@@ -32,9 +32,9 @@ applications, and resize use its PTY directly. The upper terminal owns the
 session and presents package approvals; shell output never becomes approval
 input.
 
-The shell preset binds =$HOME/.config/fish= read-only and loads it. That directory
-must exist on the host running =serve=. Fish config changes are visible through
-the bind; restart Fish or source its config to apply them. Tools and other paths
+The shell preset starts Fish with a private HOME. To load host Fish settings,
+add =roDirs = [ "$HOME/.config/fish" ];= to a custom =mkGoblin= configuration.
+That directory must exist on the host running =serve=. Tools and other paths
 referenced by the config need their own package or startup grants.
 
 Inside Fish, try:
@@ -127,10 +127,21 @@ default =goblins run shell= configuration; custom entries still use =mkGoblin=.
 =mkGoblins { goblins = { NAME = mkGoblin { ... }; }; }= returns a Nix derivation
 providing the host =bin/goblins= executable, with =config= and =goblins=
 attributes for inspection. Names select entries through =goblins run NAME=.
-The host server owns this mapping; clients send a name, never a command, PID,
-mount argument, or runtime configuration. A client from a different Goblins
-package/configuration is rejected, so it cannot accidentally launch a different
-definition with the same name. Start =serve= and =run= from the same build.
+The host =run NAME= client sends its manifest's absolute path and the selected
+name over the private attachment socket. The server loads that manifest for
+each new launch. Rebuild your Goblins package and run its new executable: the
+existing server can launch changed definitions and newly added names without
+restarting. The names printed when =serve= starts describe its own build only.
+
+Exit the active goblin before launching the updated one; one session at a time
+is still supported. Existing sessions keep their selected launch configuration.
+Package approval and workspace selection remain with =serve=. Configuration
+paths are accepted only from host attachments, never sandbox package requests.
+Malformed, missing, oversized and non-regular manifests return launch errors.
+
+A server running code from before this feature needs one restart to install the
+updated controller. Subsequent configuration-only rebuilds need no server
+restart. This does not add controller restart recovery.
 
 =mkGoblin= calls upstream =mkSandbox= with the inner request executable added
 to =allowedPackages=. Its result carries upstream's =buildSpec= plus a =goblin=

@@ -10,6 +10,40 @@ from test_connected import Terminal
 
 
 class BindTests(unittest.TestCase):
+    def test_fish_config_is_an_explicit_startup_bind(self):
+        with tempfile.TemporaryDirectory(prefix="goblins-fish-config-test-") as directory:
+            root = Path(directory)
+            flake = "path:" + str(Path(__file__).resolve().parents[1])
+            app = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "app",
+                                flake + "#checks.x86_64-linux.configured-shell"])) / "bin/goblins"
+            home = root / "home"
+            fish = home / ".config/fish"
+            (fish / "functions").mkdir(parents=True)
+            targets = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "targets",
+                                    flake + "#checks.x86_64-linux.bind-targets"]))
+            (fish / "config.fish").symlink_to(targets / "config.fish")
+            (fish / "functions/config_probe.fish").symlink_to(targets / "functions/config_probe.fish")
+            (home / "unselected-secret").write_text("private-home")
+            state = root / "control"
+            server = Terminal([str(app), "--state-dir", str(state), "serve"], env={**os.environ, "HOME": str(home)})
+            self.addCleanup(server.close)
+            server.expect("Goblins serving")
+            client = Terminal([str(app), "--state-dir", str(state), "shell"])
+            self.addCleanup(client.close)
+            server.expect("shell connected")
+            client.expect("workspace[>#]")
+            client.send("printf 'CONFIG=%s\\n' $GOBLIN_FISH_CONFIG; config_probe; echo forbidden > $HOME/.config/fish/new-file; printf 'CONFIG_RO=%s\\n' $status\n")
+            client.expect(r"(?:^|\n)CONFIG=loaded\n")
+            client.expect(r"(?:^|\n)config-function-loaded\n")
+            client.expect(r"(?:^|\n)CONFIG_RO=1\n")
+            client.send(f"test -e {targets}/unselected-secret; printf 'STORE_SIBLING_HIDDEN=%s\\n' $status; test -e $HOME/unselected-secret; printf 'HOME_PRIVATE=%s\\n' $status\n")
+            client.expect(r"(?:^|\n)STORE_SIBLING_HIDDEN=1\n")
+            client.expect(r"(?:^|\n)HOME_PRIVATE=1\n")
+            self.assertFalse((fish / "new-file").exists())
+            server.send("quit\n")
+            self.assertEqual(server.wait(), 0)
+            self.assertEqual(client.wait(), 0)
+
     def test_all_four_bind_options_and_live_host_changes(self):
         with tempfile.TemporaryDirectory(prefix="goblins-bind-test-") as directory:
             root = Path(directory)

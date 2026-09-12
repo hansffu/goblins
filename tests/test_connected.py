@@ -100,11 +100,11 @@ class ConnectedTests(unittest.TestCase):
             client.expect("workspace[>#]")
             configuration = command(["nix", "eval", "--raw", "--no-write-lock-file",
                                      flake + "#checks.x86_64-linux.named-goblins.config"])
-            # The owner validates the selector even if a host client bypasses
-            # argparse. Rejected attachments must not disturb the active goblin.
+            # A second attachment cannot replace an active goblin, even when
+            # it names another configuration or bypasses CLI validation.
             for name, selected_config, message in (
-                ("../utility", configuration, "unknown goblin"),
-                ("fishy", "/different/config", "configuration differs"),
+                ("../utility", configuration, "one goblin at a time"),
+                ("fishy", "/different/config", "one goblin at a time"),
                 ("utility", configuration, "one goblin at a time"),
             ):
                 with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as control:
@@ -150,30 +150,14 @@ class ConnectedTests(unittest.TestCase):
             # Exercise the public repository-root flake.
             flake = "path:" + str(Path(__file__).resolve().parents[1])
             app = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths", "--out-link", root / "app", flake + "#goblins"])) / "bin/goblins"
-            home = root / "home"
-            fish = home / ".config/fish"
-            (fish / "functions").mkdir(parents=True)
-            targets = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "targets",
-                                    flake + "#checks.x86_64-linux.bind-targets"]))
-            (fish / "config.fish").symlink_to(targets / "config.fish")
-            (fish / "functions/config_probe.fish").symlink_to(targets / "functions/config_probe.fish")
-            (home / "unselected-secret").write_text("private-home")
             state = root / "control"
-            server = Terminal([str(app), "--state-dir", str(state), "serve"], env={**os.environ, "HOME": str(home)})
+            server = Terminal([str(app), "--state-dir", str(state), "serve"])
             self.addCleanup(server.close)
             server.expect("Goblins serving")
             client = Terminal([str(app), "--state-dir", str(state), "run", "shell"])
             self.addCleanup(client.close)
             server.expect("shell connected")
             client.expect("workspace[>#]")
-            client.send("printf 'CONFIG=%s\\n' $GOBLIN_FISH_CONFIG; config_probe; echo forbidden > $HOME/.config/fish/new-file; printf 'CONFIG_RO=%s\\n' $status\n")
-            client.expect(r"(?:^|\n)CONFIG=loaded\n")
-            client.expect(r"(?:^|\n)config-function-loaded\n")
-            client.expect(r"(?:^|\n)CONFIG_RO=1\n")
-            client.send(f"test -e {targets}/unselected-secret; printf 'STORE_SIBLING_HIDDEN=%s\\n' $status; test -e $HOME/unselected-secret; printf 'HOME_PRIVATE=%s\\n' $status\n")
-            client.expect(r"(?:^|\n)STORE_SIBLING_HIDDEN=1\n")
-            client.expect(r"(?:^|\n)HOME_PRIVATE=1\n")
-            self.assertFalse((fish / "new-file").exists())
             client.send("printf 'BEFORE_PID=%s\\n' $fish_pid; command -q hello; printf 'HELLO_ABSENT=%s\\n' $status\n")
             before = client.expect(r"(?:^|\n)BEFORE_PID=(\d+)\r?\n").group(1)
             client.expect(r"(?:^|\n)HELLO_ABSENT=127\r?\n")

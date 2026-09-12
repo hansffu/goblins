@@ -74,6 +74,11 @@ The configured name selects the sandbox; =binName= selects its executable.
 The server accepts one active goblin at a time, with live package requests in
 each. =goblins shell= remains an alias for =goblins run shell=.
 
+After changing a definition, rebuild and invoke the new package's =goblins run=.
+Its host client sends the new manifest path to the running server, which loads
+it for that session. Changed definitions and new names do not require restarting
+=serve=; exit an active goblin before launching another.
+
 See [[file:USAGE.org::*Nix API][the Nix API options and limits]].
 
 Predefined goblins live under =nix/goblins/= and are exposed through

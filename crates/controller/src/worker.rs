@@ -1,7 +1,7 @@
 //! One session worker: blocking host work is kept off the controller event pump.
 use crate::{
     Result,
-    config::Configuration,
+    config::Manifest,
     process::WORKER_TICK,
     session::{Cancel, Identity, Session},
     unix,
@@ -38,7 +38,8 @@ pub(super) struct Worker {
 }
 impl Worker {
     pub fn start(
-        config: Configuration,
+        configuration: PathBuf,
+        name: String,
         workspace: Option<PathBuf>,
         state: PathBuf,
         rows: u16,
@@ -50,6 +51,11 @@ impl Worker {
         let (results, rx) = mpsc::channel();
         let thread = thread::spawn(move || {
             let run = || -> Result<()> {
+                // The private host attachment chooses this launch's manifest.
+                // Disk reads and launch adaptation stay off the event pump.
+                token.check()?;
+                let config = Manifest::read(&configuration)?.select(&name)?;
+                token.check()?;
                 let (master, slave) = unix::pty(rows, cols)?;
                 let mut launch = config.launch()?;
                 launch.protected_paths.push(std::fs::canonicalize(state)?);

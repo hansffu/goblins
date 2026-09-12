@@ -94,6 +94,41 @@ in
       touch $out
     '';
   named-goblins = configured;
+  updated-goblins =
+    let
+      changed = mkGoblin (
+        base
+        // {
+          args = [
+            "--noprofile"
+            "--norc"
+            "-i"
+          ];
+          allowedPackages = [
+            pkgs.coreutils
+            pkgs.tree
+          ];
+          env = {
+            GOBLIN_MARKER = "updated";
+            PS1 = "updated> ";
+          };
+        }
+      );
+    in
+    mkGoblins {
+      goblins = {
+        fishy = changed;
+        added = changed;
+      };
+    };
+  configured-shell = mkGoblins {
+    goblins.shell = mkGoblin {
+      pkg = pkgs.fish;
+      binName = "fish";
+      args = [ "--interactive" ];
+      roDirs = [ "$HOME/.config/fish" ];
+    };
+  };
   bind-targets = pkgs.runCommand "goblins-bind-targets" { } ''
     mkdir -p $out/functions
     echo 'set -gx GOBLIN_FISH_CONFIG loaded' > $out/config.fish

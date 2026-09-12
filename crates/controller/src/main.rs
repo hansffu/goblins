@@ -86,12 +86,7 @@ fn show(screen: &mut File, events: Vec<Event>, pending: &mut Option<ApprovalId>)
     screen.flush()?;
     Ok(())
 }
-fn serve(
-    manifest: Manifest,
-    identity: String,
-    state: PathBuf,
-    workspace: Option<PathBuf>,
-) -> Result<()> {
+fn serve(manifest: Manifest, state: PathBuf, workspace: Option<PathBuf>) -> Result<()> {
     let mut approval = OpenOptions::new().read(true).open("/dev/tty")?;
     let mut screen = OpenOptions::new().write(true).open("/dev/tty")?;
     let names = manifest
@@ -100,10 +95,10 @@ fn serve(
         .cloned()
         .collect::<Vec<_>>()
         .join(", ");
-    let mut controller = Controller::new(manifest, identity, &state, workspace)?;
+    let mut controller = Controller::new(&state, workspace)?;
     writeln!(
         screen,
-        "Goblins serving. Run goblins run NAME in another terminal.\nGoblins: {names}\nPackages: pinned nixpkgs attributes (e.g. hello, cowsay, python3Packages.black). Type quit to stop."
+        "Goblins serving. Run goblins run NAME in another terminal.\nGoblins: {names}\nEach run supplies its own configuration.\nPackages: pinned nixpkgs attributes (e.g. hello, cowsay, python3Packages.black). Type quit to stop."
     )?;
     let mut pending = None;
     let mut input = Vec::new();
@@ -186,9 +181,9 @@ fn main() {
             .unwrap_or(default);
         let workspace = option(&mut args, "--workspace")?.map(PathBuf::from);
         let manifest = Manifest::read(&runtime)?;
-        let identity = fs::canonicalize(runtime)?.display().to_string();
+        let configuration = fs::canonicalize(runtime)?.display().to_string();
         match args.as_slice() {
-            [command] if command == "serve" => serve(manifest, identity, state, workspace)?,
+            [command] if command == "serve" => serve(manifest, state, workspace)?,
             _ => {
                 let name = match args.as_slice() {
                     [command] if command == "shell" => "shell",
@@ -210,7 +205,7 @@ fn main() {
                     );
                     return Ok(2);
                 }
-                attachment::run(state, name.into(), identity)?;
+                attachment::run(state, name.into(), configuration)?;
             }
         }
         Ok(0)

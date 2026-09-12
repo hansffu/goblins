@@ -2,7 +2,9 @@ use crate::Result;
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    fs,
+    fs::{self, OpenOptions},
+    io::Read,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
@@ -21,9 +23,35 @@ pub struct Configuration {
 pub struct Manifest {
     pub goblins: BTreeMap<String, Configuration>,
 }
+// Host manifests contain only launch metadata, not package contents. Bound the
+// read and reject special files so a mistaken FIFO/device cannot stall startup.
+const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
-        Ok(serde_json::from_slice(&fs::read(path)?)?)
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|e| format!("cannot open configuration {}: {e}", path.display()))?;
+        if !file.metadata()?.is_file() {
+            return Err("configuration must be a regular file".into());
+        }
+        let mut bytes = Vec::new();
+        file.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+            return Err("configuration exceeds 1 MiB".into());
+        }
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
+    }
+    pub fn select(mut self, name: &str) -> Result<Configuration> {
+        self.goblins.remove(name).ok_or_else(|| {
+            format!(
+                "unknown goblin; available: {}",
+                self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+            .into()
+        })
     }
 }
 /// Trusted launch configuration, never accepted over the sandbox socket.

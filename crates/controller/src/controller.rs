@@ -3,7 +3,6 @@
 //! token is independent of its command queue. No daemon or recovery protocol.
 use crate::{
     Result,
-    config::Manifest,
     session::Identity,
     unix,
     worker::{Completed, Work, Worker},
@@ -74,8 +73,6 @@ struct Attach {
 }
 
 pub struct Controller {
-    manifest: Manifest,
-    configuration: String,
     workspace: Option<PathBuf>,
     socket_path: PathBuf,
     next_approval: u64,
@@ -85,12 +82,7 @@ pub struct Controller {
     active: Option<Active>,
 }
 impl Controller {
-    pub fn new(
-        manifest: Manifest,
-        configuration: String,
-        state: &Path,
-        workspace: Option<PathBuf>,
-    ) -> Result<Self> {
+    pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
         unix::private_directory(state)?;
         let lock = unix::lock(&state.join("serve.lock"))?;
         let socket_path = state.join("serve.sock");
@@ -102,8 +94,6 @@ impl Controller {
         }
         let listener = unix::seqpacket(&socket_path, true)?;
         Ok(Self {
-            manifest,
-            configuration,
             workspace,
             socket_path,
             next_approval: 0,
@@ -206,20 +196,8 @@ impl Controller {
                 {
                     return Err("invalid host request".into());
                 }
-                if req.configuration != self.configuration {
-                    return Err("configuration differs from server; run serve and run with the same Goblins package".into());
-                }
-                if !self.manifest.goblins.contains_key(&req.name) {
-                    return Err(format!(
-                        "unknown goblin; available: {}",
-                        self.manifest
-                            .goblins
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                    .into());
+                if !Path::new(&req.configuration).is_absolute() {
+                    return Err("configuration path must be absolute".into());
                 }
                 if self.active.is_some() {
                     return Err("one goblin at a time; exit the existing goblin first".into());
@@ -229,7 +207,8 @@ impl Controller {
             match req {
                 Ok(req) => {
                     let worker = Worker::start(
-                        self.manifest.goblins[&req.name].clone(),
+                        req.configuration.into(),
+                        req.name.clone(),
                         self.workspace.clone(),
                         self.socket_path.parent().unwrap().to_path_buf(),
                         req.rows,

@@ -1,5 +1,38 @@
 #+title: Live package grant experiment results
-#+date: 2026-09-12
+#+date: 2026-09-13
+
+* Client-selected configuration for each launch
+
+The private host attachment already sent a configuration path. The controller
+now loads that path for each new session instead of requiring equality with
+its own build's manifest. Selection and bounded regular-file reads run in the
+startup worker, keeping disk access out of the event pump. The host client can
+select changed definitions and new names while the same =serve= process runs.
+The sandbox request protocol still has no configuration or approval authority.
+An active session retains its launch configuration and rejects a second client.
+
+The user removed the default shell's Fish config bind after discovering extra
+config dependencies; that removal is preserved. Explicit =roDirs= config loading
+remains covered through a separate Nix-built test configuration.
+
+The production regression passed in 33.092 seconds. One unchanged server PID and
+attachment socket launched the original Fish definition, then a different
+Nix-built client's Bash definition under the same name with changed environment,
+entry arguments and packages, then a newly added name. A concurrent launch did
+not replace the active Fish process. Missing, malformed, oversized, non-regular
+(including a FIFO), relative-path and unknown-name requests returned errors;
+the server continued accepting launches.
+
+The full regression run passed *15 tests in 233.944 seconds*, including explicit
+binds, same-process live grants, namespace isolation, partial-failure teardown,
+PTY behavior and responsiveness. The whole-frame deadline rejected the slow
+client after 3.030 seconds. Nine Rust unit tests, Clippy with warnings denied,
+Rust/Nix formatting, =nix flake check path:.= and the production build passed.
+Nix checks retain production-only source packaging and no mandatory Python.
+
+Installing this controller change requires restarting an older server once.
+Later configuration-only rebuilds do not require a restart. This feature does
+not add reconnect, controller restart recovery or state restoration.
 
 * Startup bind forwarding and Fish config follow-up
 

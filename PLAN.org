@@ -241,3 +241,11 @@ Before implementing PTY persistence, compare using an existing session backendâ€
 6. Which second frontend best tests the API after Emacs is useful?
 
 The reproducible shell experiment, isolation probes, and result record are now implemented directly on this branch. See =src/main.rs=, =crates/=, =tests/=, and [[file:RESULTS.org][the results]]. Package definitions and the configurable Goblins API live in =nix/=; the root =flake.nix= wires inputs and outputs. Terminal multiplexing and agent-state notifications remain deferred.
+
+* Per-launch configuration selection
+
+The trusted host attachment supplies its Nix-generated manifest path and goblin
+name. Each launch uses that client's build, so configuration changes do not
+require restarting the foreground server. The active session keeps its selected
+configuration; one active session and sequential package grants remain sufficient.
+This changes launch selection only. Controller restart recovery stays out of scope.
