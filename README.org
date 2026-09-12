@@ -1,0 +1,11 @@
+#+title: Goblins
+
+A sandbox-first agent orchestration runtime with Emacs as its first frontend.
+
+See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
+
+* Documentation convention
+
+Use Org mode (=.org=) for repository documentation, including plans, design
+notes, and experiment reports. Use native Org headings, links, lists, tables,
+and source blocks.

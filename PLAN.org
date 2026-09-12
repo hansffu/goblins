@@ -1,0 +1,204 @@
+#+title: Goblins: sandbox-first agent orchestration in Emacs
+
+Draft for discussion, 2026-09-12. This document proposes architecture and experiments; it does not claim that the sandbox design has been validated.
+
+* Product direction
+
+A frontend-independent runtime for running and coordinating coding agents, with Emacs as its first client, real terminals, understandable permissions, and sessions that eventually survive closing the UI. A later TUI, desktop app, or web GUI should use the same runtime API. Every agent and its descendants run inside a sandbox, including agents that coordinate other agents.
+
+Use Herdr as the interaction reference: project workspaces, individual agent terminals, easy switching, persistent sessions, and an overview of which agents need attention. Herdr distinguishes terminal locations from agent identity and lifecycle; preserve that distinction in our model. [[https://herdr.dev/docs/agent-automation/][Herdr agent automation]]
+
+The first useful outcome is much smaller: *a running sandbox requests a missing package, a human approves it, and the same process can use it without restarting or acquiring unrelated host access.*
+
+Confirmed scope: packages can be granted to a running sandbox in v1; file and network permission changes may require restarting it. The GUI must be decoupled so other frontends can be added easily. The selected experiment adds read-only package mounts inside the running namespace. Approval runs in a foreground terminal application; the PoC has no background daemon. Working assumptions still to validate: one user, one local Linux/NixOS machine, and one CLI agent initially.
+
+* Goals
+
+- Enforce isolation outside the agent's own permission prompts. Agent commands, builds, tests, and child processes inherit the boundary.
+- Support explicit, scoped additions to a running session's capabilities, starting with packages.
+- Make effective permissions inspectable: what is accessible, why, for which session, and what an approval changes.
+- Keep dependencies reproducible through pinned Nix inputs and recorded package outputs.
+- Preserve the agent's real interactive terminal in Emacs; integrate naturally with project navigation and reviewing changes.
+- Eventually coordinate several independent agents without losing track of ownership, pending decisions, or results.
+- Keep sandbox enforcement independent of the choice of terminal renderer and sidebar toolkit.
+- Expose session and permission operations through a frontend-independent API; Emacs, a TUI, a desktop app, and a web GUI should not need separate orchestration implementations.
+
+* Antigoals and deliberate deferrals
+
+Antigoals:
+
+- An agent-accessible host shell, unrestricted Nix daemon, or generic privileged RPC service.
+- Treating PATH filtering or a package list as a complete prohibition on arbitrary code execution.
+- A replacement coding-agent implementation, terminal emulator, or general Emacs UI framework.
+- Silent expansion of permissions because project files or an agent request say it is necessary.
+- Claiming that removing a package or mount erases data already read or stops code already running.
+
+Deferred until the foundation works:
+
+- Multiplexing, status detection, notifications, automatic delegation, and sidebar polish.
+- Live grants of arbitrary host paths, comprehensive live revocation, and arbitrary project flakes.
+- Remote machines, multiple users, macOS, distributed scheduling, and automatic merging or publishing.
+- Choosing the daemon implementation language or committing to Treemacs versus VUI.
+
+* Threat model and invariants
+
+Assume an agent can run arbitrary code inside its sandbox, including code influenced by malicious repository content. Protect unrelated host files, credentials, services, processes, and other sessions. Trust the host kernel and deliberately installed host components; kernel exploits and a compromised host are outside the initial guarantee.
+
+The trusted side consists of the launcher, permission controller, mount helper, and human approval client. The agent-facing API only requests capabilities and observes its own requests. It cannot approve, choose another session's identity, or supply commands for host execution.
+
+Use a private HOME and temporary directory, an explicit workspace, isolated process/network views, and no ambient host sockets or environment. Keep effective policy and approval records outside agent-writable project directories. Failure to construct the required boundary aborts launch.
+
+Restricting store visibility protects unrelated store contents, including private source and configuration. Package approval authorizes host-side provisioning; it does not prohibit the agent from obtaining or implementing equivalent code inside its existing permissions. Package availability controls the provided environment. A shell or interpreter can execute agent-written code, and a dependency closure can contain additional executables. The actual security boundary is resource access. Downloading an executable must not grant new filesystem, network, or broker permissions.
+
+Initially use a disposable repository copy with independent Git metadata. Shared Git worktrees are a later decision: separate working directories alone do not isolate their common Git state. Host tools must not automatically execute hooks, project configuration, or generated scripts merely because an agent produced them.
+
+* What the upstream project establishes
+
+=agent-sandbox.nix= is the preferred starting point for evaluation. The inspected Nix interface computes the initial package closure and sandbox PATH. Its Linux launcher mounts individual closure paths when =allowNix= is false, supplies private HOME and =/tmp=, and applies a Unix-socket restriction by default. With =allowNix=, it exposes the host store and Nix state. These are startup decisions in the inspected code. [[https://github.com/archie-judd/agent-sandbox.nix/blob/main/lib/sandbox.nix][Sandbox interface]], [[https://github.com/archie-judd/agent-sandbox.nix/blob/main/launcher/lib/launch_config/linux/compute.py][Linux launcher]]
+
+Consequences for this project:
+
+- A symlink to a newly installed host store path will not by itself expose that path inside the current sandbox.
+- A broker connection needs an explicit transport design; a mounted Unix socket may still be blocked by the syscall policy.
+- We need a launcher extension that lets a trusted helper add mounts to the running namespace while withholding that authority from the agent.
+
+The README and inspected source differ on some details, including store and temporary-directory exposure. Pin and test a specific upstream revision before relying on either. The initial research used moving =main= URLs; an immutable revision is still a Phase 0 deliverable.
+
+Bubblewrap provides the mechanisms, while the launcher must define and enforce the policy. Reusing it does not remove responsibility for verifying the resulting boundary. [[https://github.com/containers/bubblewrap/blob/main/README.md#sandbox-security][Bubblewrap security model]]
+
+* Selected experiment: live mounts with foreground approval
+
+Use a foreground terminal application to own one sandbox session, receive package requests, ask the human for approval, and coordinate mounting. No daemon, service installation, persistent request queue, or full TUI framework is required for the PoC. Keep terminal input/output separate from the core controller so later frontends can reuse its operations.
+
+At launch, expose only the initial runtime closure through read-only bind mounts at the original =/nix/store/<hash>-name= paths. Do not expose the host Nix daemon. For an approved addition, the host resolves its transitive runtime closure and a trusted helper adds the missing read-only mounts inside the existing mount namespace. No copied private store is planned for this experiment.
+
+The first technical gate is namespace authority: prove that a helper can enter or retain access to the relevant namespaces and mount a package while the agent cannot mount, remount, or access the helper's control handles. Sharing the host user's UID does not by itself establish the necessary =setns= permissions. Namespace ownership and capabilities must be verified against the actual launcher. [[https://man7.org/linux/man-pages/man2/setns.2.html][Linux namespace entry requirements]]
+
+Keep namespace descriptors and source handles on the trusted side. Derive mount sources from host-resolved store paths and destinations from their canonical store names. Reject caller-selected PIDs, namespaces, destinations, mount flags, and arbitrary host paths. Protect destination lookup against agent-created symlinks and races; merely checking a string prefix is insufficient. Ensure all successful mounts are read-only and that the agent cannot modify the store mountpoint hierarchy.
+
+Start with an already realized package to isolate the mount experiment from downloading, building, and authentication. After that passes, allow the foreground controller to realize an approved entry from a small host-controlled, pinned package catalog using host Nix access. Root the closure for the session's lifetime.
+
+Mount the complete additional closure before updating a host-managed profile. Bind a stable profile parent read-only at =/run/goblins/packages= from startup and put =/run/goblins/packages/current/bin= on PATH. Switch =current= only after all required mounts succeed. Existing processes retain their environment; wrappers or fresh child environments may be needed for development tools with setup hooks.
+
+Multiple mount operations are not an atomic grant: direct store paths can become accessible before profile activation. For this PoC, if mounting fails partway through, report failure and terminate the disposable session to avoid continuing with an uncertain effective grant. Do not claim rollback or revocation of data already accessed. Revisit transactional behavior only after the basic experiment works.
+
+* Proposed request transport: Unix socket and CLI
+
+Use a pathname Unix-domain stream socket, created by the foreground controller before sandbox launch and exposed only to that session at =/run/goblins/request.sock=. A small =goblins-request= executable inside the sandbox sends one bounded, newline-delimited JSON request and waits for a terminal response. A shell command is enough for the first agent integration:
+
+#+begin_src sh
+goblins-request package jq --reason "Inspect the test output"
+#+end_src
+
+Illustrative wire request:
+
+#+begin_src json
+{"v":1,"id":"r1","op":"request-package","package":"jq","reason":"Inspect the test output"}
+#+end_src
+
+The endpoint determines the session. A request cannot select another session or contain an approval. Keep this request socket separate from the trusted helper's mount-control channel; the agent must never receive the latter. Socket peer UID alone is not a sufficient session identity when multiple sandboxes use the same host UID.
+
+For the PoC, support one outstanding request per session. Validate the package against the host catalog, display escaped package/reason text in the approval terminal, and accept explicit human approve/deny input there. Bound message sizes, reject malformed or unsupported requests, and never evaluate supplied shell text. Do not infer approval from terminal output produced by the agent.
+
+On approval, resolve/realize the selected package, add its mounts, update the profile, and then return =ready=. On denial return =denied=; on failure return =error=. The client exits successfully only for =ready=. A client disconnect does not constitute approval; after an ambiguous disconnect it should report an unknown outcome rather than silently resubmit. Controller exit ends the disposable PoC session. Crash recovery and durable retries are deferred.
+
+The upstream default disables Unix sockets, so the launch policy needs an explicit adjustment. Allowing AF_UNIX creation is broader than granting this one endpoint: verify that host daemon sockets, other session endpoints, and sockets in any shared workspace remain inaccessible. Retain isolated network and temporary-directory views. A read-only socket bind protects the mounted entry; it does not prevent protocol requests through the socket.
+
+MCP is an optional later adapter. It defines tool discovery and invocation, while the socket carries requests across the sandbox boundary. A stdio MCP server launched inside the sandbox could expose =request_package= and forward to the same socket. Keep it untrusted, without approval or mount authority. The documented standard MCP transports include stdio and Streamable HTTP; a raw Unix socket would be a custom MCP transport, so the adapter avoids requiring agent clients to support one. [[https://modelcontextprotocol.io/specification/2025-06-18/basic/transports][MCP transports]]
+
+* Controller boundary and later hardening
+
+For the PoC, approvals live entirely in the foreground terminal. Record decisions and mount results in a small host-side log; log package identity and outcomes without treating agent text as terminal control sequences. No generic command execution, arbitrary Nix expressions, caller-selected Nix options, or project-defined package evaluation is exposed.
+
+After the experiment, add structured inspection, request identity/retry handling, bounded queues, concurrent realization, and restart reconciliation as needed. A future service may host the same controller, but service lifecycle and recovery are not prerequisites for proving live mounts.
+
+* Frontend-independent runtime
+
+The runtime is the authority for session IDs, effective policy, permission requests, and lifecycle. Later it also owns tasks, agent status, and persistent terminals. Emacs owns presentation: buffers, windows, keyboard commands, and local display preferences. No core operation requires Emacs Lisp, an Emacs process, or a buffer name.
+
+Use a small versioned protocol with structured commands, responses, and errors. A host CLI exercises the same application API as future GUIs. Start with the package-request operations; add session/task operations when their milestones arrive. Keep the API independent of its transport. A local socket is a candidate for trusted clients; a future web gateway can translate HTTP/WebSocket connections without moving policy into the browser.
+
+Separate three interfaces:
+
+| Interface       | Callers                                                     | Authority                                                                   |
+|-----------------+-------------------------------------------------------------+-----------------------------------------------------------------------------|
+| Control API     | Authorized human clients: CLI, Emacs, later other frontends | Inspect/manage sessions and approve or deny grants                          |
+| Agent API       | Sandboxed processes, including coordinators                 | Request scoped capabilities and perform explicitly authorized orchestration |
+| Terminal stream | Authorized frontend attachments                             | Terminal bytes, input, resize, and attachment ownership                     |
+
+Agent endpoints must not expose the human control API. Frontend credentials must never enter the sandbox. Future browser access needs an authenticated gateway and origin checks; supporting a web frontend does not mean opening an unauthenticated network listener now.
+
+When state notifications are introduced, provide a snapshot plus events with sequence numbers, allowing clients to reconnect and resynchronize. Keep terminal byte streams separate from structured state. Multiple views should be possible; terminal input needs explicit controller ownership. None of this requires building an event framework or multiplexer during the sandbox proof.
+
+Acceptance criterion for decoupling: start a session, inspect it, handle its package request, and stop it using only the CLI/API. Adding the Emacs client must not change the permission model. Later, reconnecting a different client must recover authoritative state without depending on the previous client's memory.
+
+* Different kinds of live grants
+
+| Capability                               | Candidate mechanism                                          | Initial contract                                                 |
+|------------------------------------------+--------------------------------------------------------------+------------------------------------------------------------------|
+| Package                                  | Add read-only closure mounts in the running namespace        | Must work without restarting the agent                           |
+| Read-only reference material             | Copy a selected snapshot into a pre-mounted import directory | Possible next experiment; snapshot semantics must be visible     |
+| Live host file or directory              | Recreate the sandbox with revised bindings                   | Restart is acceptable in v1; live grants are future research     |
+| Outbound network destination             | Recreate with revised network policy                         | Restart is acceptable in v1; live proxy updates can follow later |
+| Host-local service or published dev port | Narrow forwarding broker                                     | Separate from internet domain permission                         |
+| Credential-backed operation              | Narrow service proxy or explicit credential exposure         | Separate approval and threat-model decision                      |
+
+Do not build a universal permission daemon before proving these cases independently. Landlock can add restrictions but cannot remove an enforced policy; a design using it must reserve the intended publication hierarchy from startup or recreate the session. [[https://docs.kernel.org/userspace-api/landlock.html][Landlock policy enforcement]]
+
+For the first version, grants are additive for a session. Removing approval prevents future issuance; it does not reliably revoke already running programs, open descriptors, copied data, or knowledge. Stronger contraction generally requires stopping the affected session and creating a fresh one with narrower policy.
+
+* Short-term plan: earn the right to build the UI
+
+Indicative effort for one developer; milestones and exit criteria govern sequencing, not calendar promises.
+
+| Phase                 | Approximate effort | Deliverable                                                                 | Exit criterion                                                                                      |
+|-----------------------+--------------------+-----------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------|
+| 0. Baseline           | 1–2 days           | Pinned upstream revision, launch specification, small isolation probe suite | A shell works; unrelated files, host sockets, and disallowed network access fail as intended        |
+| 1. Live package proof | 2–4 days           | One sandbox plus a trusted live-mount helper                                | A previously unavailable package and its dependencies work in the same running shell after mounting |
+| 2. Permission loop    | 3–5 days           | Foreground approval app, request socket/CLI, small grant log                | Approve/deny and failure handling work without a daemon or GUI dependency                           |
+| 3. Real agent trial   | 2–4 days           | One CLI agent with scoped authentication                                    | It completes a small coding task and requests a tool without requiring broad host access            |
+
+The initial horizon is roughly two to three focused weeks, subject to the namespace-authority result and upstream integration work. Defer durable recovery and concurrency until the foreground PoC works.
+
+Required Phase 1 evidence:
+
+- Record process identity before and after granting; the original shell stays alive.
+- Confirm the tool is initially absent by command lookup and direct store-path access.
+- Grant a dynamically linked tool, a script with a store-path interpreter, and a tool that reads runtime data.
+- Verify the agent cannot mount/remount, reach helper control handles, mutate the store/profile, or escape through symlink and destination races.
+- Verify a second minimal sandbox does not receive the first one's grant. This tests isolation, not orchestration.
+- Exercise partial mount failure, failed realization, denial, malformed requests, controller exit, package-name collisions, and cleanup/GC behavior. Defer concurrent request scheduling.
+- Test discovery in the intended agent's child shells; document caching or environment limitations.
+
+Go/no-go decision after Phase 1: proceed if a narrowly scoped helper can add read-only mounts while the agent retains no mount authority. Prefer namespace-scoped privileges; do not silently escalate to a general root mount service. If this cannot be achieved with an understandable launcher change, document the blocker and compare the copied-store fallback before introducing orchestration.
+
+* Longer-term plan: build the Emacs experience
+
+| Stage                     | Intended outcome                                                             | Acceptance gate                                                              |
+|---------------------------+------------------------------------------------------------------------------+------------------------------------------------------------------------------|
+| Single-agent Emacs client | Start/stop, inspect permissions, approve requests, view a Ghostel terminal   | Complete the real-agent trial entirely from Emacs                            |
+| Persistent sessions       | Runtime owns session lifetime and PTY; Emacs attaches as a client            | Closing and reopening Emacs preserves the live process and usable terminal   |
+| Several agents            | Project/session list, explicit workspaces, jump-to-agent, manual dispatch    | Run 3–5 agents with separate grants and reviewable outputs                   |
+| State and attention       | Adapter events for working, awaiting permission/input, done, failed, unknown | Reliable navigation to work needing attention; reconnect restores state      |
+| Orchestration             | Scoped delegation, parent/child tasks, result handoff, bounded concurrency   | A coordinator delegates and reviews work without expanding its own authority |
+| Additional frontends      | TUI, desktop app, or web GUI over the existing API                           | A second client manages existing sessions without duplicating runtime logic  |
+| Mature permissions        | Selected live filesystem/network grants, policy presets, resource budgets    | Each supported grant has documented enforcement and revocation semantics     |
+
+Use Ghostel as the preferred terminal frontend. Its architecture includes native local PTY handling; persistent runtime-owned PTYs therefore need a tested attach bridge, not an assumption that buffers provide persistence. Its shell integration can invoke allowlisted Emacs functions, so sandbox terminals must disable unsafe host callbacks. [[https://github.com/dakra/ghostel/blob/main/README.org][Ghostel documentation]]
+
+For the first sidebar, prefer a small native Emacs list buffer. Decide on a richer tree once the actual hierarchy and actions are known. Treat Treemacs as a candidate if file/project browsing dominates; evaluate VUI if reactive controls and approval forms dominate. VUI provides components and automatic re-rendering, but does not need to be part of sandbox research. [[https://github.com/d12frosted/vui.el/blob/master/README.org][VUI documentation]]
+
+Keep project, session, agent process, task, terminal attachment, and permission request as distinct identities. A terminal buffer disappearing must not imply an agent finished. A tool approval must not imply the task succeeded. Agent-reported status remains informational and never authorizes a grant.
+
+Before implementing PTY persistence, compare using an existing session backend—including Herdr's attach API—with writing one. Reuse is a decision to test after the sandbox milestone, not a prerequisite for it.
+
+* Decisions to revisit
+
+1. Which single CLI agent and authentication flow should anchor the first real trial?
+2. Can the mount helper operate with namespace-scoped authority and no host-root service?
+3. Can upstream accept the live-mount helper extension, or does this require a maintained adapter/fork?
+4. Which repository operations should agents perform directly, and which should be mediated by the host?
+5. Is persistence required for the first Emacs release, or the immediately following milestone?
+6. Which second frontend best tests the API after Emacs is useful?
+
+Next implementation task: create =spikes/live-package-grant/= containing a reproducible shell experiment, isolation probes, and a short result record. Do not start terminal multiplexing or agent-state notifications until its exit criteria pass.
