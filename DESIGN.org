@@ -128,12 +128,30 @@ isolation; it is not a comprehensive syscall allowlist.
 
 * Controller, transport, and terminal separation
 
+The Nix library builds named configurations. =mkGoblin= calls the pinned
+=mkSandbox= with the inner request package added, and retains its build spec.
+=mkGoblins= serializes the configurations into an immutable host-side manifest
+and returns =bin/goblins=. The live adapter reads upstream's entry executable,
+POSIX shell, full initial closure, PATH, certificate and pkg-config paths. It
+does not run upstream's independent static launcher or its environment shell
+fragments. Configured environment values and entry arguments remain literal.
+Unsupported filesystem/network settings are rejected at Nix evaluation.
+
+The host =run NAME= client sends a configured name and manifest identity over
+the private control socket. The foreground owner checks both before allocating
+a session; it never accepts a client-supplied executable or launch configuration.
+Unknown names, mismatched configurations, and second concurrent attachments
+are rejected without stopping an existing session. =shell= is a CLI alias for
+=run shell=. Only =request-package= is available in the inner command.
+
 =runtime.py= contains session lifecycle, validation, host realization, closure
 mounting, profile publication, and decisions. It has no terminal dependency.
-=goblins.py= supplies the connected serve/shell frontends. =terminal.py= is
+=goblins.py= supplies the connected serve/run frontends. =terminal.py= is
 the older single-terminal gate presentation.
-=goblins request-package= (with a legacy =goblins-request= alias) is an untrusted client, rendered with a pinned Python shebang
-at launch. Its public socket cannot select session identity or approve anything.
+=goblins request-package= is an untrusted client packaged with a pinned Python
+shebang by =mkGoblin=. The standalone gate also supplies a legacy
+=goblins-request= alias. Its public socket cannot select session identity or
+approve anything.
 
 Protocol: one UTF-8 JSON line, at most 4096 bytes, with exactly:
 
@@ -153,17 +171,21 @@ an explicit unknown outcome and exit 2, without resubmission. Disconnect alone
 never constitutes approval. A human-approved grant may still complete after a
 client disconnects, leaving that client uncertain about its outcome.
 
-The foreground client opens =/dev/tty= directly for decisions. Agent stdio is
-pipes, never that terminal. Request fields, shell output, and responses are
-escaped before rendering. During approval the client pauses payload rendering.
+The foreground client opens =/dev/tty= directly for decisions. The connected
+payload has its own PTY slave; only the host attachment client gets its master.
+The original gate uses pipes. Neither receives the approval terminal. Request
+fields and responses are escaped before rendering in the host approval UI;
+payload terminal output goes directly to its separate attachment terminal.
 No agent-generated text is fed into the approval input. The host controller
 API used by tests is trusted; it is not exported on the public socket.
 
 * Lifetime and failure policy
 
-Host Nix resolves validated attribute components from the trusted flake's
-=legacyPackages.x86_64-linux= package set, whose nixpkgs and upstream inputs are
-revision/hash locked. Two named test fixtures come from its =packages= set.
+Host Nix resolves validated attribute components directly from the pinned
+nixpkgs source's =legacyPackages.x86_64-linux= package set. The host executable
+references =pkgs.path= from the locked input; it does not embed the Goblins root
+flake, tests, or fixture definitions. Test drivers build fixtures separately
+and pass their already-realized outputs to the host-side grant API.
 A fixed host-side Nix function requires a derivation and chooses its =bin=
 output, or its default output when no =bin= exists. The host supplies the build
 output selector; the request cannot. Evaluation and realization happen only

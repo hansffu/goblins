@@ -18,7 +18,6 @@ HERE = Path(__file__).resolve().parent
 STORE = re.compile(r"/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+\Z")
 MAX_FRAME = 4096
 PACKAGE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)*\Z")
-FIXTURES = {"script-tool", "data-tool"}
 
 
 def package_name(name):
@@ -115,6 +114,32 @@ def receive(conn):
     return parse_request(bytes(data))
 
 
+def goblin_config(config):
+    """Adapt the pinned mkSandbox build specification to the live launcher.
+
+    This is host configuration from mkGoblin, never request-supplied data.
+    Keep mkSandbox's closure, executable, shell, PATH and pkg-config setup.
+    Network and host binds are rejected by mkGoblin until this adapter supports
+    them. Environment values here are literal strings, without shell expansion.
+    """
+    spec = json.loads(Path(config["build_spec"]).read_text())
+    if spec["platform"] != "linux" or spec["allow_nix"] or not spec["allow_unix_sockets"]:
+        raise ValueError("unsupported Goblin sandbox policy")
+    if any(spec[k] for k in ("rw_dirs", "rw_files", "ro_dirs", "ro_files",
+                             "allowed_host_ports", "published_ports")):
+        raise ValueError("live launcher does not support host binds or network grants")
+    paths = spec["sandbox_path"].split(":")
+    return dict(
+        shell=spec["sandboxed_binary"], shell_args=config["args"], posix_shell=spec["shell"],
+        initial_packages=[str(Path(p).parent) for p in paths if p],
+        initial_closure=Path(spec["closure_paths_file"]).read_text().splitlines(),
+        python=spec["dependencies"]["python"], bwrap=spec["dependencies"]["bwrap"],
+        helper=config["helper"], flake=config["flake"], client_package=config["client_package"],
+        env={"PKG_CONFIG_PATH": spec["pkg_config_path"], "SSL_CERT_DIR": spec["cacert_dir"],
+             "SSL_CERT_FILE": spec["cacert_bundle"], **config["env"]},
+    )
+
+
 def snapshot(source, destination):
     """Copy into an unshared disposable directory without following source links.
 
@@ -154,7 +179,8 @@ def snapshot(source, destination):
 
 class Session:
     def __init__(self, *, shell=None, python=None, helper=None, bwrap=None, flake=None,
-                 workspace=None, initial_packages=(), shell_args=None):
+                 workspace=None, initial_packages=(), shell_args=None, posix_shell=None,
+                 initial_closure=(), client_package=None, env=None):
         self.directory = Path(tempfile.mkdtemp(prefix="goblins-"))
         self.closed = False
         self.proc = None
@@ -164,11 +190,15 @@ class Session:
         self.last_error = None
         self.flake = str(flake or ("path:" + str(HERE)))
         self.shell = Path(shell or executable_store("bash") / "bin/bash")
+        self.posix_shell = Path(posix_shell or self.shell)
         self.python = Path(python or Path(shutil.which("python3")).resolve())
         self.helper = str(helper or HERE / "target/debug/goblins-mount-helper")
         self.bwrap = str(bwrap or shutil.which("bwrap"))
         self.initial_packages = [store_path(path) for path in initial_packages]
-        self.shell_args = shell_args or ["--noprofile", "--norc"]
+        self.initial_closure = [store_path(path) for path in initial_closure]
+        self.client_package = store_path(client_package) if client_package else None
+        self.env = env or {}
+        self.shell_args = ["--noprofile", "--norc"] if shell_args is None else shell_args
         for name in ("store", "packages", "roots", "workspace", "bin"):
             (self.directory / name).mkdir()
         if workspace:
@@ -206,7 +236,8 @@ class Session:
                 dst.touch(exist_ok=True)
 
     def start(self, argv=None, *, terminal_fd=None):
-        initial = self.closure([self.shell.parents[1], self.python.parents[1], *self.initial_packages])
+        initial = self.closure([self.shell.parents[1], self.posix_shell.parents[1], self.python.parents[1],
+                                *self.initial_packages, *self.initial_closure])
         self.placeholders(initial)
         client = (HERE / "request.py").read_text()
         for name in ("goblins", "goblins-request"):
@@ -223,15 +254,17 @@ class Session:
                 "--clearenv", "--setenv", "HOME", "/home/agent", "--setenv", "LC_ALL", "C",
                 "--setenv", "USER", "agent", "--setenv", "LOGNAME", "agent",
                 "--setenv", "PATH", path,
-                "--setenv", "SHELL", str(self.shell), "--setenv", "PYTHONNOUSERSITE", "1",
+                "--setenv", "SHELL", str(self.posix_shell), "--setenv", "PYTHONNOUSERSITE", "1",
                 "--setenv", "TERM", "xterm-256color",
                 "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                 "--tmpfs", "/home/agent", "--bind", str(self.directory / "workspace"), "/workspace",
                 "--ro-bind", str(self.directory / "store"), "/nix/store",
                 "--ro-bind", str(self.directory / "packages"), "/run/goblins/packages",
-                "--ro-bind", str(self.directory / "bin"), "/run/goblins/bin",
+                "--ro-bind", str(self.client_package / "bin" if self.client_package else self.directory / "bin"), "/run/goblins/bin",
                 "--ro-bind", str(self.directory / "request.sock"), "/run/goblins/request.sock",
-                "--symlink", str(self.shell), "/bin/sh", "--chdir", "/workspace"]
+                "--symlink", str(self.posix_shell), "/bin/sh", "--chdir", "/workspace"]
+        for name, value in self.env.items():
+            args += ["--setenv", name, value]
         for path in sorted(initial):
             args += ["--ro-bind", str(path), str(path)]
         args += ["--remount-ro", "/"]
@@ -278,8 +311,7 @@ class Session:
         # Only attribute components reach the pinned HOST flake. No expressions,
         # URLs, output selectors or workspace flakes come from the requester.
         package_name(name)
-        namespace = "packages" if name in FIXTURES else "legacyPackages"
-        attr = f"{self.flake}#{namespace}.x86_64-linux.{name}"
+        attr = f"{self.flake}#legacyPackages.x86_64-linux.{name}"
         nix = ["nix", "--extra-experimental-features", "nix-command flakes"]
         select_output = ('p: if builtins.isAttrs p && (p.type or null) == "derivation" '
                          'then (p.bin or p).outputName '

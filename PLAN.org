@@ -3,17 +3,20 @@
 Draft for discussion, 2026-09-12. This document proposes architecture and experiments; it does not claim that the sandbox design has been validated.
 
 The implemented package-only PoC is documented in
-[[file:spikes/live-package-grant/README.org][the runnable experiment]]. See
-[[file:spikes/live-package-grant/RESULTS.org][its result record]] for measured evidence and current limitations.
+[[file:USAGE.org][the runnable experiment]]. See
+[[file:RESULTS.org][its result record]] for measured evidence and current limitations.
 
 * Current PoC command interface
 
 The foreground owner is =goblins serve=. A separate host terminal runs
-=goblins shell= to start and attach interactive Fish with upstream commonTools.
+=goblins run shell= to start and attach interactive Fish with upstream commonTools.
 Inside the sandbox, a restricted =goblins request-package NAME= client sends a
 bounded request through the mounted per-session socket. Only the serve terminal
 can approve. Approved closures become available in that same Fish session.
 A future background service can host the controller; this PoC stays foreground.
+The Nix API exports =mkGoblins { goblins = { NAME = mkGoblin { ... }; }; }=.
+=mkGoblin= wraps upstream =mkSandbox= with an inner request client, and
+=goblins run NAME= selects that configuration through the host controller.
 
 * Product direction
 
@@ -214,4 +217,4 @@ Before implementing PTY persistence, compare using an existing session backendâ€
 5. Is persistence required for the first Emacs release, or the immediately following milestone?
 6. Which second frontend best tests the API after Emacs is useful?
 
-Next implementation task: create =spikes/live-package-grant/= containing a reproducible shell experiment, isolation probes, and a short result record. Do not start terminal multiplexing or agent-state notifications until its exit criteria pass.
+The reproducible shell experiment, isolation probes, and result record are now implemented directly on this branch. See =gate.py=, =tests/=, and [[file:RESULTS.org][the results]]. Package definitions and the configurable Goblins API live in =nix/=; the root =flake.nix= wires inputs and outputs. Terminal multiplexing and agent-state notifications remain deferred.

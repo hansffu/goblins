@@ -9,6 +9,7 @@ import pty
 import re
 import select
 import signal
+import socket
 import struct
 import tempfile
 import termios
@@ -74,20 +75,85 @@ class Terminal:
 
 
 class ConnectedTests(unittest.TestCase):
+    def test_configured_names_packages_environment_and_dispatch(self):
+        with tempfile.TemporaryDirectory(prefix="goblins-config-test-") as directory:
+            root = Path(directory)
+            flake = "path:" + str(Path(__file__).resolve().parents[1])
+            app = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
+                                "--out-link", root / "app", flake + "#checks.x86_64-linux.named-goblins"])) / "bin/goblins"
+            state = root / "control"
+            server = Terminal([str(app), "--state-dir", str(state), "serve"])
+            self.addCleanup(server.close)
+            server.expect("Goblins: fishy, utility")
+
+            unknown = Terminal([str(app), "--state-dir", str(state), "run", "missing"])
+            self.addCleanup(unknown.close)
+            unknown.expect("unknown goblin; available: fishy, utility")
+            self.assertEqual(unknown.wait(), 2)
+
+            client = Terminal([str(app), "--state-dir", str(state), "run", "fishy"])
+            self.addCleanup(client.close)
+            server.expect("fishy connected")
+            client.expect("workspace[>#]")
+            configuration = command(["nix", "eval", "--raw", "--no-write-lock-file",
+                                     flake + "#checks.x86_64-linux.named-goblins.config"])
+            # The owner validates the selector even if a host client bypasses
+            # argparse. Rejected attachments must not disturb the active goblin.
+            for name, selected_config, message in (
+                ("../utility", configuration, "unknown goblin"),
+                ("fishy", "/different/config", "configuration differs"),
+                ("utility", configuration, "one goblin at a time"),
+            ):
+                with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as control:
+                    control.settimeout(5)
+                    control.connect(str(state / "serve.sock"))
+                    control.send(json.dumps({"v": 1, "op": "run", "name": name,
+                                             "configuration": selected_config, "rows": 24, "cols": 80}).encode())
+                    reply = json.loads(control.recv(4096))
+                    self.assertEqual(reply["status"], "error")
+                    self.assertIn(message, reply["message"])
+            client.send("printf 'MARKER=%s\\n' $GOBLIN_MARKER; command -q tree; printf 'NO_TREE=%s\\n' $status; command -q jq; printf 'NO_JQ=%s\\n' $status; /bin/sh -c 'echo POSIX_SH_OK'\n")
+            client.expect(r"(?:^|\n)MARKER=literal \$HOME \$\(false\)\n")
+            client.expect(r"(?:^|\n)NO_TREE=127\n")
+            client.expect(r"(?:^|\n)NO_JQ=127\n")
+            client.expect(r"(?:^|\n)POSIX_SH_OK\n")
+            client.send("goblins run utility; printf 'INNER_RUN=%s\\n' $status\n")
+            client.expect(r"(?:^|\n)INNER_RUN=2\n")
+            client.send("goblins request-package hello; printf 'READY=%s\\n' $status\n")
+            server.expect("Approve package\\? Type approve or deny:")
+            server.send("approve\n")
+            client.expect(r"(?:^|\n)READY=0\n", timeout=60)
+            client.send("hello; exit\n")
+            client.expect(r"(?:^|\n)Hello, world!\n")
+            self.assertEqual(client.wait(), 0)
+            server.expect("Goblin stopped")
+
+            utility = Terminal([str(app), "--state-dir", str(state), "run", "utility"])
+            self.addCleanup(utility.close)
+            server.expect("utility connected")
+            utility.expect("utility>")
+            utility.send("printf 'MARKER=%s\\n' \"$GOBLIN_MARKER\"; tree --version; command -v hello || echo NO_PREVIOUS_GRANT\n")
+            utility.expect(r"(?:^|\n)MARKER=utility\n")
+            utility.expect(r"(?:^|\n)tree v")
+            utility.expect(r"(?:^|\n)NO_PREVIOUS_GRANT\n")
+            server.send("quit\n")
+            self.assertEqual(server.wait(), 0)
+            self.assertEqual(utility.wait(), 0)
+            print("EVIDENCE mkGoblins: fishy/utility dispatch, per-goblin packages and literal env, inner request only, live grant, fresh-session isolation", flush=True)
+
     def test_hello_grant_from_real_fish_without_restart(self):
         with tempfile.TemporaryDirectory(prefix="goblins-connected-test-") as directory:
             root = Path(directory)
-            # Exercise the public repository-root flake; other integration
-            # scenarios retain the standalone experiment flake.
-            flake = "path:" + str(Path(__file__).resolve().parents[2])
+            # Exercise the public repository-root flake.
+            flake = "path:" + str(Path(__file__).resolve().parents[1])
             app = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths", "--out-link", root / "app", flake + "#goblins"])) / "bin/goblins"
             state = root / "control"
             server = Terminal([str(app), "--state-dir", str(state), "serve"])
             self.addCleanup(server.close)
             server.expect("Goblins serving")
-            client = Terminal([str(app), "--state-dir", str(state), "shell"])
+            client = Terminal([str(app), "--state-dir", str(state), "run", "shell"])
             self.addCleanup(client.close)
-            server.expect("Fish connected")
+            server.expect("shell connected")
             client.expect("workspace[>#]")
             client.send("printf 'BEFORE_PID=%s\\n' $fish_pid; command -q hello; printf 'HELLO_ABSENT=%s\\n' $status\n")
             before = client.expect(r"(?:^|\n)BEFORE_PID=(\d+)\r?\n").group(1)
@@ -161,12 +227,12 @@ class ConnectedTests(unittest.TestCase):
             client.expect(r"(?:^|\n)31 102\r?\n")
             client.send("exit\n")
             self.assertEqual(client.wait(), 0)
-            server.expect("Shell stopped")
+            server.expect("Goblin stopped")
 
             # A fresh session does not inherit the previous session's grant.
-            fresh = Terminal([str(app), "--state-dir", str(state), "shell"])
+            fresh = Terminal([str(app), "--state-dir", str(state), "run", "shell"])
             self.addCleanup(fresh.close)
-            server.expect("Fish connected")
+            server.expect("shell connected")
             fresh.expect("workspace[>#]")
             fresh.send("command -q hello; printf 'FRESH_ABSENT=%s\\n' $status\n")
             fresh.expect(r"(?:^|\n)FRESH_ABSENT=127\r?\n")

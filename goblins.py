@@ -16,7 +16,7 @@ import sys
 import termios
 import tty
 
-from runtime import HERE, Session, receive
+from runtime import HERE, Session, goblin_config, receive
 
 LIMIT = 4096
 
@@ -49,17 +49,19 @@ def start_request(conn):
     if len(raw) > LIMIT:
         raise ValueError("oversized host request")
     req = json.loads(raw)
-    if not isinstance(req, dict) or set(req) != {"v", "op", "rows", "cols"}:
+    if not isinstance(req, dict) or set(req) != {"v", "op", "name", "configuration", "rows", "cols"}:
         raise ValueError("invalid host request")
-    if type(req["v"]) is not int or req["v"] != 1 or req["op"] != "shell":
+    if type(req["v"]) is not int or req["v"] != 1 or req["op"] != "run":
         raise ValueError("unsupported host operation")
+    if not isinstance(req["name"], str) or not isinstance(req["configuration"], str):
+        raise ValueError("invalid goblin selector")
     for key in ("rows", "cols"):
         if type(req[key]) is not int or not 1 <= req[key] <= 1000:
             raise ValueError("invalid terminal dimensions")
     return req
 
 
-def serve(config, state, workspace=None):
+def serve(config, state, workspace=None, *, configuration):
     """Foreground owner; approvals come only from this process's host terminal."""
     state = private_directory(state)
     socket_path = state / "serve.sock"
@@ -83,7 +85,8 @@ def serve(config, state, workspace=None):
             listener.listen(1)
             events.register(listener, selectors.EVENT_READ, "attach")
             events.register(approval, selectors.EVENT_READ, "terminal")
-            announce(screen, "Goblins serving. Run goblins shell in another terminal.")
+            announce(screen, "Goblins serving. Run goblins run NAME in another terminal.")
+            announce(screen, "Goblins: " + ", ".join(config["goblins"]))
             announce(screen, "Packages: pinned nixpkgs attributes (e.g. hello, cowsay, python3Packages.black). Type quit to stop.")
 
             def stop_session():
@@ -98,7 +101,7 @@ def serve(config, state, workspace=None):
                         events.unregister(session.socket)
                     session.close()
                     session = None
-                    announce(screen, "Shell stopped. Ready for goblins shell.")
+                    announce(screen, "Goblin stopped. Ready for goblins run NAME.")
 
             try:
                 while True:
@@ -117,11 +120,15 @@ def serve(config, state, workspace=None):
                             master = slave = None
                             try:
                                 req = start_request(peer)
+                                if req["configuration"] != configuration:
+                                    raise ValueError("configuration differs from server; run serve and run with the same Goblins package")
+                                if req["name"] not in config["goblins"]:
+                                    raise ValueError("unknown goblin; available: " + ", ".join(config["goblins"]))
                                 if session is not None:
-                                    raise ValueError("one shell at a time; exit the existing shell first")
+                                    raise ValueError("one goblin at a time; exit the existing goblin first")
                                 master, slave = os.openpty()
                                 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", req["rows"], req["cols"], 0, 0))
-                                session = Session(**config, workspace=workspace)
+                                session = Session(**goblin_config(config["goblins"][req["name"]]), workspace=workspace)
                                 session.start(terminal_fd=slave)
                                 os.close(slave); slave = None
                                 # Only the host shell client receives the PTY master.
@@ -132,7 +139,7 @@ def serve(config, state, workspace=None):
                                 control = peer
                                 events.register(control, selectors.EVENT_READ, "control")
                                 events.register(session.socket, selectors.EVENT_READ, "package")
-                                announce(screen, "Fish connected. Package requests will appear here.")
+                                announce(screen, req["name"] + " connected. Package requests will appear here.")
                             except (OSError, ValueError, RuntimeError) as error:
                                 with contextlib.suppress(OSError):
                                     peer.send(packet({"v": 1, "status": "error", "message": str(error)}))
@@ -179,10 +186,10 @@ def serve(config, state, workspace=None):
         os.close(lock)
 
 
-def shell(state):
+def run(state, name, configuration):
     """Attach the caller's real terminal to its sandbox PTY; never approve."""
     if not os.isatty(0) or not os.isatty(1):
-        raise RuntimeError("goblins shell requires an interactive terminal")
+        raise RuntimeError("goblins run requires an interactive terminal")
     state = private_directory(state)
     master = None
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as control:
@@ -191,7 +198,8 @@ def shell(state):
         except (FileNotFoundError, ConnectionRefusedError):
             raise RuntimeError("start goblins serve in another terminal first") from None
         size = os.get_terminal_size(0)
-        control.send(packet({"v": 1, "op": "shell", "rows": max(1, size.lines), "cols": max(1, size.columns)}))
+        control.send(packet({"v": 1, "op": "run", "name": name, "configuration": configuration,
+                             "rows": max(1, size.lines), "cols": max(1, size.columns)}))
         data, ancillary, flags, _ = control.recvmsg(LIMIT + 1, socket.CMSG_SPACE(array.array("i").itemsize))
         received = []
         for level, kind, raw in ancillary:
@@ -258,13 +266,20 @@ def main():
     parser.add_argument("--state-dir", type=Path, default=default_state())
     commands = parser.add_subparsers(dest="command", required=True)
     server = commands.add_parser("serve", help="own the sandbox and approve packages in this terminal")
-    server.add_argument("--workspace", type=Path, help="snapshot a workspace before launching Fish")
-    commands.add_parser("shell", help="start and attach a sandboxed Fish shell")
+    server.add_argument("--workspace", type=Path, help="snapshot a workspace before launching a goblin")
+    runner = commands.add_parser("run", help="start and attach a configured goblin")
+    runner.add_argument("name", help="name in mkGoblins.goblins")
+    commands.add_parser("shell", help="alias for run shell")
     args = parser.parse_args()
+    configuration = str(args.runtime.resolve())
+    config = json.loads(args.runtime.read_text())
     if args.command == "serve":
-        serve(json.loads(args.runtime.read_text()), args.state_dir, args.workspace)
+        serve(config, args.state_dir, args.workspace, configuration=configuration)
     else:
-        shell(args.state_dir)
+        name = "shell" if args.command == "shell" else args.name
+        if name not in config["goblins"]:
+            parser.error("unknown goblin; available: " + ", ".join(config["goblins"]))
+        run(args.state_dir, name, configuration)
 
 
 if __name__ == "__main__":

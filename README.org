@@ -21,14 +21,92 @@ nix build path:.#goblins
 ./result/bin/goblins serve
 #+end_src
 
-In a second terminal, run =./result/bin/goblins shell=. Inside Fish, request
+In a second terminal, run =./result/bin/goblins run shell=. Inside Fish, request
 =goblins request-package cowsay=, approve in the serve terminal, then run
 =cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
 revision; package grants do not restart the shell.
 
-Alternatively, =nix run path:. -- serve= and =nix run path:. -- shell= run the
+Alternatively, =nix run path:. -- serve= and =nix run path:. -- run shell= run the
 default app, and =nix develop path:.= puts =goblins= and build tools on PATH.
 The explicit =path:.= also includes the currently uncommitted PoC files.
 
-See [[file:spikes/live-package-grant/README.org][the runnable demo]] and
-[[file:spikes/live-package-grant/RESULTS.org][the experiment results]].
+See [[file:USAGE.org][the runnable demo]] and
+[[file:RESULTS.org][the experiment results]].
+
+* Configure named goblins with Nix
+
+The flake exports =lib.x86_64-linux.mkGoblin= and =lib.x86_64-linux.mkGoblins=.
+=mkGoblin= wraps upstream =mkSandbox= and includes the restricted inner =goblins=
+command. =mkGoblins= returns a package containing the host =bin/goblins= command.
+Add that package to your flake outputs:
+
+#+begin_src nix
+let
+  system = "x86_64-linux";
+  pkgs = nixpkgs.legacyPackages.${system};
+  inherit (goblins.lib.${system}) mkGoblins mkGoblin commonTools;
+in {
+  packages.${system}.goblins = mkGoblins {
+    goblins = {
+      shell = mkGoblin {
+        pkg = pkgs.fish;
+        binName = "fish";
+        args = [ "--no-config" "--interactive" ];
+        allowedPackages = commonTools;
+        env.PAGER = "less";
+      };
+      bash = mkGoblin {
+        pkg = pkgs.bashInteractive;
+        binName = "bash";
+        args = [ "--noprofile" "--norc" "-i" ];
+        allowedPackages = commonTools ++ [ pkgs.tree ];
+      };
+    };
+  };
+}
+#+end_src
+
+Here =goblins= is this flake input. Build =.#goblins=, start its =goblins serve=
+in one terminal, then use =goblins run shell= or =goblins run bash= in another.
+The configured name selects the sandbox; =binName= selects its executable.
+The server accepts one active goblin at a time, with live package requests in
+each. =goblins shell= remains an alias for =goblins run shell=.
+
+See [[file:USAGE.org::*Nix API][the Nix API options and limits]].
+
+Predefined goblins live under =nix/goblins/= and are exposed through
+=lib.x86_64-linux.goblins=. The default package uses the Fish preset:
+
+#+begin_src nix
+mkGoblins {
+  goblins.shell = goblins.lib.x86_64-linux.goblins.shell;
+}
+#+end_src
+
+* Repository layout
+
+The branch contains the implementation directly; there is no separate spike
+flake. =flake.nix= declares inputs, configures the default goblins, and wires
+package, app, check, and development-shell outputs.
+
+| Location | Purpose |
+|----------+---------|
+| =nix/lib.nix= | =mkGoblin= and =mkGoblins= |
+| =nix/packages/goblins.nix= | Host binary, including its Rust helper, controller, and pinned catalog |
+| =nix/packages/internal-goblins.nix= | Restricted =goblins request-package= binary for the sandbox |
+| =nix/goblins/shell.nix= | Predefined interactive Fish goblin with commonTools |
+| =tests/fixtures.nix= | Runtime dependency fixtures and upstream baselines |
+| =tests/checks.nix= | Nix API validation and named configuration test build |
+| =src/main.rs=, =Cargo.toml=, =Cargo.lock= | Rust mount helper |
+| =goblins.py=, =runtime.py=, =request.py= | Host CLI, controller, and inner request client |
+| =tests/= | Python protocol and integration tests |
+| =gate.py=, =terminal.py=, =fish_terminal.py= | Original mount gate and baseline frontends |
+
+Build and test from the repository root:
+
+#+begin_src sh
+nix build .#goblins
+nix flake check
+nix fmt
+python3 -m unittest discover -s tests -p 'test_*.py'
+#+end_src

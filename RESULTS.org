@@ -1,6 +1,78 @@
 #+title: Live package grant experiment results
 #+date: 2026-09-12
 
+* Repository layout consolidation
+
+The implementation now lives directly at the repository root, with the Rust
+helper under =src/=, Python tests under =tests/=, and Nix definitions under
+=nix/=. There is one root =flake.nix= and one =flake.lock=. The root flake
+declares inputs, the default configuration and output wiring. Production Nix
+code consists of =nix/lib.nix= (public API), =nix/packages/goblins.nix= (host
+executable and helper/controller), and =nix/packages/internal-goblins.nix=
+(sandbox request executable). Predefined configurations live under
+=nix/goblins/=; =shell.nix= supplies the default Fish entry and is exported as
+=lib.x86_64-linux.goblins.shell=.
+This package/preset directory split passed Nix and formatting checks. Both the
+default package and production-only check retained the exact previously tested
+Goblins derivation; the Fish preset extraction changed no runtime configuration.
+Test fixtures and Nix checks live under =tests/=. The earlier
+standalone-flake observations below describe the development history.
+
+Runtime behavior and the =mkGoblin=/=mkGoblins= API are preserved. Host package
+realization references the pinned nixpkgs source directly through =pkgs.path=.
+An earlier source bundle embedded the root flake and consequently its test
+imports; that unnecessary coupling has been removed. Production no longer
+special-cases test fixture package names. The Nix =production-only= check builds
+Goblins from sources containing no root flake, lock file, or test definitions.
+Usage commands and local Org links refer to the new layout.
+
+After removing the catalog coupling, all 12 Python tests passed in 66.482
+seconds, including live =hello= and =cowsay= realization directly from pinned
+nixpkgs. Nix checks passed; the production-only source build evaluated to the
+same Goblins derivation as the normal package, proving the removed files are
+not needed to build it. =nixfmt --check= also passed.
+
+After relocation, all *12 Python tests passed in 52.007 seconds*, including
+named dispatch, live =hello=/=cowsay= grants, same-process/mount-namespace checks,
+host/store/socket isolation, and mount-failure handling. =nix flake check= passed
+through the normal Git-based root flake, validating the split modules and API
+checks. The Rust helper derivation remained unchanged by the source move.
+
+The subsequent consolidation into three production Nix files passed all
+12 Python tests in 51.989 seconds and the Nix API checks. All Nix files are
+formatted with =nixfmt=. The flake exposes =formatter.x86_64-linux= for =nix fmt=.
+
+* Configurable Goblins Nix API
+
+The flake now exports =lib.x86_64-linux.mkGoblin= and =mkGoblins=. The default
+output package is constructed with these functions. =mkGoblin= wraps upstream
+=mkSandbox= with the inner request executable included, while the connected
+launcher consumes its generated specification. The root CLI dispatches named
+configurations with =goblins run NAME=; =shell= remains a compatibility alias.
+
+The full suite passed *12 Python tests in 53.739 seconds*. The new configuration
+test builds two named goblins through the public library: =fishy= (Fish with
+coreutils) and =utility= (Bash with coreutils/tree). It confirms different entry
+arguments, package availability, and literal environment values; =$HOME= and
+=$(false)= survive without host expansion. The inner command rejects =run= but
+can request =hello=, whose approved grant executes successfully. The next goblin
+does not inherit that grant. The existing same-process live =hello=/=cowsay=,
+namespace, mount-authority, host/store/socket isolation and failure tests pass.
+
+An additional run of the named-configuration test passed in 14.788 seconds after
+adding direct host-socket probes. Unknown names, mismatched configuration
+identities, and second concurrent attachments all returned errors while the
+original goblin remained usable and completed its package request.
+
+=nix flake check path:.= passed, including evaluation checks that reject invalid
+names/descriptors, empty configurations, Nix-daemon access, disabled request
+sockets, unsupported network/host binds, invalid argument types, and reserved
+environment overrides. The live launcher still supports isolated networking
+and disposable workspace snapshots only. It does not claim upstream's complete
+host-bind or network feature set. Initial closure visibility now follows
+upstream's package, implicit-package and development-output closure; later live
+grants retain executable-output/runtime-closure semantics.
+
 * Arbitrary pinned package lookup correction
 
 The manual =cowsay= request exposed a real defect: the controller accepted only
@@ -227,14 +299,14 @@ approval mechanism was used for these experiments; no PoC boundary was relaxed.
 From the worktree, the final checked implementation was built with:
 
 #+begin_src sh
-nix build --out-link spikes/live-package-grant/result-runtime \
-  path:./spikes/live-package-grant#runtime
-nix build --out-link spikes/live-package-grant/result-jq \
-  'path:./spikes/live-package-grant#jq^bin'
-python3 spikes/live-package-grant/gate.py \
-  --runtime spikes/live-package-grant/result-runtime \
+nix build --out-link result-runtime \
+  path:.#runtime
+nix build --out-link result-jq \
+  'path:.#jq^bin'
+python3 gate.py \
+  --runtime result-runtime \
   --jq /nix/store/wm4pfgq6l2wgc2cqfvfidl5y3mc9r2xx-jq-1.8.2-bin
-python3 -m unittest discover -s spikes/live-package-grant -p 'test_*.py'
+python3 -m unittest discover -s tests -p 'test_*.py'
 #+end_src
 
 Recorded full suite: *9 Python tests passed* (six integration scenarios and

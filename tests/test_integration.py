@@ -44,7 +44,7 @@ class LiveTests(unittest.TestCase):
         cls.paths = {}
         for name in ("runtime", "jq", "script-tool", "data-tool", "collision"):
             cls.paths[name] = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
-                "--out-link", str(Path(cls.fixture.name) / name), "path:" + str(Path(__file__).resolve().parent) + "#" + ("jq^bin" if name == "jq" else name)]))
+                "--out-link", str(Path(cls.fixture.name) / name), "path:" + str(Path(__file__).resolve().parents[1]) + "#" + ("jq^bin" if name == "jq" else name)]))
         cls.config = json.loads(cls.paths["runtime"].read_text())
 
     @classmethod
@@ -257,7 +257,7 @@ s.input.write("while :; do :; done & wait\\n")
 print(json.dumps([str(s.directory),s.proc.pid,s.identity['pid']]),flush=True)
 time.sleep(60)
 '''
-        driver = subprocess.Popen(["python3", "-c", script], cwd=Path(__file__).parent, stdout=subprocess.PIPE, text=True)
+        driver = subprocess.Popen(["python3", "-c", script], cwd=Path(__file__).resolve().parents[1], stdout=subprocess.PIPE, text=True)
         directory, helper, payload = json.loads(driver.stdout.readline())
         driver.kill(); driver.wait(); driver.stdout.close()
         self.addCleanup(lambda: __import__('shutil').rmtree(directory, ignore_errors=True))

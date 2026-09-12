@@ -2,7 +2,7 @@
 
 * Run it in two terminals
 
-Build once from this directory:
+Build once from the repository root:
 
 #+begin_src sh
 nix --extra-experimental-features 'nix-command flakes' build \
@@ -22,7 +22,7 @@ goblins serve
 In the lower terminal:
 
 #+begin_src sh
-goblins shell
+goblins run shell
 #+end_src
 
 The lower terminal is a real interactive Fish shell. It starts with Fish and
@@ -58,8 +58,9 @@ Request packages by attribute name from the pinned nixpkgs revision, for example
 components; URLs, paths, Nix expressions, options, and output selectors are
 rejected. Try =goblins request-package cowsay=, approve in the upper terminal,
 then run =cowsay hello= in Fish. =jq= is already supplied by commonTools.
-=script-tool= and =data-tool= are additional local test fixtures for absolute
-store interpreters and separate store data files.
+=script-tool= and =data-tool= are test fixtures for absolute store interpreters
+and separate store data files. They are built and granted by the host test
+driver, not exposed as package names through the public request command.
 
 The host selects the =bin= output when present, otherwise the default output,
 and mounts its runtime closure. This is executable provisioning, not a complete
@@ -72,13 +73,14 @@ leaves the shell running. A transport failure with an uncertain outcome remains
 exit 2.
 
 Type =exit= in Fish to stop that session; =serve= stays ready for another
-=goblins shell=. A new session does not inherit previous grants. This PoC
+=goblins run shell=. A new session does not inherit previous grants. This PoC
 supports one attached shell at a time. Type =status= in the serve terminal to
 inspect the active session, or =quit= / Ctrl-C to stop the server and its shell.
 
 * Boundaries
 
-The host =goblins= executable implements =serve= and =shell=. The variant mounted
+The host =goblins= executable implements =serve= and =run NAME=, with =shell= as
+an alias for =run shell=. The variant mounted
 inside the sandbox implements only =request-package=. Even arbitrary agent code
 can only reach the per-session request socket at =/run/goblins/request.sock=;
 it cannot reach the separate host control socket or the helper's private pipes.
@@ -92,7 +94,9 @@ controlling terminal. It never receives the serve terminal. Terminal dimensions
 are forwarded without adding a general control RPC.
 
 The connected shell uses the live-mount launcher extension described in
-[[file:DESIGN.org][the design]], with Fish and commonTools from the pinned upstream input.
+[[file:DESIGN.org][the design]], consuming the build specification produced by upstream
+=mkSandbox=: executable, POSIX shell, PATH, full initial closure (including its
+development outputs), certificate paths, and pkg-config paths.
 The earlier unmodified upstream =fish-shell= wrapper remains a baseline only:
 it lacks the retained mount helper and is not the connected =goblins shell=.
 Unix sockets are deliberately enabled for the single mounted request endpoint;
@@ -101,6 +105,57 @@ Host Nix is never exposed. Effective and bounding capabilities are zero in the
 connected payload, and seccomp denies namespace/mount authority.
 
 See [[file:RESULTS.org][the result record]] for measured evidence and explicit limitations.
+
+* Nix API
+
+The root flake exports =lib.x86_64-linux.{mkGoblin,mkGoblins,commonTools,goblins}=. The
+=packages.x86_64-linux.goblins= and default package are built with these helpers.
+See [[file:README.org::*Configure named goblins with Nix][the configuration example]].
+
+Use =lib.x86_64-linux.goblins.shell= for the predefined interactive Fish
+configuration in =nix/goblins/shell.nix=. The host and inner binary definitions
+live separately under =nix/packages/=. The preset uses commonTools and is the
+default =goblins run shell= configuration; custom entries still use =mkGoblin=.
+
+=mkGoblins { goblins = { NAME = mkGoblin { ... }; }; }= returns a Nix derivation
+providing the host =bin/goblins= executable, with =config= and =goblins=
+attributes for inspection. Names select entries through =goblins run NAME=.
+The host server owns this mapping; clients send a name, never a command, PID,
+mount argument, or runtime configuration. A client from a different Goblins
+package/configuration is rejected, so it cannot accidentally launch a different
+definition with the same name. Start =serve= and =run= from the same build.
+
+=mkGoblin= calls upstream =mkSandbox= with the inner request executable added
+to =allowedPackages=. Its result carries upstream's =buildSpec= plus a =goblin=
+configuration consumed by =mkGoblins=. Launch it with =goblins run= to receive
+the session request socket and retained mount helper. Directly invoking the
+upstream wrapper is a separate static sandbox and has no approval connection.
+
+| Option | Meaning / default |
+|--------+-------------------|
+| =pkg= | Required Nix package providing the entry executable |
+| =binName= | Required executable name under =pkg/bin= |
+| =outName= | Upstream wrapper name; defaults to =goblin-${binName}= |
+| =allowedPackages= | Initially available packages; defaults to upstream =commonTools= |
+| =args= | Literal entry argument list; defaults to =[]= |
+| =env= | Literal string environment values; defaults to ={}= |
+| =allowNix= | Must be =false=; host daemon stays hidden |
+| =allowUnixSockets= | Must be =true= for the request transport |
+| =allowedDomains=, =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
+| =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Currently must be =[]=; workspace snapshots are available on =serve= |
+
+Unsupported network/host-bind settings fail at Nix evaluation. They are not
+silently ignored or passed to an incompatible launcher. Unlike upstream's
+environment fragments, Goblin =env= values are literal: =$HOME= and =$(...)=
+are not expanded or executed on the host. =PATH=, =HOME=, =SHELL=, =USER=,
+=LOGNAME=, and =PYTHONNOUSERSITE= are reserved. Store paths used in =env= must
+also be included through an allowed package's closure to be visible inside.
+
+The initial closure now comes from =mkSandbox=, including its implicit
+packages and development outputs. Later package requests still select =bin=
+or the default output and its runtime closure; they do not activate development
+setup hooks. =/bin/sh= uses upstream's Bash wrapper even when Fish or another
+program is the goblin entry point.
 
 * Workspaces and state
 
@@ -142,7 +197,8 @@ terminal interruption/resize, the restricted in-sandbox executable, hidden host
 sockets, session isolation, and shutdown.
 
 #+begin_src sh
-python3 -m unittest discover -s . -p 'test_*.py'
+python3 -m unittest discover -s tests -p 'test_*.py'
+nix flake check
 #+end_src
 
 For the original already-realized package gate, independent of terminal setup:
