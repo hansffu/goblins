@@ -43,6 +43,10 @@ pub struct Launch {
     pub initial_closure: Vec<PathBuf>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub binds: crate::binds::Declarations,
+    #[serde(skip)]
+    pub protected_paths: Vec<PathBuf>,
 }
 fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
@@ -56,16 +60,9 @@ impl Configuration {
         {
             return Err("unsupported Goblin sandbox policy".into());
         }
-        for key in [
-            "rw_dirs",
-            "rw_files",
-            "ro_dirs",
-            "ro_files",
-            "allowed_host_ports",
-            "published_ports",
-        ] {
+        for key in ["allowed_host_ports", "published_ports"] {
             if !spec[key].as_array().is_some_and(|v| v.is_empty()) {
-                return Err("live launcher does not support host binds or network grants".into());
+                return Err("live launcher does not support network grants".into());
             }
         }
         let string = |key: &str| {
@@ -100,6 +97,11 @@ impl Configuration {
                 .map(PathBuf::from)
                 .collect(),
             env,
+            protected_paths: vec![],
+            binds: serde_json::from_value(serde_json::json!({
+                "rw_dirs": spec["rw_dirs"], "rw_files": spec["rw_files"],
+                "ro_dirs": spec["ro_dirs"], "ro_files": spec["ro_files"],
+            }))?,
         })
     }
 }

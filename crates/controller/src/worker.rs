@@ -37,7 +37,13 @@ pub(super) struct Worker {
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
-    pub fn start(config: Configuration, workspace: Option<PathBuf>, rows: u16, cols: u16) -> Self {
+    pub fn start(
+        config: Configuration,
+        workspace: Option<PathBuf>,
+        state: PathBuf,
+        rows: u16,
+        cols: u16,
+    ) -> Self {
         let cancel = Cancel::default();
         let token = cancel.clone();
         let (tx, commands) = mpsc::channel();
@@ -45,8 +51,9 @@ impl Worker {
         let thread = thread::spawn(move || {
             let run = || -> Result<()> {
                 let (master, slave) = unix::pty(rows, cols)?;
-                let mut session =
-                    Session::new(config.launch()?, workspace.as_deref(), token.clone())?;
+                let mut launch = config.launch()?;
+                launch.protected_paths.push(std::fs::canonicalize(state)?);
+                let mut session = Session::new(launch, workspace.as_deref(), token.clone())?;
                 session.start(Some(slave))?;
                 results.send(Completed::Started {
                     master,

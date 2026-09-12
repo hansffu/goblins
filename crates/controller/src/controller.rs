@@ -231,6 +231,7 @@ impl Controller {
                     let worker = Worker::start(
                         self.manifest.goblins[&req.name].clone(),
                         self.workspace.clone(),
+                        self.socket_path.parent().unwrap().to_path_buf(),
                         req.rows,
                         req.cols,
                     );

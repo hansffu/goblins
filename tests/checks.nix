@@ -55,8 +55,8 @@ let
     { allowedDomains = [ "example.com" ]; }
     { allowedHostPorts = [ 80 ]; }
     { publishedPorts = [ 80 ]; }
-    { roDirs = [ "/etc" ]; }
-    { rwFiles = [ "/tmp/file" ]; }
+    { roDirs = "/etc"; }
+    { rwFiles = [ 1 ]; }
     { args = "-i"; }
     { env.PATH = "/host/bin"; }
     { env.BAD = 1; }
@@ -94,6 +94,30 @@ in
       touch $out
     '';
   named-goblins = configured;
+  bind-targets = pkgs.runCommand "goblins-bind-targets" { } ''
+    mkdir -p $out/functions
+    echo 'set -gx GOBLIN_FISH_CONFIG loaded' > $out/config.fish
+    echo 'function config_probe; echo config-function-loaded; end' > $out/functions/config_probe.fish
+    echo private-sibling > $out/unselected-secret
+  '';
+  bound-goblins = mkGoblins {
+    goblins.bound = mkGoblin (
+      base
+      // {
+        args = [
+          "--noprofile"
+          "--norc"
+          "-i"
+        ];
+        allowedPackages = [ pkgs.coreutils ];
+        env.PS1 = "bind-test> ";
+        roDirs = [ "$GOBLINS_TEST_ROOT/readonly" ];
+        rwDirs = [ "\${GOBLINS_TEST_ROOT}/writable" ];
+        roFiles = [ "$GOBLINS_TEST_ROOT/ro-file" ];
+        rwFiles = [ "$GOBLINS_TEST_ROOT/rw-file" ];
+      }
+    );
+  };
   goblins-api =
     assert builtins.all rejected invalid;
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";

@@ -167,6 +167,14 @@ impl Session {
         Ok(())
     }
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
+        let mut private = self.launch.protected_paths.clone();
+        private.push(self.directory.clone());
+        let binds = self.launch.binds.plan(&private, &self.cancel)?;
+        // Root selected store-backed config without exposing the full output or
+        // its closure. Only the precise declared/linked targets are mounted.
+        for root in binds.store_roots()? {
+            self.root(&root)?;
+        }
         let package = |p: &Path| {
             p.parent()
                 .and_then(Path::parent)
@@ -212,7 +220,7 @@ impl Session {
         .map(String::from)
         .to_vec();
         for (name, value) in [
-            ("HOME", "/home/agent".into()),
+            ("HOME", binds.home.display().to_string()),
             ("LC_ALL", "C".into()),
             ("USER", "agent".into()),
             ("LOGNAME", "agent".into()),
@@ -223,19 +231,8 @@ impl Session {
         ] {
             args.extend(["--setenv".into(), name.into(), value]);
         }
-        args.extend(
-            [
-                "--proc",
-                "/proc",
-                "--dev",
-                "/dev",
-                "--tmpfs",
-                "/tmp",
-                "--tmpfs",
-                "/home/agent",
-            ]
-            .map(String::from),
-        );
+        args.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"].map(String::from));
+        args.extend(["--tmpfs".into(), binds.home.display().to_string()]);
         for (flag, source, dest) in [
             ("--bind", self.directory.join("workspace"), "/workspace"),
             ("--ro-bind", self.directory.join("store"), "/nix/store"),
@@ -274,6 +271,7 @@ impl Session {
                 path.display().to_string(),
             ]);
         }
+        binds.append_args(&mut args, &self.directory.join("store"), &initial)?;
         args.push("--remount-ro".into());
         args.push("/".into());
         let (input, output) = if let Some(slave) = terminal {

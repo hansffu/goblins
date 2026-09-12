@@ -32,6 +32,11 @@ applications, and resize use its PTY directly. The upper terminal owns the
 session and presents package approvals; shell output never becomes approval
 input.
 
+The shell preset binds =$HOME/.config/fish= read-only and loads it. That directory
+must exist on the host running =serve=. Fish config changes are visible through
+the bind; restart Fish or source its config to apply them. Tools and other paths
+referenced by the config need their own package or startup grants.
+
 Inside Fish, try:
 
 #+begin_src fish
@@ -100,7 +105,9 @@ development outputs), certificate paths, and pkg-config paths.
 The earlier unmodified upstream =fish-shell= wrapper remains a baseline only:
 it lacks the retained mount helper and is not the connected =goblins shell=.
 Unix sockets are deliberately enabled for the single mounted request endpoint;
-private filesystem/network views keep other host/session sockets inaccessible.
+private filesystem/network views hide ungranted host/session sockets. Explicit
+startup directory binds expose their selected contents, including sockets there;
+protected controller and Nix daemon paths cannot be granted.
 Host Nix is never exposed. Effective and bounding capabilities are zero in the
 connected payload, and seccomp denies namespace/mount authority.
 
@@ -142,14 +149,30 @@ upstream wrapper is a separate static sandbox and has no approval connection.
 | =allowNix= | Must be =false=; host daemon stays hidden |
 | =allowUnixSockets= | Must be =true= for the request transport |
 | =allowedDomains=, =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
-| =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Currently must be =[]=; workspace snapshots are available on =serve= |
+| =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Forwarded startup host bind paths; defaults to =[]= |
 
-Unsupported network/host-bind settings fail at Nix evaluation. They are not
-silently ignored or passed to an incompatible launcher. Unlike upstream's
+Unsupported network settings and malformed option types fail at Nix evaluation. Unlike upstream's
 environment fragments, Goblin =env= values are literal: =$HOME= and =$(...)=
 are not expanded or executed on the host. =PATH=, =HOME=, =SHELL=, =USER=,
 =LOGNAME=, and =PYTHONNOUSERSITE= are reserved. Store paths used in =env= must
 also be included through an allowed package's closure to be visible inside.
+
+The four bind options use the upstream names and string-list format. Paths
+expand =$VAR=, =${VAR}= and leading =~/= using the host =serve= environment;
+no shell command is evaluated. Bind sources must exist, match the declared
+file/directory kind, and have absolute paths without =..=. The private sandbox
+HOME uses the host HOME pathname, so a =$HOME/.config/fish= bind is also where
+Fish looks. The rest of HOME remains private. Writable binds modify host data;
+read-only binds reflect host changes without allowing sandbox writes.
+
+Goblins rejects overlapping bind destinations and binds covering protected
+namespace, store, workspace or controller paths. Symlinks in selected directories
+do not automatically grant other host files. Links into the immutable Nix store
+expose only their selected targets, including links inside config subdirectories;
+those store outputs are rooted without mounting their entire closures. Symlinks
+added or retargeted to previously hidden store targets require a new session.
+The directory itself is bound, never copied. Startup binds do not add a live
+file-grant operation or change the disposable =--workspace= snapshot behavior.
 
 The initial closure now comes from =mkSandbox=, including its implicit
 packages and development outputs. Later package requests still select =bin=

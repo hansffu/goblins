@@ -2,8 +2,8 @@
 mkGoblin {
   pkg = pkgs.fish;
   binName = "fish";
+  roDirs = [ "$HOME/.config/fish" ];
   args = [
-    "--no-config"
     "--interactive"
   ];
 }

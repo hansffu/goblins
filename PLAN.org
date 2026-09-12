@@ -85,7 +85,7 @@ Assume an agent can run arbitrary code inside its sandbox, including code influe
 
 The trusted side consists of the launcher, permission controller, mount helper, and human approval client. The agent-facing API only requests capabilities and observes its own requests. It cannot approve, choose another session's identity, or supply commands for host execution.
 
-Use a private HOME and temporary directory, an explicit workspace, isolated process/network views, and no ambient host sockets or environment. Keep effective policy and approval records outside agent-writable project directories. Failure to construct the required boundary aborts launch.
+Use a private HOME (with explicitly configured startup binds) and temporary directory, an explicit workspace, isolated process/network views, and no ambient host sockets or environment. Keep effective policy and approval records outside agent-writable project directories. Failure to construct the required boundary aborts launch.
 
 Restricting store visibility protects unrelated store contents, including private source and configuration. Package approval authorizes host-side provisioning; it does not prohibit the agent from obtaining or implementing equivalent code inside its existing permissions. Package availability controls the provided environment. A shell or interpreter can execute agent-written code, and a dependency closure can contain additional executables. The actual security boundary is resource access. Downloading an executable must not grant new filesystem, network, or broker permissions.
 

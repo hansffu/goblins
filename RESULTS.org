@@ -1,6 +1,52 @@
 #+title: Live package grant experiment results
 #+date: 2026-09-12
 
+* Startup bind forwarding and Fish config follow-up
+
+Corrected the mismatch between =mkGoblin='s =mkSandbox= wrapper and the Rust
+launcher: =roDirs=, =rwDirs=, =roFiles= and =rwFiles= now reach startup bind
+mounts. The shell preset declares =roDirs = [ "$HOME/.config/fish" ];= and starts
+Fish with =--interactive=, allowing its config to load. HOME keeps the host
+pathname inside a private tmpfs. No config snapshot or live file-grant protocol
+was added.
+
+Home Manager-style symlinks select exact read-only store targets. Their outputs
+are rooted, but unrelated files and the complete referenced closure are not
+exposed. Paths referenced by Fish scripts still need separate grants. Missing
+sources, incorrect types, overlapping destinations, and protected-path conflicts
+fail launch. See [[file:USAGE.org::*Nix API][the startup bind limits]].
+
+Verification on 2026-09-12, run as separate test groups:
+
+- All four bind options passed their production CLI test (1 test, 2.325 seconds):
+  read-only writes fail, writable changes reach the host, and a later host edit
+  appears through the read-only bind. A non-store escape link stays unreadable.
+  Symlink sources targeting the controller directory, Nix daemon directory and
+  procfs are rejected before sandbox startup.
+- Both connected terminal tests passed (2 tests, 84.048 seconds). The default
+  shell loaded a store-linked Fish config and function; its config mount refused
+  writes, while unselected store and home siblings stayed hidden. Live hello
+  and cowsay, same PID/start/mount namespace, named configurations, literal env,
+  resize, Ctrl-C and fresh-session checks still passed.
+- All six retained namespace/integration tests passed (10.606 seconds).
+- All four responsiveness/crash tests passed (118.077 seconds); the whole-frame
+  rejection was observed after 3.029 seconds.
+- Nine Rust unit tests passed; Clippy with warnings denied, Rust/Nix formatting,
+  =nix flake check path:.= and the production =goblins= build passed. Nix checks
+  include packaging without test/source fixtures and no mandatory Python.
+
+The existing Herdr serve/shell demo was restarted on the rebuilt executable.
+The actual host Fish config loaded; a readability probe succeeded and its mount
+reported =ro,nosuid,nodev=. Startup reported missing external config
+references: Home Manager session variables, any-nix-shell, Starship and direnv.
+Those extra paths were not granted. Host Fish files were not modified. The
+previous demo's hello grant ended with its old session.
+
+These tests do not cover concurrent hostile host replacement of startup bind
+sources. The retained helper's no-follow destination lookup and detached-mount
+invariants continue to apply to live package grants. Controller restart recovery,
+live file/network grants and new frontends remain out of scope.
+
 * Rust rewrite result
 
 Implemented on =rewrite/rust= in the separate rewrite worktree, using tested PoC

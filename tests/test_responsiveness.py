@@ -33,8 +33,11 @@ class ResponsiveTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.state = self.root / "control"
+        self.home = self.root / "home"
+        (self.home / ".config/fish").mkdir(parents=True)
 
     def start(self, env=None):
+        env = {**(env or os.environ), "HOME": str(self.home)}
         self.server = Terminal([self.binary, "--runtime", self.config, "--state-dir", str(self.state), "serve"], env=env)
         self.addCleanup(self.server.close)
         self.server.expect("Goblins serving")

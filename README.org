@@ -52,7 +52,8 @@ in {
       shell = mkGoblin {
         pkg = pkgs.fish;
         binName = "fish";
-        args = [ "--no-config" "--interactive" ];
+        args = [ "--interactive" ];
+        roDirs = [ "$HOME/.config/fish" ];
         allowedPackages = commonTools;
         env.PAGER = "less";
       };

@@ -115,8 +115,10 @@ The pinned upstream wrapper is separately evaluable/buildable as
 The upstream default denies =socket(AF_UNIX)=. This adapter intentionally allows
 Unix sockets so the one pathname request socket works. It mounts the socket
 itself at =/run/goblins/request.sock=, not its parent directory. Other session
-sockets, host pathname sockets, the Nix daemon, and socket inodes in workspace
-snapshots are absent. A separate network namespace isolates abstract Unix
+sockets, the Nix daemon, and socket inodes in workspace snapshots are absent.
+Explicit startup host directory grants expose their contents, including any
+socket inodes there; the launcher refuses grants covering its private control
+and session directories. A separate network namespace isolates abstract Unix
 sockets and host IP services. There is no pasta forwarding or host networking.
 
 An x86_64 seccomp filter rejects mount APIs, =setns=, =unshare=, namespace-creating
@@ -135,7 +137,19 @@ and returns =bin/goblins=. The live adapter reads upstream's entry executable,
 POSIX shell, full initial closure, PATH, certificate and pkg-config paths. It
 does not run upstream's independent static launcher or its environment shell
 fragments. Configured environment values and entry arguments remain literal.
-Unsupported filesystem/network settings are rejected at Nix evaluation.
+The four upstream host bind lists are forwarded and implemented by the Rust
+startup adapter. Types and unsupported network options are checked at Nix
+evaluation; source existence, types and protected-path conflicts are checked at
+launch. See [[file:USAGE.org::*Nix API][bind semantics and limits]]. HOME retains its host pathname
+but is a private tmpfs with only declared paths bound into it.
+
+The adapter discovers store symlinks within declared directories using
+no-follow directory descriptors. It roots their containing store outputs while
+mounting only the exact selected targets; this supports Home Manager without
+exposing unrelated settings or recursively granting a config's dependencies.
+Startup host bind sources are trusted host configuration. Concurrent host
+replacement of source paths during launch is not covered by the live store
+helper's openat2 guarantee.
 
 The host =run NAME= client sends a configured name and manifest identity over
 the private control socket. The foreground owner checks both before allocating

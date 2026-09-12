@@ -31,8 +31,15 @@ let
       fail "allowUnixSockets must be true for the session request socket"
     else if allowedDomains != [ ] || allowedHostPorts != [ ] || publishedPorts != [ ] then
       fail "network grants are not supported by the live-mount launcher yet"
-    else if rwDirs != [ ] || rwFiles != [ ] || roDirs != [ ] || roFiles != [ ] then
-      fail "host binds are not supported yet; use goblins serve --workspace for a disposable snapshot"
+    else if
+      !builtins.all (paths: builtins.isList paths && builtins.all builtins.isString paths) [
+        rwDirs
+        rwFiles
+        roDirs
+        roFiles
+      ]
+    then
+      fail "rwDirs, rwFiles, roDirs and roFiles must be lists of path strings"
     else if !builtins.isList args || !builtins.all builtins.isString args then
       fail "args must be a list of strings"
     else if
