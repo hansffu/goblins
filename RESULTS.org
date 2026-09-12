@@ -1,6 +1,61 @@
 #+title: Live package grant experiment results
 #+date: 2026-09-13
 
+* Fullscreen approval UI and cost previews
+
+=serve= now uses an alternate-screen terminal frontend with a scrollable package
+table. Rows show the connected sandbox, host PID, startup access and live grants.
+A bordered panel reserves space below the table for the requested package,
+sandbox, reason, host-store availability, transfer estimate and Yes/No buttons.
+It shrinks the table instead of overlaying it. The panel supports long-content
+scrolling, =y=/=n=, arrow/Tab/Enter selection (initially No), and mouse clicks.
+The default palette uses terminal defaults/ANSI colors; =--theme onedark= uses
+OneDark RGB values. =NO_COLOR= is respected. =--plain= retains the earlier line UI.
+
+The host session worker supplies advisory previews using pinned package lookup
+with IFD disabled and Nix =--dry-run=. It parses the C-locale compressed download
+summary, since this Nix version's build JSON has no transfer sizes. Unknown
+metadata stays Unknown, and source builds are labelled as having unknown total
+cost. Preview cancellation is separate from session cancellation, allowing
+quick denial or request withdrawal without killing the shell. Session shutdown
+still cancels and reaps owned work. Preview/decision results use controller
+approval tokens; duplicate public IDs cannot dismiss another request's popup.
+
+Verification on 2026-09-13:
+
+- The fullscreen PTY test passed in 29.558 seconds after extending it to long
+  requests and a 70-by-18 terminal. A terminal emulator checked the actual screen:
+  table scrolling, non-overlapping panel layout, visible buttons, inherited ANSI
+  colors, cached =hello= at zero download, an absent package with a real Nix
+  transfer estimate, and no requested output realization before approval.
+- Denial by =n=, clicking No, and Enter's default No worked. Approval by =y=
+  published =hello= in the table and made it executable in the same shell.
+  Bracketed paste did not approve, and an invalid second request with the same
+  public ID did not dismiss the popup. Resize and normal tty/alternate-screen
+  restoration passed.
+- The separate OneDark/cancellation PTY scenario passed. RGB colors were checked
+  from rendered cells. A deliberately slow preview and its descendant were
+  cancelled/reaped on denial, request disconnect and quit, within the test's
+  two-second response bound.
+- All *15 existing integration tests passed in 234.959 seconds* through the plain
+  frontend, covering live hello/cowsay, configuration changes, binds, isolation,
+  mount failures, crash teardown and responsiveness. The slow frame was rejected
+  after 3.030 seconds.
+- Ten Rust unit tests, Clippy with warnings denied, formatting, the production
+  build and =nix flake check path:.= passed. Production-only packaging and no
+  mandatory Python remain checked. Pyte is test-only, provided by =nix develop=.
+
+Ratatui and Crossterm are the two direct frontend dependencies: maintained
+layout/widgets and terminal event handling avoid a custom terminal protocol
+renderer. See [[https://ratatui.rs/installation/][Ratatui's backend/version guidance]]. The controller library remains
+frontend-independent; the inner client and namespace helper keep their narrow
+dependency and authority boundaries.
+
+Only one sandbox is active at once. Download figures are advisory snapshots,
+not a guarantee of final transfer/build cost; metadata/evaluation can itself
+access configured caches. No daemon, multiplexing or restart recovery was added.
+SIGKILL cannot run tty restoration; crash leftovers retain the earlier limits.
+
 * Client-selected configuration for each launch
 
 The private host attachment already sent a configuration path. The controller

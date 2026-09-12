@@ -41,7 +41,7 @@
           pkgs.cargo
           pkgs.rustfmt
           pkgs.clippy
-          pkgs.python3
+          (pkgs.python3.withPackages (p: [ p.pyte ]))
           pkgs.bubblewrap
           pkgs.nix
           pkgs.jq

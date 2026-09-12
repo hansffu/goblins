@@ -26,9 +26,18 @@ const MAX_READING_CLIENTS: usize = 16;
 pub enum Event {
     Connected(String),
     Stopped,
+    RequestGone(ApprovalId),
+    Preview {
+        approval: ApprovalId,
+        result: std::result::Result<crate::catalog::Preview, String>,
+    },
     Request {
         request: Request,
         approval: ApprovalId,
+    },
+    DecisionFinished {
+        approval: ApprovalId,
+        reply: Reply,
     },
     Result(Reply),
     Detail(String),
@@ -49,6 +58,12 @@ struct Pending {
     peer: UnixStream,
     request: Request,
     decided: bool,
+    preview_cancel: crate::session::Cancel,
+}
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.preview_cancel.cancel();
+    }
 }
 struct Active {
     name: String,
@@ -57,6 +72,7 @@ struct Active {
     listener: Option<UnixListener>,
     identity: Option<Identity>,
     packages: BTreeSet<String>,
+    initial_packages: Vec<String>,
     reading: Vec<IncomingRequest>,
     pending: Option<Pending>,
     stopping: bool,
@@ -70,6 +86,15 @@ struct Attach {
     configuration: String,
     rows: u16,
     cols: u16,
+}
+
+/// Read-only presentation state; no terminal or approval behavior lives here.
+pub struct Sandbox<'a> {
+    pub name: &'a str,
+    pub identity: Option<&'a Identity>,
+    pub initial_packages: &'a [String],
+    pub granted_packages: &'a BTreeSet<String>,
+    pub status: &'static str,
 }
 
 pub struct Controller {
@@ -103,6 +128,25 @@ impl Controller {
             active: None,
         })
     }
+    pub fn sandbox(&self) -> Option<Sandbox<'_>> {
+        self.active.as_ref().map(|a| Sandbox {
+            name: &a.name,
+            identity: a.identity.as_ref(),
+            initial_packages: &a.initial_packages,
+            granted_packages: &a.packages,
+            status: if a.stopping {
+                "Stopping"
+            } else if a.identity.is_none() {
+                "Starting"
+            } else if a.pending.as_ref().is_some_and(|p| p.decided) {
+                "Granting"
+            } else if a.pending.is_some() {
+                "Approval"
+            } else {
+                "Connected"
+            },
+        })
+    }
     pub fn status(&self) -> serde_json::Value {
         serde_json::json!({"session":self.active.as_ref().and_then(|a| a.identity.as_ref()), "packages":self.active.as_ref().map(|a| &a.packages), "stopping":self.active.as_ref().is_some_and(|a| a.stopping)})
     }
@@ -124,6 +168,7 @@ impl Controller {
             return false;
         }
         pending.decided = true;
+        pending.preview_cancel.cancel();
         if active
             .worker
             .commands
@@ -221,6 +266,7 @@ impl Controller {
                         listener: None,
                         identity: None,
                         packages: BTreeSet::new(),
+                        initial_packages: vec![],
                         reading: Vec::new(),
                         pending: None,
                         stopping: false,
@@ -256,7 +302,17 @@ impl Controller {
                 }
             };
             match result {
+                Completed::Preview { approval, result } => {
+                    if active
+                        .pending
+                        .as_ref()
+                        .is_some_and(|p| p.approval == approval && !p.decided)
+                    {
+                        events.push(Event::Preview { approval, result });
+                    }
+                }
                 Completed::Started {
+                    initial_packages,
                     master,
                     listener,
                     identity,
@@ -264,6 +320,7 @@ impl Controller {
                     if unix::send_terminal(active.peer.as_raw_fd(), master.as_raw_fd()).is_err() {
                         Self::stop(active);
                     } else {
+                        active.initial_packages = initial_packages;
                         active.listener = Some(listener);
                         active.identity = Some(identity);
                         events.push(Event::Connected(active.name.clone()));
@@ -276,10 +333,13 @@ impl Controller {
                     }
                     if let Some(pending) = active.pending.take() {
                         if reply.status == "ready" {
-                            active.packages.insert(pending.request.package);
+                            active.packages.insert(pending.request.package.clone());
                         }
                         send_reply(&pending.peer, &reply);
-                        events.push(Event::Result(reply));
+                        events.push(Event::DecisionFinished {
+                            approval: pending.approval,
+                            reply,
+                        });
                     }
                 }
                 Completed::Failed(e) => {
@@ -310,8 +370,9 @@ impl Controller {
             .pending
             .as_ref()
             .is_some_and(|p| !p.decided && unix::disconnected(p.peer.as_raw_fd()))
+            && let Some(pending) = active.pending.take()
         {
-            active.pending.take();
+            events.push(Event::RequestGone(pending.approval));
         }
         if let Some(listener) = &active.listener {
             for _ in 0..MAX_READING_CLIENTS {
@@ -362,11 +423,18 @@ impl Controller {
                         request: req.clone(),
                         approval,
                     });
+                    let preview_cancel = active.worker.cancel.child();
+                    active.worker.commands.send(Work::Preview {
+                        approval,
+                        package: req.package.clone(),
+                        cancel: preview_cancel.clone(),
+                    })?;
                     active.pending = Some(Pending {
                         approval,
                         peer: incoming.peer,
                         request: req,
                         decided: false,
+                        preview_cancel,
                     });
                 }
                 Ok(req) => send_reply(

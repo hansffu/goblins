@@ -1,6 +1,6 @@
 #+title: Goblins
 
-A Rust sandbox runtime for approved live Nix package grants. A foreground CLI
+A Rust sandbox runtime for approved live Nix package grants. A fullscreen terminal app
 is the current frontend; Emacs integration is planned.
 
 See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
@@ -23,7 +23,7 @@ nix build path:.#goblins
 #+end_src
 
 In a second terminal, run =./result/bin/goblins run shell=. Inside Fish, request
-=goblins request-package cowsay=, approve in the serve terminal, then run
+=goblins request-package cowsay=, press =y= in the serve terminal, then run
 =cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
 revision; package grants do not restart the shell.
 
@@ -122,6 +122,8 @@ nix flake check path:.
 python3 -m unittest discover -s tests -p 'test_*.py'
 #+end_src
 
+The development shell includes pyte for fullscreen terminal regression tests.
+
 The controller accepts explicit frontend decisions; its library never opens
 =/dev/tty=. One cancellable worker owns startup and sequential grants while the
 controller continues handling requests and attachment disconnects. The internal
@@ -129,6 +131,6 @@ client depends only on shared protocol code, with no host policy or mount API.
 There is no production Python executable or mandatory Python interpreter.
 
 This rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It does
-not implement a daemon, Emacs/TUI, multiplexing, file/network live grants, or
+not implement a daemon, Emacs integration, multiplexing, file/network live grants, or
 controller restart recovery. Controller death stops the helper and sandbox;
 abrupt death may leave host session directories and GC roots for manual cleanup.

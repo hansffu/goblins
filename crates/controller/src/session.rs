@@ -354,38 +354,18 @@ impl Session {
         })
     }
     fn realize(&self, name: &str) -> Result<PathBuf> {
-        if !package_name(name) {
-            return Err("invalid package attribute".into());
-        }
-        let attr = format!("{}#legacyPackages.x86_64-linux.{name}", self.launch.flake);
-        let nix = || {
-            let mut c = Command::new("nix");
-            c.args(["--extra-experimental-features", "nix-command flakes"]);
-            c
-        };
-        let select = "p: if builtins.isAttrs p && (p.type or null) == \"derivation\" then (p.bin or p).outputName else throw \"attribute is not a package derivation\"";
-        let raw = self
-            .command(nix().args([
-                "eval",
-                "--no-write-lock-file",
-                "--json",
-                &attr,
-                "--apply",
-                select,
-            ]))
-            .map_err(|e| format!("cannot resolve package '{name}' from pinned nixpkgs: {e}"))?;
-        let output: String = serde_json::from_str(&raw)?;
-        if output.is_empty()
-            || !output
-                .bytes()
-                .enumerate()
-                .all(|(i, b)| b.is_ascii_alphabetic() || b == b'_' || i > 0 && b.is_ascii_digit())
-        {
-            return Err("package has an unsupported output name".into());
-        }
+        let selection = crate::catalog::select(
+            &self.launch.flake,
+            name,
+            &self.directory,
+            &self.cancel,
+            true,
+        )?;
+        let attr = crate::catalog::attribute(&self.launch.flake, name);
+        let output = selection.output;
         let result = self
             .command(
-                nix()
+                crate::catalog::nix()
                     .args(["build", "--no-write-lock-file", "--out-link"])
                     .arg(self.directory.join("roots").join(format!("catalog-{name}")))
                     .args(["--print-out-paths", &format!("{attr}^{output}")]),

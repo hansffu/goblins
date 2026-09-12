@@ -25,7 +25,7 @@ class BindTests(unittest.TestCase):
             (fish / "functions/config_probe.fish").symlink_to(targets / "functions/config_probe.fish")
             (home / "unselected-secret").write_text("private-home")
             state = root / "control"
-            server = Terminal([str(app), "--state-dir", str(state), "serve"], env={**os.environ, "HOME": str(home)})
+            server = Terminal([str(app), "--state-dir", str(state), "serve", "--plain"], env={**os.environ, "HOME": str(home)})
             self.addCleanup(server.close)
             server.expect("Goblins serving")
             client = Terminal([str(app), "--state-dir", str(state), "shell"])
@@ -57,7 +57,7 @@ class BindTests(unittest.TestCase):
             app = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "app",
                                 flake + "#checks.x86_64-linux.bound-goblins"])) / "bin/goblins"
             state = root / "control"
-            server = Terminal([str(app), "--state-dir", str(state), "serve"],
+            server = Terminal([str(app), "--state-dir", str(state), "serve", "--plain"],
                               env={**os.environ, "GOBLINS_TEST_ROOT": str(root)})
             self.addCleanup(server.close)
             server.expect("Goblins serving")

@@ -38,7 +38,7 @@ class ResponsiveTests(unittest.TestCase):
 
     def start(self, env=None):
         env = {**(env or os.environ), "HOME": str(self.home)}
-        self.server = Terminal([self.binary, "--runtime", self.config, "--state-dir", str(self.state), "serve"], env=env)
+        self.server = Terminal([self.binary, "--runtime", self.config, "--state-dir", str(self.state), "serve", "--plain"], env=env)
         self.addCleanup(self.server.close)
         self.server.expect("Goblins serving")
         self.attach()
@@ -143,7 +143,7 @@ class ResponsiveTests(unittest.TestCase):
         script = fakebin / "nix"
         script.write_text(f'''#!{sys.executable}
 import json,os,subprocess,sys,time
-if "build" in sys.argv:
+if "build" in sys.argv and "--dry-run" not in sys.argv:
  child=subprocess.Popen([{shutil.which("sleep")!r},"60"])
  open({str(marker)!r},"w").write(json.dumps([os.getpid(),child.pid]))
  time.sleep(60)

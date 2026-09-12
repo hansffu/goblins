@@ -15,10 +15,23 @@ use std::{
 };
 
 pub(super) enum Work {
-    Decide { request: Request, approved: bool },
+    Preview {
+        approval: crate::controller::ApprovalId,
+        package: String,
+        cancel: Cancel,
+    },
+    Decide {
+        request: Request,
+        approved: bool,
+    },
 }
 pub(super) enum Completed {
+    Preview {
+        approval: crate::controller::ApprovalId,
+        result: std::result::Result<crate::catalog::Preview, String>,
+    },
     Started {
+        initial_packages: Vec<String>,
         master: OwnedFd,
         listener: UnixListener,
         identity: Identity,
@@ -62,6 +75,12 @@ impl Worker {
                 let mut session = Session::new(launch, workspace.as_deref(), token.clone())?;
                 session.start(Some(slave))?;
                 results.send(Completed::Started {
+                    initial_packages: session
+                        .launch
+                        .initial_packages
+                        .iter()
+                        .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
+                        .collect(),
                     master,
                     listener: session.listener.take().unwrap(),
                     identity: session.identity.clone().unwrap(),
@@ -71,6 +90,25 @@ impl Worker {
                         break;
                     }
                     match commands.recv_timeout(WORKER_TICK) {
+                        Ok(Work::Preview {
+                            approval,
+                            package,
+                            cancel,
+                        }) => {
+                            let result = crate::catalog::preview(
+                                &session.launch.flake,
+                                &package,
+                                &session.directory,
+                                &cancel,
+                            )
+                            .map_err(|e| e.to_string());
+                            if results
+                                .send(Completed::Preview { approval, result })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                         Ok(Work::Decide {
                             request: req,
                             approved,

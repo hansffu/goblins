@@ -21,7 +21,7 @@ class ConfigurationTests(unittest.TestCase):
             original, updated = apps
             configuration = command(["nix", "eval", "--raw", flake + "#checks.x86_64-linux.named-goblins.config"])
             state = root / "control"
-            server = Terminal([str(original), "--state-dir", str(state), "serve"])
+            server = Terminal([str(original), "--state-dir", str(state), "serve", "--plain"])
             self.addCleanup(server.close)
             server.expect("Goblins: fishy, utility")
             server_pid = server.pid

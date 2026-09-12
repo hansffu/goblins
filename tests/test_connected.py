@@ -85,7 +85,7 @@ class ConnectedTests(unittest.TestCase):
             app = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
                                 "--out-link", root / "app", flake + "#checks.x86_64-linux.named-goblins"])) / "bin/goblins"
             state = root / "control"
-            server = Terminal([str(app), "--state-dir", str(state), "serve"])
+            server = Terminal([str(app), "--state-dir", str(state), "serve", "--plain"])
             self.addCleanup(server.close)
             server.expect("Goblins: fishy, utility")
 
@@ -151,7 +151,7 @@ class ConnectedTests(unittest.TestCase):
             flake = "path:" + str(Path(__file__).resolve().parents[1])
             app = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths", "--out-link", root / "app", flake + "#goblins"])) / "bin/goblins"
             state = root / "control"
-            server = Terminal([str(app), "--state-dir", str(state), "serve"])
+            server = Terminal([str(app), "--state-dir", str(state), "serve", "--plain"])
             self.addCleanup(server.close)
             server.expect("Goblins serving")
             client = Terminal([str(app), "--state-dir", str(state), "run", "shell"])

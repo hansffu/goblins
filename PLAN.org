@@ -13,14 +13,14 @@ configurations, presets, flake outputs, literal env, initial packages and pinned
 request-time package lookup.
 
 The rewrite implements a frontend-independent controller with one cancellable
-session worker and a temporary foreground =serve= UI. It corrects whole-frame
+session worker and a fullscreen foreground =serve= UI (plus a plain fallback). It corrects whole-frame
 deadlines and keeps shutdown/attachment disconnects responsive during framing,
 approval and Nix work. The internal client shares only public protocol code.
 No host-root service or alternative sandbox approach is introduced.
 
 Controller/daemon restart recovery is *explicitly out of scope*: no reconnect,
 state restoration or surviving restart. Controller death continues to stop its
-helper and sandbox. A daemon, Emacs integration, full TUI, multiplexing,
+helper and sandbox. A daemon, Emacs integration, multiplexing,
 orchestration, notifications, file/network live grants and real-agent credentials
 are also outside this rewrite. Future frontend persistence ideas below do not
 change that contract.
@@ -249,3 +249,11 @@ name. Each launch uses that client's build, so configuration changes do not
 require restarting the foreground server. The active session keeps its selected
 configuration; one active session and sequential package grants remain sufficient.
 This changes launch selection only. Controller restart recovery stays out of scope.
+
+* Fullscreen approval frontend follow-up
+
+At the user's request, =serve= now has a fullscreen table and bottom request
+panel, quick Yes/No keys, mouse buttons, scrolling and terminal/OneDark colors.
+The host worker supplies cancellable package availability and transfer-size
+previews. This is a frontend expansion; one active sandbox, sequential grants
+and controller-owned lifetime remain. Restart recovery is still out of scope.

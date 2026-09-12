@@ -45,7 +45,7 @@ command -q hello; echo $status
 goblins request-package hello --reason "Try a live package grant"
 #+end_src
 
-=hello= is initially absent. Type =approve= or =deny= in the *serve terminal*.
+=hello= is initially absent. Press =y= or =n= in the *serve terminal*.
 There is no timeout for the human decision. On approval, run in the same Fish:
 
 #+begin_src fish
@@ -79,8 +79,47 @@ exit 2.
 
 Type =exit= in Fish to stop that session; =serve= stays ready for another
 =goblins run shell=. A new session does not inherit previous grants. This runtime
-supports one attached shell at a time. Type =status= in the serve terminal to
-inspect the active session, or =quit= / Ctrl-C to stop the server and its shell.
+supports one attached shell at a time. The fullscreen table shows the connected
+sandbox, host PID, startup packages and live grants. Press =q= / Ctrl-C to stop
+the server and its shell.
+
+* Fullscreen approval interface
+
+=serve= enters the alternate screen and restores the terminal on exit. The
+scrollable table lists the connected sandbox and its packages, distinguishing
+startup access from live grants. A bordered request panel opens at the bottom
+and reduces the table height; it never draws over table rows.
+
+| Input | Action |
+|-------+--------|
+| =y= / =n= | Approve / deny the displayed request immediately |
+| Left / Right / Tab, then Enter | Select a Yes/No button; No is selected initially |
+| Mouse click | Activate the Yes or No button |
+| Up / Down or =k= / =j=, Home / End | Scroll the package table |
+| Mouse wheel | Scroll the table or request under the pointer |
+| Page Up / Page Down | Scroll long request content; otherwise page through the table |
+| =q= / Ctrl-C | Quit and stop the attached sandbox |
+
+The panel shows package, sandbox, reason, host-store presence and a download
+estimate. =Checking...= appears during the host query. A preview evaluates the
+pinned package with import-from-derivation disabled and runs Nix =--dry-run=;
+it can query caches and write evaluation metadata, but does not build the
+requested output or grant sandbox access. Transfer estimates are Nix's
+compressed missing-closure sizes, not unpacked sizes. Source builds can have
+additional unknown costs, and unavailable metadata is shown as =Unknown=.
+These values are advisory; approval is still required for realization/mounting.
+Denial, request disconnect, attachment disconnect and quit cancel pending work.
+
+Colors use the terminal's default foreground/background and ANSI palette.
+For an explicit OneDark palette, run =goblins serve --theme onedark=.
+The =NO_COLOR= environment convention is respected. Borders and text labels
+also distinguish states without color. Very small terminals show a resize hint.
+Bracketed paste is ignored for approvals, and request text is escaped before
+rendering. The approval terminal remains separate from sandbox output.
+
+=serve --plain= retains the line-oriented foreground interface for simple
+terminals and diagnostics: =approve=, =deny=, =status= and =quit= followed by
+Enter. Both frontends use the same controller and per-launch configuration flow.
 
 * Boundaries
 
@@ -242,7 +281,9 @@ The Python harness builds that driver with Cargo, transfers the payload pipes
 and listener using SCM_RIGHTS, and runs the existing payload probes in the real
 sandbox. Set =GOBLINS_TEST_DRIVER= to a prebuilt Rust test executable if needed.
 Fault injection exists only in that test executable. The connected and
-responsiveness suites exercise the packaged production CLI directly.
+responsiveness suites exercise the packaged production CLI directly through
+=serve --plain=. The fullscreen suite uses pyte (supplied by =nix develop=) to
+check actual rendered screens, colors, input and terminal restoration.
 
 For Rust development:
 
@@ -281,11 +322,12 @@ automatically. This is not a production sandbox security certification.
 Incomplete public requests expire after three seconds total, even if they drip
 bytes. Approval/build time is separate and has no automatic approval or retry.
 One package request can be awaiting a decision or grant at once; extra complete
-requests receive a correlated busy error. =status= and =quit= remain available
-during incomplete requests, pending approval, startup and builds. Closing the
+requests receive a correlated busy error. The table and quit key remain responsive
+during incomplete requests, pending approval, previews, startup and builds.
+The plain frontend also keeps =status= and =quit= available. Closing the
 host attachment stops its session in all these states.
 
 Stopping a build terminates and reaps the owned Nix client; it does not kill the
 host Nix daemon or guarantee cancellation of daemon work shared with others.
 Controller restart never resumes a prior session. There is no daemon, Emacs
-integration, full TUI, file/network live grant or credential integration here.
+integration, file/network live grant or credential integration here.

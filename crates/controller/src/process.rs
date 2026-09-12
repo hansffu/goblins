@@ -15,13 +15,28 @@ use std::{
 };
 pub const WORKER_TICK: Duration = Duration::from_millis(20);
 #[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation {
+    cancelled: Arc<AtomicBool>,
+    parent: Option<Arc<AtomicBool>>,
+}
 impl Cancellation {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+    /// A request preview can be cancelled without ending the owning session.
+    pub fn child(&self) -> Self {
+        Self {
+            cancelled: Arc::default(),
+            parent: Some(self.cancelled.clone()),
+        }
     }
     pub fn check(&self) -> Result<()> {
-        if self.0.load(Ordering::Relaxed) {
+        if self.cancelled.load(Ordering::Relaxed)
+            || self
+                .parent
+                .as_ref()
+                .is_some_and(|p| p.load(Ordering::Relaxed))
+        {
             Err("session cancelled".into())
         } else {
             Ok(())

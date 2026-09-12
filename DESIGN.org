@@ -28,6 +28,33 @@ shell is supported at a time, with sequential fresh sessions on the same server.
 The source, target namespace, closure rooting, and publication mechanisms below
 are shared with the original gate.
 
+* Fullscreen presentation and package previews
+
+The fullscreen frontend uses Ratatui for table/layout rendering and Crossterm
+for terminal events. These dependencies are confined to the host controller
+package; the inner request client and namespace helper do not depend on them.
+The controller library still never opens =/dev/tty=. The frontend owns alternate
+screen/raw mode, resize, scroll state, colors and input. Its request panel reserves
+vertical space below the table rather than overlaying it. Terminal ANSI colors
+are inherited by default; OneDark is an explicit alternative.
+
+A validated package request emits an approval token immediately and queues a
+preview on the existing session worker. Preview evaluation disables IFD and
+uses the selected configuration's pinned nixpkgs. For an absent output, Nix's
+C-locale raw =--dry-run= summary supplies the compressed download estimate;
+its build JSON does not contain transfer sizes. Unexpected summary formats,
+lookup failures and unavailable metadata yield Unknown. Source builds are
+marked as having unknown total cost. The normal approved build retains its
+existing realization behavior.
+
+Each preview has a cancellation token linked to session cancellation. Denial
+or request disconnect cancels only the preview; session shutdown cancels both.
+No preview can publish a profile, mount a package, or authorize a grant. The
+worker remains sequential, separate from the event pump and namespace helper.
+Preview and decision events carry the controller-issued approval identity;
+another sandbox client's duplicate public request ID cannot replace or dismiss
+the displayed decision. Bracketed paste cannot supply approval keys.
+
 * Namespace topology
 
 #+begin_example
@@ -176,7 +203,7 @@ The Rust workspace has three authority boundaries:
 - =goblins-controller= owns host policy and session lifecycle. Its library
   contains configuration adaptation, the event pump, session worker, Nix
   commands, snapshots and launch/mount coordination. Its =goblins= executable
-  supplies the temporary foreground approval UI and host terminal relay.
+  supplies the fullscreen approval UI, plain fallback and host terminal relay.
 
 The separate =goblins-mount-helper= retains the PoC implementation and depends
 only on =libc=. No controller thread performs namespace operations. The helper
@@ -279,6 +306,6 @@ No global garbage collection is run by this PoC.
 
 Controller/daemon restart recovery is explicitly out of scope. Normal frontend
 shutdown joins the worker and removes session roots/directories. SIGKILL cannot
-perform that filesystem cleanup. A future daemon or Emacs/TUI can host the same
+perform that filesystem cleanup. A future daemon or Emacs frontend can host the same
 controller operations, but neither service lifecycle nor surviving a controller
 restart is implemented by this rewrite.
