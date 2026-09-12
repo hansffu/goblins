@@ -9,3 +9,26 @@ See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
 Use Org mode (=.org=) for repository documentation, including plans, design
 notes, and experiment reports. Use native Org headings, links, lists, tables,
 and source blocks.
+
+* Live package grant proof of concept
+
+The root flake provides the =goblins= package, default app, and development
+shell for x86_64-linux, with nixpkgs and agent-sandbox.nix pinned in =flake.lock=.
+From this worktree:
+
+#+begin_src sh
+nix build path:.#goblins
+./result/bin/goblins serve
+#+end_src
+
+In a second terminal, run =./result/bin/goblins shell=. Inside Fish, request
+=goblins request-package cowsay=, approve in the serve terminal, then run
+=cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
+revision; package grants do not restart the shell.
+
+Alternatively, =nix run path:. -- serve= and =nix run path:. -- shell= run the
+default app, and =nix develop path:.= puts =goblins= and build tools on PATH.
+The explicit =path:.= also includes the currently uncommitted PoC files.
+
+See [[file:spikes/live-package-grant/README.org][the runnable demo]] and
+[[file:spikes/live-package-grant/RESULTS.org][the experiment results]].

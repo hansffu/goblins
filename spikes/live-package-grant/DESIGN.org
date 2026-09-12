@@ -1,0 +1,183 @@
+#+title: Live grant boundary and implementation
+
+* Connected command interface
+
+=goblins serve= owns the session and helper. =goblins shell= connects to a
+separate, private host-only SOCK_SEQPACKET control socket and requests one shell
+with its terminal dimensions. The server creates a PTY, starts Fish on its slave,
+and transfers the master to the host attachment using SCM_RIGHTS. The shell
+client relays bytes and window-size changes, restoring its terminal on exit.
+This provides a real terminal without adding terminal multiplexing or persistence.
+
+The helper attaches the newly allocated slave as the payload's controlling
+terminal before Bubblewrap setup. It closes every other handle on exec. The
+sandbox's =/dev/tty= now intentionally names its own shell terminal, never the
+serve terminal. Pipe-based gate tests still have no controlling terminal.
+
+The host control socket and the per-session public request socket are different
+interfaces. Only the public request socket is mounted into Fish. Host socket
+messages can start one fixed Fish session, with bounded terminal dimensions;
+there is no approval or arbitrary mount operation on that protocol. The server's
+foreground terminal remains the only source of package approval. The mounted
+=goblins= executable implements only =request-package=, and is not the host CLI.
+
+The server keeps an exclusive lock on a private mode-0700 control directory.
+The control connection's lifetime owns the attachment: disconnect stops the
+session; server exit stops its helper and restores the shell terminal. One
+shell is supported at a time, with sequential fresh sessions on the same server.
+The source, target namespace, closure rooting, and publication mechanisms below
+are shared with the original gate.
+
+* Namespace topology
+
+#+begin_example
+host controller (ordinary host UID; Nix access; foreground lifetime)
+  private pipes -> Rust helper
+    user namespace A: UID 0 maps only to the invoking host UID
+    mount namespace S owned by A: private copy of source mounts
+    final helper capabilities: CAP_SYS_ADMIN | CAP_SYS_CHROOT in A
+      Bubblewrap monitor
+        user namespace B (child of A)
+        mount namespace M owned by B
+        private PID / network / IPC / UTS / cgroup namespaces
+          PID 1: Bubblewrap reaper
+          PID 2: original Fish (Bash in the gate), zero capabilities, no_new_privs
+            descendants inherit the same restrictions
+#+end_example
+
+There is no host-root process. The Rust helper refuses host UID 0, creates A,
+maps only the invoking UID/GID, denies setgroups, and creates S. It marks S's
+mount propagation recursively private. S retains trusted source access; the
+payload does not inherit S's descriptors or root.
+
+Bubblewrap creates B and M with =--unshare-all --cap-drop ALL=. Its private
+=--info-fd= reports the child PID. Its =--block-fd= holds the payload until the
+helper observes the final root and verifies namespace ownership. The helper
+uses =NS_GET_USERNS= and =NS_GET_PARENT= to verify that M's owner is a direct
+child of A, and independently verifies S's owner is A. It never accepts a PID
+or namespace from the agent.
+
+The helper stays outside the sandbox PID namespace, is nondumpable, and drops
+all capabilities except =CAP_SYS_ADMIN= and =CAP_SYS_CHROOT= after setup. Its
+authority applies to A and descendant namespaces, not the host user namespace.
+Both its source and target mount namespaces are per-session namespaces. The
+agent has no namespace descriptors or mount-control pipe. Its only inherited
+descriptors are payload stdio; Bubblewrap's reaper also holds its eventfd.
+
+* Why retaining source and target namespaces matters
+
+The first kernel trial successfully entered M but failed =open_tree= with
+=EINVAL=: the source descriptor referred to a mount outside the helper's
+current mount namespace. This is a concrete failure of that first mechanism,
+not a blocker for live mounts. The working helper switches to S to clone the
+source, hardens the detached mount, switches to M, and attaches it. It retains
+no descriptor for entering the host's mount namespace.
+
+Each grant operation:
+
+1. The host controller validates a nixpkgs attribute name and obtains its pinned
+   output from host Nix. It creates GC roots before enumerating requisites.
+2. The controller enumerates the transitive closure through host Nix, validates
+   canonical store names, checks executable-name collisions, and prepares a
+   profile generation. It creates empty destination placeholders in a
+   host-owned directory already bound read-only at =/nix/store=.
+3. The private helper protocol carries only one bounded canonical store
+   basename per operation. No source prefix, destination, PID, or flags are
+   accepted. Agent requests never reach this protocol directly.
+4. In S, the helper opens the source relative to its retained store descriptor.
+   =openat2= uses =RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+   RESOLVE_NO_MAGICLINKS=. Only regular files and directories are supported.
+5. It resolves the destination relative to the retained sandbox root with the
+   same lookup restrictions. The agent cannot modify the read-only parent
+   hierarchy or create placeholders; fault injection also tests rejection of
+   a host-inserted destination symlink.
+6. =open_tree(OPEN_TREE_CLONE)= clones the single source object into a detached
+   mount. =mount_setattr= sets =RDONLY | NOSUID | NODEV= *before* visibility.
+   No recursive import of host submounts is performed.
+7. In M, =move_mount= attaches the hardened clone by source/destination FDs.
+   The helper acknowledges success; errors exit and kill the disposable tree.
+8. Only after every acknowledgement does the controller atomically rename the
+   =current= symlink under the read-only mounted profile parent.
+
+The empty host =store/= directory contains mountpoint placeholders, not copied
+package contents. Absolute =/nix/store/= identities and package symlinks remain
+intact. A grant is not an atomic set of mounts; direct paths may be readable
+before =current= changes. Partial failure ends the session, not a rollback.
+
+* Payload policy and socket exception
+
+The launch specification follows upstream's selective read-only closure mounts,
+private HOME/tmp, and Bubblewrap boundary. Goblins uses an explicit adapter
+because the upstream wrapper has no retained live-mount helper/control channel.
+The pinned upstream wrapper is separately evaluable/buildable as
+=upstream-baseline=; it is not the executable used for the live experiment.
+
+The upstream default denies =socket(AF_UNIX)=. This adapter intentionally allows
+Unix sockets so the one pathname request socket works. It mounts the socket
+itself at =/run/goblins/request.sock=, not its parent directory. Other session
+sockets, host pathname sockets, the Nix daemon, and socket inodes in workspace
+snapshots are absent. A separate network namespace isolates abstract Unix
+sockets and host IP services. There is no pasta forwarding or host networking.
+
+An x86_64 seccomp filter rejects mount APIs, =setns=, =unshare=, namespace-creating
+=clone= flags, ptrace, and open-by-handle. It rejects alternate syscall ABIs.
+=clone3= returns =ENOSYS= to permit libc's ordinary-process =clone= fallback.
+Normal child execution succeeds; all capabilities and the capability bounding
+set remain zero in the payload. This supplements filesystem, PID, and network
+isolation; it is not a comprehensive syscall allowlist.
+
+* Controller, transport, and terminal separation
+
+=runtime.py= contains session lifecycle, validation, host realization, closure
+mounting, profile publication, and decisions. It has no terminal dependency.
+=goblins.py= supplies the connected serve/shell frontends. =terminal.py= is
+the older single-terminal gate presentation.
+=goblins request-package= (with a legacy =goblins-request= alias) is an untrusted client, rendered with a pinned Python shebang
+at launch. Its public socket cannot select session identity or approve anything.
+
+Protocol: one UTF-8 JSON line, at most 4096 bytes, with exactly:
+
+#+begin_src json
+{"v":1,"id":"r1","op":"request-package","package":"jq","reason":"Inspect test output"}
+#+end_src
+
+IDs use 1–64 ASCII letters/digits/underscores/hyphens. Reasons contain 1–1024
+characters, subject to the wire limit. Duplicate/unknown fields, invalid types,
+unknown packages, and malformed/deep JSON are errors. Reading a request has a
+three-second timeout. Requests are processed serially, with a small kernel
+listen backlog; there is no durable queue or scheduling policy.
+
+A valid request yields =ready=, =denied=, or =error= with matching version/ID.
+The CLI succeeds only on =ready=. An interrupted/missing/invalid reply yields
+an explicit unknown outcome and exit 2, without resubmission. Disconnect alone
+never constitutes approval. A human-approved grant may still complete after a
+client disconnects, leaving that client uncertain about its outcome.
+
+The foreground client opens =/dev/tty= directly for decisions. Agent stdio is
+pipes, never that terminal. Request fields, shell output, and responses are
+escaped before rendering. During approval the client pauses payload rendering.
+No agent-generated text is fed into the approval input. The host controller
+API used by tests is trusted; it is not exported on the public socket.
+
+* Lifetime and failure policy
+
+Host Nix resolves validated attribute components from the trusted flake's
+=legacyPackages.x86_64-linux= package set, whose nixpkgs and upstream inputs are
+revision/hash locked. Two named test fixtures come from its =packages= set.
+A fixed host-side Nix function requires a derivation and chooses its =bin=
+output, or its default output when no =bin= exists. The host supplies the build
+output selector; the request cannot. Evaluation and realization happen only
+after human approval. No agent workspace files, supplied expressions, URLs,
+or package strings as shell code are evaluated. The package grammar is bounded
+to 200 ASCII characters with dot-separated identifier components.
+Top-level roots retain transitive dependencies for the session. The profile
+contains absolute links to approved =bin= entries, with collision rejection.
+There is no shell restart or environment replacement; the stable profile path
+was on PATH from launch.
+
+Realization or pre-mount collision errors leave the running session/profile
+unchanged. Once mounting/publication begins, any failure ends the session.
+Helper termination kills Bubblewrap; Bubblewrap parent-death handling and PID
+namespace teardown kill the payload tree. Controller exit stops the helper.
+SIGKILL cannot clean filesystem state, so crash leftovers require host cleanup.
+No global garbage collection is run by this PoC.

@@ -2,6 +2,19 @@
 
 Draft for discussion, 2026-09-12. This document proposes architecture and experiments; it does not claim that the sandbox design has been validated.
 
+The implemented package-only PoC is documented in
+[[file:spikes/live-package-grant/README.org][the runnable experiment]]. See
+[[file:spikes/live-package-grant/RESULTS.org][its result record]] for measured evidence and current limitations.
+
+* Current PoC command interface
+
+The foreground owner is =goblins serve=. A separate host terminal runs
+=goblins shell= to start and attach interactive Fish with upstream commonTools.
+Inside the sandbox, a restricted =goblins request-package NAME= client sends a
+bounded request through the mounted per-session socket. Only the serve terminal
+can approve. Approved closures become available in that same Fish session.
+A future background service can host the controller; this PoC stays foreground.
+
 * Product direction
 
 A frontend-independent runtime for running and coordinating coding agents, with Emacs as its first client, real terminals, understandable permissions, and sessions that eventually survive closing the UI. A later TUI, desktop app, or web GUI should use the same runtime API. Every agent and its descendants run inside a sandbox, including agents that coordinate other agents.
@@ -76,7 +89,7 @@ The first technical gate is namespace authority: prove that a helper can enter o
 
 Keep namespace descriptors and source handles on the trusted side. Derive mount sources from host-resolved store paths and destinations from their canonical store names. Reject caller-selected PIDs, namespaces, destinations, mount flags, and arbitrary host paths. Protect destination lookup against agent-created symlinks and races; merely checking a string prefix is insufficient. Ensure all successful mounts are read-only and that the agent cannot modify the store mountpoint hierarchy.
 
-Start with an already realized package to isolate the mount experiment from downloading, building, and authentication. After that passes, allow the foreground controller to realize an approved entry from a small host-controlled, pinned package catalog using host Nix access. Root the closure for the session's lifetime.
+Start with an already realized package to isolate the mount experiment from downloading, building, and authentication. After that passes, allow the foreground controller to realize an approved attribute from the host-controlled, pinned nixpkgs package set using host Nix access. Root the closure for the session's lifetime.
 
 Mount the complete additional closure before updating a host-managed profile. Bind a stable profile parent read-only at =/run/goblins/packages= from startup and put =/run/goblins/packages/current/bin= on PATH. Switch =current= only after all required mounts succeed. Existing processes retain their environment; wrappers or fresh child environments may be needed for development tools with setup hooks.
 

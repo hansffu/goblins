@@ -1,0 +1,289 @@
+#+title: Live package grant experiment results
+#+date: 2026-09-12
+
+* Arbitrary pinned package lookup correction
+
+The manual =cowsay= request exposed a real defect: the controller accepted only
+five hardcoded test names. It returned an uncorrelated invalid-request error,
+which the client misreported as an unknown outcome. Requests now accept bounded
+attribute paths from the pinned nixpkgs package set. The host requires a package
+derivation and chooses its executable output; callers cannot supply Nix code,
+flake URLs, output selectors, host paths, or build options.
+
+The full regression suite passed *11 Python tests in 35.301 seconds*. The actual
+two-terminal test now approves =cowsay=, runs =cowsay live-grant-ok= successfully
+with its Perl/data dependencies, and verifies the same Fish PID and mount
+namespace. It retains the =hello= denial/approval and process-start checks.
+An unknown attribute and a package set (=python3Packages=) each return a
+correlated resolution error with exit 1, leaving the shell usable. A supplied
+=hello^out= selector is rejected with a correlated validation error. Host-only
+evaluation also confirmed nested =python3Packages.black= resolves to output
+=out=; that package was not built or live-mounted in this check.
+
+Host Nix diagnostics are escaped in the serve terminal and recorded in the
+session log. Only the public error category is returned to the sandbox.
+The existing negative namespace, capability, socket, store, and host-resource
+checks still pass. These checks do not establish that every nixpkgs package
+works: platform availability, default unfree/broken restrictions, build errors,
+executable collisions, and programs needing development setup hooks remain
+possible failures. Only =bin= (when present) or the default output is selected,
+with its complete recorded runtime closure.
+
+* Repository-root Nix entry point
+
+The repository now has =flake.nix= and =flake.lock= exposing the same package,
+default app, and development shell as the standalone experiment. The root
+flake reuses its output implementation and locks the same inputs. From the
+repository root, =nix build path:.#goblins= succeeded, =nix run path:. -- --help=
+launched the host CLI, and =nix flake check --no-build path:.= passed evaluation
+of every exported package, the default app, and the development shell. Nix
+reported an informational missing-app-=meta= warning. The connected terminal
+regression now builds through this public root entry point and passed in
+27.803 seconds, including live =hello= and =cowsay= grants.
+
+* Connected serve/shell result
+
+The current interface is now connected end to end:
+
+- Upper host terminal: =goblins serve=.
+- Lower host terminal: =goblins shell=, attached to real interactive Fish.
+- Inside Fish: =goblins request-package hello=.
+- Approval happens only in the upper terminal; the resulting tool runs in the
+  same lower Fish process and mount namespace.
+
+The automated =test_connected.py= test runs the actual Nix-built executable in
+two separate PTYs, rather than calling the controller's approval API directly.
+It verifies initial absence of =hello=, a denial with continued absence, then
+approval, host realization, and =Hello, world!= from the same Fish PID, process
+start time, and mount namespace. A deliberate pause longer than the request
+framing timeout confirms human approval itself does not expire.
+
+It also verifies that the sandbox =goblins= rejects =serve=, cannot see the host
+control socket or Nix daemon, retains zero effective capabilities, supports
+Ctrl-C and terminal resizing after a grant, starts fresh without previous grants,
+and exits when the foreground server stops. The connected test passed. The complete regression run passed all 10 Python
+tests (including the original namespace, protocol, and failure checks) in 30.168
+seconds; the Nix helper build also passed its Rust test.
+
+The runtime takes Fish/commonTools from the pinned upstream input and uses the
+retained-helper launcher extension for live mounts. The earlier direct upstream
+Fish wrapper remains a baseline, not the current =goblins shell= implementation.
+Only the per-session request socket crosses the sandbox boundary. The distinct
+host attachment socket and PTY master remain outside it.
+
+The older single-terminal and independent-Fish observations below are historical
+steps, not the current user workflow. A fresh interactive session is left for
+the user to request and approve =hello= themselves; automated approval is confined
+to a separate test instance.
+
+* Decision
+
+*Go for the package-only proof of concept.* A Rust helper with authority only
+in session user namespaces successfully attached new read-only Nix closure
+mounts to an existing Bubblewrap shell. The foreground approval and pathname
+socket flow work. No copied private store, host-root helper/service, sandbox
+restart on grant, or agent authentication was introduced.
+
+Implementation remains in worktree =live-package-grant= on
+=poc/live-package-grant=. Planning baseline was commit =1ffe5d2=.
+Nothing was merged or published.
+
+* Reproducible inputs and environment
+
+| Component | Pin / tested version |
+|-----------+----------------------|
+| agent-sandbox.nix | =566defa1560051c4e48049389f942a6c1a53aee9= |
+| nixpkgs | =21a67dc470149f337cecafbe965d8d252a390518= |
+| libc crate | =0.2.186=, checksum in =Cargo.lock= |
+| Nix | =2.34.8= |
+| Kernel | NixOS Linux =7.2.4=, x86_64 |
+| Bubblewrap | =0.11.2= |
+| Pinned Nix Rust build | Rust =1.95.0= |
+| Local development compile | Rust =1.97.1= |
+| Sandbox Bash / Python | =5.3p9= / =3.13.15= |
+
+The flake lock records immutable revision and NAR hashes for both inputs.
+The upstream input follows this PoC's pinned nixpkgs; this deliberately differs
+from upstream's own older nixpkgs lock.
+
+Upstream evaluation used the checked-out immutable source, particularly
+[[https://github.com/archie-judd/agent-sandbox.nix/blob/566defa1560051c4e48049389f942a6c1a53aee9/lib/sandbox.nix][the Nix sandbox interface]],
+[[https://github.com/archie-judd/agent-sandbox.nix/blob/566defa1560051c4e48049389f942a6c1a53aee9/launcher/lib/launch_config/linux/compute.py][Linux launch computation]], and
+[[https://github.com/archie-judd/agent-sandbox.nix/blob/566defa1560051c4e48049389f942a6c1a53aee9/launcher/lib/launch_config/linux/seccomp.py][the Unix socket filter]].
+The =upstream-baseline= output was successfully built with =allowNix=false=
+and the deliberate =allowUnixSockets=true= adjustment. Its public wrapper has
+no retained namespace mount-helper hook. Goblins therefore implements a small
+launcher adapter around Bubblewrap, retaining selective closure mounts and
+private HOME/tmp. It does not run upstream's pasta networking or bind the
+original workspace. The upstream wrapper itself was not given a full runtime
+isolation certification by these tests.
+
+Bubblewrap's =--info-fd= / =--block-fd= ordering was checked in
+[[https://github.com/containers/bubblewrap/blob/1b80120ef26a28e065e67f89bfef873f13bdd317/bubblewrap.c][Bubblewrap v0.11.2 source]]. Namespace entry requirements were checked against
+[[https://man7.org/linux/man-pages/man2/setns.2.html][setns(2)]], then validated through actual ownership ioctls and syscalls.
+
+* Hardest-gate observations
+
+The first variant retained a host-source descriptor and entered the target
+mount namespace. =setns= succeeded, but =open_tree= failed with =EINVAL=.
+The source mount was outside the current namespace. This failure was not
+hidden or replaced with a copied-store design.
+
+The working helper retains a private source mount namespace owned by user
+namespace A, and the target mount namespace owned by its child B. It clones and
+hardens in the source namespace, then switches to the target and attaches by
+FD. Ownership is checked, not inferred from a shared UID. At steady state the
+helper's effective capability mask is =0000000000240000=, exactly
+=CAP_SYS_ADMIN | CAP_SYS_CHROOT= in A. Payload capability sets, including the
+bounding set, are all zero.
+
+Standalone final gate output, abridged only to omit pipe inode numbers:
+
+#+begin_example
+gate: PASS
+before: [2, "6389942", "mnt:[4026533942]"]
+after:  [2, "6389942", "mnt:[4026533942]"]
+namespace PID 1 on host: 124997
+helper userns: 4026533939
+source mountns: 4026533940
+mount owner userns: 4026533941
+target mountns: 4026533942
+payload mount attempt: -1, errno 1 (EPERM)
+payload inherited descriptors: three pipes
+payload CapInh/CapPrm/CapEff/CapBnd/CapAmb: all zero
+jq: /nix/store/wm4pfgq6l2wgc2cqfvfidl5y3mc9r2xx-jq-1.8.2-bin
+#+end_example
+
+The recorded PID, process start-time ticks, and mount namespace match before
+and after. =jq= was absent both from command lookup and its absolute store path,
+then produced ={"live":true}= without restarting the shell.
+
+* Positive evidence
+
+- The complete =jq= runtime closure was mounted. Three previously absent store
+  objects were added on this machine: the =jq= bin output, its library output,
+  and the Oniguruma library. Other dependencies were already in the initial
+  Bash/Python closure. Tests checked every closure path exists and every
+  individual store mount has =ro,nosuid,nodev= flags.
+- The absolute-interpreter =script-tool= printed =script-interpreter-ok= using
+  Dash from a newly granted store path.
+- =data-tool= printed =runtime-data-ok= from a distinct top-level store file,
+  proving both directory and regular-file store objects mount successfully.
+- A fresh =/bin/sh= child found and ran the newly granted =jq= through the
+  inherited stable profile PATH.
+- A second sandbox remained unable to see the first session's =jq= output.
+- =goblins-request= crossed the intentionally allowed pathname Unix socket,
+  received =denied= / exit 1, then =ready= / exit 0 after a host-controller
+  decision. Approved realization uses the pinned host catalog.
+- A foreground host-PTY smoke test exercised the real =terminal.py --demo=
+  presentation with synthetic host-terminal =approve= input. It displayed
+  =original shell 2=, =jq-absent=, the request, =ready=, =same shell 2=, and
+  successful JSON output. =:status= reported =jq= and =:quit= cleaned up.
+  This is an automated terminal smoke test, not a claim of a separate human
+  authentication trial.
+
+The =jq= catalog initially selected multiple Nix outputs (=bin= and =man=),
+which correctly failed the controller's single-output check. The catalog now
+explicitly requests =jq^bin= and follows that output's runtime closure.
+
+* Negative and failure evidence
+
+| Probe | Observed result |
+|-------+-----------------|
+| Payload mount / remount / unshare / setns | All returned =EPERM= |
+| Payload capability sets and no_new_privs | All capability sets zero; =NoNewPrivs: 1= |
+| Payload controlling terminal | Opening =/dev/tty= failed |
+| Helper descriptors in payload procfs | No namespace/source/control handles; only stdio pipes plus reaper eventfd |
+| Unrelated host secret and =/etc/shadow= | Absent |
+| Unrelated store fixture | Absent |
+| Host session directory and helper proc root | Absent from sandbox |
+| Nix daemon pathname socket | Absent; connection failed |
+| Other host/session pathname sockets | Connections failed |
+| Host abstract Unix socket | Connection failed in private network namespace |
+| Host loopback TCP listener | Connection failed |
+| Agent writes/symlinks under store/profile/root hierarchy | Rejected |
+| Repeated agent symlink attempts during grant | No attacker entry created; grant succeeded |
+| Host-injected destination symlink after one successful mount | Helper rejected lookup; session terminated; profile unpublished |
+| Injected controller failure after first mount | Session terminated; profile unpublished |
+| Executable-name collision | Rejected before mounting; previous profile unchanged |
+| Failed host realization | =error= response; previous running session retained |
+| Malformed, oversized, duplicate-field, deep, unsupported, path/PID/flags requests | Rejected without reaching approval |
+| Disconnect/truncated request | No approval inferred |
+| CLI missing response | Explicit unknown outcome, exit 2, no automatic retry |
+| Workspace socket/FIFO and shared =.git= metadata | Omitted from snapshot |
+| Escaping workspace symlink | Could not expose host target |
+| Workspace writes | Changed disposable copy; source file unchanged |
+| Controller SIGKILL with running descendant | Sandbox PID namespace disappeared |
+| Normal cleanup and roots | Nix reported session root; normal close removed directory/root |
+| Abrupt controller death | Sandbox killed; host directory/root leftovers remain |
+
+All experimental payloads and descendants used the sandbox launcher. Host-side
+test drivers and Nix realization are trusted test/controller code. The enclosing
+Codex sandbox blocked host Nix daemon and some socket operations, so the normal
+approval mechanism was used for these experiments; no PoC boundary was relaxed.
+
+* Checks run
+
+From the worktree, the final checked implementation was built with:
+
+#+begin_src sh
+nix build --out-link spikes/live-package-grant/result-runtime \
+  path:./spikes/live-package-grant#runtime
+nix build --out-link spikes/live-package-grant/result-jq \
+  'path:./spikes/live-package-grant#jq^bin'
+python3 spikes/live-package-grant/gate.py \
+  --runtime spikes/live-package-grant/result-runtime \
+  --jq /nix/store/wm4pfgq6l2wgc2cqfvfidl5y3mc9r2xx-jq-1.8.2-bin
+python3 -m unittest discover -s spikes/live-package-grant -p 'test_*.py'
+#+end_src
+
+Recorded full suite: *9 Python tests passed* (six integration scenarios and
+three protocol scenarios). The Nix helper build and a local =cargo test --offline=
+run each passed the Rust store-name validation test. Rust formatting and Python
+syntax checks also passed. The real foreground terminal flow was exercised
+separately as described above.
+
+* Remaining limits and untested claims
+
+- No implementation blocker remains for this package-only experiment on the
+  tested Linux/NixOS machine. Other architectures/kernels are not validated;
+  the seccomp program explicitly requires x86_64.
+- No real agent, credentials, network authentication, or credential-sharing
+  policy was tested. These remain separate from package grants.
+- Root references were queried and normal/crash cleanup observed. No global
+  host GC was forced, and no claim is made about a simultaneous GC stress run.
+- Read-only flags and mutation probes were checked. There was no adversarial
+  kernel exploit testing or exhaustive syscall/security audit.
+- Closure completeness means Nix's recorded runtime references. Arbitrarily
+  discovered plugins, unrecorded data, setup hooks, and developer environment
+  activation remain outside this implementation.
+- There are no resource quotas, durable retries, request scheduling, crash
+  reconciliation, revocation, or graceful terminal job control. An agent can
+  exhaust resources or stall its own request flow.
+- Ordinary package contents are readable; arbitrary code execution is expected.
+  Procfs can reveal kernel/hardware information. Mount access does not provide
+  a VM-equivalent confidentiality boundary.
+- Direct store paths become visible one mount at a time. Profile publication
+  is atomic, but the whole grant is not. Failure kills the session and cannot
+  erase data already read.
+- Abrupt controller death can leave session directories and GC roots. Cleanup
+  is manual after verifying the crashed session is gone; no service was added.
+
+* Interactive Fish follow-up
+
+At the user's request, the lower Herdr pane was switched to a real Fish shell
+using upstream =mkSandbox= with =commonTools ++ [ pkgs.fish ]=. The flake output
+is =fish-shell=, and =fish_terminal.py= supplies a disposable workspace and the
+actual terminal. The original live-grant controller remains separate.
+
+The pinned build succeeded. A sandboxed Fish command probe reported Fish 4.7.1
+and found every commonTools executable. It confirmed no Nix daemon path, no
+=nix= command, and no unrelated Rust helper store output. Effective capabilities
+were zero and =NoNewPrivs= was 1. Upstream retained a nonzero capability bounding
+set; do not apply the custom live-helper's zero-bounding-set claim to this shell.
+
+The interactive Herdr pane reached =user@sandbox ...>= and was checked with
+normal command input and Ctrl-C. The configuration denies Unix sockets, permits
+no network domains or host ports, and supplies =jq= at startup. The shell is
+not yet wired to the live approval socket. These checks do not amount to a full
+security audit of upstream's filesystem exposure or networking implementation.
