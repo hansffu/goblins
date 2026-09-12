@@ -16,16 +16,16 @@ import termios
 import time
 import unittest
 
-from runtime import command
+from support import command
 
 ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
 
 class Terminal:
-    def __init__(self, argv):
+    def __init__(self, argv, env=None):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            os.execv(argv[0], argv)
+            os.execve(argv[0], argv, env or os.environ)
         self.buffer = b""
         self.reaped = False
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
@@ -65,6 +65,8 @@ class Terminal:
         raise AssertionError("terminal process did not exit")
 
     def close(self):
+        if self.fd is None:
+            return
         if not self.reaped:
             with contextlib.suppress(ProcessLookupError):
                 os.kill(self.pid, signal.SIGTERM)
@@ -72,6 +74,7 @@ class Terminal:
                 os.waitpid(self.pid, 0)
             self.reaped = True
         os.close(self.fd)
+        self.fd = None
 
 
 class ConnectedTests(unittest.TestCase):

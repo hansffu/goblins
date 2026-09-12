@@ -73,9 +73,7 @@ in
           ../Cargo.toml
           ../Cargo.lock
           ../src
-          ../goblins.py
-          ../runtime.py
-          ../request.py
+          ../crates
         ];
       };
       api = import "${source}/nix/lib.nix" { inherit pkgs sandbox; };
@@ -83,6 +81,18 @@ in
     api.mkGoblins {
       goblins.shell = api.goblins.shell;
     };
+  runtime-no-python =
+    let
+      minimal = mkGoblins { goblins.shell = mkGoblin (base // { allowedPackages = [ ]; }); };
+      closure = pkgs.closureInfo { rootPaths = [ minimal ]; };
+    in
+    pkgs.runCommand "goblins-runtime-no-python" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+      if grep -E '/[^/]*-python[0-9.]*-' ${closure}/store-paths; then
+        echo 'Unexpected mandatory Python runtime' >&2
+        exit 1
+      fi
+      touch $out
+    '';
   named-goblins = configured;
   goblins-api =
     assert builtins.all rejected invalid;

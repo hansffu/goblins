@@ -1,6 +1,125 @@
 #+title: Live package grant experiment results
 #+date: 2026-09-12
 
+* Rust rewrite result
+
+Implemented on =rewrite/rust= in the separate rewrite worktree, using tested PoC
+commit =c2a9d42= as the behavioral reference. The PoC worktree and branch are
+preserved. Nothing is merged or pushed.
+
+Both production entry points are Rust: the host =goblins serve/run/shell=
+CLI/controller and the internal =goblins request-package= client. The original
+Rust namespace mount helper is retained, with named kernel flags and unchanged
+source/target namespace, openat2 and detached-mount semantics. The public Nix
+=mkGoblin=/=mkGoblins= configuration API, presets/exports, initial package
+closures, literal env, entry arguments and pinned nixpkgs selection remain.
+
+The controller event pump handles sockets and explicit frontend decisions.
+One cancellable session worker handles startup and sequential Nix/mount work;
+namespace operations remain single-threaded in the separate helper process.
+Only the foreground executable accesses =/dev/tty=. Public correlation IDs are
+separate from controller-issued approval tokens. The inner executable depends
+only on protocol/serialization code, with no approval or mount authority.
+
+** Verification
+
+The full black-box run passed *12 tests in 188.609 seconds*: six retained
+namespace scenarios, two real-terminal scenarios, and four responsiveness/crash
+regressions. The old Python parser tests are replaced by Rust unit tests; Python
+is now test infrastructure only. A test-only Rust harness exposes the Session
+library to the original payload probes using transferred pipe/listener FDs.
+No test RPC, fixture catalog or fault-injection option is installed in production.
+
+Observed in the Rust rewrite:
+
+- Real Fish =hello= denial/approval and =cowsay= approval/execution, including
+  Perl/data dependencies, with the same Fish PID, start time and mount namespace.
+- =jq= adds three missing dynamic closure objects; separate script interpreter
+  and regular-file runtime data grants work. All observed store mounts retain
+  =ro,nosuid,nodev=. Fresh sessions do not inherit grants.
+- Named Fish/Bash configurations retain initial package differences, literal
+  =$HOME= / =$(false)= environment values, entry arguments and POSIX shell.
+  Unknown names, configuration mismatch and second attachments are rejected.
+- Host files/store objects, other session/host sockets, abstract sockets, host
+  TCP and the Nix daemon remain inaccessible in the probes. Payload capability
+  sets remain zero; mount/remount/unshare/setns return =EPERM=. Private helper
+  descriptors are absent; the helper retains only namespace-scoped
+  =CAP_SYS_ADMIN | CAP_SYS_CHROOT=.
+- Snapshot isolation, socket/FIFO/.git omission, escape-link behavior, concurrent
+  destination mutation attempts, host-injected symlink rejection after an actual
+  mount, partial-failure teardown, collision rejection and GC root cleanup pass.
+- PTY resize and Ctrl-C work. Both the test controller's death and SIGKILL of the
+  production serve process stop the sandbox. Crash directories remain for manual
+  cleanup, as designed.
+- A client dripping bytes every 0.85 seconds receives a whole-frame deadline
+  error after *3.038 seconds* in the full run (3.033 seconds in the initial run).
+  Another request reaches denial while that frame is incomplete; status remains
+  responsive. Oversized, multiline and disconnected partial frames do not grant.
+- Attachment disconnect and quit are handled during incomplete frames and
+  pending approval. A trusted host-only slow-Nix substitute verifies status,
+  disconnect and quit during a running build: the owned Nix client is reaped,
+  its descendant stops, and the sandbox/session directory are removed. Tests
+  require status within 1.5 seconds and teardown within two seconds; these are
+  observed regression bounds, not hard real-time guarantees.
+
+After the final request-argument compatibility and lint polish, the production
+Fish =hello=/=cowsay= test passed again in 56.163 seconds. The normal Git-based
+=nix flake check= and =nix build .#goblins= also pass; =result-goblins/bin/goblins=
+is the final runnable package.
+
+Rust checks use Rust 1.95.0, matching the pinned Nix build:
+
+#+begin_src sh
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all --check
+nix flake check path:.
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+#+end_src
+
+Seven Rust unit tests pass (protocol grammar/framing/deadline, request arguments,
+response validation,
+terminal escaping and helper store names). The ignored host-driver test is
+invoked explicitly by the Python integration harness. Clippy passes with warnings
+denied. Nix formatting and API checks pass. The production-only Nix check builds
+from sources without the root flake/flake.lock, Python scripts or Nix test
+fixtures, and
+produces the same Goblins derivation as the normal package. A minimal runtime
+closure check confirms there is no mandatory Python interpreter. The original
+upstream static wrapper can still use Python, and chosen packages may require it.
+
+Host Nix and namespace tests used the normal approval mechanism when the outer
+Codex sandbox denied access; no payload boundary was weakened. The root flake
+continues to export its packages, app, library, checks, formatter and development
+shell. Its development shell supplies Rust/Cargo, rustfmt, Clippy and Python for
+verification. Direct runtime dependencies are libc and serde/serde_json with a
+locked dependency graph; no async runtime or terminal UI framework was added.
+
+** Explicit limits
+
+Controller/daemon restart recovery is *out of scope*: no reconnect, state
+restoration or survival across controller restart. Normal shutdown cleans session
+roots/directories; SIGKILL can leave them. A daemon, Emacs integration, full TUI,
+multiplexing, orchestration, notifications, live file/network grants and real-agent
+credentials are not implemented.
+
+Package grants remain additive. Individual store paths can become readable
+before atomic profile publication; partial failure kills the session and cannot
+erase data already read. No GC stress test, exhaustive syscall/security audit,
+resource quota, revocation, development setup-hook activation or other-platform
+validation is claimed. Arbitrary payload code execution is expected.
+
+Cancellation terminates owned Nix clients, not the host Nix daemon or shared
+build jobs. Slow filesystem/kernel I/O can still delay cleanup; no hard real-time
+or resource-exhaustion guarantee is made. The slow-build regression uses a
+trusted test substitute, while ordinary grants use actual pinned host Nix.
+
+* Historical PoC evidence
+
+The sections below record the preserved PoC's development and measurements.
+References to removed Python scripts, earlier interfaces and earlier test counts
+are historical; the Rust architecture and checks above describe this worktree.
+
 * Repository layout consolidation
 
 The implementation now lives directly at the repository root, with the Rust

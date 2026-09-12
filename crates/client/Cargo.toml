@@ -1,0 +1,9 @@
+[package]
+name = "goblins-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+goblins-protocol = { path = "../protocol" }
+serde_json = "1"

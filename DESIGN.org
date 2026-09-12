@@ -4,7 +4,7 @@
 
 =goblins serve= owns the session and helper. =goblins shell= connects to a
 separate, private host-only SOCK_SEQPACKET control socket and requests one shell
-with its terminal dimensions. The server creates a PTY, starts Fish on its slave,
+with its terminal dimensions. The session worker creates a PTY, starts the configured entry on its slave,
 and transfers the master to the host attachment using SCM_RIGHTS. The shell
 client relays bytes and window-size changes, restoring its terminal on exit.
 This provides a real terminal without adding terminal multiplexing or persistence.
@@ -16,7 +16,7 @@ serve terminal. Pipe-based gate tests still have no controlling terminal.
 
 The host control socket and the per-session public request socket are different
 interfaces. Only the public request socket is mounted into Fish. Host socket
-messages can start one fixed Fish session, with bounded terminal dimensions;
+messages select one named host configuration, with bounded terminal dimensions;
 there is no approval or arbitrary mount operation on that protocol. The server's
 foreground terminal remains the only source of package approval. The mounted
 =goblins= executable implements only =request-package=, and is not the host CLI.
@@ -144,14 +144,32 @@ Unknown names, mismatched configurations, and second concurrent attachments
 are rejected without stopping an existing session. =shell= is a CLI alias for
 =run shell=. Only =request-package= is available in the inner command.
 
-=runtime.py= contains session lifecycle, validation, host realization, closure
-mounting, profile publication, and decisions. It has no terminal dependency.
-=goblins.py= supplies the connected serve/run frontends. =terminal.py= is
-the older single-terminal gate presentation.
-=goblins request-package= is an untrusted client packaged with a pinned Python
-shebang by =mkGoblin=. The standalone gate also supplies a legacy
-=goblins-request= alias. Its public socket cannot select session identity or
-approve anything.
+The Rust workspace has three authority boundaries:
+
+- =goblins-protocol= defines public data, strict JSON validation and framing.
+- =goblins-client= depends on that protocol and JSON serialization only. Its
+  executable is installed as =bin/goblins= in the inner Nix package (with the
+  historical =goblins-request package NAME= alias).
+- =goblins-controller= owns host policy and session lifecycle. Its library
+  contains configuration adaptation, the event pump, session worker, Nix
+  commands, snapshots and launch/mount coordination. Its =goblins= executable
+  supplies the temporary foreground approval UI and host terminal relay.
+
+The separate =goblins-mount-helper= retains the PoC implementation and depends
+only on =libc=. No controller thread performs namespace operations. The helper
+is single-threaded, with its own source/target namespace and control descriptors.
+The only third-party runtime dependencies are =libc= and =serde=/=serde_json=
+(with their locked transitive dependencies). There is no async runtime or CLI
+framework. Descriptor ownership uses =OwnedFd=/=File= and owned processes are
+reaped on shutdown/error paths.
+
+The Nix configuration model is unchanged. =mkGoblin= still wraps =mkSandbox=;
+=mkGoblins= projects its build specification for the live adapter, omitting
+unused references to the upstream static Python/network launcher. Initial
+closures, allowed packages, entry arguments and literal environment values are
+retained. The original upstream wrapper remains available through =mkGoblin=.
+Neither Rust executable needs Python. A configured package may itself depend
+on Python, and the integration probes deliberately include it.
 
 Protocol: one UTF-8 JSON line, at most 4096 bytes, with exactly:
 
@@ -161,9 +179,38 @@ Protocol: one UTF-8 JSON line, at most 4096 bytes, with exactly:
 
 IDs use 1–64 ASCII letters/digits/underscores/hyphens. Reasons contain 1–1024
 characters, subject to the wire limit. Duplicate/unknown fields, invalid types,
-unknown packages, and malformed/deep JSON are errors. Reading a request has a
-three-second timeout. Requests are processed serially, with a small kernel
-listen backlog; there is no durable queue or scheduling policy.
+unsupported operations, and malformed/deep JSON are errors. A syntactically
+valid unknown package reaches approval and then gets a correlated Nix resolution
+error. Framing has a monotonic *whole-request* deadline of three seconds from
+acceptance; receiving more bytes never resets it.
+
+The frontend calls =Controller::tick= and renders returned events, passes an
+opaque controller-issued =ApprovalId= to =decide=, and can inspect or stop a
+session. The approval token is independent of the agent-chosen correlation ID.
+The controller library never reads =/dev/tty=. No host socket operation can
+approve a grant; the foreground frontend supplies that explicit decision.
+
+A small event pump accepts and reads sockets nonblockingly, limiting each kind
+to 16 incomplete connections and bounded work per tick. One complete request
+may await approval or grant processing; other complete requests receive a
+correlated busy error. Slow readers never receive an unbounded response buffer.
+The host attachment handshake is also bounded and has a whole-packet deadline.
+There is no durable queue, scheduler, or concurrency between grants.
+
+One persistent worker thread owns the session and handles startup, snapshots,
+Nix and helper replies. The event pump continues during these operations and
+while awaiting a human. Attachment disconnect sets a cancellation token without
+waiting for the worker's command queue. The foreground UI polls at 20 ms;
+worker waits and helper replies check cancellation at similar intervals. These
+are polling intervals, not hard real-time latency guarantees.
+
+On cancellation, an owned host command's process group is killed and its direct
+child reaped. =waitid(WNOWAIT)= keeps the child's PID reserved until group
+termination, avoiding a signal to a recycled PID. The host Nix daemon is not
+owned or killed; cancellation of its client is not a claim that shared daemon
+build work stops. Helper death tears down the sandbox. Local filesystem I/O and
+kernel calls are not made cancellable, so an unresponsive filesystem/kernel can
+still delay cleanup. No reconnect, saved state or restart recovery is provided.
 
 A valid request yields =ready=, =denied=, or =error= with matching version/ID.
 The CLI succeeds only on =ready=. An interrupted/missing/invalid reply yields
@@ -173,11 +220,14 @@ client disconnects, leaving that client uncertain about its outcome.
 
 The foreground client opens =/dev/tty= directly for decisions. The connected
 payload has its own PTY slave; only the host attachment client gets its master.
-The original gate uses pipes. Neither receives the approval terminal. Request
+The host-library integration tests use pipes. Neither receives the approval terminal. Request
 fields and responses are escaped before rendering in the host approval UI;
 payload terminal output goes directly to its separate attachment terminal.
 No agent-generated text is fed into the approval input. The host controller
-API used by tests is trusted; it is not exported on the public socket.
+API used by tests is trusted; it is not exported on the public socket. A test-only
+Rust harness transfers payload pipe/listener descriptors to Python probes.
+Fault injection is compiled only into this test harness, never installed as a
+production command or accepted in a manifest or socket request.
 
 * Lifetime and failure policy
 
@@ -203,3 +253,9 @@ Helper termination kills Bubblewrap; Bubblewrap parent-death handling and PID
 namespace teardown kill the payload tree. Controller exit stops the helper.
 SIGKILL cannot clean filesystem state, so crash leftovers require host cleanup.
 No global garbage collection is run by this PoC.
+
+Controller/daemon restart recovery is explicitly out of scope. Normal frontend
+shutdown joins the worker and removes session roots/directories. SIGKILL cannot
+perform that filesystem cleanup. A future daemon or Emacs/TUI can host the same
+controller operations, but neither service lifecycle nor surviving a controller
+restart is implemented by this rewrite.

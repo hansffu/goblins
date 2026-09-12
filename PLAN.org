@@ -1,6 +1,29 @@
 #+title: Goblins: sandbox-first agent orchestration in Emacs
 
-Draft for discussion, 2026-09-12. This document proposes architecture and experiments; it does not claim that the sandbox design has been validated.
+Updated for the Rust rewrite, 2026-09-12. Long-term product direction below is
+separate from the implemented scope and evidence in [[file:RESULTS.org][RESULTS.org]].
+
+* Rust rewrite decision and scope
+
+Rust is decided for the production host CLI/controller and sandbox request
+client. The existing separate Rust namespace helper is retained. PoC commit
+=c2a9d42= is the behavioral reference, preserved on its original branch/worktree.
+The Nix setup and public =mkGoblin=/=mkGoblins= API remain, including named
+configurations, presets, flake outputs, literal env, initial packages and pinned
+request-time package lookup.
+
+The rewrite implements a frontend-independent controller with one cancellable
+session worker and a temporary foreground =serve= UI. It corrects whole-frame
+deadlines and keeps shutdown/attachment disconnects responsive during framing,
+approval and Nix work. The internal client shares only public protocol code.
+No host-root service or alternative sandbox approach is introduced.
+
+Controller/daemon restart recovery is *explicitly out of scope*: no reconnect,
+state restoration or surviving restart. Controller death continues to stop its
+helper and sandbox. A daemon, Emacs integration, full TUI, multiplexing,
+orchestration, notifications, file/network live grants and real-agent credentials
+are also outside this rewrite. Future frontend persistence ideas below do not
+change that contract.
 
 The implemented package-only PoC is documented in
 [[file:USAGE.org][the runnable experiment]]. See
@@ -54,7 +77,7 @@ Deferred until the foundation works:
 - Multiplexing, status detection, notifications, automatic delegation, and sidebar polish.
 - Live grants of arbitrary host paths, comprehensive live revocation, and arbitrary project flakes.
 - Remote machines, multiple users, macOS, distributed scheduling, and automatic merging or publishing.
-- Choosing the daemon implementation language or committing to Treemacs versus VUI.
+- Committing to Treemacs versus VUI; Rust implementation language is decided.
 
 * Threat model and invariants
 
@@ -116,7 +139,7 @@ The endpoint determines the session. A request cannot select another session or 
 
 For the PoC, support one outstanding request per session. Validate the package against the host catalog, display escaped package/reason text in the approval terminal, and accept explicit human approve/deny input there. Bound message sizes, reject malformed or unsupported requests, and never evaluate supplied shell text. Do not infer approval from terminal output produced by the agent.
 
-On approval, resolve/realize the selected package, add its mounts, update the profile, and then return =ready=. On denial return =denied=; on failure return =error=. The client exits successfully only for =ready=. A client disconnect does not constitute approval; after an ambiguous disconnect it should report an unknown outcome rather than silently resubmit. Controller exit ends the disposable PoC session. Crash recovery and durable retries are deferred.
+On approval, resolve/realize the selected package, add its mounts, update the profile, and then return =ready=. On denial return =denied=; on failure return =error=. The client exits successfully only for =ready=. A client disconnect does not constitute approval; after an ambiguous disconnect it should report an unknown outcome rather than silently resubmit. Controller exit ends the disposable PoC session. Controller restart recovery is explicitly out of scope; durable retries are deferred.
 
 The upstream default disables Unix sockets, so the launch policy needs an explicit adjustment. Allowing AF_UNIX creation is broader than granting this one endpoint: verify that host daemon sockets, other session endpoints, and sockets in any shared workspace remain inaccessible. Retain isolated network and temporary-directory views. A read-only socket bind protects the mounted entry; it does not prevent protocol requests through the socket.
 
@@ -126,7 +149,7 @@ MCP is an optional later adapter. It defines tool discovery and invocation, whil
 
 For the PoC, approvals live entirely in the foreground terminal. Record decisions and mount results in a small host-side log; log package identity and outcomes without treating agent text as terminal control sequences. No generic command execution, arbitrary Nix expressions, caller-selected Nix options, or project-defined package evaluation is exposed.
 
-After the experiment, add structured inspection, request identity/retry handling, bounded queues, concurrent realization, and restart reconciliation as needed. A future service may host the same controller, but service lifecycle and recovery are not prerequisites for proving live mounts.
+A future service may host the same Rust controller. Concurrent realization, durable retries and service lifecycle require separate work. Controller restart recovery is explicitly out of scope for this rewrite.
 
 * Frontend-independent runtime
 
@@ -174,7 +197,7 @@ Indicative effort for one developer; milestones and exit criteria govern sequenc
 | 2. Permission loop    | 3–5 days           | Foreground approval app, request socket/CLI, small grant log                | Approve/deny and failure handling work without a daemon or GUI dependency                           |
 | 3. Real agent trial   | 2–4 days           | One CLI agent with scoped authentication                                    | It completes a small coding task and requests a tool without requiring broad host access            |
 
-The initial horizon is roughly two to three focused weeks, subject to the namespace-authority result and upstream integration work. Defer durable recovery and concurrency until the foreground PoC works.
+The initial horizon is roughly two to three focused weeks, subject to the namespace-authority result and upstream integration work. Controller restart recovery and concurrency are outside this rewrite.
 
 Required Phase 1 evidence:
 
@@ -211,10 +234,10 @@ Before implementing PTY persistence, compare using an existing session backend�
 * Decisions to revisit
 
 1. Which single CLI agent and authentication flow should anchor the first real trial?
-2. Can the mount helper operate with namespace-scoped authority and no host-root service?
+2. The retained helper operates with namespace-scoped authority and no host-root service; further hardening needs additional evidence.
 3. Can upstream accept the live-mount helper extension, or does this require a maintained adapter/fork?
 4. Which repository operations should agents perform directly, and which should be mediated by the host?
 5. Is persistence required for the first Emacs release, or the immediately following milestone?
 6. Which second frontend best tests the API after Emacs is useful?
 
-The reproducible shell experiment, isolation probes, and result record are now implemented directly on this branch. See =gate.py=, =tests/=, and [[file:RESULTS.org][the results]]. Package definitions and the configurable Goblins API live in =nix/=; the root =flake.nix= wires inputs and outputs. Terminal multiplexing and agent-state notifications remain deferred.
+The reproducible shell experiment, isolation probes, and result record are now implemented directly on this branch. See =src/main.rs=, =crates/=, =tests/=, and [[file:RESULTS.org][the results]]. Package definitions and the configurable Goblins API live in =nix/=; the root =flake.nix= wires inputs and outputs. Terminal multiplexing and agent-state notifications remain deferred.

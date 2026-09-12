@@ -11,6 +11,10 @@ in
   runtime = pkgs.writeText "goblins-runtime.json" (
     builtins.toJSON {
       shell = "${pkgs.bashInteractive}/bin/bash";
+      posix_shell = "${pkgs.bashInteractive}/bin/bash";
+      flake = "path:${pkgs.path}";
+      client_package = import ../nix/packages/internal-goblins.nix { inherit pkgs; };
+      initial_packages = [ pkgs.python3 ];
       python = "${pkgs.python3}/bin/python3";
       helper = "${helper}/bin/goblins-mount-helper";
       bwrap = "${pkgs.bubblewrap}/bin/bwrap";

@@ -1,0 +1,11 @@
+//! Host-only lifecycle and policy. No code here opens or reads /dev/tty.
+pub mod config;
+pub mod controller;
+mod process;
+mod seccomp;
+pub mod session;
+mod snapshot;
+pub mod unix;
+pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+mod worker;

@@ -18,6 +18,20 @@ const NS_GET_PARENT: libc::c_ulong = 0xb702;
 const CAP_SYS_ADMIN: u32 = 21;
 const CAP_SYS_CHROOT: u32 = 18;
 
+// Linux UAPI flags are named here to make the security-sensitive combinations
+// reviewable alongside the namespace invariants below.
+const RESOLVE_BENEATH: u64 = 0x08;
+const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const OPEN_TREE_CLONE: i32 = 1;
+const MOUNT_ATTR_RDONLY: u64 = 1;
+const MOUNT_ATTR_NOSUID: u64 = 2;
+const MOUNT_ATTR_NODEV: u64 = 4;
+const MOVE_MOUNT_F_EMPTY_PATH: i32 = 0x04;
+const MOVE_MOUNT_T_EMPTY_PATH: i32 = 0x40;
+const CLOSE_RANGE_CLOEXEC: u32 = 4;
+const MAX_HELPER_COMMAND: u64 = 256;
+
 fn cvt(n: i32) -> io::Result<i32> {
     if n < 0 {
         Err(io::Error::last_os_error())
@@ -49,7 +63,7 @@ fn beneath(root: RawFd, path: &str) -> io::Result<OwnedFd> {
     let how = OpenHow {
         flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
         mode: 0,
-        resolve: 0x08 | 0x04 | 0x02,
+        resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     }; // BENEATH | NO_SYMLINKS | NO_MAGICLINKS
     fd(unsafe {
         libc::syscall(
@@ -105,12 +119,12 @@ fn grant(
             libc::SYS_open_tree,
             src.as_raw_fd(),
             c("").as_ptr(),
-            1 | libc::O_CLOEXEC | libc::AT_EMPTY_PATH,
+            OPEN_TREE_CLONE | libc::O_CLOEXEC | libc::AT_EMPTY_PATH,
         ) as i32
     })
     .map_err(|e| io::Error::other(format!("open_tree: {e}")))?;
     let attr = MountAttr {
-        attr_set: 1 | 2 | 4, // RDONLY | NOSUID | NODEV
+        attr_set: MOUNT_ATTR_RDONLY | MOUNT_ATTR_NOSUID | MOUNT_ATTR_NODEV,
         attr_clr: 0,
         propagation: 0,
         userns_fd: 0,
@@ -134,7 +148,7 @@ fn grant(
             c("").as_ptr(),
             dst.as_raw_fd(),
             c("").as_ptr(),
-            0x04 | 0x40,
+            MOVE_MOUNT_F_EMPTY_PATH | MOVE_MOUNT_T_EMPTY_PATH,
         ) as i32
     })
     .map_err(|e| io::Error::other(format!("move_mount: {e}")))?;
@@ -217,7 +231,7 @@ fn run() -> io::Result<()> {
                 cvt(libc::ioctl(0, libc::TIOCSCTTY, 0))?;
             }
             // Mark all other descriptors close-on-exec, including controller pipes.
-            cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
+            cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) as i32)?;
             for f in keep {
                 cvt(libc::fcntl(f, libc::F_SETFD, 0))?;
             }
@@ -245,11 +259,10 @@ fn run() -> io::Result<()> {
         if let Ok(candidate) = open(
             &format!("/proc/{pid}/root"),
             libc::O_PATH | libc::O_DIRECTORY,
-        ) {
-            if beneath(candidate.as_raw_fd(), "run/goblins/packages").is_ok() {
-                root = Some(candidate);
-                break;
-            }
+        ) && beneath(candidate.as_raw_fd(), "run/goblins/packages").is_ok()
+        {
+            root = Some(candidate);
+            break;
         }
         if session.0.try_wait()?.is_some() {
             break;
@@ -314,7 +327,10 @@ fn run() -> io::Result<()> {
     loop {
         let mut bytes = Vec::new();
         use std::io::Read;
-        let count = input.by_ref().take(256).read_until(b'\n', &mut bytes)?;
+        let count = input
+            .by_ref()
+            .take(MAX_HELPER_COMMAND)
+            .read_until(b'\n', &mut bytes)?;
         if count == 0 {
             break;
         }

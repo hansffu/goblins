@@ -73,7 +73,7 @@ leaves the shell running. A transport failure with an uncertain outcome remains
 exit 2.
 
 Type =exit= in Fish to stop that session; =serve= stays ready for another
-=goblins run shell=. A new session does not inherit previous grants. This PoC
+=goblins run shell=. A new session does not inherit previous grants. This runtime
 supports one attached shell at a time. Type =status= in the serve terminal to
 inspect the active session, or =quit= / Ctrl-C to stop the server and its shell.
 
@@ -186,7 +186,7 @@ removes it. Abrupt server death kills the sandbox through parent-death handling
 but can leave its directory and roots behind. After verifying that specific
 session is gone, remove its directory manually. No cleanup service or global
 Nix garbage collection is installed. Logs are currently disposable with the
-session; durable records and recovery are deferred.
+session; durable records are deferred; controller restart recovery is explicitly out of scope.
 
 * Reproducible checks
 
@@ -197,28 +197,30 @@ terminal interruption/resize, the restricted in-sandbox executable, hidden host
 sockets, session isolation, and shutdown.
 
 #+begin_src sh
+nix develop path:.
+cargo test --workspace --locked
 python3 -m unittest discover -s tests -p 'test_*.py'
-nix flake check
+nix flake check path:.
 #+end_src
 
-For the original already-realized package gate, independent of terminal setup:
-
-#+begin_src sh
-nix build --out-link result-runtime path:.#runtime
-nix build --out-link result-jq 'path:.#jq^bin'
-python3 gate.py --runtime result-runtime --jq "$(readlink -f result-jq)"
-#+end_src
+The six original namespace scenarios now use a test-only Rust Session driver.
+The Python harness builds that driver with Cargo, transfers the payload pipes
+and listener using SCM_RIGHTS, and runs the existing payload probes in the real
+sandbox. Set =GOBLINS_TEST_DRIVER= to a prebuilt Rust test executable if needed.
+Fault injection exists only in that test executable. The connected and
+responsiveness suites exercise the packaged production CLI directly.
 
 For Rust development:
 
 #+begin_src sh
 nix develop path:.
-cargo build --locked
-cargo test --locked
-cargo fmt --check
+cargo build --workspace --locked
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo fmt --all --check
 #+end_src
 
-The Nix helper build also runs Rust tests. Host-driven integration checks need
+The Nix Rust builds also run their unit tests. Host-driven integration checks need
 host Nix and Unix socket access; an enclosing Codex sandbox may require its
 normal approval mechanism. Tests must not weaken the PoC boundary to bypass
 an outer sandbox denial.
@@ -232,7 +234,7 @@ runtime. Tested on NixOS/Linux 7.2.4. =serve= and =shell= require host terminals
 
 This is a package-only proof, with no real agent credentials or authentication.
 There are no CPU/memory/process/disk quotas, concurrent shell management,
-durable retries, crash reconciliation, or live revocation. Runtime closures are
+durable retries, controller restart recovery, or live revocation. Runtime closures are
 readable/executable; arbitrary code execution is expected. Procfs can expose
 kernel/hardware information. Namespace creation is blocked in the payload.
 
@@ -241,3 +243,15 @@ publication. Mount/publication failure kills the disposable session; it cannot
 erase data already read. Nix runtime references are honored, but setup hooks,
 compiler environments, services, or unrecorded plugins/data are not configured
 automatically. This is not a production sandbox security certification.
+
+Incomplete public requests expire after three seconds total, even if they drip
+bytes. Approval/build time is separate and has no automatic approval or retry.
+One package request can be awaiting a decision or grant at once; extra complete
+requests receive a correlated busy error. =status= and =quit= remain available
+during incomplete requests, pending approval, startup and builds. Closing the
+host attachment stops its session in all these states.
+
+Stopping a build terminates and reaps the owned Nix client; it does not kill the
+host Nix daemon or guarantee cancellation of daemon work shared with others.
+Controller restart never resumes a prior session. There is no daemon, Emacs
+integration, full TUI, file/network live grant or credential integration here.

@@ -6,3 +6,7 @@ publish = false
 
 [dependencies]
 libc = "=0.2.186"
+
+[workspace]
+members = ["crates/protocol", "crates/client", "crates/controller"]
+resolver = "3"

@@ -10,8 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from runtime import Session, command, receive
-from test_protocol import request
+from support import Session, command, receive, request
 
 
 def line(session, timeout=15):
@@ -233,14 +232,7 @@ for _ in range(20000):
         # Fault injection on the TRUSTED side proves openat2 rejects symlinks
         # even if destination immutability were broken. No arbitrary mount RPC.
         victim = self.session()
-        original = victim.placeholders
-        def corrupt(paths):
-            original(paths)
-            dest = victim.directory / "store" / paths[1].name
-            if dest.is_dir(): dest.rmdir()
-            else: dest.unlink()
-            dest.symlink_to("/tmp")
-        victim.placeholders = corrupt
+        victim.fault = "symlink"
         with self.assertRaisesRegex(RuntimeError, "helper exited"):
             victim.grant("jq", self.paths["jq"])
         self.assertIsNotNone(victim.proc.poll())
@@ -251,13 +243,13 @@ for _ in range(20000):
         # starts through the same sandbox, and sleeps only inside that boundary.
         config = json.dumps(self.config)
         script = f'''import json,os,time
-from runtime import Session
+from support import Session
 s=Session(**json.loads({config!r})); s.start()
 s.input.write("while :; do :; done & wait\\n")
 print(json.dumps([str(s.directory),s.proc.pid,s.identity['pid']]),flush=True)
 time.sleep(60)
 '''
-        driver = subprocess.Popen(["python3", "-c", script], cwd=Path(__file__).resolve().parents[1], stdout=subprocess.PIPE, text=True)
+        driver = subprocess.Popen(["python3", "-c", script], cwd=Path(__file__).resolve().parent, stdout=subprocess.PIPE, text=True)
         directory, helper, payload = json.loads(driver.stdout.readline())
         driver.kill(); driver.wait(); driver.stdout.close()
         self.addCleanup(lambda: __import__('shutil').rmtree(directory, ignore_errors=True))
@@ -266,7 +258,7 @@ time.sleep(60)
                 break
             time.sleep(.02)
         self.assertFalse(Path(f"/proc/{payload}").exists(), "payload survived controller death")
-        # Abrupt death cannot run Python cleanup; document stale host GC roots.
+        # Abrupt death cannot run Rust cleanup; document stale host GC roots.
         self.assertTrue(Path(directory).exists())
 
 

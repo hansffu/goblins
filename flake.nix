@@ -39,6 +39,8 @@
           goblins
           pkgs.rustc
           pkgs.cargo
+          pkgs.rustfmt
+          pkgs.clippy
           pkgs.python3
           pkgs.bubblewrap
           pkgs.nix
