@@ -213,7 +213,7 @@ isolation; it is not a comprehensive syscall allowlist.
 
 =mkGoblin=/=mkGoblins=, named presets, public flake outputs, literal environment
 values/entry arguments and the upstream initial closure remain supported.
-Each trusted launch supplies its own absolute manifest path and name, allowing
+Each trusted launch supplies its own absolute manifest path and configuration name, allowing
 configuration-only rebuilds to start changed/new definitions on the same daemon.
 Running sessions retain their selected configuration. Manifests declare API 1
 and private helper API 2; mismatches fail only that launch. Manifest/build-spec
@@ -252,3 +252,21 @@ kill sandboxes on daemon death. Normal cleanup removes roots and resources;
 SIGKILL can leave host files/roots for manual cleanup. Durable recovery, terminal
 multiplexing, projects, Emacs integration and live file/network grants remain
 outside this milestone. [[file:RESULTS.org][RESULTS.org]] records verification and its limits.
+
+* Per-launch agent names
+
+The daemon assigns =agent_name= independently of the reusable Nix configuration
+key (=name=) and manifest path (=configuration=). Allocation and insertion run
+in the authority loop before another host operation can execute; workers do not
+allocate names. The bounded checked-in pool covers all 16 live worker slots.
+Explicit validation, collision and exhaustion errors precede accepting a launch.
+Launch-key lookup precedes allocation, preserving ID/name/acceptance on retries.
+
+Worker ownership reserves a name across startup and cleanup, including final
+messages waiting for the worker to finish. Dropping the completed worker releases
+the name; retained terminal output and history keep their immutable session ID.
+Session and permission records carry the stable agent name, with permission
+records copying it at creation so later eviction or reuse cannot relabel history.
+Only trusted host get/stop permit a live-name selector. Decisions, permission
+filters, resize and sandbox endpoint authority continue using immutable IDs.
+See [[file:DAEMON.org::*Agent naming extension (API 1)][the API contract]] and [[file:USAGE.org::*Agent names][usage rules]].

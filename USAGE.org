@@ -60,6 +60,63 @@ successful grant. Package names are bounded nixpkgs attributes, including
 are rejected. Host Nix chooses the bin output when available, otherwise default.
 Development setup hooks and unrecorded plugins/data are not activated.
 
+* Agent names
+
+Configuration/preset names and agent names are separate. =run CONFIG= selects a
+reusable Nix definition; =--name NAME= labels that single sandbox session:
+
+#+begin_src sh
+goblins run shell --name snikk
+goblins shell --name scout-2
+goblins run shell                  # daemon chooses an available goblin name
+goblins list
+goblins stop snikk
+#+end_src
+
+Agent names are case-sensitive, 1..32 ASCII lowercase letters, digits or hyphens,
+starting with a letter. Invalid names and explicit live-name collisions return
+clear errors. No normalization or automatic suffix is applied to explicit names.
+Names are unique within a daemon, including starting and stopping sessions, and
+remain reserved until the worker finishes cleanup. Once released, a name may be
+reused, even while the previous session's terminal output is still draining.
+There is no renaming operation.
+
+The daemon chooses the first available name in
+[[file:crates/controller/src/goblin-names.txt][the checked-in list of 16 fantasy goblin names]], enough for the 16-session
+runtime limit. If none is available, launch fails immediately with a resource
+limit error; allocation never spins or silently collides. Custom names do not
+consume list entries unless they match a list name. The live-session limit still
+applies. All host API launches use this same allocator.
+
+The list, fullscreen overview and plain =status= show the allocated agent name
+and the reusable configuration identity. Permission records and events retain
+the agent name even if the corresponding session record is later evicted.
+Historical sessions and permissions may share a name, but always have distinct
+immutable IDs. =stop ID_OR_NAME= and host =sessions.get/stop {session}= accept
+an exact session ID or a live agent name. After completion, inspect/stop retained
+history by ID. A reused name targets its current live session; use IDs in
+scripts that must keep targeting the original launch. Approval decisions,
+permission filters and resize still require IDs, never agent names.
+
+For host API 1, =sessions.start= keeps =name= as the configuration key and
+=configuration= as the absolute manifest path. Optional =agent_name= requests a
+session name; omitted or null means automatic allocation. For example:
+
+#+begin_src json
+{"key":"my-launch-1","configuration":"/absolute/manifest.json","name":"shell","agent_name":"snikk","rows":24,"cols":100}
+#+end_src
+
+The start result adds =agent_name= alongside =session,state,terminal=.
+Session records add =agent_name= while preserving =name,configuration=;
+permission records also add =agent_name=. Host initialization advertises
+=agent-names=. Existing launch requests remain valid; clients should tolerate
+additive result fields. An older daemon must be upgraded to supply naming.
+An identical launch key and parameters (including the requested name) return
+the original acceptance result and allocated name, even after completion,
+name reuse or record eviction. Retries never allocate a new name. Omitting
+=agent_name= and passing null are equivalent; changing it to the allocated name
+is a parameter change and conflicts. Retry the original request exactly.
+
 * Closing, stopping and inspecting
 
 Closing =serve=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
@@ -73,7 +130,7 @@ To inspect or explicitly stop a session from a trusted host terminal:
 
 #+begin_src sh
 goblins list
-goblins stop SESSION_ID
+goblins stop ID_OR_NAME
 goblins rpc permissions.list '{}'
 goblins rpc sessions.get '{"session":"SESSION_ID"}'
 #+end_src

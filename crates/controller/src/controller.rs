@@ -26,10 +26,13 @@ use std::{
 
 const HOSTS: usize = 32;
 const SESSIONS: usize = 16;
+const GOBLIN_NAMES: &str = include_str!("goblin-names.txt");
 const QUEUE: usize = 2 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub id: String,
+    pub agent_name: String,
+    /// Reusable Nix configuration key, distinct from the per-launch agent name.
     pub name: String,
     pub configuration: String,
     pub state: String,
@@ -47,6 +50,8 @@ pub struct SessionRecord {
 pub struct PermissionRecord {
     pub id: String,
     pub session: String,
+    /// Retained even after the session record is evicted or its name reused.
+    pub agent_name: String,
     pub approval: String,
     pub package: String,
     pub reason: String,
@@ -239,6 +244,7 @@ struct Start {
     key: String,
     configuration: String,
     name: String,
+    agent_name: Option<String>,
     rows: u16,
     cols: u16,
 }
@@ -301,6 +307,13 @@ fn capacity() -> Fault {
 }
 fn dimensions(rows: u16, cols: u16) -> bool {
     (1..=1000).contains(&rows) && (1..=1000).contains(&cols)
+}
+fn valid_agent_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 pub struct Controller {
     state: PathBuf,
@@ -403,6 +416,43 @@ impl Controller {
     fn permission_mut(&mut self, id: &str) -> Option<&mut PermissionRecord> {
         self.permissions.iter_mut().find(|p| p.id == id)
     }
+    fn allocate_name(&self, requested: Option<&str>) -> std::result::Result<String, Fault> {
+        // Worker ownership includes startup and teardown, even if a final state
+        // has arrived before cleanup finishes. Allocation and insertion both
+        // happen in this event loop before another host call can run.
+        let available = |name: &str| {
+            !self
+                .sessions
+                .values()
+                .any(|a| a.worker.is_some() && a.record.agent_name == name)
+        };
+        if let Some(name) = requested {
+            if !valid_agent_name(name) {
+                return Err((-32602, "agent_name must be 1..32 ASCII lowercase letters, digits or hyphens, starting with a letter".into()));
+            }
+            if !available(name) {
+                return Err((-32009, format!("agent name '{name}' is already in use")));
+            }
+            return Ok(name.into());
+        }
+        GOBLIN_NAMES
+            .lines()
+            .find(|name| available(name))
+            .map(str::to_owned)
+            .ok_or_else(|| (-32010, "automatic agent name pool exhausted".into()))
+    }
+    fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
+        if self.sessions.contains_key(target) {
+            return Ok(target.into());
+        }
+        // Names address live sessions only. Historical names may be shared;
+        // historical operations must use the immutable session ID.
+        self.sessions
+            .values()
+            .find(|a| a.worker.is_some() && a.record.agent_name == target)
+            .map(|a| a.record.id.clone())
+            .ok_or_else(missing)
+    }
     fn stop(&mut self, id: &str) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
         if let Some(w) = &a.worker {
@@ -473,9 +523,8 @@ impl Controller {
             }
             "sessions.get" => {
                 let p: SessionId = params(value)?;
-                Ok(json!(
-                    self.sessions.get(&p.session).ok_or_else(missing)?.record
-                ))
+                let id = self.resolve_session(&p.session)?;
+                Ok(json!(self.sessions[&id].record))
             }
             "sessions.start" => {
                 let p: Start = params(value)?;
@@ -493,6 +542,7 @@ impl Controller {
                         Err(conflict())
                     };
                 }
+                let agent_name = self.allocate_name(p.agent_name.as_deref())?;
                 if self.launches.len() >= 4096
                     || self
                         .sessions
@@ -533,6 +583,7 @@ impl Controller {
                 );
                 let record = SessionRecord {
                     id: id.clone(),
+                    agent_name,
                     name: p.name.clone(),
                     configuration: p.configuration.clone(),
                     state: "starting".into(),
@@ -546,7 +597,7 @@ impl Controller {
                     exit_code: None,
                     detail: None,
                 };
-                let result = json!({"session":id,"state":"starting","terminal":record.terminal});
+                let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal});
                 self.sessions.insert(
                     id,
                     Active {
@@ -565,7 +616,8 @@ impl Controller {
             }
             "sessions.stop" => {
                 let p: SessionId = params(value)?;
-                self.stop(&p.session)
+                let id = self.resolve_session(&p.session)?;
+                self.stop(&id)
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -706,7 +758,7 @@ impl Controller {
                     Decoder::new(16384, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal"]}else{vec!["package-grants"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names"]}else{vec!["package-grants"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -767,6 +819,7 @@ impl Controller {
                     self.permissions.push_back(PermissionRecord {
                         id: request.clone(),
                         session,
+                        agent_name: a.record.agent_name.clone(),
                         approval,
                         package: p.package,
                         reason: p.reason,
@@ -1051,6 +1104,7 @@ mod tests {
                 created: 0,
                 record: SessionRecord {
                     id: id.clone(),
+                    agent_name: "snikk".into(),
                     name: "shell".into(),
                     configuration: "test".into(),
                     state: "running".into(),
@@ -1079,6 +1133,7 @@ mod tests {
         d.permissions.push_back(PermissionRecord {
             id: "r".into(),
             session: id.clone(),
+            agent_name: "snikk".into(),
             approval: "a".into(),
             package: "hello".into(),
             reason: "test".into(),
@@ -1088,6 +1143,130 @@ mod tests {
             message: None,
         });
         id
+    }
+    fn launch(key: &str, agent_name: Option<&str>) -> Value {
+        json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
+               "agent_name":agent_name,"rows":24,"cols":100})
+    }
+    #[test]
+    fn agent_name_grammar_and_pool_cover_session_limit() {
+        let names: std::collections::BTreeSet<_> = GOBLIN_NAMES.lines().collect();
+        assert_eq!(names.len(), GOBLIN_NAMES.lines().count());
+        assert!(names.len() >= SESSIONS);
+        assert!(names.iter().all(|n| valid_agent_name(n)));
+        for name in ["a", "snikk-2", &"x".repeat(32)] {
+            assert!(valid_agent_name(name));
+        }
+        for name in [
+            "",
+            "Snikk",
+            "1snikk",
+            "-snikk",
+            "two words",
+            "../snikk",
+            "gøb",
+            "x\n",
+            &"x".repeat(33),
+        ] {
+            assert!(!valid_agent_name(name), "{name:?}");
+        }
+    }
+    #[test]
+    fn allocation_is_bounded_and_retries_precede_capacity_and_collisions() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        let mut results = Vec::new();
+        for (i, name) in GOBLIN_NAMES.lines().enumerate() {
+            let result = d
+                .host(&mut c, "sessions.start", launch(&format!("key{i}"), None))
+                .unwrap();
+            assert_eq!(result["agent_name"], name);
+            let record = &d.sessions[result["session"].as_str().unwrap()].record;
+            assert_eq!(record.agent_name, name);
+            assert_eq!(record.name, "shell");
+            assert_eq!(record.configuration, "/missing-goblins-test-manifest");
+            results.push(result);
+        }
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("overflow", None))
+                .unwrap_err(),
+            (-32010, "automatic agent name pool exhausted".into())
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("collision", Some("snikk")))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("capacity", Some("custom")))
+                .unwrap_err()
+                .0,
+            -32010
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("key0", None))
+                .unwrap(),
+            results[0]
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("key0", Some("custom")))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert_eq!(d.launches.len(), SESSIONS);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn explicit_names_reserve_through_cleanup_and_history_keeps_identity() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        for name in ["", "Snikk", "../snikk", &"a".repeat(33)] {
+            assert_eq!(
+                d.host(&mut c, "sessions.start", launch("bad", Some(name)))
+                    .unwrap_err()
+                    .0,
+                -32602
+            );
+        }
+        assert!(d.sessions.is_empty());
+        let first = d
+            .host(&mut c, "sessions.start", launch("first", Some("shell")))
+            .unwrap();
+        let id = first["session"].as_str().unwrap();
+        assert_eq!(d.resolve_session("shell").unwrap(), id);
+        assert_eq!(d.resolve_session(id).unwrap(), id);
+        d.host(&mut c, "sessions.stop", json!({"session":"shell"}))
+            .unwrap();
+        for state in ["starting", "running", "stopping", "stopped", "failed"] {
+            d.sessions.get_mut(id).unwrap().record.state = state.into();
+            assert_eq!(d.allocate_name(Some("shell")).unwrap_err().0, -32009);
+        }
+        d.sessions.get_mut(id).unwrap().worker.take();
+        assert!(d.resolve_session("shell").is_err());
+        let second = d
+            .host(&mut c, "sessions.start", launch("second", Some("shell")))
+            .unwrap();
+        assert_ne!(first["session"], second["session"]);
+        assert_eq!(d.resolve_session("shell").unwrap(), second["session"]);
+        assert_eq!(
+            d.host(&mut c, "sessions.get", json!({"session":id}))
+                .unwrap()["agent_name"],
+            "shell"
+        );
+        // Even eviction and name reuse cannot redirect a retry to the successor.
+        d.sessions.remove(id);
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("first", Some("shell")))
+                .unwrap(),
+            first
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn queued_progress_cannot_restore_cancelled_permission() {

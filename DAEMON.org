@@ -522,7 +522,7 @@ These choices settle the open details for API 1 before implementation.
   Only ready is client exit 0; denial/failure is 1; invalid/missing/interrupted
   replies are unknown outcome, exit 2, without retry.
 - IDs contain a random 128-bit daemon instance prefix and monotonic counters.
-  =sessions.start {key,configuration,name,rows,cols}= requires an absolute
+  =sessions.start {key,configuration,name,agent_name?,rows,cols}= requires an absolute
   trusted manifest path and a caller-generated identifier =key=. Repeating
   an identical key/params returns the original session ID; changed params
   conflict. Keep at most 4096 launch keys for the daemon lifetime, then reject
@@ -530,10 +530,10 @@ These choices settle the open details for API 1 before implementation.
   =api:1,helper_api:2=; configuration-only rebuilds may select new helper paths
   implementing private helper API 2 (=READY2= startup acknowledgement).
   Incompatible manifests/helpers fail that launch.
-- =sessions.get/stop {session}=; =sessions.list {}=; =permissions.get {request}=;
+- =sessions.get/stop {session}= accept an exact ID or live agent name; =sessions.list {}=; =permissions.get {request}=;
   =permissions.list {session?,state?}=; =permissions.decide
   {session,request,approval,approved}=. Only the first pending decision wins.
-  Stop is idempotent while the record exists. A small =sessions.resize
+  Stop by ID is idempotent while the record exists. Names address only live workers. A small =sessions.resize
   {session,rows,cols}= operation preserves terminal resizing; it conveys no
   attachment or namespace authority. Dimensions are 1..1000.
 - Limits: 16 live sessions, 128 retained session records, 256 permission records,
@@ -552,7 +552,7 @@ These choices settle the open details for API 1 before implementation.
   connection; =state.unsubscribe {subscription}= ends it. Queued output is
   bounded to 2 MiB per host connection; overflow disconnects the subscriber,
   which must initialize and subscribe afresh. No silent notification loss.
-- Start returns ={session,state:"starting",terminal}=, where =terminal= is a
+- Start returns ={session,agent_name,state:"starting",terminal}=, where =terminal= is a
   private per-session Unix STREAM path accepting one lifetime terminal consumer.
   It carries raw bidirectional bytes, no JSON or multiplexing. The daemon owns
   the master and pumps bounded 64 KiB buffers. Before a consumer connects,
@@ -583,7 +583,7 @@ exit status preceding stream drain. Protocol tests alone do not establish these.
 
 ** API 1 record and snapshot schemas
 
-All objects below have exactly the listed fields. Optional values are JSON null,
+Objects below have the listed fields; clients should tolerate additive result fields. Optional values are JSON null,
 not omitted, except where JSON-RPC itself specifies optional envelope fields.
 Input parameter objects reject unknown fields. Lists/get return the record or
 array directly; stop/resize/unsubscribe return ={accepted:true}=. Decide returns
@@ -593,9 +593,9 @@ acceptance object; use get to inspect its current lifecycle.
 | Record | Fields |
 |--------+--------|
 | Snapshot | =instance= (string), =sessions= (Session array), =permissions= (Permission array) |
-| Session | =id,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted= (booleans); =exit_code= (integer or null); =detail= (string or null) |
+| Session | =id,agent_name,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted= (booleans); =exit_code= (integer or null); =detail= (string or null) |
 | Identity | =pid,helper_userns,mount_owner,source_mountns,mountns= (integers; trusted host inspection only) |
-| Permission | =id,session,approval,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
+| Permission | =id,session,agent_name,approval,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
 | Preview | ={in_store:boolean,download:string-or-null,build_required:boolean}= or ={error:string}= |
 
 Session states are =starting,running,stopping,stopped,failed=. The =stopped=
@@ -624,3 +624,52 @@ through both exec boundaries. Bubblewrap mounts with =--bind-fd=/=--ro-bind-fd=
 and closes the handles before payload execution. Helpers implementing API 1
 are incompatible with this launcher contract and must be rebuilt. Goblins
 JSON-RPC remains API 1.
+
+** Agent naming extension (API 1)
+
+The daemon owns per-launch names; Nix =mkGoblin/mkGoblins= configuration names
+retain their existing meaning and public API. =sessions.start.name= and
+=Session.name= remain the reusable configuration key; =configuration= remains
+the manifest path. Optional =sessions.start.agent_name= is a requested agent
+name, with omission/null selecting automatic allocation. Start acceptance,
+Session and Permission records expose the allocated =agent_name= string. Host
+=initialize.features= includes =agent-names=; the sandbox method surface is
+unchanged. Existing API launch requests remain valid.
+
+Explicit names match =[a-z][a-z0-9-]{0,31}=. Invalid names return -32602;
+explicit-name collisions return -32009 with an already-in-use message.
+Automatic allocation scans the checked-in =crates/controller/src/goblin-names.txt=
+in order and selects the first available entry. Its 16 unique names cover the
+16-worker limit. Exhaustion returns -32010 with an automatic-pool-exhausted
+message, with no retries, random probing or suffixing. General resource bounds
+also continue to apply.
+
+Allocation, record insertion and launch-key retention execute in one daemon
+control-loop operation. A name is reserved while its worker is present,
+including startup, stopping and final lifecycle messages awaiting complete
+worker cleanup. Release follows the disconnected/drained worker result channel
+and confirmed worker exit; PTY output may continue draining afterward. Historical
+records retain the original name and ID until evicted. Duplicate names in history
+are expected; IDs never repeat. Names are scoped to one daemon lifetime.
+
+Launch-key lookup precedes allocation and capacity checks. An identical retry
+returns its original acceptance (ID/name/terminal/starting state), even after
+completion, eviction or name reuse. Requested names are part of parameter
+comparison. Omission and null compare equal; changing an automatic request to an
+explicit allocated name conflicts. Rejected launches do not reserve names or keys.
+
+Host =sessions.get/stop.session= accepts an exact immutable ID or a live agent
+name. IDs take precedence; generated IDs are longer than the name grammar
+allows, so the namespaces cannot collide. Name lookup excludes historical
+records and is serialized with stop. An absent live name returns -32004. Names
+are convenience selectors, never approval identities: =permissions.decide=,
+permission filters and resize still use IDs. The sandbox's session is always
+derived from its endpoint. Permission =agent_name= is copied from that session
+at request creation, so permission details/events remain intelligible after
+session eviction or reuse without changing immutable decision identities.
+
+The CLI accepts =run CONFIG --name NAME= and =shell --name NAME=; omission uses
+the daemon allocator. List/status, fullscreen session/request views and plain
+permission details display names while session inspection retains configuration
+identity. Renaming, projects, scheduling, multiplexing and restart recovery are
+outside this extension.

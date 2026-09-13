@@ -1,6 +1,72 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Named agents and sandbox sessions
+
+Implemented on =feature/agent-names= from merged master =db524a9=. The daemon
+allocates stable per-launch =agent_name= values, independently of the existing
+Nix configuration key =name= and manifest path =configuration=. The public
+=mkGoblin/mkGoblins= API is unchanged. CLI launches support
+=run CONFIG --name NAME= and =shell --name NAME=; omission chooses the first
+available entry from the checked-in 16-name fantasy goblin list.
+
+Names stay reserved through worker cleanup, with explicit validation/collision
+errors and bounded pool exhaustion. Launch retries retain their original
+ID/name even after completion, name reuse or record eviction. Trusted get/stop
+accept live names as well as IDs; approvals, permission filters, resize and
+sandbox endpoint authority continue to use immutable identities. Session/list,
+plain status, fullscreen overview/request details, permission records and
+subscription snapshots/events expose agent names. See
+[[file:DAEMON.org::*Agent naming extension (API 1)][the exact contract]] and [[file:USAGE.org::*Agent names][usage]].
+
+Validation used the rebuilt production package
+=/nix/store/2wlmb2jydvpp0scrxrb84616c52b8hv0-goblins=, linked at
+=/tmp/goblins-agent-names=. The pinned Cargo/Rust tools were loaded from
+=/tmp/goblins-cargo-env=. Eighteen Rust tests passed; the test-only namespace
+driver remains ignored during normal enumeration and is exercised by Python
+integration tests. Formatting and workspace/all-target Clippy with warnings
+denied passed. The production Nix build and all 26 flake checks passed,
+including public Nix configuration and production-only/no-Python packaging.
+The initial restricted Rust invocation could not create Unix sockets; the
+same tests passed with the required host socket access.
+
+The new black-box naming gates passed against that production build:
+
+- CLI =shell/run --name=, automatic =shell=, list exposure and stop by name/ID.
+- Concurrent first launches with one key return the same acceptance; competing
+  explicit names yield one collision. Concurrent automatic launches fill all
+  16 unique names; exhaustion fails immediately. Concurrent retries at capacity
+  return the original ID/name, and changed parameters conflict.
+- Session and permission snapshots/events expose names. Plain status displays
+  them. Reusing a completed name retains old session/permission IDs and names;
+  retries still report the old launch. Names cannot substitute for approval
+  session IDs, and a stale decision cannot affect the successor's request.
+
+The complete black-box discovery run passed *all 30 methods in 474.061 seconds*
+in one clean run against the rebuilt package. This includes the new naming
+methods, fullscreen agent/configuration labels and permission popup names,
+configuration-only rebuild separation, all eight bind-race combinations,
+queued key/token/mouse approval identity, 50,000-byte output drain, namespace
+isolation, normal/crash teardown, slow-session/subscriber behavior and startup
+resize. The resize gate retains =/bin/sh= with POSIX =read=; it does not depend
+on Fish terminal negotiation. Python ran inside =nix develop= with both =pyte=
+and its =wcwidth= dependency. Full output is at
+=/tmp/goblins-agent-names-tests.log=.
+
+#+begin_src sh
+source /tmp/goblins-cargo-env
+cargo test --workspace --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+nix build --out-link /tmp/goblins-agent-names path:.#goblins
+nix flake check path:.
+GOBLINS_APP=/tmp/goblins-agent-names/bin/goblins nix develop path:. \
+  --command python3 -m unittest discover -s tests -p 'test_*.py' -v
+#+end_src
+
+Host-access execution was used for Unix sockets, Nix and namespace probes.
+No changes were merged or pushed. Existing pre-merge fixes remain intact.
+
 * Pre-merge review fixes
 
 Review found and fixed two daemon lifecycle races and a startup-bind race:

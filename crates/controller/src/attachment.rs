@@ -50,7 +50,12 @@ fn size(fd: RawFd) -> Result<libc::winsize> {
     unix::cvt(unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut s) })?;
     Ok(s)
 }
-pub fn run(state: PathBuf, name: String, configuration: String) -> Result<i32> {
+pub fn run(
+    state: PathBuf,
+    name: String,
+    configuration: String,
+    agent_name: Option<String>,
+) -> Result<i32> {
     use goblins_controller::host::Client;
     use serde_json::json;
     use std::{
@@ -65,7 +70,7 @@ pub fn run(state: PathBuf, name: String, configuration: String) -> Result<i32> {
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let launch=control.call("sessions.start",json!({"key":key,"configuration":configuration,"name":name,"rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}))?;
+    let launch=control.call("sessions.start",json!({"key":key,"configuration":configuration,"name":name,"agent_name":agent_name,"rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}))?;
     let session = launch["session"].as_str().ok_or("missing session ID")?;
     let mut terminal =
         UnixStream::connect(launch["terminal"].as_str().ok_or("missing terminal path")?)?;

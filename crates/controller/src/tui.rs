@@ -166,17 +166,23 @@ impl View {
                 })
                 .unwrap_or_default();
             let table = Table::new(rows, [Constraint::Min(20), Constraint::Length(12)])
-                .block(border(if self.focus == Focus::Sandboxes {
-                    " Packages [focused] "
-                } else {
-                    " Packages "
-                }))
+                .block(border(&format!(
+                    " Packages{} · {} ",
+                    if self.focus == Focus::Sandboxes {
+                        " [focused]"
+                    } else {
+                        ""
+                    },
+                    selected
+                        .map(|s| format!("{} ({})", safe(&s.agent_name), safe(&s.name)))
+                        .unwrap_or_default()
+                )))
                 .row_highlight_style(Style::default().reversed());
             f.render_stateful_widget(table, areas[1], &mut self.packages);
         } else {
             let rows = snapshot.sessions.iter().map(|s| {
                 Row::new(vec![
-                    Cell::from(safe(&s.name)),
+                    Cell::from(format!("{} ({})", safe(&s.agent_name), safe(&s.name))),
                     Cell::from(
                         s.identity
                             .as_ref()
@@ -208,15 +214,10 @@ impl View {
             .row_highlight_style(Style::default().reversed());
             f.render_stateful_widget(table, areas[1], &mut self.sessions);
         }
-        let rows = snapshot.permissions.iter().map(|p| {
-            let name = snapshot
-                .sessions
-                .iter()
-                .find(|s| s.id == p.session)
-                .map(|s| s.name.as_str())
-                .unwrap_or(&p.session);
-            Row::new(vec![safe(name), safe(&p.package), safe(&p.state)])
-        });
+        let rows = snapshot
+            .permissions
+            .iter()
+            .map(|p| Row::new(vec![safe(&p.agent_name), safe(&p.package), safe(&p.state)]));
         let table = Table::new(
             rows,
             [
@@ -244,12 +245,6 @@ impl View {
             f.render_widget(block, areas[3]);
             let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             if let Some(p) = &self.presented {
-                let name = snapshot
-                    .sessions
-                    .iter()
-                    .find(|s| s.id == p.session)
-                    .map(|s| s.name.as_str())
-                    .unwrap_or(&p.session);
                 let preview = match &p.preview {
                     None => "Checking...".into(),
                     Some(v) if v.get("error").is_some() => format!(
@@ -273,7 +268,7 @@ impl View {
                 };
                 let text = format!(
                     "Sandbox: {}\nPackage: {}\n{}\nReason: {}\nStatus: {}{}",
-                    safe(name),
+                    safe(&p.agent_name),
                     safe(&p.package),
                     safe(&preview),
                     safe(&p.reason),

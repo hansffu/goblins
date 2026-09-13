@@ -92,8 +92,8 @@ class Daemon:
             time.sleep(.02)
         raise AssertionError("daemon condition timed out")
 
-    def start(self, name="shell", manifest=None, key=None, wait=True):
-        result = self.rpc.call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name,
+    def start(self, name="shell", manifest=None, key=None, wait=True, agent_name=None):
+        result = self.rpc.call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name, "agent_name": agent_name,
                                                   "configuration": str(manifest or self.manifest), "rows": 24, "cols": 100})
         if wait:
             record = self.wait(lambda: (r if (r := self.get(result["session"]))["state"] != "starting" else None))

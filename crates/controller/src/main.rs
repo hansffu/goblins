@@ -31,7 +31,7 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "usage: goblins [--runtime MANIFEST] [--state-dir DIRECTORY] daemon [--workspace DIRECTORY]\n       goblins [--state-dir DIRECTORY] serve [--plain]\n       goblins [--state-dir DIRECTORY] run NAME\n       goblins [--state-dir DIRECTORY] shell\n       goblins [--state-dir DIRECTORY] list\n       goblins [--state-dir DIRECTORY] stop SESSION\n       goblins [--state-dir DIRECTORY] rpc METHOD PARAMS_JSON"
+            "usage: goblins [--runtime MANIFEST] [--state-dir DIRECTORY] daemon [--workspace DIRECTORY]\n       goblins [--state-dir DIRECTORY] serve [--plain]\n       goblins [--state-dir DIRECTORY] run CONFIG [--name NAME]\n       goblins [--state-dir DIRECTORY] shell [--name NAME]\n       goblins [--state-dir DIRECTORY] list\n       goblins [--state-dir DIRECTORY] stop ID_OR_NAME\n       goblins [--state-dir DIRECTORY] rpc METHOD PARAMS_JSON"
         );
         return;
     }
@@ -60,6 +60,10 @@ fn main() {
         let state = option(&mut args, "--state-dir")?
             .map(PathBuf::from)
             .unwrap_or(default);
+        let agent_name = option(&mut args, "--name")?;
+        if agent_name.is_some() && !args.first().is_some_and(|a| a == "run" || a == "shell") {
+            return Err("--name is only valid with run or shell".into());
+        }
         let workspace = option(&mut args, "--workspace")?.map(PathBuf::from);
         let plain = if let Some(i) = args.iter().position(|a| a == "--plain") {
             args.remove(i);
@@ -118,7 +122,7 @@ fn main() {
                 let name = match args.as_slice() {
                     [command] if command == "shell" => "shell",
                     [command, name] if command == "run" => name,
-                    _ => return Err("expected daemon, serve, run NAME, shell, list, stop SESSION or rpc METHOD PARAMS_JSON".into()),
+                    _ => return Err("expected daemon, serve, run CONFIG [--name NAME], shell, list, stop ID_OR_NAME or rpc METHOD PARAMS_JSON".into()),
                 };
                 let runtime =
                     runtime.ok_or("run requires --runtime (use the Nix-built goblins command)")?;
@@ -136,7 +140,7 @@ fn main() {
                     );
                     return Ok(2);
                 }
-                return attachment::run(state, name.into(), configuration);
+                return attachment::run(state, name.into(), configuration, agent_name);
             }
         }
         Ok(0)

@@ -12,14 +12,17 @@ from terminal_support import Terminal, screen_wait
 class TuiTests(unittest.TestCase):
     def test_popup_list_focus_buttons_and_tty_restoration(self):
         d = Daemon(); self.addCleanup(d.close)
-        a, b = d.start(), d.start()
+        a, b = d.start(agent_name="zoggit"), d.start()
         ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve"]); self.addCleanup(ui.close)
         before = screen_wait(ui, lambda text: "Sandboxes [focused]" in text)
         self.assertNotIn("Permission request", before)
+        self.assertIn("zoggit (shell)", before)
+        self.assertIn(b["agent_name"] + " (shell)", before)
         pa, ra = d.pending(a["session"]); self.addCleanup(pa.close)
         pb, rb = d.pending(b["session"], "tree"); self.addCleanup(pb.close)
         text = screen_wait(ui, lambda text: "Package: hello" in text and "tree" in text)
         self.assertIn("Reason: test", text)
+        self.assertIn("Sandbox: zoggit", text)
         self.assertIn("[ No ]", text); self.assertIn("[ Yes ]", text)
         # The popup reserves rows beneath both lists, rather than overlaying them.
         rows = ui.screen.display
