@@ -65,6 +65,8 @@ impl Manifest {
 /// Trusted launch configuration, never accepted over the sandbox socket.
 #[derive(Clone, Deserialize)]
 pub struct Launch {
+    #[serde(skip)]
+    pub cwd: Option<PathBuf>,
     pub shell: PathBuf,
     #[serde(default = "default_args")]
     pub shell_args: Vec<String>,
@@ -114,6 +116,7 @@ impl Configuration {
         ]);
         env.extend(self.env.clone());
         Ok(Launch {
+            cwd: None,
             shell: string("sandboxed_binary")?.into(),
             shell_args: self.args.clone(),
             posix_shell: string("shell")?.into(),

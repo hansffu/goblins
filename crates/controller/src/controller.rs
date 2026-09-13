@@ -245,6 +245,8 @@ struct Start {
     configuration: String,
     name: String,
     agent_name: Option<String>,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
     rows: u16,
     cols: u16,
 }
@@ -593,6 +595,7 @@ impl Controller {
                 if !goblins_protocol::identifier(&p.key)
                     || !goblins_protocol::identifier(&p.name)
                     || !Path::new(&p.configuration).is_absolute()
+                    || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
                     || !dimensions(p.rows, p.cols)
                 {
                     return Err((-32602, "invalid launch parameters".into()));
@@ -638,10 +641,10 @@ impl Controller {
                     p.configuration.clone().into(),
                     p.name.clone(),
                     self.workspace.clone(),
+                    p.cwd.clone(),
                     self.state.clone(),
                     directory.join("resources"),
-                    p.rows,
-                    p.cols,
+                    (p.rows, p.cols),
                 );
                 let record = SessionRecord {
                     id: id.clone(),

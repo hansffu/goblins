@@ -79,11 +79,17 @@ impl Session {
         Self::new_in(launch, workspace, cancel, unix::temp_directory()?)
     }
     pub fn new_in(
-        launch: Launch,
+        mut launch: Launch,
         workspace: Option<&Path>,
         cancel: Cancel,
         directory: PathBuf,
     ) -> Result<Self> {
+        // An explicit daemon workspace retains the existing snapshot behavior.
+        launch.cwd = if workspace.is_some() {
+            None
+        } else {
+            launch.cwd.map(fs::canonicalize).transpose()?
+        };
         unix::private_directory(&directory)?;
         let session = Self {
             directory,
@@ -183,7 +189,10 @@ impl Session {
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
         let mut private = self.launch.protected_paths.clone();
         private.push(self.directory.clone());
-        let binds = self.launch.binds.plan(&private, &self.cancel)?;
+        let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
+        if let Some(cwd) = &self.launch.cwd {
+            binds.add_working_directory(cwd, &private)?;
+        }
         // Root selected store-backed config without exposing the full output or
         // its closure. Only the precise declared/linked targets are mounted.
         for root in binds.store_roots()? {
@@ -273,7 +282,12 @@ impl Session {
             self.launch.posix_shell.display().to_string(),
             "/bin/sh".into(),
             "--chdir".into(),
-            "/workspace".into(),
+            self.launch
+                .cwd
+                .as_deref()
+                .unwrap_or(Path::new("/workspace"))
+                .display()
+                .to_string(),
         ]);
         for (name, value) in &self.launch.env {
             args.extend(["--setenv".into(), name.clone(), value.clone()]);

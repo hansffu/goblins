@@ -287,6 +287,28 @@ fn scan(
     Ok(())
 }
 impl Plan {
+    pub fn add_working_directory(&mut self, cwd: &Path, private: &[PathBuf]) -> Result<()> {
+        validate(cwd, private)?;
+        let source_fd = open_source(cwd)?;
+        let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
+        validate(&source, private)?;
+        if !source_fd.metadata()?.is_dir() {
+            return Err("working directory must be a directory".into());
+        }
+        // A directory bind includes descendants. Mount it before explicit binds
+        // so configured read-only paths still take precedence. Pin the source
+        // using the same descriptor mechanism as other startup grants.
+        self.mounts.insert(
+            0,
+            Mount {
+                source_fd,
+                source,
+                destination: cwd.to_path_buf(),
+                readonly: false,
+            },
+        );
+        Ok(())
+    }
     pub fn source_fds(&self) -> impl Iterator<Item = RawFd> + '_ {
         self.mounts.iter().map(|m| m.source_fd.as_raw_fd())
     }

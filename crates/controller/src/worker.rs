@@ -60,10 +60,10 @@ impl Worker {
         configuration: PathBuf,
         name: String,
         workspace: Option<PathBuf>,
+        cwd: Option<PathBuf>,
         state: PathBuf,
         directory: PathBuf,
-        rows: u16,
-        cols: u16,
+        dimensions: (u16, u16),
     ) -> Self {
         let cancel = Cancel::default();
         let token = cancel.clone();
@@ -76,8 +76,9 @@ impl Worker {
                 token.check()?;
                 let config = Manifest::read(&configuration)?.select(&name)?;
                 token.check()?;
-                let (master, slave) = unix::pty(rows, cols)?;
+                let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
                 let mut launch = config.launch()?;
+                launch.cwd = cwd;
                 if launch.initial_packages.len() > 128 {
                     return Err("initial package limit is 128".into());
                 }

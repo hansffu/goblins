@@ -22,9 +22,11 @@ ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
 
 
 class Terminal:
-    def __init__(self, argv, env=None, output=None):
+    def __init__(self, argv, env=None, output=None, cwd=None):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
+            if cwd is not None:
+                os.chdir(cwd)
             if output:
                 os.dup2(os.open(output, os.O_WRONLY), 1)
             os.execve(argv[0], argv, env or os.environ)

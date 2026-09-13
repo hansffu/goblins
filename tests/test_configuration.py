@@ -33,7 +33,7 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertIn(expected, record["detail"])
             with self.assertRaises(ValueError): d.start("fishy", "relative.json")
             first = Terminal([str(original), "--state-dir", str(d.state), "run", "fishy", "--name", "snikk"]); self.addCleanup(first.close)
-            first.expect("workspace[>#]")
+            first.expect("[>#]")
             record = d.rpc.call("sessions.get", {"session": "snikk"})
             self.assertEqual(record["name"], "fishy")
             self.assertEqual(record["agent_name"], "snikk")

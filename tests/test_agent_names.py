@@ -110,7 +110,7 @@ class AgentNameTests(unittest.TestCase):
                                 (["run", "shell", "--name", "builder-2"], "builder-2"),
                                 (["run", "shell"], None)]:
             ui = Terminal([str(d.app), "--state-dir", str(d.state), *args]); self.addCleanup(ui.close)
-            ui.expect("workspace[>#]")
+            ui.expect("[>#]")
             listing = subprocess.check_output([str(d.app), "--state-dir", str(d.state), "list"], text=True)
             record = next(r for r in json.loads(listing) if r["state"] == "running")
             self.assertEqual(record["name"], "shell")

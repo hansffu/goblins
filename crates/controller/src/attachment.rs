@@ -70,7 +70,7 @@ pub fn run(
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let launch=control.call("sessions.start",json!({"key":key,"configuration":configuration,"name":name,"agent_name":agent_name,"rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}))?;
+    let launch=control.call("sessions.start",json!({"key":key,"configuration":configuration,"name":name,"agent_name":agent_name,"cwd":std::env::current_dir()?,"rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}))?;
     let session = launch["session"].as_str().ok_or("missing session ID")?;
     let mut terminal =
         UnixStream::connect(launch["terminal"].as_str().ok_or("missing terminal path")?)?;

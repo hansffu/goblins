@@ -293,8 +293,14 @@ a second daemon taking over that instance. Host and terminal sockets stay
 outside sandbox startup binds; all session resources are beneath this protected
 tree, including sessions created later.
 
-By default workspaces are empty. To create a separate disposable copy for every
-launch, start the daemon with:
+=goblins run= preserves the calling terminal's working directory and binds it
+read/write at the same path, including its nested files and directories. Changes
+are visible on the host and in the sandbox. Each launch supplies its own directory,
+independently of where the daemon started. Protected controller paths cannot be
+exposed this way.
+
+To use a separate disposable copy at =/workspace= for every launch instead,
+start the daemon with:
 
 #+begin_src sh
 goblins server start --workspace /path/to/repository

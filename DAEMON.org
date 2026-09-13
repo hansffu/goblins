@@ -522,8 +522,12 @@ These choices settle the open details for API 1 before implementation.
   Only ready is client exit 0; denial/failure is 1; invalid/missing/interrupted
   replies are unknown outcome, exit 2, without retry.
 - IDs contain a random 128-bit daemon instance prefix and monotonic counters.
-  =sessions.start {key,configuration,name,agent_name?,rows,cols}= requires an absolute
-  trusted manifest path and a caller-generated identifier =key=. Repeating
+  =sessions.start {key,configuration,name,agent_name?,cwd?,rows,cols}= requires an absolute
+  trusted manifest path and a caller-generated identifier =key=. Optional =cwd=
+  is an absolute host directory, bound read/write at the same path and used as
+  the shell working directory. The CLI supplies it for each run. Omitting it
+  retains the legacy =/workspace= behavior; an explicit daemon =--workspace=
+  overrides it with a disposable snapshot. Repeating
   an identical key/params returns the original session ID; changed params
   conflict. Keep at most 4096 launch keys for the daemon lifetime, then reject
   new launches; never silently reuse an expired key. Manifests carry
