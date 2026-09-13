@@ -259,3 +259,55 @@ returns. Borders are square and blue; the OneDark option has been removed.
 The host worker supplies cancellable package availability and transfer-size
 previews. This is a frontend expansion; one active sandbox, sequential grants
 and controller-owned lifetime remain. Restart recovery is still out of scope.
+
+* Deferred review findings: daemon and communication rewrite
+
+Decision on 2026-09-13: defer the three confirmed review findings to the daemon
+and communication rewrite. Do not patch the temporary implementation now.
+These are accepted known defects, not resolved findings. Controller restart
+recovery remains out of scope, including during the daemon work unless the user
+explicitly changes that requirement.
+
+Review baseline: =c2a9d42..3f7d623780f94247c75d2818225ba19f47e8dd8d=.
+The independent review reported passing 10 Rust unit tests, 17 black-box tests,
+formatting, Clippy, production build, flake evaluation and API/packaging checks.
+It did not confirm an additional namespace escape; this is not a security audit
+certification. The following focused reproductions demonstrated uncovered bugs.
+
+** TODO Bind approval input to the request actually presented (P1)
+
+Queued terminal input for an old request can authorize a replacement request:
+the frontend replaces pending state before consuming the queued input and gives
+that input the new request's approval token. The review reproduced an approval
+for =tree= after =hello= was the displayed request when input was queued.
+See [[file:crates/controller/src/tui.rs][the TUI event loop and approval handling]].
+
+Daemon/frontend acceptance criterion: decisions identify an immutable pending
+request/generation; withdrawn, superseded, stale or duplicate decisions cannot
+approve a successor. The frontend must also prevent old queued input from being
+relabelled with a new token. Reproduce replacement/disconnect plus queued input
+in a regression test. This approval-boundary issue has priority over UI polish.
+
+** TODO Drain buffered terminal output before reporting completion (P2)
+
+PTY EOF/EIO currently completes attachment teardown while output remains queued.
+The review's slow-reader reproduction delivered 16,384 of 50,000 bytes, lost the
+final marker and exited successfully. A short configured command also lost its
+output. See [[file:crates/controller/src/attachment.rs][the PTY attachment relay]].
+
+Daemon/attachment acceptance criterion: separate process exit, PTY EOF and client
+output completion. Drain already-buffered bytes before normal completion, handle
+backpressure, and deliver the final marker reliably in an exit-with-output test.
+Do not require reconnection or controller restart recovery to satisfy this.
+
+** TODO Recognize disconnect despite unread trailing bytes (P2)
+
+The pending-request connection uses =MSG_PEEK= to detect EOF but never consumes
+extra data. Sending one extra byte after a valid request and then closing hides
+the disconnect, retaining the abandoned request/preview and blocking the next
+request. See [[file:crates/controller/src/unix.rs][socket disconnect detection]] and
+[[file:crates/controller/src/controller.rs][pending-request lifecycle]].
+
+Daemon/protocol acceptance criterion: reject unexpected trailing input or detect
+hangup despite unread data; cancel abandoned pending requests/previews and allow
+subsequent requests. Add a valid-frame + trailing-byte + close regression test.
