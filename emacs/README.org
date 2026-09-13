@@ -21,7 +21,14 @@ The server uses this buffer's state directory and starts from its
 =default-directory=, just like running the CLI from that directory.
 Set =goblins-executable= to the packaged binary's absolute path if =goblins=
 is not on Emacs' =exec-path=.
-Launch agents with =goblins run shell= as usual. The buffer updates automatically
+Use =M-x goblins-run= (or =R= in status) to choose from your Nix-configured
+goblins with completion and launch one in a new Ghostel buffer.
+Pressing Enter without typing selects the default shown in the prompt.
+Requires your installed Ghostel package with =ghostel-exec= and its native module; Goblins
+never downloads the module. Rebuild the Goblins CLI from this checkout first,
+since this uses the new =configurations= and =attach= commands.
+
+The buffer updates automatically
 and includes agents, pending requests, and collapsible recent request history.
 Agent and pending-request headings are visible with their details collapsed
 by default. Request history and its entries are fully collapsed by default.
@@ -32,8 +39,10 @@ to see its reason and preview. Live updates preserve your folding choices.
 |-----+--------|
 | =s= | Start the server and connect |
 | =S= | Stop the server and all agents |
+| =R= | Choose and launch a goblin in Ghostel |
 | =n= / =p= | Next / previous section |
-| =TAB= or =RET= | Expand / collapse section |
+| =TAB= | Expand / collapse section |
+| =RET= | Open an agent's Ghostel buffer; toggle other sections |
 | =a= | Accept the pending request at point |
 | =d= | Deny the pending request at point |
 | =g= or =r= | Reconnect and refresh |
@@ -45,9 +54,11 @@ When Evil is enabled, the buffer starts in normal state with dedicated bindings:
 |----------+--------|
 | =s= | Start the server and connect |
 | =S= | Stop the server and all agents |
+| =R= | Choose and launch a goblin in Ghostel |
 | =j= / =k= | Next / previous section |
 | =h= / =l= | Collapse / expand section |
-| =TAB=, =RET= or =za= | Toggle section |
+| =TAB= or =za= | Toggle section |
+| =RET= | Open an agent's Ghostel buffer; toggle other sections |
 | =a= / =d= | Accept / deny the pending request at point |
 | =gr= or =r= | Reconnect and refresh |
 | =gg= / =G= | Beginning / end of buffer |
@@ -55,6 +66,17 @@ When Evil is enabled, the buffer starts in normal state with dedicated bindings:
 
 Evil support works with either package load order and changes only this mode's
 bindings. Evil is optional and is never installed or enabled globally by Goblins.
+
+Launches use the calling buffer's =default-directory=. Each launch gets a new
+agent name from the daemon and a separate Ghostel buffer, even for the same
+configuration. Status marks linked agents with =[RET: terminal]=. Links use
+the daemon instance and immutable session ID and live only in this Emacs
+process. Closing/reopening status preserves them; killing the terminal buffer
+removes the link. Terminal buffers stay available after process exit until you
+close them. Agents started outside =goblins-run= have no terminal link, and
+there is no adoption or terminal replay after a buffer is killed.
+Goblins terminals keep their local launch directory in Emacs; namespace-local
+shell directory reports are not interpreted as SSH hosts or host paths.
 
 Acceptance starts provisioning; the request moves to recent history and its
 state continues updating until ready or failed. Decisions always use the exact
@@ -84,9 +106,8 @@ emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
 
-The Python integration tests start, stop and restart an isolated server from the buffer and
-use the existing daemon test harness to create two
-isolated agents, accepts and denies actual package requests through Emacs,
-reconnects, and checks that closing Emacs leaves the agents running. It skips
-when Emacs or =magit-section= is unavailable. These commands use =-Q= and do not
+The Python integration tests exercise server start/stop/restart, real approvals,
+and two simultaneous Ghostel launches with working-directory input and status
+links. They skip when Emacs or =magit-section= is unavailable; the Ghostel test
+also requires its installed native module. These commands use =-Q= and do not
 load your init file or install Emacs packages.

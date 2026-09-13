@@ -41,6 +41,15 @@ pub enum Command {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
     },
+    /// Print configured goblin names and their manifest as JSON (no server needed)
+    Configurations,
+    /// Consume a session's terminal stream (only before any previous attachment)
+    Attach {
+        session: String,
+        /// Require this daemon instance, as returned by initialize
+        #[arg(long)]
+        instance: String,
+    },
     /// List agent names, session IDs, configurations and lifecycle state
     List,
     /// Stop one agent by live name or immutable session ID

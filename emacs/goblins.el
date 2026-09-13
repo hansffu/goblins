@@ -17,6 +17,9 @@
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
+(defvar ghostel-kill-buffer-on-exit)
+(defvar ghostel-identity)
 
 (defgroup goblins nil "Goblins agent status and approvals." :group 'tools)
 
@@ -39,6 +42,10 @@ Set this to the directory passed to `goblins --state-dir'."
 (defvar-local goblins--snapshot nil)
 (defvar-local goblins--notice "Disconnected; s start server, r reconnect")
 (defvar-local goblins--decisions nil)
+(defvar goblins--terminal-buffers (make-hash-table :test #'equal)
+  "Emacs-only mapping from (directory instance session) to Ghostel buffers.")
+(defvar-local goblins--session-key nil)
+(defvar goblins-run-history nil)
 
 (defclass goblins-section (magit-section) ())
 (defclass goblins-agent-section (goblins-section) ())
@@ -108,10 +115,12 @@ Set this to the directory passed to `goblins --state-dir'."
         (dolist (agent sessions)
           (magit-insert-section (goblins-agent-section (plist-get agent :id) t)
             (magit-insert-heading
-              (format "  %-20s %-12s %s"
+              (format "  %-20s %-12s %s%s"
                       (goblins--safe (plist-get agent :agent_name))
                       (goblins--safe (plist-get agent :state))
-                      (goblins--safe (plist-get agent :name))))
+                      (goblins--safe (plist-get agent :name))
+                      (if (goblins--terminal-buffer (plist-get agent :id))
+                          "  [RET: terminal]" "")))
             (goblins--field "Session:" (plist-get agent :id))
             (goblins--field "Startup:" (string-join (append (plist-get agent :initial_packages) nil) ", "))
             (goblins--field "Granted:" (string-join (append (plist-get agent :packages) nil) ", "))
@@ -353,6 +362,125 @@ Set this to the directory passed to `goblins --state-dir'."
   (interactive)
   (quit-window t))
 
+(defun goblins--terminal-buffer (session)
+  (let ((buffer (gethash (list goblins--directory goblins--instance session)
+                         goblins--terminal-buffers)))
+    (and (buffer-live-p buffer) buffer)))
+
+(defun goblins--render-status-buffers ()
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (derived-mode-p 'goblins-status-mode) (goblins--render)))))
+
+(defun goblins--forget-terminal ()
+  (remhash goblins--session-key goblins--terminal-buffers)
+  (goblins--render-status-buffers))
+
+(defun goblins--ghostel-directory (function directory)
+  "Keep namespace-local DIRECTORY reports out of host directory tracking."
+  ;; The sandbox's hostname is not an SSH destination, and /workspace need
+  ;; not correspond to a host path.  Leave ordinary Ghostel buffers alone.
+  (unless (eq (alist-get 'kind ghostel-identity) 'goblins)
+    (funcall function directory)))
+
+(with-eval-after-load 'ghostel
+  (advice-add 'ghostel--update-directory :around #'goblins--ghostel-directory))
+
+(defun goblins-visit ()
+  "Open the Emacs-launched agent at point, or toggle another section."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (if (and section (object-of-class-p section 'goblins-agent-section))
+        (if-let* ((buffer (goblins--terminal-buffer (oref section value))))
+            (pop-to-buffer buffer)
+          (user-error "No Emacs terminal for this agent; launch with M-x goblins-run"))
+      (magit-section-toggle section))))
+
+(defun goblins--configurations ()
+  "Read current configuration names and manifest from the packaged CLI."
+  (with-temp-buffer
+    (let ((code (process-file goblins-executable nil t nil "configurations")))
+      (unless (eq code 0)
+        (user-error "Cannot list goblins: %s" (string-trim (buffer-string))))
+      (goto-char (point-min))
+      (let ((value (json-parse-buffer :object-type 'plist :array-type 'list)))
+        (unless (and (stringp (plist-get value :configuration))
+                     (file-name-absolute-p (plist-get value :configuration))
+                     (consp (plist-get value :names))
+                     (cl-every #'stringp (plist-get value :names)))
+          (user-error "Invalid Goblins configuration list"))
+        value))))
+
+(defun goblins--read-configuration (names)
+  "Choose from NAMES, using the displayed default for empty input."
+  (let* ((default (car names))
+         (selected (completing-read (format "Run goblin (default %s): " default)
+                                    names nil t nil 'goblins-run-history default))
+         (name (if (string-empty-p selected) default selected)))
+    (unless (member name names)
+      (user-error "Select a configured goblin"))
+    name))
+
+;;;###autoload
+(defun goblins-run ()
+  "Choose a configured goblin and launch it in a new Ghostel buffer.
+Use the current directory and this status buffer's server, or the default
+server outside a status buffer.  Only launches made here are linked by RET."
+  (interactive)
+  (when (file-remote-p default-directory)
+    (user-error "Goblins requires a local working directory"))
+  ;; Require the installed module directly, bypassing Ghostel's auto-download.
+  (unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)
+               (fboundp 'ghostel-exec))
+    (user-error "goblins-run requires installed Ghostel with its native module"))
+  (let* ((cwd (expand-file-name default-directory))
+         (directory (or goblins--directory goblins-state-directory
+                        (goblins--default-directory)))
+         (executable goblins-executable)
+         (configs (goblins--configurations))
+         (name (goblins--read-configuration (plist-get configs :names))))
+    (goblins-status directory)
+    (let ((deadline (+ (float-time) 3)))
+      (while (and goblins--connection (not goblins--subscription)
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.01)))
+    (unless goblins--subscription
+      (user-error "Server disconnected; press s to start, then R to run"))
+    (let* ((connection goblins--connection)
+           (instance goblins--instance)
+           (launch (jsonrpc-request
+                    connection 'sessions.start
+                    (list :key (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid))))
+                          :name name :configuration (plist-get configs :configuration)
+                          :cwd cwd :rows 24 :cols 80)
+                    :timeout 3))
+           (session (plist-get launch :session))
+           (key (list goblins--directory instance session))
+           (buffer (generate-new-buffer
+                    (format "*Goblin: %s*" (plist-get launch :agent_name)))))
+      (condition-case err
+          (progn
+            (with-current-buffer buffer (setq default-directory cwd))
+            (pop-to-buffer buffer)
+            (let ((ghostel-kill-buffer-on-exit nil))
+              (ghostel-exec buffer executable
+                            (list "--state-dir" (car key) "attach" session
+                                  "--instance" instance)
+                            `((kind . goblins) (session . ,session) (instance . ,instance))))
+            (with-current-buffer buffer
+              (setq-local goblins--session-key key)
+              (setq-local goblins--directory (car key))
+              (setq-local ghostel-kill-buffer-on-exit nil)
+              (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
+            (puthash key buffer goblins--terminal-buffers)
+            (goblins--render-status-buffers)
+            buffer)
+        (error
+         (when (buffer-live-p buffer) (kill-buffer buffer))
+         (ignore-errors
+           (jsonrpc-request connection 'sessions.stop (list :session session) :timeout 3))
+         (signal (car err) (cdr err)))))))
+
 (defvar goblins-status-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
@@ -360,10 +488,11 @@ Set this to the directory passed to `goblins --state-dir'."
     (define-key map (kbd "r") #'goblins-refresh)
     (define-key map (kbd "s") #'goblins-start-server)
     (define-key map (kbd "S") #'goblins-stop-server)
+    (define-key map (kbd "R") #'goblins-run)
     (define-key map (kbd "a") #'goblins-accept)
     (define-key map (kbd "d") #'goblins-deny)
     (define-key map (kbd "q") #'goblins-quit)
-    (define-key map (kbd "RET") #'magit-section-toggle)
+    (define-key map (kbd "RET") #'goblins-visit)
     map))
 
 ;; Keep Evil optional and support either package load order.  These bindings
@@ -377,7 +506,7 @@ Set this to the directory passed to `goblins --state-dir'."
     (kbd "l") #'magit-section-show
     (kbd "TAB") #'magit-section-toggle
     (kbd "<tab>") #'magit-section-toggle
-    (kbd "RET") #'magit-section-toggle
+    (kbd "RET") #'goblins-visit
     (kbd "za") #'magit-section-toggle
     (kbd "a") #'goblins-accept
     (kbd "d") #'goblins-deny
@@ -385,6 +514,7 @@ Set this to the directory passed to `goblins --state-dir'."
     (kbd "gr") #'goblins-refresh
     (kbd "s") #'goblins-start-server
     (kbd "S") #'goblins-stop-server
+    (kbd "R") #'goblins-run
     (kbd "q") #'goblins-quit))
 
 (define-derived-mode goblins-status-mode magit-section-mode "Goblins"
@@ -394,8 +524,8 @@ Use \[goblins-accept] to accept and \[goblins-deny] to deny.
 Use \[goblins-refresh] to reconnect."
   (setq-local header-line-format
               '(:eval (if (bound-and-true-p evil-local-mode)
-                          " s start   S stop server   a accept   d deny   TAB fold   j/k navigate   gr refresh   q quit"
-                        " s start   S stop server   a accept   d deny   TAB fold   n/p navigate   g refresh   q quit")))
+                          " R run   RET terminal   s/S server   a/d decide   TAB fold   j/k navigate   gr refresh   q quit"
+                        " R run   RET terminal   s/S server   a/d decide   TAB fold   n/p navigate   g refresh   q quit")))
   (setq-local revert-buffer-function (lambda (&rest _) (goblins-refresh)))
   (add-hook 'kill-buffer-hook #'goblins--disconnect nil t))
 

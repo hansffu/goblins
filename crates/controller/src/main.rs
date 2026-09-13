@@ -106,6 +106,22 @@ fn execute(cli: Cli) -> Result<i32> {
             }
             return attachment::run(state, config, configuration, name);
         }
+        Command::Configurations => {
+            let runtime = cli
+                .runtime
+                .ok_or("configurations requires --runtime (use the Nix-built goblins command)")?;
+            let manifest = Manifest::read(&runtime)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "configuration": fs::canonicalize(runtime)?,
+                    "names": manifest.goblins.keys().collect::<Vec<_>>()
+                })
+            );
+        }
+        Command::Attach { session, instance } => {
+            return attachment::attach(state, session, instance);
+        }
         Command::Completions { shell } => cli::completions(shell, cli.runtime.as_deref())?,
     }
     Ok(0)

@@ -99,6 +99,8 @@ Closing the TUI leaves agents running. Use =goblins stop snikk= for one agent or
 
 For Emacs, load [[file:emacs/goblins.el][goblins.el]] and run =M-x goblins-status= for a Magit-style
 buffer with live agent/request sections and =a=/=d= accept/deny actions.
+Use =M-x goblins-run= to choose a configuration and launch it in Ghostel;
+=RET= on its status entry opens that terminal buffer.
 See [[file:emacs/README.org][Emacs setup and keys]]; it uses your existing =magit-section= package.
 
 ** Try without installing

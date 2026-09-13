@@ -1,6 +1,8 @@
 //! Host terminal relay; receives only a PTY master from the controller.
 use crate::{RESIZE, STOP};
+use goblins_controller::host::Client;
 use goblins_controller::{Result, unix};
+use serde_json::json;
 use std::{
     io,
     os::fd::{AsRawFd, RawFd},
@@ -56,12 +58,7 @@ pub fn run(
     configuration: String,
     agent_name: Option<String>,
 ) -> Result<i32> {
-    use goblins_controller::host::Client;
-    use serde_json::json;
-    use std::{
-        io::{Read, Write},
-        os::unix::net::UnixStream,
-    };
+    use std::io::Read;
     if unsafe { libc::isatty(0) != 1 } {
         return Err("goblins run requires terminal input".into());
     }
@@ -72,8 +69,41 @@ pub fn run(
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let launch=control.call("sessions.start",json!({"key":key,"configuration":configuration,"name":name,"agent_name":agent_name,"cwd":std::env::current_dir()?,"rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}))?;
     let session = launch["session"].as_str().ok_or("missing session ID")?;
-    let mut terminal =
-        UnixStream::connect(launch["terminal"].as_str().ok_or("missing terminal path")?)?;
+    relay(
+        control,
+        session,
+        launch["terminal"].as_str().ok_or("missing terminal path")?,
+    )
+}
+
+pub fn attach(state: PathBuf, session: String, instance: String) -> Result<i32> {
+    if unsafe { libc::isatty(0) != 1 } {
+        return Err("goblins attach requires terminal input".into());
+    }
+    let mut control = Client::connect(&state)?;
+    if control.instance != instance {
+        return Err("daemon instance changed; cannot attach".into());
+    }
+    let record = control.call("sessions.get", json!({"session":session}))?;
+    // Do not resolve reusable agent names for an editor's retained identity.
+    if record["id"] != session || record["terminal_interrupted"] == true {
+        return Err("session identity mismatch or terminal already disconnected".into());
+    }
+    // Apply the Ghostel window's actual dimensions once the PTY is ready.
+    RESIZE.store(true, Ordering::Relaxed);
+    relay(
+        control,
+        &session,
+        record["terminal"].as_str().ok_or("missing terminal path")?,
+    )
+}
+
+fn relay(mut control: Client, session: &str, path: &str) -> Result<i32> {
+    use std::{
+        io::{Read, Write},
+        os::unix::net::UnixStream,
+    };
+    let mut terminal = UnixStream::connect(path)?;
     terminal.set_nonblocking(true)?;
     let _mode = TerminalMode::raw()?;
     let _output_flags = NonblockingOutput::new()?;

@@ -369,6 +369,11 @@ open_tree, mount_setattr, move_mount, close_range and namespace ownership ioctls
 are required. Grants are additive; mount/publication failure kills the affected
 session without claiming rollback. Stopping owned Nix clients does not cancel
 shared host Nix daemon work. Unresponsive filesystem/kernel calls may delay
-cleanup. No terminal multiplexing, attach/detach management, projects, Emacs
-integration, live file/network grants or daemon restart recovery is provided.
+cleanup. Emacs status, approvals and Ghostel launches are described in
+[[file:emacs/README.org][the Emacs guide]]. The =configurations= command prints the current manifest
+path and configured names as JSON without contacting a server. Editor launches
+use =attach SESSION --instance INSTANCE= to consume a newly created session's
+terminal stream; it requires exact IDs and does not provide reattachment or replay.
+No terminal multiplexing, attach/detach management, projects, live file/network
+grants or daemon restart recovery is provided.
 See [[file:RESULTS.org][RESULTS.org]] for measured evidence and limitations.

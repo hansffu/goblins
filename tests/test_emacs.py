@@ -1,5 +1,6 @@
 """Emacs approvals against the real daemon; never loads the user's init file."""
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
@@ -67,6 +68,30 @@ class EmacsTests(unittest.TestCase):
         self.assertEqual(receive(peers[1].peer)["result"]["status"], "denied")
         for agent in agents:
             self.assertEqual(daemon.get(agent["session"])["state"], "running")
+
+    def test_run_in_ghostel_and_visit_from_status(self):
+        available = subprocess.run(
+            ["emacs", "--batch", "-Q", "--eval",
+             '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
+            capture_output=True, timeout=10,
+        )
+        if available.returncode:
+            self.skipTest("Ghostel and its native module are not installed")
+        daemon = Daemon()
+        self.addCleanup(daemon.close)
+        external = daemon.start()
+        with tempfile.TemporaryDirectory(prefix="ge-workspace-") as workspace:
+            result = subprocess.run(
+                ["emacs", "--batch", "-Q", "-L", str(ROOT / "emacs"),
+                 "-l", "goblins-tests", "-f", "goblins-test-run-live"],
+                env={**os.environ, "GOBLINS_APP": str(daemon.app),
+                     "GOBLINS_TEST_STATE": str(daemon.state),
+                     "GOBLINS_TEST_WORKSPACE": workspace,
+                     "GOBLINS_TEST_EXTERNAL": external["session"]},
+                capture_output=True, text=True, timeout=90,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((Path(workspace) / "emacs-launch.txt").read_text(), "ghostel-run-ok")
 
 
 if __name__ == "__main__":
