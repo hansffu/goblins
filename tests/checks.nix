@@ -94,6 +94,25 @@ in
       touch $out
     '';
   named-goblins = configured;
+  cli-completions =
+    pkgs.runCommand "goblins-cli-completions"
+      {
+        nativeBuildInputs = [
+          pkgs.bash
+          pkgs.fish
+          pkgs.zsh
+          pkgs.gnugrep
+        ];
+      }
+      ''
+        bash -n ${configured}/share/bash-completion/completions/goblins
+        zsh -n ${configured}/share/zsh/site-functions/_goblins
+        fish --no-config -c 'source ${configured}/share/fish/vendor_completions.d/goblins.fish; complete -C "goblins run "' > candidates
+        grep -q fishy candidates
+        grep -q utility candidates
+        touch $out
+      '';
+
   updated-goblins =
     let
       changed = mkGoblin (

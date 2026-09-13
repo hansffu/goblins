@@ -21,19 +21,24 @@ From this worktree:
 
 #+begin_src sh
 nix build path:.#goblins
-./result/bin/goblins daemon
+./result/bin/goblins server start
 #+end_src
 
-In a second terminal, run =./result/bin/goblins serve= for approvals. In further
+Run =./result/bin/goblins serve= for approvals. In further
 terminals run =./result/bin/goblins run shell=. Inside Fish, request
-=goblins request-package cowsay=, type =approve TOKEN= with the displayed token
-in the serve terminal, then run
-=cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
+=goblins request-package cowsay=, approve the request in the serve terminal,
+then run =cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
 revision; package grants do not restart the shell.
 
 Alternatively, =nix run path:. -- serve= and =nix run path:. -- run shell= run the
 default app, and =nix develop path:.= puts =goblins= and build tools on PATH.
 The explicit =path:.= also includes uncommitted source files.
+
+=server start= runs in the background. Use =goblins server status=,
+=goblins server logs= and =goblins server stop= to inspect its state/output or
+stop it and its agents. =goblins --help= and =goblins help COMMAND= describe the
+CLI. Nix packages install Fish, Bash and Zsh completions, including configured
+=run= names; =goblins completions SHELL= prints a script for manual setup.
 
 See [[file:USAGE.org][the runnable demo]] and
 [[file:RESULTS.org][the experiment results]].
@@ -72,16 +77,16 @@ in {
 }
 #+end_src
 
-Here =goblins= is this flake input. Build =.#goblins=, start its =goblins daemon=
-in one terminal, then use =goblins run shell= or =goblins run bash= in another.
+Here =goblins= is this flake input. Build =.#goblins=, start it with
+=goblins server start=, then use =goblins run shell= or =goblins run bash=.
 The configured name selects a reusable sandbox configuration; =binName= selects
 its executable. Give each launch its own agent name with
-=goblins run shell --name snikk= (or =goblins shell --name snikk=).
+=goblins run shell --name snikk=.
 Without =--name=, the daemon chooses an available fantasy goblin name from the
 checked-in list. =goblins list= shows both identities; =goblins stop snikk= stops
 the live agent. Session IDs remain authoritative, including for history and
 approvals. See [[file:USAGE.org::*Agent names][agent naming and reuse rules]].
-The daemon supports simultaneous goblins with independent requests and grants. =goblins shell= remains an alias for =goblins run shell=.
+The daemon supports simultaneous goblins with independent requests and grants.
 
 After changing a definition, rebuild and invoke the new package's =goblins run=.
 Its host client sends the new manifest path to the running server, which loads

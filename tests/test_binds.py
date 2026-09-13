@@ -29,7 +29,7 @@ class BindTests(unittest.TestCase):
             server = Daemon(app, env={**os.environ, "HOME": str(home)})
             self.addCleanup(server.close)
             state = server.state
-            client = Terminal([str(app), "--state-dir", str(state), "shell"])
+            client = Terminal([str(app), "--state-dir", str(state), "run", "shell"])
             self.addCleanup(client.close)
             client.expect("workspace[>#]")
             client.send("printf 'CONFIG=%s\\n' $GOBLIN_FISH_CONFIG; config_probe; echo forbidden > $HOME/.config/fish/new-file; printf 'CONFIG_RO=%s\\n' $status\n")

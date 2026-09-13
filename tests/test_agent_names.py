@@ -102,11 +102,11 @@ class AgentNameTests(unittest.TestCase):
             d.decide(permission, True)
         self.assertEqual(d.rpc.call("permissions.get", {"request": current["id"]})["state"], "pending")
 
-    def test_cli_shell_run_list_and_stop_by_name_or_id(self):
+    def test_cli_run_list_and_stop_by_name_or_id(self):
         d = self.d
-        for args, requested in [(["shell", "--name", "scout"], "scout"),
+        for args, requested in [(["run", "shell", "--name", "scout"], "scout"),
                                 (["run", "shell", "--name", "builder-2"], "builder-2"),
-                                (["shell"], None)]:
+                                (["run", "shell"], None)]:
             ui = Terminal([str(d.app), "--state-dir", str(d.state), *args]); self.addCleanup(ui.close)
             ui.expect("workspace[>#]")
             listing = subprocess.check_output([str(d.app), "--state-dir", str(d.state), "list"], text=True)
@@ -121,7 +121,7 @@ class AgentNameTests(unittest.TestCase):
             stopped = subprocess.check_output([str(d.app), "--state-dir", str(d.state), "stop", target], text=True)
             self.assertEqual(json.loads(stopped), {"accepted": True})
             d.wait(lambda: d.get(record["id"])["state"] == "stopped")
-        for args in [["list", "--name", "bad"], ["shell", "--name"], ["run", "shell", "--name", "a", "--name", "b"]]:
+        for args in [["list", "--name", "bad"], ["run", "shell", "--name"], ["run", "shell", "--name", "a", "--name", "b"]]:
             result = subprocess.run([str(d.app), "--state-dir", str(d.state), *args], capture_output=True)
             self.assertNotEqual(result.returncode, 0)
 

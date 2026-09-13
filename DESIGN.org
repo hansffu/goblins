@@ -3,7 +3,7 @@
 * Ownership and concurrency
 
 The ordinary-user Rust daemon owns session records, permission identities,
-decisions, grant outcomes, PTYs and lifecycle. =goblins daemon= has no terminal
+decisions, grant outcomes, PTYs and lifecycle. =goblins server start= has no terminal
 frontend dependency. =serve= and =serve --plain= are host API clients; =run NAME=
 starts a session through that same API and consumes its separate raw terminal
 stream. Closing any or all frontends leaves sessions alive. Reconnecting to the
@@ -270,3 +270,15 @@ records copying it at creation so later eviction or reuse cannot relabel history
 Only trusted host get/stop permit a live-name selector. Decisions, permission
 filters, resize and sandbox endpoint authority continue using immutable IDs.
 See [[file:DAEMON.org::*Agent naming extension (API 1)][the API contract]] and [[file:USAGE.org::*Agent names][usage rules]].
+
+* Server process management
+
+The host CLI starts the server in its own POSIX session with output redirected
+to a private append-only log file. Start readiness uses host initialization;
+stop uses the host-only =server.stop= RPC and then waits for the daemon lock
+through cleanup. No reusable PID file is used as shutdown authority. The same
+=server start --foreground= entry point supports supervised/terminal execution.
+A separate management lock serializes background start/stop operations without
+replacing the daemon's exclusive lifetime lock. Logs and status are inspection
+commands; neither creates a server. Help and completion use a shared Clap command
+tree; completion configuration keys come from the package's manifest.

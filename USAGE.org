@@ -7,11 +7,12 @@ Build from the repository root:
 #+begin_src sh
 nix build --out-link result-goblins path:.#goblins
 export PATH="$PWD/result-goblins/bin:$PATH"
-goblins daemon
+goblins server start
 #+end_src
 
-The ordinary-user daemon runs headlessly until signalled. No service or automatic
-background launch is installed. In another host terminal start the approval view:
+The ordinary-user server starts in the background and survives closing this
+terminal. Repeating =server start= leaves the existing server and its environment
+unchanged. Open the approval view:
 
 #+begin_src sh
 goblins serve
@@ -25,7 +26,7 @@ goblins run shell
 #+end_src
 
 Each run creates an independent interactive Fish sandbox, with commonTools from
-the pinned agent-sandbox input. =goblins shell= is an alias for =run shell=.
+the pinned agent-sandbox input. Use =run shell= to select the shell configuration.
 Inside Fish:
 
 #+begin_src fish
@@ -60,6 +61,68 @@ successful grant. Package names are bounded nixpkgs attributes, including
 are rejected. Host Nix chooses the bin output when available, otherwise default.
 Development setup hooks and unrecorded plugins/data are not activated.
 
+* Server commands, help and completion
+
+#+begin_src sh
+goblins server start                    # background; returns once ready
+goblins server start --workspace /path/to/repository
+goblins server status                   # state, instance ID and live agent count
+goblins server logs                     # print captured stdout/stderr
+goblins server stop                     # stop all agents and wait for cleanup
+goblins server start --foreground       # optional terminal/supervisor mode
+
+goblins                                 # help menu
+goblins --help
+goblins help run
+goblins server start --help
+#+end_src
+
+=server start= inherits this process's environment and working directory. Startup
+bind variables use that environment; =--workspace= chooses the per-agent snapshot
+source. Options on a repeated start do not change an existing server. Stop and
+start again to change its environment/workspace. There is no service installation,
+automatic restart or session recovery. =goblins shell= and =goblins daemon= are
+not commands; use =goblins run shell= and =goblins server start=.
+
+The background server writes stdout/stderr to the private =STATE/server.log=,
+appending across starts. =server logs= prints that output once; it does not follow
+the file, summarize permissions or show sandbox terminal output. Foreground mode
+writes to its terminal/supervisor instead. Logs currently contain startup and
+shutdown messages and errors. No log rotation is provided yet.
+
+Start waits up to ten seconds for readiness and reports startup failures with a
+pointer to logs. Stop uses the private host API, stops all agents, and waits up
+to fifteen seconds for the daemon lock to be released. If cleanup takes longer,
+it reports that the stop was accepted but remains incomplete; it does not force
+kill an unrelated process. Start/stop operations are serialized by a private
+management lock; competing operations may report that the lock is held. There
+are no PID files. Repeating stop after shutdown succeeds. =server status= exits
+0 for a responsive server and 1 when stopped, starting/stopping without a
+responsive endpoint, or on an error. Missing-server status/logs do not start it.
+
+Nix packages install completion scripts in the standard Fish, Bash and Zsh
+locations under =share/=. Your shell/profile needs its usual completion loading
+enabled. Scripts complete commands, options, paths and this Nix package's =run=
+configuration keys. For manual installation or one shell session:
+
+#+begin_src fish
+# Fish
+goblins completions fish | source
+#+end_src
+#+begin_src bash
+# Bash
+source <(goblins completions bash)
+#+end_src
+#+begin_src zsh
+# Zsh (after compinit)
+source <(goblins completions zsh)
+#+end_src
+
+Completions come from the same command tree as help and argument validation.
+Generating them reads the selected runtime manifest and does not connect to or
+start the server. Regenerate manually installed scripts after changing Nix
+configuration names. Live session names are not included in these static scripts.
+
 * Agent names
 
 Configuration/preset names and agent names are separate. =run CONFIG= selects a
@@ -67,7 +130,7 @@ reusable Nix definition; =--name NAME= labels that single sandbox session:
 
 #+begin_src sh
 goblins run shell --name snikk
-goblins shell --name scout-2
+goblins run shell --name scout-2
 goblins run shell                  # daemon chooses an available goblin name
 goblins list
 goblins stop snikk
@@ -137,8 +200,7 @@ goblins rpc sessions.get '{"session":"SESSION_ID"}'
 
 Typing =exit= in Fish naturally ends its session. Connected terminal output is
 drained before =run= returns the payload exit code. Broken output delivery or
-daemon death reports failure. To stop the daemon and all its sessions, use Ctrl-C
-in its terminal or send its process SIGTERM. Frontend quit does not stop it.
+daemon death reports failure. Use =goblins server stop= to stop the server and all its sessions. Frontend quit does not stop it.
 
 The fullscreen sandbox overview supports Enter to open package details.
 Escape returns; Up/Down scroll packages when sandboxes have focus.
@@ -232,7 +294,7 @@ By default workspaces are empty. To create a separate disposable copy for every
 launch, start the daemon with:
 
 #+begin_src sh
-goblins daemon --workspace /path/to/repository
+goblins server start --workspace /path/to/repository
 #+end_src
 
 The snapshot omits .git entries, sockets, FIFOs and devices, follows no source

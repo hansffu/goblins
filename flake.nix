@@ -45,6 +45,9 @@
           pkgs.bubblewrap
           pkgs.nix
           pkgs.jq
+          pkgs.bashInteractive
+          pkgs.fish
+          pkgs.zsh
         ];
       };
       # Only validated attributes from this pinned package set are requestable.

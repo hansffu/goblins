@@ -1,6 +1,78 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Server commands, help and shell completion
+
+Follow-up on =feature/agent-names= after =972eefa=. Removed =goblins shell=;
+=goblins run shell= launches with an automatic name unless =--name= is supplied.
+The public daemon interface is =goblins server start/stop/status/logs=, with
+=server start --foreground= available for supervision and tests. =serve= remains
+the approval frontend. Existing naming, immutable identity and Nix configuration
+semantics remain intact.
+
+Background start creates a separate POSIX session, captures stdout/stderr in
+private =STATE/server.log= and waits for host API readiness. Stop uses the
+host-only API and waits for the daemon lock through agent cleanup. There is no
+PID file, service installation, automatic restart or session recovery. Logs
+print captured output once, appending across server starts. Exact timeout and
+concurrency behavior is documented in [[file:USAGE.org::*Server commands, help and completion][USAGE.org]] and
+[[file:DAEMON.org::*Server management and CLI revision][DAEMON.org]].
+
+Clap now supplies parsing and help for every command. =goblins=, =--help= and
+=help COMMAND= expose that command tree. Bash, Fish and Zsh scripts are generated
+with the package's configuration keys and installed in the standard =share/=
+locations. =completions SHELL= provides manual setup. The scripts are static;
+live session names are not completion candidates.
+
+Validation uses production package
+=/nix/store/3agalipzapib8l2jn8ndqx58qd117jki-goblins=, linked at
+=/tmp/goblins-server-cli=. Twenty Rust tests passed (one integration driver
+ignored during normal enumeration), including CLI validation, host-only server
+control, response flushing and rejection of launches after stop acceptance.
+Formatting and workspace/all-target Clippy with warnings denied passed.
+The production Nix build and all 27 flake checks passed, including the new
+installed-completion gate using the =fishy= and =utility= configurations.
+
+The three focused black-box methods passed in 13.889 seconds. They verify
+background lifetime after the launching CLI exits, duplicate start, status with
+two active agents, clean shutdown of both payloads, captured log permissions and
+output across restart, fresh daemon identity/no recovered sessions, symlink log
+rejection, no-start help/status/completion behavior, removed aliases, installed
+script contents, real Fish command/configuration/option completion, real Bash
+configuration completion, and Zsh syntax. The development shell explicitly
+includes the three shells plus Python's =pyte= and =wcwidth= dependency.
+
+The checks caught two implementation issues before completion: the Nix trivial
+wrapper builder does not run =postBuild=, so completion installation now extends
+its actual build command; clap_complete's static Fish generator omits positional
+candidates, so a small Fish positional helper supplies configuration/shell names.
+The initial Bash harness also needed the standard command/current/previous
+arguments when calling its completion function. These were corrected and the
+focused checks rerun successfully. Logs: =/tmp/goblins-server-tests.log= and
+=/tmp/goblins-server-nix-checks.log=.
+
+The full discovery run then passed *all 33 methods in 487.770 seconds* against
+that same final production package, with no failing methods. This includes all
+previous agent-name, bind-race, configuration-rebuild, live-grant, endpoint
+isolation, stale-approval, terminal-drain, startup-resize and responsiveness
+regressions, plus the new managed-server/help/completion methods. Full output:
+=/tmp/goblins-server-full-tests.log=.
+
+#+begin_src sh
+source /tmp/goblins-cargo-env
+cargo test --workspace --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+nix build --out-link /tmp/goblins-server-cli path:.#goblins
+nix flake check path:.
+GOBLINS_APP=/tmp/goblins-server-cli/bin/goblins nix develop path:. \
+  --command python3 -m unittest discover -s tests -p 'test_*.py' -v
+#+end_src
+
+Host socket/Nix/namespace checks used host-access execution. No changes were
+merged or pushed. Earlier sections below retain their historical command names;
+current usage is the server/run interface described above.
+
 * Named agents and sandbox sessions
 
 Implemented on =feature/agent-names= from merged master =db524a9=. The daemon

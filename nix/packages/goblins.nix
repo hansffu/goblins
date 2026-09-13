@@ -35,9 +35,21 @@ let
       ) configurations;
     }
   );
-  package = pkgs.writeShellScriptBin "goblins" ''
-    export PATH=${pkgs.nix}/bin:$PATH
-    exec ${controller}/bin/goblins --runtime ${config} "$@"
-  '';
+  package =
+    (pkgs.writeShellScriptBin "goblins" ''
+      export PATH=${pkgs.nix}/bin:$PATH
+      exec ${controller}/bin/goblins --runtime ${config} "$@"
+    '').overrideAttrs
+      (old: {
+        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.installShellFiles ];
+        buildCommand = old.buildCommand + ''
+          for shell in bash fish zsh; do
+            ${controller}/bin/goblins --runtime ${config} completions "$shell" > "goblins.$shell"
+          done
+          installShellCompletion --bash --name goblins goblins.bash
+          installShellCompletion --fish --name goblins.fish goblins.fish
+          installShellCompletion --zsh --name _goblins goblins.zsh
+        '';
+      });
 in
 package // { inherit config goblins helper; }

@@ -485,9 +485,9 @@ expand this milestone into project management and multiplexing.
 
 These choices settle the open details for API 1 before implementation.
 
-- =goblins daemon= is an explicitly launched ordinary-user headless process.
+- =goblins server start= explicitly starts the ordinary-user headless process in the background.
   =serve= becomes a host API approval frontend; quitting it leaves sessions
-  running. No automatic service installation or daemon start. The daemon's
+  running. No service installation or automatic restart. The daemon's
   inherited environment expands startup bind variables; =--workspace= on the
   daemon selects the snapshot source for every launch. Literal env/args remain
   literal. All session resources live below its protected private state directory,
@@ -668,8 +668,49 @@ derived from its endpoint. Permission =agent_name= is copied from that session
 at request creation, so permission details/events remain intelligible after
 session eviction or reuse without changing immutable decision identities.
 
-The CLI accepts =run CONFIG --name NAME= and =shell --name NAME=; omission uses
+The CLI accepts =run CONFIG --name NAME=; omission uses
 the daemon allocator. List/status, fullscreen session/request views and plain
 permission details display names while session inspection retains configuration
 identity. Renaming, projects, scheduling, multiplexing and restart recovery are
 outside this extension.
+
+** Server management and CLI revision
+
+The public daemon command is =goblins server start/stop/status/logs=. The old
+=daemon= and =shell= commands are removed; =goblins run shell= automatically
+allocates a name unless =--name= is supplied. =serve= remains the approval UI.
+Clap supplies the command tree, per-command help and argument validation;
+clap_complete generates completion scripts, including the selected manifest's
+configuration keys. Nix packages install Bash/Fish/Zsh scripts. Neither help nor
+completion generation requires a server.
+
+=server start= spawns this executable with =server start --foreground= in a new
+POSIX session, stdin closed and stdout/stderr appended to private
+=STATE/server.log=. It inherits environment/cwd; no supervisor, service unit,
+PID file, automatic restart or recovery is introduced. Start waits for host API
+initialization before succeeding, up to ten seconds. A failed/interrupted start
+reaps only its own spawned child. Existing servers are left unchanged.
+
+Host API 1 adds =server.status {}= returning
+={instance,state,sessions}=, with =state= running/stopping and =sessions= the
+live worker count. =server.stop {}= returns ={accepted:true}=, then closes the
+connection and gracefully tears down every agent and the daemon. Host
+initialization advertises =server-control=. These methods are unavailable on
+sandbox endpoints. The daemon flushes the stop acceptance before teardown,
+allowing at most one second for a stalled response queue; a missing reply is
+still an unknown outcome. Once stop is accepted, subsequent host operations
+other than server status/stop are rejected with -32009.
+
+The CLI waits for the daemon lock to be released after stop acceptance, bounded
+at fifteen seconds. Timeout/interruption reports incomplete cleanup without
+forcing any PID. The daemon lock remains held through worker/resource cleanup.
+A separate =server-control.lock= serializes background start/stop clients;
+concurrent callers may receive a lock-held error. Foreground start retains the
+same exclusive daemon lock. =server status= does not equate a stale socket with
+a running server: it initializes on the host endpoint and reports errors from
+unresponsive/incompatible peers. Status/logs do not create missing state.
+
+=server logs= prints captured background stdout/stderr verbatim once. Log writes
+append across starts; symlink/special-file/nonprivate log paths are refused.
+Foreground output goes to its caller. No follow, rotation or sandbox-output
+aggregation is implemented. See [[file:USAGE.org::*Server commands, help and completion][usage and completion setup]].

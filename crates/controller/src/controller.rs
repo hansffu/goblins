@@ -327,6 +327,7 @@ pub struct Controller {
     sessions: BTreeMap<String, Active>,
     permissions: VecDeque<PermissionRecord>,
     launches: BTreeMap<String, (Start, Value)>,
+    shutdown: Option<(u64, Instant)>,
     dirty: bool,
 }
 impl Controller {
@@ -359,6 +360,7 @@ impl Controller {
             sessions: BTreeMap::new(),
             permissions: VecDeque::new(),
             launches: BTreeMap::new(),
+            shutdown: None,
             dirty: false,
         })
     }
@@ -376,6 +378,15 @@ impl Controller {
             sessions: self.sessions.values().map(|s| s.record.clone()).collect(),
             permissions: self.permissions.iter().cloned().collect(),
         }
+    }
+    pub fn shutdown_ready(&self) -> bool {
+        self.shutdown.is_some_and(|(connection, deadline)| {
+            Instant::now() >= deadline
+                || !self
+                    .connections
+                    .iter()
+                    .any(|c| c.id == connection && c.queued != 0)
+        })
     }
     fn publish(&mut self) {
         if !self.dirty {
@@ -516,7 +527,26 @@ impl Controller {
         method: &str,
         value: Value,
     ) -> std::result::Result<Value, Fault> {
+        if self.shutdown.is_some() && !["server.status", "server.stop"].contains(&method) {
+            return Err((-32009, "server is stopping".into()));
+        }
         match method {
+            "server.status" => {
+                let _: Empty = params(value)?;
+                Ok(
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count()}),
+                )
+            }
+            "server.stop" => {
+                let _: Empty = params(value)?;
+                // Flush acceptance before teardown, but a non-reading host
+                // cannot prevent shutdown by holding its response queue full.
+                self.shutdown
+                    .get_or_insert((c.id, Instant::now() + std::time::Duration::from_secs(1)));
+                c.subscription = None;
+                c.close = true;
+                Ok(json!({"accepted":true}))
+            }
             "sessions.list" => {
                 let _: Empty = params(value)?;
                 Ok(json!(self.snapshot().sessions))
@@ -758,7 +788,7 @@ impl Controller {
                     Decoder::new(16384, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names"]}else{vec!["package-grants"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control"]}else{vec!["package-grants"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1384,6 +1414,8 @@ mod tests {
                 .expired(Instant::now() + std::time::Duration::from_secs(4))
         );
         for method in [
+            "server.status",
+            "server.stop",
             "sessions.start",
             "sessions.stop",
             "permissions.decide",
@@ -1406,6 +1438,45 @@ mod tests {
         );
         assert!(c.output.is_empty());
         assert_eq!(d.snapshot().sessions.len(), before);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn server_shutdown_flushes_acceptance_and_rejects_later_work() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        assert_eq!(
+            d.host(&mut c, "server.status", json!({})).unwrap()["state"],
+            "running"
+        );
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(2)),
+                method: "server.stop".into(),
+                params: json!({}),
+            },
+        );
+        assert!(c.queued > 0);
+        d.connections.push(c);
+        assert!(!d.shutdown_ready());
+        let (mut other, _other_peer) = connection(Role::Host);
+        assert_eq!(
+            d.host(&mut other, "sessions.start", launch("late", None))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert!(d.sessions.is_empty());
+        assert_eq!(
+            d.host(&mut other, "server.status", json!({})).unwrap()["state"],
+            "stopping"
+        );
+        d.connections[0].flush();
+        assert!(d.shutdown_ready());
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

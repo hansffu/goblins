@@ -73,7 +73,7 @@ class Daemon:
         self.state = Path(self.temp.name) / "state"
         self.app = application or app()
         self.binary, self.manifest = re.search(r'exec (\S+) --runtime (\S+)', self.app.read_text()).groups()
-        argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "daemon"]
+        argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "server", "start", "--foreground"]
         if workspace:
             argv += ["--workspace", str(workspace)]
         self.process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

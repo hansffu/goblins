@@ -234,7 +234,7 @@ pub fn lock(path: &Path) -> Result<File> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
     cvt(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) })
-        .map_err(|_| "goblins serve is already running")?;
+        .map_err(|_| format!("another Goblins process holds {}", path.display()))?;
     Ok(f)
 }
 pub fn temp_directory() -> Result<PathBuf> {

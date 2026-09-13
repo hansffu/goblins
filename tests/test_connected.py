@@ -12,7 +12,7 @@ class ConnectedTests(unittest.TestCase):
         d = Daemon(); self.addCleanup(d.close)
         ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve", "--plain"]); self.addCleanup(ui.close)
         ui.expect("approval frontend")
-        client = Terminal([str(d.app), "--state-dir", str(d.state), "shell"]); self.addCleanup(client.close)
+        client = Terminal([str(d.app), "--state-dir", str(d.state), "run", "shell"]); self.addCleanup(client.close)
         client.expect("workspace[>#]")
         client.send("printf 'BEFORE=%s\\n' $fish_pid; command -q hello; printf 'ABSENT=%s\\n' $status\n")
         pid = client.expect(r"(?:^|\n)BEFORE=(\d+)\n").group(1)

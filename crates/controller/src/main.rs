@@ -1,9 +1,13 @@
 //! Headless daemon entry point, host API frontends and raw terminal client.
 //! The controller library never opens the approval terminal.
 mod attachment;
+mod cli;
 mod plain;
+mod server;
 mod tui;
-use goblins_controller::{Result, config::Manifest, controller::Controller, host::Client};
+use clap::{CommandFactory, Parser};
+use cli::{Cli, Command, ServerCommand};
+use goblins_controller::{Result, config::Manifest, host::Client};
 use std::{
     fs,
     path::PathBuf,
@@ -26,133 +30,96 @@ fn signals() {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
 }
-fn main() {
-    signals();
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "usage: goblins [--runtime MANIFEST] [--state-dir DIRECTORY] daemon [--workspace DIRECTORY]\n       goblins [--state-dir DIRECTORY] serve [--plain]\n       goblins [--state-dir DIRECTORY] run CONFIG [--name NAME]\n       goblins [--state-dir DIRECTORY] shell [--name NAME]\n       goblins [--state-dir DIRECTORY] list\n       goblins [--state-dir DIRECTORY] stop ID_OR_NAME\n       goblins [--state-dir DIRECTORY] rpc METHOD PARAMS_JSON"
-        );
-        return;
-    }
-    let option = |args: &mut Vec<String>, key: &str| -> Result<Option<String>> {
-        if let Some(i) = args.iter().position(|a| a == key) {
-            args.remove(i);
-            if i == args.len() {
-                return Err(format!("{key} requires a value").into());
-            }
-            Ok(Some(args.remove(i)))
-        } else {
-            Ok(None)
-        }
+fn execute(cli: Cli) -> Result<i32> {
+    let Some(command) = cli.command else {
+        Cli::command().print_help()?;
+        println!();
+        return Ok(0);
     };
-    let execute = || -> Result<i32> {
-        let runtime = option(&mut args, "--runtime")?.map(PathBuf::from);
-        let uid = unsafe { libc::getuid() };
-        let root = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| format!("/run/user/{uid}").into());
-        let default = if root.is_dir() {
+    let uid = unsafe { libc::getuid() };
+    let root = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| format!("/run/user/{uid}").into());
+    let state = cli.state_dir.unwrap_or_else(|| {
+        if root.is_dir() {
             root.join("goblins")
         } else {
             format!("/tmp/goblins-control-{uid}").into()
-        };
-        let state = option(&mut args, "--state-dir")?
-            .map(PathBuf::from)
-            .unwrap_or(default);
-        let agent_name = option(&mut args, "--name")?;
-        if agent_name.is_some() && !args.first().is_some_and(|a| a == "run" || a == "shell") {
-            return Err("--name is only valid with run or shell".into());
         }
-        let workspace = option(&mut args, "--workspace")?.map(PathBuf::from);
-        let plain = if let Some(i) = args.iter().position(|a| a == "--plain") {
-            args.remove(i);
-            true
-        } else {
-            false
-        };
-        if workspace.is_some() && args.first().is_none_or(|a| a != "daemon") {
-            return Err("--workspace is only valid with daemon".into());
-        }
-        if plain && args.first().is_none_or(|a| a != "serve") {
-            return Err("--plain is only valid with serve".into());
-        }
-        match args.as_slice() {
-            [command] if command == "daemon" => {
-                let mut daemon = Controller::new(&state, workspace)?;
-                println!(
-                    "Goblins daemon ready at {}",
-                    state.join("host.sock").display()
-                );
-                while !STOP.load(Ordering::Relaxed) {
-                    daemon.tick()?;
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-            }
-            [command] if command == "serve" => {
-                if workspace.is_some() {
-                    return Err("--workspace belongs to daemon".into());
-                }
-                if plain {
-                    plain::serve(state)?;
+    });
+    match command {
+        Command::Server { command } => match command {
+            ServerCommand::Start {
+                workspace,
+                foreground,
+            } => {
+                if foreground {
+                    server::foreground(&state, workspace)?;
                 } else {
-                    tui::serve(state)?;
+                    server::start(&state, workspace.as_deref())?;
                 }
             }
-            [command] if command == "list" => {
-                println!(
-                    "{}",
-                    Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
-                );
-            }
-            [command, id] if command == "stop" => {
-                println!(
-                    "{}",
-                    Client::connect(&state)?
-                        .call("sessions.stop", serde_json::json!({"session":id}))?
-                );
-            }
-            [command, method, params] if command == "rpc" => {
-                println!(
-                    "{}",
-                    Client::connect(&state)?.call(method, serde_json::from_str(params)?)?
-                );
-            }
-            _ => {
-                let name = match args.as_slice() {
-                    [command] if command == "shell" => "shell",
-                    [command, name] if command == "run" => name,
-                    _ => return Err("expected daemon, serve, run CONFIG [--name NAME], shell, list, stop ID_OR_NAME or rpc METHOD PARAMS_JSON".into()),
-                };
-                let runtime =
-                    runtime.ok_or("run requires --runtime (use the Nix-built goblins command)")?;
-                let configuration = fs::canonicalize(&runtime)?.display().to_string();
-                let manifest = Manifest::read(&runtime)?;
-                if !manifest.goblins.contains_key(name) {
-                    eprintln!(
-                        "goblins: unknown goblin; available: {}",
-                        manifest
-                            .goblins
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                    return Ok(2);
-                }
-                return attachment::run(state, name.into(), configuration, agent_name);
+            ServerCommand::Stop => server::stop(&state)?,
+            ServerCommand::Status => return server::status(&state),
+            ServerCommand::Logs => server::logs(&state)?,
+        },
+        Command::Serve { plain } => {
+            if plain {
+                plain::serve(state)?;
+            } else {
+                tui::serve(state)?;
             }
         }
-        Ok(0)
-    };
-    let mut execute = execute;
-    std::process::exit(match execute() {
+        Command::List => println!(
+            "{}",
+            Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
+        ),
+        Command::Stop { id_or_name } => println!(
+            "{}",
+            Client::connect(&state)?
+                .call("sessions.stop", serde_json::json!({"session":id_or_name}))?
+        ),
+        Command::Rpc {
+            method,
+            params_json,
+        } => println!(
+            "{}",
+            Client::connect(&state)?.call(&method, serde_json::from_str(&params_json)?)?
+        ),
+        Command::Run { config, name } => {
+            let runtime = cli
+                .runtime
+                .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
+            let configuration = fs::canonicalize(&runtime)?.display().to_string();
+            let manifest = Manifest::read(&runtime)?;
+            if !manifest.goblins.contains_key(&config) {
+                return Err(format!(
+                    "unknown configuration '{config}'; available: {}",
+                    manifest
+                        .goblins
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .into());
+            }
+            return attachment::run(state, config, configuration, name);
+        }
+        Command::Completions { shell } => cli::completions(shell, cli.runtime.as_deref())?,
+    }
+    Ok(0)
+}
+fn main() {
+    signals();
+    let code = match execute(Cli::parse()) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("goblins: {e}");
             1
         }
-    });
+    };
+    std::process::exit(code);
 }
 
 #[cfg(test)]

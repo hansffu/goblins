@@ -19,20 +19,35 @@ pub struct Client {
 }
 impl Client {
     pub fn connect(state: &Path) -> Result<Self> {
-        let mut stream = UnixStream::connect(state.join("host.sock"))
-            .map_err(|e| format!("start goblins daemon first: {e}"))?;
+        Self::connect_optional(state)?
+            .ok_or_else(|| "start the server with 'goblins server start' first".into())
+    }
+    /// Absence is distinct from a live endpoint that fails initialization.
+    pub fn connect_optional(state: &Path) -> Result<Option<Self>> {
+        let mut stream = match UnixStream::connect(state.join("host.sock")) {
+            Ok(stream) => stream,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        };
         let init = rpc::exchange(&mut stream, json!(1), "initialize", json!({"api":1}))?;
         if init["api"] != 1 || init["role"] != "host" {
             return Err("incompatible daemon".into());
         }
-        Ok(Self {
+        Ok(Some(Self {
             instance: init["instance"]
                 .as_str()
                 .ok_or("missing daemon identity")?
                 .into(),
             stream,
             next: 1,
-        })
+        }))
     }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
