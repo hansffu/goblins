@@ -24,13 +24,13 @@ nix build path:.#goblins
 ./result/bin/goblins server start
 #+end_src
 
-Run =./result/bin/goblins serve= for approvals. In further
+Run =./result/bin/goblins tui= for approvals. In further
 terminals run =./result/bin/goblins run shell=. Inside Fish, request
-=goblins request-package cowsay=, approve the request in the serve terminal,
+=goblins request-package cowsay=, approve the request in the tui terminal,
 then run =cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
 revision; package grants do not restart the shell.
 
-Alternatively, =nix run path:. -- serve= and =nix run path:. -- run shell= run the
+Alternatively, =nix run path:. -- tui= and =nix run path:. -- run shell= run the
 default app, and =nix develop path:.= puts =goblins= and build tools on PATH.
 The explicit =path:.= also includes uncommitted source files.
 
@@ -121,7 +121,7 @@ package, app, check, and development-shell outputs.
 | =src/main.rs= | Retained single-threaded namespace mount helper |
 | =crates/protocol/= | Bounded request/reply types, validation and deadline |
 | =crates/client/= | Restricted Rust sandbox request executable |
-| =crates/controller/= | Rust session library, event pump, worker and serve/run frontend |
+| =crates/controller/= | Rust session library, event pump, worker and tui/run frontend |
 | =nix/packages/rust.nix= | Shared Rust build derivation with separate package selection |
 | =tests/= | Python black-box payload and terminal tests; Nix checks |
 

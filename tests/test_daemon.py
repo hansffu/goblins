@@ -71,7 +71,7 @@ class DaemonTests(unittest.TestCase):
         d = self.d
         launch = d.start()
         for plain in (True, False):
-            ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve", *(["--plain"] if plain else [])])
+            ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui", *(["--plain"] if plain else [])])
             self.addCleanup(ui.close)
             pa, a = d.pending(launch["session"])
             self.addCleanup(pa.close)

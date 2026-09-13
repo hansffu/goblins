@@ -395,7 +395,7 @@ rather than silently imposing a fixed daemon configuration registry.
 
 Preserve =mkSandbox= startup bind behavior, protected-path checks, exact
 store-backed config targets, literal environment semantics and disposable
-workspace snapshots. Bind variables currently expand in the =serve= process's
+workspace snapshots. Bind variables currently expand in the =tui= process's
 host environment; these are distinct from literal =mkGoblin.env= values. Daemon
 launch/service packaging must explicitly define that environment rather than
 silently changing variable sources. Per-launch workspace selection was not
@@ -424,7 +424,7 @@ that cannot be established by protocol unit tests alone.
 
 ** 2. Extract daemon ownership and multiple sessions
 
-Host the controller independently of =serve='s terminal. Replace the single
+Host the controller independently of =tui='s terminal. Replace the single
 active-session slot with independently controlled sessions and workers/helpers.
 Implement host lifecycle/inspection and the narrow sandbox permission flow.
 Retain cancellation and mount isolation. An explicitly launched headless
@@ -486,7 +486,7 @@ expand this milestone into project management and multiplexing.
 These choices settle the open details for API 1 before implementation.
 
 - =goblins server start= explicitly starts the ordinary-user headless process in the background.
-  =serve= becomes a host API approval frontend; quitting it leaves sessions
+  =tui= becomes a host API approval frontend; quitting it leaves sessions
   running. No service installation or automatic restart. The daemon's
   inherited environment expands startup bind variables; =--workspace= on the
   daemon selects the snapshot source for every launch. Literal env/args remain
@@ -681,7 +681,7 @@ outside this extension.
 
 The public daemon command is =goblins server start/stop/status/logs=. The old
 =daemon= and =shell= commands are removed; =goblins run shell= automatically
-allocates a name unless =--name= is supplied. =serve= remains the approval UI.
+allocates a name unless =--name= is supplied. =tui= remains the approval UI.
 Clap supplies the command tree, per-command help and argument validation;
 clap_complete generates completion scripts, including the selected manifest's
 configuration keys. Nix packages install Bash/Fish/Zsh scripts. Neither help nor

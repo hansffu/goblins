@@ -158,16 +158,16 @@ impl Worker {
                                     session.event("error", serde_json::json!({"detail":detail}));
                                     let category = if detail.starts_with("cannot resolve package") {
                                         format!(
-                                            "cannot resolve package '{}' from pinned nixpkgs; see serve terminal",
+                                            "cannot resolve package '{}' from pinned nixpkgs; see tui terminal",
                                             req.package
                                         )
                                     } else if detail.starts_with("could not build package") {
                                         format!(
-                                            "could not build package '{}'; see serve terminal",
+                                            "could not build package '{}'; see tui terminal",
                                             req.package
                                         )
                                     } else {
-                                        "grant failed; see serve terminal".into()
+                                        "grant failed; see tui terminal".into()
                                     };
                                     (
                                         Reply::new(Some(req.id), "error", Some(category)),

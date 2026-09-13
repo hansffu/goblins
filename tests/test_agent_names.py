@@ -79,7 +79,7 @@ class AgentNameTests(unittest.TestCase):
         self.assertEqual(receive(peer.peer)["result"]["status"], "denied")
         event = receive(sub.peer)["params"]["snapshot"]
         self.assertEqual(event["permissions"][0]["agent_name"], "snikk")
-        ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve", "--plain"])
+        ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui", "--plain"])
         self.addCleanup(ui.close)
         ui.expect(r'"agent_name":"snikk"')
         ui.send("status\rquit\r"); self.assertEqual(ui.wait(), 0)

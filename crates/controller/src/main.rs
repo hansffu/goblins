@@ -63,7 +63,7 @@ fn execute(cli: Cli) -> Result<i32> {
             ServerCommand::Status => return server::status(&state),
             ServerCommand::Logs => server::logs(&state)?,
         },
-        Command::Serve { plain } => {
+        Command::Tui { plain } => {
             if plain {
                 plain::serve(state)?;
             } else {

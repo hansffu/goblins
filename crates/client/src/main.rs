@@ -108,7 +108,7 @@ mod tests {
                 ("hello".into(), "test".into())
             );
         }
-        assert!(parse_args(false, &["serve".into()]).is_err());
+        assert!(parse_args(false, &["tui".into()]).is_err());
         assert!(parse_args(true, &["package".into(), "hello".into()]).is_ok());
     }
 }

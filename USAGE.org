@@ -15,8 +15,8 @@ terminal. Repeating =server start= leaves the existing server and its environmen
 unchanged. Open the approval view:
 
 #+begin_src sh
-goblins serve
-# Or: goblins serve --plain
+goblins tui
+# Or: goblins tui --plain
 #+end_src
 
 In one or more other terminals:
@@ -185,8 +185,8 @@ is a parameter change and conflicts. Retry the original request exactly.
 
 * Closing, stopping and inspecting
 
-Closing =serve=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
-client leaves sessions owned by the daemon. A fresh =serve= discovers current
+Closing =tui=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
+client leaves sessions owned by the daemon. A fresh =tui= discovers current
 sessions, pending approvals and retained outcomes from a new atomic snapshot.
 Reconnect is to the same daemon only. There is no terminal reattachment/replay
 operation: each launch has one terminal consumer. Output after its disconnection

@@ -28,7 +28,7 @@ pub enum Command {
         command: ServerCommand,
     },
     /// Open the approval interface; quitting leaves agents running
-    Serve {
+    Tui {
         /// Use the line-oriented approval interface
         #[arg(long)]
         plain: bool,
@@ -133,6 +133,7 @@ mod tests {
         for args in [
             vec!["goblins", "shell"],
             vec!["goblins", "daemon"],
+            vec!["goblins", "serve"],
             vec!["goblins", "list", "--name", "snikk"],
             vec!["goblins", "server", "status", "--workspace", "/tmp"],
             vec!["goblins", "run", "shell", "--name", "a", "--name", "b"],

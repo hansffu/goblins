@@ -1,4 +1,4 @@
-"""Real two-terminal test: host serve, attached Fish, sandbox request CLI."""
+"""Real two-terminal test: host tui, attached Fish, sandbox request CLI."""
 import contextlib
 import errno
 import fcntl

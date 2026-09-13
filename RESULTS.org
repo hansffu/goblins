@@ -1,6 +1,39 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Approval command renamed to tui
+
+Renamed the host approval command from =goblins serve= to =goblins tui=,
+including its =--plain= fallback. The old command is rejected. Help, generated
+and installed Bash/Fish/Zsh completions, package failure diagnostics, current
+usage documentation and executable test invocations use =tui=. Historical
+results and the original plan below retain the command names used at the time.
+
+Twenty-one Rust tests passed (one integration driver ignored), along with
+formatting, workspace/all-target Clippy with warnings denied, the production
+Nix build and all 27 flake checks.
+
+All five focused black-box methods passed in 52.425 seconds against the rebuilt
+package: help/removed-command validation and installed completions; both
+fullscreen interaction tests; connected Fish grants and host-command isolation;
+and stale-input rejection in both fullscreen and plain interfaces.
+
+Production package: =/nix/store/chbrsvhy7zv981r4nsbz3zavq3fm3dhk-goblins=,
+linked at =/tmp/goblins-tui=. Logs: =/tmp/goblins-tui-rust-tests.log=,
+=/tmp/goblins-tui-build.log=, =/tmp/goblins-tui-nix-checks.log= and
+=/tmp/goblins-tui-tests.log=.
+
+#+begin_src sh
+source /tmp/goblins-cargo-env
+cargo test --workspace --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+nix build --out-link /tmp/goblins-tui path:.#goblins
+nix flake check path:.
+GOBLINS_APP=/tmp/goblins-tui/bin/goblins nix develop path:. --command bash -c \
+  'PYTHONPATH=tests python3 -m unittest test_server.ServerTests.test_help_removed_aliases_and_completion_installation test_tui test_connected test_daemon.DaemonTests.test_required_stale_input_in_actual_frontends -v'
+#+end_src
+
 * Random goblin names
 
 Expanded the checked-in fantasy goblin name pool from 16 to 128 entries.

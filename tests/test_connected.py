@@ -10,7 +10,7 @@ from terminal_support import Terminal
 class ConnectedTests(unittest.TestCase):
     def test_connected_fish_live_grants_and_terminal_behavior(self):
         d = Daemon(); self.addCleanup(d.close)
-        ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve", "--plain"]); self.addCleanup(ui.close)
+        ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui", "--plain"]); self.addCleanup(ui.close)
         ui.expect("approval frontend")
         client = Terminal([str(d.app), "--state-dir", str(d.state), "run", "shell"]); self.addCleanup(client.close)
         client.expect("workspace[>#]")
@@ -29,7 +29,7 @@ class ConnectedTests(unittest.TestCase):
         client.send("hello; cowsay live-grant-ok; printf 'AFTER=%s\\n' $fish_pid\n")
         client.expect(r"(?:^|\n)Hello, world!\n"); client.expect("live-grant-ok")
         self.assertEqual(client.expect(r"(?:^|\n)AFTER=(\d+)\n").group(1), pid)
-        client.send(f"goblins serve; printf 'RESTRICTED=%s\\n' $status; test -e {d.state}/host.sock; printf 'HOST_HIDDEN=%s\\n' $status; test -e /nix/var/nix/daemon-socket/socket; printf 'NIX_HIDDEN=%s\\n' $status\n")
+        client.send(f"goblins tui; printf 'RESTRICTED=%s\\n' $status; test -e {d.state}/host.sock; printf 'HOST_HIDDEN=%s\\n' $status; test -e /nix/var/nix/daemon-socket/socket; printf 'NIX_HIDDEN=%s\\n' $status\n")
         client.expect(r"(?:^|\n)RESTRICTED=2\n"); client.expect(r"(?:^|\n)HOST_HIDDEN=1\n"); client.expect(r"(?:^|\n)NIX_HIDDEN=1\n")
         client.send("sleep 60\n"); client.send("\x03"); client.send("echo INTERRUPTED\n"); client.expect(r"(?:^|\n)INTERRUPTED\n")
         import fcntl, struct, termios

@@ -13,7 +13,7 @@ class TuiTests(unittest.TestCase):
     def test_popup_list_focus_buttons_and_tty_restoration(self):
         d = Daemon(); self.addCleanup(d.close)
         a, b = d.start(agent_name="zoggit"), d.start()
-        ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve"]); self.addCleanup(ui.close)
+        ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui"]); self.addCleanup(ui.close)
         before = screen_wait(ui, lambda text: "Sandboxes [focused]" in text)
         self.assertNotIn("Permission request", before)
         self.assertIn("zoggit (shell)", before)
@@ -70,13 +70,13 @@ class TuiTests(unittest.TestCase):
         self.assertTrue(termios.tcgetattr(ui.fd)[3] & termios.ICANON)
         self.assertTrue(termios.tcgetattr(ui.fd)[3] & termios.ECHO)
         self.assertEqual(d.get(a["session"])["state"], "running")
-        fresh = Terminal([str(d.app), "--state-dir", str(d.state), "serve"]); self.addCleanup(fresh.close)
+        fresh = Terminal([str(d.app), "--state-dir", str(d.state), "tui"]); self.addCleanup(fresh.close)
         screen_wait(fresh, lambda text: "Status: ready" in text)
         fresh.send("q"); self.assertEqual(fresh.wait(), 0)
 
     def test_mouse_press_cannot_transfer_to_replacement(self):
         d = Daemon(); self.addCleanup(d.close); a = d.start()
-        ui = Terminal([str(d.app), "--state-dir", str(d.state), "serve"]); self.addCleanup(ui.close)
+        ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui"]); self.addCleanup(ui.close)
         pa, ra = d.pending(a["session"]); self.addCleanup(pa.close)
         screen_wait(ui, lambda text: "Package: hello" in text)
         row = next(i for i,r in enumerate(ui.screen.display) if "[ Yes ]" in r)

@@ -69,14 +69,16 @@ class ServerTests(unittest.TestCase):
     def test_help_removed_aliases_and_completion_installation(self):
         for args in [(), ("--help",), ("help",)]:
             text = self.cli(*args)
-            for command in ("server", "serve", "run", "stop", "completions"):
+            for command in ("server", "tui", "run", "stop", "completions"):
                 self.assertIn(command, text)
-            self.assertNotRegex(text, r"(?m)^  (shell|daemon)\s")
+            self.assertNotRegex(text, r"(?m)^  (shell|daemon|serve)\s")
         self.assertIn("--name", self.cli("help", "run"))
         self.assertIn("--foreground", self.cli("server", "start", "--help"))
         self.assertIn("logs", self.cli("server", "--help"))
         self.cli("shell", code=2)
         self.cli("daemon", code=2)
+        self.cli("serve", code=2)
+        self.assertIn("--plain", self.cli("tui", "--help"))
         root = self.app.resolve().parent.parent
         paths = {"bash": root / "share/bash-completion/completions/goblins",
                  "fish": root / "share/fish/vendor_completions.d/goblins.fish",
@@ -86,6 +88,8 @@ class ServerTests(unittest.TestCase):
             script = self.cli("completions", shell)
             self.assertEqual(script, path.read_text())
             self.assertIn("server", script)
+            self.assertRegex(script, r"\btui\b")
+            self.assertNotRegex(script, r"\bserve\b")
             self.assertIn("shell", script)  # The run configuration, not an alias.
             self.assertIn("-l name" if shell == "fish" else "--name", script)
         subprocess.run(["zsh", "-n", str(paths["zsh"])], check=True)
@@ -99,7 +103,10 @@ class ServerTests(unittest.TestCase):
                         script + "; complete -C " + shlex.quote(line)], text=True)
             self.assertIn(expected, completed)
             if line == "goblins ":
-                self.assertNotIn("shell", [row.split("\t")[0] for row in completed.splitlines()])
+                candidates = [row.split("\t")[0] for row in completed.splitlines()]
+                self.assertIn("tui", candidates)
+                self.assertNotIn("serve", candidates)
+                self.assertNotIn("shell", candidates)
         bash = shutil.which("bash")
         completed = subprocess.check_output([bash, "--noprofile", "--norc", "-c",
             "source " + shlex.quote(str(paths["bash"])) +

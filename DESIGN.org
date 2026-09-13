@@ -4,7 +4,7 @@
 
 The ordinary-user Rust daemon owns session records, permission identities,
 decisions, grant outcomes, PTYs and lifecycle. =goblins server start= has no terminal
-frontend dependency. =serve= and =serve --plain= are host API clients; =run NAME=
+frontend dependency. =tui= and =tui --plain= are host API clients; =run NAME=
 starts a session through that same API and consumes its separate raw terminal
 stream. Closing any or all frontends leaves sessions alive. Reconnecting to the
 same daemon obtains current state; restarting the daemon never recovers sessions.
