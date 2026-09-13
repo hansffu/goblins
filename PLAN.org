@@ -3,6 +3,22 @@
 Updated for the Rust rewrite, 2026-09-12. Long-term product direction below is
 separate from the implemented scope and evidence in [[file:RESULTS.org][RESULTS.org]].
 
+* Next implementation: daemon and communication
+
+The decisions agreed on 2026-09-13 are recorded in
+[[file:DAEMON.org][DAEMON.org: daemon and communication implementation decisions]]. That document
+governs the next milestone: multiple concurrent sandboxes, daemon-owned
+session/request/approval state, frontend reconnection to the same live daemon,
+and JSON-RPC 2.0 with Content-Length framing over Unix sockets. Sandbox requests
+go directly to the daemon; each helper retains its private mount channel.
+
+Terminal multiplexing, explicit attach/detach management, project management and
+daemon restart recovery remain out of scope. The three review findings below
+are required acceptance gates, not resolved defects. The earlier single-session
+foreground and newline-JSON descriptions here remain the PoC/rewrite history;
+they do not override the new milestone. Production code is unchanged by this
+planning record.
+
 * Rust rewrite decision and scope
 
 Rust is decided for the production host CLI/controller and sandbox request

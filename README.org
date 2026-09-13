@@ -4,6 +4,8 @@ A Rust sandbox runtime for approved live Nix package grants. A fullscreen termin
 is the current frontend; Emacs integration is planned.
 
 See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
+The agreed next implementation is recorded in
+[[file:DAEMON.org][the daemon and communication decisions]]; it is not yet implemented.
 
 * Documentation convention
 

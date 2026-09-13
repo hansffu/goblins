@@ -1,0 +1,482 @@
+#+title: Goblins daemon and communication implementation decisions
+#+date: 2026-09-13
+
+* Status and precedence
+
+This records the architecture and protocol direction agreed with the user after
+inspection of master at =398c72e=. It is an implementation plan, not a claim
+that the daemon or the review fixes exist. The user authorized committing the
+plans and starting implementation on 2026-09-13. Merging and pushing are not
+part of that instruction.
+
+For the next daemon milestone, this document supersedes the single-session,
+foreground-owner and newline-JSON choices in the earlier PoC/rewrite plan.
+[[file:DESIGN.org][DESIGN.org]], [[file:USAGE.org][USAGE.org]] and [[file:RESULTS.org][RESULTS.org]] continue to describe the
+implementation and its evidence. The three findings in
+[[file:PLAN.org::*Deferred review findings: daemon and communication rewrite][PLAN.org]] remain unresolved until implemented and verified.
+
+Architecture, data flow, transport family and the method surface below are
+settled. Exact schemas, limits and the explicitly listed open details still
+need specification before their dependent implementation.
+
+* Goals
+
+- Run multiple simultaneous sandboxes in the first daemon milestone. A slow
+  launch, unanswered approval or package build in one must not block control
+  and permission handling for another.
+- Move authoritative session, permission-request and approval state into a
+  frontend-independent Rust daemon running as the ordinary host user.
+- Keep sessions running when all frontends close, while the same daemon lives.
+- Let a new frontend discover existing sessions, requests and approval outcomes
+  from daemon state without the previous frontend's memory.
+- Use established protocol machinery instead of a custom RPC envelope.
+- Preserve live approved package grants, helper isolation and public Nix
+  configuration semantics through the migration.
+- Fix all three accepted review findings as protocol/frontend acceptance gates.
+
+* Antigoals and scope boundaries
+
+- No controller/daemon restart recovery: no sandbox survival across daemon
+  death, checkpointing, durable recovery, restart reconciliation or replay into
+  a replacement daemon. Daemon death ends helpers and sandboxes. Abrupt death
+  may still leave host directories and GC roots for manual cleanup.
+- Reconnecting a frontend to the /same live daemon/ is required. This is
+  distinct from restart recovery.
+- No terminal multiplexing, simultaneous terminal observers, input-ownership
+  transfer, or explicit attach/detach management API in this milestone.
+- Exact terminal screen, scrollback and frontend layout restoration are not
+  required. Reliable output draining for a connected terminal is required.
+- No project-management UI, general scheduling, automatic delegation,
+  agent-controlled orchestration, remote hosts, web serving or rich UI work.
+- No live file/network grants or revocation guarantee. File/network permission
+  changes may require a fresh sandbox.
+- No executable allowlisting boundary. Packages provision an environment;
+  arbitrary agent code is expected. Store restriction protects unrelated store
+  contents, and resource access remains the security boundary.
+
+Future Herdr-like project/multiplexing state and operations remain open and may
+be controlled by agents with appropriate authority. Do not turn this milestone's
+small agent API or its provisional frontend/view-state distinction into a
+permanent restriction on that future design. Detailed frontend architecture is
+deferred; the approval-input safety contract is required now.
+
+Emacs/Ghostel remains the preferred first editor frontend. Core runtime and
+protocol must not require Emacs, Ghostel, a particular TUI or buffer identity.
+
+* Ownership and data flow
+
+| Component | State and responsibility |
+|-----------+--------------------------|
+| Daemon | Session IDs, selected launch configuration, lifecycle, request records, decisions, grant progress/results, GC roots, package provisioning records and PTY lifetime |
+| Per-session helper | Retained namespace/filesystem handles, supervised sandbox process and execution/acknowledgement of narrow mount commands |
+| Sandbox | Payload processes, memory, files and its actual mounted environment |
+| Internal request client | RPC correlation ID, connection and returned outcome, including unknown outcome on interrupted communication |
+| Frontend | Current presentation and interaction state; consumes daemon state and submits explicit control operations |
+
+The daemon records what was authorized and confirmed. Kernel mounts determine
+what is actually accessible; sending a helper command is not confirmation that
+it succeeded. Helpers are stateful executors, not approval controllers. They
+need no copies of frontend subscriptions or approval queues and no durable
+recovery state.
+
+#+begin_example
+Host CLI/frontend -- sessions.start --------------------> Daemon
+                                                          |
+                                                creates helper + sandbox
+                                                          |
+Sandbox client -- per-session socket / permission ------> Daemon
+Host frontend -- separate host socket / decision -------> Daemon
+                                                          |
+                                             private pipe / mount command
+                                                          v
+                                                   Session helper
+                                                          |
+                                               mount + acknowledgement
+                                                          v
+Sandbox client <------------ final permission result --- Daemon
+
+Host CLI/frontend -- sessions.stop ---------------------> Daemon
+                                                tears down this session
+#+end_example
+
+Sandbox permission requests go directly to the daemon, never through the
+mount helper. Each sandbox gets its own request socket, mounted at the existing
+=/run/goblins/request.sock= location. The daemon derives session identity from
+that endpoint, not from a caller-supplied session ID or shared host UID.
+
+The separate private host socket is for trusted host operations. The helper
+retains private per-session pipes and accepts narrow canonical store-basename
+mount commands. No public RPC exposes helper handles, caller-selected PIDs,
+namespaces, destinations, mount flags, arbitrary Nix expressions or host Nix.
+Trusted host =sessions.start= may select a manifest path; the sandbox API cannot.
+
+Keep namespace operations in the small separate single-threaded Rust helper.
+Keep blocking startup, Nix and helper waits off the daemon's control/event loop.
+One worker per session is the straightforward extension of the current worker
+design; exact thread/channel implementation is not a protocol commitment.
+Sequential grants and one outstanding permission request per session are the
+initial implementation direction; this must not become one global pending slot.
+
+* Lifetime distinctions
+
+- =sessions.start= is host-to-daemon launch control. The daemon creates the
+  sandbox and helper. The host =goblins run NAME= command will use this path.
+- =sessions.stop= is explicit host-to-daemon teardown, including owned work,
+  helper, payload tree and session resource cleanup.
+- Closing a frontend's control connection does not stop sessions, withdraw
+  sandbox requests or forget accepted decisions. Its subscriptions end.
+- Closing a sandbox request client's connection is not session stop. Before a
+  decision, it withdraws that request and cancels its preview. After approval,
+  the grant may still complete and that caller may have an unknown outcome.
+- Natural payload exit ends the running workload. Payload exit, PTY EOF,
+  terminal delivery completion and resource cleanup must not be collapsed into
+  one event that prematurely drops output.
+- Daemon death ends its sandboxes. A newly started daemon has a different
+  instance identity; a frontend must not treat it as the previous live instance.
+
+No detach operation is being added. The exact single-terminal connection
+mechanics and output policy while no frontend consumes bytes remain to be
+specified; they must honor session survival without claiming terminal replay.
+
+* Protocol decision
+
+Use *JSON-RPC 2.0 over pathname Unix stream sockets*, with *Content-Length
+framing* for structured daemon communication. Use the same envelope and framing
+on host and sandbox sockets, with separate dispatch/authorization surfaces.
+
+#+begin_example
+Content-Length: <UTF-8 body byte count>\r\n
+\r\n
+<JSON-RPC message>
+#+end_example
+
+The displayed =\r\n= denotes actual CRLF bytes. Terminal payload bytes use a
+separate stream, not JSON-RPC notifications or JSON-encoded byte chunks. The
+existing private helper command protocol remains separate for this milestone.
+
+Prefer an existing JSON-RPC implementation where suitable. Library selection
+must account for bounded parsing, streaming transport and the small internal
+client's dependency boundary. Do not put host policy into shared protocol code.
+
+JSON-RPC provides request/response correlation, result/error envelopes and
+notifications. Goblins still specifies operation schemas, authorization,
+application versioning, state transitions, subscriptions and resource limits.
+=jsonrpc: "2.0"= is not the Goblins API version.
+
+Content-Length framing matches existing editor RPC tooling, including Emacs's
+=jsonrpc.el=, without imposing editor-specific application methods. gRPC and
+D-Bus were considered; JSON-RPC was selected for readable structured operations,
+multiple client implementations and minimal protocol machinery. MCP remains a
+possible later thin agent adapter, not the sandbox transport or approval API.
+
+References checked during planning:
+
+- [[https://www.jsonrpc.org/specification][JSON-RPC 2.0 specification]]
+- [[https://raw.githubusercontent.com/emacs-mirror/emacs/master/lisp/jsonrpc.el][Emacs JSON-RPC implementation and Content-Length framing]]
+- [[https://man7.org/linux/man-pages/man7/unix.7.html][Unix-domain socket interfaces]]
+- [[https://grpc.io/docs/what-is-grpc/core-concepts/][gRPC concepts]]
+- [[https://dbus.freedesktop.org/doc/dbus-specification.html][D-Bus specification]]
+
+* Initial method surface
+
+** Common initialization
+
+| Method | Contract |
+|--------+----------|
+| =initialize= | Negotiate Goblins API version; identify the daemon instance and report supported features and protocol limits appropriate to the caller |
+
+Connect and disconnect are transport events, not dedicated RPC methods.
+Initialization does not let a sandbox choose a host role or another session.
+
+** Sandbox socket
+
+| Method | Contract |
+|--------+----------|
+| =permissions.request= | Request permission for this sandbox; initially only =kind: "package"=; return one terminal result after decision/execution |
+
+The initial sandbox surface is connect, request permission, disconnect. It has
+no session list/start/stop, permission list/get/decide/cancel, subscriptions,
+host paths or terminal-management operations. Additional authorized agent
+operations can be designed in a later milestone.
+
+Illustrative JSON body, excluding framing:
+
+#+begin_src json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "permissions.request",
+  "params": {
+    "kind": "package",
+    "package": "cowsay",
+    "reason": "Run the example"
+  }
+}
+#+end_src
+
+The daemon creates its own immutable request/approval identities while the RPC
+is pending. Host snapshots/events expose that record. This is not an immediate
+submit-and-poll API on the sandbox side. The internal CLI succeeds only after
+=ready=, reports denial/failure distinctly, and reports an unknown outcome for
+missing/invalid/interrupted replies without automatic resubmission. Preserve
+the existing success/denial-or-failure/unknown exit-code distinction (0/1/2).
+Exact result schemas and application error codes remain to be specified.
+
+** Trusted host socket
+
+| Method | Contract |
+|--------+----------|
+| =sessions.list= | Discover session records, including starting/stopping sessions |
+| =sessions.get= | Inspect one session's selected configuration summary, lifecycle and provisioned packages |
+| =sessions.start= | Launch a named configuration from a trusted host manifest; return an ID and starting state once accepted |
+| =sessions.stop= | Explicitly request teardown of the identified session; acceptance does not imply cleanup has finished |
+| =permissions.list= | Inspect pending requests and retained decision/outcome records, filterable by session/state |
+| =permissions.get= | Inspect an individual request, decision and execution outcome |
+| =permissions.decide= | Approve/deny the exact pending session/request/approval identity |
+| =state.subscribe= | Obtain an initial authoritative snapshot and subscribe to subsequent ordered changes |
+| =state.unsubscribe= | End a subscription |
+
+Daemon-to-host notification: =state.changed= carries the subscription identity,
+sequence number and resource changes. Decisions must be RPC calls with replies,
+not unacknowledged notifications. Only an accepted daemon response confirms a
+decision; acceptance of approval is not confirmation of package readiness.
+
+There is no =terminals.attach/detach=, observer, claim/release-input, project or
+scheduling method set in this milestone. A generic jobs API is unnecessary for
+the initial flow: session and permission records describe their ongoing work.
+
+* Identities, transitions and synchronization
+
+** Identity and duplicate handling
+
+- A configuration name is a reusable label; a session ID identifies one launch.
+- The daemon instance identifies one live runtime. Session/request/approval
+  identities must not accidentally refer to objects in a replacement runtime.
+- A JSON-RPC =id= correlates one exchange. It is not a session ID, approval
+  capability or idempotency key. Reusing an agent's RPC ID cannot replace a
+  pending approval or affect another client/session.
+- =permissions.decide= targets immutable daemon-issued identities, not "the
+  current request", a list position, package name or frontend selection.
+- The daemon serializes competing decisions: only the first valid pending
+  transition can authorize work. Repeated/stale/conflicting submissions never
+  perform an additional grant or authorize a successor.
+- Specify duplicate/retry behavior before implementing mutations, especially
+  =sessions.start=. A lost reply is not permission for a client to repeat an
+  uncertain launch or grant automatically. Exact idempotency keys, retention
+  and duplicate response schemas remain open.
+
+** Permission lifecycle
+
+Conceptual transitions, not final wire enum spellings:
+
+#+begin_example
+validated request -> pending approval (advisory preview may run)
+pending approval -> denied
+pending approval -> withdrawn (sandbox request connection lost)
+pending approval -> approved -> realizing -> mounting/publishing -> ready
+approved execution -> failed
+session stop -> cancel owned work / terminate session
+#+end_example
+
+Preview completion is not a decision and cannot grant access. Cancellation of
+preview work must remain separate from session cancellation. Decisions and
+disconnects are ordered by the daemon; after approval has been accepted,
+disconnect does not imply revocation. A terminal outcome must remain distinct
+from whether its reply was delivered to the sandbox client.
+
+Retain the current failure boundary: realization/collision failure before
+mounting leaves the sandbox usable; failure during mount preparation,
+mounting or publication ends the affected session. Direct store paths may
+already be visible before the profile switches. No rollback guarantee is made.
+
+** Snapshots and events
+
+=state.subscribe= establishes one snapshot at sequence N and delivers subsequent
+changes after N without a gap. A new frontend can reconstruct daemon-owned
+session/request/approval state without consulting a former frontend. List/get
+remain available for one-off inspection; listing followed by an unrelated
+subscription must not be the only way to initialize a live view.
+
+Bound subscription buffering. A client that falls behind must be told to
+resynchronize or disconnected so that it takes a fresh snapshot; do not
+silently drop changes while presenting a continuous sequence. This requires no
+durable event log or daemon-restart recovery. Exact snapshot sizing/pagination,
+retention and sequencing schemas remain open.
+
+* Framing, backpressure and authority invariants
+
+- Enforce bounded headers, body lengths, JSON nesting, connections, pending
+  work, diagnostics and outgoing queues. Bound per-session and daemon-wide
+  resources so multiple sessions do not create unbounded work.
+- Preserve the monotonic whole-frame deadline improvement. Header/body bytes
+  cannot reset the deadline. The current three-second request-frame budget is
+  the baseline; define initiation for initialization and later frames explicitly.
+  Human approval/build waiting is separate and must not time out as framing.
+- Validate malformed/duplicate fields, operation-specific unknown fields,
+  parameter types and the existing bounded package grammar. Keep agent text as
+  escaped data in approval views, never terminal instructions or approval input.
+- Handle partial reads/writes and EOF throughout pending RPCs. Unexpected
+  trailing input must be rejected or parsed under the bounded connection rules;
+  unread bytes must never conceal a disconnect indefinitely.
+- Keep host socket/session directories private and inaccessible through sandbox
+  startup binds. All concurrent session-private paths must be protected, not
+  only the requesting session's directory. Shared host UID is not sandbox scope.
+- Helpers retain namespace-scoped authority, private handles and hardened
+  read-only mounts. No main-daemon thread enters sandbox mount namespaces.
+- Slow subscribers, terminal consumers and Nix operations must not block other
+  sessions' control, approvals or shutdown. Backpressure behavior must be explicit.
+- Cancellation stops/reaps owned Nix clients, not the host Nix daemon or shared
+  build work. Existing filesystem/kernel cancellation limits still apply.
+
+* Required review regressions
+
+These gates are required even though JSON-RPC supplies standard envelopes.
+The findings are accepted known defects in the current code, not fixed by this
+document or invalidated by the previously passing test suite.
+
+** P1: input queued for an old approval
+
+Daemon decisions must name the immutable pending approval. The frontend must
+also retain which request was actually presented for an interaction. Replacing
+a request must not reassign queued keys, partial approval commands or mouse
+interactions to the replacement. A token alone is insufficient: the existing
+frontend already has tokens and still mislabels stale input.
+
+Acceptance: display A, queue approval input, withdraw A and introduce B before
+consuming that input. B remains unapproved. Test the actual approval frontend,
+including the plain fallback if retained, and daemon rejection of withdrawn,
+stale, duplicate and competing decisions. Reusing public RPC IDs cannot affect
+the presented decision. Frontend implementation details can remain deferred
+only until this required safety contract is implemented and tested.
+
+** P2: terminal EOF drops buffered output
+
+Represent payload exit/status, PTY EOF/EIO, buffered transport output and local
+client output completion separately. An exit notification or accepted stop
+response cannot cause the client to discard queued terminal bytes. Separate
+control/terminal channels may deliver exit information before terminal draining
+finishes. Normal completion drains buffered output; broken output delivery is
+reported as interrupted/incomplete rather than successful completion.
+
+Acceptance: the recorded slow-reader reproduction receives all 50,000 bytes and
+the final marker before successful completion (the defect delivered only
+16,384 bytes). A short command that exits immediately after writing also
+delivers its output. Exercise partial writes/backpressure and EOF/EIO paths,
+including exit information arriving before output drains. This requires neither
+multiplexing nor detach/replay support.
+
+** P2: trailing bytes hide request disconnect
+
+Continue servicing the sandbox request connection while approval/preview is
+pending. Do not rely on =MSG_PEEK= returning zero while leaving trailing input
+unread. Reject unexpected input or consume it through bounded framing, and
+recognize EOF/hangup even after an incomplete extra frame. Withdrawal cancels
+preview work, removes the pending approval and releases the pending slot.
+
+Acceptance: valid =permissions.request= frame + one extra byte + close withdraws
+the undecided request and cancels/reaps its preview; a subsequent request can
+proceed. Test fragmented input, silent/incomplete frames and slow drip input
+against whole-frame deadlines. A race won by an already accepted decision is
+reported consistently with the post-approval unknown-outcome rule.
+
+* Nix and runtime compatibility
+
+Preserve =mkGoblin=/=mkGoblins=, named presets/configurations, public flake
+outputs, initial closures, literal entry arguments and literal =env= values.
+Keep the restricted internal binary distinct from the host CLI. Neither the
+daemon migration nor protocol selection introduces mandatory production Python.
+
+Trusted host launches continue to supply a Nix-generated manifest path and
+configuration name. Rebuilt configuration-only clients can start changed or
+new definitions on the same daemon; running sessions retain their selected
+configuration. Keep bounded regular-file manifest reads and launch work off the
+control loop. Specify manifest/helper compatibility across builds explicitly
+rather than silently imposing a fixed daemon configuration registry.
+
+Preserve =mkSandbox= startup bind behavior, protected-path checks, exact
+store-backed config targets, literal environment semantics and disposable
+workspace snapshots. Bind variables currently expand in the =serve= process's
+host environment; these are distinct from literal =mkGoblin.env= values. Daemon
+launch/service packaging must explicitly define that environment rather than
+silently changing variable sources. Per-launch workspace selection was not
+settled in this discussion and is not implied by accepting manifest paths.
+
+The daemon continues host-only pinned Nix resolution, closure rooting, helper
+acknowledgements and profile publication. Each sandbox keeps its own live
+grants and namespace-scoped helper; grants must not leak between sessions.
+
+* Implementation phases and acceptance gates
+
+These phases describe the authorized implementation. This planning commit
+contains no implementation. Intermediate refactors may be incremental, but a
+single-active-session daemon is not the completed milestone.
+
+** 1. Specify and test the protocol contract
+
+Finalize schemas, initialization/version behavior, error codes, framing limits,
+mutation duplicate handling and subscription ordering. Select suitable RPC
+machinery. Define the three review reproductions as regression gates before
+changing the corresponding paths.
+
+Gate: protocol tests cover hostile framing, unsupported authority, duplicate
+identities and stale decisions. Record terminal/approval integration scenarios
+that cannot be established by protocol unit tests alone.
+
+** 2. Extract daemon ownership and multiple sessions
+
+Host the controller independently of =serve='s terminal. Replace the single
+active-session slot with independently controlled sessions and workers/helpers.
+Implement host lifecycle/inspection and the narrow sandbox permission flow.
+Retain cancellation and mount isolation. An explicitly launched headless
+command is the suggested first packaging step; service launch policy is open.
+
+Gate: start at least two simultaneous sandboxes through the host API. A slow
+build/preview/startup in A does not block status, request/decision handling or
+stop in B. Grants and helper channels are isolated. Normal daemon shutdown
+cleans all sessions; abrupt death kills their payloads without restart recovery.
+
+** 3. State subscriptions and minimal frontend migration
+
+Move approval presentation onto the host API and implement snapshot-plus-event
+resynchronization. Keep the frontend independent from worker/session memory.
+Implement and verify immutable displayed-input handling, not just RPC tokens.
+
+Gate: close all frontends while multiple sessions and requests exist, then
+connect a fresh client to the same daemon. It discovers sessions, pending
+requests and retained decisions/results. Slow-client resync has no silent gap.
+Competing frontends cannot double-decide a request. The P1 reproduction passes.
+Rich Emacs/TUI and project-management work are not required by this phase.
+
+** 4. Terminal completion and migration verification
+
+Finish the separate terminal byte path and explicitly defined exit/drain
+semantics without adding multiplexing or detach methods. Preserve ordinary
+interactive terminal behavior. Complete both P2 regression gates.
+
+Gate: all three review reproductions pass; existing live-grant, namespace,
+configuration, startup-bind, literal-env, crash-teardown and responsiveness
+coverage remains applicable and passes after adapting the interface. Run Rust
+tests, formatting, Clippy, black-box tests and Nix/API/packaging checks. Record
+actual results in =RESULTS.org= only after verification, and update current
+usage/design documentation to describe the implemented behavior.
+
+* Details to settle before dependent implementation
+
+- Exact RPC parameter/result schemas, application error codes, feature/version
+  negotiation, ID encodings and notification payloads. Batch/notification
+  policy must be explicit and tested for interoperability and authorization.
+- Duplicate mutation handling, in-memory result retention and behavior when an
+  outcome is no longer retained. No unbounded or durable history is implied.
+- Per-connection request count/reuse rules; exact byte/depth/connection/queue
+  limits; snapshot pagination/chunking and subscription resync signaling.
+- Terminal connection establishment, process-exit reporting from the helper/
+  supervisor, and bounded output behavior when no terminal client is consuming.
+  Preserve daemon-owned lifetime; do not add attach/detach multiplexing scope.
+- Daemon CLI naming, explicit start versus service integration, state-directory
+  discovery, host bind expansion environment and workspace selection.
+- Exact worker/transport library choices and compatibility between a live
+  daemon and newly built manifests/helpers/clients.
+
+These are focused implementation details, not invitations to reopen the agreed
+authority/data flow, require restart recovery, defer multiple sandboxes, or
+expand this milestone into project management and multiplexing.
