@@ -5,10 +5,10 @@ use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::CString,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     os::{
         fd::{AsRawFd, RawFd},
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+        unix::ffi::OsStrExt,
     },
     path::{Component, Path, PathBuf},
 };
@@ -22,6 +22,9 @@ pub struct Declarations {
     pub ro_files: Vec<String>,
 }
 pub struct Mount {
+    // Pin the object, not merely its current pathname. This descriptor remains
+    // CLOEXEC in the daemon and is inherited only by this launch's helper/bwrap.
+    source_fd: File,
     source: PathBuf,
     destination: PathBuf,
     readonly: bool,
@@ -131,8 +134,12 @@ impl Declarations {
                 cancel.check()?;
                 let destination = expand(raw, env)?;
                 validate(&destination, private)?;
-                let source = fs::canonicalize(&destination)
+                let source_fd = open_source(&destination)
                     .map_err(|e| format!("host bind {}: {e}", destination.display()))?;
+                // Read the resolved location of the OPENED object. Resolving a
+                // name first and opening it afterwards would introduce another
+                // race during validation, including in any ancestor component.
+                let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
                 // A declared symlink into the immutable store may select an exact
                 // file/directory, but it cannot make that store content writable.
                 if source.starts_with("/nix/store") {
@@ -143,7 +150,7 @@ impl Declarations {
                 } else {
                     validate(&source, private)?;
                 }
-                let meta = fs::metadata(&source)?;
+                let meta = source_fd.metadata()?;
                 if if directory {
                     !meta.is_dir()
                 } else {
@@ -172,13 +179,18 @@ impl Declarations {
                     .into());
                 }
                 if directory {
-                    let dir = OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-                        .open(&source)?;
+                    let dot = CString::new(".")?;
+                    let dir = unix::owned(unsafe {
+                        libc::openat(
+                            source_fd.as_raw_fd(),
+                            dot.as_ptr(),
+                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                        )
+                    })?;
                     scan(dir.as_raw_fd(), &source, &mut plan.store_targets, cancel)?;
                 }
                 plan.mounts.push(Mount {
+                    source_fd,
                     source,
                     destination,
                     readonly,
@@ -187,6 +199,35 @@ impl Declarations {
         }
         Ok(plan)
     }
+}
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+fn open_source(path: &Path) -> Result<File> {
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        // Ordinary config symlinks are supported; procfs magic links must not
+        // cross into another process's descriptors or mount namespace.
+        resolve: 0x02, // RESOLVE_NO_MAGICLINKS
+    };
+    let fd = unix::owned(unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &how,
+            size_of::<OpenHow>(),
+        ) as i32
+    })?;
+    // Both execs remap stdio, so source descriptors must always be above it.
+    Ok(File::from(unix::owned(unsafe {
+        libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3)
+    })?))
 }
 fn store_root(path: &Path) -> Result<PathBuf> {
     let name = path
@@ -246,6 +287,9 @@ fn scan(
     Ok(())
 }
 impl Plan {
+    pub fn source_fds(&self) -> impl Iterator<Item = RawFd> + '_ {
+        self.mounts.iter().map(|m| m.source_fd.as_raw_fd())
+    }
     pub fn store_roots(&self) -> Result<BTreeSet<PathBuf>> {
         self.store_targets
             .iter()
@@ -287,12 +331,12 @@ impl Plan {
         for mount in &self.mounts {
             args.extend([
                 if mount.readonly {
-                    "--ro-bind"
+                    "--ro-bind-fd"
                 } else {
-                    "--bind"
+                    "--bind-fd"
                 }
                 .into(),
-                mount.source.display().to_string(),
+                mount.source_fd.as_raw_fd().to_string(),
                 mount.destination.display().to_string(),
             ]);
         }

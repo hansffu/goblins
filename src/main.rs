@@ -162,15 +162,29 @@ impl Drop for Session {
     }
 }
 fn run() -> io::Result<i32> {
-    // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BWRAP [arguments...]
+    // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BIND_FDS BWRAP [arguments...]
     let args: Vec<String> = env::args().collect();
-    if args.len() < 6 {
+    if args.len() < 7 {
         return Err(io::Error::other("expected host launcher arguments"));
     }
     let parse = |i: usize| args[i].parse::<RawFd>().map_err(io::Error::other);
     let input = parse(1)?;
     let output = parse(2)?;
     let seccomp = parse(3)?;
+    // This explicit launcher field avoids interpreting arbitrary bwrap argument
+    // values (environment, command arguments, etc.) as descriptor authority.
+    let mut sources = Vec::new();
+    for value in args[4].split(',').filter(|s| !s.is_empty()) {
+        let source: RawFd = value.parse().map_err(io::Error::other)?;
+        if source < 3
+            || [input, output, seccomp].contains(&source)
+            || sources.iter().any(|fd: &OwnedFd| fd.as_raw_fd() == source)
+        {
+            return Err(io::Error::other("invalid startup source descriptor"));
+        }
+        cvt(unsafe { libc::fcntl(source, libc::F_GETFD) })?;
+        sources.push(unsafe { OwnedFd::from_raw_fd(source) });
+    }
     let parent = unsafe { libc::getppid() };
     cvt(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) })?;
     if unsafe { libc::getppid() } != parent {
@@ -207,20 +221,21 @@ fn run() -> io::Result<i32> {
     let store = open("/nix/store", libc::O_PATH | libc::O_DIRECTORY)?;
     let (info_r, info_w) = pipe()?;
     let (block_r, block_w) = pipe()?;
-    let mut cmd = Command::new(&args[4]);
+    let mut cmd = Command::new(&args[5]);
     cmd.args([
         "--info-fd",
         &info_w.as_raw_fd().to_string(),
         "--block-fd",
         &block_r.as_raw_fd().to_string(),
     ]);
-    cmd.args(&args[5..]);
+    cmd.args(&args[6..]);
     // Duplicated stdio is unrelated to the controller's stdin/stdout.
     cmd.stdin(Stdio::from(unsafe { OwnedFd::from_raw_fd(input) }));
     let payload_output = unsafe { OwnedFd::from_raw_fd(output) };
     cmd.stdout(Stdio::from(payload_output.try_clone()?));
     cmd.stderr(Stdio::from(payload_output));
-    let keep = [info_w.as_raw_fd(), block_r.as_raw_fd(), seccomp];
+    let mut keep = vec![info_w.as_raw_fd(), block_r.as_raw_fd(), seccomp];
+    keep.extend(sources.iter().map(AsRawFd::as_raw_fd));
     unsafe {
         cmd.pre_exec(move || {
             // A shell attachment supplies a fresh PTY slave, never the approval
@@ -232,7 +247,7 @@ fn run() -> io::Result<i32> {
             }
             // Mark all other descriptors close-on-exec, including controller pipes.
             cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) as i32)?;
-            for f in keep {
+            for &f in &keep {
                 cvt(libc::fcntl(f, libc::F_SETFD, 0))?;
             }
             Ok(())
@@ -240,6 +255,9 @@ fn run() -> io::Result<i32> {
     }
     let mut session = Session(cmd.spawn()?);
     drop(cmd);
+    // Bubblewrap consumes and closes bind-fd handles before payload execution.
+    // The supervising helper must not retain them either.
+    drop(sources);
     drop(info_w);
     drop(block_r);
     // The original inherited seccomp fd belongs solely to this helper now.
@@ -315,7 +333,7 @@ fn run() -> io::Result<i32> {
     cvt(unsafe { libc::syscall(libc::SYS_capset, &hdr, caps.as_ptr()) as i32 })?;
     writeln!(File::from(block_w), "x")?;
     println!(
-        "READY1 {pid} {} {} {} {}",
+        "READY2 {pid} {} {} {} {}",
         inode(&own)?,
         inode(&owner)?,
         inode(&source_ns)?,

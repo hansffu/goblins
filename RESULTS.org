@@ -1,6 +1,54 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Pre-merge review fixes
+
+Review found and fixed two daemon lifecycle races and a startup-bind race:
+
+- Worker completion is recognized only after its result channel is disconnected
+  and drained. A final status arriving after an empty poll is preserved. A worker
+  that exits without its final event leaves a failed session record, not a
+  permanently running/stopping record.
+- Progress must belong to the live pending grant. Queued mounting/publishing
+  events cannot restore a permission already cancelled by session stop.
+- Startup binds now validate and mount the same opened object. Source handles
+  are passed explicitly through the launcher/helper and consumed by Bubblewrap's
+  descriptor bind operations. Host descriptors do not reach the payload. The
+  changed private launcher contract is helper API 2 (=READY2=); JSON-RPC is API 1.
+
+The synthetic two-sandbox reproduction on baseline =9fffbb5= failed its safety
+assertion: after sandbox A replaced a writable shared child with a symlink to
+private daemon state, sandbox B received =host.sock=. No real secrets or host
+control operations were used. The fixed build retains the original inode and
+live host updates while hiding the synthetic private marker/control socket.
+
+Both new bind regression methods passed, covering eight combinations of
+file/directory, read/write and leaf/ancestor replacement, in 172.601 seconds.
+They also inspect namespace-init/shell descriptors for leaked source handles.
+The initial regression waited for a particular Fish prompt after clearing the
+configuration binds; this harness assumption caused timeouts. It now waits for
+the actual filesystem mutation, and passed against the fixed build while failing
+on the vulnerable baseline for the expected host-socket exposure.
+
+Fifteen Rust tests passed (one test-only namespace driver remains ignored by
+normal enumeration), including three deterministic lifecycle regressions.
+Formatting, workspace/all-target Clippy with warnings denied, the production
+Nix build and all flake checks passed. Verified production application:
+=/nix/store/p8bw1xmbkha2678f79b5vqsj27x8ziw8-goblins=.
+An independent review of the descriptor handoff found no additional blockers.
+
+Against that same build, 24 existing black-box methods passed in the final
+full discovery run. Its two new bind methods still used the earlier prompt
+synchronization and were rerun successfully as described above. The remaining
+startup-resize method initially stalled while Fish emitted capability queries;
+Fish's read builtin also negotiates when invoked from a noninteractive script.
+The corrected gate uses =/bin/sh= with POSIX read, then asserts =stty size= is
+=40 110= after a resize accepted before the PTY exists. It passed in 6.996 seconds.
+All 27 black-box methods therefore have passing results against this production
+build across the full run and focused reruns; no single clean 27-method run is
+claimed. The first review run also omitted wcwidth from the terminal emulator's
+Python path; its three affected UI methods passed once the dependency was supplied.
+
 * Approval popup and focus revision
 
 The user requested the information popup, Yes/No buttons and y/n shortcuts back.

@@ -307,6 +307,11 @@ impl Session {
                 input.as_raw_fd().to_string(),
                 output.as_raw_fd().to_string(),
                 filter.as_raw_fd().to_string(),
+                binds
+                    .source_fds()
+                    .map(|fd| fd.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
             ])
             .arg(&self.launch.bwrap)
             .args(args)
@@ -317,7 +322,8 @@ impl Session {
             .stdout(Stdio::from(reply_w))
             .stderr(File::create(self.directory.join("helper.log"))?);
         let parent = unsafe { libc::getpid() };
-        let keep = [input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
+        let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
+        keep.extend(binds.source_fds());
         unsafe {
             command.pre_exec(move || {
                 unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
@@ -327,7 +333,7 @@ impl Session {
                 // The worker may coexist with frontend threads. Only async-signal
                 // safe syscalls run between fork and exec; no namespace work here.
                 unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
-                for fd in keep {
+                for &fd in &keep {
                     unix::cvt(libc::fcntl(fd, libc::F_SETFD, 0))?;
                 }
                 Ok(())
@@ -335,11 +341,14 @@ impl Session {
         }
         self.cancel.check()?;
         self.helper = Some(command.spawn()?);
+        // Only the helper/bwrap now needs the startup source handles.
+        drop(command);
+        drop(binds);
         self.helper_input = Some(File::from(control_w));
         self.helper_output = Some(File::from(reply_r));
         let ready = self.helper_reply(Duration::from_secs(15))?;
         let fields: Vec<_> = ready.split_whitespace().collect();
-        if fields.len() != 6 || fields[0] != "READY1" {
+        if fields.len() != 6 || fields[0] != "READY2" {
             return Err(format!("invalid helper startup reply: {ready}").into());
         }
         self.identity = Some(Identity {

@@ -527,8 +527,8 @@ These choices settle the open details for API 1 before implementation.
   an identical key/params returns the original session ID; changed params
   conflict. Keep at most 4096 launch keys for the daemon lifetime, then reject
   new launches; never silently reuse an expired key. Manifests carry
-  =api:1,helper_api:1=; configuration-only rebuilds may select new helper paths
-  implementing private helper API 1 (=READY1= startup acknowledgement).
+  =api:1,helper_api:2=; configuration-only rebuilds may select new helper paths
+  implementing private helper API 2 (=READY2= startup acknowledgement).
   Incompatible manifests/helpers fail that launch.
 - =sessions.get/stop {session}=; =sessions.list {}=; =permissions.get {request}=;
   =permissions.list {session?,state?}=; =permissions.decide
@@ -612,7 +612,15 @@ disconnect does not revoke authorization; readiness can still be retained even
 when no caller receives its reply. Snapshot/event schemas contain daemon-issued
 identities, never an agent's RPC ID as approval authority.
 
-The helper's versioned =READY1= acknowledgement includes the five Identity
+The helper's versioned =READY2= acknowledgement includes the five Identity
 integers. Mount acknowledgements remain =OK= after one canonical store basename.
 The helper polls its private pipe and child status, exiting with the workload's
 status. No daemon thread performs namespace operations.
+
+Helper API 2 passes an explicit startup-source descriptor list before the
+Bubblewrap executable argument. The daemon opens each declared bind source,
+validates the opened object's resolved location and kind, and keeps that handle
+through both exec boundaries. Bubblewrap mounts with =--bind-fd=/=--ro-bind-fd=
+and closes the handles before payload execution. Helpers implementing API 1
+are incompatible with this launcher contract and must be rebuilt. Goblins
+JSON-RPC remains API 1.

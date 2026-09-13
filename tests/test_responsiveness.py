@@ -54,15 +54,26 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
 
     def test_resize_during_startup_is_applied_when_pty_arrives(self):
         d, marker = self.slow_daemon("startup")
-        a = d.start(wait=False); d.wait(marker.exists)
+        # A raw byte consumer is not a terminal emulator. Use a noninteractive
+        # payload so Fish's capability negotiation cannot swallow test input.
+        config = json.loads(Path(d.manifest).read_text())
+        config["goblins"]["shell"]["args"] = ["--no-config", "-c", "exec /bin/sh -c 'read -r ready; stty size'"]
+        manifest = marker.parent / "resize.json"
+        manifest.write_text(json.dumps(config))
+        a = d.start(manifest=manifest, wait=False); d.wait(marker.exists)
         self.assertTrue(d.rpc.call("sessions.resize", {"session":a["session"],"rows":40,"cols":110})["accepted"])
         marker.with_suffix(".release").touch()
         d.wait(lambda: d.get(a["session"])["state"] == "running")
         with d.terminal(a) as terminal:
             data = b""
-            while b"workspace" not in data: data += terminal.recv(8192)
-            terminal.sendall(b"stty size\n")
-            while b"40 110" not in data: data += terminal.recv(8192)
+            terminal.sendall(b"go\n")
+            while b"40 110" not in data:
+                try:
+                    chunk = terminal.recv(8192)
+                except TimeoutError:
+                    self.fail(f"missing resized dimensions: output={data!r}; session={d.get(a['session'])}")
+                self.assertTrue(chunk, data)
+                data += chunk
         self.assert_reaped(d, marker)
 
     def test_trailing_byte_disconnect_cancels_and_reaps_preview(self):

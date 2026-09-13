@@ -148,7 +148,9 @@ do not automatically grant other host files. Links into the immutable Nix store
 expose only their selected targets, including links inside config subdirectories;
 those store outputs are rooted without mounting their entire closures. Symlinks
 added or retargeted to previously hidden store targets require a new session.
-The directory itself is bound, never copied. Startup binds do not add a live
+The opened file/directory is bound, never copied. Replacing its host pathname
+or an ancestor during startup does not redirect the grant to a different object;
+changes within the granted object remain visible. Startup binds do not add a live
 file-grant operation or change the disposable =--workspace= snapshot behavior.
 
 The initial closure now comes from =mkSandbox=, including its implicit
