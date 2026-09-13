@@ -1,7 +1,35 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
-* Daemon milestone (API 1)
+* Approval popup and focus revision
+
+The user requested the information popup, Yes/No buttons and y/n shortcuts back.
+The fullscreen frontend now has a request list beneath the sandbox list. Tab
+switches focus; Up/Down selects within that list. The selected request popup
+reserves bottom rows and pushes the lists upward. Escape hides it without
+cancelling the request; accepted approval/denial closes it automatically.
+Navigation or Enter reopens details. Buttons support Left/Right and Enter (No
+by default), mouse clicks, and y/n while requests have focus.
+
+Selection remains bound to its request identity after withdrawal/completion.
+Queued events use the last rendered request; navigation and approval in one
+batch cannot activate an unseen selection. Mouse press/release retains its
+request identity. Hidden popups and bracketed paste cannot receive decisions.
+The plain fallback still uses explicit immutable token commands.
+
+Verification: three focused black-box tests passed in *27.909 seconds* against
+=/nix/store/yx118nficdhg8s2f35h2wfr6g56jg9mn-goblins=. Pyte reconstructed actual
+100-by-24 terminal screens to check the popup layout, request list, focus,
+navigation, Escape/reopening, automatic closure, history inspection and terminal
+restoration. Real sandbox requests exercised default-No Enter, Yes/Enter, live
+y approval, n denial and mouse buttons. The suspended-frontend regression
+passed for fullscreen y and plain partial-token input; an old mouse press
+could not transfer to a replacement request. Twelve Rust tests, formatting,
+Clippy with warnings denied and the production Nix build also passed.
+The complete daemon suite below records the preceding milestone; this revision
+reran the affected frontend gates rather than claiming a new complete-suite run.
+
+* Daemon milestone (API 1, initial frontend at 52feceb)
 
 Implemented on =feature/daemon-protocol= from =eb3276f=, following
 [[file:DAEMON.org][DAEMON.org]]. The ordinary-user Rust daemon owns simultaneous sessions,

@@ -35,11 +35,21 @@ hello
 echo $fish_pid
 #+end_src
 
-The approval view displays an immutable token. Type =approve TOKEN= or =deny TOKEN=
-with that complete token and press Enter. Bare approval words, y/n and mouse
-clicks cannot grant access. The fullscreen frontend ignores bracketed paste;
-type its command. The plain fallback accepts the same explicit token commands.
-Queued or partially typed input for a withdrawn request cannot approve a new one.
+The fullscreen approval view keeps a request list above a popup containing the
+selected permission's sandbox, package, reason, cost preview and Yes/No buttons.
+The popup reserves space below the lists and pushes them upward. Tab switches
+focus between sandboxes and requests; Up/Down selects in the focused list.
+With requests focused, =y= approves and =n= denies. Left/Right selects No/Yes and
+Enter activates the button (No by default); mouse clicks also work. Fullscreen
+bracketed paste is ignored. A finished or withdrawn selection stays selected
+until you choose another request, so queued input cannot approve its successor.
+Escape closes the popup without cancelling the request; accepted approval or
+denial closes it automatically. The request list remains visible. Up/Down or
+Enter on a request reopens its details; opening a hidden popup does not decide it.
+
+The plain fallback uses =approve TOKEN= or =deny TOKEN= with the complete
+immutable displayed token. Its queued/partial commands keep their original
+identity across request replacement.
 
 The request exits 0 only after the approved package and its complete runtime
 closure have been mounted read-only and the profile published. Denial or failure
@@ -52,7 +62,7 @@ Development setup hooks and unrecorded plugins/data are not activated.
 
 * Closing, stopping and inspecting
 
-Closing =serve=, typing =quit= in either approval frontend, or closing a terminal
+Closing =serve=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
 client leaves sessions owned by the daemon. A fresh =serve= discovers current
 sessions, pending approvals and retained outcomes from a new atomic snapshot.
 Reconnect is to the same daemon only. There is no terminal reattachment/replay
@@ -73,10 +83,9 @@ drained before =run= returns the payload exit code. Broken output delivery or
 daemon death reports failure. To stop the daemon and all its sessions, use Ctrl-C
 in its terminal or send its process SIGTERM. Frontend quit does not stop it.
 
-The fullscreen overview supports Up/Down selection and empty Enter to open
-package details. Escape returns/clears input; Up/Down scroll packages;
-Page Up/Down scroll request details; Ctrl-C closes the frontend. Select the
-sandbox whose request you want to inspect. Preview estimates are advisory and
+The fullscreen sandbox overview supports Enter to open package details.
+Escape returns; Up/Down scroll packages when sandboxes have focus.
+Page Up/Down scroll request details; Ctrl-C also closes the frontend. Preview estimates are advisory and
 may be Unknown. Colors use the terminal palette; =NO_COLOR= suppresses colors.
 The plain view additionally accepts =status= to print current state.
 

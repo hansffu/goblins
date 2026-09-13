@@ -71,13 +71,21 @@ or scroll package details; Page Up/Down scroll request text. Terminal defaults
 and ANSI blue borders are used, with =NO_COLOR= honored. The plain fallback
 prints escaped state and request records. Neither frontend owns sandbox state.
 
-Approval commands are =approve APPROVAL= and =deny APPROVAL=, using the complete
-immutable displayed token. Bare y/n, a mouse click, or a bare approval word
-cannot authorize anything. Fullscreen bracketed paste is ignored. Input text
-survives state replacement as text: queued/partial input naming A cannot be
-retagged as B. The daemon still validates the immutable triple against its
-current state, so a stale frontend cannot override withdrawal or another client.
-All agent text is escaped to ASCII JSON data before host-terminal presentation.
+The fullscreen view restores Yes/No buttons, mouse clicks and =y=/=n= shortcuts.
+Tab switches between sandbox and request lists; Up/Down selects in the focused
+list. The selected request popup reserves bottom rows rather than overlaying
+other content. Its identity remains selected after withdrawal or completion;
+it is never automatically replaced by the next pending request. Escape hides
+the popup, and accepted decisions close it automatically. The list remains;
+navigation or Enter reopens details. Hidden popups cannot receive decisions.
+
+Input batches target the last rendered request before applying new snapshots.
+Navigation within a batch cannot approve a selection that has not been drawn.
+Mouse press/release retains the pressed request identity. Bracketed paste is
+ignored. The plain fallback retains complete =approve APPROVAL=/=deny APPROVAL=
+commands whose text survives state replacement unchanged. In both cases the
+daemon validates the immutable triple against current state. Agent text is
+escaped to ASCII JSON data before host-terminal presentation.
 
 * Terminal lifetime and completion
 

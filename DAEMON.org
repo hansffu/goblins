@@ -564,15 +564,19 @@ These choices settle the open details for API 1 before implementation.
   separate fields; the client waits for stream EOF and drains local stdout
   before checking the retained exit/delivery result. Daemon loss or failed
   output delivery is an error, never successful terminal completion.
-- Both approval frontends accept =approve APPROVAL= / =deny APPROVAL= with the
-  exact displayed immutable token. Bare keys, mouse clicks and bare approval
-  words cannot authorize a grant. Partially entered commands retain their text
-  across state replacement and can only name the original token; bracketed
-  paste is ignored in the fullscreen frontend. This intentionally replaces the
-  unsafe immediate y/Yes gesture without requiring a larger UI design.
+- User-requested frontend revision: fullscreen keeps the information popup,
+  Yes/No buttons, mouse and =y=/=n= shortcuts. Tab switches sandbox/request
+  focus; Up/Down selects entries. The popup reserves bottom rows. Escape closes
+  it without cancelling the request; accepted decisions close it automatically.
+  The list stays visible; navigation or Enter reopens details. Selection
+  stays bound to its immutable request after withdrawal/completion. Input
+  batches target the last rendered identity; selecting another row cannot
+  activate it before presentation. Mouse release must match the press identity.
+  Bracketed paste is ignored. The plain fallback retains complete
+  =approve APPROVAL=/=deny APPROVAL= commands with immutable token text.
 
 Integration gates include suspending the actual frontend after A is displayed,
-queueing its complete/partial approval command, withdrawing A and adding B,
+queueing its approval keys or plain complete/partial command, withdrawing A and adding B,
 then resuming it; B must remain pending. Terminal tests include 50,000 bytes
 plus final marker through a slow local PTY reader, immediate short output and
 exit status preceding stream drain. Protocol tests alone do not establish these.

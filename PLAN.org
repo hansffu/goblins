@@ -292,11 +292,13 @@ certification. The following focused reproductions demonstrated uncovered bugs.
 
 ** DONE Bind approval input to the request actually presented (P1)
 
-Resolution: both actual frontends require the complete immutable approval token
-in the typed command. Suspending the frontend with A displayed, queueing a
-partial A command, withdrawing A and creating B, then completing/resuming the
-old command leaves B pending. Stale/duplicate/competing daemon decisions are
-also rejected. Bracketed paste does not grant access.
+Resolution: the plain frontend retains immutable token commands. The
+user-requested fullscreen revision restores buttons and y/n, preserving the
+selected request identity after withdrawal and binding queued input to the
+last rendered request. Navigation plus approval cannot activate an unseen
+selection. Both actual frontends are covered by the suspended-input regression;
+stale/duplicate/competing daemon decisions are rejected, and bracketed paste
+does not grant access.
 
 At the review baseline, queued terminal input for an old request could authorize
 a replacement: the frontend replaced pending state before consuming input and gave

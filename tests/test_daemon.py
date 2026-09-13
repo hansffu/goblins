@@ -10,7 +10,7 @@ import socket
 import time
 import unittest
 from daemon_support import Daemon, RPC, frame, receive
-from terminal_support import Terminal
+from terminal_support import Terminal, screen_wait
 
 class DaemonTests(unittest.TestCase):
     def setUp(self):
@@ -75,27 +75,36 @@ class DaemonTests(unittest.TestCase):
             self.addCleanup(ui.close)
             pa, a = d.pending(launch["session"])
             self.addCleanup(pa.close)
-            ui.expect(a["approval"])
+            if plain:
+                ui.expect(a["approval"])
+            else:
+                screen_wait(ui, lambda text: "Package: hello" in text)
+                ui.send("\t")
+                screen_wait(ui, lambda text: "Requests [focused]" in text)
             os.kill(ui.pid, signal.SIGSTOP)
-            ui.send("approve " + a["approval"][:-2])  # queued partial command for A
+            ui.send("approve " + a["approval"][:-2] if plain else "y")  # input for displayed A
             pa.peer.sendall(b"x"); pa.close()
             d.wait(lambda: d.rpc.call("permissions.get", {"request": a["id"]})["state"] == "withdrawn")
             pb, b = d.pending(launch["session"], "tree")
             self.addCleanup(pb.close)
-            ui.send(a["approval"][-2:] + "\r")
+            if plain: ui.send(a["approval"][-2:] + "\r")
             os.kill(ui.pid, signal.SIGCONT)
             time.sleep(.3)
             self.assertEqual(d.rpc.call("permissions.get", {"request": b["id"]})["state"], "pending")
-            ui.send("approve\ry\r")
+            ui.send("approve\ry\r" if plain else "y\r")
             time.sleep(.2)
             self.assertEqual(d.rpc.call("permissions.get", {"request": b["id"]})["state"], "pending")
             if not plain:
-                import fcntl, struct, termios
-                fcntl.ioctl(ui.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 101, 0, 0))
-                os.kill(ui.pid, signal.SIGWINCH)
-            ui.expect(b["approval"])
+                # Navigation and approval queued together must not approve an
+                # unseen selection either. Only a later, fresh interaction may.
+                ui.send("\x1b[By")
+                time.sleep(.2)
+                self.assertEqual(d.rpc.call("permissions.get", {"request": b["id"]})["state"], "pending")
+                screen_wait(ui, lambda text: "Package: tree" in text)
+            else:
+                ui.expect(b["approval"])
             # A valid fresh command is still usable in the actual frontend.
-            ui.send("deny " + b["approval"] + "\r")
+            ui.send("deny " + b["approval"] + "\r" if plain else "n")
             def decided():
                 while select.select([ui.fd], [], [], 0)[0]:
                     ui.buffer += os.read(ui.fd, 65536)
@@ -105,9 +114,9 @@ class DaemonTests(unittest.TestCase):
             except AssertionError:
                 self.fail(f"frontend {plain=}, record={d.rpc.call('permissions.get', {'request':b['id']})}, output={ui.buffer[-8000:]!r}")
             self.assertEqual(receive(pb.peer)["result"]["status"], "denied")
-            ui.send("quit\r"); self.assertEqual(ui.wait(), 0)
+            ui.send("quit\r" if plain else "q"); self.assertEqual(ui.wait(), 0)
             self.assertEqual(d.get(launch["session"])["state"], "running")
-        print("EVIDENCE queued partial approval for displayed A cannot approve replacement B in plain/fullscreen frontends", flush=True)
+        print("EVIDENCE queued token text / fullscreen y for displayed A cannot approve replacement B", flush=True)
 
     def test_terminal_slow_reader_and_immediate_exit(self):
         d = self.d
