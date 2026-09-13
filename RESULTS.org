@@ -1,6 +1,35 @@
 #+title: Live package grant experiment results
 #+date: 2026-09-13
 
+* Sandbox overview and terminal palette refinement
+
+The overview now shows one row per sandbox, with its PID, state and startup/live
+package counts. Enter opens a separate scrollable package table; Escape or
+Backspace returns. The request panel still reserves space below either view,
+and pending requests keep Enter's button action (initially No).
+
+Borders have square corners. Headings/borders use terminal ANSI blue; access
+and Yes use green, requests use yellow, and No uses red. Foreground/background
+remain terminal defaults. Selection uses reverse video and hints are dimmed.
+The OneDark option was removed; there is no RGB fallback or background probing.
+
+Verification on 2026-09-13:
+
+- Both fullscreen PTY tests passed in 68.069 seconds, including single-row
+  overview assertions, Enter/Escape navigation, package scrolling, blue palette
+  cells, square corners, reserved request layout, cached/remote cost previews,
+  keyboard/mouse denial, live hello approval and overview count updates.
+- After hiding the scrollbar when all rows fit, the layout/live-grant PTY
+  scenario passed again in 30.612 seconds against the final production build.
+- Slow preview cancellation/reaping on deny, request disconnect and quit passed
+  the two-second response bounds. Resize and terminal restoration still passed.
+- Ten Rust unit tests, Clippy with warnings denied, the production Nix build
+  and all 26 flake checks passed. Production packaging still excludes Python
+  and source/test fixtures.
+
+The following section records the earlier frontend implementation and its
+verification, including the subsequently removed OneDark option.
+
 * Fullscreen approval UI and cost previews
 
 =serve= now uses an alternate-screen terminal frontend with a scrollable package

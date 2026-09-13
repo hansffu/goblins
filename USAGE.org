@@ -80,20 +80,24 @@ exit 2.
 Type =exit= in Fish to stop that session; =serve= stays ready for another
 =goblins run shell=. A new session does not inherit previous grants. This runtime
 supports one attached shell at a time. The fullscreen table shows the connected
-sandbox, host PID, startup packages and live grants. Press =q= / Ctrl-C to stop
+sandbox once, with host PID, state and startup/live package counts. Enter opens
+the selected sandbox's package details. Press =q= / Ctrl-C to stop
 the server and its shell.
 
 * Fullscreen approval interface
 
 =serve= enters the alternate screen and restores the terminal on exit. The
-scrollable table lists the connected sandbox and its packages, distinguishing
-startup access from live grants. A bordered request panel opens at the bottom
+overview has one row per connected sandbox. Press Enter to open its scrollable
+package table, distinguishing startup access from live grants; Escape returns
+to the overview. A bordered request panel opens at the bottom
 and reduces the table height; it never draws over table rows.
 
 | Input | Action |
 |-------+--------|
 | =y= / =n= | Approve / deny the displayed request immediately |
-| Left / Right / Tab, then Enter | Select a Yes/No button; No is selected initially |
+| Enter (no request pending) | Open the selected sandbox's package details |
+| Escape / Backspace | Return from details to the sandbox overview |
+| Left / Right / Tab, then Enter (request pending) | Select a Yes/No button; No is selected initially |
 | Mouse click | Activate the Yes or No button |
 | Up / Down or =k= / =j=, Home / End | Scroll the package table |
 | Mouse wheel | Scroll the table or request under the pointer |
@@ -111,7 +115,10 @@ These values are advisory; approval is still required for realization/mounting.
 Denial, request disconnect, attachment disconnect and quit cancel pending work.
 
 Colors use the terminal's default foreground/background and ANSI palette.
-For an explicit OneDark palette, run =goblins serve --theme onedark=.
+Blue marks square borders/headings, green marks status/access and Yes, yellow
+marks requests, and red marks No. The terminal theme supplies these ANSI colors;
+Goblins does not sample the background or use a fallback RGB theme. Selection
+uses reverse video (swapping foreground/background), and hints are dimmed.
 The =NO_COLOR= environment convention is respected. Borders and text labels
 also distinguish states without color. Very small terminals show a resize hint.
 Bracketed paste is ignored for approvals, and request text is escaped before

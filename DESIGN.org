@@ -35,8 +35,10 @@ for terminal events. These dependencies are confined to the host controller
 package; the inner request client and namespace helper do not depend on them.
 The controller library still never opens =/dev/tty=. The frontend owns alternate
 screen/raw mode, resize, scroll state, colors and input. Its request panel reserves
-vertical space below the table rather than overlaying it. Terminal ANSI colors
-are inherited by default; OneDark is an explicit alternative.
+vertical space below the table rather than overlaying it. The overview contains
+one row per sandbox; Enter opens its package table and Escape returns. Terminal
+foreground/background defaults and ANSI colors are inherited, with blue square
+borders and no RGB theme fallback.
 
 A validated package request emits an approval token immediately and queues a
 preview on the existing session worker. Preview evaluation disables IFD and

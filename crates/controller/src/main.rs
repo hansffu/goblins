@@ -38,7 +38,7 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "usage: goblins [--runtime MANIFEST] [--state-dir DIRECTORY] serve [--workspace DIRECTORY] [--plain | --theme terminal|onedark]\n       goblins [--state-dir DIRECTORY] run NAME\n       goblins [--state-dir DIRECTORY] shell"
+            "usage: goblins [--runtime MANIFEST] [--state-dir DIRECTORY] serve [--workspace DIRECTORY] [--plain]\n       goblins [--state-dir DIRECTORY] run NAME\n       goblins [--state-dir DIRECTORY] shell"
         );
         return;
     }
@@ -77,7 +77,6 @@ fn main() {
         } else {
             false
         };
-        let theme = option(&mut args, "--theme")?;
         let manifest = Manifest::read(&runtime)?;
         let configuration = fs::canonicalize(runtime)?.display().to_string();
         match args.as_slice() {
@@ -85,7 +84,7 @@ fn main() {
                 if plain {
                     plain::serve(manifest, state, workspace)?;
                 } else {
-                    tui::serve(state, workspace, tui::Theme::parse(theme.as_deref())?)?;
+                    tui::serve(state, workspace)?;
                 }
             }
             _ => {
@@ -94,8 +93,8 @@ fn main() {
                     [command, name] if command == "run" => name,
                     _ => return Err("expected serve, run NAME or shell".into()),
                 };
-                if plain || theme.is_some() {
-                    return Err("--plain and --theme are only valid with serve".into());
+                if plain {
+                    return Err("--plain is only valid with serve".into());
                 }
                 if workspace.is_some() {
                     return Err("--workspace is only valid with serve".into());

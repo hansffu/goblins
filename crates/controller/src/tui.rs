@@ -35,40 +35,6 @@ use std::{
 
 const TICK: Duration = Duration::from_millis(30);
 #[derive(Clone, Copy)]
-pub enum Theme {
-    Terminal,
-    OneDark,
-}
-impl Theme {
-    pub fn parse(value: Option<&str>) -> Result<Self> {
-        match value {
-            None | Some("terminal") => Ok(Self::Terminal),
-            Some("onedark") => Ok(Self::OneDark),
-            _ => Err("theme must be terminal or onedark".into()),
-        }
-    }
-    fn colors(self) -> Colors {
-        match self {
-            Self::Terminal => Colors {
-                fg: Color::Reset,
-                bg: Color::Reset,
-                accent: Color::Cyan,
-                green: Color::Green,
-                yellow: Color::Yellow,
-                red: Color::Red,
-            },
-            Self::OneDark => Colors {
-                fg: Color::Rgb(171, 178, 191),
-                bg: Color::Rgb(40, 44, 52),
-                accent: Color::Rgb(97, 175, 239),
-                green: Color::Rgb(152, 195, 121),
-                yellow: Color::Rgb(229, 192, 123),
-                red: Color::Rgb(224, 108, 117),
-            },
-        }
-    }
-}
-#[derive(Clone, Copy)]
 struct Colors {
     fg: Color,
     bg: Color,
@@ -78,13 +44,25 @@ struct Colors {
     red: Color,
 }
 impl Colors {
+    // Named colors refer to the terminal palette. Reset preserves its default
+    // foreground/background; no theme probing or RGB fallback is needed.
+    fn terminal() -> Self {
+        Self {
+            fg: Color::Reset,
+            bg: Color::Reset,
+            accent: Color::Blue,
+            green: Color::Green,
+            yellow: Color::Yellow,
+            red: Color::Red,
+        }
+    }
     fn base(self) -> Style {
         Style::default().fg(self.fg).bg(self.bg)
     }
     fn border(self, title: String) -> Block<'static> {
         Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+            .border_type(BorderType::Plain)
             .border_style(Style::default().fg(self.accent))
             .title(title)
             .style(self.base())
@@ -131,7 +109,7 @@ struct Pending {
     decided: Option<bool>,
 }
 struct View {
-    theme: Theme,
+    details: bool,
     table: TableState,
     pending: Option<Pending>,
     notice: String,
@@ -148,9 +126,9 @@ fn safe(text: &str) -> String {
     quoted[1..quoted.len() - 1].into()
 }
 impl View {
-    fn new(theme: Theme) -> Self {
+    fn new() -> Self {
         Self {
-            theme,
+            details: false,
             table: TableState::default().with_selected(0),
             pending: None,
             notice: "Run goblins run NAME in another terminal to connect.".into(),
@@ -168,9 +146,11 @@ impl View {
             match event {
                 Event::Connected(name) => {
                     self.notice = format!("{} connected", safe(&name));
+                    self.details = false;
                     self.table.select(Some(0));
                 }
                 Event::Stopped => {
+                    self.details = false;
                     self.pending = None;
                     self.notice = "Sandbox stopped. Ready for another connection.".into();
                 }
@@ -268,7 +248,17 @@ impl View {
                 KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
                     self.yes_selected = !self.yes_selected
                 }
-                KeyCode::Enter => self.decide(controller, self.yes_selected),
+                KeyCode::Enter if self.pending.is_some() => {
+                    self.decide(controller, self.yes_selected)
+                }
+                KeyCode::Enter if !self.details && controller.sandbox().is_some() => {
+                    self.details = true;
+                    self.table = TableState::default().with_selected(0);
+                }
+                KeyCode::Esc | KeyCode::Backspace if self.details => {
+                    self.details = false;
+                    self.table = TableState::default().with_selected(0);
+                }
                 KeyCode::Up | KeyCode::Char('k') => self.move_table(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_table(1),
                 KeyCode::Home => self.table.select(Some(0)),
@@ -320,7 +310,7 @@ impl View {
         false
     }
     fn draw(&mut self, f: &mut Frame, controller: &Controller) {
-        let c = self.theme.colors();
+        let c = Colors::terminal();
         let area = f.area();
         f.render_widget(Block::default().style(c.base()), area);
         if area.width < 42 || area.height < 14 {
@@ -351,6 +341,7 @@ impl View {
             sections[0],
         );
         let mut rows = Vec::new();
+        let mut title = " Connected sandboxes (0) ".to_string();
         if let Some(sandbox) = controller.sandbox() {
             let goblins_controller::controller::Sandbox {
                 name,
@@ -359,35 +350,51 @@ impl View {
                 granted_packages: granted,
                 status,
             } = sandbox;
-            let mut packages: Vec<_> = initial.iter().map(|p| (safe(p), "Startup")).collect();
-            packages.extend(granted.iter().map(|p| (safe(p), "Granted")));
-            if packages.is_empty() {
-                packages.push(("No packages granted yet".into(), "-"));
-            }
             let pid = identity
                 .map(|i| i.pid.to_string())
                 .unwrap_or_else(|| "-".into());
-            for (package, access) in packages {
+            if self.details {
+                title = format!(
+                    " {} · PID {} · {} · Packages ({}) ",
+                    safe(name),
+                    pid,
+                    status,
+                    initial.len() + granted.len()
+                );
+                for (package, access) in initial
+                    .iter()
+                    .map(|p| (p, "Startup"))
+                    .chain(granted.iter().map(|p| (p, "Granted")))
+                {
+                    rows.push(Row::new(vec![
+                        Cell::from(safe(package)),
+                        Cell::from(access).style(Style::default().fg(c.green)),
+                    ]));
+                }
+                if rows.is_empty() {
+                    rows.push(Row::new(["No packages granted yet", "-"]));
+                }
+            } else {
+                title = " Connected sandboxes (1) ".into();
                 rows.push(Row::new(vec![
                     Cell::from(safe(name)),
-                    Cell::from(pid.clone()),
-                    Cell::from(package),
-                    Cell::from(format!("{access} / {status}")).style(Style::default().fg(
-                        if status == "Approval" {
-                            c.yellow
-                        } else {
-                            c.green
-                        },
+                    Cell::from(pid),
+                    Cell::from(status).style(Style::default().fg(if status == "Approval" {
+                        c.yellow
+                    } else {
+                        c.green
+                    })),
+                    Cell::from(format!(
+                        "{} startup / {} granted",
+                        initial.len(),
+                        granted.len()
                     )),
                 ]));
             }
         }
         self.row_count = rows.len();
         self.table_area = sections[1];
-        let block = c.border(format!(
-            " Connected sandboxes · Packages ({}) ",
-            self.row_count
-        ));
+        let block = c.border(title);
         if rows.is_empty() {
             f.render_widget(
                 Paragraph::new(
@@ -397,32 +404,44 @@ impl View {
                 sections[1],
             );
         } else {
-            let table = Table::new(
-                rows,
-                [
-                    Constraint::Percentage(18),
-                    Constraint::Length(8),
-                    Constraint::Percentage(42),
-                    Constraint::Min(17),
-                ],
-            )
-            .header(
-                Row::new(["Sandbox", "PID", "Package", "Access / State"])
-                    .style(c.base().fg(c.accent).bold())
-                    .bottom_margin(1),
-            )
-            .block(block)
-            .column_spacing(2)
-            .row_highlight_style(c.base().reversed())
-            .highlight_symbol("› ");
+            let (widths, headers) = if self.details {
+                (
+                    vec![Constraint::Min(20), Constraint::Length(12)],
+                    vec!["Package", "Access"],
+                )
+            } else {
+                (
+                    vec![
+                        Constraint::Min(10),
+                        Constraint::Length(8),
+                        Constraint::Length(10),
+                        Constraint::Length(24),
+                    ],
+                    vec!["Sandbox", "PID", "State", "Packages"],
+                )
+            };
+            let table = Table::new(rows, widths)
+                .header(
+                    Row::new(headers)
+                        .style(c.base().fg(c.accent).bold())
+                        .bottom_margin(1),
+                )
+                .block(block)
+                .column_spacing(2)
+                .row_highlight_style(c.base().reversed())
+                .highlight_symbol("› ");
             f.render_stateful_widget(table, sections[1], &mut self.table);
-            let mut scroll =
-                ScrollbarState::new(self.row_count).position(self.table.selected().unwrap_or(0));
-            f.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight),
-                sections[1],
-                &mut scroll,
-            );
+            // Keep borders intact when every row fits (including the overview).
+            let visible_rows = sections[1].height.saturating_sub(4) as usize;
+            if self.row_count > visible_rows {
+                let mut scroll = ScrollbarState::new(self.row_count)
+                    .position(self.table.selected().unwrap_or(0));
+                f.render_stateful_widget(
+                    Scrollbar::new(ScrollbarOrientation::VerticalRight),
+                    sections[1],
+                    &mut scroll,
+                );
+            }
         }
         self.request_area = sections[3];
         self.yes_area = Rect::default();
@@ -508,7 +527,7 @@ impl View {
                     f.render_widget(
                         Paragraph::new(label)
                             .centered()
-                            .block(Block::bordered().border_type(BorderType::Rounded))
+                            .block(Block::bordered().border_type(BorderType::Plain))
                             .style(if selected { style.reversed() } else { style }),
                         rect,
                     );
@@ -520,7 +539,18 @@ impl View {
                 sections[3],
             );
         }
-        f.render_widget(Paragraph::new(if area.width >= 90 { " ↑↓/j k scroll  PgUp/PgDn request  ←→/Tab buttons  Enter select  y/n decide  q quit" } else if area.width >= 65 { " ↑↓ scroll  PgUp/Dn request  y/n decide  Tab buttons  q quit" } else { " ↑↓ scroll  y/n decide  Tab buttons  q quit" }).style(c.base().dim()), sections[4]);
+        let help = if self.pending.is_some() {
+            if area.width >= 90 {
+                " ↑↓ scroll  PgUp/Dn request  Tab buttons  Enter select  y/n decide  Esc back  q quit"
+            } else {
+                " y/n decide  Tab/Enter select  q quit"
+            }
+        } else if self.details {
+            " ↑↓ scroll  PgUp/Dn page  Esc back  q quit"
+        } else {
+            " ↑↓ select  Enter details  q quit"
+        };
+        f.render_widget(Paragraph::new(help).style(c.base().dim()), sections[4]);
     }
 }
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -539,10 +569,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         })
         .collect()
 }
-pub fn serve(state: PathBuf, workspace: Option<PathBuf>, theme: Theme) -> Result<()> {
+pub fn serve(state: PathBuf, workspace: Option<PathBuf>) -> Result<()> {
     let mut controller = Controller::new(&state, workspace)?;
     let mut screen = Screen::open()?;
-    let mut view = View::new(theme);
+    let mut view = View::new();
     while !STOP.load(Ordering::Relaxed) {
         view.events(controller.tick()?, &controller);
         screen.terminal.draw(|f| view.draw(f, &controller))?;

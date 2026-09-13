@@ -76,9 +76,8 @@ class TuiTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.state = self.root / 'control'
 
-    def start(self, env=None, theme=None):
+    def start(self, env=None):
         args = [self.binary, '--runtime', self.config, '--state-dir', str(self.state), 'serve']
-        if theme: args += ['--theme', theme]
         self.server = Screen(args, env=env)
         self.addCleanup(self.server.close)
         self.server.contains('No connected sandbox')
@@ -107,14 +106,26 @@ class TuiTests(unittest.TestCase):
         self.start()
         self.assertIn(b'\x1b[?1049h', self.server.raw)
         self.assertFalse(termios.tcgetattr(self.server.fd)[3] & termios.ICANON)
+        overview = self.server.contains('Enter details')
+        self.assertEqual(sum(bool(re.search(r'shell\s+\d+\s', l)) for l in overview.splitlines()), 1)
+        self.assertIn('startup / 0 granted', overview)
+        self.assertNotIn('coreutils-', overview)
+        self.assertIn('┌', overview)
+        self.assertNotIn('╭', overview)
+        self.server.send('\r')
+        self.server.contains('Startup')
+        self.server.send('\x1b')
+        self.server.contains('Enter details')
+        self.server.send('\r')
+        self.server.contains('Startup')
         first = self.server.text()
         self.server.send('\x1b[F')
         self.server.until(lambda s: s != first)
         self.server.send('\x1b[H')
         self.server.contains('Startup')
         # The terminal's own ANSI palette is used, not a forced RGB background.
-        self.assertTrue({'cyan', '00cdcd'} & {cell.fg for row in self.server.screen.buffer.values() for cell in row.values()})
-        idle_table_rows = sum('Startup / Connected' in l for l in self.server.screen.display)
+        self.assertTrue({'blue', '0000ee'} & {cell.fg for row in self.server.screen.buffer.values() for cell in row.values()})
+        idle_table_rows = sum('Startup' in l for l in self.server.screen.display)
         peer = self.peer(package='hello', id='ui-hello', reason='A clear reason for the project')
         screen = self.server.contains('In host store: Yes')
         self.assertIn('Download: 0 B', screen)
@@ -126,8 +137,8 @@ class TuiTests(unittest.TestCase):
         Path('/tmp/goblins-tui-request.txt').write_text(screen)
         Path('/tmp/goblins-tui-request-cells.json').write_text(json.dumps([[{'text': cell.data, 'fg': cell.fg, 'bg': cell.bg, 'reverse': cell.reverse, 'bold': cell.bold} for cell in (self.server.screen.buffer[y][x] for x in range(100))] for y in range(24)]))
         request_row = next(i for i,l in enumerate(self.server.screen.display) if 'Package request' in l)
-        self.assertTrue(all(i < request_row for i,l in enumerate(self.server.screen.display) if 'Startup / Approval' in l))
-        self.assertLess(sum('Startup / Approval' in l for l in self.server.screen.display), idle_table_rows)
+        self.assertTrue(all(i < request_row for i,l in enumerate(self.server.screen.display) if 'Startup' in l))
+        self.assertLess(sum('Startup' in l for l in self.server.screen.display), idle_table_rows)
         # A duplicate public ID cannot dismiss the popup for another request.
         invalid = self.peer(package='hello^out', id='ui-hello')
         self.assertEqual(json.loads(invalid.recv(4096))['status'], 'error')
@@ -173,7 +184,11 @@ class TuiTests(unittest.TestCase):
         self.server.send('y')
         self.assertEqual(json.loads(peer.recv(4096))['status'], 'ready')
         self.server.send('\x1b[F')
-        self.server.until(lambda s: re.search(r'hello\s+Granted / Connected', s) is not None)
+        self.server.until(lambda s: re.search(r'hello\s+Granted', s) is not None)
+        self.server.send('\x1b')
+        overview = self.server.contains('startup / 1 granted')
+        self.assertEqual(sum(bool(re.search(r'shell\s+\d+\s', l)) for l in overview.splitlines()), 1)
+        self.assertNotIn('hello', overview.split('Activity')[0])
         self.client.send('hello\n')
         self.client.expect(r'(?:^|\n)Hello, world!\n')
         self.server.resize(70, 18)
@@ -189,7 +204,7 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(self.client.wait(), 0)
         print('EVIDENCE fullscreen: scrolling, reserved popup layout, ANSI colors, cached/missing preview, paste rejection, y/n, mouse denial, live hello, resize and tty restoration', flush=True)
 
-    def test_onedark_and_preview_cancellation(self):
+    def test_preview_cancellation(self):
         import shutil, sys
         fake = self.root / 'bin'; fake.mkdir()
         marker = self.root / 'preview'
@@ -204,8 +219,7 @@ if 'eval' in sys.argv and 'false' in sys.argv:
 else: os.execv({real_nix!r},[{real_nix!r},*sys.argv[1:]])
 ''')
         script.chmod(0o700)
-        self.start(env={**os.environ, 'PATH': str(fake) + ':' + os.environ['PATH']}, theme='onedark')
-        self.assertIn('61afef', {cell.fg for row in self.server.screen.buffer.values() for cell in row.values()})
+        self.start(env={**os.environ, 'PATH': str(fake) + ':' + os.environ['PATH']})
         for action in ('deny', 'disconnect', 'quit'):
             peer = self.peer(package='hello', id=action, reason='Cancel a slow preview')
             self.server.contains('Checking...')
@@ -233,4 +247,4 @@ else: os.execv({real_nix!r},[{real_nix!r},*sys.argv[1:]])
                 self.assertTrue(not path.exists() or path.read_text().split()[2] == 'Z')
             marker.unlink()
         self.assertEqual(self.client.wait(), 0)
-        print('EVIDENCE OneDark RGB colors; deny, request disconnect and quit cancel/reap preview without blocking UI', flush=True)
+        print('EVIDENCE deny, request disconnect and quit cancel/reap preview without blocking UI', flush=True)

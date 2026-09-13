@@ -253,7 +253,9 @@ This changes launch selection only. Controller restart recovery stays out of sco
 * Fullscreen approval frontend follow-up
 
 At the user's request, =serve= now has a fullscreen table and bottom request
-panel, quick Yes/No keys, mouse buttons, scrolling and terminal/OneDark colors.
+panel, quick Yes/No keys, mouse buttons, scrolling and terminal ANSI colors.
+The overview has one row per sandbox; Enter opens package details and Escape
+returns. Borders are square and blue; the OneDark option has been removed.
 The host worker supplies cancellable package availability and transfer-size
 previews. This is a frontend expansion; one active sandbox, sequential grants
 and controller-owned lifetime remain. Restart recovery is still out of scope.
