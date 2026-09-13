@@ -1,5 +1,16 @@
 #+title: Goblins
 
+* EXPERIMENTAL · AI-GENERATED SOFTWARE
+
+*Created for me, by me (and Codex).*
+
+This is a personal experiment, built with substantial AI-generated code. It is
+made for my own workflow, not a polished or supported product. Expect bugs,
+breaking changes, and rough edges. The sandbox is experimental too: it has not
+had an independent security audit. Use it at your own risk.
+
+* What is Goblins?
+
 A Rust sandbox runtime for approved live Nix package grants. A fullscreen terminal app
 is the current frontend; Emacs integration is planned.
 
@@ -7,11 +18,95 @@ See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
 The agreed next implementation is recorded in
 [[file:DAEMON.org][the daemon and communication decisions]]; current usage and verified evidence are in USAGE.org and RESULTS.org.
 
-* Documentation convention
+* Install on NixOS
 
-Use Org mode (=.org=) for repository documentation, including plans, design
-notes, and experiment reports. Use native Org headings, links, lists, tables,
-and source blocks.
+Currently supported: *x86_64 Linux*, with Nix and unprivileged user namespaces.
+The runtime requires modern Linux mount APIs; see [[file:USAGE.org::*Scope and requirements][runtime requirements]].
+Run Goblins as your normal user, not as root.
+
+For a NixOS configuration managed with flakes, add this input to your existing
+=flake.nix=:
+
+#+begin_src nix
+inputs.goblins.url = "github:hansffu/goblins";
+#+end_src
+
+Keep your existing =nixpkgs= input and system modules. Add =goblins= to the
+=outputs= arguments and install its package through =environment.systemPackages=.
+For example, adapting =your-host= and the modules to your configuration:
+
+#+begin_src nix
+outputs = { nixpkgs, goblins, ... }: {
+  nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+    system = "x86_64-linux";
+    modules = [
+      ./configuration.nix
+      {
+        nix.settings.experimental-features = [ "nix-command" "flakes" ];
+        environment.systemPackages = [
+          goblins.packages.x86_64-linux.default
+        ];
+      }
+    ];
+  };
+};
+#+end_src
+
+From your NixOS configuration directory, lock the new input and rebuild:
+
+#+begin_src sh
+nix flake lock
+sudo nixos-rebuild switch --flake .#your-host
+#+end_src
+
+If flakes are not enabled yet, first add
+=nix.settings.experimental-features = [ "nix-command" "flakes" ];= to your
+existing NixOS configuration and rebuild it with =sudo nixos-rebuild switch=.
+See [[https://nix.dev/concepts/flakes.html][the Nix flakes documentation]] and
+[[https://wiki.nixos.org/wiki/NixOS_system_configuration][NixOS system configuration]] for the general setup.
+
+This installs the command and shell completions. It does not install a NixOS
+service or start a server automatically. The flake keeps its own pinned
+=nixpkgs= and =agent-sandbox.nix= inputs; your system's package set can stay as it is.
+
+** Quick start
+
+From the project directory you want to work in:
+
+#+begin_src sh
+goblins server start
+goblins tui
+#+end_src
+
+In another terminal, from that project directory:
+
+#+begin_src sh
+goblins run shell --name snikk
+#+end_src
+
+Inside the sandbox, request a package, approve it in the TUI, then use it:
+
+#+begin_src fish
+goblins request-package cowsay --reason "Try a live package grant"
+cowsay hello
+#+end_src
+
+Omit =--name= to get a randomly selected fantasy goblin name. The project is
+copied into a disposable workspace; writes there do not update the original.
+Explicit writable binds are different: they modify host files.
+Closing the TUI leaves agents running. Use =goblins stop snikk= for one agent or
+=goblins server stop= to stop the server and all its agents.
+
+** Try without installing
+
+With flakes enabled, the same commands can be run directly from GitHub:
+
+#+begin_src sh
+nix run github:hansffu/goblins -- server start
+nix run github:hansffu/goblins -- tui
+# In another terminal:
+nix run github:hansffu/goblins -- run shell
+#+end_src
 
 * Rust runtime
 
@@ -143,6 +238,9 @@ The controller accepts explicit frontend decisions; its library never opens
 the daemon continues serving other sessions and frontends. The internal
 client depends only on shared protocol code, with no host policy or mount API.
 There is no production Python executable or mandatory Python interpreter.
+
+Use Org mode (=.org=) for repository documentation, including plans, design
+notes, and experiment reports.
 
 This rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It does
 not implement Emacs integration, multiplexing, file/network live grants, or
