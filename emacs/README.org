@@ -1,0 +1,92 @@
+#+title: Goblins for Emacs
+
+A small Magit-style status buffer for the Goblins daemon. Requires Emacs 28.1+
+and =magit-section= (included with Magit). Uses Emacs' built-in =jsonrpc= and
+connects directly to the local host socket.
+
+* Load and use
+
+With your existing Emacs/Nix packages available, evaluate:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/goblins/emacs")
+(require 'goblins)
+#+end_src
+
+Run =M-x goblins-status= and press =s= to start the server if it is not running.
+Startup runs asynchronously and connects the buffer automatically when ready.
+Press =S= to stop the server and all its agents. Shutdown also runs asynchronously;
+the buffer reports when it has finished. Use =s= to start again afterward.
+The server uses this buffer's state directory and starts from its
+=default-directory=, just like running the CLI from that directory.
+Set =goblins-executable= to the packaged binary's absolute path if =goblins=
+is not on Emacs' =exec-path=.
+Launch agents with =goblins run shell= as usual. The buffer updates automatically
+and includes agents, pending requests, and collapsible recent request history.
+Agent and pending-request headings are visible with their details collapsed
+by default. Request history and its entries are fully collapsed by default.
+Expand an agent to see its session ID and startup/granted packages, or a request
+to see its reason and preview. Live updates preserve your folding choices.
+
+| Key | Action |
+|-----+--------|
+| =s= | Start the server and connect |
+| =S= | Stop the server and all agents |
+| =n= / =p= | Next / previous section |
+| =TAB= or =RET= | Expand / collapse section |
+| =a= | Accept the pending request at point |
+| =d= | Deny the pending request at point |
+| =g= or =r= | Reconnect and refresh |
+| =q= | Close the buffer and its connection; agents keep running |
+
+When Evil is enabled, the buffer starts in normal state with dedicated bindings:
+
+| Evil key | Action |
+|----------+--------|
+| =s= | Start the server and connect |
+| =S= | Stop the server and all agents |
+| =j= / =k= | Next / previous section |
+| =h= / =l= | Collapse / expand section |
+| =TAB=, =RET= or =za= | Toggle section |
+| =a= / =d= | Accept / deny the pending request at point |
+| =gr= or =r= | Reconnect and refresh |
+| =gg= / =G= | Beginning / end of buffer |
+| =q= | Close the buffer |
+
+Evil support works with either package load order and changes only this mode's
+bindings. Evil is optional and is never installed or enabled globally by Goblins.
+
+Acceptance starts provisioning; the request moves to recent history and its
+state continues updating until ready or failed. Decisions always use the exact
+displayed session/request/approval identity. If a selected request disappears or
+moves to history, point returns to the top instead of selecting another request.
+Disconnects, sequence gaps and errors disable decisions until =r= reconnects.
+A timed-out decision is not automatically retried; refresh to inspect its outcome.
+
+For a daemon launched with =--state-dir=, use =C-u M-x goblins-status= to select
+that directory, or set =goblins-state-directory=. Otherwise the directory follows
+the CLI's =$XDG_RUNTIME_DIR/goblins=, =/run/user/UID/goblins=, or
+=/tmp/goblins-control-UID= fallback. Each directory gets its own status buffer.
+
+This package starts a daemon only when you press =s=. It does not install
+dependencies, run a package manager, or alter your Emacs configuration.
+Nix-managed Emacs packages can be used
+directly; there is no need to download another copy of Magit.
+
+* Checks
+
+Run with an Emacs that already has =magit-section= on its load path:
+
+#+begin_src sh
+emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
+  -f batch-byte-compile emacs/goblins.el
+emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
+python3 -m unittest discover -s tests -p test_emacs.py
+#+end_src
+
+The Python integration tests start, stop and restart an isolated server from the buffer and
+use the existing daemon test harness to create two
+isolated agents, accepts and denies actual package requests through Emacs,
+reconnects, and checks that closing Emacs leaves the agents running. It skips
+when Emacs or =magit-section= is unavailable. These commands use =-Q= and do not
+load your init file or install Emacs packages.

@@ -12,7 +12,7 @@ had an independent security audit. Use it at your own risk.
 * What is Goblins?
 
 A Rust sandbox runtime for approved live Nix package grants. A fullscreen terminal app
-is the current frontend; Emacs integration is planned.
+and an Emacs status buffer provide agent status and approvals.
 
 See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
 The agreed next implementation is recorded in
@@ -96,6 +96,10 @@ copied into a disposable workspace; writes there do not update the original.
 Explicit writable binds are different: they modify host files.
 Closing the TUI leaves agents running. Use =goblins stop snikk= for one agent or
 =goblins server stop= to stop the server and all its agents.
+
+For Emacs, load [[file:emacs/goblins.el][goblins.el]] and run =M-x goblins-status= for a Magit-style
+buffer with live agent/request sections and =a=/=d= accept/deny actions.
+See [[file:emacs/README.org][Emacs setup and keys]]; it uses your existing =magit-section= package.
 
 ** Try without installing
 
@@ -252,6 +256,7 @@ package, app, check, and development-shell outputs.
 | =crates/controller/= | Rust session library, event pump, worker and tui/run frontend |
 | =nix/packages/rust.nix= | Shared Rust build derivation with separate package selection |
 | =tests/= | Python black-box payload and terminal tests; Nix checks |
+| =emacs/= | Magit-style agent status and approval frontend |
 
 Build and test from the repository root:
 
@@ -276,7 +281,7 @@ Use Org mode (=.org=) for repository documentation, including plans, design
 notes, and experiment reports.
 
 This rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It does
-not implement Emacs integration, multiplexing, file/network live grants, or
+not implement multiplexing, file/network live grants, or
 daemon restart recovery. Closing frontends leaves sessions alive; daemon death
 stops every helper and sandbox;
 abrupt death may leave host session directories and GC roots for manual cleanup.
