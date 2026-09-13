@@ -836,11 +836,9 @@ impl Controller {
                     Err(e) => return Err(e.into()),
                 }
             }
-            for _ in 0..16 {
-                let result = a.worker.as_ref().and_then(|w| w.results.try_recv().ok());
-                let Some(result) = result else {
-                    break;
-                };
+            let (results, worker_finished) =
+                a.worker.as_ref().map(Worker::poll).unwrap_or_default();
+            for result in results {
                 match result {
                     Completed::Started {
                         initial_packages,
@@ -871,7 +869,10 @@ impl Controller {
                         }
                     }
                     Completed::Progress { request, state } => {
-                        if let Some(r) = self.permission_mut(&request) {
+                        if a.pending.as_ref().is_some_and(|p| p.id == request)
+                            && let Some(r) = self.permission_mut(&request)
+                            && ["realizing", "mounting", "publishing"].contains(&r.state.as_str())
+                        {
                             r.state = state.into();
                             self.dirty = true;
                         }
@@ -924,8 +925,28 @@ impl Controller {
                     }
                 }
             }
-            if a.worker.as_ref().is_some_and(Worker::finished) {
+            if worker_finished {
                 a.worker.take();
+                // A worker can lose its final try_send when its bounded result
+                // queue is full (or panic). Never retain a live session after
+                // its producer is gone, even without a Stopped result.
+                if !["stopped", "failed"].contains(&a.record.state.as_str()) {
+                    a.record.state = "failed".into();
+                    a.record.detail =
+                        Some("session worker exited without a final lifecycle result".into());
+                    a.listener.take();
+                    if a.record.identity.is_none() {
+                        a.terminal.failed_start();
+                    }
+                    if let Some(p) = a.pending.take() {
+                        p.cancel.cancel();
+                        if let Some(r) = self.permission_mut(&p.id) {
+                            r.state = "cancelled".into();
+                        }
+                        self.reply_permission(&p.id, "error", Some("session worker exited".into()));
+                    }
+                    self.dirty = true;
+                }
             }
             let old = (a.terminal.eof, a.terminal.complete, a.terminal.interrupted);
             if let Err(e) = a.terminal.tick() {
@@ -1018,6 +1039,118 @@ mod tests {
         let data = c.output.pop_back().unwrap();
         let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
         rpc::parse(&data[body..]).unwrap()
+    }
+    fn session_with_results(d: &mut Controller, results: Vec<Completed>) -> String {
+        let id = "test-session".to_string();
+        let directory = d.state.join(&id);
+        unix::private_directory(&directory).unwrap();
+        let terminal = Terminal::new(&directory.join("terminal.sock")).unwrap();
+        d.sessions.insert(
+            id.clone(),
+            Active {
+                created: 0,
+                record: SessionRecord {
+                    id: id.clone(),
+                    name: "shell".into(),
+                    configuration: "test".into(),
+                    state: "running".into(),
+                    identity: None,
+                    initial_packages: vec![],
+                    packages: vec![],
+                    terminal: String::new(),
+                    pty_eof: false,
+                    terminal_complete: false,
+                    terminal_interrupted: false,
+                    exit_code: None,
+                    detail: None,
+                },
+                worker: Some(Worker::completed(results)),
+                listener: None,
+                pending: Some(Pending {
+                    id: "r".into(),
+                    serial: 1,
+                    connection: 99,
+                    cancel: Cancel::default(),
+                }),
+                terminal,
+                directory,
+            },
+        );
+        d.permissions.push_back(PermissionRecord {
+            id: "r".into(),
+            session: id.clone(),
+            approval: "a".into(),
+            package: "hello".into(),
+            reason: "test".into(),
+            state: "realizing".into(),
+            approved: Some(true),
+            preview: None,
+            message: None,
+        });
+        id
+    }
+    #[test]
+    fn queued_progress_cannot_restore_cancelled_permission() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(
+            &mut d,
+            vec![
+                Completed::Progress {
+                    request: "r".into(),
+                    state: "mounting",
+                },
+                Completed::Progress {
+                    request: "r".into(),
+                    state: "publishing",
+                },
+                Completed::Granted {
+                    reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
+                    detail: None,
+                },
+                Completed::Stopped { exit_code: None },
+            ],
+        );
+        d.stop(&id).unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.permissions[0].state, "cancelled");
+        assert_eq!(d.sessions[&id].record.state, "stopped");
+        assert!(d.sessions[&id].worker.is_none());
+        assert!(d.sessions[&id].record.packages.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn full_result_queue_without_stopped_cannot_leave_session_running() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        // A full bounded queue can reject the worker's final try_send(Stopped).
+        let id = session_with_results(
+            &mut d,
+            (0..16)
+                .map(|_| Completed::Progress {
+                    request: "r".into(),
+                    state: "mounting",
+                })
+                .collect(),
+        );
+        d.tick().unwrap();
+        assert!(d.sessions[&id].worker.is_some());
+        d.tick().unwrap();
+        assert!(d.sessions[&id].worker.is_none());
+        assert_eq!(d.sessions[&id].record.state, "failed");
+        assert!(
+            d.sessions[&id]
+                .record
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("without a final")
+        );
+        assert!(d.sessions[&id].pending.is_none());
+        assert_eq!(d.permissions[0].state, "cancelled");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn endpoint_authority_initialization_and_notifications() {

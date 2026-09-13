@@ -52,7 +52,7 @@ pub(super) enum Completed {
 pub(super) struct Worker {
     pub cancel: Cancel,
     pub commands: SyncSender<Work>,
-    pub results: Receiver<Completed>,
+    results: Receiver<Completed>,
     thread: Option<JoinHandle<()>>,
 }
 impl Worker {
@@ -209,7 +209,40 @@ impl Worker {
     }
 }
 impl Worker {
-    pub fn finished(&self) -> bool {
+    /// Completion is usable only after observing the channel disconnected and
+    /// empty. Checking thread completion after an empty read could otherwise
+    /// discard a final result sent between those two observations.
+    pub fn poll(&self) -> (Vec<Completed>, bool) {
+        let mut results = Vec::new();
+        for _ in 0..16 {
+            match self.results.try_recv() {
+                Ok(result) => results.push(result),
+                Err(mpsc::TryRecvError::Empty) => return (results, false),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return (results, self.finished());
+                }
+            }
+        }
+        (results, false)
+    }
+    #[cfg(test)]
+    pub fn completed(results: Vec<Completed>) -> Self {
+        let (commands, _) = mpsc::sync_channel(4);
+        let (sender, receiver) = mpsc::sync_channel(16);
+        for result in results {
+            sender
+                .try_send(result)
+                .unwrap_or_else(|_| panic!("test result queue full"));
+        }
+        drop(sender);
+        Self {
+            cancel: Cancel::default(),
+            commands,
+            results: receiver,
+            thread: None,
+        }
+    }
+    fn finished(&self) -> bool {
         self.thread.as_ref().is_none_or(|t| t.is_finished())
     }
 }
@@ -219,5 +252,37 @@ impl Drop for Worker {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn final_result_after_empty_poll_is_not_discarded() {
+        let (commands, _) = mpsc::sync_channel(4);
+        let (sender, results) = mpsc::sync_channel(16);
+        let worker = Worker {
+            cancel: Cancel::default(),
+            commands,
+            results,
+            thread: None,
+        };
+        // Even a finished producer observation cannot make an empty (still
+        // connected) channel final. A last message may arrive after this poll.
+        let (results, finished) = worker.poll();
+        assert!(results.is_empty());
+        assert!(!finished);
+        sender
+            .try_send(Completed::Stopped { exit_code: Some(7) })
+            .unwrap_or_else(|_| panic!("send"));
+        drop(sender);
+        let (results, finished) = worker.poll();
+        assert!(finished);
+        assert!(matches!(
+            results.as_slice(),
+            [Completed::Stopped { exit_code: Some(7) }]
+        ));
     }
 }
