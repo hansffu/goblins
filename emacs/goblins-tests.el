@@ -91,6 +91,8 @@
     (unwind-protect
         (progn
           (should (evil-normal-state-p))
+          (should-not (eq (key-binding (kbd "s")) #'goblins-start-server))
+          (should-not (eq (key-binding (kbd "S")) #'goblins-stop-server))
           (dolist (binding '(("j" . magit-section-forward)
                              ("k" . magit-section-backward)
                              ("h" . magit-section-hide)
@@ -103,14 +105,41 @@
                              ("d" . goblins-deny)
                              ("r" . goblins-refresh)
                              ("gr" . goblins-refresh)
-                             ("s" . goblins-start-server)
-                             ("S" . goblins-stop-server)
                              ("R" . goblins-run)
                              ("q" . goblins-quit)
                              ("gg" . evil-goto-first-line)
                              ("G" . evil-goto-line)))
             (should (eq (key-binding (kbd (car binding))) (cdr binding)))))
       (evil-local-mode -1))))
+
+(ert-deftest goblins-stopped-agents-have-collapsed-history ()
+  (goblins-test--buffer
+    (setq goblins--snapshot
+          (plist-put goblins--snapshot :sessions
+                     (vconcat (mapcar (lambda (state)
+                                        (list :id state :agent_name state
+                                              :name "shell" :state state))
+                                      '("starting" "running" "stopping" "stopped" "failed")))))
+    (goblins--render)
+    (let* ((groups (oref magit-root-section children))
+           (agents (nth 0 groups))
+           (stopped (nth 3 groups)))
+      (should (equal (mapcar (lambda (s) (oref s value)) (oref agents children))
+                     '("starting" "running" "stopping")))
+      (should (equal (mapcar (lambda (s) (oref s value)) (oref stopped children))
+                     '("stopped" "failed")))
+      (should (oref stopped hidden))
+      (should (invisible-p (marker-position (oref (car (oref stopped children)) start))))
+      (goblins-test--goto-agent "running")
+      (plist-put (aref (plist-get goblins--snapshot :sessions) 1) :state "stopped")
+      (goblins--render)
+      (should (= (point) (point-min)))
+      (setq stopped (nth 3 (oref magit-root-section children)))
+      (should (= 3 (length (oref stopped children))))
+      (should (oref stopped hidden))
+      (magit-section-show stopped)
+      (goblins--render)
+      (should-not (oref (nth 3 (oref magit-root-section children)) hidden)))))
 
 (ert-deftest goblins-decisions-use-displayed-identities ()
   (dolist (approved '(t nil))
@@ -222,29 +251,35 @@
 (defun goblins-test-run-live ()
   "Launch real goblins in the installed Ghostel, with no package downloads."
   (require 'ghostel)
-  (let ((goblins-executable (getenv "GOBLINS_APP"))
+  (let* ((goblins-executable (getenv "GOBLINS_APP"))
         (goblins-state-directory (getenv "GOBLINS_TEST_STATE"))
         (default-directory (file-name-as-directory (getenv "GOBLINS_TEST_WORKSPACE")))
         (ghostel-query-before-killing nil)
         (completing-read-function #'completing-read-default)
+        (source (generate-new-buffer " *goblins launch notes*"))
         terminals status)
     (unwind-protect
         (progn
           (goblins-status)
           (setq status (current-buffer))
           (goblins-test--wait (lambda () goblins--subscription))
+          (pop-to-buffer source)
+          (insert "Unrelated launch notes")
+          (setq buffer-read-only t)
           ;; Press Enter without typing: the configured default must launch.
           (cl-letf (((symbol-function 'read-from-minibuffer)
                      (lambda (&rest _) "")))
             (dotimes (_ 2)
               (push (goblins-run) terminals)))
+          (should (equal (with-current-buffer source (buffer-string)) "Unrelated launch notes"))
           (should-not (equal (buffer-local-value 'goblins--session-key (car terminals))
                              (buffer-local-value 'goblins--session-key (cadr terminals))))
           (with-current-buffer (car terminals)
             (should (derived-mode-p 'ghostel-mode))
             (ghostel-send-string "printf ghostel-run-ok > emacs-launch.txt\n"))
           (goblins-test--wait
-           (lambda () (file-exists-p (expand-file-name "emacs-launch.txt" default-directory))))
+           (lambda () (file-exists-p (expand-file-name "emacs-launch.txt"
+                                                       (getenv "GOBLINS_TEST_WORKSPACE")))))
           (pop-to-buffer status)
           (goblins-test--wait (lambda () (= 3 (length (plist-get goblins--snapshot :sessions)))))
           (dolist (terminal terminals)
@@ -267,12 +302,13 @@
             (should-not (gethash key goblins--terminal-buffers))))
       (dolist (terminal terminals)
         (when (buffer-live-p terminal) (kill-buffer terminal)))
-      (when (buffer-live-p status) (kill-buffer status)))))
+      (when (buffer-live-p status) (kill-buffer status))
+      (kill-buffer source))))
 
 (ert-deftest goblins-disconnected-actions-and-decision-outcomes ()
   (goblins-test--buffer
     (goblins--fail "Disconnected")
-    (should (string-match-p "s start server, r reconnect" goblins--notice))
+    (should (string-match-p "r to reconnect" goblins--notice))
     (should-not (string-match-p "outcome unknown" goblins--notice))
     (puthash "a" t goblins--decisions)
     (goblins--fail "Disconnected")
@@ -288,7 +324,84 @@
       (should-not goblins--server-process)
       (should-not goblins--connection)
       (should (string-match-p "Cannot start server" goblins--notice))
-      (should (string-match-p "s start server" goblins--notice)))))
+      (should (string-match-p "r to reconnect" goblins--notice)))))
+
+(defmacro goblins-test--outside-status (&rest body)
+  (declare (indent 0))
+  `(let ((directory (make-temp-file "goblins-outside-" t)))
+     (unwind-protect
+         (save-window-excursion
+           (with-temp-buffer
+             (text-mode)
+             (insert "Keep my notes\n")
+             (set-buffer-modified-p nil)
+             (setq buffer-read-only t)
+             (let ((source (current-buffer))
+                   (goblins-state-directory directory))
+               ,@body
+               (should (buffer-live-p source))
+               (with-current-buffer source
+                 (should (equal (buffer-string) "Keep my notes\n"))
+                 (should (eq major-mode 'text-mode))
+                 (should-not (buffer-modified-p))
+                 (should buffer-read-only)))))
+       (when-let* ((status (get-buffer (format "*Goblins: %s*" directory))))
+         (kill-buffer status))
+       (delete-directory directory))))
+
+(ert-deftest goblins-server-commands-preserve-unrelated-buffers ()
+  (dolist (command '(goblins-start-server goblins-stop-server goblins-refresh goblins-status))
+    (goblins-test--outside-status
+      (let ((goblins-executable "/nonexistent/goblins-test-executable"))
+        (call-interactively command)
+        (should (derived-mode-p 'goblins-status-mode))
+        (should (equal goblins--directory directory))
+        (should-not (eq (current-buffer) source))
+        (should-not (string-match-p "stringp, nil" (buffer-string)))))))
+
+(ert-deftest goblins-quit-outside-status-only-closes-status ()
+  (goblins-test--outside-status
+    (let ((status (goblins--status-buffer)))
+      (goblins-quit)
+      (should-not (buffer-live-p status))
+      (should (eq (current-buffer) source))
+      ;; Repeating quit without any status view must also leave the caller alone.
+      (goblins-quit))))
+
+(ert-deftest goblins-visit-outside-status-chooses-local-terminals ()
+  (goblins-test--outside-status
+    (let ((terminal (generate-new-buffer " *goblins chosen terminal*"))
+          (goblins--terminal-buffers (make-hash-table :test #'equal)))
+      (unwind-protect
+          (progn
+            (puthash (list directory "daemon-a" "session-a") terminal goblins--terminal-buffers)
+            (puthash '("/other-server" "daemon-b" "session-b") source goblins--terminal-buffers)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt choices &rest _)
+                         (should (= 1 (length choices)))
+                         (caar choices))))
+              (goblins-visit)
+              (should (eq (current-buffer) terminal))))
+        (kill-buffer terminal)))))
+
+(defun goblins-test--decide-from-notes (directory request approved)
+  "Select REQUEST from outside status and verify that the caller survives."
+  (let ((goblins-state-directory directory)
+        (source (generate-new-buffer " *goblins approval notes*")))
+    (unwind-protect
+        (progn
+          (pop-to-buffer source)
+          (insert "Unrelated notes")
+          (setq buffer-read-only t)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt choices &rest _)
+                       (car (cl-find request choices
+                                     :key (lambda (entry) (plist-get (cdr entry) :id))
+                                     :test #'equal)))))
+            (call-interactively (if approved #'goblins-accept #'goblins-deny)))
+          (should (derived-mode-p 'goblins-status-mode))
+          (should (equal (with-current-buffer source (buffer-string)) "Unrelated notes")))
+      (kill-buffer source))))
 
 (ert-deftest goblins-decision-disconnect-is-not-a-rejection ()
   (dolist (running '(t nil))
@@ -307,14 +420,17 @@
                       (not (null (string-match-p "outcome unknown" goblins--notice))))))))))
 
 (defun goblins-test-start-live ()
-  "Start a real server from the status buffer in an isolated directory."
-  (let ((goblins-executable (getenv "GOBLINS_APP")))
+  "Start a real server without first opening its status buffer."
+  (let ((goblins-executable (getenv "GOBLINS_APP"))
+        (goblins-state-directory (getenv "GOBLINS_TEST_STATE"))
+        (source (generate-new-buffer " *goblins server notes*")))
     (unwind-protect
         (progn
-          (goblins-status (getenv "GOBLINS_TEST_STATE"))
-          (should-not goblins--subscription)
-          (should (string-match-p "s start server" (buffer-string)))
-          (call-interactively (key-binding (kbd "s")))
+          (pop-to-buffer source)
+          (insert "Unrelated notes")
+          (setq buffer-read-only t)
+          (call-interactively #'goblins-start-server)
+          (should (derived-mode-p 'goblins-status-mode))
           (should (process-live-p goblins--server-process))
           (should-error (goblins-start-server) :type 'user-error)
           (goblins-test--wait (lambda () goblins--subscription))
@@ -326,16 +442,20 @@
             (goblins-test--wait (lambda () (not goblins--server-process)))
             (goblins-test--wait (lambda () goblins--subscription))
             (should (equal goblins--instance instance))
-            (call-interactively (key-binding (kbd "S")))
+            (pop-to-buffer source)
+            (call-interactively #'goblins-stop-server)
+            (should (derived-mode-p 'goblins-status-mode))
+            (should (equal (with-current-buffer source (buffer-string)) "Unrelated notes"))
             (should-not goblins--connection)
             (should-error (goblins-start-server) :type 'user-error)
             (goblins-test--wait (lambda () (not goblins--server-process)))
-            (should (equal goblins--notice "Server stopped; s start server"))
+            (should (equal goblins--notice "Server stopped"))
             (should-not goblins--snapshot)
             (goblins-start-server)
             (goblins-test--wait (lambda () goblins--subscription))
             (should-not (equal goblins--instance instance))))
-      (when (derived-mode-p 'goblins-status-mode) (kill-buffer (current-buffer))))))
+      (when (derived-mode-p 'goblins-status-mode) (kill-buffer (current-buffer)))
+      (kill-buffer source))))
 
 ;; Run against an isolated real daemon from tests/test_emacs.py.
 (defun goblins-test-live ()
@@ -346,13 +466,11 @@
           (goblins-test--wait (lambda () goblins--subscription))
           (should (string-match-p "snikk" (buffer-string)))
           (should (string-match-p "Try a live grant 🐟" (buffer-string)))
-          (goblins-test--goto (getenv "GOBLINS_TEST_ACCEPT"))
-          (goblins-accept)
+          (goblins-test--decide-from-notes directory (getenv "GOBLINS_TEST_ACCEPT") t)
           (goblins-test--wait
            (lambda () (cl-find "ready" (plist-get goblins--snapshot :permissions)
                                :key (lambda (r) (plist-get r :state)) :test #'equal)))
-          (goblins-test--goto (getenv "GOBLINS_TEST_DENY"))
-          (goblins-deny)
+          (goblins-test--decide-from-notes directory (getenv "GOBLINS_TEST_DENY") nil)
           (goblins-test--wait
            (lambda () (cl-find "denied" (plist-get goblins--snapshot :permissions)
                                :key (lambda (r) (plist-get r :state)) :test #'equal)))

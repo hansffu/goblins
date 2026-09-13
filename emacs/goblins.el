@@ -5,7 +5,7 @@
 ;; Keywords: tools, processes
 
 ;;; Commentary:
-;; Run M-x goblins-status, then press s to start the server if needed.
+;; Run M-x goblins-status; use M-x goblins-start-server if needed.
 ;; Connects directly to the daemon's host socket using JSON-RPC API 1.
 
 ;;; Code:
@@ -40,7 +40,7 @@ Set this to the directory passed to `goblins --state-dir'."
 (defvar-local goblins--subscription nil)
 (defvar-local goblins--sequence nil)
 (defvar-local goblins--snapshot nil)
-(defvar-local goblins--notice "Disconnected; s start server, r reconnect")
+(defvar-local goblins--notice "Disconnected; r to reconnect")
 (defvar-local goblins--decisions nil)
 (defvar goblins--terminal-buffers (make-hash-table :test #'equal)
   "Emacs-only mapping from (directory instance session) to Ghostel buffers.")
@@ -94,6 +94,21 @@ Set this to the directory passed to `goblins --state-dir'."
       (goblins--field "Message:" message))
     (insert "\n")))
 
+(defun goblins--insert-agent (agent)
+  (magit-insert-section (goblins-agent-section (plist-get agent :id) t)
+    (magit-insert-heading
+      (format "  %-20s %-12s %s%s"
+              (goblins--safe (plist-get agent :agent_name))
+              (goblins--safe (plist-get agent :state))
+              (goblins--safe (plist-get agent :name))
+              (if (goblins--terminal-buffer (plist-get agent :id))
+                  "  [RET: terminal]" "")))
+    (goblins--field "Session:" (plist-get agent :id))
+    (goblins--field "Startup:" (string-join (append (plist-get agent :initial_packages) nil) ", "))
+    (goblins--field "Granted:" (string-join (append (plist-get agent :packages) nil) ", "))
+    (when-let* ((detail (plist-get agent :detail)))
+      (goblins--field "Detail:" detail))))
+
 (defun goblins--render ()
   "Render state, preserving section identity and folding across updates."
   (let* ((section (magit-current-section))
@@ -101,6 +116,10 @@ Set this to the directory passed to `goblins --state-dir'."
          (offset (and section (- (point) (oref section start))))
          (inhibit-read-only t)
          (sessions (append (plist-get goblins--snapshot :sessions) nil))
+         (stopped (cl-remove-if-not
+                   (lambda (agent) (member (plist-get agent :state) '("stopped" "failed")))
+                   sessions))
+         (active (cl-set-difference sessions stopped))
          (requests (append (plist-get goblins--snapshot :permissions) nil))
          (pending (cl-remove-if-not
                    (lambda (r) (equal (plist-get r :state) "pending")) requests)))
@@ -110,22 +129,9 @@ Set this to the directory passed to `goblins --state-dir'."
               (goblins--safe goblins--directory) "\n"
               (goblins--safe goblins--notice) "\n\n")
       (magit-insert-section (goblins-section 'agents)
-        (magit-insert-heading (format "Agents (%d)" (length sessions)))
-        (unless sessions (insert "  No agents\n"))
-        (dolist (agent sessions)
-          (magit-insert-section (goblins-agent-section (plist-get agent :id) t)
-            (magit-insert-heading
-              (format "  %-20s %-12s %s%s"
-                      (goblins--safe (plist-get agent :agent_name))
-                      (goblins--safe (plist-get agent :state))
-                      (goblins--safe (plist-get agent :name))
-                      (if (goblins--terminal-buffer (plist-get agent :id))
-                          "  [RET: terminal]" "")))
-            (goblins--field "Session:" (plist-get agent :id))
-            (goblins--field "Startup:" (string-join (append (plist-get agent :initial_packages) nil) ", "))
-            (goblins--field "Granted:" (string-join (append (plist-get agent :packages) nil) ", "))
-            (when-let* ((detail (plist-get agent :detail)))
-              (goblins--field "Detail:" detail))))
+        (magit-insert-heading (format "Agents (%d)" (length active)))
+        (unless active (insert "  No active agents\n"))
+        (mapc #'goblins--insert-agent active)
         (insert "\n"))
       (magit-insert-section (goblins-section 'pending)
         (magit-insert-heading (format "Pending requests (%d)" (length pending)))
@@ -133,7 +139,10 @@ Set this to the directory passed to `goblins --state-dir'."
         (mapc #'goblins--insert-request pending))
       (magit-insert-section (goblins-section 'recent t)
         (magit-insert-heading "Recent requests")
-        (mapc #'goblins--insert-request (cl-set-difference requests pending))))
+        (mapc #'goblins--insert-request (cl-set-difference requests pending)))
+      (magit-insert-section (goblins-section 'stopped t)
+        (magit-insert-heading (format "Stopped agents (%d)" (length stopped)))
+        (mapc #'goblins--insert-agent stopped)))
     ;; Apply the saved hidden flags to display overlays after insertion.
     (magit-section-show magit-root-section)
     ;; Never fall back to the row now occupying a vanished request's position.
@@ -160,12 +169,13 @@ Set this to the directory passed to `goblins --state-dir'."
                                       goblins--decisions)
                              pending))
                   "; in-flight decision outcome unknown")
-                "; s start server, r reconnect"))
+                "; r to reconnect"))
   (goblins--disconnect)
   (goblins--render))
 
 (defun goblins--server-command (action)
   "Run server ACTION asynchronously for this buffer's state directory."
+  (goblins--ensure-status-buffer)
   (when (process-live-p goblins--server-process)
     (user-error "A server command is already in progress"))
   (let ((buffer (current-buffer))
@@ -195,7 +205,7 @@ Set this to the directory passed to `goblins --state-dir'."
                                      (goblins-refresh)
                                    (setq goblins--snapshot nil goblins--instance nil
                                          goblins--sequence nil goblins--decisions nil
-                                         goblins--notice "Server stopped; s start server")
+                                         goblins--notice "Server stopped")
                                    (goblins--render))
                                (goblins--fail
                                 (format "Server %s failed: %s" action
@@ -209,12 +219,12 @@ Set this to the directory passed to `goblins --state-dir'."
                               (error-message-string err)))))))
 
 (defun goblins-start-server ()
-  "Start the server for this status buffer, then connect automatically."
+  "Start the server and connect, opening its status buffer if needed."
   (interactive)
   (goblins--server-command "start"))
 
 (defun goblins-stop-server ()
-  "Stop this buffer's server and all its agents asynchronously."
+  "Stop the server and all its agents, opening its status buffer if needed."
   (interactive)
   (goblins--server-command "stop"))
 
@@ -263,6 +273,7 @@ Set this to the directory passed to `goblins --state-dir'."
 (defun goblins-refresh ()
   "Reconnect and obtain a fresh authoritative snapshot."
   (interactive)
+  (goblins--ensure-status-buffer)
   (when (process-live-p goblins--server-process)
     (user-error "A server command is in progress; status will update automatically"))
   (goblins--disconnect)
@@ -320,13 +331,28 @@ Set this to the directory passed to `goblins --state-dir'."
                                    (error-message-string err)))))))
 
 (defun goblins--decide (approved)
-  (unless (and goblins--connection goblins--subscription)
-    (user-error "Disconnected; press r to reconnect"))
-  (let* ((section (magit-current-section))
-         (record (and section
-                      (object-of-class-p section 'goblins-request-section)
-                      (oref section record)))
+  (let* ((record
+          (if (derived-mode-p 'goblins-status-mode)
+              (let ((section (magit-current-section)))
+                (and section (object-of-class-p section 'goblins-request-section)
+                     (oref section record)))
+            (goblins--ensure-connected)
+            (goblins--choose
+             (if approved "Accept request: " "Deny request: ")
+             (mapcar (lambda (request)
+                       (cons (format "%s: %s — %s [%s]"
+                                     (goblins--safe (plist-get request :agent_name))
+                                     (goblins--safe (plist-get request :package))
+                                     (goblins--safe (plist-get request :reason))
+                                     (plist-get request :id))
+                             request))
+                     (cl-remove-if-not
+                      (lambda (request) (equal (plist-get request :state) "pending"))
+                      (append (plist-get goblins--snapshot :permissions) nil)))
+             "No pending requests")))
          (id (plist-get record :id)))
+    (unless (and goblins--connection goblins--subscription)
+      (user-error "Disconnected; use M-x goblins-refresh to reconnect"))
     (unless (equal (plist-get record :state) "pending")
       (user-error "Place point on a pending request"))
     (when (gethash id goblins--decisions)
@@ -348,19 +374,32 @@ Set this to the directory passed to `goblins --state-dir'."
        (goblins--render)))))
 
 (defun goblins-accept ()
-  "Accept the pending request at point."
+  "Accept the request at point in status, or choose one from another buffer."
   (interactive)
   (goblins--decide t))
 
 (defun goblins-deny ()
-  "Deny the pending request at point."
+  "Deny the request at point in status, or choose one from another buffer."
   (interactive)
   (goblins--decide nil))
 
 (defun goblins-quit ()
-  "Close this frontend, leaving the daemon and its agents running."
+  "Close the relevant status view, leaving other buffers and agents alone."
   (interactive)
-  (quit-window t))
+  (let ((buffer (if (derived-mode-p 'goblins-status-mode)
+                    (current-buffer)
+                  (get-buffer (format "*Goblins: %s*" (goblins--resolve-directory))))))
+    (when buffer
+      (if (eq (window-buffer (selected-window)) buffer)
+          (quit-window t)
+        (kill-buffer buffer)))))
+
+(defun goblins--choose (prompt choices empty-message)
+  "Select a value from CHOICES, an alist, using PROMPT."
+  (unless choices (user-error "%s" empty-message))
+  (let ((choice (assoc (completing-read prompt choices nil t) choices)))
+    (unless choice (user-error "Select an entry"))
+    (cdr choice)))
 
 (defun goblins--terminal-buffer (session)
   (let ((buffer (gethash (list goblins--directory goblins--instance session)
@@ -387,14 +426,24 @@ Set this to the directory passed to `goblins --state-dir'."
   (advice-add 'ghostel--update-directory :around #'goblins--ghostel-directory))
 
 (defun goblins-visit ()
-  "Open the Emacs-launched agent at point, or toggle another section."
+  "Open the agent at point in status, or choose a terminal from elsewhere.
+On other status sections, toggle their visibility."
   (interactive)
-  (let ((section (magit-current-section)))
-    (if (and section (object-of-class-p section 'goblins-agent-section))
-        (if-let* ((buffer (goblins--terminal-buffer (oref section value))))
-            (pop-to-buffer buffer)
-          (user-error "No Emacs terminal for this agent; launch with M-x goblins-run"))
-      (magit-section-toggle section))))
+  (if (derived-mode-p 'goblins-status-mode)
+      (let ((section (magit-current-section)))
+        (if (and section (object-of-class-p section 'goblins-agent-section))
+            (if-let* ((buffer (goblins--terminal-buffer (oref section value))))
+                (pop-to-buffer buffer)
+              (user-error "No Emacs terminal for this agent; launch with M-x goblins-run"))
+          (magit-section-toggle section)))
+    (let ((directory (goblins--resolve-directory)) choices)
+      (maphash (lambda (key buffer)
+                 (when (and (equal (car key) directory) (buffer-live-p buffer))
+                   (push (cons (format "%s [%s]" (buffer-name buffer) (nth 2 key)) buffer)
+                         choices)))
+               goblins--terminal-buffers)
+      (pop-to-buffer (goblins--choose "Goblin terminal: " choices
+                                     "No Emacs-launched terminal buffers for this server")))))
 
 (defun goblins--configurations ()
   "Read current configuration names and manifest from the packaged CLI."
@@ -439,13 +488,7 @@ server outside a status buffer.  Only launches made here are linked by RET."
          (executable goblins-executable)
          (configs (goblins--configurations))
          (name (goblins--read-configuration (plist-get configs :names))))
-    (goblins-status directory)
-    (let ((deadline (+ (float-time) 3)))
-      (while (and goblins--connection (not goblins--subscription)
-                  (< (float-time) deadline))
-        (accept-process-output nil 0.01)))
-    (unless goblins--subscription
-      (user-error "Server disconnected; press s to start, then R to run"))
+    (goblins--ensure-connected directory)
     (let* ((connection goblins--connection)
            (instance goblins--instance)
            (launch (jsonrpc-request
@@ -486,14 +529,16 @@ server outside a status buffer.  Only launches made here are linked by RET."
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "g") #'goblins-refresh)
     (define-key map (kbd "r") #'goblins-refresh)
-    (define-key map (kbd "s") #'goblins-start-server)
-    (define-key map (kbd "S") #'goblins-stop-server)
     (define-key map (kbd "R") #'goblins-run)
     (define-key map (kbd "a") #'goblins-accept)
     (define-key map (kbd "d") #'goblins-deny)
     (define-key map (kbd "q") #'goblins-quit)
     (define-key map (kbd "RET") #'goblins-visit)
     map))
+
+;; Also remove the previous bindings when reloading into an existing Emacs.
+(define-key goblins-status-mode-map (kbd "s") nil)
+(define-key goblins-status-mode-map (kbd "S") nil)
 
 ;; Keep Evil optional and support either package load order.  These bindings
 ;; belong only to this mode; in particular, preserve Evil's gg/g prefixes.
@@ -512,8 +557,8 @@ server outside a status buffer.  Only launches made here are linked by RET."
     (kbd "d") #'goblins-deny
     (kbd "r") #'goblins-refresh
     (kbd "gr") #'goblins-refresh
-    (kbd "s") #'goblins-start-server
-    (kbd "S") #'goblins-stop-server
+    (kbd "s") nil
+    (kbd "S") nil
     (kbd "R") #'goblins-run
     (kbd "q") #'goblins-quit))
 
@@ -524,10 +569,41 @@ Use \[goblins-accept] to accept and \[goblins-deny] to deny.
 Use \[goblins-refresh] to reconnect."
   (setq-local header-line-format
               '(:eval (if (bound-and-true-p evil-local-mode)
-                          " R run   RET terminal   s/S server   a/d decide   TAB fold   j/k navigate   gr refresh   q quit"
-                        " R run   RET terminal   s/S server   a/d decide   TAB fold   n/p navigate   g refresh   q quit")))
+                          " R run   RET terminal   a/d decide   TAB fold   j/k navigate   gr refresh   q quit"
+                        " R run   RET terminal   a/d decide   TAB fold   n/p navigate   g refresh   q quit")))
   (setq-local revert-buffer-function (lambda (&rest _) (goblins-refresh)))
   (add-hook 'kill-buffer-hook #'goblins--disconnect nil t))
+
+(defun goblins--resolve-directory (&optional directory)
+  "Resolve DIRECTORY, the current Goblins context, or the configured default."
+  (directory-file-name
+   (expand-file-name (or directory goblins--directory goblins-state-directory
+                         (goblins--default-directory)))))
+
+(defun goblins--status-buffer (&optional directory)
+  "Return an initialized status buffer for DIRECTORY without connecting."
+  (let* ((directory (goblins--resolve-directory directory))
+         (buffer (get-buffer-create (format "*Goblins: %s*" directory))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'goblins-status-mode)
+        (goblins-status-mode))
+      (setq goblins--directory directory))
+    buffer))
+
+(defun goblins--ensure-status-buffer ()
+  "Switch to initialized status before changing any frontend state."
+  (unless (and (derived-mode-p 'goblins-status-mode) goblins--directory)
+    (pop-to-buffer (goblins--status-buffer))))
+
+(defun goblins--ensure-connected (&optional directory)
+  "Open status for DIRECTORY and await its initial snapshot."
+  (goblins-status directory)
+  (let ((deadline (+ (float-time) 3)))
+    (while (and goblins--connection (not goblins--subscription)
+                (< (float-time) deadline))
+      (accept-process-output nil 0.01)))
+  (unless goblins--subscription
+    (user-error "Server disconnected; use M-x goblins-start-server")))
 
 ;;;###autoload
 (defun goblins-status (&optional directory)
@@ -535,18 +611,12 @@ Use \[goblins-refresh] to reconnect."
 With a prefix argument, prompt for the daemon state directory."
   (interactive (list (when current-prefix-arg
                        (read-directory-name "Goblins state directory: "
-                                            (or goblins-state-directory
+                                            (or goblins--directory
+                                                goblins-state-directory
                                                 (goblins--default-directory))))))
-  (let* ((directory (directory-file-name
-                     (expand-file-name (or directory goblins-state-directory
-                                           (goblins--default-directory)))))
-         (buffer (get-buffer-create (format "*Goblins: %s*" directory))))
-    (pop-to-buffer buffer)
-    (unless (derived-mode-p 'goblins-status-mode)
-      (goblins-status-mode)
-      (setq goblins--directory directory))
-    (unless (or goblins--connection (process-live-p goblins--server-process))
-      (goblins-refresh))))
+  (pop-to-buffer (goblins--status-buffer directory))
+  (unless (or goblins--connection (process-live-p goblins--server-process))
+    (goblins-refresh)))
 
 (provide 'goblins)
 ;;; goblins.el ends here
