@@ -82,9 +82,9 @@ Here =goblins= is this flake input. Build =.#goblins=, start it with
 The configured name selects a reusable sandbox configuration; =binName= selects
 its executable. Give each launch its own agent name with
 =goblins run shell --name snikk=.
-Without =--name=, the daemon chooses an available fantasy goblin name from the
-checked-in list. =goblins list= shows both identities; =goblins stop snikk= stops
-the live agent. Session IDs remain authoritative, including for history and
+Without =--name=, the daemon randomly chooses an available name from the
+checked-in list of 128 fantasy goblin names. =goblins list= shows both identities;
+=goblins stop snikk= stops the live agent. Session IDs remain authoritative, including for history and
 approvals. See [[file:USAGE.org::*Agent names][agent naming and reuse rules]].
 The daemon supports simultaneous goblins with independent requests and grants.
 

@@ -31,7 +31,7 @@ class AgentNameTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=len(launches)) as pool:
             return list(pool.map(start, launches))
 
-    def test_concurrent_names_exhaustion_collisions_and_retry_at_capacity(self):
+    def test_concurrent_random_names_collisions_and_retry_at_capacity(self):
         d = self.d
         self.assertIn("agent-names", d.rpc.init["features"])
         same = self.params("same-launch", agent_name="snikk")
@@ -48,8 +48,10 @@ class AgentNameTests(unittest.TestCase):
         self.assertTrue(all("session" in r for r in allocated), allocated)
         names = {r["agent_name"] for r in allocated} | {"snikk", "grib"}
         expected = set((ROOT / "crates/controller/src/goblin-names.txt").read_text().splitlines())
-        self.assertEqual(names, expected)
-        with self.assertRaisesRegex(ValueError, "automatic agent name pool exhausted"):
+        self.assertEqual(len(names), 16)
+        self.assertTrue(names <= expected)
+        self.assertGreater(len(expected), 16)
+        with self.assertRaisesRegex(ValueError, "resource limit reached"):
             d.rpc.call("sessions.start", self.params("exhausted"))
         repeated = self.concurrent([attempts[winner], attempts[winner], automatic[0], automatic[0]])
         self.assertEqual(repeated[:2], [results[winner]] * 2)
@@ -58,7 +60,7 @@ class AgentNameTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conflicting"):
             d.rpc.call("sessions.start", changed)
         self.assertEqual(len(d.rpc.call("sessions.list", {})), 16)
-        print("EVIDENCE concurrent explicit collision, 16 unique live names, bounded pool exhaustion and concurrent retries at capacity", flush=True)
+        print("EVIDENCE concurrent explicit collision, 16 unique random live names, bounded session capacity and concurrent retries at capacity", flush=True)
 
     def test_name_reuse_retains_permission_history_and_endpoint_identity(self):
         d = self.d

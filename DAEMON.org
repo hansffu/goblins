@@ -638,11 +638,14 @@ unchanged. Existing API launch requests remain valid.
 
 Explicit names match =[a-z][a-z0-9-]{0,31}=. Invalid names return -32602;
 explicit-name collisions return -32009 with an already-in-use message.
-Automatic allocation scans the checked-in =crates/controller/src/goblin-names.txt=
-in order and selects the first available entry. Its 16 unique names cover the
-16-worker limit. Exhaustion returns -32010 with an automatic-pool-exhausted
-message, with no retries, random probing or suffixing. General resource bounds
-also continue to apply.
+Automatic allocation filters the checked-in =crates/controller/src/goblin-names.txt=
+to available entries and picks one uniformly at random. Its 128 unique names
+provide variety beyond the unchanged 16-worker limit. OS randomness from
+=/dev/urandom= is sampled with rejection to avoid modulo bias, bounded at eight
+64-bit samples. Entropy read/open failures or repeated rejected samples return
+-32010 without accepting a launch. Exhaustion returns -32010 with an
+automatic-pool-exhausted message, with no probing occupied names or suffixing.
+General resource bounds also continue to apply.
 
 Allocation, record insertion and launch-key retention execute in one daemon
 control-loop operation. A name is reserved while its worker is present,

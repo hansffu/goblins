@@ -144,12 +144,15 @@ remain reserved until the worker finishes cleanup. Once released, a name may be
 reused, even while the previous session's terminal output is still draining.
 There is no renaming operation.
 
-The daemon chooses the first available name in
-[[file:crates/controller/src/goblin-names.txt][the checked-in list of 16 fantasy goblin names]], enough for the 16-session
-runtime limit. If none is available, launch fails immediately with a resource
-limit error; allocation never spins or silently collides. Custom names do not
-consume list entries unless they match a list name. The live-session limit still
-applies. All host API launches use this same allocator.
+The daemon randomly chooses among the available names in
+[[file:crates/controller/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
+16 live sessions; the larger pool adds variety without changing that limit. If
+none is available, launch fails immediately with a resource-limit error;
+allocation never spins or silently collides. Custom names do not consume list
+entries unless they match a list name. The live-session limit still
+applies. All host API launches use this same allocator. Selection uses OS
+randomness with unbiased sampling; randomness failures return a resource-limit
+error without accepting a launch. A retry of an accepted launch keeps its name.
 
 The list, fullscreen overview and plain =status= show the allocated agent name
 and the reusable configuration identity. Permission records and events retain

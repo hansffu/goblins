@@ -1,6 +1,45 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Random goblin names
+
+Expanded the checked-in fantasy goblin name pool from 16 to 128 entries.
+Automatic launches now choose uniformly at random among currently available
+names, using OS randomness and bounded rejection sampling. Explicit names,
+reservation through cleanup, immutable session IDs and launch retry stability
+are unchanged. The runtime still permits 16 live workers. Empty pools and
+randomness failures return resource errors without accepting a launch.
+
+Twenty-one Rust tests passed, with one integration driver ignored during normal
+enumeration. Deterministic random-source tests cover candidate selection,
+rejection, exhaustion, read failure and the eight-sample bound. Concurrent
+allocation tests cover uniqueness, collisions and retries at capacity.
+Formatting and workspace/all-target Clippy with warnings denied passed.
+The production build and all 27 Nix flake checks passed.
+
+All five affected naming and fullscreen UI black-box methods passed in 83.800
+seconds against the rebuilt production package. They verify concurrent random
+allocation, explicit collisions, retries at capacity, name reuse with retained
+permission history, configuration/name separation, CLI targeting and approval
+UI exposure. Evidence: =/tmp/goblins-random-names-tests.log=. The earlier full
+33-method regression run below remains historical; this follow-up reran the
+five affected methods.
+
+Production package: =/nix/store/yh7xrydr89cvrx9yhks80c47lrzg5hh3-goblins=,
+linked at =/tmp/goblins-random-names=. Nix evidence is in
+=/tmp/goblins-random-names-nix-checks.log=.
+
+#+begin_src sh
+source /tmp/goblins-cargo-env
+cargo test --workspace --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+nix build --out-link /tmp/goblins-random-names path:.#goblins
+nix flake check path:.
+GOBLINS_APP=/tmp/goblins-random-names/bin/goblins nix develop path:. \
+  --command bash -c 'PYTHONPATH=tests python3 -m unittest test_agent_names test_tui -v'
+#+end_src
+
 * Server commands, help and shell completion
 
 Follow-up on =feature/agent-names= after =972eefa=. Removed =goblins shell=;

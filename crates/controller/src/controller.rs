@@ -315,6 +315,32 @@ fn valid_agent_name(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
+// Rejection sampling avoids modulo bias. Bound retries even if the random
+// source fails or repeatedly supplies rejected values.
+fn random_name<'a>(
+    available: &[&'a str],
+    random: &mut impl Read,
+) -> std::result::Result<&'a str, Fault> {
+    if available.is_empty() {
+        return Err((-32010, "automatic agent name pool exhausted".into()));
+    }
+    let count = available.len() as u64;
+    let limit = u64::MAX - u64::MAX % count;
+    for _ in 0..8 {
+        let mut bytes = [0; 8];
+        random
+            .read_exact(&mut bytes)
+            .map_err(|_| (-32010, "cannot read randomness for agent name".into()))?;
+        let sample = u64::from_le_bytes(bytes);
+        if sample < limit {
+            return Ok(available[(sample % count) as usize]);
+        }
+    }
+    Err((
+        -32010,
+        "cannot select random agent name after 8 attempts".into(),
+    ))
+}
 pub struct Controller {
     state: PathBuf,
     workspace: Option<PathBuf>,
@@ -446,11 +472,17 @@ impl Controller {
             }
             return Ok(name.into());
         }
-        GOBLIN_NAMES
+        let available: Vec<_> = GOBLIN_NAMES
             .lines()
-            .find(|name| available(name))
-            .map(str::to_owned)
-            .ok_or_else(|| (-32010, "automatic agent name pool exhausted".into()))
+            .filter(|name| available(name))
+            .collect();
+        let mut random = File::open("/dev/urandom").map_err(|_| {
+            (
+                -32010,
+                "cannot open randomness source for agent name".into(),
+            )
+        })?;
+        random_name(&available, &mut random).map(str::to_owned)
     }
     fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
         if self.sessions.contains_key(target) {
@@ -1202,16 +1234,57 @@ mod tests {
         }
     }
     #[test]
+    fn random_selection_covers_candidates_and_bounds_exhaustion_and_entropy_failures() {
+        let candidates = ["snikk", "grib", "zoggit"];
+        for (index, name) in candidates.iter().enumerate() {
+            let bytes = (index as u64).to_le_bytes();
+            assert_eq!(
+                random_name(&candidates, &mut bytes.as_slice()).unwrap(),
+                *name
+            );
+        }
+        // Reject the top incomplete bucket, then use a fresh sample.
+        let bytes = [u64::MAX.to_le_bytes(), 2_u64.to_le_bytes()].concat();
+        assert_eq!(
+            random_name(&candidates, &mut bytes.as_slice()).unwrap(),
+            "zoggit"
+        );
+        assert_eq!(
+            random_name(&[], &mut io::empty()).unwrap_err(),
+            (-32010, "automatic agent name pool exhausted".into())
+        );
+        assert!(
+            random_name(&candidates, &mut io::empty())
+                .unwrap_err()
+                .1
+                .contains("cannot read randomness")
+        );
+        let rejected = [255; 64];
+        assert!(
+            random_name(&candidates, &mut rejected.as_slice())
+                .unwrap_err()
+                .1
+                .contains("after 8 attempts")
+        );
+        assert_eq!(
+            random_name(&["grib"], &mut 0_u64.to_le_bytes().as_slice()).unwrap(),
+            "grib"
+        );
+    }
+    #[test]
     fn allocation_is_bounded_and_retries_precede_capacity_and_collisions() {
         let mut d = daemon();
         let path = d.state.clone();
         let (mut c, _peer) = connection(Role::Host);
         let mut results = Vec::new();
-        for (i, name) in GOBLIN_NAMES.lines().enumerate() {
+        let mut allocated = std::collections::BTreeSet::new();
+        for i in 0..SESSIONS {
             let result = d
                 .host(&mut c, "sessions.start", launch(&format!("key{i}"), None))
                 .unwrap();
-            assert_eq!(result["agent_name"], name);
+            let name = result["agent_name"].as_str().unwrap();
+            assert!(GOBLIN_NAMES.lines().any(|candidate| candidate == name));
+            assert!(allocated.insert(name.to_owned()));
             let record = &d.sessions[result["session"].as_str().unwrap()].record;
             assert_eq!(record.agent_name, name);
             assert_eq!(record.name, "shell");
@@ -1221,12 +1294,16 @@ mod tests {
         assert_eq!(
             d.host(&mut c, "sessions.start", launch("overflow", None))
                 .unwrap_err(),
-            (-32010, "automatic agent name pool exhausted".into())
+            capacity()
         );
         assert_eq!(
-            d.host(&mut c, "sessions.start", launch("collision", Some("snikk")))
-                .unwrap_err()
-                .0,
+            d.host(
+                &mut c,
+                "sessions.start",
+                launch("collision", results[0]["agent_name"].as_str())
+            )
+            .unwrap_err()
+            .0,
             -32009
         );
         assert_eq!(

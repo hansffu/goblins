@@ -258,7 +258,9 @@ outside this milestone. [[file:RESULTS.org][RESULTS.org]] records verification a
 The daemon assigns =agent_name= independently of the reusable Nix configuration
 key (=name=) and manifest path (=configuration=). Allocation and insertion run
 in the authority loop before another host operation can execute; workers do not
-allocate names. The bounded checked-in pool covers all 16 live worker slots.
+allocate names. The checked-in pool has 128 names for 16 live worker slots;
+allocation chooses uniformly among available entries using OS randomness and bounded rejection
+sampling. Occupied names are filtered before sampling.
 Explicit validation, collision and exhaustion errors precede accepting a launch.
 Launch-key lookup precedes allocation, preserving ID/name/acceptance on retries.
 
