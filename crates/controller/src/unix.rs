@@ -46,23 +46,6 @@ pub fn readable(fd: RawFd, millis: i32) -> io::Result<bool> {
         Err(e) => Err(e),
     }
 }
-pub fn disconnected(fd: RawFd) -> bool {
-    let mut byte = 0u8;
-    let n = unsafe {
-        libc::recv(
-            fd,
-            (&mut byte as *mut u8).cast(),
-            1,
-            libc::MSG_PEEK | libc::MSG_DONTWAIT,
-        )
-    };
-    n == 0
-        || n < 0
-            && !matches!(
-                io::Error::last_os_error().kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            )
-}
 pub fn recv(fd: RawFd, bytes: &mut [u8]) -> io::Result<usize> {
     let n = unsafe {
         libc::recv(

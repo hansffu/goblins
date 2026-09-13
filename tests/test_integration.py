@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 from support import Session, command, receive, request
+from daemon_support import frame
 
 
 def line(session, timeout=15):
@@ -160,13 +161,13 @@ print(json.dumps(results))''')
             with conn:
                 req = receive(conn)
                 reply = session.decide(req, approved)
-                conn.sendall((json.dumps(reply) + "\n").encode())
-            self.assertEqual(json.loads(line(session))["status"], "ready" if approved else "denied")
+                conn.sendall(frame({"jsonrpc":"2.0","id":req["id"],"result":{"request":"test-request","status":reply["status"]}}))
+            self.assertEqual(json.loads(line(session))["status"], "ready" if approved else "denied", reply)
             self.assertEqual(session.output.readline().strip(), "CLIENT-EXIT:" + ("0" if approved else "1"))
         # Malformed requests never reach decide. A truncated peer cannot approve.
         session.input.write(str(session.python) + " -c " + shlex.quote("import socket; s=socket.socket(socket.AF_UNIX); s.connect('/run/goblins/request.sock'); s.sendall(b'{bad}\\n'); s.close()") + "\n")
         conn, _ = session.socket.accept()
-        with conn, self.assertRaises(ValueError):
+        with conn, self.assertRaises((ValueError, EOFError)):
             receive(conn)
         session.input.write('goblins-request package data-tool --reason "disconnect"; echo "CLIENT-EXIT:$?"\n')
         conn, _ = session.socket.accept()

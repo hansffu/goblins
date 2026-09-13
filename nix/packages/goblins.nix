@@ -15,6 +15,8 @@ let
   };
   config = pkgs.writeText "goblins-config.json" (
     builtins.toJSON {
+      api = 1;
+      helper_api = 1;
       goblins = lib.mapAttrs (
         _: configuration:
         configuration

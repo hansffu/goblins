@@ -1,7 +1,120 @@
-#+title: Live package grant experiment results
+#+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
-* Sandbox overview and terminal palette refinement
+* Daemon milestone (API 1)
+
+Implemented on =feature/daemon-protocol= from =eb3276f=, following
+[[file:DAEMON.org][DAEMON.org]]. The ordinary-user Rust daemon owns simultaneous sessions,
+requests, approvals, package grants and PTYs. Both approval frontends now use
+the private host API; sandbox requests go directly to their endpoint-scoped
+permission API. Structured communication uses JSON-RPC 2.0 with bounded
+Content-Length framing; terminal bytes have a separate raw stream. The helper
+keeps its private pipes and namespace authority.
+
+The exact API, limits, retention, duplicate handling, terminal lifetime and
+manifest/helper compatibility choices are recorded in DAEMON.org's
+implementation contract. Current operational instructions are in
+[[file:USAGE.org][USAGE.org]], and ownership/failure boundaries are in [[file:DESIGN.org][DESIGN.org]].
+
+** Required review reproductions
+
+- Stale approval input: suspend each actual approval frontend after displaying
+  A, queue a partial =approve A_TOKEN= command, withdraw A, create B with the
+  same public RPC correlation ID, finish the queued command and resume the
+  frontend. B remains pending. Bare =approve= and =y= also leave B pending;
+  a fresh explicit =deny B_TOKEN= works. This runs against both plain and
+  fullscreen presentation. Daemon tests additionally reject withdrawn, stale,
+  repeated and competing decisions. Fullscreen bracketed paste cannot decide.
+- Terminal completion: a real =run= client and a slow local PTY reader receive
+  all 50,000 output bytes and the final marker. The test observes the stopped
+  session before output has finished draining. An immediate short command also
+  delivers its complete output, and writing to =/dev/full= reports incomplete
+  delivery with a failing exit status.
+- Request withdrawal: a valid pending request followed by one extra byte and
+  close withdraws the approval and cancels/reaps a deliberately stalled preview
+  and its child; another request can proceed. Silent and slow-drip framing obey
+  the three-second whole-frame deadline. Fragmented valid frames work.
+
+** Concurrency, reconnect and preserved isolation
+
+The black-box tests exercise two actual simultaneous sandbox namespaces and
+independent pending requests. Closing every host client preserves both sessions
+and requests; a fresh subscription obtains an atomic snapshot followed by
+ordered events. A grant changes only its target sandbox. A fresh fullscreen
+frontend displays a retained denial. A stalled subscriber is disconnected at
+the output bound and resynchronizes with a fresh snapshot.
+
+Deliberately stalled startup and approved build work in A leave status, launch,
+requests, decisions and stop in B responsive. Stopping A cancels its owned
+work without ending B. Resize during startup is retained and applied when its
+PTY arrives. Normal daemon shutdown cleans both sessions and payloads; SIGKILL
+kills both payload namespaces, with crash-only filesystem cleanup still outside
+this milestone.
+
+Preserved checks cover live =hello=/=cowsay= and runtime closures in the same
+shell, namespace identity, mount flags, helper/payload capabilities, private
+file descriptors and sockets, hidden host Nix/store contents, collision and
+pre-mount failure survival, partial mount/publication failure teardown, GC
+roots, disposable workspace snapshots, destination races and crash teardown.
+All four startup bind options retain their behavior. Bind protection covers
+the daemon state tree, another concurrent session, ancestors and canonical
+aliases. Exact store-backed config targets remain visible without their secret
+siblings. Literal entry arguments/environment and rebuilt configuration-only
+clients retain their semantics; changed and new named configurations launch
+alongside an unchanged running session. Malformed, missing, FIFO, oversized and
+incompatible manifests are rejected.
+
+** Executed checks
+
+- Final complete black-box run: *24 tests passed in 197.052 seconds*, including
+  all three required review reproductions and the Rust-driver namespace tests.
+  Command: =GOBLINS_APP=/tmp/goblins-daemon-app/bin/goblins python3 -m unittest
+  discover -s tests -p 'test_*.py' -v=, with the pinned Rust tools on PATH.
+- =cargo test --workspace --locked --offline=: 12 tests passed; one test-only
+  namespace driver is intentionally ignored by normal enumeration.
+- =cargo fmt --all --check= and Clippy for all workspace targets with
+  =--locked --offline -- -D warnings=: passed.
+- =nix flake check path:.=: all eight checks passed (=bind-targets=,
+  =bound-goblins=, =configured-shell=, =goblins-api=, =named-goblins=,
+  =production-only=, =runtime-no-python=, =updated-goblins=).
+- Nix formatting passed for the flake, library, package and test expressions.
+- The final production application built successfully at
+  =/nix/store/k5q1i9x2vdj8gyr8kr39kqfx0winn5cn-goblins=.
+- The raw packaged daemon also started without a runtime manifest or terminal,
+  served an empty session list, and shut down cleanly on SIGTERM.
+
+An earlier expanded suite timed out waiting for a fresh valid decision after
+its stale-input safety assertions had passed. Captured diagnostics were added;
+the interaction then passed three focused repetitions and another 12 repetitions
+in 66.084 seconds, including both actual frontends each time. The transient's
+cause was not established, and is not claimed fixed by those passing repeats.
+The final 24-test run also passed that interaction. The replacement approval
+stayed pending in the failing run too. One later full
+invocation omitted Cargo from PATH and therefore failed to start the six
+Rust-driver namespace tests; that invocation is not counted as passing.
+
+** Verification environment and scope
+
+Verified on x86_64 Linux 7.2.4 with Nix 2.34.8 and Rust/Cargo 1.95.0.
+Namespace and Unix-socket tests were run with host access: the outer execution
+sandbox denies those operations and access to the Nix daemon. Host execution
+supported actual namespace creation and live mounts; these gates were not
+skipped or replaced with mocks. Deliberate slow Nix wrappers are test fixtures,
+not production controls. Production executables are Rust, and the Nix
+=runtime-no-python= check verifies no mandatory Python runtime.
+
+The test-only Rust session driver remains explicitly ignored in ordinary unit
+test enumeration and is invoked by the namespace black-box suite. Python is
+used only for test orchestration/payloads. Restart recovery, terminal
+multiplexing/reattachment and live file/network grants remain out of scope.
+
+* Historical results before the daemon split
+
+The sections below preserve earlier experiment evidence. Their foreground
+ownership, newline-JSON transport, immediate approval gestures and removed UI
+options describe historical implementations, not the current API or behavior.
+
+** Sandbox overview and terminal palette refinement
 
 The overview now shows one row per sandbox, with its PID, state and startup/live
 package counts. Enter opens a separate scrollable package table; Escape or
@@ -30,7 +143,7 @@ Verification on 2026-09-13:
 The following section records the earlier frontend implementation and its
 verification, including the subsequently removed OneDark option.
 
-* Fullscreen approval UI and cost previews
+** Fullscreen approval UI and cost previews
 
 =serve= now uses an alternate-screen terminal frontend with a scrollable package
 table. Rows show the connected sandbox, host PID, startup access and live grants.
@@ -85,7 +198,7 @@ not a guarantee of final transfer/build cost; metadata/evaluation can itself
 access configured caches. No daemon, multiplexing or restart recovery was added.
 SIGKILL cannot run tty restoration; crash leftovers retain the earlier limits.
 
-* Client-selected configuration for each launch
+** Client-selected configuration for each launch
 
 The private host attachment already sent a configuration path. The controller
 now loads that path for each new session instead of requiring equality with
@@ -118,7 +231,7 @@ Installing this controller change requires restarting an older server once.
 Later configuration-only rebuilds do not require a restart. This feature does
 not add reconnect, controller restart recovery or state restoration.
 
-* Startup bind forwarding and Fish config follow-up
+** Startup bind forwarding and Fish config follow-up
 
 Corrected the mismatch between =mkGoblin='s =mkSandbox= wrapper and the Rust
 launcher: =roDirs=, =rwDirs=, =roFiles= and =rwFiles= now reach startup bind
@@ -164,7 +277,7 @@ sources. The retained helper's no-follow destination lookup and detached-mount
 invariants continue to apply to live package grants. Controller restart recovery,
 live file/network grants and new frontends remain out of scope.
 
-* Rust rewrite result
+** Rust rewrite result
 
 Implemented on =rewrite/rust= in the separate rewrite worktree, using tested PoC
 commit =c2a9d42= as the behavioral reference. The PoC worktree and branch are
@@ -184,7 +297,7 @@ Only the foreground executable accesses =/dev/tty=. Public correlation IDs are
 separate from controller-issued approval tokens. The inner executable depends
 only on protocol/serialization code, with no approval or mount authority.
 
-** Verification
+*** Verification
 
 The full black-box run passed *12 tests in 188.609 seconds*: six retained
 namespace scenarios, two real-terminal scenarios, and four responsiveness/crash
@@ -258,7 +371,7 @@ shell. Its development shell supplies Rust/Cargo, rustfmt, Clippy and Python for
 verification. Direct runtime dependencies are libc and serde/serde_json with a
 locked dependency graph; no async runtime or terminal UI framework was added.
 
-** Explicit limits
+*** Explicit limits
 
 Controller/daemon restart recovery is *out of scope*: no reconnect, state
 restoration or survival across controller restart. Normal shutdown cleans session
@@ -277,13 +390,13 @@ build jobs. Slow filesystem/kernel I/O can still delay cleanup; no hard real-tim
 or resource-exhaustion guarantee is made. The slow-build regression uses a
 trusted test substitute, while ordinary grants use actual pinned host Nix.
 
-* Historical PoC evidence
+** Historical PoC evidence
 
 The sections below record the preserved PoC's development and measurements.
 References to removed Python scripts, earlier interfaces and earlier test counts
 are historical; the Rust architecture and checks above describe this worktree.
 
-* Repository layout consolidation
+** Repository layout consolidation
 
 The implementation now lives directly at the repository root, with the Rust
 helper under =src/=, Python tests under =tests/=, and Nix definitions under
@@ -324,7 +437,7 @@ The subsequent consolidation into three production Nix files passed all
 12 Python tests in 51.989 seconds and the Nix API checks. All Nix files are
 formatted with =nixfmt=. The flake exposes =formatter.x86_64-linux= for =nix fmt=.
 
-* Configurable Goblins Nix API
+** Configurable Goblins Nix API
 
 The flake now exports =lib.x86_64-linux.mkGoblin= and =mkGoblins=. The default
 output package is constructed with these functions. =mkGoblin= wraps upstream
@@ -355,7 +468,7 @@ host-bind or network feature set. Initial closure visibility now follows
 upstream's package, implicit-package and development-output closure; later live
 grants retain executable-output/runtime-closure semantics.
 
-* Arbitrary pinned package lookup correction
+** Arbitrary pinned package lookup correction
 
 The manual =cowsay= request exposed a real defect: the controller accepted only
 five hardcoded test names. It returned an uncorrelated invalid-request error,
@@ -383,7 +496,7 @@ executable collisions, and programs needing development setup hooks remain
 possible failures. Only =bin= (when present) or the default output is selected,
 with its complete recorded runtime closure.
 
-* Repository-root Nix entry point
+** Repository-root Nix entry point
 
 The repository now has =flake.nix= and =flake.lock= exposing the same package,
 default app, and development shell as the standalone experiment. The root
@@ -395,7 +508,7 @@ reported an informational missing-app-=meta= warning. The connected terminal
 regression now builds through this public root entry point and passed in
 27.803 seconds, including live =hello= and =cowsay= grants.
 
-* Connected serve/shell result
+** Connected serve/shell result
 
 The current interface is now connected end to end:
 
@@ -430,9 +543,9 @@ steps, not the current user workflow. A fresh interactive session is left for
 the user to request and approve =hello= themselves; automated approval is confined
 to a separate test instance.
 
-* Decision
+** Decision
 
-*Go for the package-only proof of concept.* A Rust helper with authority only
+**Go for the package-only proof of concept.* A Rust helper with authority only
 in session user namespaces successfully attached new read-only Nix closure
 mounts to an existing Bubblewrap shell. The foreground approval and pathname
 socket flow work. No copied private store, host-root helper/service, sandbox
@@ -442,7 +555,7 @@ Implementation remains in worktree =live-package-grant= on
 =poc/live-package-grant=. Planning baseline was commit =1ffe5d2=.
 Nothing was merged or published.
 
-* Reproducible inputs and environment
+** Reproducible inputs and environment
 
 | Component | Pin / tested version |
 |-----------+----------------------|
@@ -476,7 +589,7 @@ Bubblewrap's =--info-fd= / =--block-fd= ordering was checked in
 [[https://github.com/containers/bubblewrap/blob/1b80120ef26a28e065e67f89bfef873f13bdd317/bubblewrap.c][Bubblewrap v0.11.2 source]]. Namespace entry requirements were checked against
 [[https://man7.org/linux/man-pages/man2/setns.2.html][setns(2)]], then validated through actual ownership ioctls and syscalls.
 
-* Hardest-gate observations
+** Hardest-gate observations
 
 The first variant retained a host-source descriptor and entered the target
 mount namespace. =setns= succeeded, but =open_tree= failed with =EINVAL=.
@@ -512,7 +625,7 @@ The recorded PID, process start-time ticks, and mount namespace match before
 and after. =jq= was absent both from command lookup and its absolute store path,
 then produced ={"live":true}= without restarting the shell.
 
-* Positive evidence
+** Positive evidence
 
 - The complete =jq= runtime closure was mounted. Three previously absent store
   objects were added on this machine: the =jq= bin output, its library output,
@@ -540,7 +653,7 @@ The =jq= catalog initially selected multiple Nix outputs (=bin= and =man=),
 which correctly failed the controller's single-output check. The catalog now
 explicitly requests =jq^bin= and follows that output's runtime closure.
 
-* Negative and failure evidence
+** Negative and failure evidence
 
 | Probe | Observed result |
 |-------+-----------------|
@@ -576,7 +689,7 @@ test drivers and Nix realization are trusted test/controller code. The enclosing
 Codex sandbox blocked host Nix daemon and some socket operations, so the normal
 approval mechanism was used for these experiments; no PoC boundary was relaxed.
 
-* Checks run
+** Checks run
 
 From the worktree, the final checked implementation was built with:
 
@@ -597,7 +710,7 @@ run each passed the Rust store-name validation test. Rust formatting and Python
 syntax checks also passed. The real foreground terminal flow was exercised
 separately as described above.
 
-* Remaining limits and untested claims
+** Remaining limits and untested claims
 
 - No implementation blocker remains for this package-only experiment on the
   tested Linux/NixOS machine. Other architectures/kernels are not validated;
@@ -623,7 +736,7 @@ separately as described above.
 - Abrupt controller death can leave session directories and GC roots. Cleanup
   is manual after verifying the crashed session is gone; no service was added.
 
-* Interactive Fish follow-up
+** Interactive Fish follow-up
 
 At the user's request, the lower Herdr pane was switched to a real Fish shell
 using upstream =mkSandbox= with =commonTools ++ [ pkgs.fish ]=. The flake output

@@ -98,12 +98,10 @@ pub fn diagnostic(path: &Path) -> String {
 }
 pub fn command(command: &mut Command, directory: &Path, cancel: &Cancellation) -> Result<String> {
     cancel.check()?;
-    let stdout = directory.join("command.out");
-    let stderr = directory.join("command.err");
     command
         .stdin(Stdio::null())
-        .stdout(File::create(&stdout)?)
-        .stderr(File::create(&stderr)?)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .process_group(0);
     let parent = unsafe { libc::getpid() };
     unsafe {
@@ -120,15 +118,63 @@ pub fn command(command: &mut Command, directory: &Path, cancel: &Cancellation) -
         child: command.spawn()?,
         reaped: false,
     };
+    let mut stdout = child.child.stdout.take().unwrap();
+    let mut stderr = child.child.stderr.take().unwrap();
+    unix::nonblocking(stdout.as_raw_fd())?;
+    unix::nonblocking(stderr.as_raw_fd())?;
+    let mut out = Vec::new();
+    let mut err = Vec::new();
     loop {
         cancel.check()?;
-        if let Some(status) = child.finished()? {
-            if !status.success() {
-                return Err(
-                    format!("host command failed ({status}): {}", diagnostic(&stderr)).into(),
-                );
+        let status = child.finished()?;
+        // Drain after observing exit too. Limits apply to captured bytes, not
+        // Nix's own store/cache files. No process-wide file-size limit is used.
+        for (reader, buffer, limit, tail) in [
+            (
+                &mut stdout as &mut dyn Read,
+                &mut out,
+                8 * 1024 * 1024,
+                false,
+            ),
+            (&mut stderr as &mut dyn Read, &mut err, 1024 * 1024, true),
+        ] {
+            for _ in 0..128 {
+                let mut bytes = [0; 8192];
+                match reader.read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        buffer.extend_from_slice(&bytes[..n]);
+                        if buffer.len() > limit {
+                            if tail {
+                                buffer.drain(..buffer.len() - limit);
+                            } else {
+                                return Err("host command output exceeds 8 MiB".into());
+                            }
+                        }
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
             }
-            return Ok(fs::read_to_string(stdout)?.trim().to_string());
+        }
+        if let Some(status) = status {
+            fs::write(directory.join("command.out"), &out)?;
+            fs::write(directory.join("command.err"), &err)?;
+            if !status.success() {
+                return Err(format!(
+                    "host command failed ({status}): {}",
+                    diagnostic(&directory.join("command.err"))
+                )
+                .into());
+            }
+            return Ok(String::from_utf8(out)?.trim().to_string());
         }
         thread::sleep(WORKER_TICK);
     }

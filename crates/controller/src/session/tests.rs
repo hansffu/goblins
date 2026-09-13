@@ -97,18 +97,6 @@ fn host_driver() {
                     };
                     Ok(serde_json::to_value(reply)?)
                 }
-                "parse" => {
-                    let bytes = req["bytes"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|b| b.as_u64().unwrap() as u8)
-                        .collect::<Vec<_>>();
-                    match goblins_protocol::parse_request(&bytes) {
-                        Ok(req) => Ok(serde_json::to_value(req)?),
-                        Err(reply) => Err(reply.message.unwrap_or_default().into()),
-                    }
-                }
                 "flake" => {
                     session.as_mut().unwrap().launch.flake = req["value"].as_str().unwrap().into();
                     Ok(json!(null))

@@ -1,9 +1,7 @@
-"""Regressions against the real Rust CLI/event loop and per-session socket."""
-import contextlib
+"""Slow owned work, subscriber backpressure and daemon crash teardown."""
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import signal
 import socket
@@ -11,185 +9,120 @@ import sys
 import tempfile
 import time
 import unittest
-from support import command, request
-from test_connected import Terminal
-
+from daemon_support import Daemon, RPC, receive
 
 class ResponsiveTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.build = tempfile.TemporaryDirectory(prefix="goblins-responsive-build-")
-        cls.app = Path(command(["nix", "build", "--print-out-paths", "--out-link", Path(cls.build.name) / "app",
-                                "path:" + str(Path(__file__).resolve().parents[1]) + "#goblins"])) / "bin/goblins"
-        wrapper = cls.app.read_text()
-        cls.binary, cls.config = re.search(r'exec (\S+) --runtime (\S+)', wrapper).groups()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.build.cleanup()
-
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="goblins-responsive-")
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.state = self.root / "control"
-        self.home = self.root / "home"
-        (self.home / ".config/fish").mkdir(parents=True)
-
-    def start(self, env=None):
-        env = {**(env or os.environ), "HOME": str(self.home)}
-        self.server = Terminal([self.binary, "--runtime", self.config, "--state-dir", str(self.state), "serve", "--plain"], env=env)
-        self.addCleanup(self.server.close)
-        self.server.expect("Goblins serving")
-        self.attach()
-
-    def attach(self):
-        self.client = Terminal([str(self.app), "--state-dir", str(self.state), "shell"])
-        self.addCleanup(self.client.close)
-        self.server.expect("shell connected")
-        self.client.expect("workspace[>#]")
-        self.server.send("status\n")
-        status = json.loads(self.server.expect(r'(\{"packages":.*\})\n').group(1))
-        self.payload = status["session"]["pid"]
-        # Find the matching host-only event record; no debug endpoint is added.
-        for path in Path("/tmp").glob("goblins-*/events.jsonl"):
-            with contextlib.suppress(OSError, ValueError):
-                if any(event.get("event") == "started" and event.get("fields", {}).get("pid") == self.payload
-                       for event in map(json.loads, path.read_text().splitlines())):
-                    self.directory = path.parent
-                    break
-        else:
-            self.fail("no session event record")
-
-    def peer(self):
-        peer = socket.socket(socket.AF_UNIX)
-        self.addCleanup(peer.close)
-        peer.settimeout(5)
-        peer.connect(str(self.directory / "request.sock"))
-        return peer
-
-    def pending(self):
-        peer = self.peer()
-        peer.sendall((json.dumps(request(package="hello")) + "\n").encode())
-        self.server.expect("Approve package\\? Type approve or deny:")
-        return peer
-
-    def assert_status_responsive(self):
-        start = time.monotonic()
-        self.server.send("status\n")
-        self.server.expect(r'\{"packages":.*\}\n', timeout=1.5)
-        self.assertLess(time.monotonic() - start, 1.5)
-
-    def assert_stopped(self):
-        self.server.expect("Goblin stopped", timeout=2)
-        self.assertFalse(Path(f"/proc/{self.payload}").exists())
-        self.assertFalse(self.directory.exists())
-
-    def test_whole_frame_timeout_and_other_requests_progress(self):
-        self.start()
-        slow = self.peer()
-        start = time.monotonic()
-        slow.sendall(b'{"v":')
-        # Another client reaches a decision while the first frame is incomplete.
-        peer = self.pending()
-        self.assert_status_responsive()
-        self.server.send("deny\n")
-        self.assertEqual(json.loads(peer.recv(4096))["status"], "denied")
-        # Drip bytes less than three seconds apart. The accept deadline must not
-        # slide with them, unlike the PoC's per-recv timeout.
-        for target in (.85, 1.7, 2.55):
-            time.sleep(max(0, start + target - time.monotonic()))
-            slow.sendall(b' ')
-        reply = json.loads(slow.recv(4096))
-        elapsed = time.monotonic() - start
-        self.assertEqual(reply["status"], "error")
-        self.assertIn("deadline", reply["message"])
-        self.assertLess(elapsed, 3.5)
-        # Both excess frames and disconnected partial frames stay non-authorizing.
-        for data in (b'{}\n{}\n', b'x' * 4097):
-            peer = self.peer(); peer.sendall(data)
-            self.assertEqual(json.loads(peer.recv(4096))["status"], "error")
-        peer = self.peer(); peer.sendall(b'{"v":'); peer.close()
-        self.assert_status_responsive()
-        self.server.send("quit\n")
-        self.assertEqual(self.server.wait(), 0)
-        self.assertEqual(self.client.wait(), 0)
-        print(f"EVIDENCE whole-frame rejection in {elapsed:.3f}s, other request and status progressed", flush=True)
-
-    def test_disconnect_and_shutdown_during_framing_and_approval(self):
-        self.start()
-        slow = self.peer(); slow.sendall(b'{')
-        self.client.close()
-        self.assert_stopped()
-        self.attach()
-        self.pending()
-        self.assert_status_responsive()
-        self.client.close()
-        self.assert_stopped()
-        self.attach()
-        self.pending()
-        self.server.send("quit\n")
-        self.assertEqual(self.server.wait(), 0)
-        self.assertEqual(self.client.wait(), 0)
-        self.assertFalse(self.directory.exists())
-
-    def test_build_cancellation_reaps_nix_and_handles_disconnect(self):
-        fakebin = self.root / "bin"; fakebin.mkdir()
-        marker = self.root / "building"
-        # Trusted test substitute for a slow host Nix client. It is never put in
-        # the sandbox, catalog, or production configuration. Startup nix-store
-        # and eval still use real host Nix; only build pauses after approval.
-        real_nix = shutil.which("nix")
-        script = fakebin / "nix"
+    def slow_daemon(self, kind):
+        root = tempfile.TemporaryDirectory(prefix="gs-"); self.addCleanup(root.cleanup)
+        root = Path(root.name); bindir = root / "bin"; bindir.mkdir(); marker = root / "owned"
+        tool = "nix-store" if kind == "startup" else "nix"
+        real = shutil.which(tool)
+        condition = '"eval" in sys.argv and any(".hello" in a for a in sys.argv)' if kind == "preview" else ('"build" in sys.argv and "--dry-run" not in sys.argv' if kind == "build" else '"--realise" in sys.argv')
+        script = bindir / tool
         script.write_text(f'''#!{sys.executable}
 import json,os,subprocess,sys,time
-if "build" in sys.argv and "--dry-run" not in sys.argv:
+if {condition} and not os.path.exists({str(marker)!r}):
  child=subprocess.Popen([{shutil.which("sleep")!r},"60"])
  open({str(marker)!r},"w").write(json.dumps([os.getpid(),child.pid]))
- time.sleep(60)
-else:
- os.execv({real_nix!r},[{real_nix!r},*sys.argv[1:]])
-''')
-        script.chmod(0o700)
-        env = {**os.environ, "PATH": str(fakebin) + ":" + os.environ["PATH"]}
-        self.start(env=env)
-        for action in ("disconnect", "quit"):
-            if action == "quit":
-                marker.unlink(); self.attach()
-            self.pending()
-            self.server.send("approve\n")
-            deadline = time.monotonic() + 15
-            while not marker.exists() and time.monotonic() < deadline:
-                time.sleep(.02)
-            self.assertTrue(marker.exists(), "host build did not start")
-            processes = json.loads(marker.read_text())
-            self.assert_status_responsive()
-            start = time.monotonic()
-            if action == "disconnect":
-                self.client.close()
-                self.assert_stopped()
-            else:
-                self.server.send("quit\n")
-                self.assertEqual(self.server.wait(), 0)
-                self.assertEqual(self.client.wait(), 0)
-            self.assertLess(time.monotonic() - start, 2)
-            self.assertFalse(Path(f"/proc/{processes[0]}").exists(), "owned Nix child was not reaped")
-            for pid in processes:
-                stat = Path(f"/proc/{pid}/stat")
-                self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z', "build descendant still running")
-            self.assertFalse(Path(f"/proc/{self.payload}").exists())
-            self.assertFalse(self.directory.exists())
-        print("EVIDENCE slow build: status, attachment disconnect and quit responsive; Nix client reaped and sandbox stopped", flush=True)
+ for _ in range(6000):
+  if os.path.exists({str(marker.with_suffix('.release'))!r}): break
+  time.sleep(.01)
+os.execv({real!r},[{real!r},*sys.argv[1:]])
+'''); script.chmod(0o700)
+        d = Daemon(env={**os.environ, "PATH": str(bindir) + ":" + os.environ["PATH"]}); self.addCleanup(d.close)
+        return d, marker
 
-    def test_production_controller_death_kills_sandbox(self):
-        self.start()
-        self.client.send("while true; sleep 1; end &\n")
-        os.kill(self.server.pid, signal.SIGKILL)
-        self.server.wait()
-        self.client.wait()
+    def assert_reaped(self, d, marker):
+        pids = json.loads(marker.read_text())
+        d.wait(lambda: not Path(f"/proc/{pids[0]}").exists(), timeout=2)
+        for pid in pids:
+            stat = Path(f"/proc/{pid}/stat")
+            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+
+    def test_slow_startup_does_not_block_other_session(self):
+        d, marker = self.slow_daemon("startup")
+        a = d.start(wait=False); d.wait(marker.exists)
+        b = d.start()
+        peer, record = d.pending(b["session"], "tree"); self.addCleanup(peer.close)
+        start = time.monotonic(); d.decide(record, False)
+        self.assertEqual(receive(peer.peer)["result"]["status"], "denied")
+        d.rpc.call("sessions.stop", {"session": b["session"]})
+        d.wait(lambda: d.get(b["session"])["state"] == "stopped", timeout=2)
+        self.assertLess(time.monotonic() - start, 2)
+        d.rpc.call("sessions.stop", {"session": a["session"]}); self.assert_reaped(d, marker)
+        print("EVIDENCE slow startup A does not block launch, approval or stop B", flush=True)
+
+    def test_resize_during_startup_is_applied_when_pty_arrives(self):
+        d, marker = self.slow_daemon("startup")
+        a = d.start(wait=False); d.wait(marker.exists)
+        self.assertTrue(d.rpc.call("sessions.resize", {"session":a["session"],"rows":40,"cols":110})["accepted"])
+        marker.with_suffix(".release").touch()
+        d.wait(lambda: d.get(a["session"])["state"] == "running")
+        with d.terminal(a) as terminal:
+            data = b""
+            while b"workspace" not in data: data += terminal.recv(8192)
+            terminal.sendall(b"stty size\n")
+            while b"40 110" not in data: data += terminal.recv(8192)
+        self.assert_reaped(d, marker)
+
+    def test_trailing_byte_disconnect_cancels_and_reaps_preview(self):
+        d, marker = self.slow_daemon("preview")
+        a, b = d.start(), d.start()
+        peer, record = d.pending(a["session"]); d.wait(marker.exists)
+        peer.peer.sendall(b"x"); peer.close()
+        d.wait(lambda: d.rpc.call("permissions.get", {"request": record["id"]})["state"] == "withdrawn", timeout=2)
+        self.assert_reaped(d, marker)
+        next_peer, record = d.pending(a["session"], "tree"); self.addCleanup(next_peer.close); d.decide(record, False)
+        self.assertEqual(receive(next_peer.peer)["result"]["status"], "denied")
+        self.assertEqual(d.get(b["session"])["state"], "running")
+        print("EVIDENCE valid request + extra byte + close withdraws approval and reaps slow preview/descendant; next request proceeds", flush=True)
+
+    def test_slow_build_and_stop_are_session_local(self):
+        d, marker = self.slow_daemon("build")
+        a, b = d.start(), d.start()
+        peer, record = d.pending(a["session"]); self.addCleanup(peer.close); d.decide(record, True); d.wait(marker.exists)
+        other, request = d.pending(b["session"], "tree"); self.addCleanup(other.close)
+        start = time.monotonic(); d.decide(request, False)
+        self.assertEqual(receive(other.peer)["result"]["status"], "denied")
+        self.assertLess(time.monotonic() - start, 1)
+        d.rpc.call("sessions.stop", {"session": a["session"]}); self.assert_reaped(d, marker)
+        self.assertEqual(d.get(b["session"])["state"], "running")
+        d.wait(lambda: not (d.state / a["session"] / "resources").exists(), timeout=2)
+        print("EVIDENCE slow approved build A leaves B responsive; explicit stop reaps only A's owned work", flush=True)
+
+    def test_slow_subscriber_disconnects_and_fresh_snapshot_resynchronizes(self):
+        d = Daemon(); self.addCleanup(d.close); a = d.start()
+        slow = d.host(); self.addCleanup(slow.close); slow.peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        initial = slow.call("state.subscribe", {})
+        for index in range(110):
+            peer = RPC(d.state / a["session"] / "resources/request.sock")
+            peer.send("permissions.request", {"kind":"package","package":"hello","reason":"x" * 1024})
+            record = d.wait(lambda: next(iter(d.permissions(state="pending")), None))
+            d.decide(record, False); self.assertEqual(receive(peer.peer)["result"]["status"], "denied"); peer.close()
+        # Drain until disconnected; any complete frames before it must be ordered.
+        sequence = initial["sequence"]
+        while True:
+            try:
+                event = receive(slow.peer)["params"]
+            except EOFError:
+                break
+            sequence += 1; self.assertEqual(event["sequence"], sequence)
+        fresh = d.host(); self.addCleanup(fresh.close)
+        result = fresh.call("state.subscribe", {})
+        self.assertEqual(len(result["snapshot"]["permissions"]), 110)
+        self.assertTrue(all(p["state"] == "denied" for p in result["snapshot"]["permissions"]))
+        self.assertGreater(result["sequence"], sequence)
+        print("EVIDENCE slow subscriber disconnects without a false continuous sequence; fresh subscription recovers retained outcomes", flush=True)
+
+    def test_abrupt_daemon_death_kills_multiple_payloads(self):
+        d = Daemon(); self.addCleanup(d.close)
+        launches = [d.start(), d.start()]
+        pids = [d.get(a["session"])["identity"]["pid"] for a in launches]
+        os.kill(d.process.pid, signal.SIGKILL); d.process.wait()
         deadline = time.monotonic() + 3
-        while Path(f"/proc/{self.payload}").exists() and time.monotonic() < deadline:
-            time.sleep(.02)
-        self.assertFalse(Path(f"/proc/{self.payload}").exists())
-        self.assertTrue(self.directory.exists())
-        shutil.rmtree(self.directory)
+        while any(Path(f"/proc/{pid}").exists() for pid in pids) and time.monotonic() < deadline: time.sleep(.02)
+        self.assertTrue(all(not Path(f"/proc/{pid}").exists() for pid in pids))
+        self.assertTrue(all((d.state / a["session"] / "resources").exists() for a in launches))
+        print("EVIDENCE daemon SIGKILL kills both payload namespaces; crash-only filesystem leftovers remain", flush=True)
+
+if __name__ == "__main__": unittest.main(verbosity=2)

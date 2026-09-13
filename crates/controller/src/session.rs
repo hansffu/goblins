@@ -8,7 +8,7 @@ use crate::{
     seccomp, snapshot, unix,
 };
 use goblins_protocol::package_name;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -51,7 +51,7 @@ pub fn store_path(path: &Path) -> Result<PathBuf> {
     }
     Ok(path.to_path_buf())
 }
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {
     pub pid: u32,
     pub helper_userns: u64,
@@ -69,14 +69,24 @@ pub struct Session {
     pub output: Option<File>,
     pub listener: Option<UnixListener>,
     helper: Option<Child>,
+    pub exit_code: Option<i32>,
     helper_input: Option<File>,
     helper_output: Option<File>,
     cancel: Cancellation,
 }
 impl Session {
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
+        Self::new_in(launch, workspace, cancel, unix::temp_directory()?)
+    }
+    pub fn new_in(
+        launch: Launch,
+        workspace: Option<&Path>,
+        cancel: Cancel,
+        directory: PathBuf,
+    ) -> Result<Self> {
+        unix::private_directory(&directory)?;
         let session = Self {
-            directory: unix::temp_directory()?,
+            directory,
             launch,
             mounted: BTreeSet::new(),
             packages: BTreeMap::new(),
@@ -85,6 +95,7 @@ impl Session {
             output: None,
             listener: None,
             helper: None,
+            exit_code: None,
             helper_input: None,
             helper_output: None,
             cancel,
@@ -109,6 +120,9 @@ impl Session {
             .append(true)
             .open(self.directory.join("events.jsonl"))
         {
+            if file.metadata().is_ok_and(|m| m.len() >= 1024 * 1024) {
+                return;
+            }
             let time = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -325,7 +339,7 @@ impl Session {
         self.helper_output = Some(File::from(reply_r));
         let ready = self.helper_reply(Duration::from_secs(15))?;
         let fields: Vec<_> = ready.split_whitespace().collect();
-        if fields.len() != 6 || fields[0] != "READY" {
+        if fields.len() != 6 || fields[0] != "READY1" {
             return Err(format!("invalid helper startup reply: {ready}").into());
         }
         self.identity = Some(Identity {
@@ -417,7 +431,16 @@ impl Session {
         &mut self,
         name: &str,
         output: Option<&Path>,
+        before_mount: impl FnMut(usize, &Path) -> Result<()>,
+    ) -> Result<()> {
+        self.grant_observed(name, output, before_mount, |_| Ok(()))
+    }
+    pub(crate) fn grant_observed(
+        &mut self,
+        name: &str,
+        output: Option<&Path>,
         mut before_mount: impl FnMut(usize, &Path) -> Result<()>,
+        mut progress: impl FnMut(&'static str) -> Result<()>,
     ) -> Result<()> {
         if !package_name(name) {
             return Err("invalid package attribute".into());
@@ -440,6 +463,7 @@ impl Session {
         // From placeholder preparation through publication, any uncertainty
         // terminates this session. Direct store paths appear before publication.
         let mount = (|| -> Result<()> {
+            progress("mounting")?;
             self.placeholders(&missing)?;
             for (count, item) in missing.iter().enumerate() {
                 self.cancel.check()?;
@@ -458,6 +482,7 @@ impl Session {
                 self.mounted.insert(item.clone());
             }
             self.cancel.check()?;
+            progress("publishing")?;
             let staged = self.directory.join("packages/next");
             symlink(generation.file_name().unwrap(), &staged)?;
             fs::rename(staged, self.directory.join("packages/current"))?;
@@ -476,9 +501,14 @@ impl Session {
         Ok(())
     }
     pub fn alive(&mut self) -> bool {
-        self.helper
-            .as_mut()
-            .is_some_and(|p| p.try_wait().is_ok_and(|status| status.is_none()))
+        match self.helper.as_mut().map(Child::try_wait) {
+            Some(Ok(None)) => true,
+            Some(Ok(Some(status))) => {
+                self.exit_code = status.code();
+                false
+            }
+            _ => false,
+        }
     }
     pub fn helper_pid(&self) -> Option<u32> {
         self.helper.as_ref().map(Child::id)

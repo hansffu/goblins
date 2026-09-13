@@ -10,13 +10,13 @@ use goblins_protocol::{Reply, Request};
 use std::{
     os::{fd::OwnedFd, unix::net::UnixListener},
     path::PathBuf,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
 };
 
 pub(super) enum Work {
     Preview {
-        approval: crate::controller::ApprovalId,
+        approval: u64,
         package: String,
         cancel: Cancel,
     },
@@ -27,7 +27,7 @@ pub(super) enum Work {
 }
 pub(super) enum Completed {
     Preview {
-        approval: crate::controller::ApprovalId,
+        approval: u64,
         result: std::result::Result<crate::catalog::Preview, String>,
     },
     Started {
@@ -36,16 +36,22 @@ pub(super) enum Completed {
         listener: UnixListener,
         identity: Identity,
     },
+    Progress {
+        request: String,
+        state: &'static str,
+    },
     Granted {
         reply: Reply,
         detail: Option<String>,
     },
     Failed(String),
-    Stopped,
+    Stopped {
+        exit_code: Option<i32>,
+    },
 }
 pub(super) struct Worker {
     pub cancel: Cancel,
-    pub commands: Sender<Work>,
+    pub commands: SyncSender<Work>,
     pub results: Receiver<Completed>,
     thread: Option<JoinHandle<()>>,
 }
@@ -55,15 +61,16 @@ impl Worker {
         name: String,
         workspace: Option<PathBuf>,
         state: PathBuf,
+        directory: PathBuf,
         rows: u16,
         cols: u16,
     ) -> Self {
         let cancel = Cancel::default();
         let token = cancel.clone();
-        let (tx, commands) = mpsc::channel();
-        let (results, rx) = mpsc::channel();
+        let (tx, commands) = mpsc::sync_channel(4);
+        let (results, rx) = mpsc::sync_channel(16);
         let thread = thread::spawn(move || {
-            let run = || -> Result<()> {
+            let run = || -> Result<Option<i32>> {
                 // The private host attachment chooses this launch's manifest.
                 // Disk reads and launch adaptation stay off the event pump.
                 token.check()?;
@@ -71,10 +78,14 @@ impl Worker {
                 token.check()?;
                 let (master, slave) = unix::pty(rows, cols)?;
                 let mut launch = config.launch()?;
+                if launch.initial_packages.len() > 128 {
+                    return Err("initial package limit is 128".into());
+                }
                 launch.protected_paths.push(std::fs::canonicalize(state)?);
-                let mut session = Session::new(launch, workspace.as_deref(), token.clone())?;
+                let mut session =
+                    Session::new_in(launch, workspace.as_deref(), token.clone(), directory)?;
                 session.start(Some(slave))?;
-                results.send(Completed::Started {
+                results.try_send(Completed::Started {
                     initial_packages: session
                         .launch
                         .initial_packages
@@ -103,7 +114,7 @@ impl Worker {
                             )
                             .map_err(|e| e.to_string());
                             if results
-                                .send(Completed::Preview { approval, result })
+                                .try_send(Completed::Preview { approval, result })
                                 .is_err()
                             {
                                 break;
@@ -118,7 +129,18 @@ impl Worker {
                                 serde_json::json!({"request":req,"approved":approved}),
                             );
                             let result = if approved {
-                                session.grant(&req.package, None)
+                                session.grant_observed(
+                                    &req.package,
+                                    None,
+                                    |_, _| Ok(()),
+                                    |state| {
+                                        results.try_send(Completed::Progress {
+                                            request: req.id.clone(),
+                                            state,
+                                        })?;
+                                        Ok(())
+                                    },
+                                )
                             } else {
                                 Ok(())
                             };
@@ -153,7 +175,10 @@ impl Worker {
                                     )
                                 }
                             };
-                            if results.send(Completed::Granted { reply, detail }).is_err() {
+                            if results
+                                .try_send(Completed::Granted { reply, detail })
+                                .is_err()
+                            {
                                 break;
                             }
                         }
@@ -161,12 +186,19 @@ impl Worker {
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
-                Ok(())
+                Ok(session.exit_code)
             };
-            if let Err(e) = run() {
-                let _ = results.send(Completed::Failed(e.to_string()));
+            match run() {
+                Ok(exit_code) => {
+                    let _ = results.try_send(Completed::Stopped { exit_code });
+                }
+                Err(e) => {
+                    if token.check().is_ok() {
+                        let _ = results.try_send(Completed::Failed(e.to_string()));
+                    }
+                    let _ = results.try_send(Completed::Stopped { exit_code: None });
+                }
             }
-            let _ = results.send(Completed::Stopped);
         });
         Self {
             cancel,
@@ -174,6 +206,11 @@ impl Worker {
             results: rx,
             thread: Some(thread),
         }
+    }
+}
+impl Worker {
+    pub fn finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
     }
 }
 impl Drop for Worker {

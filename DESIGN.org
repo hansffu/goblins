@@ -1,66 +1,110 @@
-#+title: Live grant boundary and implementation
+#+title: Goblins daemon, protocol and sandbox boundary
 
-* Connected command interface
+* Ownership and concurrency
 
-=goblins serve= owns the session and helper. =goblins shell= connects to a
-separate, private host-only SOCK_SEQPACKET control socket and requests one shell
-with its terminal dimensions. The session worker creates a PTY, starts the configured entry on its slave,
-and transfers the master to the host attachment using SCM_RIGHTS. The shell
-client relays bytes and window-size changes, restoring its terminal on exit.
-This provides a real terminal without adding terminal multiplexing or persistence.
+The ordinary-user Rust daemon owns session records, permission identities,
+decisions, grant outcomes, PTYs and lifecycle. =goblins daemon= has no terminal
+frontend dependency. =serve= and =serve --plain= are host API clients; =run NAME=
+starts a session through that same API and consumes its separate raw terminal
+stream. Closing any or all frontends leaves sessions alive. Reconnecting to the
+same daemon obtains current state; restarting the daemon never recovers sessions.
 
-The helper attaches the newly allocated slave as the payload's controlling
-terminal before Bubblewrap setup. It closes every other handle on exec. The
-sandbox's =/dev/tty= now intentionally names its own shell terminal, never the
-serve terminal. Pipe-based gate tests still have no controlling terminal.
+One event loop serializes authority and snapshot/event ordering. Each session
+has its own cancellable worker and separate single-threaded namespace helper.
+Startup, manifest reads, snapshots, Nix and helper acknowledgements run on the
+worker. A slow session, human decision, output consumer or subscriber cannot
+hold another session's worker or control path. Worker command/result channels
+are bounded; cancellation bypasses the command queue. Finished workers are
+joined only after completion; explicit stop acceptance does not wait for cleanup.
+Normal daemon shutdown first cancels every worker, then joins and cleans them.
 
-The host control socket and the per-session public request socket are different
-interfaces. Only the public request socket is mounted into Fish. Host socket
-messages select one named host configuration, with bounded terminal dimensions;
-there is no approval or arbitrary mount operation on that protocol. The server's
-foreground terminal remains the only source of package approval. The mounted
-=goblins= executable implements only =request-package=, and is not the host CLI.
+All daemon session directories, including future sessions, are children of its
+private protected state directory. Bind validation checks that whole tree and
+canonical sources, rather than only a requesting session's own directory.
+A sandbox gets only its own request socket at =/run/goblins/request.sock=.
+Neither a shared host UID nor an agent-supplied field selects session authority.
 
-The server keeps an exclusive lock on a private mode-0700 control directory.
-The control connection's lifetime owns the attachment: disconnect stops the
-session; server exit stops its helper and restores the shell terminal. One
-shell is supported at a time, with sequential fresh sessions on the same server.
-The source, target namespace, closure rooting, and publication mechanisms below
-are shared with the original gate.
+* Structured communication
 
-* Fullscreen presentation and package previews
+Both host and per-session sandbox endpoints are pathname Unix STREAM sockets,
+mode 0600 within mode-0700 host directories. JSON-RPC 2.0 messages use
+Content-Length framing with CRLF headers; terminal bytes never enter JSON.
+Shared protocol code uses Serde typed data plus duplicate-key and nesting
+validation. The inner client has no dependency on host policy, Ratatui, Nix or
+the helper. The helper still accepts only narrow private pipe commands.
 
-The fullscreen frontend uses Ratatui for table/layout rendering and Crossterm
-for terminal events. These dependencies are confined to the host controller
-package; the inner request client and namespace helper do not depend on them.
-The controller library still never opens =/dev/tty=. The frontend owns alternate
-screen/raw mode, resize, scroll state, colors and input. Its request panel reserves
-vertical space below the table rather than overlaying it. The overview contains
-one row per sandbox; Enter opens its package table and Escape returns. Terminal
-foreground/background defaults and ANSI colors are inherited, with blue square
-borders and no RGB theme fallback.
+[[file:DAEMON.org::*Implementation contract (2026-09-13)][The API 1 implementation contract]] specifies the methods, schemas, errors,
+identity and retry rules, limits and deadlines. =initialize= negotiates the
+Goblins version independently of JSON-RPC's version and reports a random daemon
+instance ID. Host connections support repeated calls. Sandbox connections
+initialize, make one permission request, receive one terminal outcome and close.
+Notifications never mutate state; batches are rejected. Unknown fields,
+duplicate JSON keys at every depth, invalid IDs and unsupported methods fail.
 
-A validated package request emits an approval token immediately and queues a
-preview on the existing session worker. Preview evaluation disables IFD and
-uses the selected configuration's pinned nixpkgs. For an absent output, Nix's
-C-locale raw =--dry-run= summary supplies the compressed download estimate;
-its build JSON does not contain transfer sizes. Unexpected summary formats,
-lookup failures and unavailable metadata yield Unknown. Source builds are
-marked as having unknown total cost. The normal approved build retains its
-existing realization behavior.
+Every incomplete frame has one monotonic three-second budget. Initialization
+starts at accept, the sandbox request at initialization completion, and later
+host frames at their first byte. Idle initialized host connections and human or
+build waits have no frame timeout. Any byte or EOF after the sandbox permission
+frame disconnects that caller. Before approval this withdraws the record and
+cancels the preview; after approval the grant can finish with an undelivered
+reply and an unknown caller outcome. No disconnect path uses MSG_PEEK.
 
-Each preview has a cancellation token linked to session cancellation. Denial
-or request disconnect cancels only the preview; session shutdown cancels both.
-No preview can publish a profile, mount a package, or authorize a grant. The
-worker remains sequential, separate from the event pump and namespace helper.
-Preview and decision events carry the controller-issued approval identity;
-another sandbox client's duplicate public request ID cannot replace or dismiss
-the displayed decision. Bracketed paste cannot supply approval keys.
+A daemon-issued session/request/approval triple names every decision. Only the
+first pending transition wins. A public RPC ID is only correlation data.
+Launch mutations additionally require a host-generated retry key: identical
+parameters return the original acceptance, differing parameters conflict.
+Keys remain reserved for that daemon lifetime; capacity exhaustion refuses new
+keys. No automatic client retry is inferred from a lost response.
+
+=state.subscribe= atomically returns a snapshot at global sequence N. Later
+=state.changed= messages contain ordered complete replacement snapshots, including
+record evictions. Bounded session/permission records make this simple schema
+sufficient without pagination or a durable log. Queue overflow disconnects the
+subscriber, requiring a fresh subscription; it cannot silently skip an event.
+The frontend uses a subscription connection and a separate host call connection.
+
+* Approval presentation
+
+The minimal Ratatui frontend shows sessions and startup/live package names,
+with a separate request panel and advisory preview. Arrow keys select a session
+or scroll package details; Page Up/Down scroll request text. Terminal defaults
+and ANSI blue borders are used, with =NO_COLOR= honored. The plain fallback
+prints escaped state and request records. Neither frontend owns sandbox state.
+
+Approval commands are =approve APPROVAL= and =deny APPROVAL=, using the complete
+immutable displayed token. Bare y/n, a mouse click, or a bare approval word
+cannot authorize anything. Fullscreen bracketed paste is ignored. Input text
+survives state replacement as text: queued/partial input naming A cannot be
+retagged as B. The daemon still validates the immutable triple against its
+current state, so a stale frontend cannot override withdrawal or another client.
+All agent text is escaped to ASCII JSON data before host-terminal presentation.
+
+* Terminal lifetime and completion
+
+Start acceptance returns a private terminal stream pathname immediately. It
+accepts one lifetime consumer, even while startup is still in progress. The
+daemon retains the PTY master and relays raw bytes with separate bounded
+64-KiB input/output buffers. =sessions.resize= performs the PTY size ioctl in
+the daemon; it carries no namespace or attachment authority.
+
+Before the first consumer connects, buffered output backpressures that session
+at the limit. After consumer disconnect, the daemon discards output and keeps
+draining the PTY so the session survives; delivery is marked interrupted.
+There is no terminal reattachment, replay, observer or multiplexing contract.
+A slow connected consumer backpressures its own session only.
+
+The helper observes natural Bubblewrap/payload exit while polling its private
+command pipe and returns the exit code. The worker's stopped result follows
+resource cleanup. The daemon tracks that exit separately from PTY EOF/EIO,
+buffer drain, and raw-stream completion. It sends stream EOF only after queued
+bytes have been written. The host client then drains its own stdout buffer and
+checks the retained exit and delivery fields. A control disconnect, daemon
+crash, stdout failure or interrupted relay cannot report successful completion.
 
 * Namespace topology
 
 #+begin_example
-host controller (ordinary host UID; Nix access; foreground lifetime)
+host daemon (ordinary host UID; Nix access; independent frontend lifetime)
   private pipes -> Rust helper
     user namespace A: UID 0 maps only to the invoking host UID
     mount namespace S owned by A: private copy of source mounts
@@ -157,157 +201,42 @@ Normal child execution succeeds; all capabilities and the capability bounding
 set remain zero in the payload. This supplements filesystem, PID, and network
 isolation; it is not a comprehensive syscall allowlist.
 
-* Controller, transport, and terminal separation
+* Nix configuration and live grants
 
-The Nix library builds named configurations. =mkGoblin= calls the pinned
-=mkSandbox= with the inner request package added, and retains its build spec.
-=mkGoblins= serializes the configurations into an immutable host-side manifest
-and returns =bin/goblins=. The live adapter reads upstream's entry executable,
-POSIX shell, full initial closure, PATH, certificate and pkg-config paths. It
-does not run upstream's independent static launcher or its environment shell
-fragments. Configured environment values and entry arguments remain literal.
-The four upstream host bind lists are forwarded and implemented by the Rust
-startup adapter. Types and unsupported network options are checked at Nix
-evaluation; source existence, types and protected-path conflicts are checked at
-launch. See [[file:USAGE.org::*Nix API][bind semantics and limits]]. HOME retains its host pathname
-but is a private tmpfs with only declared paths bound into it.
+=mkGoblin=/=mkGoblins=, named presets, public flake outputs, literal environment
+values/entry arguments and the upstream initial closure remain supported.
+Each trusted launch supplies its own absolute manifest path and name, allowing
+configuration-only rebuilds to start changed/new definitions on the same daemon.
+Running sessions retain their selected configuration. Manifests declare API 1
+and private helper API 1; mismatches fail only that launch. Manifest/build-spec
+reads require bounded regular files. Launch configuration never comes from a
+sandbox request. The daemon inherits bind-variable expansion values from its
+own host environment; literal =env= values do not use that expansion path.
 
-The adapter discovers store symlinks within declared directories using
-no-follow directory descriptors. It roots their containing store outputs while
-mounting only the exact selected targets; this supports Home Manager without
-exposing unrelated settings or recursively granting a config's dependencies.
-Startup host bind sources are trusted host configuration. Concurrent host
-replacement of source paths during launch is not covered by the live store
-helper's openat2 guarantee.
+The daemon's =--workspace= selects the source for each independent disposable
+snapshot. Source symlinks are not followed, .git entries and special files are
+omitted, and no host hooks are executed. Explicit startup binds retain the
+upstream four read/write file/directory options and exact store-target handling.
+Host replacement races or an unresponsive filesystem/kernel are not made
+transactional or cancellable by this milestone.
 
-The host =run NAME= client sends a configured name and an absolute manifest path
-over the private control socket. This is a trusted host interface: selecting a
-manifest selects executable paths and startup policy. The session worker reads
-and selects the configuration for each launch; the server has no fixed registry
-or manifest-identity equality check. Loading stays outside the event pump.
-Manifest reads are bounded to 1 MiB and require regular files; FIFO/device paths
-cannot block startup. Invalid manifests and unknown names fail that launch.
+A validated request starts a cancellable advisory preview with IFD disabled.
+Approval cancels that preview, then performs pinned host Nix realization,
+closure rooting, collision checks, helper-acknowledged mounts and atomic profile
+publication. Permission records distinguish realizing, mounting, publishing,
+ready and failed. Host commands are read through bounded nonblocking pipes;
+stdout is capped at 8 MiB and stderr retains at most 1 MiB. This bounds diagnostic
+capture without imposing a file-size limit on Nix's own caches or store work.
 
-Changed definitions and new names can therefore run on the same server without
-restart. Active sessions retain their launch configuration, and a second
-attachment is rejected without replacing them. =shell= is a CLI alias for
-=run shell=. Only =request-package= is available in the inner command: its
-protocol cannot select manifests, executables, host paths or approval decisions.
-The server still owns workspace snapshots, grant approval and session teardown.
-This per-launch configuration selection provides no restart recovery.
+The stable profile path is inherited at startup. Successful additive grants
+become usable in the same payload process/mount namespace. Realization and
+collision failures preserve the running session. Failure from mount preparation
+through publication terminates that session; direct store paths may already be
+visible, so there is no rollback or revocation claim.
 
-The Rust workspace has three authority boundaries:
-
-- =goblins-protocol= defines public data, strict JSON validation and framing.
-- =goblins-client= depends on that protocol and JSON serialization only. Its
-  executable is installed as =bin/goblins= in the inner Nix package (with the
-  historical =goblins-request package NAME= alias).
-- =goblins-controller= owns host policy and session lifecycle. Its library
-  contains configuration adaptation, the event pump, session worker, Nix
-  commands, snapshots and launch/mount coordination. Its =goblins= executable
-  supplies the fullscreen approval UI, plain fallback and host terminal relay.
-
-The separate =goblins-mount-helper= retains the PoC implementation and depends
-only on =libc=. No controller thread performs namespace operations. The helper
-is single-threaded, with its own source/target namespace and control descriptors.
-The only third-party runtime dependencies are =libc= and =serde=/=serde_json=
-(with their locked transitive dependencies). There is no async runtime or CLI
-framework. Descriptor ownership uses =OwnedFd=/=File= and owned processes are
-reaped on shutdown/error paths.
-
-The Nix configuration model is unchanged. =mkGoblin= still wraps =mkSandbox=;
-=mkGoblins= projects its build specification for the live adapter, omitting
-unused references to the upstream static Python/network launcher. Initial
-closures, allowed packages, entry arguments and literal environment values are
-retained. The original upstream wrapper remains available through =mkGoblin=.
-Neither Rust executable needs Python. A configured package may itself depend
-on Python, and the integration probes deliberately include it.
-
-Protocol: one UTF-8 JSON line, at most 4096 bytes, with exactly:
-
-#+begin_src json
-{"v":1,"id":"r1","op":"request-package","package":"jq","reason":"Inspect test output"}
-#+end_src
-
-IDs use 1–64 ASCII letters/digits/underscores/hyphens. Reasons contain 1–1024
-characters, subject to the wire limit. Duplicate/unknown fields, invalid types,
-unsupported operations, and malformed/deep JSON are errors. A syntactically
-valid unknown package reaches approval and then gets a correlated Nix resolution
-error. Framing has a monotonic *whole-request* deadline of three seconds from
-acceptance; receiving more bytes never resets it.
-
-The frontend calls =Controller::tick= and renders returned events, passes an
-opaque controller-issued =ApprovalId= to =decide=, and can inspect or stop a
-session. The approval token is independent of the agent-chosen correlation ID.
-The controller library never reads =/dev/tty=. No host socket operation can
-approve a grant; the foreground frontend supplies that explicit decision.
-
-A small event pump accepts and reads sockets nonblockingly, limiting each kind
-to 16 incomplete connections and bounded work per tick. One complete request
-may await approval or grant processing; other complete requests receive a
-correlated busy error. Slow readers never receive an unbounded response buffer.
-The host attachment handshake is also bounded and has a whole-packet deadline.
-There is no durable queue, scheduler, or concurrency between grants.
-
-One persistent worker thread owns the session and handles startup, snapshots,
-Nix and helper replies. The event pump continues during these operations and
-while awaiting a human. Attachment disconnect sets a cancellation token without
-waiting for the worker's command queue. The foreground UI polls at 20 ms;
-worker waits and helper replies check cancellation at similar intervals. These
-are polling intervals, not hard real-time latency guarantees.
-
-On cancellation, an owned host command's process group is killed and its direct
-child reaped. =waitid(WNOWAIT)= keeps the child's PID reserved until group
-termination, avoiding a signal to a recycled PID. The host Nix daemon is not
-owned or killed; cancellation of its client is not a claim that shared daemon
-build work stops. Helper death tears down the sandbox. Local filesystem I/O and
-kernel calls are not made cancellable, so an unresponsive filesystem/kernel can
-still delay cleanup. No reconnect, saved state or restart recovery is provided.
-
-A valid request yields =ready=, =denied=, or =error= with matching version/ID.
-The CLI succeeds only on =ready=. An interrupted/missing/invalid reply yields
-an explicit unknown outcome and exit 2, without resubmission. Disconnect alone
-never constitutes approval. A human-approved grant may still complete after a
-client disconnects, leaving that client uncertain about its outcome.
-
-The foreground client opens =/dev/tty= directly for decisions. The connected
-payload has its own PTY slave; only the host attachment client gets its master.
-The host-library integration tests use pipes. Neither receives the approval terminal. Request
-fields and responses are escaped before rendering in the host approval UI;
-payload terminal output goes directly to its separate attachment terminal.
-No agent-generated text is fed into the approval input. The host controller
-API used by tests is trusted; it is not exported on the public socket. A test-only
-Rust harness transfers payload pipe/listener descriptors to Python probes.
-Fault injection is compiled only into this test harness, never installed as a
-production command or accepted in a manifest or socket request.
-
-* Lifetime and failure policy
-
-Host Nix resolves validated attribute components directly from the pinned
-nixpkgs source's =legacyPackages.x86_64-linux= package set. The host executable
-references =pkgs.path= from the locked input; it does not embed the Goblins root
-flake, tests, or fixture definitions. Test drivers build fixtures separately
-and pass their already-realized outputs to the host-side grant API.
-A fixed host-side Nix function requires a derivation and chooses its =bin=
-output, or its default output when no =bin= exists. The host supplies the build
-output selector; the request cannot. Evaluation and realization happen only
-after human approval. No agent workspace files, supplied expressions, URLs,
-or package strings as shell code are evaluated. The package grammar is bounded
-to 200 ASCII characters with dot-separated identifier components.
-Top-level roots retain transitive dependencies for the session. The profile
-contains absolute links to approved =bin= entries, with collision rejection.
-There is no shell restart or environment replacement; the stable profile path
-was on PATH from launch.
-
-Realization or pre-mount collision errors leave the running session/profile
-unchanged. Once mounting/publication begins, any failure ends the session.
-Helper termination kills Bubblewrap; Bubblewrap parent-death handling and PID
-namespace teardown kill the payload tree. Controller exit stops the helper.
-SIGKILL cannot clean filesystem state, so crash leftovers require host cleanup.
-No global garbage collection is run by this PoC.
-
-Controller/daemon restart recovery is explicitly out of scope. Normal frontend
-shutdown joins the worker and removes session roots/directories. SIGKILL cannot
-perform that filesystem cleanup. A future daemon or Emacs frontend can host the same
-controller operations, but neither service lifecycle nor surviving a controller
-restart is implemented by this rewrite.
+Cancellation kills and reaps owned Nix client process groups, never the host Nix
+daemon or its shared builds. Parent-death handling and PID namespace teardown
+kill sandboxes on daemon death. Normal cleanup removes roots and resources;
+SIGKILL can leave host files/roots for manual cleanup. Durable recovery, terminal
+multiplexing, projects, Emacs integration and live file/network grants remain
+outside this milestone. [[file:RESULTS.org][RESULTS.org]] records verification and its limits.

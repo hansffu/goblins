@@ -3,21 +3,20 @@
 Updated for the Rust rewrite, 2026-09-12. Long-term product direction below is
 separate from the implemented scope and evidence in [[file:RESULTS.org][RESULTS.org]].
 
-* Next implementation: daemon and communication
+* Implemented daemon milestone
 
-The decisions agreed on 2026-09-13 are recorded in
-[[file:DAEMON.org][DAEMON.org: daemon and communication implementation decisions]]. That document
-governs the next milestone: multiple concurrent sandboxes, daemon-owned
-session/request/approval state, frontend reconnection to the same live daemon,
-and JSON-RPC 2.0 with Content-Length framing over Unix sockets. Sandbox requests
-go directly to the daemon; each helper retains its private mount channel.
+The decisions agreed on 2026-09-13 are recorded in [[file:DAEMON.org][DAEMON.org]].
+The daemon implementation now supports concurrent sandboxes, daemon-owned
+sessions/permissions, same-live-daemon frontend reconnection and JSON-RPC 2.0
+with Content-Length framing. Sandbox requests go directly to per-session
+daemon endpoints; helpers retain private mount pipes. [[file:RESULTS.org][RESULTS.org]] records
+verified gates and [[file:USAGE.org][USAGE.org]] describes the current commands.
 
-Terminal multiplexing, explicit attach/detach management, project management and
-daemon restart recovery remain out of scope. The three review findings below
-are required acceptance gates, not resolved defects. The earlier single-session
-foreground and newline-JSON descriptions here remain the PoC/rewrite history;
-they do not override the new milestone. Production code is unchanged by this
-planning record.
+The three deferred review findings below are implemented and their reproductions
+pass. The earlier single-session foreground/newline descriptions remain history,
+not the current architecture. Terminal multiplexing, explicit attach/detach,
+projects, live file/network grants and daemon restart recovery remain outside
+this milestone.
 
 * Rust rewrite decision and scope
 
@@ -280,7 +279,8 @@ and controller-owned lifetime remain. Restart recovery is still out of scope.
 
 Decision on 2026-09-13: defer the three confirmed review findings to the daemon
 and communication rewrite. Do not patch the temporary implementation now.
-These are accepted known defects, not resolved findings. Controller restart
+These were accepted known defects; the implementation resolutions below were
+verified during the daemon milestone. Controller restart
 recovery remains out of scope, including during the daemon work unless the user
 explicitly changes that requirement.
 
@@ -290,10 +290,16 @@ formatting, Clippy, production build, flake evaluation and API/packaging checks.
 It did not confirm an additional namespace escape; this is not a security audit
 certification. The following focused reproductions demonstrated uncovered bugs.
 
-** TODO Bind approval input to the request actually presented (P1)
+** DONE Bind approval input to the request actually presented (P1)
 
-Queued terminal input for an old request can authorize a replacement request:
-the frontend replaces pending state before consuming the queued input and gives
+Resolution: both actual frontends require the complete immutable approval token
+in the typed command. Suspending the frontend with A displayed, queueing a
+partial A command, withdrawing A and creating B, then completing/resuming the
+old command leaves B pending. Stale/duplicate/competing daemon decisions are
+also rejected. Bracketed paste does not grant access.
+
+At the review baseline, queued terminal input for an old request could authorize
+a replacement: the frontend replaced pending state before consuming input and gave
 that input the new request's approval token. The review reproduced an approval
 for =tree= after =hello= was the displayed request when input was queued.
 See [[file:crates/controller/src/tui.rs][the TUI event loop and approval handling]].
@@ -304,9 +310,14 @@ approve a successor. The frontend must also prevent old queued input from being
 relabelled with a new token. Reproduce replacement/disconnect plus queued input
 in a regression test. This approval-boundary issue has priority over UI polish.
 
-** TODO Drain buffered terminal output before reporting completion (P2)
+** DONE Drain buffered terminal output before reporting completion (P2)
 
-PTY EOF/EIO currently completes attachment teardown while output remains queued.
+Resolution: daemon PTY/stream draining and client stdout completion are separate
+from workload exit. The actual slow-reader reproduction receives all 50,000
+bytes and its final marker, including when exit is reported before delivery
+finishes. Immediate short output passes; /dev/full output reports failure.
+
+At the review baseline, PTY EOF/EIO completed teardown while output remained queued.
 The review's slow-reader reproduction delivered 16,384 of 50,000 bytes, lost the
 final marker and exited successfully. A short configured command also lost its
 output. See [[file:crates/controller/src/attachment.rs][the PTY attachment relay]].
@@ -316,10 +327,15 @@ output completion. Drain already-buffered bytes before normal completion, handle
 backpressure, and deliver the final marker reliably in an exit-with-output test.
 Do not require reconnection or controller restart recovery to satisfy this.
 
-** TODO Recognize disconnect despite unread trailing bytes (P2)
+** DONE Recognize disconnect despite unread trailing bytes (P2)
 
-The pending-request connection uses =MSG_PEEK= to detect EOF but never consumes
-extra data. Sending one extra byte after a valid request and then closing hides
+Resolution: pending sandbox streams consume/reject trailing input and recognize
+EOF, without MSG_PEEK. The valid-frame + extra-byte + close test withdraws the
+approval, cancels/reaps a stalled preview and its child, and permits a successor.
+Whole-frame silent/drip/fragmentation tests also pass.
+
+At the review baseline, the pending connection used =MSG_PEEK= without consuming
+extra data. One extra byte after a valid request followed by close hid
 the disconnect, retaining the abandoned request/preview and blocking the next
 request. See [[file:crates/controller/src/unix.rs][socket disconnect detection]] and
 [[file:crates/controller/src/controller.rs][pending-request lifecycle]].

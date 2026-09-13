@@ -30,11 +30,14 @@ def rust_driver():
 
 
 def command(args):
-    return subprocess.check_output([str(x) for x in args], text=True, stderr=subprocess.PIPE).strip()
+    result = subprocess.run([str(x) for x in args], text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f"command failed ({result.returncode}): {args}\n{result.stderr[-12000:]}")
+    return result.stdout.strip()
 
 
 def request(**updates):
-    return {"v": 1, "id": "r1", "op": "request-package", "package": "jq", "reason": "test", **updates}
+    return {"id": "r1", "package": "jq", "reason": "test", **updates}
 
 
 class Process:
@@ -136,16 +139,12 @@ class Session:
 
 
 def receive(conn):
-    """Test transport only; parser assertions live in Rust protocol unit tests."""
-    deadline = time.monotonic() + 3
-    data = bytearray()
-    while b"\n" not in data:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise ValueError("request deadline exceeded")
-        conn.settimeout(remaining)
-        chunk = conn.recv(4097 - len(data))
-        if not chunk or len(data) + len(chunk) > 4096:
-            raise ValueError("incomplete or oversized request")
-        data.extend(chunk)
-    return json.loads(data)
+    """Test-only handshake with the real restricted request executable."""
+    from daemon_support import receive as framed, frame
+    conn.settimeout(3)
+    init = framed(conn)
+    assert init["method"] == "initialize"
+    conn.sendall(frame({"jsonrpc":"2.0", "id":init["id"], "result":{"api":1,"role":"sandbox"}}))
+    req = framed(conn)
+    assert req["method"] == "permissions.request"
+    return request(id=req["id"], package=req["params"]["package"], reason=req["params"]["reason"])

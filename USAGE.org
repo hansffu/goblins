@@ -1,163 +1,84 @@
-#+title: Goblins: live package grants from an interactive Fish shell
+#+title: Goblins daemon and live package grants
 
-* Run it in two terminals
+* Start the daemon and frontends
 
-Build once from the repository root:
+Build from the repository root:
 
 #+begin_src sh
-nix --extra-experimental-features 'nix-command flakes' build \
-  --out-link result-goblins path:.#goblins
+nix build --out-link result-goblins path:.#goblins
+export PATH="$PWD/result-goblins/bin:$PATH"
+goblins daemon
 #+end_src
 
-Put =result-goblins/bin= on PATH in both host terminals, or use
-=./result-goblins/bin/goblins= directly. =nix develop path:.= also supplies
-=goblins=. No service or global installation is required.
-
-In the upper terminal:
+The ordinary-user daemon runs headlessly until signalled. No service or automatic
+background launch is installed. In another host terminal start the approval view:
 
 #+begin_src sh
 goblins serve
+# Or: goblins serve --plain
 #+end_src
 
-In the lower terminal:
+In one or more other terminals:
 
 #+begin_src sh
 goblins run shell
 #+end_src
 
-The lower terminal is a real interactive Fish shell. It starts with Fish and
-=agent-sandbox.nix='s =commonTools=: coreutils, curl, which, Git, ripgrep, fd,
-sed, grep, find, diff, less, awk, and jq. Editing, completion, Ctrl-C, terminal
-applications, and resize use its PTY directly. The upper terminal owns the
-session and presents package approvals; shell output never becomes approval
-input.
-
-The shell preset starts Fish with a private HOME. To load host Fish settings,
-add =roDirs = [ "$HOME/.config/fish" ];= to a custom =mkGoblin= configuration.
-That directory must exist on the host running =serve=. Tools and other paths
-referenced by the config need their own package or startup grants.
-
-Inside Fish, try:
+Each run creates an independent interactive Fish sandbox, with commonTools from
+the pinned agent-sandbox input. =goblins shell= is an alias for =run shell=.
+Inside Fish:
 
 #+begin_src fish
 echo $fish_pid
-command -q hello; echo $status
 goblins request-package hello --reason "Try a live package grant"
-#+end_src
-
-=hello= is initially absent. Press =y= or =n= in the *serve terminal*.
-There is no timeout for the human decision. On approval, run in the same Fish:
-
-#+begin_src fish
 hello
 echo $fish_pid
 #+end_src
 
-The PID stays the same. The server realizes the pinned package on the host,
-roots it, mounts every missing runtime dependency read-only into the existing
-mount namespace, and only then switches the stable profile. The command returns
-success only after that publication. =--reason= is optional.
+The approval view displays an immutable token. Type =approve TOKEN= or =deny TOKEN=
+with that complete token and press Enter. Bare approval words, y/n and mouse
+clicks cannot grant access. The fullscreen frontend ignores bracketed paste;
+type its command. The plain fallback accepts the same explicit token commands.
+Queued or partially typed input for a withdrawn request cannot approve a new one.
 
-Request packages by attribute name from the pinned nixpkgs revision, for example
-=cowsay=, =tree=, or =python3Packages.black=. Names may have dot-separated
-components; URLs, paths, Nix expressions, options, and output selectors are
-rejected. Try =goblins request-package cowsay=, approve in the upper terminal,
-then run =cowsay hello= in Fish. =jq= is already supplied by commonTools.
-=script-tool= and =data-tool= are test fixtures for absolute store interpreters
-and separate store data files. They are built and granted by the host test
-driver, not exposed as package names through the public request command.
+The request exits 0 only after the approved package and its complete runtime
+closure have been mounted read-only and the profile published. Denial or failure
+exits 1. Missing/invalid/interrupted communication is an unknown outcome (exit 2),
+without automatic retry. The same Fish PID and namespace remain in use after a
+successful grant. Package names are bounded nixpkgs attributes, including
+=cowsay= and =python3Packages.black=; paths, URLs, expressions and output selectors
+are rejected. Host Nix chooses the bin output when available, otherwise default.
+Development setup hooks and unrecorded plugins/data are not activated.
 
-The host selects the =bin= output when present, otherwise the default output,
-and mounts its runtime closure. This is executable provisioning, not a complete
-development environment: additional development outputs and setup hooks are
-not activated. Packages must exist and be buildable for x86_64-linux at the
-pinned revision. Nixpkgs' default unfree/broken-package restrictions still apply.
-Unknown attributes, non-package attributes, and build failures return =error=
-(exit 1); the serve terminal shows the Nix diagnostic. Failure before mounting
-leaves the shell running. A transport failure with an uncertain outcome remains
-exit 2.
+* Closing, stopping and inspecting
 
-Type =exit= in Fish to stop that session; =serve= stays ready for another
-=goblins run shell=. A new session does not inherit previous grants. This runtime
-supports one attached shell at a time. The fullscreen table shows the connected
-sandbox once, with host PID, state and startup/live package counts. Enter opens
-the selected sandbox's package details. Press =q= / Ctrl-C to stop
-the server and its shell.
+Closing =serve=, typing =quit= in either approval frontend, or closing a terminal
+client leaves sessions owned by the daemon. A fresh =serve= discovers current
+sessions, pending approvals and retained outcomes from a new atomic snapshot.
+Reconnect is to the same daemon only. There is no terminal reattachment/replay
+operation: each launch has one terminal consumer. Output after its disconnection
+is discarded, and that session's terminal delivery is marked interrupted.
 
-* Fullscreen approval interface
+To inspect or explicitly stop a session from a trusted host terminal:
 
-=serve= enters the alternate screen and restores the terminal on exit. The
-overview has one row per connected sandbox. Press Enter to open its scrollable
-package table, distinguishing startup access from live grants; Escape returns
-to the overview. A bordered request panel opens at the bottom
-and reduces the table height; it never draws over table rows.
+#+begin_src sh
+goblins list
+goblins stop SESSION_ID
+goblins rpc permissions.list '{}'
+goblins rpc sessions.get '{"session":"SESSION_ID"}'
+#+end_src
 
-| Input | Action |
-|-------+--------|
-| =y= / =n= | Approve / deny the displayed request immediately |
-| Enter (no request pending) | Open the selected sandbox's package details |
-| Escape / Backspace | Return from details to the sandbox overview |
-| Left / Right / Tab, then Enter (request pending) | Select a Yes/No button; No is selected initially |
-| Mouse click | Activate the Yes or No button |
-| Up / Down or =k= / =j=, Home / End | Scroll the package table |
-| Mouse wheel | Scroll the table or request under the pointer |
-| Page Up / Page Down | Scroll long request content; otherwise page through the table |
-| =q= / Ctrl-C | Quit and stop the attached sandbox |
+Typing =exit= in Fish naturally ends its session. Connected terminal output is
+drained before =run= returns the payload exit code. Broken output delivery or
+daemon death reports failure. To stop the daemon and all its sessions, use Ctrl-C
+in its terminal or send its process SIGTERM. Frontend quit does not stop it.
 
-The panel shows package, sandbox, reason, host-store presence and a download
-estimate. =Checking...= appears during the host query. A preview evaluates the
-pinned package with import-from-derivation disabled and runs Nix =--dry-run=;
-it can query caches and write evaluation metadata, but does not build the
-requested output or grant sandbox access. Transfer estimates are Nix's
-compressed missing-closure sizes, not unpacked sizes. Source builds can have
-additional unknown costs, and unavailable metadata is shown as =Unknown=.
-These values are advisory; approval is still required for realization/mounting.
-Denial, request disconnect, attachment disconnect and quit cancel pending work.
-
-Colors use the terminal's default foreground/background and ANSI palette.
-Blue marks square borders/headings, green marks status/access and Yes, yellow
-marks requests, and red marks No. The terminal theme supplies these ANSI colors;
-Goblins does not sample the background or use a fallback RGB theme. Selection
-uses reverse video (swapping foreground/background), and hints are dimmed.
-The =NO_COLOR= environment convention is respected. Borders and text labels
-also distinguish states without color. Very small terminals show a resize hint.
-Bracketed paste is ignored for approvals, and request text is escaped before
-rendering. The approval terminal remains separate from sandbox output.
-
-=serve --plain= retains the line-oriented foreground interface for simple
-terminals and diagnostics: =approve=, =deny=, =status= and =quit= followed by
-Enter. Both frontends use the same controller and per-launch configuration flow.
-
-* Boundaries
-
-The host =goblins= executable implements =serve= and =run NAME=, with =shell= as
-an alias for =run shell=. The variant mounted
-inside the sandbox implements only =request-package=. Even arbitrary agent code
-can only reach the per-session request socket at =/run/goblins/request.sock=;
-it cannot reach the separate host control socket or the helper's private pipes.
-The endpoint determines the session. Package requests cannot contain host paths,
-PIDs, namespace descriptors, mount flags, Nix expressions, or approvals.
-
-=serve= owns the Rust helper, session GC roots, and lifecycle. =shell= is a thin
-host terminal attachment. It receives only its PTY master over the private host
-control socket; the sandbox receives the matching slave as its own stdio and
-controlling terminal. It never receives the serve terminal. Terminal dimensions
-are forwarded without adding a general control RPC.
-
-The connected shell uses the live-mount launcher extension described in
-[[file:DESIGN.org][the design]], consuming the build specification produced by upstream
-=mkSandbox=: executable, POSIX shell, PATH, full initial closure (including its
-development outputs), certificate paths, and pkg-config paths.
-The earlier unmodified upstream =fish-shell= wrapper remains a baseline only:
-it lacks the retained mount helper and is not the connected =goblins shell=.
-Unix sockets are deliberately enabled for the single mounted request endpoint;
-private filesystem/network views hide ungranted host/session sockets. Explicit
-startup directory binds expose their selected contents, including sockets there;
-protected controller and Nix daemon paths cannot be granted.
-Host Nix is never exposed. Effective and bounding capabilities are zero in the
-connected payload, and seccomp denies namespace/mount authority.
-
-See [[file:RESULTS.org][the result record]] for measured evidence and explicit limitations.
+The fullscreen overview supports Up/Down selection and empty Enter to open
+package details. Escape returns/clears input; Up/Down scroll packages;
+Page Up/Down scroll request details; Ctrl-C closes the frontend. Select the
+sandbox whose request you want to inspect. Preview estimates are advisory and
+may be Unknown. Colors use the terminal palette; =NO_COLOR= suppresses colors.
+The plain view additionally accepts =status= to print current state.
 
 * Nix API
 
@@ -173,21 +94,11 @@ default =goblins run shell= configuration; custom entries still use =mkGoblin=.
 =mkGoblins { goblins = { NAME = mkGoblin { ... }; }; }= returns a Nix derivation
 providing the host =bin/goblins= executable, with =config= and =goblins=
 attributes for inspection. Names select entries through =goblins run NAME=.
-The host =run NAME= client sends its manifest's absolute path and the selected
-name over the private attachment socket. The server loads that manifest for
-each new launch. Rebuild your Goblins package and run its new executable: the
-existing server can launch changed definitions and newly added names without
-restarting. The names printed when =serve= starts describe its own build only.
-
-Exit the active goblin before launching the updated one; one session at a time
-is still supported. Existing sessions keep their selected launch configuration.
-Package approval and workspace selection remain with =serve=. Configuration
-paths are accepted only from host attachments, never sandbox package requests.
-Malformed, missing, oversized and non-regular manifests return launch errors.
-
-A server running code from before this feature needs one restart to install the
-updated controller. Subsequent configuration-only rebuilds need no server
-restart. This does not add controller restart recovery.
+Each =run NAME= supplies its Nix-generated manifest to the same live daemon.
+Changed definitions and new names can launch concurrently without restarting
+the daemon; existing sessions keep their configuration. Manifests/helper builds
+must implement API 1. Installing an incompatible daemon protocol requires a
+restart, which ends existing sandboxes.
 
 =mkGoblin= calls upstream =mkSandbox= with the inner request executable added
 to =allowedPackages=. Its result carries upstream's =buildSpec= plus a =goblin=
@@ -215,7 +126,7 @@ are not expanded or executed on the host. =PATH=, =HOME=, =SHELL=, =USER=,
 also be included through an allowed package's closure to be visible inside.
 
 The four bind options use the upstream names and string-list format. Paths
-expand =$VAR=, =${VAR}= and leading =~/= using the host =serve= environment;
+expand =$VAR=, =${VAR}= and leading =~/= using the host =daemon= environment;
 no shell command is evaluated. Bind sources must exist, match the declared
 file/directory kind, and have absolute paths without =..=. The private sandbox
 HOME uses the host HOME pathname, so a =$HOME/.config/fish= bind is also where
@@ -237,104 +148,88 @@ or the default output and its runtime closure; they do not activate development
 setup hooks. =/bin/sh= uses upstream's Bash wrapper even when Fish or another
 program is the goblin entry point.
 
-* Workspaces and state
+* State, workspace and authority
 
-By default each shell starts in an empty disposable =/workspace=. To use a
-repository snapshot, configure it on the host server:
+The host socket is =host.sock= under =$XDG_RUNTIME_DIR/goblins= (normally
+=/run/user/UID/goblins=), with a private =/tmp/goblins-control-UID= fallback.
+Use =--state-dir PATH= consistently on daemon and frontend commands for an
+isolated instance. Keep the pathname short enough for Unix sockets, including
+its session ID and =terminal.sock= suffix (about 60 additional bytes).
+The directory must be owned by you, nonsymlink and mode 0700. A lock prevents
+a second daemon taking over that instance. Host and terminal sockets stay
+outside sandbox startup binds; all session resources are beneath this protected
+tree, including sessions created later.
+
+By default workspaces are empty. To create a separate disposable copy for every
+launch, start the daemon with:
 
 #+begin_src sh
-goblins serve --workspace /path/to/repository
+goblins daemon --workspace /path/to/repository
 #+end_src
 
-The host copies regular files, directories, and symlinks before launch. It
-follows no source symlinks, skips all =.git= entries, and omits sockets, FIFOs,
-and devices. There is no shared Git metadata or shared host workspace mount.
-No hooks or project configuration are executed on the host. Other regular files
-are copied, so select an appropriate source. Concurrent host edits can yield
-an inconsistent snapshot or a copy error. The copy is deleted on session exit;
-artifact export is not implemented.
+The snapshot omits .git entries, sockets, FIFOs and devices, follows no source
+symlinks and executes no host hooks. Normal cleanup deletes it. Explicit startup
+binds still select live host files/directories with their declared read/write
+permissions. Bind variables expand from the daemon's inherited environment,
+including HOME; =mkGoblin.env= values and entry arguments remain literal.
 
-The private host control socket is normally under =$XDG_RUNTIME_DIR/goblins/=
-(or =/run/user/UID/goblins/=, with a private =/tmp/= fallback). An exclusive lock
-prevents a second server from taking over its socket. For isolated test instances,
-pass =--state-dir PATH= before =serve= and =shell= on both host commands. This
-path is never mounted in the sandbox.
+Session logs, sockets, mount placeholders, profiles and GC roots live below
+=STATE/SESSION/resources=. Logs are disposable and bounded. Normal session stop
+cleans resources; daemon SIGKILL kills payloads but can leave directories and
+roots. Remove crash leftovers only after verifying that daemon/session is gone.
+There is no startup recovery or automatic reconciliation of old directories.
 
-Session logs, request socket, mountpoint placeholders, profiles, workspace, and
-GC roots live in a private mode-0700 =/tmp/goblins-*= directory. Normal exit
-removes it. Abrupt server death kills the sandbox through parent-death handling
-but can leave its directory and roots behind. After verifying that specific
-session is gone, remove its directory manually. No cleanup service or global
-Nix garbage collection is installed. Logs are currently disposable with the
-session; durable records are deferred; controller restart recovery is explicitly out of scope.
+The restricted executable inside the sandbox implements only package requests.
+It initializes on that session's endpoint and sends JSON-RPC 2.0 with
+Content-Length framing. It cannot choose a session, manifest, PID, mount target,
+namespace, Nix expression or approval. Only the separate private host socket
+accepts lifecycle and decision operations. The namespace helper retains narrow
+private pipes; daemon threads never enter mount namespaces.
+
+* Protocol and limits
+
+[[file:DAEMON.org::*Implementation contract (2026-09-13)][DAEMON.org's API 1 contract]] specifies complete framing, method parameters,
+error codes, snapshots, sequence numbers and duplicate-launch rules. An
+uncertain =sessions.start= can be inspected/repeated with the same caller key
+and identical parameters; the CLI never automatically repeats a launch.
+Launch keys are retained for one daemon lifetime, up to 4096. Completed session
+and permission records are bounded and can be evicted, after which get returns
+an absent/evicted error. An evicted outcome must not be assumed successful.
+
+The initial limits are 16 live sessions, 128 session records, 256 permission
+records, 128 initial package entries, 64 successful package names per session,
+32 host connections and 8 sandbox connections per session. Each session has
+one pending approval/grant. Incomplete frames have a non-sliding three-second
+deadline; human decisions and builds do not. Each host connection has a 2-MiB
+output queue; a slow subscriber is disconnected and must resubscribe. Terminal
+buffers are 64 KiB in each direction; a slow reader affects only its session.
+These are protocol resource bounds, not payload CPU/process/memory/disk quotas.
 
 * Reproducible checks
 
-The connected test creates two real terminal processes, runs =serve= and
-=shell=, denies and then approves =hello= through the server terminal, and checks
-that Fish's PID/start time/mount namespace are unchanged. It also exercises
-terminal interruption/resize, the restricted in-sandbox executable, hidden host
-sockets, session isolation, and shutdown.
-
 #+begin_src sh
 nix develop path:.
 cargo test --workspace --locked
-python3 -m unittest discover -s tests -p 'test_*.py'
-nix flake check path:.
-#+end_src
-
-The six original namespace scenarios now use a test-only Rust Session driver.
-The Python harness builds that driver with Cargo, transfers the payload pipes
-and listener using SCM_RIGHTS, and runs the existing payload probes in the real
-sandbox. Set =GOBLINS_TEST_DRIVER= to a prebuilt Rust test executable if needed.
-Fault injection exists only in that test executable. The connected and
-responsiveness suites exercise the packaged production CLI directly through
-=serve --plain=. The fullscreen suite uses pyte (supplied by =nix develop=) to
-check actual rendered screens, colors, input and terminal restoration.
-
-For Rust development:
-
-#+begin_src sh
-nix develop path:.
-cargo build --workspace --locked
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+nix build path:.#goblins
+nix flake check path:.
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 #+end_src
 
-The Nix Rust builds also run their unit tests. Host-driven integration checks need
-host Nix and Unix socket access; an enclosing Codex sandbox may require its
-normal approval mechanism. Tests must not weaken the PoC boundary to bypass
-an outer sandbox denial.
+Tests require host Nix, Unix sockets and ordinary-user namespace access. An outer
+execution sandbox may require running those checks with its normal host-access
+approval mechanism. No production Python is used: Python is a test driver only.
+The ignored Rust Session harness supports fault-injected mount and namespace
+probes; production API/terminal tests use the Nix-built executables.
 
-* Requirements and current limits
+* Scope and requirements
 
-Linux x86_64 with unprivileged user namespaces, a non-root host user, Nix flakes,
-and support for =openat2=, =open_tree=, =mount_setattr=, =move_mount=,
-=close_range=, and namespace ownership ioctls. The Nix output supplies the pinned
-runtime. Tested on NixOS/Linux 7.2.4. =serve= and =shell= require host terminals.
-
-This is a package-only proof, with no real agent credentials or authentication.
-There are no CPU/memory/process/disk quotas, concurrent shell management,
-durable retries, controller restart recovery, or live revocation. Runtime closures are
-readable/executable; arbitrary code execution is expected. Procfs can expose
-kernel/hardware information. Namespace creation is blocked in the payload.
-
-Grants are additive and individual paths become visible before profile
-publication. Mount/publication failure kills the disposable session; it cannot
-erase data already read. Nix runtime references are honored, but setup hooks,
-compiler environments, services, or unrecorded plugins/data are not configured
-automatically. This is not a production sandbox security certification.
-
-Incomplete public requests expire after three seconds total, even if they drip
-bytes. Approval/build time is separate and has no automatic approval or retry.
-One package request can be awaiting a decision or grant at once; extra complete
-requests receive a correlated busy error. The table and quit key remain responsive
-during incomplete requests, pending approval, previews, startup and builds.
-The plain frontend also keeps =status= and =quit= available. Closing the
-host attachment stops its session in all these states.
-
-Stopping a build terminates and reaps the owned Nix client; it does not kill the
-host Nix daemon or guarantee cancellation of daemon work shared with others.
-Controller restart never resumes a prior session. There is no daemon, Emacs
-integration, file/network live grant or credential integration here.
+Linux x86_64, unprivileged user namespaces, Nix, and support for openat2,
+open_tree, mount_setattr, move_mount, close_range and namespace ownership ioctls
+are required. Grants are additive; mount/publication failure kills the affected
+session without claiming rollback. Stopping owned Nix clients does not cancel
+shared host Nix daemon work. Unresponsive filesystem/kernel calls may delay
+cleanup. No terminal multiplexing, attach/detach management, projects, Emacs
+integration, live file/network grants or daemon restart recovery is provided.
+See [[file:RESULTS.org][RESULTS.org]] for measured evidence and limitations.

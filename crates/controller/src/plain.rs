@@ -1,11 +1,20 @@
-//! Line-oriented foreground fallback for logging and simple terminals.
-use super::*;
-/// Match the PoC's ASCII-only JSON display: C1 controls, bidi controls and
-/// non-ASCII text stay data even in terminals that interpret them specially.
+//! Line-oriented approval frontend. It owns presentation, never sessions.
+use crate::STOP;
+use goblins_controller::{
+    Result,
+    host::{Client, decision},
+    unix,
+};
+use std::{
+    fs::OpenOptions,
+    io::{Read, Write},
+    os::fd::AsRawFd,
+    path::PathBuf,
+    sync::atomic::Ordering,
+};
 pub(super) fn escaped_json(value: &impl serde::Serialize) -> Result<String> {
-    let json = serde_json::to_string(value)?;
     let mut result = String::new();
-    for ch in json.chars() {
+    for ch in serde_json::to_string(value)?.chars() {
         if ch.is_ascii() {
             result.push(ch);
         } else {
@@ -16,104 +25,79 @@ pub(super) fn escaped_json(value: &impl serde::Serialize) -> Result<String> {
     }
     Ok(result)
 }
-fn show(screen: &mut File, events: Vec<Event>, pending: &mut Option<ApprovalId>) -> Result<()> {
-    for event in events {
-        match event {
-            Event::Connected(name) => writeln!(
-                screen,
-                "{name} connected. Package requests will appear here."
-            )?,
-            Event::Stopped => {
-                *pending = None;
-                writeln!(screen, "Goblin stopped. Ready for goblins run NAME.")?;
-            }
-            Event::Preview { .. } => (),
-            Event::RequestGone(id) => {
-                if *pending == Some(id) {
-                    *pending = None;
+pub fn serve(state: PathBuf) -> Result<()> {
+    let mut client = Client::connect(&state)?;
+    let mut subscription = Client::connect(&state)?.subscribe()?;
+    if client.instance != subscription.snapshot.instance {
+        return Err("daemon changed while connecting; reconnect".into());
+    }
+    let mut input = OpenOptions::new().read(true).open("/dev/tty")?;
+    let mut output = OpenOptions::new().write(true).open("/dev/tty")?;
+    writeln!(
+        output,
+        "Goblins approval frontend. Daemon {}. Type status or quit. Sessions survive quit.",
+        client.instance
+    )?;
+    let mut line = Vec::new();
+    let mut show = true;
+    while !STOP.load(Ordering::Relaxed) {
+        show |= subscription.tick()?;
+        if show {
+            writeln!(output, "STATE {}", escaped_json(&subscription.snapshot)?)?;
+            for p in &subscription.snapshot.permissions {
+                if p.state == "pending" {
+                    writeln!(
+                        output,
+                        "REQUEST {}\nType approve {} or deny {}",
+                        escaped_json(p)?,
+                        p.approval,
+                        p.approval
+                    )?;
                 }
             }
-            Event::Request {
-                request: req,
-                approval,
-            } => {
-                *pending = Some(approval);
-                writeln!(screen, "REQUEST {}", escaped_json(&req)?)?;
-                write!(screen, "Approve package? Type approve or deny: ")?;
-            }
-            Event::Result(reply) | Event::DecisionFinished { reply, .. } => {
-                writeln!(screen, "RESULT {}", escaped_json(&reply)?)?;
-            }
-            Event::Detail(detail) => {
-                // JSON escapes control characters, including terminal sequences.
-                let detail: String = detail
-                    .chars()
-                    .rev()
-                    .take(12000)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect();
-                writeln!(screen, "DETAIL {}", escaped_json(&detail)?)?;
-            }
+            output.flush()?;
+            show = false;
         }
-    }
-    screen.flush()?;
-    Ok(())
-}
-pub fn serve(manifest: Manifest, state: PathBuf, workspace: Option<PathBuf>) -> Result<()> {
-    let mut approval = OpenOptions::new().read(true).open("/dev/tty")?;
-    let mut screen = OpenOptions::new().write(true).open("/dev/tty")?;
-    let names = manifest
-        .goblins
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut controller = Controller::new(&state, workspace)?;
-    writeln!(
-        screen,
-        "Goblins serving. Run goblins run NAME in another terminal.\nGoblins: {names}\nEach run supplies its own configuration.\nPackages: pinned nixpkgs attributes (e.g. hello, cowsay, python3Packages.black). Type quit to stop."
-    )?;
-    let mut pending = None;
-    let mut input = Vec::new();
-    while !STOP.load(Ordering::Relaxed) {
-        show(&mut screen, controller.tick()?, &mut pending)?;
-        if !unix::readable(approval.as_raw_fd(), 20)? {
+        if !unix::readable(input.as_raw_fd(), 20)? {
             continue;
         }
         let mut bytes = [0; 1024];
-        let n = approval.read(&mut bytes)?;
+        let n = input.read(&mut bytes)?;
         if n == 0 {
             break;
         }
         for byte in &bytes[..n] {
             if *byte != b'\n' {
-                if input.len() < 4096 {
-                    input.push(*byte);
+                if line.len() < 4096 {
+                    line.push(*byte);
                 }
                 continue;
             }
-            let line = String::from_utf8_lossy(&input).trim().to_string();
-            input.clear();
-            match line.as_str() {
+            let command = String::from_utf8_lossy(&line).trim().to_string();
+            line.clear();
+            match command.as_str() {
                 "quit" | ":quit" => return Ok(()),
-                "status" | ":status" => writeln!(screen, "{}", controller.status())?,
-                "approve" | "deny" => {
-                    if !pending
-                        .take()
-                        .is_some_and(|id| controller.decide(id, line == "approve"))
-                    {
-                        writeln!(screen, "No approval pending. Type status or quit.")?;
+                "status" | ":status" => show = true,
+                _ => {
+                    if let Some((p, yes)) = decision(&command, &subscription.snapshot) {
+                        match client.decide(p, yes) {
+                            Ok(r) => writeln!(output, "DECISION {}", escaped_json(&r)?)?,
+                            Err(e) => writeln!(
+                                output,
+                                "DECISION rejected: {}",
+                                escaped_json(&e.to_string())?
+                            )?,
+                        }
+                    } else {
+                        writeln!(
+                            output,
+                            "No matching pending approval. Use approve TOKEN or deny TOKEN."
+                        )?;
                     }
                 }
-                _ => writeln!(
-                    screen,
-                    "Type approve or deny for a pending request, status or quit."
-                )?,
             }
         }
-        screen.flush()?;
+        output.flush()?;
     }
     Ok(())
 }

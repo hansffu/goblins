@@ -5,7 +5,7 @@ is the current frontend; Emacs integration is planned.
 
 See [[file:PLAN.org][the project plan]] for goals, architecture, and milestones.
 The agreed next implementation is recorded in
-[[file:DAEMON.org][the daemon and communication decisions]]; it is not yet implemented.
+[[file:DAEMON.org][the daemon and communication decisions]]; current usage and verified evidence are in USAGE.org and RESULTS.org.
 
 * Documentation convention
 
@@ -21,11 +21,13 @@ From this worktree:
 
 #+begin_src sh
 nix build path:.#goblins
-./result/bin/goblins serve
+./result/bin/goblins daemon
 #+end_src
 
-In a second terminal, run =./result/bin/goblins run shell=. Inside Fish, request
-=goblins request-package cowsay=, press =y= in the serve terminal, then run
+In a second terminal, run =./result/bin/goblins serve= for approvals. In further
+terminals run =./result/bin/goblins run shell=. Inside Fish, request
+=goblins request-package cowsay=, type =approve TOKEN= with the displayed token
+in the serve terminal, then run
 =cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
 revision; package grants do not restart the shell.
 
@@ -70,16 +72,15 @@ in {
 }
 #+end_src
 
-Here =goblins= is this flake input. Build =.#goblins=, start its =goblins serve=
+Here =goblins= is this flake input. Build =.#goblins=, start its =goblins daemon=
 in one terminal, then use =goblins run shell= or =goblins run bash= in another.
 The configured name selects the sandbox; =binName= selects its executable.
-The server accepts one active goblin at a time, with live package requests in
-each. =goblins shell= remains an alias for =goblins run shell=.
+The daemon supports simultaneous goblins with independent requests and grants. =goblins shell= remains an alias for =goblins run shell=.
 
 After changing a definition, rebuild and invoke the new package's =goblins run=.
 Its host client sends the new manifest path to the running server, which loads
 it for that session. Changed definitions and new names do not require restarting
-=serve=; exit an active goblin before launching another.
+=daemon=; existing sessions retain their selected configuration.
 
 See [[file:USAGE.org::*Nix API][the Nix API options and limits]].
 
@@ -127,12 +128,13 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 The development shell includes pyte for fullscreen terminal regression tests.
 
 The controller accepts explicit frontend decisions; its library never opens
-=/dev/tty=. One cancellable worker owns startup and sequential grants while the
-controller continues handling requests and attachment disconnects. The internal
+=/dev/tty=. Each session has a cancellable worker for startup and sequential grants while
+the daemon continues serving other sessions and frontends. The internal
 client depends only on shared protocol code, with no host policy or mount API.
 There is no production Python executable or mandatory Python interpreter.
 
 This rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It does
-not implement a daemon, Emacs integration, multiplexing, file/network live grants, or
-controller restart recovery. Controller death stops the helper and sandbox;
+not implement Emacs integration, multiplexing, file/network live grants, or
+daemon restart recovery. Closing frontends leaves sessions alive; daemon death
+stops every helper and sandbox;
 abrupt death may leave host session directories and GC roots for manual cleanup.

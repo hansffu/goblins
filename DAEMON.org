@@ -4,8 +4,9 @@
 * Status and precedence
 
 This records the architecture and protocol direction agreed with the user after
-inspection of master at =398c72e=. It is an implementation plan, not a claim
-that the daemon or the review fixes exist. The user authorized committing the
+inspection of master at =398c72e=. The plan is followed by the API 1 implementation
+contract below. Current implementation and verification are recorded in
+DESIGN.org and RESULTS.org. The user authorized committing the
 plans and starting implementation on 2026-09-13. Merging and pushing are not
 part of that instruction.
 
@@ -13,11 +14,10 @@ For the next daemon milestone, this document supersedes the single-session,
 foreground-owner and newline-JSON choices in the earlier PoC/rewrite plan.
 [[file:DESIGN.org][DESIGN.org]], [[file:USAGE.org][USAGE.org]] and [[file:RESULTS.org][RESULTS.org]] continue to describe the
 implementation and its evidence. The three findings in
-[[file:PLAN.org::*Deferred review findings: daemon and communication rewrite][PLAN.org]] remain unresolved until implemented and verified.
+[[file:PLAN.org::*Deferred review findings: daemon and communication rewrite][PLAN.org]] are implemented; their verified reproductions are recorded in RESULTS.org.
 
-Architecture, data flow, transport family and the method surface below are
-settled. Exact schemas, limits and the explicitly listed open details still
-need specification before their dependent implementation.
+Architecture, data flow and transport family below are settled. The
+implementation contract below settles schemas, limits and transport details.
 
 * Goals
 
@@ -407,8 +407,8 @@ grants and namespace-scoped helper; grants must not leak between sessions.
 
 * Implementation phases and acceptance gates
 
-These phases describe the authorized implementation. This planning commit
-contains no implementation. Intermediate refactors may be incremental, but a
+These phases describe the authorized implementation. The preceding planning
+commit contained no implementation. Intermediate refactors may be incremental, but a
 single-active-session daemon is not the completed milestone.
 
 ** 1. Specify and test the protocol contract
@@ -460,7 +460,7 @@ tests, formatting, Clippy, black-box tests and Nix/API/packaging checks. Record
 actual results in =RESULTS.org= only after verification, and update current
 usage/design documentation to describe the implemented behavior.
 
-* Details to settle before dependent implementation
+* Details originally open (settled by the implementation contract below)
 
 - Exact RPC parameter/result schemas, application error codes, feature/version
   negotiation, ID encodings and notification payloads. Batch/notification
@@ -480,3 +480,135 @@ usage/design documentation to describe the implemented behavior.
 These are focused implementation details, not invitations to reopen the agreed
 authority/data flow, require restart recovery, defer multiple sandboxes, or
 expand this milestone into project management and multiplexing.
+
+* Implementation contract (2026-09-13)
+
+These choices settle the open details for API 1 before implementation.
+
+- =goblins daemon= is an explicitly launched ordinary-user headless process.
+  =serve= becomes a host API approval frontend; quitting it leaves sessions
+  running. No automatic service installation or daemon start. The daemon's
+  inherited environment expands startup bind variables; =--workspace= on the
+  daemon selects the snapshot source for every launch. Literal env/args remain
+  literal. All session resources live below its protected private state directory,
+  including future concurrent sessions, so an earlier bind cannot expose them.
+- Use existing Serde/serde_json typed messages with a bounded Content-Length
+  codec, without adding an async runtime or host dependencies to the inner client.
+  A generic RPC server framework would still require this custom bounded Unix
+  transport and authority dispatcher. JSON-RPC envelopes follow 2.0; no custom
+  request/reply envelope is used. Reject batches. Notifications never mutate
+  state and receive no reply; supported operations require an ID. IDs are
+  strings of 1..64 ASCII identifier characters or nonnegative safe integers.
+- =initialize {api:1}= is required once per connection. Its result contains
+  =api=, =instance=, =role=, =features= and =limits=. Initialization cannot select
+  a role. Sandbox connections permit one subsequent =permissions.request=
+  with ={kind:"package",package,reason}=, then one terminal response and close.
+  Host connections permit sequential calls and ordered notifications; at most
+  4096 calls per connection. No automatic retry of uncertain mutations.
+- Headers are ASCII, at most 256 bytes, one case-insensitive Content-Length and
+  optionally Content-Type (UTF-8 JSON); no duplicate/other headers. Host input
+  bodies are at most 16 KiB, sandbox input 4096 bytes, output 1 MiB, nesting 32.
+  Duplicate JSON keys at any depth and unknown operation fields are rejected.
+  A whole-frame three-second deadline starts on accept for initialization,
+  on completion of sandbox initialization for its request, and on the first
+  byte for later idle host frames. Pending human/build waits have no deadline.
+  Any byte after a sandbox permission frame terminates that connection;
+  undecided work is withdrawn and its preview cancelled. No MSG_PEEK.
+- Standard errors: -32700 parse, -32600 envelope, -32601 unavailable method,
+  -32602 params. Application errors: -32001 initialization required,
+  -32002 incompatible version, -32004 absent/evicted record, -32009 stale or
+  conflicting operation, -32010 resource limit. Permission results contain
+  =status= (=ready=, =denied=, =error=), =request=, and optional =message=.
+  Only ready is client exit 0; denial/failure is 1; invalid/missing/interrupted
+  replies are unknown outcome, exit 2, without retry.
+- IDs contain a random 128-bit daemon instance prefix and monotonic counters.
+  =sessions.start {key,configuration,name,rows,cols}= requires an absolute
+  trusted manifest path and a caller-generated identifier =key=. Repeating
+  an identical key/params returns the original session ID; changed params
+  conflict. Keep at most 4096 launch keys for the daemon lifetime, then reject
+  new launches; never silently reuse an expired key. Manifests carry
+  =api:1,helper_api:1=; configuration-only rebuilds may select new helper paths
+  implementing private helper API 1 (=READY1= startup acknowledgement).
+  Incompatible manifests/helpers fail that launch.
+- =sessions.get/stop {session}=; =sessions.list {}=; =permissions.get {request}=;
+  =permissions.list {session?,state?}=; =permissions.decide
+  {session,request,approval,approved}=. Only the first pending decision wins.
+  Stop is idempotent while the record exists. A small =sessions.resize
+  {session,rows,cols}= operation preserves terminal resizing; it conveys no
+  attachment or namespace authority. Dimensions are 1..1000.
+- Limits: 16 live sessions, 128 retained session records, 256 permission records,
+  128 initial package entries and 64 provisioned package names per session,
+  32 host connections, 8 sandbox
+  connections per session, one pending request/grant per session. Evict oldest
+  terminal records only, also pruning terminal history to keep a snapshot below
+  900 KiB; exposed diagnostics are capped at 512 characters.
+  Get on an evicted identity returns -32004. IDs never
+  repeat. Launch-key lookup still reports the original ID after record eviction.
+- =state.subscribe {}= returns ={subscription,sequence,snapshot}= atomically.
+  Subsequent =state.changed= notifications contain the same subscription,
+  increasing global sequence and a complete replacement =snapshot= of bounded
+  session/permission records. This deliberately simple replacement schema
+  includes evictions without a durable log or pagination. One subscription per
+  connection; =state.unsubscribe {subscription}= ends it. Queued output is
+  bounded to 2 MiB per host connection; overflow disconnects the subscriber,
+  which must initialize and subscribe afresh. No silent notification loss.
+- Start returns ={session,state:"starting",terminal}=, where =terminal= is a
+  private per-session Unix STREAM path accepting one lifetime terminal consumer.
+  It carries raw bidirectional bytes, no JSON or multiplexing. The daemon owns
+  the master and pumps bounded 64 KiB buffers. Before a consumer connects,
+  retain at most 64 KiB and backpressure the payload. After consumer disconnect,
+  discard output while continuing to drain the PTY; record interrupted delivery.
+  There is no reconnect/replay promise for terminal bytes. Session state still
+  reconnects through the host API. A connected slow consumer backpressures only
+  its session. Process exit/status, PTY EOF and terminal-stream completion are
+  separate fields; the client waits for stream EOF and drains local stdout
+  before checking the retained exit/delivery result. Daemon loss or failed
+  output delivery is an error, never successful terminal completion.
+- Both approval frontends accept =approve APPROVAL= / =deny APPROVAL= with the
+  exact displayed immutable token. Bare keys, mouse clicks and bare approval
+  words cannot authorize a grant. Partially entered commands retain their text
+  across state replacement and can only name the original token; bracketed
+  paste is ignored in the fullscreen frontend. This intentionally replaces the
+  unsafe immediate y/Yes gesture without requiring a larger UI design.
+
+Integration gates include suspending the actual frontend after A is displayed,
+queueing its complete/partial approval command, withdrawing A and adding B,
+then resuming it; B must remain pending. Terminal tests include 50,000 bytes
+plus final marker through a slow local PTY reader, immediate short output and
+exit status preceding stream drain. Protocol tests alone do not establish these.
+
+** API 1 record and snapshot schemas
+
+All objects below have exactly the listed fields. Optional values are JSON null,
+not omitted, except where JSON-RPC itself specifies optional envelope fields.
+Input parameter objects reject unknown fields. Lists/get return the record or
+array directly; stop/resize/unsubscribe return ={accepted:true}=. Decide returns
+={accepted:true,request,approved}=. A duplicate start returns its original
+acceptance object; use get to inspect its current lifecycle.
+
+| Record | Fields |
+|--------+--------|
+| Snapshot | =instance= (string), =sessions= (Session array), =permissions= (Permission array) |
+| Session | =id,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted= (booleans); =exit_code= (integer or null); =detail= (string or null) |
+| Identity | =pid,helper_userns,mount_owner,source_mountns,mountns= (integers; trusted host inspection only) |
+| Permission | =id,session,approval,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
+| Preview | ={in_store:boolean,download:string-or-null,build_required:boolean}= or ={error:string}= |
+
+Session states are =starting,running,stopping,stopped,failed=. The =stopped=
+notification follows worker cleanup, while terminal buffering may still be
+draining. A failed launch has no payload exit code. A normal payload exit has
+its exit code; signal exits use =128 + signal=. Explicit cancellation can leave
+an unknown/null payload exit code. PTY/stream end and terminal interruption are
+separate from those workload states.
+
+Permission states are =pending,realizing,mounting,publishing,ready,denied,
+withdrawn,failed,cancelled=. =approved= records accepted authorization separately
+from execution. Preview errors never grant or cancel a session. Approved caller
+disconnect does not revoke authorization; readiness can still be retained even
+when no caller receives its reply. Snapshot/event schemas contain daemon-issued
+identities, never an agent's RPC ID as approval authority.
+
+The helper's versioned =READY1= acknowledgement includes the five Identity
+integers. Mount acknowledgements remain =OK= after one canonical store basename.
+The helper polls its private pipe and child status, exiting with the workload's
+status. No daemon thread performs namespace operations.

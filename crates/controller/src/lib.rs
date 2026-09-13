@@ -11,3 +11,6 @@ pub mod unix;
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 mod worker;
+
+pub mod host;
+mod terminal;

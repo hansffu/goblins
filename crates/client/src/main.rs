@@ -1,26 +1,7 @@
 //! Untrusted request client. No controller or helper dependency.
-use goblins_protocol::{MAX_FRAME, REQUEST_SOCKET, Reply, Request, line};
-use std::{
-    io::{Read, Write},
-    os::unix::net::UnixStream,
-};
-
-fn parse_reply(data: &[u8], request_id: &str) -> Result<Reply, Box<dyn std::error::Error>> {
-    if data.len() > MAX_FRAME
-        || data.last() != Some(&b'\n')
-        || data[..data.len() - 1].contains(&b'\n')
-    {
-        return Err("invalid reply framing".into());
-    }
-    let reply: Reply = serde_json::from_slice(data)?;
-    if reply.v != 1
-        || reply.id.as_deref() != Some(request_id)
-        || !["ready", "denied", "error"].contains(&reply.status.as_str())
-    {
-        return Err("invalid reply".into());
-    }
-    Ok(reply)
-}
+use goblins_protocol::{REQUEST_SOCKET, rpc};
+use serde_json::json;
+use std::{io::Read, os::unix::net::UnixStream};
 
 fn parse_args(legacy: bool, args: &[String]) -> Result<(String, String), String> {
     let mut args = args.iter();
@@ -64,36 +45,38 @@ fn run() -> Result<i32, String> {
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut random))
         .map_err(|e| e.to_string())?;
-    let req = Request {
-        v: 1,
-        id: random.iter().map(|b| format!("{b:02x}")).collect(),
-        op: "request-package".into(),
-        package,
-        reason,
-    };
-    let bytes = line(&req)?;
-    let exchange = || -> Result<Reply, Box<dyn std::error::Error>> {
+    let id: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
-        socket.write_all(&bytes)?;
-        // Approval/build has no deadline; response framing and memory are bounded.
-        let mut data = Vec::new();
-        loop {
-            let mut chunk = [0; MAX_FRAME + 1];
-            let n = socket.read(&mut chunk)?;
-            if n == 0 || data.len() + n > MAX_FRAME {
-                return Err("missing or oversized reply".into());
-            }
-            data.extend_from_slice(&chunk[..n]);
-            if data.contains(&b'\n') {
-                break;
-            }
+        let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))?;
+        if init["api"] != 1 || init["role"] != "sandbox" {
+            return Err("incompatible daemon".into());
         }
-        parse_reply(&data, &req.id)
+        let params = json!({"kind":"package","package":package,"reason":reason});
+        socket.set_write_timeout(Some(rpc::TIMEOUT))?;
+        use std::io::Write;
+        socket.write_all(&rpc::encode(&rpc::request(
+            json!(id),
+            "permissions.request",
+            params,
+        ))?)?;
+        let reply = rpc::read(&mut socket)?;
+        rpc::validate_response(&reply, &json!(id))?;
+        if let Some(error) = reply.get("error") {
+            return Ok(json!({"status":"error","message":error}));
+        }
+        let result: rpc::PermissionResult = serde_json::from_value(reply["result"].clone())?;
+        if !["ready", "denied", "error"].contains(&result.status.as_str())
+            || !goblins_protocol::identifier(&result.request)
+        {
+            return Err("invalid terminal result".into());
+        }
+        Ok(serde_json::to_value(result)?)
     };
     match exchange() {
         Ok(reply) => {
             println!("{}", serde_json::to_string(&reply).unwrap());
-            Ok(if reply.status == "ready" { 0 } else { 1 })
+            Ok(if reply["status"] == "ready" { 0 } else { 1 })
         }
         Err(e) => {
             eprintln!("goblins-request: outcome unknown; do not retry automatically: {e}");
@@ -127,24 +110,5 @@ mod tests {
         }
         assert!(parse_args(false, &["serve".into()]).is_err());
         assert!(parse_args(true, &["package".into(), "hello".into()]).is_ok());
-    }
-    #[test]
-    fn replies_must_be_bounded_correlated_terminal_results() {
-        for status in ["ready", "denied", "error"] {
-            let data = format!("{{\"v\":1,\"id\":\"r1\",\"status\":\"{status}\"}}\n");
-            assert!(parse_reply(data.as_bytes(), "r1").is_ok());
-            assert!(parse_reply(data.as_bytes(), "other").is_err());
-        }
-        for data in [
-            "",
-            "{}",
-            "{}\n{}\n",
-            "{\"v\":true,\"id\":\"r1\",\"status\":\"ready\"}\n",
-            "{\"v\":1,\"v\":1,\"id\":\"r1\",\"status\":\"ready\"}\n",
-            "{\"v\":1,\"id\":\"r1\",\"status\":\"pending\"}\n",
-        ] {
-            assert!(parse_reply(data.as_bytes(), "r1").is_err());
-        }
-        assert!(parse_reply(&[b' '; MAX_FRAME + 1], "r1").is_err());
     }
 }

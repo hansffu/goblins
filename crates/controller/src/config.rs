@@ -2,7 +2,7 @@ use crate::Result;
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
+    fs::OpenOptions,
     io::Read,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
@@ -21,30 +21,38 @@ pub struct Configuration {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    pub api: u32,
+    pub helper_api: u32,
     pub goblins: BTreeMap<String, Configuration>,
 }
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("cannot open configuration {}: {e}", path.display()))?;
+    if !file.metadata()?.is_file() {
+        return Err("configuration must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("configuration exceeds {} MiB", limit / (1024 * 1024)).into());
+    }
+    Ok(bytes)
+}
 impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|e| format!("cannot open configuration {}: {e}", path.display()))?;
-        if !file.metadata()?.is_file() {
-            return Err("configuration must be a regular file".into());
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > MAX_MANIFEST_BYTES {
-            return Err("configuration exceeds 1 MiB".into());
-        }
-        serde_json::from_slice(&bytes)
+        serde_json::from_slice(&read_regular(path, MAX_MANIFEST_BYTES)?)
             .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
     }
     pub fn select(mut self, name: &str) -> Result<Configuration> {
+        if self.api != 1 || self.helper_api != 1 {
+            return Err("incompatible manifest/helper API".into());
+        }
         self.goblins.remove(name).ok_or_else(|| {
             format!(
                 "unknown goblin; available: {}",
@@ -81,7 +89,8 @@ fn default_args() -> Vec<String> {
 }
 impl Configuration {
     pub fn launch(&self) -> Result<Launch> {
-        let spec: serde_json::Value = serde_json::from_slice(&fs::read(&self.build_spec)?)?;
+        let spec: serde_json::Value =
+            serde_json::from_slice(&read_regular(&self.build_spec, MAX_MANIFEST_BYTES)?)?;
         if spec["platform"] != "linux"
             || spec["allow_nix"] != false
             || spec["allow_unix_sockets"] != true
@@ -120,10 +129,13 @@ impl Configuration {
                 .filter(|p| !p.is_empty())
                 .map(|p| Path::new(p).parent().unwrap().to_path_buf())
                 .collect(),
-            initial_closure: fs::read_to_string(string("closure_paths_file")?)?
-                .lines()
-                .map(PathBuf::from)
-                .collect(),
+            initial_closure: String::from_utf8(read_regular(
+                Path::new(string("closure_paths_file")?),
+                8 * MAX_MANIFEST_BYTES,
+            )?)?
+            .lines()
+            .map(PathBuf::from)
+            .collect(),
             env,
             protected_paths: vec![],
             binds: serde_json::from_value(serde_json::json!({

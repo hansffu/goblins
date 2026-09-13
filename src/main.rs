@@ -161,7 +161,7 @@ impl Drop for Session {
         let _ = self.0.wait();
     }
 }
-fn run() -> io::Result<()> {
+fn run() -> io::Result<i32> {
     // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BWRAP [arguments...]
     let args: Vec<String> = env::args().collect();
     if args.len() < 6 {
@@ -315,7 +315,7 @@ fn run() -> io::Result<()> {
     cvt(unsafe { libc::syscall(libc::SYS_capset, &hdr, caps.as_ptr()) as i32 })?;
     writeln!(File::from(block_w), "x")?;
     println!(
-        "READY {pid} {} {} {} {}",
+        "READY1 {pid} {} {} {} {}",
         inode(&own)?,
         inode(&owner)?,
         inode(&source_ns)?,
@@ -325,6 +325,18 @@ fn run() -> io::Result<()> {
     // Bound the PRIVATE protocol too; errors terminate the disposable session.
     let mut input = io::stdin().lock();
     loop {
+        if let Some(status) = session.0.try_wait()? {
+            use std::os::unix::process::ExitStatusExt;
+            return Ok(status.code().unwrap_or(128 + status.signal().unwrap_or(0)));
+        }
+        let mut ready = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if cvt(unsafe { libc::poll(&mut ready, 1, 20) })? == 0 {
+            continue;
+        }
         let mut bytes = Vec::new();
         use std::io::Read;
         let count = input
@@ -352,13 +364,16 @@ fn run() -> io::Result<()> {
         println!("OK");
         io::stdout().flush()?;
     }
-    Ok(())
+    Ok(0)
 }
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("goblins helper: {error}");
-        std::process::exit(1);
-    }
+    std::process::exit(match run() {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("goblins helper: {error}");
+            1
+        }
+    });
 }
 #[cfg(test)]
 mod tests {
