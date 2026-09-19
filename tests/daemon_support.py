@@ -119,6 +119,8 @@ class Daemon:
         peer = socket.socket(socket.AF_UNIX)
         peer.settimeout(10)
         peer.connect(launch["terminal"])
+        reply = receive(peer)
+        assert reply.get("result", {}).get("attached"), reply
         return peer
 
     def close(self):

@@ -1,4 +1,4 @@
-//! Host terminal relay; receives only a PTY master from the controller.
+//! Host terminal relay; the daemon retains the PTY and owns sandbox lifetime.
 use crate::{RESIZE, STOP};
 use goblins_controller::host::Client;
 use goblins_controller::{Result, unix};
@@ -76,24 +76,28 @@ pub fn run(
     )
 }
 
-pub fn attach(state: PathBuf, session: String, instance: String) -> Result<i32> {
+pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Result<i32> {
     if unsafe { libc::isatty(0) != 1 } {
         return Err("goblins attach requires terminal input".into());
     }
     let mut control = Client::connect(&state)?;
-    if control.instance != instance {
+    if instance
+        .as_ref()
+        .is_some_and(|expected| control.instance != *expected)
+    {
         return Err("daemon instance changed; cannot attach".into());
     }
     let record = control.call("sessions.get", json!({"session":session}))?;
     // Do not resolve reusable agent names for an editor's retained identity.
-    if record["id"] != session || record["terminal_interrupted"] == true {
-        return Err("session identity mismatch or terminal already disconnected".into());
+    if instance.is_some() && record["id"] != session {
+        return Err("session identity mismatch".into());
     }
+    let session = record["id"].as_str().ok_or("missing session ID")?;
     // Apply the Ghostel window's actual dimensions once the PTY is ready.
     RESIZE.store(true, Ordering::Relaxed);
     relay(
         control,
-        &session,
+        session,
         record["terminal"].as_str().ok_or("missing terminal path")?,
     )
 }
@@ -104,6 +108,26 @@ fn relay(mut control: Client, session: &str, path: &str) -> Result<i32> {
         os::unix::net::UnixStream,
     };
     let mut terminal = UnixStream::connect(path)?;
+    // rpc::read allows an unlimited idle wait for permission replies. Bound
+    // this handshake's first byte separately; subsequent bytes are timed.
+    if !unix::readable(
+        terminal.as_raw_fd(),
+        goblins_protocol::rpc::TIMEOUT.as_millis() as i32,
+    )? {
+        return Err("terminal attachment timed out".into());
+    }
+    let hello = goblins_protocol::rpc::read(&mut terminal)?;
+    goblins_protocol::rpc::validate_response(&hello, &json!(0))?;
+    if let Some(error) = hello.get("error") {
+        return Err(error["message"]
+            .as_str()
+            .unwrap_or("attachment rejected")
+            .into());
+    }
+    if hello["result"]["attached"] != true {
+        return Err("invalid terminal handshake".into());
+    }
+    terminal.set_read_timeout(None)?;
     terminal.set_nonblocking(true)?;
     let _mode = TerminalMode::raw()?;
     let _output_flags = NonblockingOutput::new()?;
@@ -228,6 +252,11 @@ fn relay(mut control: Client, session: &str, path: &str) -> Result<i32> {
     // substitute for EOF, and a daemon crash must not look like normal exit.
     loop {
         let record = control.call("sessions.get", json!({"session":session}))?;
+        // The daemon keeps this half-closed attachment until we drop the
+        // stream, so a subsequent attachment cannot overwrite its outcome.
+        if record["terminal_detached"] == true {
+            return Ok(0);
+        }
         if ["stopped", "failed"].contains(&record["state"].as_str().unwrap_or("")) {
             if record["state"] == "failed" {
                 return Err(record["detail"].as_str().unwrap_or("launch failed").into());

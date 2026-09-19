@@ -94,8 +94,11 @@ cowsay hello
 Omit =--name= to get a randomly selected fantasy goblin name. The project is
 copied into a disposable workspace; writes there do not update the original.
 Explicit writable binds are different: they modify host files.
-Closing the TUI leaves agents running. Use =goblins stop snikk= for one agent or
-=goblins server stop= to stop the server and all its agents.
+Closing the TUI leaves agents running. Inside a sandbox, =goblins detatch=
+(or =goblins detach=) returns to the host while leaving it running. Use
+=goblins detatch snikk= from another host terminal to detach it from outside,
+=goblins attach snikk= to reconnect, =goblins kill snikk= to stop one agent,
+or =goblins server stop= to stop the server and all its agents.
 
 For Emacs, load [[file:emacs/goblins.el][goblins.el]] and run =M-x goblins-status= for a Magit-style
 buffer with live agent/request sections and =a=/=d= accept/deny actions.

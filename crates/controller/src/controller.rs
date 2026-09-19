@@ -43,6 +43,10 @@ pub struct SessionRecord {
     pub pty_eof: bool,
     pub terminal_complete: bool,
     pub terminal_interrupted: bool,
+    #[serde(default)]
+    pub terminal_attached: bool,
+    #[serde(default)]
+    pub terminal_detached: bool,
     pub exit_code: Option<i32>,
     pub detail: Option<String>,
 }
@@ -430,9 +434,7 @@ impl Controller {
             } else if let Some(id) = self
                 .sessions
                 .iter()
-                .filter(|(_, a)| {
-                    a.worker.is_none() && (a.terminal.complete || a.terminal.interrupted)
-                })
+                .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
             {
@@ -497,6 +499,14 @@ impl Controller {
             .find(|a| a.worker.is_some() && a.record.agent_name == target)
             .map(|a| a.record.id.clone())
             .ok_or_else(missing)
+    }
+    fn detach(&mut self, id: &str) -> std::result::Result<Value, Fault> {
+        let a = self.sessions.get_mut(id).ok_or_else(missing)?;
+        a.terminal.detach().map_err(|e| (-32009, e.to_string()))?;
+        a.record.terminal_attached = a.terminal.attached();
+        a.record.terminal_detached = a.terminal.detached;
+        self.dirty = true;
+        Ok(json!({"accepted":true}))
     }
     fn stop(&mut self, id: &str) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
@@ -622,9 +632,7 @@ impl Controller {
                     let old = self
                         .sessions
                         .iter()
-                        .filter(|(_, a)| {
-                            a.worker.is_none() && (a.terminal.complete || a.terminal.interrupted)
-                        })
+                        .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
                         .min_by_key(|(_, a)| a.created)
                         .map(|(id, _)| id.clone())
                         .ok_or_else(capacity)?;
@@ -659,6 +667,8 @@ impl Controller {
                     pty_eof: false,
                     terminal_complete: false,
                     terminal_interrupted: false,
+                    terminal_attached: false,
+                    terminal_detached: false,
                     exit_code: None,
                     detail: None,
                 };
@@ -683,6 +693,11 @@ impl Controller {
                 let p: SessionId = params(value)?;
                 let id = self.resolve_session(&p.session)?;
                 self.stop(&id)
+            }
+            "sessions.detach" => {
+                let p: SessionId = params(value)?;
+                let id = self.resolve_session(&p.session)?;
+                self.detach(&id)
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -823,7 +838,7 @@ impl Controller {
                     Decoder::new(16384, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control"]}else{vec!["package-grants"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach"]}else{vec!["package-grants","terminal-detach"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -832,6 +847,19 @@ impl Controller {
             match &c.role {
                 Role::Host => self.host(c, &call.method, call.params).map(Some),
                 Role::Sandbox(session) => {
+                    if call.method == "sessions.detach" {
+                        let _: Empty = params(call.params)?;
+                        if !c.input.is_empty() {
+                            c.dead = true;
+                            return Err((-32600, "unexpected trailing input".into()));
+                        }
+                        // Endpoint identity selects this sandbox. No caller-
+                        // supplied session/name can affect another sandbox.
+                        let session = session.clone();
+                        let result = self.detach(&session)?;
+                        c.close = true;
+                        return Ok(Some(result));
+                    }
                     if call.method != "permissions.request" {
                         return Err((-32601, "method unavailable on sandbox endpoint".into()));
                     }
@@ -1066,17 +1094,33 @@ impl Controller {
                     self.dirty = true;
                 }
             }
-            let old = (a.terminal.eof, a.terminal.complete, a.terminal.interrupted);
+            let old = (
+                a.terminal.eof,
+                a.terminal.complete,
+                a.terminal.interrupted,
+                a.terminal.attached(),
+                a.terminal.detached,
+            );
             if let Err(e) = a.terminal.tick() {
                 a.record.detail = Some(bounded(&e.to_string()));
                 a.terminal.interrupted = true;
             }
-            if old != (a.terminal.eof, a.terminal.complete, a.terminal.interrupted) {
+            if old
+                != (
+                    a.terminal.eof,
+                    a.terminal.complete,
+                    a.terminal.interrupted,
+                    a.terminal.attached(),
+                    a.terminal.detached,
+                )
+            {
                 self.dirty = true;
             }
             a.record.pty_eof = a.terminal.eof;
             a.record.terminal_complete = a.terminal.complete;
             a.record.terminal_interrupted = a.terminal.interrupted;
+            a.record.terminal_attached = a.terminal.attached();
+            a.record.terminal_detached = a.terminal.detached;
             self.sessions.insert(id, a);
         }
         // Service pending sandbox connections before host decisions in this tick.
@@ -1180,6 +1224,8 @@ mod tests {
                     pty_eof: false,
                     terminal_complete: false,
                     terminal_interrupted: false,
+                    terminal_attached: false,
+                    terminal_detached: false,
                     exit_code: None,
                     detail: None,
                 },

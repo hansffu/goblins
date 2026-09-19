@@ -557,17 +557,36 @@ These choices settle the open details for API 1 before implementation.
   bounded to 2 MiB per host connection; overflow disconnects the subscriber,
   which must initialize and subscribe afresh. No silent notification loss.
 - Start returns ={session,agent_name,state:"starting",terminal}=, where =terminal= is a
-  private per-session Unix STREAM path accepting one lifetime terminal consumer.
-  It carries raw bidirectional bytes, no JSON or multiplexing. The daemon owns
-  the master and pumps bounded 64 KiB buffers. Before a consumer connects,
-  retain at most 64 KiB and backpressure the payload. After consumer disconnect,
-  discard output while continuing to drain the PTY; record interrupted delivery.
-  There is no reconnect/replay promise for terminal bytes. Session state still
-  reconnects through the host API. A connected slow consumer backpressures only
-  its session. Process exit/status, PTY EOF and terminal-stream completion are
-  separate fields; the client waits for stream EOF and drains local stdout
-  before checking the retained exit/delivery result. Daemon loss or failed
-  output delivery is an error, never successful terminal completion.
+  private per-session Unix STREAM path accepting one terminal consumer at a time.
+  Each connection first receives a Content-Length framed JSON-RPC response with
+  id 0: ={attached:true}= on success, or an error on rejection. Raw bidirectional
+  terminal bytes follow the success frame. Host initialization advertises
+  =terminal-reattach=; clients and daemon must both support this handshake.
+  The daemon owns the master and pumps bounded 64 KiB buffers. Before the first
+  consumer, and while attached, output backpressures the payload. While detached
+  or disconnected, the daemon continues draining and retains a bounded output
+  tail; older bytes may be discarded. There is no full screen or durable replay.
+  A sandbox may call =sessions.detach {}= on its own request endpoint (advertised
+  as =terminal-detach=), with no target parameter or host authority. This returns
+  ={accepted:true}= and half-closes the terminal output. The departing client
+  drains local stdout, observes =terminal_detached=true= and exits 0. Its read
+  half stays reserved until the client closes, preserving the detach outcome
+  against a concurrent attachment. Input from a detaching client is discarded.
+  =terminal_attached= and =terminal_detached= are included in session snapshots.
+  On the next accepted attachment, detached/interrupted state resets. An
+  unexpected consumer disconnect marks interrupted delivery but permits reattach.
+  Process exit/status, PTY EOF and terminal-stream completion remain separate;
+  normal completion waits for EOF and local output drain before checking the
+  retained exit/delivery result. Daemon loss and failed output delivery are errors.
+  Host CLI =attach NAME= resolves a live name once to its immutable session ID;
+  =attach ID --instance INSTANCE= retains the editor's exact identity checks.
+  Host =kill NAME= uses =sessions.stop=, as does the retained =stop= command.
+  Host =detatch NAME= (alias =detach=) calls =sessions.detach {session:NAME}=,
+  accepting a live name or immutable ID and using the same detach behavior.
+  Unknown sessions return -32004; unattached terminals return -32009. Sandbox
+  detach still takes no parameters and cannot select another session.
+  This extension supersedes the earlier milestone's single-consumer/no-detach
+  scope statements above.
 - User-requested frontend revision: fullscreen keeps the information popup,
   Yes/No buttons, mouse and =y=/=n= shortcuts. Tab switches sandbox/request
   focus; Up/Down selects entries. The popup reserves bottom rows. Escape closes
@@ -597,7 +616,7 @@ acceptance object; use get to inspect its current lifecycle.
 | Record | Fields |
 |--------+--------|
 | Snapshot | =instance= (string), =sessions= (Session array), =permissions= (Permission array) |
-| Session | =id,agent_name,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted= (booleans); =exit_code= (integer or null); =detail= (string or null) |
+| Session | =id,agent_name,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted,terminal_attached,terminal_detached= (booleans); =exit_code= (integer or null); =detail= (string or null) |
 | Identity | =pid,helper_userns,mount_owner,source_mountns,mountns= (integers; trusted host inspection only) |
 | Permission | =id,session,agent_name,approval,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
 | Preview | ={in_store:boolean,download:string-or-null,build_required:boolean}= or ={error:string}= |

@@ -103,7 +103,11 @@ responsive endpoint, or on an error. Missing-server status/logs do not start it.
 Nix packages install completion scripts in the standard Fish, Bash and Zsh
 locations under =share/=. Your shell/profile needs its usual completion loading
 enabled. Scripts complete commands, options, paths and this Nix package's =run=
-configuration keys. For manual installation or one shell session:
+configuration keys. =attach=, =detatch= and =detach= also complete live agent
+names by querying the current server, respecting =--state-dir=. No names are
+offered when the server is stopped; completion never starts a server. Editor
+attachments using =--instance= require exact IDs and do not offer name candidates.
+For manual installation or one shell session:
 
 #+begin_src fish
 # Fish
@@ -188,15 +192,34 @@ is a parameter change and conflicts. Retry the original request exactly.
 Closing =tui=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
 client leaves sessions owned by the daemon. A fresh =tui= discovers current
 sessions, pending approvals and retained outcomes from a new atomic snapshot.
-Reconnect is to the same daemon only. There is no terminal reattachment/replay
-operation: each launch has one terminal consumer. Output after its disconnection
-is discarded, and that session's terminal delivery is marked interrupted.
+From inside a sandbox, =goblins detatch= (also spelled =goblins detach=) returns
+to the host terminal with exit status 0. The shell, its working directory,
+variables, processes and pending approvals stay alive. From the host:
+
+#+begin_src sh
+goblins detatch snikk                   # detach its current terminal from the host
+# goblins detach snikk                  # equivalent spelling
+goblins attach snikk                    # reconnect to the same sandbox
+goblins kill snikk                      # stop it, including when detached
+#+end_src
+
+Host detach accepts a live name or immutable session ID, including while a
+foreground command is running. It leaves the sandbox running and makes its
+terminal client exit 0. An unknown or already unattached session returns an error.
+
+Only one terminal can attach at a time; a competing attachment fails. Closing
+a terminal unexpectedly also leaves the sandbox available for attachment.
+Detached output retains a tail of up to 64 KiB; older bytes can be discarded so
+background writers keep running. This is raw output, not full terminal screen
+restoration or durable scrollback. An attached slow reader still backpressures
+its sandbox. Reconnect is to the same daemon only; restarting it loses sessions.
+=kill= and the existing =stop= command use the same session shutdown path.
 
 To inspect or explicitly stop a session from a trusted host terminal:
 
 #+begin_src sh
 goblins list
-goblins stop ID_OR_NAME
+goblins kill ID_OR_NAME
 goblins rpc permissions.list '{}'
 goblins rpc sessions.get '{"session":"SESSION_ID"}'
 #+end_src
@@ -373,7 +396,8 @@ cleanup. Emacs status, approvals and Ghostel launches are described in
 [[file:emacs/README.org][the Emacs guide]]. The =configurations= command prints the current manifest
 path and configured names as JSON without contacting a server. Editor launches
 use =attach SESSION --instance INSTANCE= to consume a newly created session's
-terminal stream; it requires exact IDs and does not provide reattachment or replay.
-No terminal multiplexing, attach/detach management, projects, live file/network
+terminal stream; supplying =--instance= still requires exact IDs. Without that
+option, =attach= accepts a live agent name or immutable session ID.
+No terminal multiplexing, projects, live file/network
 grants or daemon restart recovery is provided.
 See [[file:RESULTS.org][RESULTS.org]] for measured evidence and limitations.

@@ -38,6 +38,30 @@ fn run() -> Result<i32, String> {
             "usage: goblins {} PACKAGE [--reason TEXT]",
             if legacy { "package" } else { "request-package" }
         );
+        if !legacy {
+            println!("       goblins detatch (alias: detach)");
+        }
+        return Ok(0);
+    }
+    if !legacy
+        && args
+            .first()
+            .is_some_and(|arg| arg == "detatch" || arg == "detach")
+    {
+        if args.len() != 1 {
+            return Err("usage: goblins detatch".into());
+        }
+        let mut socket = UnixStream::connect(REQUEST_SOCKET).map_err(|e| e.to_string())?;
+        let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))
+            .map_err(|e| e.to_string())?;
+        if init["api"] != 1 || init["role"] != "sandbox" {
+            return Err("incompatible daemon".into());
+        }
+        let reply = rpc::exchange(&mut socket, json!(1), "sessions.detach", json!({}))
+            .map_err(|e| e.to_string())?;
+        if reply["accepted"] != true {
+            return Err("detach was not accepted".into());
+        }
         return Ok(0);
     }
     let (package, reason) = parse_args(legacy, &args)?;

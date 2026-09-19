@@ -74,10 +74,15 @@ fn execute(cli: Cli) -> Result<i32> {
             "{}",
             Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
         ),
-        Command::Stop { id_or_name } => println!(
+        Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
             "{}",
             Client::connect(&state)?
                 .call("sessions.stop", serde_json::json!({"session":id_or_name}))?
+        ),
+        Command::Detatch { id_or_name } => println!(
+            "{}",
+            Client::connect(&state)?
+                .call("sessions.detach", serde_json::json!({"session":id_or_name}))?
         ),
         Command::Rpc {
             method,
@@ -123,6 +128,7 @@ fn execute(cli: Cli) -> Result<i32> {
             return attachment::attach(state, session, instance);
         }
         Command::Completions { shell } => cli::completions(shell, cli.runtime.as_deref())?,
+        Command::CompleteNames { words } => return Ok(cli::complete_names(&state, words)),
     }
     Ok(0)
 }

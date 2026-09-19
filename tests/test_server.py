@@ -1,5 +1,6 @@
 """Packaged server lifecycle, help and real shell completion scripts."""
 from pathlib import Path
+import os
 import re
 import shlex
 import shutil
@@ -122,6 +123,84 @@ class ServerTests(unittest.TestCase):
         self.cli("server", "start", code=1)
         self.assertEqual(target.read_text(), "unchanged")
         self.assertFalse((self.state / "host.sock").exists())
+
+    def test_live_names_in_bash_fish_and_zsh_completions(self):
+        from terminal_support import Terminal
+        self.state = Path(self.temp.name) / "goblins"
+        root = self.app.resolve().parent.parent
+        scripts = {"bash": root / "share/bash-completion/completions/goblins",
+                   "fish": root / "share/fish/vendor_completions.d/goblins.fish",
+                   "zsh": root / "share/zsh/site-functions/_goblins"}
+        env = {**os.environ, "PATH": str(self.app.parent) + ":" + os.environ["PATH"],
+               "XDG_RUNTIME_DIR": self.temp.name}
+
+        def complete(shell, words):
+            source = "source " + shlex.quote(str(scripts[shell])) + "; "
+            if shell == "fish":
+                line = shlex.join(words[:-1]) + " " + words[-1]
+                code = source + "complete -C " + shlex.quote(line)
+                args = ["fish", "--no-config", "-c", code]
+            else:
+                code = (source + "COMP_WORDS=(" + shlex.join(words) + "); " +
+                        f"COMP_CWORD={len(words)-1}; _goblins goblins " +
+                        shlex.quote(words[-1]) + " " + shlex.quote(words[-2]) +
+                        "; printf '%s\\n' \"${COMPREPLY[@]}\"")
+                args = ["bash", "--noprofile", "--norc", "-c", code]
+            result = subprocess.run(args, env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            return [line.split("\t")[0] for line in result.stdout.splitlines() if line]
+
+        for shell in ("bash", "fish"):
+            self.assertEqual(complete(shell, ["goblins", "attach", ""]), [])
+        self.assertFalse(self.state.exists())
+        self.cli("server", "start")
+        client = RPC(self.state / "host.sock")
+        self.addCleanup(client.close)
+        _, manifest = re.search(r'exec (\S+) --runtime (\S+)', self.app.read_text()).groups()
+        launches = [client.call("sessions.start", dict(key=name, name="shell", agent_name=name,
+                    configuration=manifest, rows=24, cols=100)) for name in ("snikk", "scout")]
+        for shell in ("bash", "fish"):
+            for command in ("attach", "detatch", "detach"):
+                self.assertEqual(set(complete(shell, ["goblins", command, ""])), {"snikk", "scout"})
+                self.assertEqual(complete(shell, ["goblins", command, "sn"]), ["snikk"])
+                self.assertEqual(set(complete(shell, ["goblins", "--state-dir", str(self.state), command, ""])), {"snikk", "scout"})
+                self.assertEqual(set(complete(shell, ["goblins", command, "--state-dir=" + str(self.state), ""])), {"snikk", "scout"})
+                self.assertEqual(complete(shell, ["goblins", command, "--state-dir", str(Path(self.temp.name) / "absent state"), ""]), [])
+                self.assertNotIn("snikk", complete(shell, ["goblins", command, "snikk", ""]))
+            self.assertNotIn("snikk", complete(shell, ["goblins", "attach", "--instance", "exact", ""]))
+
+        # Exercise real Zsh completion through ZLE, including alias registration.
+        zsh = Terminal([shutil.which("zsh"), "-f"], env=env)
+        def close_zsh():
+            if not zsh.reaped:
+                import contextlib
+                import signal
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(zsh.pid, signal.SIGKILL)
+            zsh.close()
+        self.addCleanup(close_zsh)
+        zsh.send("autoload -Uz compinit; compinit -D; source " + shlex.quote(str(scripts["zsh"])) +
+                 "; PS1='completion> '; bindkey '^U' kill-whole-line; print COMPLETION_READY\n")
+        zsh.expect(r"(?:^|\n)COMPLETION_READY\n")
+        for command in ("attach", "detatch", "detach"):
+            zsh.send(f"goblins --state-dir {shlex.quote(str(self.state))} {command} s\t\t")
+            zsh.expect("scout")
+            zsh.expect("snikk")
+            # Clear through ZLE: test runners can inherit ignored SIGINT, so
+            # Ctrl-C is not a reliable way to cancel an interactive input line.
+            zsh.send("\x15print COMPLETION_RESET\n")
+            zsh.expect(r"(?:^|\n)COMPLETION_RESET\n")
+        zsh.send("exit\n")
+        self.assertEqual(zsh.wait(), 0)
+
+        client.call("sessions.stop", {"session": launches[1]["session"]})
+        deadline = time.monotonic() + 30
+        while client.call("sessions.get", {"session": launches[1]["session"]})["state"] not in ("stopped", "failed"):
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.02)
+        for shell in ("bash", "fish"):
+            self.assertEqual(complete(shell, ["goblins", "attach", ""]), ["snikk"])
 
 
 if __name__ == "__main__":
