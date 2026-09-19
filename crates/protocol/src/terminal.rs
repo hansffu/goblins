@@ -207,8 +207,9 @@ pub fn relay(
                 .as_i64()
                 .map(|c| c as i32)
                 .ok_or_else(|| {
-                    record["detail"]
+                    record["stop_reason"]
                         .as_str()
+                        .or_else(|| record["detail"].as_str())
                         .unwrap_or("payload exit status unknown")
                         .into()
                 });

@@ -215,6 +215,9 @@ background writers keep running. This is raw output, not full terminal screen
 restoration or durable scrollback. An attached slow reader still backpressures
 its sandbox. Reconnect is to the same daemon only; restarting it loses sessions.
 =kill= and the existing =stop= command use the same session shutdown path.
+Session records retain a =stop_reason= identifying a host stop, the goblin that
+requested it, or an owner exiting. When shutdown leaves no payload exit code,
+=run= and =attach= report this reason instead of an unknown exit status.
 
 To inspect or explicitly stop a session from a trusted host terminal:
 

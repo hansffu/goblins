@@ -1,6 +1,26 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Explain agent-requested stops (2026-09-20)
+
+The reported Codex termination followed an explicit parent command to stop
+=number-picker= and start a replacement. The child had replied two seconds
+earlier. Cancellation left no payload exit code, so the attached client printed
+=payload exit status unknown= and made the deliberate stop look like a crash.
+
+Session records now retain a daemon-authored =stop_reason= for explicit host or
+goblin stops and owner-exit cleanup. Goblin attribution includes the name and
+immutable session ID. Both endpoint types expose this field; host diagnostics
+remain private. Attached clients use it when no payload exit code is available.
+The first cause survives repeated stop requests and queued worker results.
+Normal exit codes and terminal drain checks are unchanged.
+
+Validation: 50 Rust tests passed (one existing host driver ignored), Clippy
+passed with warnings denied, and three real-sandbox ownership/terminal tests
+passed in 163.797 seconds. These cover parent-stop attachment output, host and
+goblin subtree attribution, natural owner exit, nested detach/reattach, and
+preservation of native exit codes. Idle inbox notification remains unfinished.
+
 * Plugin-provided Codex MCP overrides (2026-09-20)
 
 The initial unavailable-MCP filter assumed every effective server already had

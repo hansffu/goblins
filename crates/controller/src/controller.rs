@@ -54,6 +54,9 @@ pub struct SessionRecord {
     #[serde(default)]
     pub terminal_detached: bool,
     pub exit_code: Option<i32>,
+    /// Daemon-authored lifecycle explanation, safe to expose inside sandboxes.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
     pub detail: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -600,12 +603,24 @@ impl Controller {
             "path":self.relative_path(record, Some(scope)),"name":record.name,
             "state":record.state,"initial_packages":record.initial_packages,
             "packages":record.packages,"exit_code":record.exit_code,
+            "stop_reason":record.stop_reason,
             "terminal_complete":record.terminal_complete,
             "terminal_interrupted":record.terminal_interrupted,
             "terminal_detached":record.terminal_detached,
             "terminal_attached":record.terminal_attached})
     }
-    fn stop_tree(&mut self, id: &str, kill_children: bool) -> std::result::Result<Value, Fault> {
+    fn owner_exited_reason(&self, id: &str) -> String {
+        format!(
+            "stopped because owner goblin {} ({id}) exited",
+            self.sessions[id].record.agent_name
+        )
+    }
+    fn stop_tree(
+        &mut self,
+        id: &str,
+        kill_children: bool,
+        reason: Option<String>,
+    ) -> std::result::Result<Value, Fault> {
         let descendants: Vec<_> = self
             .sessions
             .iter()
@@ -623,10 +638,13 @@ impl Controller {
         }
         // The event loop serializes this check with child creation. Stop the
         // whole tree before accepting any more calls from its sockets.
+        let child_reason = reason
+            .clone()
+            .unwrap_or_else(|| self.owner_exited_reason(id));
         for child in descendants {
-            self.stop(&child)?;
+            self.stop(&child, Some(child_reason.clone()))?;
         }
-        self.stop(id)
+        self.stop(id, reason)
     }
     /// Approval inheritance is deliberately isolated here: it applies downward
     /// on request, never mounts packages proactively or grants them upward.
@@ -651,9 +669,13 @@ impl Controller {
         self.dirty = true;
         Ok(json!({"accepted":true}))
     }
-    fn stop(&mut self, id: &str) -> std::result::Result<Value, Fault> {
+    fn stop(&mut self, id: &str, reason: Option<String>) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
         if let Some(w) = &a.worker {
+            // Preserve the first cause, including a natural exit with no reason.
+            if !["stopping", "stopped", "failed"].contains(&a.record.state.as_str()) {
+                a.record.stop_reason = reason;
+            }
             w.cancel.cancel();
             a.record.state = "stopping".into();
         }
@@ -820,6 +842,7 @@ impl Controller {
             terminal_attached: false,
             terminal_detached: p.detached,
             exit_code: None,
+            stop_reason: None,
             detail: None,
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
@@ -912,7 +935,11 @@ impl Controller {
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_scoped(&p.session, Some(scope))?;
-                self.stop_tree(&id, p.kill_children)
+                let reason = format!(
+                    "stopped by goblin {} ({scope})",
+                    self.sessions[scope].record.agent_name
+                );
+                self.stop_tree(&id, p.kill_children, Some(reason))
             }
             _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
         }
@@ -1053,7 +1080,7 @@ impl Controller {
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;
-                self.stop_tree(&id, p.kill_children)
+                self.stop_tree(&id, p.kill_children, Some("stopped by host".into()))
             }
             "sessions.detach" => {
                 let p: SessionId = params(value)?;
@@ -1574,7 +1601,7 @@ impl Controller {
             let stopped = ["stopped", "failed"].contains(&a.record.state.as_str());
             self.sessions.insert(id.clone(), a);
             if exited {
-                let _ = self.stop_tree(&id, true);
+                let _ = self.stop_tree(&id, true, None);
             } else if stopped {
                 let children: Vec<_> = self
                     .sessions
@@ -1587,7 +1614,8 @@ impl Controller {
                     .map(|(id, _)| id.clone())
                     .collect();
                 for child in children {
-                    let _ = self.stop(&child);
+                    let reason = self.owner_exited_reason(&id);
+                    let _ = self.stop(&child, Some(reason));
                 }
             }
         }
@@ -1714,6 +1742,7 @@ mod tests {
                     terminal_attached: false,
                     terminal_detached: false,
                     exit_code: None,
+                    stop_reason: None,
                     detail: None,
                 },
                 worker: Some(Worker::completed(results)),
@@ -1958,8 +1987,14 @@ mod tests {
                 Completed::Stopped { exit_code: None },
             ],
         );
-        d.stop(&id).unwrap();
+        d.stop(&id, Some("stopped by host".into())).unwrap();
+        d.stop(&id, Some("stopped by another caller".into()))
+            .unwrap();
         d.tick().unwrap();
+        assert_eq!(
+            d.sessions[&id].record.stop_reason.as_deref(),
+            Some("stopped by host")
+        );
         assert_eq!(d.permissions[0].state, "cancelled");
         assert_eq!(d.sessions[&id].record.state, "stopped");
         assert!(d.sessions[&id].worker.is_none());

@@ -616,7 +616,7 @@ acceptance object; use get to inspect its current lifecycle.
 | Record | Fields |
 |--------+--------|
 | Snapshot | =instance= (string), =sessions= (Session array), =permissions= (Permission array) |
-| Session | =id,agent_name,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted,terminal_attached,terminal_detached= (booleans); =exit_code= (integer or null); =detail= (string or null) |
+| Session | =id,agent_name,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted,terminal_attached,terminal_detached= (booleans); =exit_code= (integer or null); =detail,stop_reason= (strings or null) |
 | Identity | =pid,helper_userns,mount_owner,source_mountns,mountns= (integers; trusted host inspection only) |
 | Permission | =id,session,agent_name,approval,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
 | Preview | ={in_store:boolean,download:string-or-null,build_required:boolean}= or ={error:string}= |
@@ -766,7 +766,7 @@ daemon-wide name-allocation rules.
 - Sandbox =sessions.list {}= and =sessions.get {session}= expose only descendants.
   Their records contain =id=, =agent_name=, =parent= (null for direct children),
   relative =path=, configuration key =name=, =state=, =initial_packages=,
-  =packages=, =exit_code= and =terminal_attached/terminal_detached/terminal_complete/terminal_interrupted=. They omit host filesystem paths, process identities,
+  =packages=, =exit_code=, =stop_reason= and =terminal_attached/terminal_detached/terminal_complete/terminal_interrupted=. They omit host filesystem paths, process identities,
   terminal endpoints, and host diagnostics. Outside-scope IDs and names return
   the same absent-record fault as unknown IDs and names.
 - Host and sandbox =sessions.stop {session,kill_children?}= reject an operation
@@ -805,3 +805,14 @@ Children retain host-owned shared mount capabilities rather than reopening paths
 In particular a renamed/replaced workspace source does not widen their access.
 Workspace resource ownership is retained until the last dependent session stops;
 child startup does not copy a parent's snapshot or inherit its package mounts.
+
+** Stop attribution
+
+=stop_reason= is a daemon-authored explanation, null for natural payload exit.
+Explicit stops identify the host or the requesting goblin's name and immutable
+session ID. Descendants stopped by that request retain the same attribution;
+automatic cleanup after an owner exits identifies that owner. Repeated stops
+preserve the first cause. This field is exposed on both host and sandbox
+session records without exposing host diagnostics. Once terminal output is
+complete, an attached client with no payload exit code reports this reason
+before falling back to =detail= or an unknown exit status.

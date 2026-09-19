@@ -194,6 +194,19 @@ class OwnershipTests(unittest.TestCase):
         second = self.running(self.sandbox(b["session"], "sessions.start", params))
         self.assertNotEqual(first["session"], second["session"])
 
+    def test_attached_child_reports_parent_stop(self):
+        parent = self.d.start(agent_name="parent")
+        child = self.child(parent)
+        terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", child["session"]])
+        self.addCleanup(terminal.close)
+        self.d.wait(lambda: self.d.get(child["session"])["terminal_attached"])
+        self.sandbox(parent["session"], "sessions.stop", {"session": child["session"]})
+        terminal.expect(r"goblins: stopped by goblin parent")
+        self.assertNotEqual(terminal.wait(), 0)
+        reason = f"stopped by goblin parent ({parent['session']})"
+        self.assertEqual(self.d.get(child["session"])["stop_reason"], reason)
+        self.assertEqual(self.sandbox(parent["session"], "sessions.get", {"session": child["session"]})["stop_reason"], reason)
+
     def test_kill_guard_and_normal_exit_cascade(self):
         root = self.d.start(agent_name="root")
         unrelated = self.d.start(agent_name="unrelated")
@@ -210,18 +223,26 @@ class OwnershipTests(unittest.TestCase):
         self.assertTrue(stopped["accepted"])
         for entry in (child, leaf):
             self.d.wait(lambda: self.d.get(entry["session"])["state"] == "stopped")
+            self.assertEqual(self.d.get(entry["session"])["stop_reason"],
+                             f"stopped by goblin root ({root['session']})")
         child = self.child(root, "second")
         leaf = self.child(child, "leaf")
         pids = [self.d.get(x["session"])["identity"]["pid"] for x in (root, child, leaf)]
         self.terminal(root).sendall(b"exit\n")
         for entry in (root, child, leaf):
             self.d.wait(lambda: self.d.get(entry["session"])["state"] == "stopped")
+        self.assertIsNone(self.d.get(root["session"])["stop_reason"])
+        self.assertEqual(self.d.get(root["session"])["exit_code"], 0)
+        for entry in (child, leaf):
+            self.assertIn("stopped because owner goblin", self.d.get(entry["session"])["stop_reason"])
         self.d.wait(lambda: all(not Path(f"/proc/{pid}").exists() for pid in pids))
         self.assertEqual(self.d.get(unrelated["session"])["state"], "running")
         child = self.child(unrelated)
         success = self.cli("kill", "unrelated", "--kill-children")
         self.assertEqual(success.returncode, 0, success.stderr)
         self.d.wait(lambda: self.d.get(child["session"])["state"] == "stopped")
+        for entry in (unrelated, child):
+            self.assertEqual(self.d.get(entry["session"])["stop_reason"], "stopped by host")
 
     def test_cli_shared_workspace_and_pinned_parent_paths(self):
         with tempfile.TemporaryDirectory(prefix="goblin-tree-work-") as folder:
