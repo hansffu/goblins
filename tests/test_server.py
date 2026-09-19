@@ -161,7 +161,7 @@ class ServerTests(unittest.TestCase):
         launches = [client.call("sessions.start", dict(key=name, name="shell", agent_name=name,
                     configuration=manifest, rows=24, cols=100)) for name in ("snikk", "scout")]
         for shell in ("bash", "fish"):
-            for command in ("attach", "detatch", "detach"):
+            for command in ("attach", "detatch", "detach", "kill"):
                 self.assertEqual(set(complete(shell, ["goblins", command, ""])), {"snikk", "scout"})
                 self.assertEqual(complete(shell, ["goblins", command, "sn"]), ["snikk"])
                 self.assertEqual(set(complete(shell, ["goblins", "--state-dir", str(self.state), command, ""])), {"snikk", "scout"})
@@ -183,7 +183,7 @@ class ServerTests(unittest.TestCase):
         zsh.send("autoload -Uz compinit; compinit -D; source " + shlex.quote(str(scripts["zsh"])) +
                  "; PS1='completion> '; bindkey '^U' kill-whole-line; print COMPLETION_READY\n")
         zsh.expect(r"(?:^|\n)COMPLETION_READY\n")
-        for command in ("attach", "detatch", "detach"):
+        for command in ("attach", "detatch", "detach", "kill"):
             zsh.send(f"goblins --state-dir {shlex.quote(str(self.state))} {command} s\t\t")
             zsh.expect("scout")
             zsh.expect("snikk")

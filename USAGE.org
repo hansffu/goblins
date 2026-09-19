@@ -103,7 +103,7 @@ responsive endpoint, or on an error. Missing-server status/logs do not start it.
 Nix packages install completion scripts in the standard Fish, Bash and Zsh
 locations under =share/=. Your shell/profile needs its usual completion loading
 enabled. Scripts complete commands, options, paths and this Nix package's =run=
-configuration keys. =attach=, =detatch= and =detach= also complete live agent
+configuration keys. =attach=, =detatch=, =detach= and =kill= also complete live agent
 names by querying the current server, respecting =--state-dir=. No names are
 offered when the server is stopped; completion never starts a server. Editor
 attachments using =--instance= require exact IDs and do not offer name candidates.

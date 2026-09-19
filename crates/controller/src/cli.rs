@@ -147,7 +147,7 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<PathBuf>
             session,
             instance: None,
         } if session == TARGET => (),
-        Command::Detatch { id_or_name } if id_or_name == TARGET => (),
+        Command::Detatch { id_or_name } | Command::Kill { id_or_name } if id_or_name == TARGET => {}
         _ => return None,
     }
     Some(cli.state_dir.unwrap_or_else(|| default_state.into()))
@@ -244,7 +244,7 @@ function __fish_goblins_agent_names
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblins -n '__fish_goblins_using_subcommand attach detatch detach' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand attach detatch detach kill' -f -a '(__fish_goblins_agent_names)'
 "#
         );
     }
@@ -261,6 +261,7 @@ mod tests {
             vec!["goblins", "attach"],
             vec!["goblins", "detatch"],
             vec!["goblins", "detach"],
+            vec!["goblins", "kill"],
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),
