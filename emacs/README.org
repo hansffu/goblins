@@ -33,22 +33,32 @@ since this uses the new =configurations= and =attach= commands.
 
 The buffer updates automatically
 and includes agents, pending requests, and collapsible recent request history.
-Agent and pending-request headings are visible with their details collapsed
-by default. Stopped and failed agents move to a separate “Stopped agents” section.
-That section and request history are fully collapsed by default, including their entries.
-Expand an agent to see its session ID and startup/granted packages, or a request
-to see its reason and preview. Live updates preserve your folding choices.
+Agents form a tree rooted at =host=, with children nested beneath their owners.
+Branches start expanded; =TAB= collapses or expands children only. The overview
+contains headings only, with no detail rows. =RET= opens a separate details view
+for the selected sandbox or request. Sandbox details show session IDs and
+startup/granted packages; request details show the reason and preview. Details
+update live and stay tied to the selected identity. Use =b= or =q= to return to
+the tree with selection and branch folds preserved. Request labels use the
+sandbox's full tree path to distinguish matching names in different branches.
+
+Stopped children remain under their parent while any session in that root branch
+is active. Entire stopped or failed trees move intact to “Stopped agents”. That
+section and recent request history start collapsed. Live updates preserve section
+identity, selection and your folding choices.
 
 | Key | Action |
 |-----+--------|
 | =R= | Choose and launch a goblin in Ghostel |
 | =n= / =p= | Next / previous section |
-| =TAB= | Expand / collapse section |
-| =RET= | Open an agent's Ghostel buffer; toggle other sections |
+| =TAB= | Expand / collapse tree children |
+| =RET= | Open sandbox or request details |
+| =t= | Open the selected sandbox's Ghostel terminal |
+| =b= | Return from details to the tree |
 | =a= | Accept the pending request at point |
 | =d= | Deny the pending request at point |
 | =g= or =r= | Reconnect and refresh |
-| =q= | Close the buffer and its connection; agents keep running |
+| =q= | Return from details, or close the overview; agents keep running |
 
 When Evil is enabled, the buffer starts in normal state with dedicated bindings:
 
@@ -57,12 +67,14 @@ When Evil is enabled, the buffer starts in normal state with dedicated bindings:
 | =R= | Choose and launch a goblin in Ghostel |
 | =j= / =k= | Next / previous section |
 | =h= / =l= | Collapse / expand section |
-| =TAB= or =za= | Toggle section |
-| =RET= | Open an agent's Ghostel buffer; toggle other sections |
+| =TAB= or =za= | Expand / collapse tree children |
+| =RET= | Open sandbox or request details |
+| =t= | Open the selected sandbox's Ghostel terminal |
+| =b= | Return from details to the tree |
 | =a= / =d= | Accept / deny the pending request at point |
 | =gr= or =r= | Reconnect and refresh |
 | =gg= / =G= | Beginning / end of buffer |
-| =q= | Close the buffer |
+| =q= | Return from details, or close the overview |
 
 Evil support works with either package load order and changes only this mode's
 bindings. Evil is optional and is never installed or enabled globally by Goblins.
@@ -76,7 +88,7 @@ otherwise =goblins-state-directory= or the default server directory.
 
 Launches use the calling buffer's =default-directory=. Each launch gets a new
 agent name from the daemon and a separate Ghostel buffer, even for the same
-configuration. Status marks linked agents with =[RET: terminal]=. Links use
+configuration. Status marks linked agents with =[t: terminal]=. Links use
 the daemon instance and immutable session ID and live only in this Emacs
 process. Closing/reopening status preserves them; killing the terminal buffer
 removes the link. Terminal buffers stay available after process exit until you

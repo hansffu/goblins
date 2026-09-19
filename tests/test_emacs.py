@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import uuid
 
 from daemon_support import Daemon, ROOT, RPC, app, receive
 
@@ -19,6 +20,32 @@ class EmacsTests(unittest.TestCase):
         )
         if available.returncode:
             self.skipTest("magit-section is not on Emacs load-path")
+
+    def test_live_ownership_tree_and_stopped_branches(self):
+        daemon = Daemon()
+        self.addCleanup(daemon.close)
+        parent = daemon.start(agent_name="parent")
+        other = daemon.start(agent_name="other")
+        def child(owner, name):
+            launch = daemon.rpc.call("sessions.start", {
+                "key":uuid.uuid4().hex,"name":"shell","agent_name":name,
+                "configuration":daemon.manifest,"parent":owner["session"],"rows":24,"cols":100,
+            })
+            daemon.wait(lambda: daemon.get(launch["session"])["state"] == "running")
+            return launch
+        kid = child(parent, "kid")
+        leaf = child(kid, "leaf")
+        child(other, "kid")
+        result = subprocess.run(
+            ["emacs", "--batch", "-Q", "-L", str(ROOT / "emacs"),
+             "-l", "goblins.el", "-l", "goblins-tests.el", "-f", "goblins-test-tree-live"],
+            env={**os.environ,"GOBLINS_TEST_STATE":str(daemon.state),
+                 "GOBLINS_TEST_PARENT":parent["session"],"GOBLINS_TEST_CHILD":kid["session"],
+                 "GOBLINS_TEST_LEAF":leaf["session"]},
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(daemon.get(other["session"])["state"], "running")
 
     def test_start_server_from_status(self):
         application = app()

@@ -307,6 +307,14 @@ program is the goblin entry point.
 
 * Sandbox ownership
 
+The fullscreen TUI and Emacs status show sandbox ownership as a tree rooted at
+=host=. Children appear beneath their parent, including multiple generations.
+In the TUI use Left/Right to collapse/expand a branch (Left on a leaf goes to its
+parent), Up/Down to select, and Enter to inspect packages. Emacs uses =TAB= to
+fold branches, =RET= for details, =b= to return, and =t= for terminal links. Approval labels include full
+sandbox paths so matching child names in different branches remain distinct.
+
+
 The host is the root of the ownership tree. Host launches are root children by
 default; =--parent NAME_OR_PATH_OR_ID= creates a child of a running sandbox.
 Inside a sandbox, =run= defaults to that sandbox as parent. Its =--parent= can
