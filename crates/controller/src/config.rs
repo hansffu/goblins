@@ -11,6 +11,8 @@ use std::{
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
+    #[serde(default)]
+    pub network: bool,
     pub build_spec: PathBuf,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
@@ -67,6 +69,8 @@ impl Manifest {
 /// Trusted launch configuration, never accepted over the sandbox socket.
 #[derive(Clone, Deserialize)]
 pub struct Launch {
+    #[serde(default)]
+    pub pasta: Option<PathBuf>,
     #[serde(skip)]
     pub cwd: Option<PathBuf>,
     pub shell: PathBuf,
@@ -120,6 +124,16 @@ impl Configuration {
         ]);
         env.extend(self.env.clone());
         Ok(Launch {
+            pasta: if self.network {
+                Some(
+                    spec["dependencies"]["pasta"]
+                        .as_str()
+                        .ok_or("missing pasta")?
+                        .into(),
+                )
+            } else {
+                None
+            },
             cwd: None,
             shell: string("sandboxed_binary")?.into(),
             shell_args: self.args.clone(),

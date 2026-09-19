@@ -23,7 +23,7 @@ class OwnershipTests(unittest.TestCase):
             peer.close()
 
     def running(self, launch):
-        record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None))
+        record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None), timeout=60)
         self.assertEqual(record["state"], "running", record)
         return launch
 

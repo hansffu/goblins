@@ -47,13 +47,13 @@ The implemented package-only PoC is documented in
 * Current PoC command interface
 
 The foreground owner is =goblins serve=. A separate host terminal runs
-=goblins run shell= to start and attach interactive Fish with upstream commonTools.
+=goblins run shell= to start and attach interactive Fish with agent-sandbox commonTools.
 Inside the sandbox, a restricted =goblins request-package NAME= client sends a
 bounded request through the mounted per-session socket. Only the serve terminal
 can approve. Approved closures become available in that same Fish session.
 A future background service can host the controller; this PoC stays foreground.
 The Nix API exports =mkGoblins { goblins = { NAME = mkGoblin { ... }; }; }=.
-=mkGoblin= wraps upstream =mkSandbox= with an inner request client, and
+=mkGoblin= wraps agent-sandbox =mkSandbox= with an inner request client, and
 =goblins run NAME= selects that configuration through the host controller.
 
 * Product direction
@@ -106,7 +106,7 @@ Restricting store visibility protects unrelated store contents, including privat
 
 Initially use a disposable repository copy with independent Git metadata. Shared Git worktrees are a later decision: separate working directories alone do not isolate their common Git state. Host tools must not automatically execute hooks, project configuration, or generated scripts merely because an agent produced them.
 
-* What the upstream project establishes
+* What the agent-sandbox library provides
 
 =agent-sandbox.nix= is the preferred starting point for evaluation. The inspected Nix interface computes the initial package closure and sandbox PATH. Its Linux launcher mounts individual closure paths when =allowNix= is false, supplies private HOME and =/tmp=, and applies a Unix-socket restriction by default. With =allowNix=, it exposes the host store and Nix state. These are startup decisions in the inspected code. [[https://github.com/archie-judd/agent-sandbox.nix/blob/main/lib/sandbox.nix][Sandbox interface]], [[https://github.com/archie-judd/agent-sandbox.nix/blob/main/launcher/lib/launch_config/linux/compute.py][Linux launcher]]
 
@@ -116,7 +116,7 @@ Consequences for this project:
 - A broker connection needs an explicit transport design; a mounted Unix socket may still be blocked by the syscall policy.
 - We need a launcher extension that lets a trusted helper add mounts to the running namespace while withholding that authority from the agent.
 
-The README and inspected source differ on some details, including store and temporary-directory exposure. Pin and test a specific upstream revision before relying on either. The initial research used moving =main= URLs; an immutable revision is still a Phase 0 deliverable.
+The README and inspected source differ on some details, including store and temporary-directory exposure. Pin and test a specific agent-sandbox revision before relying on either. The initial research used moving =main= URLs; an immutable revision is still a Phase 0 deliverable.
 
 Bubblewrap provides the mechanisms, while the launcher must define and enforce the policy. Reusing it does not remove responsibility for verifying the resulting boundary. [[https://github.com/containers/bubblewrap/blob/main/README.md#sandbox-security][Bubblewrap security model]]
 
@@ -156,7 +156,7 @@ For the PoC, support one outstanding request per session. Validate the package a
 
 On approval, resolve/realize the selected package, add its mounts, update the profile, and then return =ready=. On denial return =denied=; on failure return =error=. The client exits successfully only for =ready=. A client disconnect does not constitute approval; after an ambiguous disconnect it should report an unknown outcome rather than silently resubmit. Controller exit ends the disposable PoC session. Controller restart recovery is explicitly out of scope; durable retries are deferred.
 
-The upstream default disables Unix sockets, so the launch policy needs an explicit adjustment. Allowing AF_UNIX creation is broader than granting this one endpoint: verify that host daemon sockets, other session endpoints, and sockets in any shared workspace remain inaccessible. Retain isolated network and temporary-directory views. A read-only socket bind protects the mounted entry; it does not prevent protocol requests through the socket.
+The agent-sandbox default disables Unix sockets, so the launch policy needs an explicit adjustment. Allowing AF_UNIX creation is broader than granting this one endpoint: verify that host daemon sockets, other session endpoints, and sockets in any shared workspace remain inaccessible. Retain isolated network and temporary-directory views. A read-only socket bind protects the mounted entry; it does not prevent protocol requests through the socket.
 
 MCP is an optional later adapter. It defines tool discovery and invocation, while the socket carries requests across the sandbox boundary. A stdio MCP server launched inside the sandbox could expose =request_package= and forward to the same socket. Keep it untrusted, without approval or mount authority. The documented standard MCP transports include stdio and Streamable HTTP; a raw Unix socket would be a custom MCP transport, so the adapter avoids requiring agent clients to support one. [[https://modelcontextprotocol.io/specification/2025-06-18/basic/transports][MCP transports]]
 
@@ -207,12 +207,12 @@ Indicative effort for one developer; milestones and exit criteria govern sequenc
 
 | Phase                 | Approximate effort | Deliverable                                                                 | Exit criterion                                                                                      |
 |-----------------------+--------------------+-----------------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------|
-| 0. Baseline           | 1–2 days           | Pinned upstream revision, launch specification, small isolation probe suite | A shell works; unrelated files, host sockets, and disallowed network access fail as intended        |
+| 0. Baseline           | 1–2 days           | Pinned agent-sandbox revision, launch specification, small isolation probe suite | A shell works; unrelated files, host sockets, and disallowed network access fail as intended        |
 | 1. Live package proof | 2–4 days           | One sandbox plus a trusted live-mount helper                                | A previously unavailable package and its dependencies work in the same running shell after mounting |
 | 2. Permission loop    | 3–5 days           | Foreground approval app, request socket/CLI, small grant log                | Approve/deny and failure handling work without a daemon or GUI dependency                           |
 | 3. Real agent trial   | 2–4 days           | One CLI agent with scoped authentication                                    | It completes a small coding task and requests a tool without requiring broad host access            |
 
-The initial horizon is roughly two to three focused weeks, subject to the namespace-authority result and upstream integration work. Controller restart recovery and concurrency are outside this rewrite.
+The initial horizon is roughly two to three focused weeks, subject to the namespace-authority result and agent-sandbox integration work. Controller restart recovery and concurrency are outside this rewrite.
 
 Required Phase 1 evidence:
 
@@ -250,7 +250,7 @@ Before implementing PTY persistence, compare using an existing session backend�
 
 1. Which single CLI agent and authentication flow should anchor the first real trial?
 2. The retained helper operates with namespace-scoped authority and no host-root service; further hardening needs additional evidence.
-3. Can upstream accept the live-mount helper extension, or does this require a maintained adapter/fork?
+3. Can agent-sandbox accept the live-mount helper extension, or does this require a maintained adapter/fork?
 4. Which repository operations should agents perform directly, and which should be mediated by the host?
 5. Is persistence required for the first Emacs release, or the immediately following milestone?
 6. Which second frontend best tests the API after Emacs is useful?

@@ -15,7 +15,7 @@ let
       env ? { },
       allowNix ? false,
       allowUnixSockets ? true,
-      allowedDomains ? [ ],
+      allowedDomains ? null,
       allowedHostPorts ? [ ],
       publishedPorts ? [ ],
       rwDirs ? [ ],
@@ -30,8 +30,12 @@ let
       fail "host Nix access is prohibited; request packages through goblins"
     else if allowUnixSockets != true then
       fail "allowUnixSockets must be true for the session request socket"
-    else if allowedDomains != [ ] || allowedHostPorts != [ ] || publishedPorts != [ ] then
-      fail "network grants are not supported by the live-mount launcher yet"
+    else if
+      (allowedDomains != null && allowedDomains != [ ])
+      || allowedHostPorts != [ ]
+      || publishedPorts != [ ]
+    then
+      fail "allowedDomains must be null (open) or [] (offline); domain filters and port mappings are not supported"
     else if
       !builtins.all (paths: builtins.isList paths && builtins.all builtins.isString paths) [
         rwDirs
@@ -97,6 +101,7 @@ let
           build_spec = wrapped.buildSpec;
           inherit args env;
           client_package = inner;
+          network = allowedDomains == null;
           sandbox_etc = lib.mapAttrs (
             name: value:
             if builtins.isString value then

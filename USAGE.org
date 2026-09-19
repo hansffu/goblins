@@ -255,32 +255,33 @@ the daemon; existing sessions keep their configuration. Manifests/helper builds
 must implement API 1. Installing an incompatible daemon protocol requires a
 restart, which ends existing sandboxes.
 
-=mkGoblin= calls upstream =mkSandbox= with the inner request executable added
-to =allowedPackages=. Its result carries upstream's =buildSpec= plus a =goblin=
+=mkGoblin= calls agent-sandbox =mkSandbox= with the inner request executable added
+to =allowedPackages=. Its result carries agent-sandbox's =buildSpec= plus a =goblin=
 configuration consumed by =mkGoblins=. Launch it with =goblins run= to receive
 the session request socket and retained mount helper. Directly invoking the
-upstream wrapper is a separate static sandbox and has no approval connection.
+agent-sandbox wrapper is a separate static sandbox and has no approval connection.
 
 | Option | Meaning / default |
 |--------+-------------------|
 | =pkg= | Required Nix package providing the entry executable |
 | =binName= | Required executable name under =pkg/bin= |
-| =outName= | Upstream wrapper name; defaults to =goblin-${binName}= |
-| =allowedPackages= | Initially available packages; defaults to upstream =commonTools= |
+| =outName= | Agent-sandbox wrapper name; defaults to =goblin-${binName}= |
+| =allowedPackages= | Initially available packages; defaults to agent-sandbox =commonTools= |
 | =args= | Literal entry argument list; defaults to =[]= |
 | =env= | Literal string environment values; defaults to ={}= |
 | =allowNix= | Must be =false=; host daemon stays hidden |
 | =allowUnixSockets= | Must be =true= for the request transport |
-| =allowedDomains=, =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
+| =allowedDomains= | =null= (default): open internet; =[]= disables networking; domain filtering is not implemented |
+| =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
 | =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Forwarded startup host bind paths; defaults to =[]= |
 
-Unsupported network settings and malformed option types fail at Nix evaluation. Unlike upstream's
+Unsupported network settings and malformed option types fail at Nix evaluation. Unlike agent-sandbox's
 environment fragments, Goblin =env= values are literal: =$HOME= and =$(...)=
 are not expanded or executed on the host. =PATH=, =HOME=, =SHELL=, =USER=,
 =LOGNAME=, and =PYTHONNOUSERSITE= are reserved. Store paths used in =env= must
 also be included through an allowed package's closure to be visible inside.
 
-The four bind options use the upstream names and string-list format. Paths
+The four bind options use the agent-sandbox names and string-list format. Paths
 expand =$VAR=, =${VAR}= and leading =~/= using the host =daemon= environment;
 no shell command is evaluated. Bind sources must exist, match the declared
 file/directory kind, and have absolute paths without =..=. The private sandbox
@@ -302,7 +303,7 @@ file-grant operation or change the disposable =--workspace= snapshot behavior.
 The initial closure now comes from =mkSandbox=, including its implicit
 packages and development outputs. Later package requests still select =bin=
 or the default output and its runtime closure; they do not activate development
-setup hooks. =/bin/sh= uses upstream's Bash wrapper even when Fish or another
+setup hooks. =/bin/sh= uses agent-sandbox's Bash wrapper even when Fish or another
 program is the goblin entry point.
 
 * Sandbox ownership
@@ -436,8 +437,8 @@ mkCodexGoblin {
 }
 #+end_src
 
-After upgrading from a build without =sandboxEtc= support, restart the Goblins
-daemon before launching this configuration so it can read the new manifest.
+After upgrading the daemon implementation, restart it before launching this
+configuration. An already-running daemon continues using its old executable.
 
 It accepts normal =mkGoblin= arguments and defaults =pkg= / =binName= to Codex.
 The package must support the managed hook setup (Codex 0.146.0 or later).
@@ -475,10 +476,37 @@ the agent to process items sequentially until empty. A failed status check
 produces a diagnostic. Native user hooks keep their usual trust requirements.
 See [[https://learn.chatgpt.com/docs/hooks][Codex's hook contract]].
 
-Outbound model connectivity and notification of an already-idle agent are
-not implemented. Native launch, attachment, configuration/auth visibility and
-hook decisions can be checked offline. The live Codex game remains opt-in and
-has not been run.
+Networking defaults to open internet, matching agent-sandbox's =allowedDomains = null= behavior. Each goblin gets its own network namespace connected by =pasta=,
+with DNS forwarding and no domain allowlist, HTTP proxy or TLS interception.
+The current transport uses IPv4, as agent-sandbox's Linux launcher does.
+Host loopback is not mapped and no inbound ports are automatically published.
+=allowedDomains = []= opts out of networking. Domain filters and explicit host
+or published-port mappings remain unsupported. Children inherit the selected
+configuration and receive independent network namespaces.
+
+Before launching native Codex, Goblins checks its effective MCP configuration.
+Enabled local MCP servers whose executables are unavailable in the sandbox are
+skipped using invocation-only overrides, with a diagnostic. Existing executables
+and HTTP MCP servers retain their configuration. This does not install missing
+tools or edit host configuration. Set =filterUnavailableMcp = false= to disable
+this convenience. Native Codex's dotted override syntax cannot disable server
+names containing dots; those are reported and left unchanged.
+
+For the same packages and directory access as an existing personal definition:
+
+#+begin_src nix
+mkCodexGoblin {
+  pkg = pkgs.llm-agents.codex; # from your package set/overlay
+  allowedPackages = baseAllowedPackages;
+  outName = "codex-personal";
+  codexConfigDir = "$HOME/.codex";
+  rwDirs = [ "$HOME/.agents" ] ++ allowedDirs;
+}
+#+end_src
+
+Notification of an already-idle agent is not implemented. Native launch,
+attachment, configuration/auth visibility and hook decisions can be checked
+offline. The live Codex game remains opt-in and has not been run.
 
 For other integrations, =mkGoblin.sandboxEtc= maps relative =/etc= file names
 to text or regular-file derivations. Files are mounted read-only only inside
@@ -545,7 +573,7 @@ requires a running daemon. Records contain message text, so handle them as
 conversation data. Queued and claimed items fail when their recipient stops.
 
 This is the manual messaging foundation. The Codex helper adds turn-boundary
-hooks and a skill; idle wakeups, model connectivity and the live trial remain.
+hooks and a skill; idle wakeups and the live trial remain.
 Existing terminal attachment remains available independently of inbox commands.
 See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the remaining work.
 

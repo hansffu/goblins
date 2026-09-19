@@ -35,7 +35,7 @@ pub struct Plan {
     pub store_targets: BTreeMap<PathBuf, PathBuf>,
 }
 
-// Expand only the upstream path syntax, never a shell expression. Literal env
+// Expand only the agent-sandbox path syntax, never a shell expression. Literal env
 // values in mkGoblin.env do not pass through this function.
 fn expand(value: &str, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
     let mut input = value;

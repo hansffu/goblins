@@ -51,7 +51,7 @@ let
     { binName = "../bash"; }
     { allowNix = true; }
     { allowUnixSockets = false; }
-    { allowedDomains = null; }
+    { allowedDomains = "open"; }
     { allowedDomains = [ "example.com" ]; }
     { allowedHostPorts = [ 80 ]; }
     { publishedPorts = [ 80 ]; }
@@ -108,6 +108,7 @@ in
     goblins = {
       codex = mkCodexGoblin {
         pkg = codexProbe;
+        filterUnavailableMcp = false;
         args = [ "literal $(false) argument" ];
         allowedPackages = [
           pkgs.coreutils
@@ -119,6 +120,7 @@ in
       };
       custom = mkCodexGoblin {
         pkg = codexProbe;
+        filterUnavailableMcp = false;
         codexConfigDir = "\${HOME}/custom codex";
         allowedPackages = [
           pkgs.coreutils
@@ -126,6 +128,7 @@ in
         ];
       };
       native = mkCodexGoblin {
+        allowedDomains = [ ];
         args = [
           "login"
           "status"
@@ -133,8 +136,42 @@ in
         allowedPackages = [ ];
       };
       native-ui = mkCodexGoblin {
+        allowedDomains = [ ];
         args = [ "--no-alt-screen" ];
         allowedPackages = [ ];
+      };
+    };
+  };
+  network-goblins = mkGoblins {
+    goblins = {
+      online = mkGoblin {
+        pkg = pkgs.bashInteractive;
+        binName = "bash";
+        args = [
+          "--noprofile"
+          "--norc"
+          "-i"
+        ];
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.curl
+        ];
+        env.PS1 = "network-test> ";
+      };
+      offline = mkGoblin {
+        pkg = pkgs.bashInteractive;
+        binName = "bash";
+        args = [
+          "--noprofile"
+          "--norc"
+          "-i"
+        ];
+        allowedDomains = [ ];
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.curl
+        ];
+        env.PS1 = "network-test> ";
       };
     };
   };
@@ -218,6 +255,8 @@ in
   };
   goblins-api =
     assert builtins.all rejected invalid;
+    assert (mkGoblin base).goblin.network;
+    assert !(mkGoblin (base // { allowedDomains = [ ]; })).goblin.network;
     assert builtins.all
       (options: !(builtins.tryEval (mkCodexGoblin options).goblin.build_spec.drvPath).success)
       [

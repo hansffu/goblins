@@ -17,8 +17,8 @@ and host-only =communications-log-v1=, not =agent-integration-v1=.
 =mkCodexGoblin= now adds a shared Codex directory, sandbox-only managed hooks
 and a messaging skill via immutable =sandboxEtc= mounts. Stop checks metadata
 and requests fetch-based continuation, respecting =stop_hook_active=.
-Notification drivers, model connectivity and the live Codex trial remain
-pending. Log follow currently polls; separate retry audit events, subscriptions
+Open networking uses the agent-sandbox library’s pasta dependency. Notification
+drivers and the live Codex trial remain pending. Log follow currently polls; separate retry audit events, subscriptions
 and offline CLI log selection are also pending. See [[file:../../USAGE.org::*Manual inbox messaging][current commands]]
 and [[file:../../RESULTS.org][verification results]] for implemented behavior.
 
@@ -470,18 +470,19 @@ rules. Driver restart resubscribes with a fresh epoch and reconciles the inbox.
 
 * Model connectivity prerequisite
 
-Current =mkGoblin= rejects network grants. Shared configuration alone cannot
-make a real Codex model request work in the current isolated network namespace.
-Step 1 therefore includes a narrow, explicit connectivity provision for the
-Codex profile. General network grants and host network namespace sharing are
-not implied by this spec.
+The native configuration uses open internet by default, matching the
+agent-sandbox library's =allowedDomains = null= behavior. Goblins connects each
+private network namespace through the library's =pasta= dependency. DNS is
+forwarded to the host resolver; TLS remains between the native agent and its
+provider. No domain allowlist or replacement model client is introduced.
+=allowedDomains = []= provides explicit offline mode. Live grants, domain
+filtering, host network namespace sharing and inbound port publication are
+outside this change.
 
-Before implementation, choose and document a broker/proxy path compatible with
-the actual inherited Codex account/provider configuration. Verify model access
-and credential refresh without exposing unrelated host sockets or credentials.
-An independently configured provider may need a different endpoint set; do not
-silently substitute an API key/account or hard-code an unverified endpoint list.
-This is an unresolved implementation prerequisite, not a passed acceptance gate.
+The current transport is IPv4. Verify the actual inherited account/provider
+separately: basic TCP/DNS/TLS checks do not establish authenticated model access
+or successful credential refresh. Do not substitute an API key/account. The
+real-account guessing game remains an opt-in acceptance gate.
 
 * Communications log
 
@@ -634,7 +635,7 @@ permission to rerun model work indefinitely.
    tests. The initial manual slice is implemented; remaining audit/subscription
    work is tracked in the status section above.
 2. Resolve Codex hook trust/config mounting, native readiness detection, and
-   scoped model connectivity in bounded probes; record supported versions.
+   native model connectivity in bounded probes; record supported versions.
 3. Implement trusted integration mounts and supervisor/driver lifecycle.
 4. Add the Codex skill/hooks and fixed terminal notification path; verify races
    and attachment using fake agents before the live trial.
@@ -652,7 +653,7 @@ The agreed architecture is recorded above. These narrower choices remain:
 - Sandbox-only managed hooks and skills use =/etc/codex= system configuration
   in Codex 0.146.0 and later; user config remains in the shared Codex directory.
   No hook-trust bypass or Goblins edits to host settings are required.
-- The scoped network broker/proxy needed by the inherited authentication setup.
+- Real-account model access and refresh validation over the open network.
 - Final Nix descriptor names and notification/lifecycle method schemas; these
   should be reviewed together with protocol fixtures. Manual inbox routing,
   schemas and limits are now covered by the initial implementation tests.

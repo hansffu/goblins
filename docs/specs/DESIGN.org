@@ -187,20 +187,30 @@ before =current= changes. Partial failure ends the session, not a rollback.
 
 * Payload policy and socket exception
 
-The launch specification follows upstream's selective read-only closure mounts,
+The launch specification follows agent-sandbox's selective read-only closure mounts,
 private HOME/tmp, and Bubblewrap boundary. Goblins uses an explicit adapter
-because the upstream wrapper has no retained live-mount helper/control channel.
-The pinned upstream wrapper is separately evaluable/buildable as
-=upstream-baseline=; it is not the executable used for the live experiment.
+because the agent-sandbox wrapper has no retained live-mount helper/control channel.
+The pinned agent-sandbox wrapper is separately evaluable/buildable as
+=agent-sandbox-baseline=; it is not the executable used for the live experiment.
 
-The upstream default denies =socket(AF_UNIX)=. This adapter intentionally allows
+The agent-sandbox default denies =socket(AF_UNIX)=. This adapter intentionally allows
 Unix sockets so the one pathname request socket works. It mounts the socket
 itself at =/run/goblins/request.sock=, not its parent directory. Other session
 sockets, the Nix daemon, and socket inodes in workspace snapshots are absent.
 Explicit startup host directory grants expose their contents, including any
 socket inodes there; the launcher refuses grants covering its private control
 and session directories. A separate network namespace isolates abstract Unix
-sockets and host IP services. There is no pasta forwarding or host networking.
+sockets and host loopback. Open-internet configurations use pasta forwarding;
+there is no host network namespace sharing. Explicit offline configurations
+have no forwarding.
+
+For open networking, the daemon starts pasta with a namespace keeper, retains
+its user/network namespace descriptors, and passes them only to the trusted
+helper. The helper validates their ownership and enters them before creating
+its existing source/payload user and mount namespaces. Bubblewrap shares this
+private network namespace. No network namespace descriptor reaches the agent.
+The daemon retains pasta's package as a GC root. Normal session teardown stops
+pasta; daemon death closes the keeper's lifetime pipe and kills its helpers.
 
 An x86_64 seccomp filter rejects mount APIs, =setns=, =unshare=, namespace-creating
 =clone= flags, ptrace, and open-by-handle. It rejects alternate syscall ABIs.
@@ -212,7 +222,7 @@ isolation; it is not a comprehensive syscall allowlist.
 * Nix configuration and live grants
 
 =mkGoblin=/=mkGoblins=, named presets, public flake outputs, literal environment
-values/entry arguments and the upstream initial closure remain supported.
+values/entry arguments and the agent-sandbox initial closure remain supported.
 Each trusted launch supplies its own absolute manifest path and configuration name, allowing
 configuration-only rebuilds to start changed/new definitions on the same daemon.
 Running sessions retain their selected configuration. Manifests declare API 1
@@ -224,7 +234,7 @@ own host environment; literal =env= values do not use that expansion path.
 The daemon's =--workspace= selects the source for each independent disposable
 snapshot. Source symlinks are not followed, .git entries and special files are
 omitted, and no host hooks are executed. Explicit startup binds retain the
-upstream four read/write file/directory options and exact store-target handling.
+agent-sandbox four read/write file/directory options and exact store-target handling.
 Startup sources are opened before location/type validation. The validated
 handles survive only into the helper and Bubblewrap, which uses descriptor bind
 mounts and closes them before payload execution. Replacing a source or ancestor

@@ -8,6 +8,7 @@
   binName ? "codex",
   codexConfigDir ? "$HOME/.codex",
   codexSettings ? { },
+  filterUnavailableMcp ? true,
   ...
 }@options:
 let
@@ -51,16 +52,24 @@ let
   };
   launcher = pkgs.writeShellScriptBin binName ''
     export CODEX_HOME=${directory}
+    codex_executable=${lib.escapeShellArg "${pkg}/bin/${binName}"}
+    mcp_overrides=()
+    ${lib.optionalString filterUnavailableMcp (
+      lib.replaceStrings [ "\${coreutils}" "\${jq}" ] [ "${pkgs.coreutils}" "${pkgs.jq}" ] (
+        builtins.readFile ./codex/mcp.sh
+      )
+    )}
     # Goblins owns the outer sandbox and package approvals. Nested namespace
     # creation is prohibited by its seccomp policy.
-    exec ${lib.escapeShellArg "${pkg}/bin/${binName}"} \
-      --sandbox danger-full-access --ask-for-approval never --enable hooks "$@"
+    exec "$codex_executable" \
+      --sandbox danger-full-access --ask-for-approval never --enable hooks "''${mcp_overrides[@]}" "$@"
   '';
   forwarded = builtins.removeAttrs options [
     "pkg"
     "binName"
     "codexConfigDir"
     "codexSettings"
+    "filterUnavailableMcp"
   ];
 in
 assert lib.assertMsg (builtins.isString codexConfigDir)

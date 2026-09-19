@@ -163,7 +163,23 @@ impl Drop for Session {
 }
 fn run() -> io::Result<i32> {
     // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BIND_FDS BWRAP [arguments...]
-    let args: Vec<String> = env::args().collect();
+    let mut args: Vec<String> = env::args().collect();
+    let network = if args.get(1).is_some_and(|arg| arg == "--network-namespaces") {
+        if args.len() < 5 {
+            return Err(io::Error::other("missing network namespace descriptors"));
+        }
+        let user: RawFd = args[2].parse().map_err(io::Error::other)?;
+        let net: RawFd = args[3].parse().map_err(io::Error::other)?;
+        if user < 3 || net < 3 || user == net {
+            return Err(io::Error::other("invalid network namespace descriptors"));
+        }
+        args.drain(1..4);
+        Some((unsafe { OwnedFd::from_raw_fd(user) }, unsafe {
+            OwnedFd::from_raw_fd(net)
+        }))
+    } else {
+        None
+    };
     if args.len() < 7 {
         return Err(io::Error::other("expected host launcher arguments"));
     }
@@ -190,11 +206,19 @@ fn run() -> io::Result<i32> {
     if unsafe { libc::getppid() } != parent {
         return Err(io::Error::other("controller exited"));
     }
-    let uid = unsafe { libc::getuid() };
-    let gid = unsafe { libc::getgid() };
-    if uid == 0 {
+    if unsafe { libc::getuid() } == 0 {
         return Err(io::Error::other("refusing host uid 0"));
     }
+    if let Some((user, net)) = network {
+        let owner = fd(unsafe { libc::ioctl(net.as_raw_fd(), NS_GET_USERNS) })?;
+        if inode(&owner)? != inode(&user)? {
+            return Err(io::Error::other("unexpected network namespace owner"));
+        }
+        cvt(unsafe { libc::setns(user.as_raw_fd(), libc::CLONE_NEWUSER) })?;
+        cvt(unsafe { libc::setns(net.as_raw_fd(), libc::CLONE_NEWNET) })?;
+    }
+    let uid = unsafe { libc::getuid() };
+    let gid = unsafe { libc::getgid() };
     cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) })?;
     fs::write("/proc/self/setgroups", "deny")?;
     fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))?;

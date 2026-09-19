@@ -1,6 +1,61 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Open networking and Codex startup (2026-09-20)
+
+=mkGoblin= now defaults =allowedDomains= to =null=, matching the agent-sandbox
+library's open-internet behavior. =[]= explicitly disables networking. There
+is no domain allowlist or HTTP/TLS proxy. Domain filtering and explicit host or
+published-port mappings remain unsupported.
+
+The daemon runs the library's =pasta= dependency per session. A private keeper
+owns the network/user namespaces; the trusted helper receives pinned namespace
+descriptors and validates their ownership before entering them. Its existing
+source/payload mount and user namespaces remain separate. The payload receives
+DNS configuration, without namespace handles or host network sharing. The
+transport is IPv4, with host loopback mapping and automatic port publishing
+disabled. Children inherit the configuration with independent network namespaces.
+
+The Codex wrapper checks native effective MCP configuration and disables local
+MCP entries whose executables are absent using invocation-only overrides. It
+does not edit shared host configuration. =filterUnavailableMcp = false= restores
+unfiltered native startup. Codex's CLI cannot express dotted server names through
+these overrides; unavailable entries with such names are reported and retained.
+The docs also consistently refer to the agent-sandbox library by name.
+
+A separate manual probe made unauthenticated HTTPS requests from a real sandbox:
+=api.openai.com/v1/models= returned 401, =chatgpt.com/backend-api/codex/models=
+returned 401, and =auth.openai.com/oauth/token= returned 405. Curl exited zero
+for each, verifying host-forwarded DNS, outbound TCP and certificate-checked TLS.
+No account credentials or model prompts were used. This is not evidence of a
+completed subscription request or credential refresh.
+
+Rust verification: 50 tests passed (one existing integration driver ignored),
+formatting and Clippy with warnings denied passed. =nix flake check path:.=
+passed. Native configuration tests cover unchanged shared configuration,
+unavailable-MCP overrides, managed hooks in the actual UI, and parent/child auth
+sharing. Deterministic network checks
+use a test-owned HTTP service on the host's network address; external endpoints
+are not part of the default suite. Native Codex checks use synthetic credentials.
+The network lifecycle check kills the daemon and verifies that pasta, its
+namespace keeper, the mount helper and the payload stop.
+
+Initial integration runs hit 30-second startup deadlines while creating Nix
+GC roots. Startup waits in the affected test helpers now allow 60 seconds;
+ordinary RPC and teardown deadlines are unchanged. All ten selected network,
+Codex configuration, Fish configuration, mailbox and ownership-cascade methods
+passed across the final run and targeted reruns. The other configuration,
+startup-bind and mailbox methods passed in the earlier regression run.
+
+#+begin_src sh
+nix flake check path:.
+nix develop path:. --command bash -c \
+  'PYTHONPATH=tests python3 -m unittest test_network test_codex_config test_binds.BindTests.test_fish_config_is_an_explicit_startup_bind test_mailbox.MailboxTests.test_host_send_reply_and_audited_retry test_ownership.OwnershipTests.test_kill_guard_and_normal_exit_cascade -v'
+#+end_src
+
+Idle wakeups, private history overlays for the anti-cheating fixture, and the
+opt-in number game remain pending. App Server and Channels are not implemented.
+
 * Codex Nix configuration and managed hooks (2026-09-19)
 
 =mkCodexGoblin= accepts =mkGoblin= options plus =codexConfigDir= (default
@@ -745,7 +800,7 @@ from sources without the root flake/flake.lock, Python scripts or Nix test
 fixtures, and
 produces the same Goblins derivation as the normal package. A minimal runtime
 closure check confirms there is no mandatory Python interpreter. The original
-upstream static wrapper can still use Python, and chosen packages may require it.
+agent-sandbox static wrapper can still use Python, and chosen packages may require it.
 
 Host Nix and namespace tests used the normal approval mechanism when the outer
 Codex sandbox denied access; no payload boundary was weakened. The root flake
@@ -823,7 +878,7 @@ formatted with =nixfmt=. The flake exposes =formatter.x86_64-linux= for =nix fmt
 ** Configurable Goblins Nix API
 
 The flake now exports =lib.x86_64-linux.mkGoblin= and =mkGoblins=. The default
-output package is constructed with these functions. =mkGoblin= wraps upstream
+output package is constructed with these functions. =mkGoblin= wraps agent-sandbox
 =mkSandbox= with the inner request executable included, while the connected
 launcher consumes its generated specification. The root CLI dispatches named
 configurations with =goblins run NAME=; =shell= remains a compatibility alias.
@@ -846,9 +901,9 @@ original goblin remained usable and completed its package request.
 names/descriptors, empty configurations, Nix-daemon access, disabled request
 sockets, unsupported network/host binds, invalid argument types, and reserved
 environment overrides. The live launcher still supports isolated networking
-and disposable workspace snapshots only. It does not claim upstream's complete
+and disposable workspace snapshots only. It does not claim agent-sandbox's complete
 host-bind or network feature set. Initial closure visibility now follows
-upstream's package, implicit-package and development-output closure; later live
+agent-sandbox's package, implicit-package and development-output closure; later live
 grants retain executable-output/runtime-closure semantics.
 
 ** Arbitrary pinned package lookup correction
@@ -915,8 +970,8 @@ and exits when the foreground server stops. The connected test passed. The compl
 tests (including the original namespace, protocol, and failure checks) in 30.168
 seconds; the Nix helper build also passed its Rust test.
 
-The runtime takes Fish/commonTools from the pinned upstream input and uses the
-retained-helper launcher extension for live mounts. The earlier direct upstream
+The runtime takes Fish/commonTools from the pinned agent-sandbox input and uses the
+retained-helper launcher extension for live mounts. The earlier direct agent-sandbox
 Fish wrapper remains a baseline, not the current =goblins shell= implementation.
 Only the per-session request socket crosses the sandbox boundary. The distinct
 host attachment socket and PTY master remain outside it.
@@ -953,19 +1008,19 @@ Nothing was merged or published.
 | Sandbox Bash / Python | =5.3p9= / =3.13.15= |
 
 The flake lock records immutable revision and NAR hashes for both inputs.
-The upstream input follows this PoC's pinned nixpkgs; this deliberately differs
-from upstream's own older nixpkgs lock.
+The agent-sandbox input follows this PoC's pinned nixpkgs; this deliberately differs
+from agent-sandbox's own older nixpkgs lock.
 
-Upstream evaluation used the checked-out immutable source, particularly
+Agent-sandbox evaluation used the checked-out immutable source, particularly
 [[https://github.com/archie-judd/agent-sandbox.nix/blob/566defa1560051c4e48049389f942a6c1a53aee9/lib/sandbox.nix][the Nix sandbox interface]],
 [[https://github.com/archie-judd/agent-sandbox.nix/blob/566defa1560051c4e48049389f942a6c1a53aee9/launcher/lib/launch_config/linux/compute.py][Linux launch computation]], and
 [[https://github.com/archie-judd/agent-sandbox.nix/blob/566defa1560051c4e48049389f942a6c1a53aee9/launcher/lib/launch_config/linux/seccomp.py][the Unix socket filter]].
-The =upstream-baseline= output was successfully built with =allowNix=false=
+The =agent-sandbox-baseline= output was successfully built with =allowNix=false=
 and the deliberate =allowUnixSockets=true= adjustment. Its public wrapper has
 no retained namespace mount-helper hook. Goblins therefore implements a small
 launcher adapter around Bubblewrap, retaining selective closure mounts and
-private HOME/tmp. It does not run upstream's pasta networking or bind the
-original workspace. The upstream wrapper itself was not given a full runtime
+private HOME/tmp. It does not run agent-sandbox's pasta networking or bind the
+original workspace. The agent-sandbox wrapper itself was not given a full runtime
 isolation certification by these tests.
 
 Bubblewrap's =--info-fd= / =--block-fd= ordering was checked in
@@ -1122,18 +1177,18 @@ separately as described above.
 ** Interactive Fish follow-up
 
 At the user's request, the lower Herdr pane was switched to a real Fish shell
-using upstream =mkSandbox= with =commonTools ++ [ pkgs.fish ]=. The flake output
+using agent-sandbox =mkSandbox= with =commonTools ++ [ pkgs.fish ]=. The flake output
 is =fish-shell=, and =fish_terminal.py= supplies a disposable workspace and the
 actual terminal. The original live-grant controller remains separate.
 
 The pinned build succeeded. A sandboxed Fish command probe reported Fish 4.7.1
 and found every commonTools executable. It confirmed no Nix daemon path, no
 =nix= command, and no unrelated Rust helper store output. Effective capabilities
-were zero and =NoNewPrivs= was 1. Upstream retained a nonzero capability bounding
+were zero and =NoNewPrivs= was 1. Agent-sandbox retained a nonzero capability bounding
 set; do not apply the custom live-helper's zero-bounding-set claim to this shell.
 
 The interactive Herdr pane reached =user@sandbox ...>= and was checked with
 normal command input and Ctrl-C. The configuration denies Unix sockets, permits
 no network domains or host ports, and supplies =jq= at startup. The shell is
 not yet wired to the live approval socket. These checks do not amount to a full
-security audit of upstream's filesystem exposure or networking implementation.
+security audit of agent-sandbox's filesystem exposure or networking implementation.

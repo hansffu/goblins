@@ -96,7 +96,9 @@ class Daemon:
         result = self.rpc.call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name, "agent_name": agent_name,
                                                   "configuration": str(manifest or self.manifest), "rows": 24, "cols": 100})
         if wait:
-            record = self.wait(lambda: (r if (r := self.get(result["session"]))["state"] != "starting" else None))
+            # Initial GC roots may cover hundreds of store outputs. Allow cold
+            # startup longer than ordinary RPC/lifecycle transitions.
+            record = self.wait(lambda: (r if (r := self.get(result["session"]))["state"] != "starting" else None), timeout=60)
             assert record["state"] == "running", record
         return result
 

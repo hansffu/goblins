@@ -94,6 +94,7 @@ pub struct Session {
     pub output: Option<File>,
     pub listener: Option<UnixListener>,
     helper: Option<Child>,
+    network: Option<crate::network::Network>,
     pub exit_code: Option<i32>,
     helper_input: Option<File>,
     helper_output: Option<File>,
@@ -130,6 +131,7 @@ impl Session {
             output: None,
             listener: None,
             helper: None,
+            network: None,
             exit_code: None,
             helper_input: None,
             helper_output: None,
@@ -270,6 +272,11 @@ impl Session {
                 .map(Path::to_path_buf)
                 .ok_or("invalid executable path")
         };
+        if let Some(pasta) = &self.launch.pasta {
+            // Keep the host network process available without exposing it as
+            // an initially granted sandbox package.
+            self.root(&package(pasta)?)?;
+        }
         let mut roots = vec![
             package(&self.launch.shell)?,
             package(&self.launch.posix_shell)?,
@@ -287,6 +294,15 @@ impl Session {
         )?;
         listener.set_nonblocking(true)?;
         self.listener = Some(listener);
+        if let Some(pasta) = &self.launch.pasta {
+            self.network = Some(crate::network::Network::start(
+                pasta,
+                &self.launch.posix_shell,
+                &self.directory,
+                &self.cancel,
+            )?);
+            fs::write(self.directory.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
+        }
         let mut path = vec![
             "/run/goblins/packages/current/bin".into(),
             "/run/goblins/bin".into(),
@@ -309,6 +325,14 @@ impl Session {
         ]
         .map(String::from)
         .to_vec();
+        if self.network.is_some() {
+            args.extend([
+                "--share-net".into(),
+                "--ro-bind".into(),
+                self.directory.join("resolv.conf").display().to_string(),
+                "/etc/resolv.conf".into(),
+            ]);
+        }
         for (name, value) in [
             ("HOME", binds.home.display().to_string()),
             ("LC_ALL", "C".into()),
@@ -394,6 +418,10 @@ impl Session {
         let (control_r, control_w) = unix::pipe()?;
         let (reply_r, reply_w) = unix::pipe()?;
         let mut command = Command::new(&self.launch.helper);
+        if let Some(network) = &self.network {
+            let [user, net] = network.fds();
+            command.args(["--network-namespaces", &user.to_string(), &net.to_string()]);
+        }
         command
             .args([
                 input.as_raw_fd().to_string(),
@@ -416,6 +444,9 @@ impl Session {
             .stderr(File::create(self.directory.join("helper.log"))?);
         let parent = unsafe { libc::getpid() };
         let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
+        if let Some(network) = &self.network {
+            keep.extend(network.fds());
+        }
         keep.extend(binds.source_fds());
         keep.push(workspace_fd);
         unsafe {
@@ -624,6 +655,7 @@ impl Session {
         self.helper.as_ref().map(Child::id)
     }
     pub fn stop(&mut self) {
+        self.network.take();
         // SIGKILL is intentional: helper parent-death/PID namespace teardown
         // ends all sandbox descendants, even while a mount command is pending.
         if let Some(mut helper) = self.helper.take() {

@@ -3,6 +3,7 @@ pub mod binds;
 pub mod catalog;
 pub mod config;
 pub mod controller;
+mod network;
 mod process;
 mod seccomp;
 pub mod session;

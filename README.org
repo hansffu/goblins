@@ -21,7 +21,7 @@ The next agent milestone is described in
 [[file:docs/specs/AGENT-INTEGRATION.org][the agent integration specification]]: daemon inboxes, sandbox-local hooks and skills,
 native agent interfaces, and a Codex communication proof of concept. Manual
 inbox messaging and Codex turn-boundary hooks are implemented; idle notification
-and model connectivity remain pending.
+remains pending. Network access is open by default, matching agent-sandbox.
 The accepted architecture is recorded in
 [[file:docs/adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001: daemon inboxes with notify-then-fetch]].
 
@@ -206,7 +206,7 @@ the default package from the installation example above. Keep your existing
 #+end_src
 
 Here =inputs.goblins= is the flake, while the local =goblins= value is your
-configured package. =mkGoblin= wraps upstream =mkSandbox= and includes the
+configured package. =mkGoblin= wraps agent-sandbox =mkSandbox= and includes the
 restricted inner =goblins request-package= command; =mkGoblins= supplies the
 host =bin/goblins= command with all your configurations.
 
@@ -224,8 +224,9 @@ not a Nix path that would copy credentials into the store.
 extra native hooks; the built-in SessionStart and Stop handlers are retained.
 Codex uses the outer Goblins sandbox, with its nested sandbox disabled and
 approvals handled by Goblins. See [[file:USAGE.org::*Codex configuration][Codex setup and current limitations]].
-Goblins does not yet support outbound sandbox network access, so this prepares
-the native CLI, auth and hooks but is not yet a complete online Codex setup.
+The helper uses open internet access through a private network namespace.
+No domain allowlist or HTTP proxy is required. Set =allowedDomains = []= for
+an explicitly offline sandbox.
 
 The configured name selects a reusable sandbox configuration; =binName= selects
 its executable. Give each launch its own agent name with
@@ -245,9 +246,8 @@ the server; existing sessions retain their selected configuration.
 See [[file:USAGE.org::*Nix API][the Nix API options and limits]].
 
 Premade sandboxes live under =nix/goblins/= and are exposed through
-=inputs.goblins.lib.x86_64-linux.goblins=. Currently =shell= is the only preset:
-an interactive Fish sandbox with =commonTools=. The example above combines it
-with a custom Codex sandbox. To install just the preset, use this =mkGoblins=
+=inputs.goblins.lib.x86_64-linux.goblins=. The presets are =shell= (interactive Fish with =commonTools=) and =codex=.
+The example above customizes the Codex preset. To install just the preset, use this =mkGoblins=
 definition in the same =let= binding:
 
 #+begin_src nix
@@ -262,7 +262,7 @@ Goblins builds on [[https://github.com/archie-judd/agent-sandbox.nix][agent-sand
 =mkSandbox= API, declarative sandbox configuration, and =commonTools= package
 set provide the foundation for Goblins' Nix integration. Thank you for making
 that work available. Goblins adds its own runtime, live package grants, daemon,
-and approval UI; see the upstream project for its original sandbox tooling.
+and approval UI; see the agent-sandbox library for its sandbox tooling.
 
 * Repository layout
 
@@ -276,7 +276,7 @@ package, app, check, and development-shell outputs.
 | =nix/packages/goblins.nix= | Host binary, including its Rust helper, controller, and pinned catalog |
 | =nix/packages/internal-goblins.nix= | Restricted =goblins request-package= binary for the sandbox |
 | =nix/goblins/shell.nix= | Predefined interactive Fish goblin with commonTools |
-| =tests/fixtures.nix= | Runtime dependency fixtures and upstream baselines |
+| =tests/fixtures.nix= | Runtime dependency fixtures and agent-sandbox baselines |
 | =tests/checks.nix= | Nix API validation and named configuration test build |
 | =src/main.rs= | Retained single-threaded namespace mount helper |
 | =crates/protocol/= | Bounded request/reply types, validation and deadline |

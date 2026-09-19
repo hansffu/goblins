@@ -42,11 +42,11 @@ in
     allowedDomains = [ ];
     allowedHostPorts = [ ];
   };
-  # Static upstream baseline with the intentional Unix transport adjustment.
-  upstream-baseline = sandbox.mkSandbox {
+  # Static agent-sandbox baseline with the intentional Unix transport adjustment.
+  agent-sandbox-baseline = sandbox.mkSandbox {
     pkg = pkgs.bashInteractive;
     binName = "bash";
-    outName = "goblins-upstream-baseline";
+    outName = "goblins-agent-sandbox-baseline";
     allowedPackages = [ pkgs.bashInteractive ];
     allowNix = false;
     allowUnixSockets = true;

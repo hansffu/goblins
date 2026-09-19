@@ -104,10 +104,13 @@ class CodexConfigTests(unittest.TestCase):
         terminal = self.terminal("custom")
         terminal.expect("CODEX_DIR=" + re.escape(str(custom)))
         terminal.expect("codex-probe>")
+        config = self.original + b'[mcp_servers.missing_fixture]\ncommand = "/missing/goblins-test-mcp"\n'
+        (self.codex / "config.toml").write_bytes(config)
         native = self.terminal("native", "native")
+        native.expect("skipping MCP server missing_fixture")
         native.expect("Logged in using an API key")
         self.assertEqual(native.wait(), 0)
-        self.assertEqual((self.codex / "config.toml").read_bytes(), self.original)
+        self.assertEqual((self.codex / "config.toml").read_bytes(), config)
 
     def test_invalid_etc_mounts_fail_before_payload_launch(self):
         source = self.manifest["goblins"]["codex"]["sandbox_etc"]["codex/config.toml"]
@@ -130,10 +133,13 @@ class CodexConfigTests(unittest.TestCase):
         (self.codex / "config.toml").write_text(
             'model = "gpt-5.3-codex"\n'
             f'[projects.{json.dumps(str(ROOT))}]\ntrust_level = "trusted"\n'
+            '[mcp_servers.missing_fixture]\ncommand = "/missing/goblins-test-mcp"\n'
         )
         native = self.terminal("native-ui")
         screen_wait(native, lambda text: "OpenAI Codex" in text, timeout=60)
-        native.send("/hooks\r")
+        native.send("/hooks")
+        screen_wait(native, lambda text: "› /hooks" in text, timeout=10)
+        native.send("\r")
         screen = screen_wait(native, lambda text: "SessionStart" in text and "Stop" in text, timeout=30)
         self.assertRegex(screen, r"SessionStart\s+1\s+1")
         self.assertRegex(screen, r"\bStop\s+1\s+1")
