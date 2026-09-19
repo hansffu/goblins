@@ -421,6 +421,69 @@ Nix expression or approval decision. The separate private host socket owns
 approvals and unrestricted terminal management. The namespace helper retains narrow private
 pipes; daemon threads never enter mount namespaces.
 
+* Manual inbox messaging
+
+Host and sandbox CLIs can send text through daemon-owned inboxes:
+
+#+begin_src sh
+goblins send scout --message "my message"
+goblins send scout --file /tmp/task.txt --key setup-1
+goblins send scout --file - < task.txt
+#+end_src
+
+Exactly one of =--message= or =--file= is required. The sending CLI reads the
+file in its own filesystem and submits its UTF-8 contents, limited to 8 KiB.
+The daemon stores those contents; the recipient needs no access to the source
+pathname. The source can be removed after acceptance. Host sends use sender
+=host=. A sandbox can address its parent (=parent=) and descendants by scoped
+name, path or immutable session ID; the host can address any live session.
+Starting sessions can receive queued work before their payload is ready.
+
+Inside the receiving sandbox, claim and answer an item:
+
+#+begin_src sh
+goblins inbox status
+goblins inbox next --key fetch-1
+goblins reply MESSAGE_ID --claim-generation 1 --message "done" --key reply-1
+#+end_src
+
+Use the message ID and claim generation returned by =inbox next=. Replying
+atomically completes the original and queues a response to its sender. The
+host can use the same inbox commands to receive replies. To finish without a
+reply, use =goblins inbox complete MESSAGE_ID --claim-generation N=. To return
+a claim to its queue, use =goblins inbox requeue MESSAGE_ID
+--claim-generation N --reason TEXT=. Requeue invalidates the previous claim
+generation. An inbox has at most one outstanding claim; another fetch returns
+that claim until it is completed, replied to, or requeued.
+
+Commands print JSON. Mutations generate a key when omitted and print the key
+to stderr before submission. Exit 0 means the daemon accepted the operation;
+exit 1 means a known rejection or local input error; exit 2 means the submitted
+operation's outcome is unknown. Retry an uncertain mutation with the same key
+and identical arguments. An empty fetch is also a retained result: use a new
+key to check for later arrivals. Keys and inboxes last for one daemon instance.
+
+Inspect exchanges from the host, without consuming inbox items:
+
+#+begin_src sh
+goblins communications-log --session scout
+goblins communications-log --session scout --follow --json
+#+end_src
+
+The log includes acceptance, claims, replies, completion, requeue and recipient
+exit. Identical retries return the original receipt without another acceptance
+record. =--session= includes the selected session's subtree; omit it to inspect
+all exchanges. Follow currently polls the daemon. Audit files are private
+=STATE/communications-INSTANCE.jsonl= files and survive normal session cleanup.
+Reading these files directly also works after daemon shutdown; the CLI currently
+requires a running daemon. Records contain message text, so handle them as
+conversation data. Queued and claimed items fail when their recipient stops.
+
+This is the manual messaging foundation. Agent hooks, idle wakeups, injected
+skills/configuration mounts, and the live Codex trial are not implemented yet.
+Existing terminal attachment remains available independently of inbox commands.
+See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the remaining work.
+
 * Protocol and limits
 
 [[file:docs/specs/DAEMON.org::*Implementation contract (2026-09-13)][DAEMON.org's API 1 contract]] specifies complete framing, method parameters,

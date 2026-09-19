@@ -114,16 +114,13 @@ struct Connection {
     close: bool,
     dead: bool,
     calls: usize,
+    body_bytes: usize,
     subscription: Option<String>,
 }
 impl Connection {
     fn new(id: u64, role: Role, peer: UnixStream) -> Result<Self> {
         peer.set_nonblocking(true)?;
-        let limit = if matches!(role, Role::Host) {
-            16384
-        } else {
-            4096
-        };
+        let limit = goblins_protocol::messages::MAX_REQUEST;
         Ok(Self {
             id,
             role,
@@ -138,6 +135,7 @@ impl Connection {
             close: false,
             dead: false,
             calls: 0,
+            body_bytes: 0,
             subscription: None,
         })
     }
@@ -209,6 +207,7 @@ impl Connection {
             Ok((n, body)) => {
                 self.input.drain(..n);
                 if let Some(body) = body {
+                    self.body_bytes = body.len();
                     self.calls += 1;
                     let limit = if matches!(self.role, Role::Host) {
                         4096
@@ -219,11 +218,7 @@ impl Connection {
                         self.dead = true;
                         return None;
                     }
-                    let limit = if matches!(self.role, Role::Host) {
-                        16384
-                    } else {
-                        4096
-                    };
+                    let limit = goblins_protocol::messages::MAX_REQUEST;
                     self.decoder = Decoder::new(
                         limit,
                         if matches!(self.role, Role::Sandbox(_)) || !self.initialized {
@@ -379,6 +374,8 @@ fn random_name<'a>(
     ))
 }
 pub struct Controller {
+    messaging: crate::messaging::Service,
+    messaging_directory: crate::mailbox::Directory,
     state: PathBuf,
     workspace: Option<PathBuf>,
     _lock: File,
@@ -410,8 +407,11 @@ impl Controller {
         fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
         let mut bytes = [0; 16];
         File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-        let instance = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let instance: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let messaging = crate::messaging::Service::new(&state, &instance)?;
         Ok(Self {
+            messaging,
+            messaging_directory: BTreeMap::new(),
             state,
             workspace,
             _lock: lock,
@@ -1121,6 +1121,25 @@ impl Controller {
             return;
         };
         let outcome = (|| -> std::result::Result<Option<Value>, Fault> {
+            let messaging = matches!(
+                call.method.as_str(),
+                "messages.send"
+                    | "messages.get"
+                    | "messages.reply"
+                    | "inbox.next"
+                    | "inbox.status"
+                    | "inbox.complete"
+                    | "inbox.requeue"
+                    | "communications.list"
+            );
+            let legacy_limit = if matches!(c.role, Role::Host) {
+                16384
+            } else {
+                4096
+            };
+            if !messaging && c.body_bytes > legacy_limit {
+                return Err((-32602, "request exceeds method frame limit".into()));
+            }
             if call.method == "initialize" {
                 let p: Initialize = params(call.params)?;
                 if c.initialized {
@@ -1131,16 +1150,44 @@ impl Controller {
                 }
                 c.initialized = true;
                 c.decoder = if matches!(c.role, Role::Sandbox(_)) {
-                    Decoder::new(4096, Some(Instant::now()))
+                    Decoder::new(
+                        goblins_protocol::messages::MAX_REQUEST,
+                        Some(Instant::now()),
+                    )
                 } else {
-                    Decoder::new(16384, None)
+                    Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach"]}else{vec!["package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","communications-log-v1"]}else{vec!["package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
                 return Err((-32001, "initialize first".into()));
+            }
+            if messaging {
+                if self.shutdown.is_some() {
+                    return Err(conflict());
+                }
+                if call.method == "communications.list" && !matches!(c.role, Role::Host) {
+                    return Err((-32601, "method unavailable on sandbox endpoint".into()));
+                }
+                let actor = match &c.role {
+                    Role::Host => "host".to_owned(),
+                    Role::Sandbox(id) => id.clone(),
+                };
+                self.messaging
+                    .commands
+                    .try_send(crate::messaging::Work::Call {
+                        connection: c.id,
+                        id: id.clone(),
+                        actor,
+                        method: call.method,
+                        params: call.params,
+                        directory: self.message_directory(),
+                    })
+                    .map_err(|_| capacity())?;
+                c.waiting = Some(("mailbox".into(), id.clone()));
+                return Ok(None);
             }
             match &c.role {
                 Role::Host => self.host(c, &call.method, call.params).map(Some),
@@ -1281,7 +1328,37 @@ impl Controller {
             }
         }
     }
+    fn message_directory(&self) -> crate::mailbox::Directory {
+        self.sessions
+            .iter()
+            .map(|(id, a)| {
+                (
+                    id.clone(),
+                    crate::mailbox::Session {
+                        id: id.clone(),
+                        parent: a.record.parent.clone(),
+                        path: a.record.path.clone(),
+                        running: matches!(a.record.state.as_str(), "starting" | "running"),
+                    },
+                )
+            })
+            .collect()
+    }
     pub fn tick(&mut self) -> Result<()> {
+        for response in self.messaging.results.try_iter() {
+            if let Some(c) = self
+                .connections
+                .iter_mut()
+                .find(|c| c.id == response.connection)
+            {
+                c.waiting = None;
+                c.close = matches!(c.role, Role::Sandbox(_));
+                c.queue(match response.result {
+                    Ok(result) => rpc::result(response.id, result),
+                    Err((code, message)) => rpc::error(response.id, code, &message),
+                });
+            }
+        }
         for _ in 0..HOSTS {
             match self.listener.accept() {
                 Ok((p, _))
@@ -1515,6 +1592,16 @@ impl Controller {
             }
         }
         self.approve_inherited_requests();
+        let directory = self.message_directory();
+        if directory != self.messaging_directory
+            && self
+                .messaging
+                .commands
+                .try_send(crate::messaging::Work::Sync(directory.clone()))
+                .is_ok()
+        {
+            self.messaging_directory = directory;
+        }
         // Service pending sandbox connections before host decisions in this tick.
         self.connections
             .sort_by_key(|c| matches!(c.role, Role::Host));

@@ -14,6 +14,7 @@ use std::{
 };
 pub struct Client {
     pub instance: String,
+    pub features: Vec<String>,
     stream: UnixStream,
     next: u64,
 }
@@ -41,6 +42,7 @@ impl Client {
             return Err("incompatible daemon".into());
         }
         Ok(Some(Self {
+            features: serde_json::from_value(init["features"].clone())?,
             instance: init["instance"]
                 .as_str()
                 .ok_or("missing daemon identity")?
@@ -57,6 +59,14 @@ impl Client {
             method,
             params,
         )?)
+    }
+    pub fn mailbox_call(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> io::Result<std::result::Result<Value, Value>> {
+        self.next += 1;
+        goblins_protocol::messages::exchange(&mut self.stream, json!(self.next), method, params)
     }
     pub fn decide(&mut self, p: &PermissionRecord, approved: bool) -> Result<Value> {
         self.call(

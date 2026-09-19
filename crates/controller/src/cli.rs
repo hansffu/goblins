@@ -22,6 +22,39 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Inspect daemon-recorded messages and outcomes
+    CommunicationsLog {
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        follow: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send text contents through the daemon to another agent
+    Send {
+        recipient: String,
+        #[command(flatten)]
+        source: MessageSource,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Reply to and complete a claimed inbox item
+    Reply {
+        message_id: String,
+        #[arg(long)]
+        claim_generation: u64,
+        #[command(flatten)]
+        source: MessageSource,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Fetch or acknowledge this caller's daemon inbox
+    Inbox {
+        #[command(subcommand)]
+        command: InboxCommand,
+    },
+
     /// Start, stop or inspect the background server
     Server {
         #[command(subcommand)]
@@ -385,5 +418,66 @@ mod tests {
         assert!(
             matches!(cli.command, Some(Command::Run { config, name: Some(name), .. }) if config == "shell" && name == "snikk")
         );
+    }
+}
+
+#[derive(clap::Args)]
+pub struct MessageSource {
+    /// Literal message text
+    #[arg(long, conflicts_with = "file", required_unless_present = "file")]
+    pub message: Option<String>,
+    /// Sender-local UTF-8 file, or - for stdin (contents are sent)
+    #[arg(long, conflicts_with = "message", required_unless_present = "message")]
+    pub file: Option<std::path::PathBuf>,
+}
+#[derive(Subcommand)]
+pub enum InboxCommand {
+    Status,
+    Next {
+        #[arg(long)]
+        key: Option<String>,
+    },
+    Complete {
+        message: String,
+        #[arg(long)]
+        claim_generation: u64,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    Requeue {
+        message: String,
+        #[arg(long)]
+        claim_generation: u64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        key: Option<String>,
+    },
+}
+impl InboxCommand {
+    pub fn request(self) -> std::io::Result<(&'static str, serde_json::Value)> {
+        use goblins_protocol::messages::operation_key;
+        use serde_json::json;
+        Ok(match self {
+            Self::Status => ("inbox.status", json!({})),
+            Self::Next { key } => ("inbox.next", json!({"key":operation_key(key)?})),
+            Self::Complete {
+                message,
+                claim_generation,
+                key,
+            } => (
+                "inbox.complete",
+                json!({"message":message,"claim_generation":claim_generation,"key":operation_key(key)?}),
+            ),
+            Self::Requeue {
+                message,
+                claim_generation,
+                key,
+                reason,
+            } => (
+                "inbox.requeue",
+                json!({"message":message,"claim_generation":claim_generation,"key":operation_key(key)?,"reason":reason}),
+            ),
+        })
     }
 }

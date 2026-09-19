@@ -234,7 +234,7 @@ impl Decoder {
 pub fn read(stream: &mut std::os::unix::net::UnixStream) -> io::Result<Value> {
     read_started(stream, None)
 }
-fn read_started(
+pub(crate) fn read_started(
     stream: &mut std::os::unix::net::UnixStream,
     start: Option<Instant>,
 ) -> io::Result<Value> {

@@ -41,6 +41,41 @@ fn run() -> Result<i32, String> {
                 .unwrap_or_else(|e| e.exit())
                 .command;
         match command {
+            cli::Command::Send {
+                recipient,
+                source,
+                key,
+            } => {
+                let body =
+                    goblins_protocol::messages::load_body(source.message, source.file.as_deref())
+                        .map_err(|e| e.to_string())?;
+                let key =
+                    goblins_protocol::messages::operation_key(key).map_err(|e| e.to_string())?;
+                return mailbox_command(
+                    "messages.send",
+                    json!({"key":key,"to":recipient,"body":body}),
+                );
+            }
+            cli::Command::Reply {
+                message_id,
+                claim_generation,
+                source,
+                key,
+            } => {
+                let body =
+                    goblins_protocol::messages::load_body(source.message, source.file.as_deref())
+                        .map_err(|e| e.to_string())?;
+                let key =
+                    goblins_protocol::messages::operation_key(key).map_err(|e| e.to_string())?;
+                return mailbox_command(
+                    "messages.reply",
+                    json!({"key":key,"message":message_id,"claim_generation":claim_generation,"body":body}),
+                );
+            }
+            cli::Command::Inbox { command } => {
+                let (method, params) = command.request().map_err(|e| e.to_string())?;
+                return mailbox_command(method, params);
+            }
             cli::Command::RequestPackage { .. } => (),
             cli::Command::Completions { shell } => {
                 cli::completions(shell);
@@ -155,6 +190,26 @@ fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, St
     let (mut socket, _) = connect()?;
     rpc::exchange(&mut socket, json!(1), method, params).map_err(|e| e.to_string())
 }
+fn mailbox_command(method: &str, params: serde_json::Value) -> Result<i32, String> {
+    if method != "inbox.status" {
+        goblins_protocol::messages::Mutation::parse(method, params.clone())?;
+    }
+    let (mut socket, init) = connect()?;
+    if !init["features"]
+        .as_array()
+        .is_some_and(|v| v.iter().any(|f| f == goblins_protocol::messages::FEATURE))
+    {
+        return Err("daemon does not support agent inboxes".into());
+    }
+    let key = params["key"].as_str().map(String::from);
+    if let Some(key) = &key {
+        eprintln!("{}", json!({"key":key}));
+    }
+    Ok(goblins_protocol::messages::print_outcome(
+        goblins_protocol::messages::exchange(&mut socket, json!(1), method, params),
+        key.as_deref(),
+    ))
+}
 fn require_terminal() -> Result<(), String> {
     if unsafe { libc::isatty(0) } != 1 {
         return Err(
@@ -221,7 +276,14 @@ fn main() {
         Ok(code) => code,
         Err(e) => {
             eprintln!("goblins: {e}");
-            2
+            if std::env::args()
+                .nth(1)
+                .is_some_and(|s| matches!(s.as_str(), "send" | "reply" | "inbox"))
+            {
+                1
+            } else {
+                2
+            }
         }
     });
 }

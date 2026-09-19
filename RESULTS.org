@@ -1,6 +1,57 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Manual daemon inbox foundation (2026-09-19)
+
+The first implementation slice on =feat/agent-integration-poc= adds daemon-owned
+inboxes and =send=, =reply= and =inbox= commands on host and sandbox CLIs.
+The daemon authenticates senders from their endpoint, restricts sandbox routing
+to parents/descendants and direct replies, and owns message contents and claims.
+Sending a file reads it in the sender's filesystem; no file pathname crosses
+the messaging protocol. Host sends and replies use a real =host= inbox.
+
+The serialized mailbox worker performs audit writes outside the controller's
+event loop. Successful mutations have audit records before becoming visible.
+Identical operation keys replay their original result; changed arguments
+conflict. Replies atomically complete the original claim and queue a response.
+Requeue increments the claim generation. Message, inbox, receipt and audit
+capacity are bounded, with capacity reserved for completing existing work.
+Uncertain audit writes disable mutations without disabling terminal management.
+Private JSONL logs preserve accepted bodies and state transitions, and host
+=communications-log= supports subtree filtering and polling follow.
+
+Verification: *49 Rust tests passed*, with one existing integration harness
+ignored; formatting and workspace/all-target Clippy with warnings denied passed.
+The production Nix build and *25 Python tests* covering messaging, daemon,
+ownership and responsiveness passed. Real sandbox testing confirmed different
+contents at the same =/tmp= pathname on host and sender: the recipient received
+the sender's contents after source deletion. Tests also cover authenticated host
+send/reply, duplicate acceptance, forbidden routing and impersonation, private
+log access, JSON escaping at the body limit and recipient exit.
+
+After the final audit-capacity and teardown changes, the rebuilt package passed
+all four messaging tests plus the existing post-approval disconnect/shutdown
+test (five tests in 79.939 seconds). The added shutdown case verifies that both
+host and sandbox pending items receive terminal audit records before exit.
+
+#+begin_src sh
+nix develop path:. --command cargo test --workspace --locked
+nix develop path:. --command cargo fmt --all --check
+nix develop path:. --command cargo clippy --workspace --all-targets --locked -- -D warnings
+nix develop path:. --command bash -c \
+  'PYTHONPATH=tests python3 -m unittest test_mailbox test_daemon test_ownership test_responsiveness -v'
+#+end_src
+
+This does not yet establish the notify-then-fetch agent baseline. Sandbox-only
+integration mounts, shared native authentication, skills/hooks, idle wakeups,
+driver lifecycle and the explicit live Codex number game remain pending.
+No model calls or subscription credentials are used by these default tests.
+The live trial will remain opt-in. Audit retry events, log subscriptions and
+offline CLI log selection are not implemented; identical retries currently
+reuse the original receipt without another audit event. Inboxes do not recover
+across daemon restarts. Codex App Server, Claude Channels and A2A are outside
+this task, as recorded in [[file:docs/adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]].
+
 * Approval command renamed to tui
 
 Renamed the host approval command from =goblins serve= to =goblins tui=,

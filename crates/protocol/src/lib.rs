@@ -46,6 +46,7 @@ pub fn identifier(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
+pub mod messages;
 pub mod rpc;
 pub mod terminal;
 #[cfg(test)]

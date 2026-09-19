@@ -13,4 +13,6 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 mod worker;
 
 pub mod host;
+pub mod mailbox;
+mod messaging;
 mod terminal;

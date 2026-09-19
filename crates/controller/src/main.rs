@@ -48,6 +48,91 @@ fn execute(cli: Cli) -> Result<i32> {
         }
     });
     match command {
+        Command::Send {
+            recipient,
+            source,
+            key,
+        } => {
+            let body =
+                goblins_protocol::messages::load_body(source.message, source.file.as_deref())?;
+            let key = goblins_protocol::messages::operation_key(key)?;
+            return mailbox_command(
+                &state,
+                "messages.send",
+                serde_json::json!({"key":key,"to":recipient,"body":body}),
+            );
+        }
+        Command::Reply {
+            message_id,
+            claim_generation,
+            source,
+            key,
+        } => {
+            let body =
+                goblins_protocol::messages::load_body(source.message, source.file.as_deref())?;
+            let key = goblins_protocol::messages::operation_key(key)?;
+            return mailbox_command(
+                &state,
+                "messages.reply",
+                serde_json::json!({"key":key,"message":message_id,"claim_generation":claim_generation,"body":body}),
+            );
+        }
+        Command::Inbox { command } => {
+            let (method, params) = command.request()?;
+            return mailbox_command(&state, method, params);
+        }
+        Command::CommunicationsLog {
+            session,
+            follow,
+            json,
+        } => {
+            let mut session = session;
+            let mut cursor = 0;
+            let mut instance = None;
+            loop {
+                let mut client = Client::connect(&state)?;
+                if instance.as_ref().is_some_and(|id| *id != client.instance) {
+                    return Err(
+                        "daemon instance changed; choose the intended log explicitly".into(),
+                    );
+                }
+                instance = Some(client.instance.clone());
+                let page = client.call(
+                    "communications.list",
+                    serde_json::json!({"session":session,"after":cursor}),
+                )?;
+                session = page["session"].as_str().map(String::from);
+                for event in page["events"]
+                    .as_array()
+                    .ok_or("invalid communications page")?
+                {
+                    if json {
+                        println!("{event}");
+                    } else {
+                        println!(
+                            "{} {} {} {}",
+                            event["sequence"],
+                            event["kind"].as_str().unwrap_or("unknown"),
+                            plain::escaped_json(&event["actor"])?,
+                            plain::escaped_json(&event["data"])?
+                        );
+                    }
+                }
+                cursor = page["cursor"]
+                    .as_u64()
+                    .ok_or("invalid communications cursor")?;
+                let caught_up = cursor
+                    >= page["latest"]
+                        .as_u64()
+                        .ok_or("invalid communications sequence")?;
+                if STOP.load(Ordering::Relaxed) || (caught_up && !follow) {
+                    break;
+                }
+                if caught_up {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+            }
+        }
         Command::Server { command } => match command {
             ServerCommand::Start {
                 workspace,
@@ -156,6 +241,33 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+fn mailbox_command(
+    state: &std::path::Path,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<i32> {
+    if method != "inbox.status" {
+        goblins_protocol::messages::Mutation::parse(method, params.clone())?;
+    }
+    let mut client = Client::connect(state)?;
+    if !client
+        .features
+        .iter()
+        .any(|f| f == goblins_protocol::messages::FEATURE)
+    {
+        return Err("daemon does not support agent inboxes".into());
+    }
+    let key = params["key"].as_str().map(String::from);
+    if let Some(key) = &key {
+        eprintln!("{}", serde_json::json!({"key":key}));
+    }
+    let result = client.mailbox_call(method, params);
+    Ok(goblins_protocol::messages::print_outcome(
+        result,
+        key.as_deref(),
+    ))
 }
 
 #[cfg(test)]
