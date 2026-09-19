@@ -103,7 +103,7 @@ responsive endpoint, or on an error. Missing-server status/logs do not start it.
 Nix packages install completion scripts in the standard Fish, Bash and Zsh
 locations under =share/=. Your shell/profile needs its usual completion loading
 enabled. Scripts complete commands, options, paths and this Nix package's =run=
-configuration keys. =attach=, =detatch=, =detach= and =kill= also complete live agent
+configuration keys. =attach=, =detach=, =stop=, =kill= and =run --parent= also complete live agent
 names by querying the current server, respecting =--state-dir=. No names are
 offered when the server is stopped; completion never starts a server. Editor
 attachments using =--instance= require exact IDs and do not offer name candidates.
@@ -143,8 +143,8 @@ goblins stop snikk
 Agent names are case-sensitive, 1..32 ASCII lowercase letters, digits or hyphens,
 starting with a letter. Invalid names and explicit live-name collisions return
 clear errors. No normalization or automatic suffix is applied to explicit names.
-Names are unique within a daemon, including starting and stopping sessions, and
-remain reserved until the worker finishes cleanup. Once released, a name may be
+Names are unique among siblings, including starting and stopping sessions, and
+remain reserved until the session and its descendants finish cleanup. Once released, a name may be
 reused, even while the previous session's terminal output is still draining.
 There is no renaming operation.
 
@@ -163,13 +163,15 @@ and the reusable configuration identity. Permission records and events retain
 the agent name even if the corresponding session record is later evicted.
 Historical sessions and permissions may share a name, but always have distinct
 immutable IDs. =stop ID_OR_NAME= and host =sessions.get/stop {session}= accept
-an exact session ID or a live agent name. After completion, inspect/stop retained
+an exact session ID, a tree path (for example =snikk/scout=), or an unambiguous live agent name. After completion, inspect/stop retained
 history by ID. A reused name targets its current live session; use IDs in
 scripts that must keep targeting the original launch. Approval decisions,
 permission filters and resize still require IDs, never agent names.
 
 For host API 1, =sessions.start= keeps =name= as the configuration key and
-=configuration= as the absolute manifest path. Optional =agent_name= requests a
+=configuration= as the absolute manifest path. Optional =parent= selects a running
+sandbox; omission selects the host root. Optional =detached=true= launches without
+a terminal consumer. Optional =agent_name= requests a
 session name; omitted or null means automatic allocation. For example:
 
 #+begin_src json
@@ -192,13 +194,12 @@ is a parameter change and conflicts. Retry the original request exactly.
 Closing =tui=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
 client leaves sessions owned by the daemon. A fresh =tui= discovers current
 sessions, pending approvals and retained outcomes from a new atomic snapshot.
-From inside a sandbox, =goblins detatch= (also spelled =goblins detach=) returns
+From inside a sandbox, =goblins detach= returns
 to the host terminal with exit status 0. The shell, its working directory,
 variables, processes and pending approvals stay alive. From the host:
 
 #+begin_src sh
-goblins detatch snikk                   # detach its current terminal from the host
-# goblins detach snikk                  # equivalent spelling
+goblins detach snikk                   # detach its current terminal from the host
 goblins attach snikk                    # reconnect to the same sandbox
 goblins kill snikk                      # stop it, including when detached
 #+end_src
@@ -304,6 +305,68 @@ or the default output and its runtime closure; they do not activate development
 setup hooks. =/bin/sh= uses upstream's Bash wrapper even when Fish or another
 program is the goblin entry point.
 
+* Sandbox ownership
+
+The host is the root of the ownership tree. Host launches are root children by
+default; =--parent NAME_OR_PATH_OR_ID= creates a child of a running sandbox.
+Inside a sandbox, =run= defaults to that sandbox as parent. Its =--parent= can
+select =.= (itself) or any running descendant. Completion offers only eligible
+parents within the caller's subtree.
+
+#+begin_src sh
+# Host: start a parent without attaching, then create a child.
+goblins run shell --name snikk --detatched
+goblins run shell --parent snikk --name scout --detatched
+
+# Inside snikk: start another child, or a grandchild of scout.
+goblins run shell --name builder
+goblins run shell --parent scout --name helper --detatched
+goblins list
+goblins kill scout --kill-children
+#+end_src
+
+Both CLIs attach on =run= by default. =--detatched= (also =--detached=) returns
+immediately with JSON containing the session ID and name. Inside a sandbox,
+=goblins attach CHILD= attaches to a descendant by relative tree path, name or ID;
+=goblins detach= returns to the enclosing shell while leaving that sandbox running.
+=goblins status= prints the current sandbox's name, configuration, state and ID.
+Attachment and terminal resizing are restricted to descendants; a sandbox cannot
+attach to itself, its ancestors or another branch.
+
+Every child uses its parent's already loaded configuration: a =shell= sandbox
+can start only =shell= children, and a =codex= sandbox only =codex= children.
+This also applies to host =--parent= launches. Children share the parent's
+workspace and pinned startup binds with the same read/write permissions.
+Changing a host path or rebuilding a configuration does not widen a child's
+access. With daemon =--workspace=, each root child gets its own snapshot, which
+it shares with its descendants. Shared workspace writes are visible throughout
+that branch; ownership restricts control operations, not access to these shared
+files.
+
+Sandbox =list= shows descendants only, with relative tree paths. =kill= and
+=stop= address only descendants by name, relative path or ID. Parent, sibling,
+and unrelated IDs return the same absent-record error as nonexistent IDs.
+The daemon enforces this on the session's authenticated socket; changing CLI
+arguments or sending raw RPC cannot select another identity, host manifest,
+terminal socket, filesystem grant or approval authority. Names and launch retry
+keys are scoped so another branch's names or keys do not cause collisions.
+
+Normal root-process exit (including Ctrl-D in a shell), startup failure, or
+worker failure stops the entire subtree. Explicit =kill= and =stop= refuse to
+stop a sandbox with live descendants, warning that =--kill-children= is required.
+With that flag the operation stops the whole subtree. Daemon shutdown stops all
+sandboxes. Stopping parents cannot accept new descendants during cleanup.
+
+Package requests always go through the host. A successful package grant makes
+that approval available to the requesting sandbox and its descendants, never
+its ancestors or other branches. Descendants must still request the package;
+packages are not mounted proactively. The host automatically approves requests
+covered by an ancestor's available package, even across intervening descendants
+that have not requested it. Otherwise the request appears in the host approval
+interface. Existing pending requests become eligible when an ancestor receives
+the package. Inheritance policy is isolated in the controller's
+=inherits_package= function for future changes.
+
 * State, workspace and authority
 
 The host socket is =host.sock= under =$XDG_RUNTIME_DIR/goblins= (normally
@@ -322,7 +385,7 @@ are visible on the host and in the sandbox. Each launch supplies its own directo
 independently of where the daemon started. Protected controller paths cannot be
 exposed this way.
 
-To use a separate disposable copy at =/workspace= for every launch instead,
+To use a separate disposable copy at =/workspace= for every root child instead,
 start the daemon with:
 
 #+begin_src sh
@@ -341,12 +404,14 @@ cleans resources; daemon SIGKILL kills payloads but can leave directories and
 roots. Remove crash leftovers only after verifying that daemon/session is gone.
 There is no startup recovery or automatic reconciliation of old directories.
 
-The restricted executable inside the sandbox implements only package requests.
-It initializes on that session's endpoint and sends JSON-RPC 2.0 with
-Content-Length framing. It cannot choose a session, manifest, PID, mount target,
-namespace, Nix expression or approval. Only the separate private host socket
-accepts lifecycle and decision operations. The namespace helper retains narrow
-private pipes; daemon threads never enter mount namespaces.
+The restricted executable inside the sandbox supports package requests,
+subtree =run/list/kill/stop/attach= commands, =status= for its own identity,
+and detaching its own terminal. It
+initializes on that session's endpoint and sends JSON-RPC 2.0 with Content-Length
+framing. It cannot choose its authority, manifest, PID, mount target, namespace,
+Nix expression or approval decision. The separate private host socket owns
+approvals and unrestricted terminal management. The namespace helper retains narrow private
+pipes; daemon threads never enter mount namespaces.
 
 * Protocol and limits
 

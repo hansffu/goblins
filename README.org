@@ -91,14 +91,17 @@ goblins request-package cowsay --reason "Try a live package grant"
 cowsay hello
 #+end_src
 
-Omit =--name= to get a randomly selected fantasy goblin name. The project is
-copied into a disposable workspace; writes there do not update the original.
-Explicit writable binds are different: they modify host files.
-Closing the TUI leaves agents running. Inside a sandbox, =goblins detatch=
-(or =goblins detach=) returns to the host while leaving it running. Use
-=goblins detatch snikk= from another host terminal to detach it from outside,
+Omit =--name= to get a randomly selected fantasy goblin name. The current directory is shared with the sandbox. Use
+=server start --workspace DIR= for a disposable snapshot instead. Children share
+their parent’s workspace. Explicit writable binds modify host files.
+Closing the TUI leaves agents running. Inside a sandbox, =goblins detach=
+returns to the enclosing terminal while leaving it running. Use
+=goblins detach snikk= from another host terminal to detach it from outside,
 =goblins attach snikk= to reconnect, =goblins kill snikk= to stop one agent,
-or =goblins server stop= to stop the server and all its agents.
+or =goblins server stop= to stop the server and all its agents. A sandbox with
+live descendants requires =kill --kill-children=. Normal sandbox exit stops its
+entire subtree. See [[file:USAGE.org::*Sandbox ownership][sandbox ownership]] for nested launches,
+=--parent=, =--detatched=, and inherited package approvals.
 
 For Emacs, load [[file:emacs/goblins.el][goblins.el]] and run =M-x goblins-status= for a Magit-style
 buffer with live agent/request sections and =a=/=d= accept/deny actions.

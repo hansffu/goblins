@@ -8,14 +8,14 @@ from terminal_support import Terminal
 
 
 class AttachmentTests(unittest.TestCase):
-    def test_host_detatch_by_name_and_alias_by_id_leave_processes_running(self):
+    def test_host_detach_by_name_and_id_leave_processes_running(self):
         d = Daemon()
         self.addCleanup(d.close)
         a = d.start(agent_name="snikk")
         b = d.start(agent_name="grub")
         command = [str(d.app), "--state-dir", str(d.state)]
         for target in ("missing-agent", "snikk"):
-            result = subprocess.run([*command, "detatch", target], text=True, capture_output=True)
+            result = subprocess.run([*command, "detach", target], text=True, capture_output=True)
             self.assertEqual(result.returncode, 1)
         other = Terminal([*command, "attach", "grub"])
         self.addCleanup(other.close)
@@ -26,11 +26,11 @@ class AttachmentTests(unittest.TestCase):
         client.send("set -g saved_value retained; printf 'PID=%s\\n' $fish_pid\n")
         pid = client.expect(r"(?:^|\n)PID=(\d+)\n").group(1)
         identity = d.get(a["session"])["identity"]
-        for spelling, target in (("detatch", "snikk"), ("detach", a["session"])):
+        for target in ("snikk", a["session"]):
             # Detach from the host while the sandbox is busy in a foreground job.
             client.send("echo BUSY; sleep 60\n")
             client.expect(r"(?:^|\n)BUSY\n")
-            reply = json.loads(subprocess.check_output([*command, spelling, target], text=True))
+            reply = json.loads(subprocess.check_output([*command, "detach", target], text=True))
             self.assertTrue(reply["accepted"])
             self.assertEqual(client.wait(), 0)
             record = d.get(a["session"])
@@ -38,7 +38,7 @@ class AttachmentTests(unittest.TestCase):
             self.assertEqual(record["identity"], identity)
             self.assertTrue(record["terminal_detached"])
             self.assertTrue(d.get(b["session"])["terminal_attached"])
-            result = subprocess.run([*command, spelling, target], text=True, capture_output=True)
+            result = subprocess.run([*command, "detach", target], text=True, capture_output=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("terminal is not attached", result.stderr)
             client = Terminal([*command, "attach", "snikk"])
@@ -78,7 +78,7 @@ class AttachmentTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)ATTACHED=yes\n")
         self.assertEqual(terminal.wait(), 7)
 
-    def test_detatch_and_reattach_keep_shell_state_and_exit_status(self):
+    def test_detach_and_reattach_keep_shell_state_and_exit_status(self):
         d = Daemon()
         self.addCleanup(d.close)
         client = Terminal([str(d.app), "--state-dir", str(d.state),
@@ -88,8 +88,8 @@ class AttachmentTests(unittest.TestCase):
         pid = client.expect(r"(?:^|\n)PID=(\d+)\n").group(1)
         session = d.rpc.call("sessions.list", {})[0]["id"]
         identity = d.get(session)["identity"]
-        for command in ("detatch", "detach"):
-            client.send(f"goblins {command}; printf 'DETACHED_CODE=%s\\n' $status\n")
+        for _ in range(2):
+            client.send("goblins detach; printf 'DETACHED_CODE=%s\\n' $status\n")
             self.assertEqual(client.wait(), 0)
             self.assertEqual(d.get(session)["state"], "running")
             self.assertEqual(d.get(session)["identity"], identity)
@@ -130,7 +130,7 @@ class AttachmentTests(unittest.TestCase):
         client.send("echo READY\n")
         client.expect(r"(?:^|\n)READY\n")
         session = d.rpc.call("sessions.list", {})[0]["id"]
-        client.send("goblins detatch; string repeat -n 200000 x; touch /tmp/output-finished\n")
+        client.send("goblins detach; string repeat -n 200000 x; touch /tmp/output-finished\n")
         self.assertEqual(client.wait(), 0)
         # /proc sees the sandbox root without adding host authority to payloads.
         from pathlib import Path
@@ -165,7 +165,7 @@ class AttachmentTests(unittest.TestCase):
         # Detach does not cancel a concurrent package approval.
         pending, permission = d.pending(a["session"])
         self.addCleanup(pending.close)
-        client.send("goblins detatch\n")
+        client.send("goblins detach\n")
         self.assertEqual(client.wait(), 0)
         self.assertEqual(d.rpc.call("permissions.get", {"request": permission["id"]})["state"], "pending")
         killed = json.loads(subprocess.check_output(

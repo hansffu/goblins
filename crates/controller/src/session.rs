@@ -23,6 +23,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::Arc,
     time::Duration,
 };
 
@@ -59,6 +60,30 @@ pub struct Identity {
     pub source_mountns: u64,
     pub mountns: u64,
 }
+struct SessionDirectory(PathBuf);
+impl Drop for SessionDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+struct SharedWorkspace {
+    file: File,
+    // Keep snapshot contents alive until every descendant has stopped.
+    _owner: Arc<SessionDirectory>,
+}
+/// Host-owned launch capability. Children reuse opened mounts, never re-resolve
+/// host paths or read a caller-selected manifest.
+#[derive(Clone)]
+pub(crate) struct Inheritance {
+    launch: Arc<Launch>,
+    binds: Arc<crate::binds::Plan>,
+    workspace: Arc<SharedWorkspace>,
+}
+impl Inheritance {
+    pub(crate) fn initially_available(&self, path: &Path) -> bool {
+        self.launch.initial_packages.iter().any(|p| p == path)
+    }
+}
 pub struct Session {
     pub directory: PathBuf,
     pub launch: Launch,
@@ -73,6 +98,9 @@ pub struct Session {
     helper_input: Option<File>,
     helper_output: Option<File>,
     cancel: Cancellation,
+    directory_owner: Arc<SessionDirectory>,
+    binds: Option<Arc<crate::binds::Plan>>,
+    workspace: Option<Arc<SharedWorkspace>>,
 }
 impl Session {
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
@@ -92,6 +120,7 @@ impl Session {
         };
         unix::private_directory(&directory)?;
         let session = Self {
+            directory_owner: Arc::new(SessionDirectory(directory.clone())),
             directory,
             launch,
             mounted: BTreeSet::new(),
@@ -105,6 +134,8 @@ impl Session {
             helper_input: None,
             helper_output: None,
             cancel,
+            binds: None,
+            workspace: None,
         };
         for name in ["store", "packages", "roots", "workspace"] {
             fs::create_dir(session.directory.join(name))?;
@@ -117,6 +148,28 @@ impl Session {
             )?;
         }
         Ok(session)
+    }
+    pub(crate) fn child(
+        inherited: Inheritance,
+        cancel: Cancel,
+        directory: PathBuf,
+    ) -> Result<Self> {
+        let mut launch = (*inherited.launch).clone();
+        launch.cwd = None;
+        let mut session = Self::new_in(launch, None, cancel, directory)?;
+        // new_in canonicalizes cwd for root launches only. Preserve the pinned
+        // parent's namespace path even when its host pathname was renamed.
+        session.launch = (*inherited.launch).clone();
+        session.binds = Some(inherited.binds);
+        session.workspace = Some(inherited.workspace);
+        Ok(session)
+    }
+    pub(crate) fn inheritance(&self) -> Inheritance {
+        Inheritance {
+            launch: Arc::new(self.launch.clone()),
+            binds: self.binds.as_ref().unwrap().clone(),
+            workspace: self.workspace.as_ref().unwrap().clone(),
+        }
     }
     pub fn event(&self, event: &str, fields: serde_json::Value) {
         // Logging must never interrupt teardown or turn a completed grant into
@@ -189,10 +242,21 @@ impl Session {
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
         let mut private = self.launch.protected_paths.clone();
         private.push(self.directory.clone());
-        let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
-        if let Some(cwd) = &self.launch.cwd {
-            binds.add_working_directory(cwd, &private)?;
+        if self.binds.is_none() {
+            let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
+            if let Some(cwd) = &self.launch.cwd {
+                binds.add_working_directory(cwd, &private)?;
+            }
+            self.binds = Some(Arc::new(binds));
         }
+        let binds = self.binds.as_ref().unwrap().clone();
+        if self.workspace.is_none() {
+            self.workspace = Some(Arc::new(SharedWorkspace {
+                file: File::open(self.directory.join("workspace"))?,
+                _owner: self.directory_owner.clone(),
+            }));
+        }
+        let workspace_fd = self.workspace.as_ref().unwrap().file.as_raw_fd();
         // Root selected store-backed config without exposing the full output or
         // its closure. Only the precise declared/linked targets are mounted.
         for root in binds.store_roots()? {
@@ -256,8 +320,12 @@ impl Session {
         }
         args.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"].map(String::from));
         args.extend(["--tmpfs".into(), binds.home.display().to_string()]);
+        args.extend([
+            "--bind-fd".into(),
+            workspace_fd.to_string(),
+            "/workspace".into(),
+        ]);
         for (flag, source, dest) in [
-            ("--bind", self.directory.join("workspace"), "/workspace"),
             ("--ro-bind", self.directory.join("store"), "/nix/store"),
             (
                 "--ro-bind",
@@ -323,6 +391,7 @@ impl Session {
                 filter.as_raw_fd().to_string(),
                 binds
                     .source_fds()
+                    .chain(std::iter::once(workspace_fd))
                     .map(|fd| fd.to_string())
                     .collect::<Vec<_>>()
                     .join(","),
@@ -338,6 +407,7 @@ impl Session {
         let parent = unsafe { libc::getpid() };
         let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
         keep.extend(binds.source_fds());
+        keep.push(workspace_fd);
         unsafe {
             command.pre_exec(move || {
                 unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
@@ -355,7 +425,8 @@ impl Session {
         }
         self.cancel.check()?;
         self.helper = Some(command.spawn()?);
-        // Only the helper/bwrap now needs the startup source handles.
+        // Retain the pinned handles in the inheritance capability for future
+        // children; these temporary command references are no longer needed.
         drop(command);
         drop(binds);
         self.helper_input = Some(File::from(control_w));
@@ -533,6 +604,12 @@ impl Session {
             _ => false,
         }
     }
+    pub(crate) fn exit_watch(&self) -> Result<OwnedFd> {
+        let pid = self.helper_pid().ok_or("helper not started")?;
+        Ok(unix::owned(unsafe {
+            libc::syscall(libc::SYS_pidfd_open, pid, 0) as i32
+        })?)
+    }
     pub fn helper_pid(&self) -> Option<u32> {
         self.helper.as_ref().map(Child::id)
     }
@@ -540,8 +617,12 @@ impl Session {
         // SIGKILL is intentional: helper parent-death/PID namespace teardown
         // ends all sandbox descendants, even while a mount command is pending.
         if let Some(mut helper) = self.helper.take() {
-            let _ = helper.kill();
-            let _ = helper.wait();
+            if let Ok(Some(status)) = helper.try_wait() {
+                self.exit_code = status.code();
+            } else {
+                let _ = helper.kill();
+                let _ = helper.wait();
+            }
         }
         self.helper_input.take();
         self.helper_output.take();
@@ -551,7 +632,6 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.stop();
-        let _ = fs::remove_dir_all(&self.directory);
     }
 }
 

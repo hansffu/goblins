@@ -1,10 +1,10 @@
 //! Single authority/event loop, with independent blocking workers per session.
 use crate::{
     Result,
-    session::{Cancel, Identity},
+    session::{Cancel, Identity, Inheritance},
     terminal::Terminal,
     unix,
-    worker::{Completed, Work, Worker},
+    worker::{Completed, Source, Work, Worker},
 };
 use goblins_protocol::{
     Request,
@@ -16,6 +16,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File},
     io::{self, Read, Write},
+    os::fd::{AsRawFd, OwnedFd},
     os::unix::{
         fs::PermissionsExt,
         net::{UnixListener, UnixStream},
@@ -32,6 +33,11 @@ const QUEUE: usize = 2 * 1024 * 1024;
 pub struct SessionRecord {
     pub id: String,
     pub agent_name: String,
+    /// None denotes the host root. Ownership always uses immutable IDs.
+    #[serde(default)]
+    pub parent: Option<String>,
+    #[serde(default)]
+    pub path: String,
     /// Reusable Nix configuration key, distinct from the per-launch agent name.
     pub name: String,
     pub configuration: String,
@@ -71,6 +77,7 @@ pub struct Snapshot {
     pub permissions: Vec<PermissionRecord>,
 }
 struct Pending {
+    initial_output: Option<PathBuf>,
     id: String,
     serial: u64,
     connection: u64,
@@ -84,6 +91,9 @@ struct Active {
     pending: Option<Pending>,
     terminal: Terminal,
     directory: PathBuf,
+    inheritance: Option<Inheritance>,
+    exit_watch: Option<OwnedFd>,
+    granted_outputs: BTreeMap<String, PathBuf>,
 }
 #[derive(Clone)]
 enum Role {
@@ -250,9 +260,30 @@ struct Start {
     name: String,
     agent_name: Option<String>,
     #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
     cwd: Option<PathBuf>,
     rows: u16,
     cols: u16,
+    #[serde(default)]
+    detached: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChildStart {
+    key: String,
+    name: String,
+    agent_name: Option<String>,
+    parent: Option<String>,
+    #[serde(default)]
+    detached: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stop {
+    session: String,
+    #[serde(default)]
+    kill_children: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -434,7 +465,14 @@ impl Controller {
             } else if let Some(id) = self
                 .sessions
                 .iter()
-                .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
+                .filter(|(id, a)| {
+                    a.worker.is_none()
+                        && a.terminal.can_evict()
+                        && !self
+                            .sessions
+                            .values()
+                            .any(|child| child.record.parent.as_ref() == Some(id))
+                })
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
             {
@@ -457,15 +495,24 @@ impl Controller {
     fn permission_mut(&mut self, id: &str) -> Option<&mut PermissionRecord> {
         self.permissions.iter_mut().find(|p| p.id == id)
     }
-    fn allocate_name(&self, requested: Option<&str>) -> std::result::Result<String, Fault> {
-        // Worker ownership includes startup and teardown, even if a final state
-        // has arrived before cleanup finishes. Allocation and insertion both
-        // happen in this event loop before another host call can run.
+    fn allocate_name(
+        &self,
+        requested: Option<&str>,
+        parent: Option<&str>,
+    ) -> std::result::Result<String, Fault> {
+        // Reserve ancestor names until the entire subtree finishes cleanup,
+        // so reusing a parent name cannot produce duplicate live tree paths.
+        // Allocation and insertion are serialized in this event loop.
         let available = |name: &str| {
-            !self
-                .sessions
-                .values()
-                .any(|a| a.worker.is_some() && a.record.agent_name == name)
+            !self.sessions.values().any(|a| {
+                a.record.parent.as_deref() == parent
+                    && a.record.agent_name == name
+                    && (a.worker.is_some()
+                        || self.sessions.values().any(|child| {
+                            child.worker.is_some()
+                                && self.descendant(&child.record.id, &a.record.id)
+                        }))
+            })
         };
         if let Some(name) = requested {
             if !valid_agent_name(name) {
@@ -488,17 +535,113 @@ impl Controller {
         })?;
         random_name(&available, &mut random).map(str::to_owned)
     }
-    fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
-        if self.sessions.contains_key(target) {
-            return Ok(target.into());
+    fn descendant(&self, id: &str, ancestor: &str) -> bool {
+        let mut current = self
+            .sessions
+            .get(id)
+            .and_then(|a| a.record.parent.as_deref());
+        while let Some(parent) = current {
+            if parent == ancestor {
+                return true;
+            }
+            current = self
+                .sessions
+                .get(parent)
+                .and_then(|a| a.record.parent.as_deref());
         }
-        // Names address live sessions only. Historical names may be shared;
-        // historical operations must use the immutable session ID.
-        self.sessions
-            .values()
-            .find(|a| a.worker.is_some() && a.record.agent_name == target)
-            .map(|a| a.record.id.clone())
-            .ok_or_else(missing)
+        false
+    }
+    fn relative_path<'a>(&'a self, record: &'a SessionRecord, scope: Option<&str>) -> &'a str {
+        if let Some(root) = scope.and_then(|id| self.sessions.get(id)) {
+            record
+                .path
+                .strip_prefix(&format!("{}/", root.record.path))
+                .unwrap_or(&record.path)
+        } else {
+            &record.path
+        }
+    }
+    fn resolve_scoped(
+        &self,
+        target: &str,
+        scope: Option<&str>,
+    ) -> std::result::Result<String, Fault> {
+        let visible = |a: &&Active| scope.is_none_or(|root| self.descendant(&a.record.id, root));
+        let records: Vec<_> = self.sessions.values().filter(visible).collect();
+        if let Some(a) = records.iter().find(|a| a.record.id == target) {
+            return Ok(a.record.id.clone());
+        }
+        if let Some(a) = records
+            .iter()
+            .find(|a| a.worker.is_some() && self.relative_path(&a.record, scope) == target)
+        {
+            return Ok(a.record.id.clone());
+        }
+        let mut matches = records
+            .iter()
+            .filter(|a| a.worker.is_some() && a.record.agent_name == target);
+        let first = matches.next().ok_or_else(missing)?;
+        if matches.next().is_some() {
+            return Err((
+                -32009,
+                "ambiguous agent name; use its tree path or session ID".into(),
+            ));
+        }
+        Ok(first.record.id.clone())
+    }
+    fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
+        self.resolve_scoped(target, None)
+    }
+    fn sandbox_record(&self, record: &SessionRecord, scope: &str) -> Value {
+        // No host paths, process IDs, terminal sockets or diagnostics cross the
+        // sandbox endpoint. Paths are relative to the caller's subtree.
+        json!({"id":record.id,"agent_name":record.agent_name,
+            "parent":record.parent.as_deref().filter(|p| *p != scope),
+            "path":self.relative_path(record, Some(scope)),"name":record.name,
+            "state":record.state,"initial_packages":record.initial_packages,
+            "packages":record.packages,"exit_code":record.exit_code,
+            "terminal_complete":record.terminal_complete,
+            "terminal_interrupted":record.terminal_interrupted,
+            "terminal_detached":record.terminal_detached,
+            "terminal_attached":record.terminal_attached})
+    }
+    fn stop_tree(&mut self, id: &str, kill_children: bool) -> std::result::Result<Value, Fault> {
+        let descendants: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(child, a)| a.worker.is_some() && self.descendant(child, id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if !kill_children && !descendants.is_empty() {
+            return Err((
+                -32009,
+                format!(
+                    "warning: sandbox has {} live descendant(s); use --kill-children to kill the subtree",
+                    descendants.len()
+                ),
+            ));
+        }
+        // The event loop serializes this check with child creation. Stop the
+        // whole tree before accepting any more calls from its sockets.
+        for child in descendants {
+            self.stop(&child)?;
+        }
+        self.stop(id)
+    }
+    /// Approval inheritance is deliberately isolated here: it applies downward
+    /// on request, never mounts packages proactively or grants them upward.
+    fn inherits_package(&self, session: &str, package: &str) -> Option<PathBuf> {
+        let mut current = Some(session);
+        while let Some(id) = current {
+            let a = self.sessions.get(id)?;
+            if let Some(output) = a.granted_outputs.get(package) {
+                // Reuse the exact granted store output; approval inheritance
+                // must not resolve a possibly changed attribute a second time.
+                return Some(output.clone());
+            }
+            current = a.record.parent.as_deref();
+        }
+        None
     }
     fn detach(&mut self, id: &str) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
@@ -565,6 +708,312 @@ impl Controller {
             self.dirty = true;
         }
     }
+    fn start(&mut self, mut p: Start, scope: Option<&str>) -> std::result::Result<Value, Fault> {
+        if self.shutdown.is_some() {
+            return Err(conflict());
+        }
+        let key = format!("{}:{}", scope.unwrap_or("host"), p.key);
+        let parent = match (scope, p.parent.as_deref()) {
+            (Some(root), None | Some(".")) => Some(root.to_string()),
+            (_, Some(target)) => Some(self.resolve_scoped(target, scope)?),
+            (None, None) => None,
+        };
+        let inherited = if let Some(id) = &parent {
+            let a = &self.sessions[id];
+            if a.record.state != "running" || a.worker.is_none() {
+                return Err(conflict());
+            }
+            if p.name != a.record.name {
+                return Err((
+                    -32602,
+                    "children must use their parent's configuration".into(),
+                ));
+            }
+            // A host --parent launch follows the same restriction, using the
+            // parent's already selected config rather than a newer manifest.
+            p.configuration = a.record.configuration.clone();
+            p.cwd = None;
+            Some(a.inheritance.clone().ok_or_else(conflict)?)
+        } else {
+            None
+        };
+        if !goblins_protocol::identifier(&p.key)
+            || !goblins_protocol::identifier(&p.name)
+            || !Path::new(&p.configuration).is_absolute()
+            || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
+            || !dimensions(p.rows, p.cols)
+        {
+            return Err((-32602, "invalid launch parameters".into()));
+        }
+        if let Some((old, result)) = self.launches.get(&key) {
+            return if old == &p {
+                Ok(result.clone())
+            } else {
+                Err(conflict())
+            };
+        }
+        let agent_name = self.allocate_name(p.agent_name.as_deref(), parent.as_deref())?;
+        if self.launches.len() >= 4096
+            || self
+                .sessions
+                .values()
+                .filter(|a| a.worker.is_some())
+                .count()
+                >= SESSIONS
+        {
+            return Err(capacity());
+        }
+        if self.sessions.len() >= 128 {
+            let old = self
+                .sessions
+                .iter()
+                .filter(|(id, a)| {
+                    a.worker.is_none()
+                        && a.terminal.can_evict()
+                        && !self
+                            .sessions
+                            .values()
+                            .any(|child| child.record.parent.as_ref() == Some(id))
+                })
+                .min_by_key(|(_, a)| a.created)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(capacity)?;
+            if let Some(a) = self.sessions.remove(&old) {
+                let _ = fs::remove_dir_all(&a.directory);
+            }
+        }
+        let id = self.id("s");
+        let directory = self.state.join(&id);
+        unix::private_directory(&directory).map_err(|e| (-32010, e.to_string()))?;
+        let path = directory.join("terminal.sock");
+        let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
+        terminal.detached = p.detached;
+        let source = match inherited {
+            Some(inherited) => Source::Child(inherited),
+            None => Source::Host {
+                configuration: p.configuration.clone().into(),
+                name: p.name.clone(),
+                workspace: self.workspace.clone(),
+                cwd: p.cwd.clone(),
+                state: self.state.clone(),
+            },
+        };
+        let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
+        let record = SessionRecord {
+            id: id.clone(),
+            path: parent
+                .as_ref()
+                .map(|id| format!("{}/{}", self.sessions[id].record.path, agent_name))
+                .unwrap_or_else(|| agent_name.clone()),
+            parent,
+            agent_name,
+            name: p.name.clone(),
+            configuration: p.configuration.clone(),
+            state: "starting".into(),
+            identity: None,
+            initial_packages: vec![],
+            packages: vec![],
+            terminal: path.display().to_string(),
+            pty_eof: false,
+            terminal_complete: false,
+            terminal_interrupted: false,
+            terminal_attached: false,
+            terminal_detached: p.detached,
+            exit_code: None,
+            detail: None,
+        };
+        let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
+        self.sessions.insert(
+            id,
+            Active {
+                inheritance: None,
+                exit_watch: None,
+                granted_outputs: BTreeMap::new(),
+                created: self.next,
+                record,
+                worker: Some(worker),
+                listener: None,
+                pending: None,
+                terminal,
+                directory,
+            },
+        );
+        self.launches.insert(key, (p, result.clone()));
+        self.dirty = true;
+        Ok(result)
+    }
+    fn sandbox_control(
+        &mut self,
+        scope: &str,
+        method: &str,
+        value: Value,
+    ) -> std::result::Result<Value, Fault> {
+        match method {
+            "sessions.status" => {
+                let _: Empty = params(value)?;
+                let record = &self.sessions[scope].record;
+                Ok(json!({"id":record.id,"agent_name":record.agent_name,
+                    "name":record.name,"state":record.state}))
+            }
+            "sessions.resize" => {
+                let p: Resize = params(value)?;
+                let id = self.resolve_scoped(&p.session, Some(scope))?;
+                if !dimensions(p.rows, p.cols) {
+                    return Err((-32602, "invalid dimensions".into()));
+                }
+                self.sessions
+                    .get_mut(&id)
+                    .unwrap()
+                    .terminal
+                    .resize(p.rows, p.cols)
+                    .map_err(|_| conflict())?;
+                Ok(json!({"accepted":true}))
+            }
+            "sessions.list" => {
+                let _: Empty = params(value)?;
+                Ok(json!(
+                    self.sessions
+                        .values()
+                        .filter(|a| self.descendant(&a.record.id, scope))
+                        .map(|a| self.sandbox_record(&a.record, scope))
+                        .collect::<Vec<_>>()
+                ))
+            }
+            "sessions.get" => {
+                let p: SessionId = params(value)?;
+                let id = self.resolve_scoped(&p.session, Some(scope))?;
+                Ok(self.sandbox_record(&self.sessions[&id].record, scope))
+            }
+            "sessions.start" => {
+                let p: ChildStart = params(value)?;
+                let result = self.start(
+                    Start {
+                        key: p.key,
+                        name: p.name,
+                        agent_name: p.agent_name,
+                        parent: p.parent,
+                        configuration: String::new(),
+                        cwd: None,
+                        rows: 24,
+                        cols: 80,
+                        detached: p.detached,
+                    },
+                    Some(scope),
+                )?;
+                let path = result["path"].as_str().ok_or_else(missing)?;
+                let relative = path
+                    .strip_prefix(&format!("{}/", self.sessions[scope].record.path))
+                    .ok_or_else(missing)?;
+                Ok(
+                    json!({"session":result["session"],"agent_name":result["agent_name"],
+                    "path":relative,"state":result["state"]}),
+                )
+            }
+            "sessions.stop" => {
+                let p: Stop = params(value)?;
+                let id = self.resolve_scoped(&p.session, Some(scope))?;
+                self.stop_tree(&id, p.kill_children)
+            }
+            _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
+        }
+    }
+    fn decide(&mut self, p: Decision) -> std::result::Result<Value, Fault> {
+        let r = self
+            .permissions
+            .iter()
+            .find(|r| r.id == p.request)
+            .ok_or_else(missing)?;
+        if r.session != p.session || r.approval != p.approval || r.state != "pending" {
+            return Err(conflict());
+        }
+        let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
+        let pending = a
+            .pending
+            .as_ref()
+            .filter(|r| r.id == p.request)
+            .ok_or_else(conflict)?;
+        // Order a decision against bytes/EOF already present, consuming
+        // unexpected input instead of letting it hide a disconnected peer.
+        if let Some(peer) = self
+            .connections
+            .iter_mut()
+            .find(|c| c.id == pending.connection)
+        {
+            let mut byte = [0];
+            if !matches!(peer.peer.read(&mut byte),Err(e) if matches!(e.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::Interrupted))
+            {
+                peer.dead = true;
+                let id = peer.id;
+                self.withdraw(id);
+                return Err(conflict());
+            }
+        } else {
+            return Err(conflict());
+        }
+        let package = self
+            .permissions
+            .iter()
+            .find(|r| r.id == p.request)
+            .unwrap()
+            .package
+            .clone();
+        let inherited = self.inherits_package(&p.session, &package);
+        let a = self.sessions.get_mut(&p.session).unwrap();
+        let pending = a.pending.as_ref().unwrap();
+        pending.cancel.cancel();
+        if p.approved {
+            let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
+            a.worker
+                .as_ref()
+                .ok_or_else(conflict)?
+                .commands
+                .try_send(Work::Decide {
+                    request: Request {
+                        id: p.request.clone(),
+                        package: r.package.clone(),
+                        reason: r.reason.clone(),
+                    },
+                    approved: true,
+                    output: inherited.or_else(|| pending.initial_output.clone()),
+                })
+                .map_err(|_| capacity())?;
+        } else {
+            a.pending.take();
+        }
+        let r = self.permission_mut(&p.request).unwrap();
+        r.approved = Some(p.approved);
+        r.state = if p.approved { "realizing" } else { "denied" }.into();
+        if !p.approved {
+            self.reply_permission(&p.request, "denied", None);
+        }
+        self.dirty = true;
+        Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
+    }
+    fn approve_inherited_requests(&mut self) {
+        let decisions: Vec<_> = self
+            .permissions
+            .iter()
+            .filter(|r| r.state == "pending")
+            .filter(|r| {
+                self.sessions.get(&r.session).is_some_and(|a| {
+                    a.record.state == "running"
+                        && a.pending.as_ref().is_some_and(|p| {
+                            p.initial_output.is_some()
+                                || self.inherits_package(&r.session, &r.package).is_some()
+                        })
+                })
+            })
+            .map(|r| Decision {
+                session: r.session.clone(),
+                request: r.id.clone(),
+                approval: r.approval.clone(),
+                approved: true,
+            })
+            .collect();
+        for decision in decisions {
+            let _ = self.decide(decision);
+        }
+    }
     fn host(
         &mut self,
         c: &mut Connection,
@@ -600,99 +1049,11 @@ impl Controller {
                 let id = self.resolve_session(&p.session)?;
                 Ok(json!(self.sessions[&id].record))
             }
-            "sessions.start" => {
-                let p: Start = params(value)?;
-                if !goblins_protocol::identifier(&p.key)
-                    || !goblins_protocol::identifier(&p.name)
-                    || !Path::new(&p.configuration).is_absolute()
-                    || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
-                    || !dimensions(p.rows, p.cols)
-                {
-                    return Err((-32602, "invalid launch parameters".into()));
-                }
-                if let Some((old, result)) = self.launches.get(&p.key) {
-                    return if old == &p {
-                        Ok(result.clone())
-                    } else {
-                        Err(conflict())
-                    };
-                }
-                let agent_name = self.allocate_name(p.agent_name.as_deref())?;
-                if self.launches.len() >= 4096
-                    || self
-                        .sessions
-                        .values()
-                        .filter(|a| a.worker.is_some())
-                        .count()
-                        >= SESSIONS
-                {
-                    return Err(capacity());
-                }
-                if self.sessions.len() >= 128 {
-                    let old = self
-                        .sessions
-                        .iter()
-                        .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
-                        .min_by_key(|(_, a)| a.created)
-                        .map(|(id, _)| id.clone())
-                        .ok_or_else(capacity)?;
-                    if let Some(a) = self.sessions.remove(&old) {
-                        let _ = fs::remove_dir_all(&a.directory);
-                    }
-                }
-                let id = self.id("s");
-                let directory = self.state.join(&id);
-                unix::private_directory(&directory).map_err(|e| (-32010, e.to_string()))?;
-                let path = directory.join("terminal.sock");
-                let terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
-                let worker = Worker::start(
-                    p.configuration.clone().into(),
-                    p.name.clone(),
-                    self.workspace.clone(),
-                    p.cwd.clone(),
-                    self.state.clone(),
-                    directory.join("resources"),
-                    (p.rows, p.cols),
-                );
-                let record = SessionRecord {
-                    id: id.clone(),
-                    agent_name,
-                    name: p.name.clone(),
-                    configuration: p.configuration.clone(),
-                    state: "starting".into(),
-                    identity: None,
-                    initial_packages: vec![],
-                    packages: vec![],
-                    terminal: path.display().to_string(),
-                    pty_eof: false,
-                    terminal_complete: false,
-                    terminal_interrupted: false,
-                    terminal_attached: false,
-                    terminal_detached: false,
-                    exit_code: None,
-                    detail: None,
-                };
-                let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal});
-                self.sessions.insert(
-                    id,
-                    Active {
-                        created: self.next,
-                        record,
-                        worker: Some(worker),
-                        listener: None,
-                        pending: None,
-                        terminal,
-                        directory,
-                    },
-                );
-                self.launches.insert(p.key.clone(), (p, result.clone()));
-                self.dirty = true;
-                Ok(result)
-            }
+            "sessions.start" => self.start(params(value)?, None),
             "sessions.stop" => {
-                let p: SessionId = params(value)?;
+                let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;
-                self.stop(&id)
+                self.stop_tree(&id, p.kill_children)
             }
             "sessions.detach" => {
                 let p: SessionId = params(value)?;
@@ -731,70 +1092,7 @@ impl Controller {
                         .ok_or_else(missing)?
                 ))
             }
-            "permissions.decide" => {
-                let p: Decision = params(value)?;
-                let r = self
-                    .permissions
-                    .iter()
-                    .find(|r| r.id == p.request)
-                    .ok_or_else(missing)?;
-                if r.session != p.session || r.approval != p.approval || r.state != "pending" {
-                    return Err(conflict());
-                }
-                let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
-                let pending = a
-                    .pending
-                    .as_ref()
-                    .filter(|r| r.id == p.request)
-                    .ok_or_else(conflict)?;
-                // Order a decision against bytes/EOF already present, consuming
-                // unexpected input instead of letting it hide a disconnected peer.
-                if let Some(peer) = self
-                    .connections
-                    .iter_mut()
-                    .find(|c| c.id == pending.connection)
-                {
-                    let mut byte = [0];
-                    if !matches!(peer.peer.read(&mut byte),Err(e) if matches!(e.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::Interrupted))
-                    {
-                        peer.dead = true;
-                        let id = peer.id;
-                        self.withdraw(id);
-                        return Err(conflict());
-                    }
-                } else {
-                    return Err(conflict());
-                }
-                let a = self.sessions.get_mut(&p.session).unwrap();
-                let pending = a.pending.as_ref().unwrap();
-                pending.cancel.cancel();
-                if p.approved {
-                    let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
-                    a.worker
-                        .as_ref()
-                        .ok_or_else(conflict)?
-                        .commands
-                        .try_send(Work::Decide {
-                            request: Request {
-                                id: p.request.clone(),
-                                package: r.package.clone(),
-                                reason: r.reason.clone(),
-                            },
-                            approved: true,
-                        })
-                        .map_err(|_| capacity())?;
-                } else {
-                    a.pending.take();
-                }
-                let r = self.permission_mut(&p.request).unwrap();
-                r.approved = Some(p.approved);
-                r.state = if p.approved { "realizing" } else { "denied" }.into();
-                if !p.approved {
-                    self.reply_permission(&p.request, "denied", None);
-                }
-                self.dirty = true;
-                Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
-            }
+            "permissions.decide" => self.decide(params(value)?),
             "state.subscribe" => {
                 let _: Empty = params(value)?;
                 if c.subscription.is_some() {
@@ -838,7 +1136,7 @@ impl Controller {
                     Decoder::new(16384, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach"]}else{vec!["package-grants","terminal-detach"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach"]}else{vec!["package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status"]},"limits":{"header":256,"body":if matches!(c.role,Role::Host){16384}else{4096},"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -847,6 +1145,15 @@ impl Controller {
             match &c.role {
                 Role::Host => self.host(c, &call.method, call.params).map(Some),
                 Role::Sandbox(session) => {
+                    let session = session.clone();
+                    if self.shutdown.is_some()
+                        || !self
+                            .sessions
+                            .get(&session)
+                            .is_some_and(|a| a.record.state == "running" && a.worker.is_some())
+                    {
+                        return Err(conflict());
+                    }
                     if call.method == "sessions.detach" {
                         let _: Empty = params(call.params)?;
                         if !c.input.is_empty() {
@@ -860,8 +1167,29 @@ impl Controller {
                         c.close = true;
                         return Ok(Some(result));
                     }
+                    if call.method == "sessions.attach" {
+                        let p: SessionId = params(call.params)?;
+                        let target = self.resolve_scoped(&p.session, Some(&session))?;
+                        // Upgrade only after initialize has drained. Reject
+                        // pipelined frames instead of interpreting them as keys.
+                        if !c.input.is_empty() || !c.output.is_empty() {
+                            return Err((-32600, "unexpected pipelined input".into()));
+                        }
+                        let peer = c.peer.try_clone().map_err(|_| conflict())?;
+                        self.sessions
+                            .get_mut(&target)
+                            .unwrap()
+                            .terminal
+                            .attach(peer, id.clone())
+                            .map_err(|e| (-32009, e.to_string()))?;
+                        c.dead = true;
+                        self.dirty = true;
+                        return Ok(None);
+                    }
                     if call.method != "permissions.request" {
-                        return Err((-32601, "method unavailable on sandbox endpoint".into()));
+                        let result = self.sandbox_control(&session, &call.method, call.params)?;
+                        c.close = true;
+                        return Ok(Some(result));
                     }
                     if !c.input.is_empty() {
                         c.dead = true;
@@ -893,17 +1221,32 @@ impl Controller {
                     let serial = self.number();
                     let request = format!("{}-r{serial}", self.instance);
                     let approval = format!("{}-a{serial}", self.instance);
+                    let inherited_output = self.inherits_package(&session, &p.package);
+                    let auto_approve = inherited_output.is_some();
                     let a = self.sessions.get_mut(&session).unwrap();
                     let w = a.worker.as_ref().ok_or_else(conflict)?;
                     let cancel = w.cancel.child();
                     w.commands
-                        .try_send(Work::Preview {
-                            approval: serial,
-                            package: p.package.clone(),
-                            cancel: cancel.clone(),
+                        .try_send(if auto_approve {
+                            Work::Decide {
+                                request: Request {
+                                    id: request.clone(),
+                                    package: p.package.clone(),
+                                    reason: p.reason.clone(),
+                                },
+                                approved: true,
+                                output: inherited_output,
+                            }
+                        } else {
+                            Work::Preview {
+                                approval: serial,
+                                package: p.package.clone(),
+                                cancel: cancel.clone(),
+                            }
                         })
                         .map_err(|_| capacity())?;
                     a.pending = Some(Pending {
+                        initial_output: None,
                         id: request.clone(),
                         serial,
                         connection: c.id,
@@ -916,8 +1259,8 @@ impl Controller {
                         approval,
                         package: p.package,
                         reason: p.reason,
-                        state: "pending".into(),
-                        approved: None,
+                        state: if auto_approve { "realizing" } else { "pending" }.into(),
+                        approved: if auto_approve { Some(true) } else { None },
                         preview: None,
                         message: None,
                     });
@@ -991,7 +1334,11 @@ impl Controller {
                         master,
                         listener,
                         identity,
+                        inheritance,
+                        exit_watch,
                     } => {
+                        a.exit_watch = Some(exit_watch);
+                        a.inheritance = Some(inheritance);
                         a.terminal.master(master)?;
                         a.record.initial_packages = initial_packages;
                         a.record.identity = Some(identity);
@@ -1002,13 +1349,24 @@ impl Controller {
                         self.dirty = true;
                     }
                     Completed::Preview { approval, result } => {
-                        if let Some(p) = &a.pending
+                        if let Some(p) = &mut a.pending
                             && p.serial == approval
                             && let Some(r) = self.permission_mut(&p.id)
                             && r.state == "pending"
                         {
                             r.preview = Some(match result {
-                                Ok(p) => json!(p),
+                                Ok(preview) => {
+                                    p.initial_output = preview
+                                        .output_path
+                                        .as_ref()
+                                        .filter(|path| {
+                                            a.inheritance
+                                                .as_ref()
+                                                .is_some_and(|i| i.initially_available(path))
+                                        })
+                                        .cloned();
+                                    json!(preview)
+                                }
                                 Err(e) => json!({"error":bounded(&e)}),
                             });
                             self.dirty = true;
@@ -1023,7 +1381,11 @@ impl Controller {
                             self.dirty = true;
                         }
                     }
-                    Completed::Granted { reply, detail } => {
+                    Completed::Granted {
+                        reply,
+                        detail,
+                        output,
+                    } => {
                         if let Some(p) = a.pending.take() {
                             p.cancel.cancel();
                             if let Some(r) = self.permission_mut(&p.id) {
@@ -1038,6 +1400,9 @@ impl Controller {
                                     && !a.record.packages.contains(&r.package)
                                 {
                                     a.record.packages.push(r.package.clone());
+                                    if let Some(output) = output {
+                                        a.granted_outputs.insert(r.package.clone(), output);
+                                    }
                                 }
                             }
                             self.reply_permission(&p.id, &reply.status, reply.message);
@@ -1073,6 +1438,8 @@ impl Controller {
             }
             if worker_finished {
                 a.worker.take();
+                a.inheritance.take();
+                a.exit_watch.take();
                 // A worker can lose its final try_send when its bounded result
                 // queue is full (or panic). Never retain a live session after
                 // its producer is gone, even without a Stopped result.
@@ -1121,8 +1488,33 @@ impl Controller {
             a.record.terminal_interrupted = a.terminal.interrupted;
             a.record.terminal_attached = a.terminal.attached();
             a.record.terminal_detached = a.terminal.detached;
-            self.sessions.insert(id, a);
+            // Observe process exit independently of a worker blocked on Nix.
+            // A pidfd pins the process identity, avoiding PID-reuse races.
+            let exited = a.record.state == "running"
+                && a.exit_watch
+                    .as_ref()
+                    .is_some_and(|fd| unix::readable(fd.as_raw_fd(), 0).unwrap_or(true));
+            let stopped = ["stopped", "failed"].contains(&a.record.state.as_str());
+            self.sessions.insert(id.clone(), a);
+            if exited {
+                let _ = self.stop_tree(&id, true);
+            } else if stopped {
+                let children: Vec<_> = self
+                    .sessions
+                    .iter()
+                    .filter(|(child, a)| {
+                        a.worker.is_some()
+                            && !["stopped", "failed", "stopping"].contains(&a.record.state.as_str())
+                            && self.descendant(child, &id)
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for child in children {
+                    let _ = self.stop(&child);
+                }
+            }
         }
+        self.approve_inherited_requests();
         // Service pending sandbox connections before host decisions in this tick.
         self.connections
             .sort_by_key(|c| matches!(c.role, Role::Host));
@@ -1203,17 +1595,25 @@ mod tests {
         rpc::parse(&data[body..]).unwrap()
     }
     fn session_with_results(d: &mut Controller, results: Vec<Completed>) -> String {
-        let id = "test-session".to_string();
+        session_with_results_id(d, "test-session", results)
+    }
+    fn session_with_results_id(d: &mut Controller, id: &str, results: Vec<Completed>) -> String {
+        let id = id.to_string();
         let directory = d.state.join(&id);
         unix::private_directory(&directory).unwrap();
         let terminal = Terminal::new(&directory.join("terminal.sock")).unwrap();
         d.sessions.insert(
             id.clone(),
             Active {
+                inheritance: None,
+                exit_watch: None,
+                granted_outputs: BTreeMap::new(),
                 created: 0,
                 record: SessionRecord {
                     id: id.clone(),
                     agent_name: "snikk".into(),
+                    parent: None,
+                    path: "snikk".into(),
                     name: "shell".into(),
                     configuration: "test".into(),
                     state: "running".into(),
@@ -1232,6 +1632,7 @@ mod tests {
                 worker: Some(Worker::completed(results)),
                 listener: None,
                 pending: Some(Pending {
+                    initial_output: None,
                     id: "r".into(),
                     serial: 1,
                     connection: 99,
@@ -1258,6 +1659,29 @@ mod tests {
     fn launch(key: &str, agent_name: Option<&str>) -> Value {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
+    }
+    #[test]
+    fn parent_name_stays_reserved_until_descendant_cleanup_finishes() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let root = session_with_results_id(&mut d, "root", vec![]);
+        let child = session_with_results_id(&mut d, "child", vec![]);
+        let a = d.sessions.get_mut(&child).unwrap();
+        a.record.parent = Some(root.clone());
+        a.record.agent_name = "kid".into();
+        a.record.path = "snikk/kid".into();
+        a.record.state = "stopping".into();
+        d.sessions.get_mut(&root).unwrap().worker.take();
+        assert_eq!(d.allocate_name(Some("snikk"), None).unwrap_err().0, -32009);
+        // The same name in a different sibling group remains independent.
+        assert_eq!(
+            d.allocate_name(Some("snikk"), Some(&root)).unwrap(),
+            "snikk"
+        );
+        d.sessions.get_mut(&child).unwrap().worker.take();
+        assert_eq!(d.allocate_name(Some("snikk"), None).unwrap(), "snikk");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn agent_name_grammar_and_pool_cover_session_limit() {
@@ -1400,7 +1824,7 @@ mod tests {
             .unwrap();
         for state in ["starting", "running", "stopping", "stopped", "failed"] {
             d.sessions.get_mut(id).unwrap().record.state = state.into();
-            assert_eq!(d.allocate_name(Some("shell")).unwrap_err().0, -32009);
+            assert_eq!(d.allocate_name(Some("shell"), None).unwrap_err().0, -32009);
         }
         d.sessions.get_mut(id).unwrap().worker.take();
         assert!(d.resolve_session("shell").is_err());
@@ -1442,6 +1866,7 @@ mod tests {
                 Completed::Granted {
                     reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
                     detail: None,
+                    output: None,
                 },
                 Completed::Stopped { exit_code: None },
             ],
@@ -1491,7 +1916,8 @@ mod tests {
     fn endpoint_authority_initialization_and_notifications() {
         let mut d = daemon();
         let path = d.state.clone();
-        let (mut c, _peer) = connection(Role::Sandbox("endpoint-session".into()));
+        let session = session_with_results(&mut d, vec![]);
+        let (mut c, _peer) = connection(Role::Sandbox(session));
         assert_eq!(
             dispatch(&mut d, &mut c, "sessions.list", json!({}), Some(json!(1)))["error"]["code"],
             -32001
@@ -1542,8 +1968,6 @@ mod tests {
         for method in [
             "server.status",
             "server.stop",
-            "sessions.start",
-            "sessions.stop",
             "permissions.decide",
             "state.subscribe",
         ] {

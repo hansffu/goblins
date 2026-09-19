@@ -101,6 +101,37 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         d.wait(lambda: not (d.state / a["session"] / "resources").exists(), timeout=2)
         print("EVIDENCE slow approved build A leaves B responsive; explicit stop reaps only A's owned work", flush=True)
 
+    def test_normal_exit_kills_children_while_package_work_is_blocked(self):
+        for kind in ("preview", "build"):
+            with self.subTest(kind=kind):
+                d, marker = self.slow_daemon(kind)
+                # A raw socket is not a terminal emulator. Use a predictable
+                # read/exit payload so Fish's terminal queries cannot consume
+                # the test input before the shell is ready.
+                config = json.loads(Path(d.manifest).read_text())
+                config["goblins"]["shell"]["args"] = [
+                    "--no-config", "-c", "exec /bin/sh -c 'read -r ready; exit 7'",
+                ]
+                manifest = marker.parent / "normal-exit.json"
+                manifest.write_text(json.dumps(config))
+                parent = d.start(manifest=manifest)
+                child = d.rpc.call("sessions.start", {
+                    "key": "child", "configuration": d.manifest, "name": "shell",
+                    "parent": parent["session"], "rows": 24, "cols": 80,
+                })
+                d.wait(lambda: d.get(child["session"])["state"] == "running")
+                peer, record = d.pending(parent["session"])
+                self.addCleanup(peer.close)
+                if kind == "build":
+                    d.decide(record, True)
+                d.wait(marker.exists)
+                with d.terminal(parent) as terminal:
+                    terminal.sendall(b"go\n")
+                    d.wait(lambda: d.get(parent["session"])["state"] == "stopped", timeout=5)
+                d.wait(lambda: d.get(child["session"])["state"] == "stopped", timeout=2)
+                self.assertEqual(d.get(parent["session"])["exit_code"], 7)
+                self.assert_reaped(d, marker)
+
     def test_slow_subscriber_disconnects_and_fresh_snapshot_resynchronizes(self):
         d = Daemon(); self.addCleanup(d.close); a = d.start()
         slow = d.host(); self.addCleanup(slow.close); slow.peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)

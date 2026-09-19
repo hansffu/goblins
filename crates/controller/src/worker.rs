@@ -3,7 +3,7 @@ use crate::{
     Result,
     config::Manifest,
     process::WORKER_TICK,
-    session::{Cancel, Identity, Session},
+    session::{Cancel, Identity, Inheritance, Session},
     unix,
 };
 use goblins_protocol::{Reply, Request};
@@ -23,6 +23,7 @@ pub(super) enum Work {
     Decide {
         request: Request,
         approved: bool,
+        output: Option<PathBuf>,
     },
 }
 pub(super) enum Completed {
@@ -35,6 +36,8 @@ pub(super) enum Completed {
         master: OwnedFd,
         listener: UnixListener,
         identity: Identity,
+        inheritance: Inheritance,
+        exit_watch: OwnedFd,
     },
     Progress {
         request: String,
@@ -43,6 +46,7 @@ pub(super) enum Completed {
     Granted {
         reply: Reply,
         detail: Option<String>,
+        output: Option<PathBuf>,
     },
     Failed(String),
     Stopped {
@@ -55,16 +59,18 @@ pub(super) struct Worker {
     results: Receiver<Completed>,
     thread: Option<JoinHandle<()>>,
 }
-impl Worker {
-    pub fn start(
+pub(super) enum Source {
+    Host {
         configuration: PathBuf,
         name: String,
         workspace: Option<PathBuf>,
         cwd: Option<PathBuf>,
         state: PathBuf,
-        directory: PathBuf,
-        dimensions: (u16, u16),
-    ) -> Self {
+    },
+    Child(Inheritance),
+}
+impl Worker {
+    pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
         let cancel = Cancel::default();
         let token = cancel.clone();
         let (tx, commands) = mpsc::sync_channel(4);
@@ -74,17 +80,29 @@ impl Worker {
                 // The private host attachment chooses this launch's manifest.
                 // Disk reads and launch adaptation stay off the event pump.
                 token.check()?;
-                let config = Manifest::read(&configuration)?.select(&name)?;
-                token.check()?;
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
-                let mut launch = config.launch()?;
-                launch.cwd = cwd;
-                if launch.initial_packages.len() > 128 {
-                    return Err("initial package limit is 128".into());
-                }
-                launch.protected_paths.push(std::fs::canonicalize(state)?);
-                let mut session =
-                    Session::new_in(launch, workspace.as_deref(), token.clone(), directory)?;
+                let mut session = match source {
+                    Source::Child(inherited) => {
+                        Session::child(inherited, token.clone(), directory)?
+                    }
+                    Source::Host {
+                        configuration,
+                        name,
+                        workspace,
+                        cwd,
+                        state,
+                    } => {
+                        let config = Manifest::read(&configuration)?.select(&name)?;
+                        token.check()?;
+                        let mut launch = config.launch()?;
+                        launch.cwd = cwd;
+                        if launch.initial_packages.len() > 128 {
+                            return Err("initial package limit is 128".into());
+                        }
+                        launch.protected_paths.push(std::fs::canonicalize(state)?);
+                        Session::new_in(launch, workspace.as_deref(), token.clone(), directory)?
+                    }
+                };
                 session.start(Some(slave))?;
                 results.try_send(Completed::Started {
                     initial_packages: session
@@ -96,6 +114,8 @@ impl Worker {
                     master,
                     listener: session.listener.take().unwrap(),
                     identity: session.identity.clone().unwrap(),
+                    inheritance: session.inheritance(),
+                    exit_watch: session.exit_watch()?,
                 })?;
                 loop {
                     if token.check().is_err() || !session.alive() {
@@ -124,6 +144,7 @@ impl Worker {
                         Ok(Work::Decide {
                             request: req,
                             approved,
+                            output,
                         }) => {
                             session.event(
                                 "decision",
@@ -132,7 +153,7 @@ impl Worker {
                             let result = if approved {
                                 session.grant_observed(
                                     &req.package,
-                                    None,
+                                    output.as_deref(),
                                     |_, _| Ok(()),
                                     |state| {
                                         results.try_send(Completed::Progress {
@@ -144,6 +165,11 @@ impl Worker {
                                 )
                             } else {
                                 Ok(())
+                            };
+                            let output = if approved && result.is_ok() {
+                                session.packages.get(&req.package).cloned()
+                            } else {
+                                None
                             };
                             let (reply, detail) = match result {
                                 Ok(()) => (
@@ -177,7 +203,11 @@ impl Worker {
                                 }
                             };
                             if results
-                                .try_send(Completed::Granted { reply, detail })
+                                .try_send(Completed::Granted {
+                                    reply,
+                                    detail,
+                                    output,
+                                })
                                 .is_err()
                             {
                                 break;
@@ -187,6 +217,9 @@ impl Worker {
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
+                // Cancellation may have come from the controller observing a
+                // normal payload exit while this worker was resolving a package.
+                session.alive();
                 Ok(session.exit_code)
             };
             match run() {

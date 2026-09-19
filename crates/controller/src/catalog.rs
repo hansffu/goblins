@@ -13,6 +13,8 @@ use std::{
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Preview {
+    #[serde(skip)]
+    pub output_path: Option<PathBuf>,
     pub in_store: bool,
     /// Nix's compressed transfer estimate for the missing closure. This is not
     /// the unpacked NAR size, and remains advisory until the actual build.
@@ -81,6 +83,7 @@ pub fn preview(
     if selection.path.exists() {
         crate::session::store_path(&selection.path)?;
         return Ok(Preview {
+            output_path: Some(selection.path),
             in_store: true,
             download: Some("0 B".into()),
             build_required: false,
@@ -104,9 +107,9 @@ pub fn preview(
         directory,
         cancel,
     )?;
-    Ok(parse_summary(&std::fs::read_to_string(
-        directory.join("command.err"),
-    )?))
+    let mut preview = parse_summary(&std::fs::read_to_string(directory.join("command.err"))?);
+    preview.output_path = Some(selection.path);
+    Ok(preview)
 }
 fn parse_summary(text: &str) -> Preview {
     let mut download = None;
@@ -129,6 +132,7 @@ fn parse_summary(text: &str) -> Preview {
         }
     }
     Preview {
+        output_path: None,
         in_store: false,
         download,
         build_required,

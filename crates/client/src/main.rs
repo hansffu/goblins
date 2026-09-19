@@ -1,4 +1,6 @@
 //! Untrusted request client. No controller or helper dependency.
+mod cli;
+use clap::Parser;
 use goblins_protocol::{REQUEST_SOCKET, rpc};
 use serde_json::json;
 use std::{io::Read, os::unix::net::UnixStream};
@@ -33,43 +35,84 @@ fn run() -> Result<i32, String> {
             .is_some_and(|n| n == "goblins-request")
     });
     let args: Vec<_> = args.collect();
-    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!(
-            "usage: goblins {} PACKAGE [--reason TEXT]",
-            if legacy { "package" } else { "request-package" }
-        );
-        if !legacy {
-            println!("       goblins detatch (alias: detach)");
+    if !legacy {
+        let command =
+            cli::Cli::try_parse_from(std::iter::once("goblins".to_string()).chain(args.clone()))
+                .unwrap_or_else(|e| e.exit())
+                .command;
+        match command {
+            cli::Command::RequestPackage { .. } => (),
+            cli::Command::Completions { shell } => {
+                cli::completions(shell);
+                return Ok(0);
+            }
+            cli::Command::Complete { words } => return cli::complete(words),
+            cli::Command::Status => {
+                let record = call("sessions.status", json!({}))?;
+                println!(
+                    "Sandbox: {}\nConfiguration: {}\nState: {}\nID: {}",
+                    record["agent_name"].as_str().unwrap_or("unknown"),
+                    record["name"].as_str().unwrap_or("unknown"),
+                    record["state"].as_str().unwrap_or("unknown"),
+                    record["id"].as_str().unwrap_or("unknown")
+                );
+                return Ok(0);
+            }
+            cli::Command::Attach { session } => {
+                require_terminal()?;
+                let record = call("sessions.get", json!({"session":session}))?;
+                return attach(record["id"].as_str().ok_or("missing session ID")?);
+            }
+            cli::Command::Run {
+                config,
+                name,
+                parent,
+                detatched,
+            } => {
+                if !detatched {
+                    require_terminal()?;
+                }
+                let launch = call(
+                    "sessions.start",
+                    json!({"key":random_key()?,
+                    "name":config,"agent_name":name,"parent":parent,"detached":detatched}),
+                )?;
+                if detatched {
+                    println!("{launch}");
+                    return Ok(0);
+                }
+                return attach(launch["session"].as_str().ok_or("missing session ID")?);
+            }
+            command => {
+                let (method, params) = match command {
+                    cli::Command::List => ("sessions.list", json!({})),
+                    cli::Command::Kill {
+                        session,
+                        kill_children,
+                    }
+                    | cli::Command::Stop {
+                        session,
+                        kill_children,
+                    } => (
+                        "sessions.stop",
+                        json!({"session":session,"kill_children":kill_children}),
+                    ),
+                    cli::Command::Detach => ("sessions.detach", json!({})),
+                    _ => unreachable!(),
+                };
+                let (mut socket, _) = connect()?;
+                let reply = rpc::exchange(&mut socket, json!(1), method, params)
+                    .map_err(|e| e.to_string())?;
+                println!("{reply}");
+                return Ok(0);
+            }
         }
-        return Ok(0);
-    }
-    if !legacy
-        && args
-            .first()
-            .is_some_and(|arg| arg == "detatch" || arg == "detach")
-    {
-        if args.len() != 1 {
-            return Err("usage: goblins detatch".into());
-        }
-        let mut socket = UnixStream::connect(REQUEST_SOCKET).map_err(|e| e.to_string())?;
-        let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))
-            .map_err(|e| e.to_string())?;
-        if init["api"] != 1 || init["role"] != "sandbox" {
-            return Err("incompatible daemon".into());
-        }
-        let reply = rpc::exchange(&mut socket, json!(1), "sessions.detach", json!({}))
-            .map_err(|e| e.to_string())?;
-        if reply["accepted"] != true {
-            return Err("detach was not accepted".into());
-        }
+    } else if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("usage: goblins-request package PACKAGE [--reason TEXT]");
         return Ok(0);
     }
     let (package, reason) = parse_args(legacy, &args)?;
-    let mut random = [0; 16];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut random))
-        .map_err(|e| e.to_string())?;
-    let id: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let id = random_key()?;
     let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
         let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))?;
@@ -107,6 +150,71 @@ fn run() -> Result<i32, String> {
             Ok(2)
         }
     }
+}
+fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let (mut socket, _) = connect()?;
+    rpc::exchange(&mut socket, json!(1), method, params).map_err(|e| e.to_string())
+}
+fn require_terminal() -> Result<(), String> {
+    if unsafe { libc::isatty(0) } != 1 {
+        return Err(
+            "attachment requires terminal input; use run --detatched for background launches"
+                .into(),
+        );
+    }
+    Ok(())
+}
+static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RESIZE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+extern "C" fn interrupted(_: i32) {
+    STOP.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+extern "C" fn resized(_: i32) {
+    RESIZE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+fn attach(session: &str) -> Result<i32, String> {
+    unsafe {
+        libc::signal(libc::SIGINT, interrupted as *const () as _);
+        libc::signal(libc::SIGTERM, interrupted as *const () as _);
+        libc::signal(libc::SIGHUP, interrupted as *const () as _);
+        libc::signal(libc::SIGWINCH, resized as *const () as _);
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+    let (mut socket, _) = connect()?;
+    let reply = rpc::exchange(
+        &mut socket,
+        json!(1),
+        "sessions.attach",
+        json!({"session":session}),
+    )
+    .map_err(|e| e.to_string())?;
+    if reply["attached"] != true {
+        return Err("invalid terminal handshake".into());
+    }
+    goblins_protocol::terminal::relay(
+        socket,
+        session,
+        |method, params| call(method, params).map_err(Into::into),
+        &STOP,
+        &RESIZE,
+    )
+    .map_err(|e| e.to_string())
+}
+fn random_key() -> Result<String, String> {
+    let mut random = [0; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut random))
+        .map_err(|e| e.to_string())?;
+    Ok(random.iter().map(|b| format!("{b:02x}")).collect())
+}
+fn connect() -> Result<(UnixStream, serde_json::Value), String> {
+    let mut socket = UnixStream::connect(REQUEST_SOCKET).map_err(|e| e.to_string())?;
+    let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))
+        .map_err(|e| e.to_string())?;
+    if init["api"] != 1 || init["role"] != "sandbox" {
+        return Err("incompatible daemon".into());
+    }
+    Ok((socket, init))
 }
 fn main() {
     std::process::exit(match run() {

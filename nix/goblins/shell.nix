@@ -4,5 +4,7 @@ mkGoblin {
   binName = "fish";
   args = [
     "--interactive"
+    "--init-command"
+    "goblins completions fish | source"
   ];
 }

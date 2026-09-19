@@ -26,11 +26,12 @@ pub struct Terminal {
     pub eof: bool,
     pub interrupted: bool,
     pub complete: bool,
+    hello: Vec<u8>,
     to_peer: Vec<u8>,
     to_pty: Vec<u8>,
 }
 fn read(source: &mut impl Read, dest: &mut Vec<u8>) -> io::Result<bool> {
-    if dest.len() == CAP {
+    if dest.len() >= CAP {
         return Ok(false);
     }
     let mut bytes = [0; 8192];
@@ -92,6 +93,7 @@ impl Terminal {
             eof: false,
             interrupted: false,
             complete: false,
+            hello: vec![],
             to_peer: vec![],
             to_pty: vec![],
         })
@@ -140,6 +142,28 @@ impl Terminal {
         self.to_pty.clear();
         Ok(())
     }
+    pub fn attach(&mut self, peer: UnixStream, id: serde_json::Value) -> Result<()> {
+        if self.peer.is_some() || self.complete {
+            return Err(if self.complete {
+                "terminal already completed"
+            } else {
+                "terminal is already attached"
+            }
+            .into());
+        }
+        peer.set_nonblocking(true)?;
+        self.hello = goblins_protocol::rpc::encode(&goblins_protocol::rpc::result(
+            id,
+            serde_json::json!({"attached":true}),
+        ))?;
+        // Keep framing separate from raw output: an abandoned handshake must
+        // never become terminal text when a later client attaches.
+        self.peer = Some(peer);
+        self.connected = true;
+        self.detached = false;
+        self.interrupted = false;
+        Ok(())
+    }
     pub fn tick(&mut self) -> Result<()> {
         if let Some(peer) = &mut self.peer {
             // Even after PTY EOF, continue draining output. Peer input EOF is a
@@ -162,6 +186,7 @@ impl Terminal {
                 || read(peer, &mut self.to_pty).unwrap_or(true)
             {
                 self.peer.take();
+                self.hello.clear();
                 if !self.complete && !self.detached {
                     self.interrupted = true;
                 }
@@ -176,32 +201,15 @@ impl Terminal {
                 Ok((mut peer, _)) => {
                     use goblins_protocol::rpc;
                     use serde_json::json;
-                    peer.set_nonblocking(true)?;
-                    if self.peer.is_some() || self.complete {
-                        let message = if self.complete {
-                            "terminal already completed"
-                        } else {
-                            "terminal is already attached"
-                        };
-                        let _ =
-                            peer.write_all(&rpc::encode(&rpc::error(json!(0), -32009, message))?);
-                        continue;
-                    }
-                    if peer
-                        .write_all(&rpc::encode(&rpc::result(
+                    let writer = peer.try_clone()?;
+                    if let Err(error) = self.attach(writer, json!(0)) {
+                        peer.set_nonblocking(true)?;
+                        let _ = peer.write_all(&rpc::encode(&rpc::error(
                             json!(0),
-                            json!({"attached":true}),
-                        ))?)
-                        .is_err()
-                    {
-                        // A client disappearing during acceptance must not
-                        // change the payload's delivery state.
-                        continue;
+                            -32009,
+                            &error.to_string(),
+                        ))?);
                     }
-                    self.peer = Some(peer);
-                    self.connected = true;
-                    self.detached = false;
-                    self.interrupted = false;
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) => return Err(e.into()),
@@ -213,7 +221,7 @@ impl Terminal {
             // Before the first consumer, and while attached, preserve lossless
             // backpressure. Detached payloads keep running: retain only a
             // bounded tail, making room for the next read when necessary.
-            let result = if self.connected && (self.peer.is_none() || self.detached) {
+            let result = if self.detached || (self.connected && self.peer.is_none()) {
                 let mut newest = Vec::new();
                 let result = read(master, &mut newest);
                 let overflow = (self.to_peer.len() + newest.len()).saturating_sub(CAP);
@@ -238,11 +246,20 @@ impl Terminal {
         if let Some(peer) = &mut self.peer
             && !self.detached
         {
-            if write(peer, &mut self.to_peer).is_err() {
+            let delivery = write(peer, &mut self.hello).and_then(|()| {
+                if self.hello.is_empty() {
+                    write(peer, &mut self.to_peer)
+                } else {
+                    Ok(())
+                }
+            });
+            if delivery.is_err() {
                 self.interrupted = true;
                 self.peer.take();
+                self.hello.clear();
                 self.to_pty.clear();
-            } else if self.eof && self.to_peer.is_empty() && !self.complete {
+            } else if self.eof && self.hello.is_empty() && self.to_peer.is_empty() && !self.complete
+            {
                 peer.shutdown(Shutdown::Write)?;
                 self.complete = true;
             }
@@ -293,6 +310,24 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[test]
+    fn abandoned_handshake_never_enters_reattached_output() {
+        for size in [6, CAP] {
+            let mut f = Fixture::new();
+            let output = vec![b'x'; size];
+            f.terminal.to_peer.extend_from_slice(&output);
+            let (server, client) = UnixStream::pair().unwrap();
+            f.terminal.attach(server, serde_json::json!(123)).unwrap();
+            // Disconnect before the first handshake byte can be sent.
+            drop(client);
+            f.terminal.tick().unwrap();
+            let mut next = f.connect();
+            let mut received = vec![0; size];
+            next.read_exact(&mut received).unwrap();
+            assert_eq!(received, output);
         }
     }
 
@@ -359,6 +394,24 @@ mod tests {
         second.read_exact(&mut bytes).unwrap();
         assert!(bytes.ends_with(b"final!"));
         assert!(!f.terminal.interrupted);
+    }
+
+    #[test]
+    fn detached_launch_drains_output_before_first_attachment() {
+        let mut f = Fixture::new();
+        f.terminal.detached = true;
+        for _ in 0..32 {
+            f.payload.write_all(&[b'x'; 8192]).unwrap();
+            f.terminal.tick().unwrap();
+            assert!(f.terminal.to_peer.len() <= CAP);
+        }
+        f.payload.write_all(b"tail!").unwrap();
+        f.terminal.tick().unwrap();
+        assert!(f.terminal.to_peer.ends_with(b"tail!"));
+        let mut peer = f.connect();
+        let mut bytes = vec![0; CAP];
+        peer.read_exact(&mut bytes).unwrap();
+        assert!(bytes.ends_with(b"tail!"));
     }
 
     #[test]

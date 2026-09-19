@@ -74,12 +74,21 @@ fn execute(cli: Cli) -> Result<i32> {
             "{}",
             Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
         ),
-        Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
+        Command::Stop {
+            id_or_name,
+            kill_children,
+        }
+        | Command::Kill {
+            id_or_name,
+            kill_children,
+        } => println!(
             "{}",
-            Client::connect(&state)?
-                .call("sessions.stop", serde_json::json!({"session":id_or_name}))?
+            Client::connect(&state)?.call(
+                "sessions.stop",
+                serde_json::json!({"session":id_or_name,"kill_children":kill_children})
+            )?
         ),
-        Command::Detatch { id_or_name } => println!(
+        Command::Detach { id_or_name } => println!(
             "{}",
             Client::connect(&state)?
                 .call("sessions.detach", serde_json::json!({"session":id_or_name}))?
@@ -91,7 +100,12 @@ fn execute(cli: Cli) -> Result<i32> {
             "{}",
             Client::connect(&state)?.call(&method, serde_json::from_str(&params_json)?)?
         ),
-        Command::Run { config, name } => {
+        Command::Run {
+            config,
+            name,
+            parent,
+            detatched,
+        } => {
             let runtime = cli
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
@@ -109,7 +123,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 )
                 .into());
             }
-            return attachment::run(state, config, configuration, name);
+            return attachment::run(state, config, configuration, name, parent, detatched);
         }
         Command::Configurations => {
             let runtime = cli

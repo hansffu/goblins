@@ -47,6 +47,7 @@ pub fn identifier(name: &str) -> bool {
 }
 
 pub mod rpc;
+pub mod terminal;
 #[cfg(test)]
 mod tests {
     use super::*;

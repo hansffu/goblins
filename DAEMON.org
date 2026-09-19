@@ -581,7 +581,7 @@ These choices settle the open details for API 1 before implementation.
   Host CLI =attach NAME= resolves a live name once to its immutable session ID;
   =attach ID --instance INSTANCE= retains the editor's exact identity checks.
   Host =kill NAME= uses =sessions.stop=, as does the retained =stop= command.
-  Host =detatch NAME= (alias =detach=) calls =sessions.detach {session:NAME}=,
+  Host =detach NAME= calls =sessions.detach {session:NAME}=,
   accepting a live name or immutable ID and using the same detach behavior.
   Unknown sessions return -32004; unattached terminals return -32009. Sandbox
   detach still takes no parameters and cannot select another session.
@@ -740,3 +740,68 @@ unresponsive/incompatible peers. Status/logs do not create missing state.
 append across starts; symlink/special-file/nonprivate log paths are refused.
 Foreground output goes to its caller. No follow, rotation or sandbox-output
 aggregation is implemented. See [[file:USAGE.org::*Server commands, help and completion][usage and completion setup]].
+
+* Ownership tree and sandbox lifecycle control (2026-09-19)
+
+This section extends API 1 and supersedes the earlier host-only lifecycle and
+daemon-wide name-allocation rules.
+
+- The host is the root, represented by a null =SessionRecord.parent=. Each
+  sandbox record has an immutable parent session ID and a =path= assembled from
+  sibling-scoped agent names. Ownership never relies on names. Records with
+  retained children cannot be evicted before their children.
+- Host =sessions.start= adds optional =parent= and =detached= fields. Omitting
+  =parent= creates a root child. A selected parent must be running. Children use
+  its loaded configuration and opened filesystem grants, including its shared
+  workspace, regardless of which host manifest the caller supplies. The
+  configuration key must match the parent's key.
+- Sandbox =initialize= advertises =subtree-control= and reports only the caller's
+  configuration key in =configuration=. Its socket selects its identity.
+  Sandbox =sessions.start {key,name,agent_name?,parent?,detached?}= creates a child, returning
+  =session=, =agent_name=, relative =path= and starting =state=. The default parent
+  (also =.=) is the caller; explicit parents must be running descendants. Host
+  launch fields (manifest, cwd, dimensions, etc.) are rejected on this endpoint.
+  Sandbox launches default to attached delivery (=detached=false=). Retry keys are scoped by caller ID;
+  host retry keys have a separate scope.
+- Sandbox =sessions.list {}= and =sessions.get {session}= expose only descendants.
+  Their records contain =id=, =agent_name=, =parent= (null for direct children),
+  relative =path=, configuration key =name=, =state=, =initial_packages=,
+  =packages=, =exit_code= and =terminal_attached/terminal_detached/terminal_complete/terminal_interrupted=. They omit host filesystem paths, process identities,
+  terminal endpoints, and host diagnostics. Outside-scope IDs and names return
+  the same absent-record fault as unknown IDs and names.
+- Host and sandbox =sessions.stop {session,kill_children?}= reject an operation
+  with live descendants unless =kill_children=true=. The check and subtree
+  cancellation occur in one event-loop operation. Sandbox targets must be
+  descendants, excluding the caller itself. CLI =kill= and =stop= expose
+  =--kill-children=. A normal exit or failure always cancels descendants; pidfds
+  let the controller observe exit while the worker is blocked on Nix work.
+- Full tree paths and exact IDs identify descendants from the host. Sandbox paths
+  are relative to the caller. A bare name resolves a direct child first, then a
+  unique descendant; ambiguous names require a path or ID. Completions use only
+  the caller's visible records, and parent completion includes running nodes.
+- Host approval remains authoritative. Successful grants retain the exact store
+  output privately. A request covered by the caller or an ancestor's successful
+  grant reuses that output automatically. Otherwise the request goes to the host.
+  Descendants receive no extra mounts until they request the package, and grants
+  never flow upward or sideways. Pending descendant requests are reconsidered
+  after ancestor grants complete. Initial-package auto-approval compares resolved
+  store outputs, not display names. The inheritance decision lives in
+  =Controller::inherits_package= so its policy can be changed independently.
+- Host and sandbox =run= attach by default. =run --detatched= (alias =--detached=)
+  returns the accepted launch JSON without attaching. Initially detached
+  terminals drain into a bounded tail without waiting for a first attachment.
+- Sandbox =sessions.attach {session}= resolves only descendants and upgrades the
+  authenticated request connection: its framed result ={attached:true}= precedes
+  raw terminal bytes. No host terminal path is exposed. Pipelined RPC input is
+  rejected during upgrade. The terminal permits one consumer, shared with host
+  attachments. =sessions.resize {session,rows,cols}= is also descendant-scoped.
+  Sandbox =initialize= advertises =subtree-terminal= and =sandbox-status=.
+- Sandbox =sessions.status {}= returns the endpoint owner's =id=, =agent_name=,
+  configuration key =name= and =state=. It accepts no target. CLI =status= prints
+  this identity. The existing sandbox self-detach operation remains self-scoped.
+  Server control, host approvals and subscriptions remain unavailable.
+
+Children retain host-owned shared mount capabilities rather than reopening paths.
+In particular a renamed/replaced workspace source does not widen their access.
+Workspace resource ownership is retained until the last dependent session stops;
+child startup does not copy a parent's snapshot or inherit its package mounts.

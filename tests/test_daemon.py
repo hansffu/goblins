@@ -48,6 +48,8 @@ class DaemonTests(unittest.TestCase):
         d.decide(rc, True)
         with self.assertRaises(ValueError):
             d.decide(rc, True, other)
+        # Realization can take longer than the transport's short framing wait.
+        pc.peer.settimeout(30)
         self.assertEqual(receive(pc.peer)["result"]["status"], "ready")
         self.assertEqual(d.get(a["session"])["packages"], ["hello"])
         self.assertEqual(d.get(b["session"])["packages"], [])
@@ -191,7 +193,7 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(d.start(key="launch_once"), launch)
         with self.assertRaises(ValueError): d.start(name="other", key="launch_once")
         endpoint = d.state / launch["session"] / "resources/request.sock"
-        for method, params in [("sessions.list", {}), ("permissions.decide", {}), ("permissions.request", {"kind": "package", "package": "hello", "reason": "test", "session": "other"})]:
+        for method, params in [("server.status", {}), ("permissions.decide", {}), ("permissions.request", {"kind": "package", "package": "hello", "reason": "test", "session": "other"})]:
             peer = RPC(endpoint)
             with self.assertRaises(ValueError): peer.call(method, params)
             peer.close()

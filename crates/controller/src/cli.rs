@@ -40,6 +40,12 @@ pub enum Command {
         /// Agent name; omitted names are chosen from the goblin name list
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Create a child of this running sandbox (name, tree path or ID)
+        #[arg(long, value_name = "PARENT")]
+        parent: Option<String>,
+        /// Start without attaching to its terminal
+        #[arg(long, visible_alias = "detached")]
+        detatched: bool,
     },
     /// Print configured goblin names and their manifest as JSON (no server needed)
     Configurations,
@@ -51,14 +57,23 @@ pub enum Command {
         instance: Option<String>,
     },
     /// Detach a sandbox's terminal by live name or immutable session ID
-    #[command(visible_alias = "detach")]
-    Detatch { id_or_name: String },
+    Detach { id_or_name: String },
     /// List agent names, session IDs, configurations and lifecycle state
     List,
     /// Stop one agent by live name or immutable session ID
-    Stop { id_or_name: String },
+    Stop {
+        id_or_name: String,
+        /// Also kill all living descendants
+        #[arg(long)]
+        kill_children: bool,
+    },
     /// Kill one sandbox by live name or immutable session ID
-    Kill { id_or_name: String },
+    Kill {
+        id_or_name: String,
+        /// Also kill all living descendants
+        #[arg(long)]
+        kill_children: bool,
+    },
     /// Call a trusted host JSON-RPC method
     Rpc { method: String, params_json: String },
     /// Print a shell completion script (Nix packages install Bash/Fish/Zsh scripts)
@@ -95,6 +110,11 @@ pub enum ServerCommand {
 // Return 1 outside a name argument so Bash/Zsh can retain their generated
 // option/path completion. A missing server is a valid, empty candidate list.
 pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
+    let words_are_parent = words
+        .iter()
+        .rev()
+        .take(2)
+        .any(|w| w == "--parent" || w == "--parent=");
     let Some(state) = completion_state(default_state, words) else {
         return 1;
     };
@@ -112,12 +132,14 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
             ) {
                 continue;
             }
-            if let Some(name) = record["agent_name"].as_str()
-                && (1..=32).contains(&name.len())
+            if let Some(name) = record["path"]
+                .as_str()
+                .or_else(|| record["agent_name"].as_str())
+                && !name.is_empty()
                 && name
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                && name.as_bytes()[0].is_ascii_lowercase()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-/".contains(&b))
+                && (!words_are_parent || record["state"] == "running")
             {
                 println!("{name}");
             }
@@ -129,6 +151,16 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
 fn completion_state(default_state: &Path, words: Vec<String>) -> Option<PathBuf> {
     // Bash may split --option=value at '='. Restore it without evaluating any
     // shell text, then let the actual CLI parser identify the argument slot.
+    const TARGET: &str = "__goblins_completion_target__";
+    let mut words = words;
+    if words
+        .last()
+        .is_some_and(|word| word.starts_with("--") && word.ends_with('='))
+    {
+        words.last_mut()?.push_str(TARGET);
+    } else {
+        words.push(TARGET.into());
+    }
     let mut normalized = Vec::<String>::new();
     let mut words = words.into_iter();
     while let Some(word) = words.next() {
@@ -139,15 +171,20 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<PathBuf>
             normalized.push(word);
         }
     }
-    const TARGET: &str = "__goblins_completion_target__";
-    normalized.push(TARGET.into());
     let cli = Cli::try_parse_from(normalized).ok()?;
     match cli.command? {
         Command::Attach {
             session,
             instance: None,
         } if session == TARGET => (),
-        Command::Detatch { id_or_name } | Command::Kill { id_or_name } if id_or_name == TARGET => {}
+        Command::Detach { id_or_name }
+        | Command::Kill { id_or_name, .. }
+        | Command::Stop { id_or_name, .. }
+            if id_or_name == TARGET => {}
+        Command::Run {
+            parent: Some(parent),
+            ..
+        } if parent == TARGET => {}
         _ => return None,
     }
     Some(cli.state_dir.unwrap_or_else(|| default_state.into()))
@@ -228,7 +265,7 @@ function __fish_goblins_needs_positional
     argparse -s (__fish_goblins_global_optspecs) -- $words 2>/dev/null; or return 1
     test "$argv[1]" = "$subcommand"; or return 1
     set -e argv[1]
-    argparse (__fish_goblins_global_optspecs) name= -- $argv 2>/dev/null; or return 1
+    argparse (__fish_goblins_global_optspecs) name= parent= detatched detached -- $argv 2>/dev/null; or return 1
     test (count $argv) -eq 0
 end
 complete -c goblins -n '__fish_goblins_needs_positional run' -f -a '{}'
@@ -244,7 +281,8 @@ function __fish_goblins_agent_names
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblins -n '__fish_goblins_using_subcommand attach detatch detach kill' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_agent_names)'
 "#
         );
     }
@@ -259,9 +297,12 @@ mod tests {
         let default = Path::new("/tmp/default");
         for words in [
             vec!["goblins", "attach"],
-            vec!["goblins", "detatch"],
             vec!["goblins", "detach"],
             vec!["goblins", "kill"],
+            vec!["goblins", "stop"],
+            vec!["goblins", "run", "shell", "--parent"],
+            vec!["goblins", "run", "shell", "--parent="],
+            vec!["goblins", "run", "shell", "--parent", "="],
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),
@@ -271,13 +312,7 @@ mod tests {
         for words in [
             vec!["goblins", "--state-dir", "/tmp/custom state", "attach"],
             vec!["goblins", "detach", "--state-dir=/tmp/custom state"],
-            vec![
-                "goblins",
-                "--state-dir",
-                "=",
-                "/tmp/custom state",
-                "detatch",
-            ],
+            vec!["goblins", "--state-dir", "=", "/tmp/custom state", "detach"],
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),
@@ -308,18 +343,16 @@ mod tests {
         );
         assert!(
             matches!(Cli::try_parse_from(["goblins", "kill", "snikk"]).unwrap().command,
-            Some(Command::Kill { id_or_name }) if id_or_name == "snikk")
+            Some(Command::Kill { id_or_name, .. }) if id_or_name == "snikk")
         );
-        for command in ["detatch", "detach"] {
-            assert!(
-                matches!(Cli::try_parse_from(["goblins", command, "snikk"]).unwrap().command,
-                Some(Command::Detatch { id_or_name }) if id_or_name == "snikk")
-            );
-        }
+        assert!(
+            matches!(Cli::try_parse_from(["goblins", "detach", "snikk"]).unwrap().command,
+            Some(Command::Detach { id_or_name }) if id_or_name == "snikk")
+        );
+        assert!(Cli::try_parse_from(["goblins", "detatch", "snikk"]).is_err());
         for args in [
             vec!["goblins", "attach"],
             vec!["goblins", "kill"],
-            vec!["goblins", "detatch"],
             vec!["goblins", "detach"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
@@ -350,7 +383,7 @@ mod tests {
         .unwrap();
         assert_eq!(cli.state_dir, Some("/tmp/test".into()));
         assert!(
-            matches!(cli.command, Some(Command::Run { config, name: Some(name) }) if config == "shell" && name == "snikk")
+            matches!(cli.command, Some(Command::Run { config, name: Some(name), .. }) if config == "shell" && name == "snikk")
         );
     }
 }
