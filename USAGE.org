@@ -423,7 +423,7 @@ pipes; daemon threads never enter mount namespaces.
 
 * Protocol and limits
 
-[[file:DAEMON.org::*Implementation contract (2026-09-13)][DAEMON.org's API 1 contract]] specifies complete framing, method parameters,
+[[file:docs/specs/DAEMON.org::*Implementation contract (2026-09-13)][DAEMON.org's API 1 contract]] specifies complete framing, method parameters,
 error codes, snapshots, sequence numbers and duplicate-launch rules. An
 uncertain =sessions.start= can be inspected/repeated with the same caller key
 and identical parameters; the CLI never automatically repeats a launch.

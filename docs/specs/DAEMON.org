@@ -12,7 +12,7 @@ part of that instruction.
 
 For the next daemon milestone, this document supersedes the single-session,
 foreground-owner and newline-JSON choices in the earlier PoC/rewrite plan.
-[[file:DESIGN.org][DESIGN.org]], [[file:USAGE.org][USAGE.org]] and [[file:RESULTS.org][RESULTS.org]] continue to describe the
+[[file:DESIGN.org][DESIGN.org]], [[file:../../USAGE.org][USAGE.org]] and [[file:../../RESULTS.org][RESULTS.org]] continue to describe the
 implementation and its evidence. The three findings in
 [[file:PLAN.org::*Deferred review findings: daemon and communication rewrite][PLAN.org]] are implemented; their verified reproductions are recorded in RESULTS.org.
 
@@ -739,7 +739,7 @@ unresponsive/incompatible peers. Status/logs do not create missing state.
 =server logs= prints captured background stdout/stderr verbatim once. Log writes
 append across starts; symlink/special-file/nonprivate log paths are refused.
 Foreground output goes to its caller. No follow, rotation or sandbox-output
-aggregation is implemented. See [[file:USAGE.org::*Server commands, help and completion][usage and completion setup]].
+aggregation is implemented. See [[file:../../USAGE.org::*Server commands, help and completion][usage and completion setup]].
 
 * Ownership tree and sandbox lifecycle control (2026-09-19)
 

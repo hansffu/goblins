@@ -1,0 +1,654 @@
+#+title: Goblins agent integration specification
+#+date: 2026-09-19
+
+* Status and scope
+
+Implementation specification on =feat/agent-integration-poc=. The user approved
+the architecture and authorized implementation on 2026-09-19. This document is
+not a verification report. Exact API names, limits, and defaults below remain
+proposals until settled by implementation and protocol fixtures.
+
+[[file:../adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]] records the accepted architectural decision. Advanced delivery
+integrations remain explicitly outside this task.
+
+This extends the current daemon, sandbox ownership, and terminal attachment
+contracts in [[file:DAEMON.org][DAEMON.org]] and [[file:../../USAGE.org][USAGE.org]]. It supersedes their earlier
+deferral of agent messaging for this milestone only. Existing permission,
+namespace, launch inheritance, and teardown rules continue to apply.
+
+** Agreed requirements
+
+- Step 1 implements notify-then-fetch with authoritative inboxes in the host
+  daemon. Keep this as a supported baseline for additional coding agents.
+- The first real integration is Codex. Claude Code is a later integration;
+  the design must accommodate it and other agents.
+- Run the native agent interface. Both parent and child remain attachable with
+  =goblins attach=; messaging must not require a terminal attachment.
+- All Goblins agent messages and replies go through the host daemon.
+- Children inherit the launching parent's authentication through =mkGoblin=
+  configuration mounts, including the Codex configuration directory.
+- Inject Goblins hooks, skills, and configuration through sandbox-local mounts.
+  Installing or launching the integration must not edit host agent settings.
+- Provide =goblins communications-log= for independent host introspection.
+- Verify the real two-agent guessing game using that log in an explicitly
+  invoked live test, excluded from the default test suite.
+- Codex App Server, Claude Channels, and other advanced delivery integrations
+  are explicitly outside this task. Keep their future addition possible without
+  replacing the inbox or agent-facing messaging contract; do not implement them.
+- A2A and other external agent federation protocols are out of scope.
+
+** Additional scope boundaries
+
+No daemon restart recovery, remote hosts, automatic cross-provider credential
+conversion, arbitrary child configuration selection, or new chat UI. Native
+agent authentication may refresh credentials through existing writable auth
+mounts; Goblins must not write integration settings into those host files.
+
+The baseline guarantees structured mailbox behavior. Terminal wakeup remains
+agent-specific best-effort automation with explicit stalled/degraded states.
+Do not describe a successful terminal write as successful message processing.
+
+* User experience
+
+Host launch and attachment remain:
+
+#+begin_src sh
+goblins run codex --name chief
+goblins list
+goblins attach chief/scout
+goblins communications-log --session chief --follow
+goblins communications-log --session chief --json
+#+end_src
+
+The host CLI can also initiate work without attaching to the agent:
+
+#+begin_src sh
+goblins send scout --message "my message"
+goblins send chief/scout --file /tmp/task.txt
+#+end_src
+
+Host targets follow existing live name/path/ID resolution; ambiguous names
+require a path or ID. The host command uses the private host socket. The daemon
+records the sender as =host=, queues the message, and runs the same notification
+flow as an agent-originated message. If the recipient is working, it processes
+the item at the next inbox check; if ready, it receives the fixed wakeup.
+Existing paused/blocked behavior still applies. Command success confirms daemon
+acceptance, not that the agent has finished the requested work.
+
+The user enters this task in the native Codex interface:
+
+#+begin_quote
+Create a subagent (goblin) and ask it to pick a number between 1 and 100.
+Make 10 guesses in separate messages. The subagent replies correct, too high,
+or too low to each guess. Report the result and the actual number.
+#+end_quote
+
+The parent creates a real child sandbox running a separate native Codex
+conversation. It submits the child's initial task as an inbox message. A child
+does not receive a copy of the parent's conversation or become a built-in
+Codex subagent. The mounted skill explains this distinction.
+
+Ten means exactly ten sequential guess/reply exchanges, even after a correct
+guess. A setup acknowledgement and final explicit number reveal are separate
+messages. The parent asks for the reveal after reply ten, then reports the
+number and the first correct guess, or that none of its guesses was correct.
+This is test behavior, not a game-specific rule in the production daemon.
+
+Proposed sandbox CLI, also described by the mounted skill:
+
+#+begin_src sh
+goblins run codex --name scout --detached
+goblins send scout --file /tmp/task.txt --key setup-1
+goblins inbox next --key receive-1
+goblins reply MESSAGE_ID --claim-generation 1 --file /tmp/reply.txt --key reply-1
+goblins inbox complete MESSAGE_ID --claim-generation 1 --key complete-1
+goblins inbox status
+#+end_src
+
+=send= and =reply= also accept =--message TEXT= or =--file -= for stdin;
+exactly one content source is required. No shell interpolation of message
+bodies. Successful commands return structured JSON with immutable IDs.
+
+=--file PATH= is a sender-local text input, not a reference for the recipient
+to open. The sending CLI reads the file in its own filesystem namespace and
+submits the contents as =body= to the daemon. The daemon stores those contents
+in the inbox and returns them when the recipient fetches the message. Thus a
+parent's =/tmp/task.txt= need not exist in the child or on the host. The daemon
+does not open an agent-supplied pathname or grant access to the sender's files.
+Deleting or changing the source file after acceptance cannot change the message.
+
+The same rule applies to host files, reply files, and stdin. Validate UTF-8 and
+the message-size limit before submitting; unreadable, oversized, or invalid
+input fails without sending a message. =--file= sends text contents only;
+binary attachments and general file transfer are outside this task.
+
+Use the claim generation returned by the fetch, not an assumed value; =1= above
+is illustrative. A reply and explicit completion are alternatives for one item.
+=run= retains its existing launch retry behavior and default attachment;
+the skill uses =--detached= when spawning work. Launch and initial send are
+separate, observable operations, and a child stays idle until its task arrives.
+
+The parent uses =send=, checks its inbox, and may finish its response while
+awaiting a child. It need not hold a shell tool open or poll the model forever.
+The daemon and integration arrange the next wakeup. Native root-process exit
+still stops the subtree; returning to the agent's input prompt does not.
+
+* Architecture and authority
+
+| Component | Responsibility |
+|-----------+----------------|
+| Host daemon | Identities, routing policy, inbox records, operation deduplication, notifications, audit log, PTY writes and session lifetime |
+| Sandbox integration supervisor | Launch native agent and optional driver, report process exits, clean up its own processes |
+| Notification driver | Observe own inbox/lifecycle, request a wakeup or deliver it through a supported native protocol |
+| Hooks | Query inbox state at lifecycle boundaries; request continuation when appropriate |
+| Skill and CLI | Teach and expose fetch, send, reply, and acknowledgement operations |
+| Native agent | Claim an item, do the work, explicitly reply or complete it |
+
+#+begin_example
+sender CLI ------------ messages.send -----------> host daemon
+                                                    |
+                                               recipient inbox
+                                                    |
+recipient driver <----- metadata subscription -------+
+        |
+        +-- baseline: request fixed wakeup ----------> daemon PTY writer
+        +-- later: native protocol notification ---> native agent
+
+recipient hook -------- inbox check/arm -----------> host daemon
+native agent ---------- inbox.next / messages.reply -> host daemon
+#+end_example
+
+The existing per-sandbox socket authenticates the sandbox identity. A caller
+cannot supply a sender identity, choose another inbox, or acquire the host API.
+Integration processes have their sandbox's authority; lifecycle reports are
+advisory and never authorize mounts, packages, approvals, or host operations.
+Mounted skills and hooks are workflow aids, not security boundaries against
+arbitrary code in that same sandbox.
+
+Proposed initial routing scope: an agent can send to its running parent and
+running descendants. =parent= is a special messaging target, not a grant of
+ancestor inspection/control. Descendant names use existing scoped resolution.
+Replies can target the authenticated sender of an incoming message without
+resolving a name. Other branches and siblings are unavailable in step 1.
+An unauthorized target and a nonexistent target return the same absent error.
+The host can send to any live integrated session; these messages have sender
+=host= and cannot be impersonated by a sandbox.
+
+Ownership and routing are separate policies. Adding wider messaging later
+must not widen session management, terminal attachment, or filesystem access.
+Replies to =host= are retained for host inspection/acknowledgement with the same
+message identity rules; there is no native agent to wake for that recipient.
+
+* Mailbox contract
+
+** Message identity and content
+
+Every accepted message has:
+
+| Field | Meaning |
+|-------+---------|
+| =id= | Daemon-instance-qualified immutable message ID |
+| =conversation= | Daemon-issued conversation ID; defaults to a new conversation for an initial send |
+| =sender=, =recipient= | Immutable session IDs, or =host= where applicable |
+| =sender_path=, =recipient_path= | Display labels captured at acceptance; not authority |
+| =in_reply_to= | Original message ID, or null |
+| =body= | UTF-8 plain text, at most 8 KiB before JSON encoding |
+| =created_sequence=, =created_at= | Daemon ordering and UTC observation time |
+| =state= | queued, claimed, completed, or failed |
+| =claim_generation= | Incremented when explicitly recovering a claim |
+
+Conversation IDs group messages; they confer no access rights. A later send
+may reuse a conversation only if the sender participates in it and routing to
+the recipient is independently allowed. A reply inherits the conversation.
+No task abstraction or attachments are required for step 1.
+
+** Delivery and completion
+
+1. =send= validates routing and limits, records acceptance, then makes the
+   message visible in the recipient inbox. Acceptance is not delivery.
+2. =inbox.next= claims the oldest queued message by acceptance sequence. There
+   is at most one outstanding claim per agent in the baseline. If one already
+   exists, return that item rather than claiming another. If none exists,
+   return =message: null= without waiting.
+3. A fetch response includes the message and its claim generation. A claim
+   records that the protocol supplied the item, not that the model understood it.
+4. =reply= atomically accepts one response to the original sender and completes
+   the incoming item. If the reply cannot be accepted, the claim remains open.
+5. =complete= explicitly acknowledges an item requiring no reply. It does not
+   infer task success from terminal text or the Stop hook.
+6. Agent interruption, driver disconnect, or timeout does not silently complete
+   or discard an item. Claims do not expire merely because work takes time.
+
+The agent can resume its existing claim by fetching again. Explicit
+=inbox.requeue= (own inbox, or host control) returns a claim to queued, bumps
+its generation, and invalidates stale completion/reply attempts. Requeue can
+repeat model work; it provides no exactly-once execution guarantee.
+
+When the recipient stops or fails to launch, unresolved messages become failed
+with a lifecycle reason. Already accepted replies remain independently queued
+for their recipients. Sending/replying to a stopping or stopped recipient fails
+without accepting a new message. Existing subtree teardown semantics apply.
+
+** Retry semantics
+
+Every mutation accepts a client-generated =key=. Scope keys to authenticated
+sender and operation. Retrying identical parameters with the same key returns
+the recorded result; changed parameters conflict. Replies and acknowledgements
+also validate the claim generation. Deduplication precedes current-lifecycle
+validation, so a retry can recover an earlier success after a target exits.
+
+=--key= is optional on the CLI, including host =send=. When omitted, generate a
+fresh random key and surface it before the mutation is transmitted, as well as
+in the command result or unknown-outcome diagnostic. The RPC always carries a
+key. Explicit =--key= supports intentional retries. Repeating a bare command
+generates a new key and constitutes a new message, not a deduplicated retry.
+For =--file=, compare the submitted contents, not the source pathname: retrying
+with changed contents under the same key conflicts.
+
+An inbox fetch uses a key too: if its response is lost, repeating that fetch
+must return the same recorded result, including an empty result. Use a new key
+for a new fetch. Sending a new key after an uncertain send is not a safe retry.
+CLI exit codes retain the current 0 success, 1 known failure, 2 unknown-outcome
+convention. Report keys and IDs needed to inspect/retry an uncertain result.
+
+Retain message and operation records for the daemon lifetime within explicit
+caps; do not silently evict deduplication state and permit duplicate actions.
+Reached caps reject new operations while permitting completion and inspection
+of existing work. Reserve capacity for those transitions at acceptance.
+
+* Proposed protocol additions
+
+Keep JSON-RPC 2.0 with existing Content-Length framing on pathname Unix sockets.
+Advertise =agent-inbox-v1=, =agent-integration-v1= and host-only
+=communications-log-v1= features during initialization. A client must detect
+unsupported features rather than falling back to pasting message bodies.
+
+| Sandbox method | Parameters and result |
+|----------------+-----------------------|
+| =messages.send= | ={key,to,body,conversation?}= -> accepted message record |
+| =messages.get= | ={message}= -> record visible to its sender or recipient |
+| =inbox.status= | ={}= -> queued count, outstanding claim ID, revision, integration health |
+| =inbox.next= | ={key}= -> ={message,claim_generation}=, or null message |
+| =messages.reply= | ={key,message,claim_generation,body}= -> reply record and completed original ID |
+| =inbox.complete= | ={key,message,claim_generation}= -> completion record |
+| =inbox.requeue= | ={key,message,claim_generation,reason}= -> new generation |
+| =integration.register= | ={key,protocol,driver}= -> selected driver epoch and own snapshot |
+| =integration.check= | ={epoch,hook_id,event}= -> inbox snapshot, continuation instruction or stop permission, wake generation |
+| =integration.subscribe= | ={epoch}= -> atomic own-inbox/lifecycle metadata snapshot and subscription |
+| =integration.view= | ={epoch}= -> bounded own-terminal snapshot, modes and terminal revision |
+| =integration.report= | ={epoch,event_id,state,turn?}= -> accepted advisory lifecycle event |
+| =integration.notify= | ={epoch,wake_generation,terminal_revision}= -> notification attempt result; no arbitrary text parameter |
+
+Host =messages.send= accepts the same message content/key fields and resolves
+the selected recipient through the host's name/path/ID scope. It always derives
+sender =host= from the connection role. Target resolution is captured on first
+acceptance; retrying an accepted operation cannot retarget a reused agent name.
+Other host equivalents address explicit session IDs and include paginated
+=communications.list= and =communications.subscribe=. Host inspection never
+claims an item. Sender inspection reveals its own messages and their status,
+not the recipient's unrelated inbox contents.
+Host control also provides =integration.pause=, =integration.resume= and
+=integration.replace=, addressing a session. Repeated identical controls are
+idempotent. Pause preserves the inbox and current native work; resume reconciles
+pending work rather than unconditionally typing a new prompt.
+
+Exact serialization of optional fields, host method schemas, and notifications
+must be finalized with protocol fixtures before implementation. Existing
+error codes apply: invalid parameters -32602, absent/unauthorized -32004,
+conflicting key/generation -32009, capacity -32010. Distinguish diagnostic
+reasons in structured error data; do not parse human error strings.
+
+Integration subscriptions use dedicated connections, one per session. They
+carry metadata and revisions, not message bodies. Snapshot plus subsequent
+events must have no gap. On disconnect or revision gap, reconnect and resnapshot;
+the daemon still owns queued work. A slow driver cannot block the daemon.
+Snapshots include own-terminal revisions so a baseline driver can request a
+bounded screen view for readiness detection. This never grants another
+sandbox's screen or terminal input. Full terminal streams remain separate.
+Short-lived hook/CLI calls keep the existing request/response connection model;
+permission-request framing and withdrawal behavior remain unchanged.
+
+Proposed bounds: retain the current 16 live sessions and 8 connections per
+sandbox; reserve one connection slot for its driver. Limit unresolved inbox
+items to 256 per recipient and accepted messages to 4096 per daemon lifetime.
+Cap operation records at 16384, with completion/retry capacity reserved.
+New messaging methods allow 64-KiB encoded request frames to accommodate an
+8-KiB body with JSON escaping; existing methods retain their semantic limits.
+Advertise updated limits, preserve bounded parsing/depth/frame deadlines, and
+bound each subscription queue to 256 KiB. Paginate host log reads by both byte
+budget and count (at most 100 events and 512 KiB per response).
+
+* Hooks, notification drivers, and the idle transition
+
+** Agent states
+
+Keep agent activity separate from sandbox process state:
+=starting=, =working=, =stopping_turn=, =ready=, =blocked=, =unknown=, =exited=.
+Integration health is separately =healthy=, =degraded=, =stalled=, or =paused=.
+An idle live agent is not a completed/terminated sandbox.
+
+Each driver activation has a daemon-issued epoch. Replacing a driver invalidates
+old reports and wakeups. Epochs prevent stale activity, not malicious code in
+the same sandbox. The daemon permits one active driver per agent. Only the
+selected driver may deliver wakeups; baseline hooks do not compete with an
+advanced driver for delivery ownership.
+Registration validates the driver against the inherited integration descriptor;
+it cannot select an arbitrary executable or configuration. The supervisor
+registers before native launch and supplies the epoch to its hooks/driver.
+Registration retries reuse the same key. Driver replacement is serialized with
+the existing activation; a second live registration fails instead of stealing
+ownership. The selected descriptor controls whether hooks continue locally or
+defer entirely to an advanced driver.
+
+** Working agent
+
+1. Messages queue while the agent works. Do not interrupt its response.
+2. Stop hook calls =integration.check= on its own endpoint.
+3. The daemon atomically observes inbox state and registers the pending idle
+   transition. If queued items exist and continuation is permitted, return a
+   fixed instruction to fetch the next inbox item.
+4. The hook translates that result to the agent's native continuation format.
+   It neither fetches nor acknowledges the item.
+5. The model fetches, processes, and replies/completes. Continue at the next
+   Stop boundary while queued work remains and the agent permits continuation.
+
+An outstanding claim is not a reason to repeat Stop continuations forever.
+Remind once per claim generation to resume/complete it, then mark stalled if no
+progress occurs. Hook continuation limits require falling back to the idle
+wakeup path; they must not cause message loss or be disabled blindly.
+
+** Idle agent and lost-wakeup prevention
+
+1. An empty Stop check arms the daemon's wake tracking before it returns.
+2. A later message marks a wake pending, even if the agent has not reached its
+   input prompt yet. The driver must confirm readiness before notification.
+3. Multiple arrivals coalesce into one outstanding wake generation.
+4. Immediately before a baseline PTY write, the daemon revalidates generation,
+   unread work, driver epoch, lifecycle, and terminal input ownership.
+   It rejects a stale terminal revision and asks the driver to reassess.
+5. Submit only fixed text: =Check your Goblins inbox and process the next item.=
+6. Fetch activity or a hook continuation satisfies the wake. A terminal write
+   alone does not. Obsolete wake requests become no-ops.
+
+On notifier reconnect, an atomic snapshot must expose pending work even if no
+new message arrives. Do not rely solely on empty-to-nonempty edge notifications.
+Stale or duplicate notices may cause an empty fetch but cannot claim a different
+item under a retried key or duplicate a previously accepted reply.
+
+Proposed retry policy: after a wake, allow 30 seconds for fetch or observed
+working activity. While working or blocked, defer further PTY writes. If still
+confidently ready with pending work, allow up to three total attempts, then
+mark stalled. Explicit host resume or a new agent lifecycle transition may
+reconcile pending work; no unbounded typing loop or silent message deletion.
+
+User interruption pauses automatic continuation/wakeup until explicit resume
+or a new user-submitted turn. Permission/question UI is blocked, not ready.
+API failures and agent exits have distinct lifecycle handling from normal Stop.
+
+** Native attachment and terminal input
+
+Notification delivery must not attach to, detach, or steal the user's terminal.
+The daemon serializes human input and its fixed wakeup submissions. Agent
+profiles recognize ready, busy, and blocked UI using native hooks plus terminal
+evidence as needed. Unknown state fails to deferred delivery.
+
+When attached, preserve a partially typed user prompt. A pending notification
+waits until the profile can establish an empty ready composer and no queued
+human input; otherwise show pending work through host state and wait. Closing
+an attachment leaves the agent and inbox alive. Reattachment uses the existing
+terminal restoration limits, without claiming full transcript replay.
+
+PTY readiness is inherently subject to native UI races. The implementation
+must document supported CLI versions and prove its tested behavior. A profile
+that cannot establish safe attached delivery must report that limitation;
+future native-protocol delivery could improve it. Do not insert message bodies
+or answer approval dialogs as a fallback.
+
+* Sandbox integration packaging
+
+Extend =mkGoblin= with an optional trusted =integration= descriptor. Keep
+ordinary shell configurations working unchanged. A descriptor identifies:
+
+- Integration name, version, and driver protocol version.
+- Native agent package/launch settings and supported version constraints.
+- Read-only skill, hook, and helper assets.
+- Generated configuration fragments and sandbox destinations.
+- Optional driver command, arguments, environment, and capabilities.
+
+Exact Nix attribute names are to be finalized after the Codex mounting probe.
+The initial implementation should use executable descriptors, not a language
+ABI or dynamic shared-library plugin loader. Drivers can be written in any
+language whose runtime is provided in the sandbox package closure.
+
+The trusted launcher creates a private runtime area for generated files and
+mounts only selected assets into the sandbox. Sources and destinations are
+validated/pinned before launch; sandbox RPC cannot submit host paths or mount
+definitions. Child launches inherit the already selected integration and pinned
+auth/config binds, while receiving fresh runtime directories and driver epochs.
+
+To add hooks to a shared agent config, generate a merged sandbox-visible file
+and overmount that file. Preserve existing configuration and hooks unless an
+explicit integration incompatibility is reported. Never patch the original
+host file, including when the desired mount destination does not yet exist.
+Do not create placeholder files in a writable shared host directory: construct
+a private directory view when necessary. Handle existing skills, symlinks,
+mount ordering, and directory overlap deliberately.
+
+Public immutable integration assets may live in the Nix store. Host credentials
+and generated files containing private configuration must not enter derivation
+inputs, the Nix store, command-line arguments, or communications logs.
+
+The native agent continues to use the inherited account. Goblins does not
+extract subscription tokens into a replacement model client. Writable credential
+refresh remains possible where the user's existing mount grants permit it.
+Independent private runtime paths must be supported for the verification
+fixture, without removing the shared authentication/configuration requirement.
+
+Hooks must be discoverable and trusted under the selected agent version.
+Use a supported sandbox-scoped loading/trust mechanism, not a global host
+configuration edit. Any invocation-wide trust bypass also affects other loaded
+hooks; it cannot be treated as trusting only the Goblins hook. Settle and test
+the Codex mechanism before declaring the profile supported.
+
+A supervisor keeps the native process attached to its original PTY. A driver
+failure reports degraded integration while leaving the native agent available
+for manual inbox commands; it does not silently terminate the agent. Native
+agent exit ends the session and its supervised helpers under current teardown
+rules. Driver restart resubscribes with a fresh epoch and reconciles the inbox.
+
+* Model connectivity prerequisite
+
+Current =mkGoblin= rejects network grants. Shared configuration alone cannot
+make a real Codex model request work in the current isolated network namespace.
+Step 1 therefore includes a narrow, explicit connectivity provision for the
+Codex profile. General network grants and host network namespace sharing are
+not implied by this spec.
+
+Before implementation, choose and document a broker/proxy path compatible with
+the actual inherited Codex account/provider configuration. Verify model access
+and credential refresh without exposing unrelated host sockets or credentials.
+An independently configured provider may need a different endpoint set; do not
+silently substitute an API key/account or hard-code an unverified endpoint list.
+This is an unresolved implementation prerequisite, not a passed acceptance gate.
+
+* Communications log
+
+The daemon writes a host-private append-only JSONL audit file per instance.
+It remains readable after sessions end and after daemon shutdown; it is not
+replayed into a replacement daemon. No power-loss/fsync durability guarantee
+is implied. Log writing and reads must not block the daemon's control loop.
+
+Record instance/event sequence, UTC time, immutable session/message/conversation
+IDs, captured display paths, event type, and relevant outcome. Message acceptance
+records contain the exact body once; later events reference its ID. Include:
+
+- Child launch identity and parent relationship; initial task message.
+- Accepted sends/replies, claims, completions, requeues, and failures.
+- Hook decisions, wake generations, attempts, deferrals, and stalled states.
+- Driver registration/replacement/failure and session exit.
+- Deduplicated retries without representing them as new messages.
+
+No API tokens, environment dumps, native reasoning transcripts, or unrelated
+terminal output in this log. Render untrusted text escaped in human-readable
+output; JSON output preserves original bodies as JSON strings.
+
+Accepted messaging transitions must be recorded before reporting success or
+publishing newly queued work. Handle uncertain append outcomes with the same
+operation IDs. On audit failure, stop accepting new messaging mutations and
+report degraded service; do not continue an apparently audited exchange.
+Keep stop/attach/inspection available. Proposed log cap: 128 MiB per daemon
+instance, reserving space for terminal outcomes; reaching it is an explicit
+capacity error, not silent truncation. Driver chatter/retries are bounded too.
+
+=communications-log --session ID= includes that session and its descendants,
+including retained records after exit. Resolve names once to immutable IDs;
+do not follow a later session reusing a name. Allow exact instance/session
+selection and =--log FILE= for offline reads. =--json= emits JSONL events.
+=--follow= joins history with new events using an atomic cursor/sequence
+boundary. A slow client disconnects and can resume from its last sequence;
+never present a silently incomplete continuous log.
+
+Host log access does not grant an agent access to another inbox. The mounted
+agent CLI has no communications-log command. The log demonstrates protocol
+actions; it does not by itself prove honest reasoning or absence of shared-file
+communication in a configuration that allows it.
+
+* Future compatibility considerations (not implementation scope)
+
+This section records design considerations only. It does not authorize or
+require implementing, prototyping, or testing App Server, Channels, or another
+advanced delivery integration as part of this task. The current task ends with
+the verified notify-then-fetch baseline. Keep a small extension boundary; do
+not build speculative integration machinery to satisfy the examples below.
+
+If implemented in a separately scoped future task, these integrations should
+use the same message IDs, routing, inbox claims, replies, log, and native
+attachment behavior.
+Their integration processes run within the corresponding sandbox and receive
+no host control socket. Their protocol endpoints remain session-private.
+
+An advanced driver may replace terminal wakeup with a structured notification
+or turn submission containing the same fixed inbox instruction. It must not
+silently switch to direct agent-to-agent communication or consume inbox items
+on the model's behalf. It must coordinate native continuation and attachment
+against the same conversation, not start a second hidden conversation.
+
+Capability negotiation selects exactly one delivery path per epoch. Fallback
+to the baseline must be explicit, visible in state/logs, and invalidate stale
+driver events. A message accepted during replacement remains in the daemon.
+The baseline remains testable and supported after advanced drivers are added.
+
+* Verification and implementation sequence
+
+** Default suite: deterministic verification
+
+Use fake agents/drivers and real daemon sockets/PTYs where required. No model
+credentials, network model calls, or real-agent guessing game in the default
+suite. Required checks include:
+
+- Routing scope, sender authentication, parent replies, and denied cross-branch
+  access; no inherited host/approval authority.
+- FIFO claim behavior, one outstanding claim, explicit completion, atomic reply,
+  duplicate keys, stale generations, lost responses, and recipient exit.
+- Sender-local =--file= delivery with different private =/tmp= contents in
+  sender, host, and recipient; removal of the original after acceptance does
+  not affect fetching. Validate file/stdin errors and changed-content retries.
+- Host =send --message= without an explicit key reaches a real inbox as sender
+  =host= and triggers the same working/idle notification paths. Sandbox callers
+  cannot impersonate host; ambiguous targets fail without sending.
+- Empty-check/idle race, arrival during a Stop hook, duplicate notifications,
+  hook continuation limits, notifier reconnect, and driver replacement.
+- Human input competing with wakeup, partial composer, approval/question UI,
+  unknown state, user interruption, detached operation, and reattachment.
+- Driver failure leaves manual native usage available; normal process exit and
+  subtree teardown do not leak driver processes.
+- Configuration overmounts leave host bytes/directory entries unchanged;
+  inherited authentication paths are usable, children have private generated
+  files, and native settings/hooks are preserved according to merge rules.
+- Audit failure/capacity, pagination/follow without gaps, escaped terminal
+  controls, and bounded parser/connection/queue behavior.
+- Existing launch, ownership, grant, attachment, and output-draining regressions.
+
+** Explicit live Codex test
+
+Provide a dedicated command such as =tests/live/codex-number-game=, outside
+default discovery and Nix checks. It requires an explicit invocation with the
+user's selected Codex package/auth mount and network provision. Run in a
+separate daemon instance and fixture workspace, with a configurable overall
+timeout and cleanup confined to its own sessions/resources.
+
+Exercise the actual =goblins run codex= path and enter the user task in the
+native TUI. Verify from host-owned evidence:
+
+1. Two distinct daemon sessions, native processes, and agent conversations.
+2. Initial task goes through the daemon; built-in Codex delegation is disabled
+   or otherwise excluded for this fixture.
+3. Exactly ten individual guess messages, each followed by its correlated child
+   reply before the next guess; no single batched request containing ten guesses.
+4. Child responses use correct/too high/too low and match the revealed number.
+5. Explicit reveal after reply ten; parent final report matches the revealed
+   number and observed outcomes. Native transcript evidence may supplement the
+   communications log for this final user-facing report.
+6. Attach/detach the child during the exchange without stopping its process,
+   changing its conversation, consuming its inbox, or losing messages.
+7. Include a deliberately delayed exchange after an empty Stop check so the
+   idle wakeup path is exercised, not only chained hook continuations.
+
+For stronger anti-cheating evidence, the fixture instructs the child to choose
+its number and a fresh random salt, keep them in private per-session storage,
+and send a SHA-256 commitment before the first guess. Specify the committed
+bytes as UTF-8 =goblins-number-v1\nNUMBER\nSALT\n=, with decimal NUMBER and a
+32-byte random salt encoded as lowercase hex. Reveal both after guess ten and
+verify the commitment plus every comparison. This requires no game-specific
+production API. Commitment/reveal bodies remain ordinary logged messages.
+
+The fixture must prevent reading the other conversation's private state via
+shared native history, workspaces, or mounted files. Use sandbox-only private
+runtime/history overlays while retaining shared auth/config. Existing ancestor
+terminal access is a possible shortcut too: inspect actual agent tool/transcript
+evidence for prohibited =attach=, transcript reads, and direct shared-file
+handoffs, and fail the live test on such behavior. If isolation/auditing cannot
+establish this, report communication success with inconclusive anti-cheating
+evidence rather than claiming a verified game.
+
+Store the communications log, version/configuration summary without secrets,
+verifier result, and necessary host-only transcript/terminal evidence as test
+artifacts. A timeout or partial run is a failure with preserved evidence, not
+permission to rerun model work indefinitely.
+
+** Proposed build order
+
+1. Resolve Codex hook trust/config mounting, native readiness detection, and
+   scoped model connectivity in bounded probes; record supported versions.
+2. Finalize wire fixtures and implement the inbox, deduplication, CLI, and audit
+   API with deterministic tests.
+3. Implement trusted integration mounts and supervisor/driver lifecycle.
+4. Add the Codex skill/hooks and fixed terminal notification path; verify races
+   and attachment using fake agents before the live trial.
+5. Run the explicit number-game trial, inspect evidence, and document results.
+
+This sequence ends with baseline verification. Advanced delivery integrations
+require a separate task and are not acceptance criteria for this one.
+
+* Decisions to finalize before coding
+
+The agreed architecture is recorded above. These narrower choices remain:
+
+- Codex package/version source and native readiness signals reliable enough for
+  attached wakeup; installed version during discussion was =codex-cli 0.155.0=.
+- Supported sandbox-only hook trust/loading and merged configuration strategy.
+- The scoped network broker/proxy needed by the inherited authentication setup.
+- Final Nix descriptor names, method schemas, and the proposed routing/limit
+  defaults; these should be reviewed together with protocol fixtures.
+
+* References checked during discussion
+
+- [[https://learn.chatgpt.com/docs/hooks][Codex hooks]]: discovery, trust, Stop continuation and interrupt behavior.
+- [[https://learn.chatgpt.com/docs/extend/mcp][Codex MCP configuration]]: optional tool exposure and timeout behavior.
+- [[https://learn.chatgpt.com/docs/app-server][Codex App Server]]: deferred structured control and native remote TUI.
+- [[https://code.claude.com/docs/en/hooks][Claude hooks]]: settings, Stop continuation and continuation limits.
+- [[https://code.claude.com/docs/en/channels-reference][Claude Channels]]: deferred native-session notification integration.
+
+These references describe available integration mechanisms, not evidence that
+the Goblins implementation already works. Pin/test the selected versions and
+update this specification when native behavior differs.

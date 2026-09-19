@@ -88,7 +88,7 @@ host-only API and waits for the daemon lock through agent cleanup. There is no
 PID file, service installation, automatic restart or session recovery. Logs
 print captured output once, appending across server starts. Exact timeout and
 concurrency behavior is documented in [[file:USAGE.org::*Server commands, help and completion][USAGE.org]] and
-[[file:DAEMON.org::*Server management and CLI revision][DAEMON.org]].
+[[file:docs/specs/DAEMON.org::*Server management and CLI revision][DAEMON.org]].
 
 Clap now supplies parsing and help for every command. =goblins=, =--help= and
 =help COMMAND= expose that command tree. Bash, Fish and Zsh scripts are generated
@@ -161,7 +161,7 @@ accept live names as well as IDs; approvals, permission filters, resize and
 sandbox endpoint authority continue to use immutable identities. Session/list,
 plain status, fullscreen overview/request details, permission records and
 subscription snapshots/events expose agent names. See
-[[file:DAEMON.org::*Agent naming extension (API 1)][the exact contract]] and [[file:USAGE.org::*Agent names][usage]].
+[[file:docs/specs/DAEMON.org::*Agent naming extension (API 1)][the exact contract]] and [[file:USAGE.org::*Agent names][usage]].
 
 Validation used the rebuilt production package
 =/nix/store/2wlmb2jydvpp0scrxrb84616c52b8hv0-goblins=, linked at
@@ -290,7 +290,7 @@ reran the affected frontend gates rather than claiming a new complete-suite run.
 * Daemon milestone (API 1, initial frontend at 52feceb)
 
 Implemented on =feature/daemon-protocol= from =eb3276f=, following
-[[file:DAEMON.org][DAEMON.org]]. The ordinary-user Rust daemon owns simultaneous sessions,
+[[file:docs/specs/DAEMON.org][DAEMON.org]]. The ordinary-user Rust daemon owns simultaneous sessions,
 requests, approvals, package grants and PTYs. Both approval frontends now use
 the private host API; sandbox requests go directly to their endpoint-scoped
 permission API. Structured communication uses JSON-RPC 2.0 with bounded
@@ -300,7 +300,7 @@ keeps its private pipes and namespace authority.
 The exact API, limits, retention, duplicate handling, terminal lifetime and
 manifest/helper compatibility choices are recorded in DAEMON.org's
 implementation contract. Current operational instructions are in
-[[file:USAGE.org][USAGE.org]], and ownership/failure boundaries are in [[file:DESIGN.org][DESIGN.org]].
+[[file:USAGE.org][USAGE.org]], and ownership/failure boundaries are in [[file:docs/specs/DESIGN.org][DESIGN.org]].
 
 ** Required review reproductions
 

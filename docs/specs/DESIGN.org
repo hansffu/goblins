@@ -251,7 +251,7 @@ daemon or its shared builds. Parent-death handling and PID namespace teardown
 kill sandboxes on daemon death. Normal cleanup removes roots and resources;
 SIGKILL can leave host files/roots for manual cleanup. Durable recovery, terminal
 multiplexing, projects, Emacs integration and live file/network grants remain
-outside this milestone. [[file:RESULTS.org][RESULTS.org]] records verification and its limits.
+outside this milestone. [[file:../../RESULTS.org][RESULTS.org]] records verification and its limits.
 
 * Per-launch agent names
 
@@ -271,7 +271,7 @@ Session and permission records carry the stable agent name, with permission
 records copying it at creation so later eviction or reuse cannot relabel history.
 Only trusted host get/stop permit a live-name selector. Decisions, permission
 filters, resize and sandbox endpoint authority continue using immutable IDs.
-See [[file:DAEMON.org::*Agent naming extension (API 1)][the API contract]] and [[file:USAGE.org::*Agent names][usage rules]].
+See [[file:DAEMON.org::*Agent naming extension (API 1)][the API contract]] and [[file:../../USAGE.org::*Agent names][usage rules]].
 
 * Server process management
 
