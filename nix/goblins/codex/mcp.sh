@@ -44,7 +44,11 @@ if mcp_list=$(cd -- "$probe_dir" && "${coreutils}/bin/timeout" 8 "$codex_executa
         continue
       fi
       printf 'goblins: skipping MCP server %q: executable %q is unavailable in this sandbox\n' "$name" "$executable" >&2
-      mcp_overrides+=(-c "mcp_servers.$name.enabled=false")
+      # Effective servers can come from plugins, without any config.toml
+      # transport. Even disabled entries must deserialize as valid transports.
+      # Include only the command; do not copy plugin environment/credentials.
+      quoted_command=$("${jq}/bin/jq" -c '.transport.command' <<< "$row")
+      mcp_overrides+=(-c "mcp_servers.$name.command=$quoted_command" -c "mcp_servers.$name.enabled=false")
     fi
   done < <("${jq}/bin/jq" -c '.[] | select(.enabled and .transport.type == "stdio")' <<< "$mcp_list")
 else

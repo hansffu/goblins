@@ -127,6 +127,40 @@ class CodexConfigTests(unittest.TestCase):
             record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "failed" else None))
             self.assertTrue(record["detail"])
 
+    def test_plugin_mcp_filter_keeps_valid_transports(self):
+        plugin = self.codex / "plugins/cache/test/fixture/local"
+        (plugin / ".codex-plugin").mkdir(parents=True)
+        manifest = '{"name":"fixture"}'
+        (plugin / ".codex-plugin/plugin.json").write_text(manifest)
+        missing_command = '/missing/node "quoted" \\backslash'
+        plugin_config = json.dumps({"mcpServers": {
+            "cua_repl": {"command": missing_command},
+        }})
+        (plugin / ".mcp.json").write_text(plugin_config)
+        config = (
+            '[features]\nplugins=true\n'
+            '[plugins."fixture@test"]\nenabled=true\n'
+            '[mcp_servers.node_repl]\ncommand="/missing/node_repl"\n'
+            '[mcp_servers.available_fixture]\ncommand="/bin/sh"\n'
+            '[mcp_servers.http_fixture]\nurl="https://mcp.fixture.invalid/mcp"\n'
+        )
+        (self.codex / "config.toml").write_text(config)
+        native = self.terminal("native-mcp")
+        native.expect("skipping MCP server cua_repl")
+        native.expect("skipping MCP server node_repl")
+        listing = json.loads(native.expect(r"(?s)(\[\n.*?\n\])").group(1))
+        self.assertEqual(native.wait(), 0)
+        servers = {entry["name"]: entry for entry in listing}
+        for name in ["cua_repl", "node_repl"]:
+            self.assertFalse(servers[name]["enabled"])
+            self.assertEqual(servers[name]["transport"]["type"], "stdio")
+        self.assertEqual(servers["cua_repl"]["transport"]["command"], missing_command)
+        self.assertTrue(servers["available_fixture"]["enabled"])
+        self.assertTrue(servers["http_fixture"]["enabled"])
+        self.assertEqual((self.codex / "config.toml").read_text(), config)
+        self.assertEqual((plugin / ".mcp.json").read_text(), plugin_config)
+        self.assertEqual((plugin / ".codex-plugin/plugin.json").read_text(), manifest)
+
     def test_native_ui_discovers_managed_hooks(self):
         # Trust only this test workspace in the synthetic native configuration.
         # /hooks is local UI, not a prompt sent to a model.

@@ -140,6 +140,15 @@ in
         args = [ "--no-alt-screen" ];
         allowedPackages = [ ];
       };
+      native-mcp = mkCodexGoblin {
+        allowedDomains = [ ];
+        args = [
+          "mcp"
+          "list"
+          "--json"
+        ];
+        allowedPackages = [ ];
+      };
     };
   };
   network-goblins = mkGoblins {

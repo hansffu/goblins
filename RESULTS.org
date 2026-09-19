@@ -1,6 +1,24 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Plugin-provided Codex MCP overrides (2026-09-20)
+
+The initial unavailable-MCP filter assumed every effective server already had
+transport settings in =config.toml=. Native =codex mcp list= also returns
+plugin-provided servers. For those, an invocation override containing only
+=enabled=false= created an invalid transport and prevented Codex from starting.
+
+The filter now includes the effective stdio command with the disabled flag.
+This creates a valid disabled entry without copying plugin environment values
+or credentials. Command strings are quoted as data; host configuration and
+plugin files are unchanged.
+
+The failure was reproduced with native Codex 0.146.0 and a synthetic plugin.
+The real-sandbox regression covers plugin-provided =cua_repl=, config-defined
+=node_repl=, command paths containing quotes/backslashes, and preservation of
+available stdio and HTTP servers. Native login-status and managed-hooks UI
+checks also pass with synthetic credentials and networking disabled.
+
 * Open networking and Codex startup (2026-09-20)
 
 =mkGoblin= now defaults =allowedDomains= to =null=, matching the agent-sandbox
