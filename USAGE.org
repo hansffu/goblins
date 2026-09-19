@@ -421,6 +421,71 @@ Nix expression or approval decision. The separate private host socket owns
 approvals and unrestricted terminal management. The namespace helper retains narrow private
 pipes; daemon threads never enter mount namespaces.
 
+* Codex configuration
+
+The default package provides =goblins run codex=. The reusable Nix helper is:
+
+#+begin_src nix
+mkCodexGoblin {
+  codexConfigDir = "$HOME/.codex"; # default, resolved at launch
+  # pkg = pkgs.codex;             # override the pinned Codex package
+  # allowedPackages = commonTools ++ [ pkgs.ripgrep ];
+  # rwDirs = [ "/path/to/extra/workspace" ];
+  # args = [ "--no-alt-screen" ];
+  codexSettings.model_reasoning_effort = "high";
+}
+#+end_src
+
+After upgrading from a build without =sandboxEtc= support, restart the Goblins
+daemon before launching this configuration so it can read the new manifest.
+
+It accepts normal =mkGoblin= arguments and defaults =pkg= / =binName= to Codex.
+The package must support the managed hook setup (Codex 0.146.0 or later).
+The baseline tools and access match =shell=, plus Fish, the hook executable,
+and a writable mount of =codexConfigDir=. That directory must already exist.
+Use an absolute runtime string, =$HOME/=, =${HOME}/= or =~/=; no credentials
+are read during Nix evaluation/build. The helper sets =CODEX_HOME= to the
+expanded directory and enables native hooks. Use =codexConfigDir= rather than
+=env.CODEX_HOME= to change it.
+
+Parent and child use the same mounted directory, including file-based native
+auth and refreshes. This also shares native history/configuration; private
+history for the anti-cheating live fixture remains separate work. Keyring-only
+credentials are not exposed by this mount. Normal native writes to the shared
+directory remain visible to the host; Goblins does not copy or rewrite its
+configuration to install hooks.
+
+The launcher runs Codex with =--sandbox danger-full-access
+--ask-for-approval never= inside Goblins' existing sandbox. Codex can use the
+same files and commands as the shell goblin; Goblins still owns isolation and
+package approvals. =args= are passed unchanged after these defaults.
+
+=codexSettings= generates sandbox-only =/etc/codex/config.toml=. These are
+system defaults below Codex's user/project/CLI layers. Native hooks from
+=codexSettings.hooks= are appended to Goblins' SessionStart/Stop handlers.
+Codex treats this system source as managed; no host hook-trust changes or
+blanket hook-trust bypass is needed. The matching skill is mounted at
+=/etc/codex/skills/goblins/SKILL.md=.
+
+SessionStart supplies messaging instructions. Stop queries inbox metadata and,
+when work remains, requests a continuation telling the agent to fetch it.
+The hook never claims an item or pastes its contents. It respects
+=stop_hook_active= to prevent endless continuation loops; the skill instructs
+the agent to process items sequentially until empty. A failed status check
+produces a diagnostic. Native user hooks keep their usual trust requirements.
+See [[https://learn.chatgpt.com/docs/hooks][Codex's hook contract]].
+
+Outbound model connectivity and notification of an already-idle agent are
+not implemented. Native launch, attachment, configuration/auth visibility and
+hook decisions can be checked offline. The live Codex game remains opt-in and
+has not been run.
+
+For other integrations, =mkGoblin.sandboxEtc= maps relative =/etc= file names
+to text or regular-file derivations. Files are mounted read-only only inside
+the sandbox, their store closures are retained, and overlapping host mounts
+are rejected. This supports injected configuration without editing host files.
+It is supplied by the trusted Nix manifest, never by agent RPC requests.
+
 * Manual inbox messaging
 
 Host and sandbox CLIs can send text through daemon-owned inboxes:
@@ -479,8 +544,8 @@ Reading these files directly also works after daemon shutdown; the CLI currently
 requires a running daemon. Records contain message text, so handle them as
 conversation data. Queued and claimed items fail when their recipient stops.
 
-This is the manual messaging foundation. Agent hooks, idle wakeups, injected
-skills/configuration mounts, and the live Codex trial are not implemented yet.
+This is the manual messaging foundation. The Codex helper adds turn-boundary
+hooks and a skill; idle wakeups, model connectivity and the live trial remain.
 Existing terminal attachment remains available independently of inbox commands.
 See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the remaining work.
 

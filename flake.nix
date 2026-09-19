@@ -18,6 +18,7 @@
       goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox; };
       goblins = goblinsLib.mkGoblins {
         goblins.shell = goblinsLib.goblins.shell;
+        goblins.codex = goblinsLib.goblins.codex;
       };
     in
     {

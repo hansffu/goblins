@@ -13,8 +13,11 @@ integrations remain explicitly outside this task.
 
 The first implementation slice provides manual daemon inboxes, host/sandbox
 messaging commands, and host log inspection. It advertises =agent-inbox-v1=
-and host-only =communications-log-v1=, not =agent-integration-v1=. Hooks,
-notification drivers, integration mounts and the live Codex trial remain
+and host-only =communications-log-v1=, not =agent-integration-v1=.
+=mkCodexGoblin= now adds a shared Codex directory, sandbox-only managed hooks
+and a messaging skill via immutable =sandboxEtc= mounts. Stop checks metadata
+and requests fetch-based continuation, respecting =stop_hook_active=.
+Notification drivers, model connectivity and the live Codex trial remain
 pending. Log follow currently polls; separate retry audit events, subscriptions
 and offline CLI log selection are also pending. See [[file:../../USAGE.org::*Manual inbox messaging][current commands]]
 and [[file:../../RESULTS.org][verification results]] for implemented behavior.
@@ -646,7 +649,9 @@ The agreed architecture is recorded above. These narrower choices remain:
 
 - Codex package/version source and native readiness signals reliable enough for
   attached wakeup; installed version during discussion was =codex-cli 0.155.0=.
-- Supported sandbox-only hook trust/loading and merged configuration strategy.
+- Sandbox-only managed hooks and skills use =/etc/codex= system configuration
+  in Codex 0.146.0 and later; user config remains in the shared Codex directory.
+  No hook-trust bypass or Goblins edits to host settings are required.
 - The scoped network broker/proxy needed by the inherited authentication setup.
 - Final Nix descriptor names and notification/lifecycle method schemas; these
   should be reviewed together with protocol fixtures. Manual inbox routing,

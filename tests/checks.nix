@@ -4,7 +4,7 @@
   sandbox,
 }:
 let
-  inherit (goblinsLib) mkGoblin mkGoblins;
+  inherit (goblinsLib) mkGoblin mkCodexGoblin mkGoblins;
   base = {
     pkg = pkgs.bashInteractive;
     binName = "bash";
@@ -60,7 +60,17 @@ let
     { args = "-i"; }
     { env.PATH = "/host/bin"; }
     { env.BAD = 1; }
+    { sandboxEtc = [ ]; }
+    { sandboxEtc."../escape" = "bad"; }
+    { sandboxEtc."/etc/absolute" = "bad"; }
+    { sandboxEtc."codex/config.toml" = 1; }
   ];
+  codexProbe = pkgs.writeShellScriptBin "codex" ''
+    printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
+    printf 'CODEX_ARG=%s\n' "$@"
+    export PS1='codex-probe> '
+    exec ${pkgs.bashInteractive}/bin/bash --noprofile --norc -i
+  '';
 in
 {
   # Build without this repository's flake, lock or tests in the source tree.
@@ -94,6 +104,40 @@ in
       touch $out
     '';
   named-goblins = configured;
+  codex-goblins = mkGoblins {
+    goblins = {
+      codex = mkCodexGoblin {
+        pkg = codexProbe;
+        args = [ "literal $(false) argument" ];
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+        codexSettings.model = "fixture-model";
+        env.GOBLINS_TEST_MARKER = "inherited";
+        sandboxEtc."goblins-test.conf" = "sandbox-only\n";
+      };
+      custom = mkCodexGoblin {
+        pkg = codexProbe;
+        codexConfigDir = "\${HOME}/custom codex";
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+      };
+      native = mkCodexGoblin {
+        args = [
+          "login"
+          "status"
+        ];
+        allowedPackages = [ ];
+      };
+      native-ui = mkCodexGoblin {
+        args = [ "--no-alt-screen" ];
+        allowedPackages = [ ];
+      };
+    };
+  };
   cli-completions =
     pkgs.runCommand "goblins-cli-completions"
       {
@@ -174,5 +218,13 @@ in
   };
   goblins-api =
     assert builtins.all rejected invalid;
+    assert builtins.all
+      (options: !(builtins.tryEval (mkCodexGoblin options).goblin.build_spec.drvPath).success)
+      [
+        { codexConfigDir = null; }
+        { codexConfigDir = "relative"; }
+        { env.CODEX_HOME = "/different"; }
+        { sandboxEtc."codex/config.toml" = "override"; }
+      ];
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

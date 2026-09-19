@@ -17,6 +17,8 @@ pub struct Configuration {
     pub client_package: PathBuf,
     pub helper: PathBuf,
     pub flake: String,
+    #[serde(default)]
+    pub sandbox_etc: BTreeMap<String, PathBuf>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +87,8 @@ pub struct Launch {
     pub binds: crate::binds::Declarations,
     #[serde(skip)]
     pub protected_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub sandbox_etc: BTreeMap<String, PathBuf>,
 }
 fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
@@ -141,6 +145,7 @@ impl Configuration {
             .collect(),
             env,
             protected_paths: vec![],
+            sandbox_etc: self.sandbox_etc.clone(),
             binds: serde_json::from_value(serde_json::json!({
                 "rw_dirs": spec["rw_dirs"], "rw_files": spec["rw_files"],
                 "ro_dirs": spec["ro_dirs"], "ro_files": spec["ro_files"],

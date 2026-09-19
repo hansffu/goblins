@@ -22,6 +22,7 @@ let
       rwFiles ? [ ],
       roDirs ? [ ],
       roFiles ? [ ],
+      sandboxEtc ? { },
     }:
     if !validName binName || !validName outName then
       fail "binName and outName must be simple executable names"
@@ -42,6 +43,15 @@ let
       fail "rwDirs, rwFiles, roDirs and roFiles must be lists of path strings"
     else if !builtins.isList args || !builtins.all builtins.isString args then
       fail "args must be a list of strings"
+    else if
+      !builtins.isAttrs sandboxEtc
+      || !builtins.all (
+        name:
+        builtins.match "[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*" name != null
+        && (builtins.isString sandboxEtc.${name} || lib.isDerivation sandboxEtc.${name})
+      ) (builtins.attrNames sandboxEtc)
+    then
+      fail "sandboxEtc must map relative /etc file names to text or file derivations"
     else if
       !builtins.isAttrs env
       || !builtins.all (
@@ -87,6 +97,13 @@ let
           build_spec = wrapped.buildSpec;
           inherit args env;
           client_package = inner;
+          sandbox_etc = lib.mapAttrs (
+            name: value:
+            if builtins.isString value then
+              pkgs.writeText "goblins-etc-${builtins.baseNameOf name}" value
+            else
+              value
+          ) sandboxEtc;
         };
       };
 
@@ -107,9 +124,15 @@ let
         ) goblins;
       in
       import ./packages/goblins.nix { inherit pkgs goblins configurations; };
+
+  mkCodexGoblin = import ./goblins/mk-codex.nix {
+    inherit pkgs mkGoblin;
+    inherit (sandbox) commonTools;
+  };
 in
 {
-  inherit mkGoblin mkGoblins;
+  inherit mkGoblin mkCodexGoblin mkGoblins;
   inherit (sandbox) commonTools;
   goblins.shell = import ./goblins/shell.nix { inherit pkgs mkGoblin; };
+  goblins.codex = mkCodexGoblin { };
 }

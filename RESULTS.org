@@ -1,6 +1,52 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Codex Nix configuration and managed hooks (2026-09-19)
+
+=mkCodexGoblin= accepts =mkGoblin= options plus =codexConfigDir= (default
+=\"$HOME/.codex\"=) and =codexSettings=. The default package now includes a
+=codex= configuration. It adds the native package, Fish, a shared writable
+Codex directory, and sandbox-only managed SessionStart/Stop hooks and messaging
+skill. The pinned package is Codex 0.146.0; callers can override =pkg=.
+
+The general =sandboxEtc= mechanism mounts immutable file derivations read-only
+under the sandbox's =/etc=. Store closures are retained with the session;
+invalid destinations/sources and overlapping host binds are rejected. No host
+configuration files are created to install Goblins hooks. Native Codex continues
+to use its shared directory for configuration/auth/state. Its nested sandbox is
+disabled because Goblins supplies the outer isolation and package approvals.
+
+The Stop hook queries metadata and requests continuation without claiming an
+item or including its body. It respects the native continuation-loop guard.
+This provides turn-boundary checking; it does not implement idle notification.
+
+Verification includes 50 passing Rust tests (one existing integration harness
+ignored), formatting, Clippy with warnings denied, all 27 Nix flake checks and
+the skill validator. Real-sandbox configuration tests cover default/custom
+directory mounts, argument/environment forwarding, read-only setup files,
+parent/child shared auth including replacement of the credential file, hook
+decisions without consumption, unchanged host config and invalid mount rejection.
+All four configuration tests passed in 20.451 seconds. Native =codex login
+status= reads a synthetic credential, and the local native =/hooks= UI shows
+both injected hooks installed/active and their handler marked Managed / Admin
+config. No real credentials or model prompts are used by these tests.
+
+The seven affected mount/configuration/mailbox regression methods passed,
+with the first bind test rerun separately after a 30-second startup timeout
+during concurrent cold builds; that isolated rerun passed in 3.661 seconds.
+
+#+begin_src sh
+nix flake check path:.
+nix develop path:. --command cargo test --workspace --locked
+nix develop path:. --command cargo clippy --workspace --all-targets --locked -- -D warnings
+nix develop path:. --command bash -c \
+  'PYTHONPATH=tests python3 -m unittest test_codex_config test_binds test_configuration test_mailbox -v'
+#+end_src
+
+Outbound model connectivity, idle wakeups, private history overlays for the
+anti-cheating fixture and the opt-in live number game remain pending. This
+change does not add App Server or Channels delivery drivers.
+
 * Manual daemon inbox foundation (2026-09-19)
 
 The first implementation slice on =feat/agent-integration-poc= adds daemon-owned

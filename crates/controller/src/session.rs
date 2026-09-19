@@ -240,8 +240,10 @@ impl Session {
         Ok(())
     }
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
+        let etc = crate::sandbox_etc::mounts(&self.launch.sandbox_etc)?;
         let mut private = self.launch.protected_paths.clone();
         private.push(self.directory.clone());
+        private.extend(etc.iter().map(|(_, destination)| destination.clone()));
         if self.binds.is_none() {
             let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
             if let Some(cwd) = &self.launch.cwd {
@@ -275,6 +277,7 @@ impl Session {
         ];
         roots.extend(self.launch.initial_packages.clone());
         roots.extend(self.launch.initial_closure.clone());
+        roots.extend(etc.iter().map(|(source, _)| source.clone()));
         let initial = self.closure(&roots)?;
         self.placeholders(&initial)?;
         let listener = UnixListener::bind(self.directory.join("request.sock"))?;
@@ -368,6 +371,13 @@ impl Session {
             ]);
         }
         binds.append_args(&mut args, &self.directory.join("store"), &initial)?;
+        for (source, destination) in &etc {
+            args.extend([
+                "--ro-bind".into(),
+                source.display().to_string(),
+                destination.display().to_string(),
+            ]);
+        }
         args.push("--remount-ro".into());
         args.push("/".into());
         let (input, output) = if let Some(slave) = terminal {

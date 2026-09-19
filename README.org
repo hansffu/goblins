@@ -20,7 +20,8 @@ current usage and verified evidence are in USAGE.org and RESULTS.org.
 The next agent milestone is described in
 [[file:docs/specs/AGENT-INTEGRATION.org][the agent integration specification]]: daemon inboxes, sandbox-local hooks and skills,
 native agent interfaces, and a Codex communication proof of concept. Manual
-inbox messaging is implemented; automatic agent notification remains pending.
+inbox messaging and Codex turn-boundary hooks are implemented; idle notification
+and model connectivity remain pending.
 The accepted architecture is recorded in
 [[file:docs/adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001: daemon inboxes with notify-then-fetch]].
 
@@ -178,18 +179,20 @@ the default package from the installation example above. Keep your existing
         ({ pkgs, ... }:
           let
             inherit (inputs.goblins.lib.x86_64-linux)
-              mkGoblin mkGoblins commonTools;
+              mkCodexGoblin mkGoblins commonTools;
 
             goblins = mkGoblins {
               goblins = {
                 # Reuse the premade interactive Fish sandbox.
                 shell = inputs.goblins.lib.x86_64-linux.goblins.shell;
 
-                # Define a custom sandbox for the Codex CLI.
-                codex = mkGoblin {
-                  pkg = pkgs.codex;
-                  binName = "codex";
+                # Native Codex with shared auth and sandbox-only hooks/skill.
+                codex = mkCodexGoblin {
+                  # Defaults to the Codex package from Goblins' pinned Nixpkgs.
+                  # pkg = pkgs.codex;
+                  codexConfigDir = "$HOME/.codex"; # default; runtime path string
                   allowedPackages = commonTools;
+                  codexSettings.model_reasoning_effort = "high";
                 };
               };
             };
@@ -209,9 +212,20 @@ host =bin/goblins= command with all your configurations.
 
 Rebuild your NixOS configuration with =sudo nixos-rebuild switch --flake .#your-host=.
 Start =goblins server start= and =goblins tui=, then use =goblins run shell= or
-=goblins run codex --name snikk= in another terminal. The Codex definition shows
-how to package the CLI; Goblins does not yet support sandbox network access,
-so this is not a complete online Codex setup.
+=goblins run codex --name snikk= in another terminal. The default package also
+includes =shell= and =codex=. =mkCodexGoblin= accepts the =mkGoblin= options,
+adds the Codex directory as a writable startup mount, and installs managed
+hooks and a messaging skill under sandbox-only =/etc/codex=. It never installs
+those files into your host Codex configuration. The selected directory must
+already exist; use a string such as ="$HOME/.codex"= or ="/path/to/codex"=,
+not a Nix path that would copy credentials into the store.
+
+=codexSettings= supplies additional sandbox system configuration, including
+extra native hooks; the built-in SessionStart and Stop handlers are retained.
+Codex uses the outer Goblins sandbox, with its nested sandbox disabled and
+approvals handled by Goblins. See [[file:USAGE.org::*Codex configuration][Codex setup and current limitations]].
+Goblins does not yet support outbound sandbox network access, so this prepares
+the native CLI, auth and hooks but is not yet a complete online Codex setup.
 
 The configured name selects a reusable sandbox configuration; =binName= selects
 its executable. Give each launch its own agent name with
