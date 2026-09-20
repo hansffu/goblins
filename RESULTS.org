@@ -1,6 +1,24 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Preserve inbox wakeups across terminal focus changes (2026-09-20)
+
+Ghostel's focus-in/out reports were counted as human input. When a report
+arrived after the Stop hook captured its input revision, the mismatch prevented
+future idle wakeups even though the composer was empty and the notifier healthy.
+The daemon now distinguishes focus reports from human edits, including reports
+split across socket reads or combined with cursor/device replies. It forwards
+all bytes unchanged. Real typing, pasted text, arrow keys and interruptions
+still take precedence. Incomplete escape sequences defer wakeups and expire
+after 100 ms; a lone Escape remains an interruption.
+
+Validation: 59 Rust tests passed (one existing host driver ignored) and Clippy
+passed with warnings denied. The offline real-sandbox notifier regression passed
+with focus changes after Stop, a subsequent inbox arrival, draft protection,
+busy delivery and notifier-failure recovery. The same test against the installed
+controller, in a separate daemon, failed specifically at the post-focus wakeup;
+its preceding wakeup/draft/busy checks passed. No subscription access was used.
+
 * Codex notify-then-fetch baseline and manual game (2026-09-20)
 
 The sandbox Codex wrapper now registers a delivery epoch and starts a separate

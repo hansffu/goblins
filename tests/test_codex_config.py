@@ -193,6 +193,11 @@ class CodexConfigTests(unittest.TestCase):
         self.d.rpc.call("messages.send", {"key": "working", "to": receiver, "body": "during work"})
         self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 2)
         self.assertEqual(self.sandbox(receiver, "inbox.status", {})["queued"], 0)
+        # Ghostel reports focus changes after Stop. These must not be mistaken
+        # for a human draft and permanently suppress the next inbox wakeup.
+        self.d.wait(lambda: self.d.rpc.call("integration.status", {"session": receiver})["state"] == "ready")
+        peer.send("\x1b[I\x1b[O")
+        time.sleep(0.2)
         # After the empty Stop check, another idle arrival wakes the same process.
         self.d.rpc.call("messages.send", {"key": "idle-again", "to": receiver, "body": "late arrival"})
         self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 3)

@@ -11,6 +11,7 @@ pub struct View {
     pub ready: bool,
     pub input: u64,
     pub interrupted: bool,
+    pub input_pending: bool,
 }
 #[derive(Default)]
 pub struct Integrations {
@@ -172,7 +173,11 @@ impl Integrations {
                             }
                             next.input = view.input;
                             let remind = status["claim"].is_null() || status["claim"] != a.claim;
-                            let continuation = pending && !p.active && !next.paused && remind;
+                            let continuation = pending
+                                && !p.active
+                                && !next.paused
+                                && !view.input_pending
+                                && remind;
                             next.state = if continuation { "working" } else { "ready" }.into();
                             next.claim = status["claim"].clone();
                             result["continue"] = json!(continuation);
@@ -372,6 +377,20 @@ mod tests {
         assert_eq!(f.state.status("child", f.now)["health"], "paused");
         f.hook("UserPromptSubmit", false);
         f.hook("Stop", true);
+        assert_eq!(f.tick()["notify"], true);
+    }
+    #[test]
+    fn stop_defers_while_escape_could_still_be_a_human_interrupt() {
+        let mut f = Fixture::new();
+        f.send();
+        f.hook("UserPromptSubmit", false);
+        f.view.input_pending = true;
+        f.view.ready = false;
+        assert_eq!(f.hook("Stop", false)["continue"], false);
+        assert_eq!(f.tick()["notify"], false);
+        // A complete focus report leaves the human input revision unchanged.
+        f.view.input_pending = false;
+        f.view.ready = true;
         assert_eq!(f.tick()["notify"], true);
     }
     #[test]

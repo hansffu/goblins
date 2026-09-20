@@ -508,6 +508,7 @@ A sandbox notifier watches inbox metadata and requests a fixed check-inbox
 prompt when the native composer is ready. It works attached or detached and
 never fetches message bodies. User typing defers delivery; interrupted turns
 pause notification until another submitted turn or explicit host resume.
+Terminal focus changes and cursor/device reports do not count as user typing.
 Inspect or control it with =goblins integration status/pause/resume NAME=.
 Three unanswered wake attempts become stalled; notifier failure becomes degraded.
 The native agent remains available for manual inbox commands.

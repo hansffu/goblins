@@ -33,6 +33,8 @@ try:
         if not data:
             break
         text += data
+        # Native terminals receive focus reports even when no text was typed.
+        text = text.replace(b"\x1b[I", b"").replace(b"\x1b[O", b"")
         if b"\r" not in text:
             continue
         submitted, text = text.split(b"\r", 1)
