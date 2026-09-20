@@ -22,8 +22,16 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Inspect, pause or resume an agent's inbox notifications
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
+    },
     /// Inspect daemon-recorded messages and outcomes
     CommunicationsLog {
+        /// Read an audit file after daemon shutdown
+        #[arg(long, conflicts_with = "follow")]
+        log: Option<PathBuf>,
         #[arg(long)]
         session: Option<String>,
         #[arg(long)]
@@ -119,6 +127,13 @@ pub enum Command {
         #[arg(last = true)]
         words: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum IntegrationCommand {
+    Status { session: String },
+    Pause { session: String },
+    Resume { session: String },
 }
 
 #[derive(Subcommand)]

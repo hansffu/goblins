@@ -15,6 +15,8 @@ mod worker;
 
 pub mod host;
 pub mod mailbox;
-mod messaging;
+pub mod messaging;
 mod sandbox_etc;
 mod terminal;
+
+pub mod integration;

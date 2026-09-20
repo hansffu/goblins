@@ -86,6 +86,7 @@ pub struct Mailbox {
     messages: Vec<Message>,
     receipts: BTreeMap<(String, String, String), Receipt>,
     audit_failed: bool,
+    auxiliary_events: usize,
 }
 
 struct Change {
@@ -108,6 +109,7 @@ impl Mailbox {
             messages: vec![],
             receipts: BTreeMap::new(),
             audit_failed: false,
+            auxiliary_events: 0,
         })
     }
 
@@ -118,11 +120,55 @@ impl Mailbox {
             .ok_or_else(absent)
     }
 
+    pub fn record(
+        &mut self,
+        actor: &str,
+        kind: &str,
+        data: Value,
+        now: u64,
+        audit: &mut impl Audit,
+    ) -> Result<()> {
+        if self.audit_failed {
+            return Err((-32009, "mailbox audit unavailable".into()));
+        }
+        if self.auxiliary_events >= 16384 {
+            return Err(capacity());
+        }
+        let event = Event {
+            instance: self.instance.clone(),
+            sequence: self.sequence + 1,
+            timestamp: now,
+            kind: kind.into(),
+            actor: actor.into(),
+            sessions: data["message"]
+                .as_str()
+                .and_then(|id| self.messages.iter().find(|m| m.id == id))
+                .map_or_else(
+                    || vec![actor.into()],
+                    |m| vec![m.sender.clone(), m.recipient.clone()],
+                ),
+            data,
+        };
+        let reserved = self
+            .messages
+            .iter()
+            .filter(|m| matches!(m.state, State::Queued | State::Claimed))
+            .count()
+            * 2048;
+        if let Err(e) = audit.append(&event, reserved) {
+            return Err(self.audit_error(e));
+        }
+        self.sequence += 1;
+        self.auxiliary_events += 1;
+        Ok(())
+    }
+
     pub fn status(&self, actor: &str) -> Value {
         let inbox = || self.messages.iter().filter(|m| m.recipient == actor);
         json!({
             "queued":inbox().filter(|m| m.state == State::Queued).count(),
             "claim":inbox().find(|m| m.state == State::Claimed).map(|m| &m.id),
+            "head":inbox().find(|m|matches!(m.state,State::Queued|State::Claimed)).map(|m|json!([m.id,m.claim_generation])),
             "revision":self.sequence,
             "audit_failed":self.audit_failed,
         })
@@ -145,11 +191,20 @@ impl Mailbox {
             command.key().into(),
         );
         if let Some(receipt) = self.receipts.get(&receipt_key) {
-            return if receipt.command == command {
-                Ok(receipt.result.clone())
-            } else {
-                Err(conflict())
-            };
+            if receipt.command != command {
+                return Err(conflict());
+            }
+            let result = receipt.result.clone();
+            // A previously committed receipt remains recoverable even when
+            // audit IO has failed. No mailbox transition is repeated.
+            let _ = self.record(
+                actor,
+                "operation.retried",
+                json!({"key":command.key(),"method":command.method(),"message":result.get("id").or_else(||result.get("reply").and_then(|m|m.get("id"))).or_else(||result.get("message").and_then(|m|m.get("id"))).or_else(||result.get("completed"))}),
+                now,
+                audit,
+            );
+            return Ok(result);
         }
         if self.audit_failed {
             return Err((-32009, "mailbox audit unavailable".into()));

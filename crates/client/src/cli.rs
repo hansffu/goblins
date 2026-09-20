@@ -14,6 +14,11 @@ pub struct Cli {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
+    },
     /// Send text contents through the daemon to another agent
     Send {
         recipient: String,
@@ -322,4 +327,23 @@ impl InboxCommand {
             ),
         })
     }
+}
+
+#[derive(Subcommand)]
+pub enum IntegrationCommand {
+    Register {
+        #[arg(long)]
+        driver: String,
+    },
+    Watch {
+        #[arg(long)]
+        epoch: u64,
+    },
+    Hook {
+        #[arg(long)]
+        event: String,
+        #[arg(long)]
+        active: bool,
+    },
+    Status,
 }

@@ -103,6 +103,14 @@ class MailboxTests(unittest.TestCase):
                     for r in records if r["kind"] == "recipient.stopped"}
         self.assertEqual(failures[session], [pending["id"]])
         self.assertEqual(failures["host"], [reply["reply"]["id"]])
+        log = next(self.d.state.glob("communications-*.jsonl"))
+        offline = self.cli("communications-log", "--log", str(log), "--json")
+        self.assertEqual(offline.returncode, 0, offline.stderr)
+        self.assertEqual([json.loads(line) for line in offline.stdout.splitlines()], records)
+        scoped = self.cli("communications-log", "--log", str(log), "--session", session, "--json")
+        self.assertEqual(scoped.returncode, 0, scoped.stderr)
+        self.assertTrue(scoped.stdout)
+
 
     def test_scope_body_validation_and_recipient_exit(self):
         parent = self.d.start(agent_name="chief")["session"]

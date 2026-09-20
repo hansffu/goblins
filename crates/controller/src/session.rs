@@ -80,6 +80,9 @@ pub(crate) struct Inheritance {
     workspace: Arc<SharedWorkspace>,
 }
 impl Inheritance {
+    pub(crate) fn integration(&self) -> Option<&str> {
+        self.launch.integration.as_deref()
+    }
     pub(crate) fn initially_available(&self, path: &Path) -> bool {
         self.launch.initial_packages.iter().any(|p| p == path)
     }

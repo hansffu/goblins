@@ -41,6 +41,7 @@ fn run() -> Result<i32, String> {
                 .unwrap_or_else(|e| e.exit())
                 .command;
         match command {
+            cli::Command::Integration { command } => return integration(command),
             cli::Command::Send {
                 recipient,
                 source,
@@ -286,6 +287,51 @@ fn main() {
             }
         }
     });
+}
+
+fn integration(command: cli::IntegrationCommand) -> Result<i32, String> {
+    use cli::IntegrationCommand::*;
+    let key = || goblins_protocol::messages::operation_key(None).map_err(|e| e.to_string());
+    let result = match command {
+        Register { driver } => call(
+            "integration.register",
+            json!({"driver":driver,"key":key()?}),
+        )?,
+        Hook { event, active } => {
+            let epoch = std::env::var("GOBLINS_INTEGRATION_EPOCH")
+                .map_err(|_| "missing integration epoch")?
+                .parse::<u64>()
+                .map_err(|_| "invalid integration epoch")?;
+            call(
+                "integration.check",
+                json!({"epoch":epoch,"event":event,"active":active,"key":key()?}),
+            )?
+        }
+        Status => call("integration.status", json!({}))?,
+        Watch { epoch } => {
+            let mut failures = 0;
+            loop {
+                match call("integration.tick", json!({"epoch":epoch})) {
+                    Ok(_) => failures = 0,
+                    Err(e) => {
+                        failures += 1;
+                        if failures == 1 {
+                            eprintln!("goblins: inbox notifier unavailable: {e}");
+                        }
+                        if failures >= 20 {
+                            return Err(
+                                "inbox notifier stopped; manual inbox commands remain available"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
+    };
+    println!("{result}");
+    Ok(0)
 }
 
 #[cfg(test)]

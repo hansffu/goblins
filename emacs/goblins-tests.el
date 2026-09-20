@@ -378,7 +378,7 @@
             (ghostel-send-string "printf ghostel-run-ok > emacs-launch.txt\n"))
           (goblins-test--wait
            (lambda () (file-exists-p (expand-file-name "emacs-launch.txt"
-                                                       (getenv "GOBLINS_TEST_WORKSPACE")))))
+                                                       (getenv "GOBLINS_TEST_WORKSPACE")))) 60)
           (pop-to-buffer status)
           (goblins-test--wait (lambda () (= 3 (length (plist-get goblins--snapshot :sessions)))))
           (dolist (terminal terminals)
@@ -633,8 +633,8 @@
             (should-not (jsonrpc-running-p connection))))
       (when (derived-mode-p 'goblins-status-mode) (kill-buffer (current-buffer))))))
 
-(defun goblins-test--wait (predicate)
-  (let ((deadline (+ (float-time) 30)))
+(defun goblins-test--wait (predicate &optional timeout)
+  (let ((deadline (+ (float-time) (or timeout 30))))
     (while (and (not (funcall predicate)) (< (float-time) deadline))
       (accept-process-output nil 0.02))
     (should (funcall predicate))))

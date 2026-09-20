@@ -1148,17 +1148,18 @@ impl Controller {
             return;
         };
         let outcome = (|| -> std::result::Result<Option<Value>, Fault> {
-            let messaging = matches!(
-                call.method.as_str(),
-                "messages.send"
-                    | "messages.get"
-                    | "messages.reply"
-                    | "inbox.next"
-                    | "inbox.status"
-                    | "inbox.complete"
-                    | "inbox.requeue"
-                    | "communications.list"
-            );
+            let messaging = call.method.starts_with("integration.")
+                || matches!(
+                    call.method.as_str(),
+                    "messages.send"
+                        | "messages.get"
+                        | "messages.reply"
+                        | "inbox.next"
+                        | "inbox.status"
+                        | "inbox.complete"
+                        | "inbox.requeue"
+                        | "communications.list"
+                );
             let legacy_limit = if matches!(c.role, Role::Host) {
                 16384
             } else {
@@ -1185,7 +1186,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","communications-log-v1"]}else{vec!["package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1202,6 +1203,27 @@ impl Controller {
                     Role::Host => "host".to_owned(),
                     Role::Sandbox(id) => id.clone(),
                 };
+                let mut call_params = call.params;
+                let view = if call.method.starts_with("integration.") {
+                    let target = if actor == "host" {
+                        let target = call_params["session"].as_str().ok_or_else(missing)?;
+                        let resolved = self.resolve_session(target)?;
+                        call_params["session"] = json!(resolved);
+                        resolved
+                    } else {
+                        actor.clone()
+                    };
+                    let a = self.sessions.get(&target).ok_or_else(missing)?;
+                    if a.record.state != "running" {
+                        return Err(conflict());
+                    }
+                    if a.inheritance.as_ref().and_then(|i| i.integration()) != Some("codex") {
+                        return Err((-32009, "session has no supported integration".into()));
+                    }
+                    a.terminal.integration_view()
+                } else {
+                    crate::integration::View::default()
+                };
                 self.messaging
                     .commands
                     .try_send(crate::messaging::Work::Call {
@@ -1209,8 +1231,9 @@ impl Controller {
                         id: id.clone(),
                         actor,
                         method: call.method,
-                        params: call.params,
+                        params: call_params,
                         directory: self.message_directory(),
+                        view,
                     })
                     .map_err(|_| capacity())?;
                 c.waiting = Some(("mailbox".into(), id.clone()));
@@ -1372,7 +1395,41 @@ impl Controller {
             .collect()
     }
     pub fn tick(&mut self) -> Result<()> {
-        for response in self.messaging.results.try_iter() {
+        // Drain human input and native output before checking wake revisions.
+        for a in self.sessions.values_mut() {
+            if let Err(e) = a.terminal.tick() {
+                a.record.detail = Some(bounded(&e.to_string()));
+                a.terminal.interrupted = true;
+            }
+        }
+        for mut response in self.messaging.results.try_iter() {
+            if let Ok(result) = &mut response.result
+                && result["notify"] == true
+            {
+                let outcome = self
+                    .sessions
+                    .get_mut(&response.actor)
+                    .filter(|a| a.record.state == "running")
+                    .ok_or("session exited")
+                    .and_then(|a| {
+                        a.terminal
+                            .notify(result["revision"].as_u64().unwrap_or(0))
+                            .map_err(|_| "terminal changed")
+                    });
+                let _ = self
+                    .messaging
+                    .commands
+                    .try_send(crate::messaging::Work::Delivery {
+                        actor: response.actor.clone(),
+                        revision: result["revision"].as_u64().unwrap_or(0),
+                        submitted: outcome.is_ok(),
+                    });
+                result["delivery"] = json!(if outcome.is_ok() {
+                    "submitted"
+                } else {
+                    "deferred"
+                });
+            }
             if let Some(c) = self
                 .connections
                 .iter_mut()

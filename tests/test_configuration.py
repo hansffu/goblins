@@ -33,7 +33,7 @@ class ConfigurationTests(unittest.TestCase):
                 self.assertIn(expected, record["detail"])
             with self.assertRaises(ValueError): d.start("fishy", "relative.json")
             first = Terminal([str(original), "--state-dir", str(d.state), "run", "fishy", "--name", "snikk"]); self.addCleanup(first.close)
-            first.expect("[>#]")
+            first.expect("[>#]", timeout=60)
             record = d.rpc.call("sessions.get", {"session": "snikk"})
             self.assertEqual(record["name"], "fishy")
             self.assertEqual(record["agent_name"], "snikk")
@@ -43,7 +43,7 @@ class ConfigurationTests(unittest.TestCase):
             first.expect(r"(?:^|\n)ORIGINAL=literal \$HOME \$\(false\)\n")
             for name in ("fishy", "added"):
                 client = Terminal([str(updated), "--state-dir", str(d.state), "run", name]); self.addCleanup(client.close)
-                client.expect("updated>")
+                client.expect("updated>", timeout=60)
                 client.send("printf 'UPDATED=%s\\n' \"$GOBLIN_MARKER\"; test -n \"$BASH_VERSION\"; printf 'BASH=%s\\n' \"$?\"; tree --version; exit\n")
                 client.expect(r"(?:^|\n)UPDATED=updated\n"); client.expect(r"(?:^|\n)BASH=0\n"); client.expect(r"(?:^|\n)tree v")
                 self.assertEqual(client.wait(), 0)

@@ -201,7 +201,8 @@ fn duplicate_send_survives_name_reuse_and_changed_body_conflicts() {
         },
     );
     assert_eq!(f.send("p", "scout", "same", "original"), original);
-    assert_eq!(f.audit.events.len(), 1);
+    assert_eq!(f.audit.events.len(), 2);
+    assert_eq!(f.audit.events[1].kind, "operation.retried");
     assert_eq!(
         f.call(
             "p",

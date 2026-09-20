@@ -118,6 +118,13 @@ in
         env.GOBLINS_TEST_MARKER = "inherited";
         sandboxEtc."goblins-test.conf" = "sandbox-only\n";
       };
+      notifier = mkCodexGoblin {
+        pkg = pkgs.writeScriptBin "codex" (
+          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_codex.py
+        );
+        allowedDomains = [ ];
+        allowedPackages = [ ];
+      };
       custom = mkCodexGoblin {
         pkg = codexProbe;
         filterUnavailableMcp = false;
@@ -128,6 +135,7 @@ in
         ];
       };
       native = mkCodexGoblin {
+        filterUnavailableMcp = true;
         allowedDomains = [ ];
         args = [
           "login"
@@ -141,6 +149,7 @@ in
         allowedPackages = [ ];
       };
       native-mcp = mkCodexGoblin {
+        filterUnavailableMcp = true;
         allowedDomains = [ ];
         args = [
           "mcp"

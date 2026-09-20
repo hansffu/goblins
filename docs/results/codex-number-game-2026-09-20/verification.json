@@ -1,0 +1,90 @@
+{
+  "number": 69,
+  "salt": "49e7350367f100de30fc94ed41300c64f15bacc331cc2798c113a4326777097d",
+  "commitment": "87d8658411a4219b71f9ba27ec654f727dc9d4c2c2528e19b6dd43f320f863cd",
+  "guesses": [
+    {
+      "guess": 50,
+      "reply": "too low",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m29",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m39"
+    },
+    {
+      "guess": 75,
+      "reply": "too high",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m45",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m52"
+    },
+    {
+      "guess": 62,
+      "reply": "too low",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m60",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m67"
+    },
+    {
+      "guess": 68,
+      "reply": "too low",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m75",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m82"
+    },
+    {
+      "guess": 71,
+      "reply": "too high",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m90",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m97"
+    },
+    {
+      "guess": 69,
+      "reply": "correct",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m112",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m119"
+    },
+    {
+      "guess": 70,
+      "reply": "too high",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m127",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m134"
+    },
+    {
+      "guess": 69,
+      "reply": "correct",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m142",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m149"
+    },
+    {
+      "guess": 1,
+      "reply": "too low",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m157",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m164"
+    },
+    {
+      "guess": 100,
+      "reply": "too high",
+      "message": "2cceedc7c6db5baf40d0796676da92f2-m172",
+      "response": "2cceedc7c6db5baf40d0796676da92f2-m179"
+    }
+  ],
+  "parent_final": "Acceptance trial passed.\n\n| # | Guess | Response |\n|---:|---:|---|\n| 1 | 50 | too low |\n| 2 | 75 | too high |\n| 3 | 62 | too low |\n| 4 | 68 | too low |\n| 5 | 71 | too high |\n| 6 | 69 | correct |\n| 7 | 70 | too high |\n| 8 | 69 | correct |\n| 9 | 1 | too low |\n| 10 | 100 | too high |\n\n- Actual number: `69`\n- Salt: `49e7350367f100de30fc94ed41300c64f15bacc331cc2798c113a4326777097d`\n- Commitment: `87d8658411a4219b71f9ba27ec654f727dc9d4c2c2528e19b6dd43f320f863cd`\n- First correct guess: guess 6 (`69`)\n- Commitment verification: passed\n- All ten comparisons: passed\n- Picker remains alive for host attachment.",
+  "instance": "2cceedc7c6db5baf40d0796676da92f2",
+  "native_conversations": 2,
+  "manual_trial": true,
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "low",
+  "codex_version": "0.146.0",
+  "reviewed_tool_calls": 76,
+  "host_codex_config_unchanged": true,
+  "attachment_checkpoint_passed": true,
+  "same_processes_after_checkpoint": true,
+  "sessions": [
+    {
+      "id": "2cceedc7c6db5baf40d0796676da92f2-s175",
+      "parent": null,
+      "path": "chief"
+    },
+    {
+      "id": "2cceedc7c6db5baf40d0796676da92f2-s292",
+      "parent": "2cceedc7c6db5baf40d0796676da92f2-s175",
+      "path": "chief/picker"
+    }
+  ]
+}

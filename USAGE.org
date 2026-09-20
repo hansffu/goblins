@@ -487,13 +487,10 @@ Host loopback is not mapped and no inbound ports are automatically published.
 or published-port mappings remain unsupported. Children inherit the selected
 configuration and receive independent network namespaces.
 
-Before launching native Codex, Goblins checks its effective MCP configuration.
-Enabled local MCP servers whose executables are unavailable in the sandbox are
-skipped using invocation-only overrides, with a diagnostic. Existing executables
-and HTTP MCP servers retain their configuration. This does not install missing
-tools or edit host configuration. Set =filterUnavailableMcp = false= to disable
-this convenience. Native Codex's dotted override syntax cannot disable server
-names containing dots; those are reported and left unchanged.
+Configured MCP tools are preserved by default. To opt into skipping unavailable
+local executables through invocation-only overrides, set
+=filterUnavailableMcp = true=. This does not install executables or edit host
+configuration; required packages still need to be included in sandbox access.
 
 For the same packages and directory access as an existing personal definition:
 
@@ -507,9 +504,16 @@ mkCodexGoblin {
 }
 #+end_src
 
-Notification of an already-idle agent is not implemented. Native launch,
-attachment, configuration/auth visibility and hook decisions can be checked
-offline. The live Codex game remains opt-in and has not been run.
+A sandbox notifier watches inbox metadata and requests a fixed check-inbox
+prompt when the native composer is ready. It works attached or detached and
+never fetches message bodies. User typing defers delivery; interrupted turns
+pause notification until another submitted turn or explicit host resume.
+Inspect or control it with =goblins integration status/pause/resume NAME=.
+Three unanswered wake attempts become stalled; notifier failure becomes degraded.
+The native agent remains available for manual inbox commands.
+
+The subscription-backed counting game is a manual acceptance exercise, never a
+default test or a reusable automated live-game script.
 
 For other integrations, =mkGoblin.sandboxEtc= maps relative =/etc= file names
 to text or regular-file derivations. Files are mounted read-only only inside
@@ -571,14 +575,12 @@ exit. Identical retries return the original receipt without another acceptance
 record. =--session= includes the selected session's subtree; omit it to inspect
 all exchanges. Follow currently polls the daemon. Audit files are private
 =STATE/communications-INSTANCE.jsonl= files and survive normal session cleanup.
-Reading these files directly also works after daemon shutdown; the CLI currently
-requires a running daemon. Records contain message text, so handle them as
+Use =goblins communications-log --log FILE --json= after daemon shutdown. Records contain message text, so handle them as
 conversation data. Queued and claimed items fail when their recipient stops.
 
-This is the manual messaging foundation. The Codex helper adds turn-boundary
-hooks and a skill; idle wakeups and the live trial remain.
+The Codex helper adds turn-boundary hooks, a skill and idle wakeups.
 Existing terminal attachment remains available independently of inbox commands.
-See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the remaining work.
+See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the protocol and verification contract.
 
 * Protocol and limits
 

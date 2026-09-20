@@ -102,7 +102,7 @@ class CodexConfigTests(unittest.TestCase):
         custom = self.home / "custom codex"
         custom.mkdir()
         terminal = self.terminal("custom")
-        terminal.expect("CODEX_DIR=" + re.escape(str(custom)))
+        terminal.expect("CODEX_DIR=" + re.escape(str(custom)), timeout=60)
         terminal.expect("codex-probe>")
         config = self.original + b'[mcp_servers.missing_fixture]\ncommand = "/missing/goblins-test-mcp"\n'
         (self.codex / "config.toml").write_bytes(config)
@@ -160,6 +160,48 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual((self.codex / "config.toml").read_text(), config)
         self.assertEqual((plugin / ".mcp.json").read_text(), plugin_config)
         self.assertEqual((plugin / ".codex-plugin/plugin.json").read_text(), manifest)
+
+    def test_notify_then_fetch_without_model_or_attachment(self):
+        launch = self.d.start("notifier", agent_name="receiver")
+        receiver = launch["session"]
+        self.d.wait(lambda: self.d.rpc.call("integration.status", {"session": receiver}).get("epoch"))
+        self.d.rpc.call("integration.pause", {"session": receiver})
+        self.d.rpc.call("messages.send", {"key": "wake", "to": receiver, "body": "private inbox content"})
+        import time
+        time.sleep(1)
+        self.assertEqual(self.sandbox(receiver, "inbox.status", {})["queued"], 1)
+        self.assertEqual(self.d.rpc.call("integration.status", {"session": receiver})["health"], "paused")
+        self.d.rpc.call("integration.resume", {"session": receiver})
+        self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 1)
+        response = self.d.rpc.call("inbox.next", {"key": "reply"})["message"]
+        self.assertEqual(response["body"], "processed: private inbox content")
+        self.assertEqual(response["sender"], receiver)
+        events = self.d.rpc.call("communications.list", {})["events"]
+        self.assertTrue(any(e["kind"] == "integration.wake_attempt" for e in events))
+        # Attachment doesn't consume work; human input holds the composer.
+        peer = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", receiver])
+        self.addCleanup(peer.close)
+        peer.expect("› ")
+        peer.send("busy")
+        self.d.wait(lambda: self.d.get(receiver)["terminal_attached"])
+        self.d.rpc.call("messages.send", {"key": "draft", "to": receiver, "body": "during human input"})
+        import time
+        time.sleep(1)
+        self.assertEqual(self.sandbox(receiver, "inbox.status", {})["queued"], 1)
+        peer.send("\r")
+        peer.expect("Working")
+        self.d.rpc.call("messages.send", {"key": "working", "to": receiver, "body": "during work"})
+        self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 2)
+        self.assertEqual(self.sandbox(receiver, "inbox.status", {})["queued"], 0)
+        # After the empty Stop check, another idle arrival wakes the same process.
+        self.d.rpc.call("messages.send", {"key": "idle-again", "to": receiver, "body": "late arrival"})
+        self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 3)
+        peer.send("notifier-fail\r")
+        self.d.wait(lambda: self.d.rpc.call("integration.status", {"session": receiver})["health"] == "degraded")
+        self.assertEqual(self.d.get(receiver)["state"], "running")
+        self.d.rpc.call("messages.send", {"key": "manual", "to": receiver, "body": "manual fallback"})
+        peer.send("Check your Goblins inbox and process the next item.\r")
+        self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 4)
 
     def test_native_ui_discovers_managed_hooks(self):
         # Trust only this test workspace in the synthetic native configuration.

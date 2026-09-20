@@ -81,11 +81,31 @@ fn execute(cli: Cli) -> Result<i32> {
             let (method, params) = command.request()?;
             return mailbox_command(&state, method, params);
         }
+        Command::Integration { command } => {
+            use cli::IntegrationCommand::*;
+            let (method, session) = match command {
+                Status { session } => ("integration.status", session),
+                Pause { session } => ("integration.pause", session),
+                Resume { session } => ("integration.resume", session),
+            };
+            let mut client = Client::connect(&state)?;
+            println!(
+                "{}",
+                client.call(method, serde_json::json!({"session":session}))?
+            );
+        }
         Command::CommunicationsLog {
+            log,
             session,
             follow,
             json,
         } => {
+            if let Some(path) = log {
+                for event in goblins_controller::messaging::offline_log(&path, session)? {
+                    print_event(&event, json)?;
+                }
+                return Ok(0);
+            }
             let mut session = session;
             let mut cursor = 0;
             let mut instance = None;
@@ -106,17 +126,7 @@ fn execute(cli: Cli) -> Result<i32> {
                     .as_array()
                     .ok_or("invalid communications page")?
                 {
-                    if json {
-                        println!("{event}");
-                    } else {
-                        println!(
-                            "{} {} {} {}",
-                            event["sequence"],
-                            event["kind"].as_str().unwrap_or("unknown"),
-                            plain::escaped_json(&event["actor"])?,
-                            plain::escaped_json(&event["data"])?
-                        );
-                    }
+                    print_event(event, json)?;
                 }
                 cursor = page["cursor"]
                     .as_u64()
@@ -268,6 +278,21 @@ fn mailbox_command(
         result,
         key.as_deref(),
     ))
+}
+
+fn print_event(event: &serde_json::Value, json: bool) -> Result<()> {
+    if json {
+        println!("{event}");
+    } else {
+        println!(
+            "{} {} {} {}",
+            event["sequence"],
+            event["kind"].as_str().unwrap_or("unknown"),
+            plain::escaped_json(&event["actor"])?,
+            plain::escaped_json(&event["data"])?
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

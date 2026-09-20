@@ -8,7 +8,7 @@
   binName ? "codex",
   codexConfigDir ? "$HOME/.codex",
   codexSettings ? { },
-  filterUnavailableMcp ? true,
+  filterUnavailableMcp ? false,
   ...
 }@options:
 let
@@ -42,6 +42,7 @@ let
   };
   hooks = (codexSettings.hooks or { }) // {
     SessionStart = [ handler ] ++ (codexSettings.hooks.SessionStart or [ ]);
+    UserPromptSubmit = [ handler ] ++ (codexSettings.hooks.UserPromptSubmit or [ ]);
     Stop = [ handler ] ++ (codexSettings.hooks.Stop or [ ]);
   };
   etc = {
@@ -59,6 +60,10 @@ let
         builtins.readFile ./codex/mcp.sh
       )
     )}
+    # Register before native launch; the notifier never claims inbox items.
+    registration=$(/run/goblins/bin/goblins integration register --driver codex)
+    export GOBLINS_INTEGRATION_EPOCH=$(${pkgs.jq}/bin/jq -r .epoch <<< "$registration")
+    /run/goblins/bin/goblins integration watch --epoch "$GOBLINS_INTEGRATION_EPOCH" </dev/null &
     # Goblins owns the outer sandbox and package approvals. Nested namespace
     # creation is prohibited by its seccomp policy.
     exec "$codex_executable" \
@@ -90,6 +95,7 @@ mkGoblin (
   forwarded
   // {
     pkg = launcher;
+    integration = "codex";
     inherit binName;
     outName = options.outName or "goblin-codex";
     allowedPackages = (options.allowedPackages or commonTools) ++ [

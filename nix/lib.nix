@@ -23,9 +23,12 @@ let
       roDirs ? [ ],
       roFiles ? [ ],
       sandboxEtc ? { },
+      integration ? null,
     }:
     if !validName binName || !validName outName then
       fail "binName and outName must be simple executable names"
+    else if integration != null && integration != "codex" then
+      fail "unsupported integration driver"
     else if allowNix != false then
       fail "host Nix access is prohibited; request packages through goblins"
     else if allowUnixSockets != true then
@@ -99,7 +102,7 @@ let
       // {
         goblin = {
           build_spec = wrapped.buildSpec;
-          inherit args env;
+          inherit args env integration;
           client_package = inner;
           network = allowedDomains == null;
           sandbox_etc = lib.mapAttrs (

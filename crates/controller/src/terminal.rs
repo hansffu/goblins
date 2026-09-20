@@ -29,6 +29,11 @@ pub struct Terminal {
     hello: Vec<u8>,
     to_peer: Vec<u8>,
     to_pty: Vec<u8>,
+    screen: vt100::Parser,
+    revision: u64,
+    input_revision: u64,
+    input_interrupted: bool,
+    last_output: std::time::Instant,
 }
 fn read(source: &mut impl Read, dest: &mut Vec<u8>) -> io::Result<bool> {
     if dest.len() >= CAP {
@@ -96,6 +101,11 @@ impl Terminal {
             hello: vec![],
             to_peer: vec![],
             to_pty: vec![],
+            screen: vt100::Parser::new(24, 80, 0),
+            revision: 0,
+            input_revision: 0,
+            input_interrupted: false,
+            last_output: std::time::Instant::now(),
         })
     }
     pub fn master(&mut self, fd: OwnedFd) -> Result<()> {
@@ -108,6 +118,10 @@ impl Terminal {
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.dimensions = Some((rows, cols));
+        self.screen
+            .screen_mut()
+            .set_size(rows.min(200), cols.min(500));
+        self.revision += 1;
         let Some(master) = self.master.as_ref() else {
             return Ok(());
         };
@@ -164,8 +178,55 @@ impl Terminal {
         self.interrupted = false;
         Ok(())
     }
+    pub fn integration_view(&self) -> crate::integration::View {
+        let screen = self.screen.screen();
+        let (row, col) = screen.cursor_position();
+        let line = screen
+            .rows(0, screen.size().1)
+            .nth(row as usize)
+            .unwrap_or_default();
+        let text = screen.contents();
+        let empty_or_placeholder = (2..screen.size().1).all(|col| {
+            screen
+                .cell(row, col)
+                .is_none_or(|c| c.contents().trim().is_empty() || c.dim())
+        });
+        let ready = empty_or_placeholder
+            && col == 2
+            && line.starts_with("› ")
+            && !screen.hide_cursor()
+            && !text.contains("esc to interrupt")
+            && self.last_output.elapsed() >= std::time::Duration::from_millis(300)
+            && self.to_pty.is_empty()
+            && !self.eof;
+        crate::integration::View {
+            revision: self.revision,
+            ready,
+            input: self.input_revision,
+            interrupted: self.input_interrupted,
+        }
+    }
+    pub fn notify(&mut self, revision: u64) -> Result<()> {
+        if revision != self.revision
+            || !self.integration_view().ready
+            || self
+                .peer
+                .as_ref()
+                .is_some_and(|p| unix::readable(p.as_raw_fd(), 0).unwrap_or(true))
+        {
+            return Err("terminal changed; notification deferred".into());
+        }
+        let bytes = format!("\x1b[200~{}\x1b[201~\r", crate::integration::PROMPT);
+        self.master
+            .as_mut()
+            .ok_or("terminal unavailable")?
+            .write_all(bytes.as_bytes())?;
+        self.revision += 1;
+        Ok(())
+    }
     pub fn tick(&mut self) -> Result<()> {
         if let Some(peer) = &mut self.peer {
+            let input_before = self.to_pty.len();
             // Even after PTY EOF, continue draining output. Peer input EOF is a
             // consumer disconnect, not payload exit or session cancellation.
             if self.detached {
@@ -191,6 +252,26 @@ impl Terminal {
                     self.interrupted = true;
                 }
                 self.to_pty.clear();
+            }
+            if self.to_pty.len() > input_before {
+                let bytes = &self.to_pty[input_before..];
+                // Terminal query replies are not edits to the human composer.
+                let response = std::str::from_utf8(bytes).is_ok_and(|s| {
+                    s.split_inclusive(['R', 'c']).all(|part| {
+                        part.strip_prefix("\x1b[").is_some_and(|p| {
+                            p.len() > 1
+                                && matches!(p.as_bytes().last(), Some(b'R' | b'c'))
+                                && p[..p.len() - 1]
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || b";?>".contains(&b))
+                        })
+                    })
+                });
+                if !response {
+                    self.input_revision += 1;
+                    self.input_interrupted = bytes.contains(&3) || bytes == b"\x1b";
+                    self.revision += 1;
+                }
             }
             if self.detached {
                 self.to_pty.clear();
@@ -221,16 +302,42 @@ impl Terminal {
             // Before the first consumer, and while attached, preserve lossless
             // backpressure. Detached payloads keep running: retain only a
             // bounded tail, making room for the next read when necessary.
-            let result = if self.detached || (self.connected && self.peer.is_none()) {
-                let mut newest = Vec::new();
-                let result = read(master, &mut newest);
+            let mut newest = Vec::new();
+            let tail = self.detached || (self.connected && self.peer.is_none());
+            let result = if tail || self.to_peer.len() < CAP {
+                // Preserve backpressure by limiting the read to remaining room.
+                let mut buf = [0; 8192];
+                let room = if tail {
+                    buf.len()
+                } else {
+                    buf.len().min(CAP - self.to_peer.len())
+                };
+                match master.read(&mut buf[..room]) {
+                    Ok(n) => {
+                        newest.extend_from_slice(&buf[..n]);
+                        Ok(n == 0)
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        Ok(false)
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                Ok(false)
+            };
+            if !newest.is_empty() {
+                self.screen.process(&newest);
+                self.revision += 1;
+                self.last_output = std::time::Instant::now();
                 let overflow = (self.to_peer.len() + newest.len()).saturating_sub(CAP);
                 self.to_peer.drain(..overflow);
                 self.to_peer.extend(newest);
-                result
-            } else {
-                read(master, &mut self.to_peer)
-            };
+            }
             match result {
                 Ok(eof) => self.eof = eof,
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => self.eof = true,
@@ -311,6 +418,38 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn wake_requires_current_empty_composer_and_yields_to_human_input() {
+        let mut f = Fixture::new();
+        f.terminal.detached = true;
+        f.payload
+            .write_all("\x1b[2J\x1b[H› \x1b[2mAsk a question\x1b[0m\x1b[1;3H\x1b[?25h".as_bytes())
+            .unwrap();
+        f.terminal.tick().unwrap();
+        f.terminal.last_output -= Duration::from_secs(1);
+        let view = f.terminal.integration_view();
+        assert!(view.ready);
+        assert!(f.terminal.notify(view.revision + 1).is_err());
+        f.terminal.notify(view.revision).unwrap();
+        let mut bytes = [0; 256];
+        let n = f.payload.read(&mut bytes).unwrap();
+        assert_eq!(
+            &bytes[..n],
+            format!("\x1b[200~{}\x1b[201~\r", crate::integration::PROMPT).as_bytes()
+        );
+        let mut peer = f.connect();
+        peer.write_all(b"draft").unwrap();
+        assert!(f.terminal.notify(f.terminal.revision).is_err());
+        f.terminal.tick().unwrap();
+        assert_eq!(f.terminal.integration_view().input, 1);
+        f.payload
+            .write_all("\x1b[2J\x1b[H› existing draft\x1b[1;3H".as_bytes())
+            .unwrap();
+        f.terminal.tick().unwrap();
+        f.terminal.last_output -= Duration::from_secs(1);
+        assert!(!f.terminal.integration_view().ready);
     }
 
     #[test]

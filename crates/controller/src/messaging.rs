@@ -49,13 +49,20 @@ pub enum Work {
         method: String,
         params: Value,
         directory: Directory,
+        view: crate::integration::View,
     },
     Sync(Directory),
+    Delivery {
+        actor: String,
+        revision: u64,
+        submitted: bool,
+    },
 }
 pub struct Completed {
     pub connection: u64,
     pub id: Value,
     pub result: mailbox::Result<Value>,
+    pub actor: String,
 }
 pub struct Service {
     pub commands: SyncSender<Work>,
@@ -112,10 +119,27 @@ impl Service {
                     bytes: 0,
                     events: vec![],
                 };
+                let mut integrations = crate::integration::Integrations::default();
                 let mut known: Directory = BTreeMap::new();
                 while let Ok(work) = input.recv() {
+                    if let Work::Delivery {
+                        actor,
+                        revision,
+                        submitted,
+                    } = work
+                    {
+                        let _ = mailbox.record(
+                            &actor,
+                            "integration.wake_result",
+                            json!({"terminal_revision":revision,"submitted":submitted}),
+                            now(),
+                            &mut journal,
+                        );
+                        continue;
+                    }
                     let directory = match &work {
                         Work::Call { directory, .. } | Work::Sync(directory) => directory,
+                        Work::Delivery { .. } => unreachable!(),
                     };
                     // Session metadata is supplied only by the host controller. Retain
                     // ancestry for log filtering after its bounded UI records expire.
@@ -124,6 +148,16 @@ impl Service {
                         .filter(|s| s.running && !directory.get(&s.id).is_some_and(|s| s.running))
                         .map(|s| s.id.clone())
                         .collect();
+                    for (id, session) in directory.iter().filter(|(id, _)| !known.contains_key(*id))
+                    {
+                        let _ = mailbox.record(
+                            id,
+                            "session.started",
+                            json!({"parent":session.parent,"path":session.path}),
+                            now(),
+                            &mut journal,
+                        );
+                    }
                     known.extend(directory.iter().map(|(id, s)| (id.clone(), s.clone())));
                     for session in known.values_mut() {
                         if !directory.contains_key(&session.id) {
@@ -131,6 +165,8 @@ impl Service {
                         }
                     }
                     for id in stopped {
+                        let _ =
+                            mailbox.record(&id, "session.exited", json!({}), now(), &mut journal);
                         let _ = mailbox.stop_recipient(&id, now(), &mut journal);
                     }
                     let Work::Call {
@@ -140,14 +176,27 @@ impl Service {
                         method,
                         params,
                         directory,
+                        view,
                     } = work
                     else {
                         continue;
                     };
                     let result = match method.as_str() {
+                        m if m.starts_with("integration.") => integrations.call(
+                            &actor,
+                            m,
+                            params,
+                            (&view, now()),
+                            &mut mailbox,
+                            &mut journal,
+                        ),
                         "messages.get" => parse::<Get>(params)
                             .and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m))),
-                        "inbox.status" => parse::<Empty>(params).map(|_| mailbox.status(&actor)),
+                        "inbox.status" => parse::<Empty>(params).map(|_| {
+                            let mut s = mailbox.status(&actor);
+                            s["integration"] = integrations.status(&actor, now());
+                            s
+                        }),
                         "communications.list" if actor == "host" => {
                             parse::<List>(params).and_then(|p| page(&journal, &known, p))
                         }
@@ -162,6 +211,7 @@ impl Service {
                             connection,
                             id,
                             result,
+                            actor,
                         })
                         .is_err()
                     {
@@ -256,4 +306,77 @@ fn page(journal: &Journal, directory: &Directory, p: List) -> mailbox::Result<Va
     }
     Ok(json!({"events":events,"cursor":cursor,"session":scope,
         "latest":journal.events.last().map_or(0,|e|e.sequence)}))
+}
+
+/// Offline inspection uses the same cursor/subtree filter as the live endpoint.
+pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Value>> {
+    use std::io::Read;
+    let mut file = File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err("communications log must be a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    (&mut file)
+        .take((LOG_LIMIT + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > LOG_LIMIT || (!bytes.is_empty() && bytes.last() != Some(&b'\n')) {
+        return Err("oversized or incomplete communications log".into());
+    }
+    let mut events: Vec<Event> = Vec::new();
+    let mut known = Directory::new();
+    for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
+        let event: Event = serde_json::from_slice(line)?;
+        if event.sequence != events.len() as u64 + 1
+            || events
+                .first()
+                .is_some_and(|first| first.instance != event.instance)
+        {
+            return Err("communications log has a sequence gap or mixed instances".into());
+        }
+        if event.kind == "session.started" {
+            known.insert(
+                event.actor.clone(),
+                mailbox::Session {
+                    id: event.actor.clone(),
+                    path: event.data["path"].as_str().unwrap_or("").into(),
+                    parent: event.data["parent"].as_str().map(String::from),
+                    running: true,
+                },
+            );
+        }
+        events.push(event);
+    }
+    if session.as_ref().is_some_and(|id| !known.contains_key(id))
+        && !known.values().any(|s| session.as_ref() == Some(&s.path))
+    {
+        return Err(
+            "offline session selection requires a session ID or captured path from session.started"
+                .into(),
+        );
+    }
+    let journal = Journal {
+        file,
+        bytes: bytes.len(),
+        events,
+    };
+    let mut after = 0;
+    let mut result = Vec::new();
+    loop {
+        let p = page(
+            &journal,
+            &known,
+            List {
+                after,
+                limit: 100,
+                session: session.clone(),
+            },
+        )
+        .map_err(|(_, e)| e)?;
+        result.extend(p["events"].as_array().unwrap().iter().cloned());
+        after = p["cursor"].as_u64().unwrap();
+        if after >= p["latest"].as_u64().unwrap() {
+            break;
+        }
+    }
+    Ok(result)
 }

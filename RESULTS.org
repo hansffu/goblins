@@ -1,6 +1,43 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Codex notify-then-fetch baseline and manual game (2026-09-20)
+
+The sandbox Codex wrapper now registers a delivery epoch and starts a separate
+metadata notifier alongside the native CLI. SessionStart/UserPromptSubmit/Stop
+hooks coordinate working and ready states. The daemon owns inbox checks and
+fixed PTY wakeups, using a bounded VT screen parser and a final input/revision
+check. Partial human input, interrupted turns and unknown screens defer delivery.
+Retries are bounded, stale epochs fail, and notifier loss leaves manual native
+use available. Host integration status/pause/resume controls expose recovery.
+
+Communications logs include launch ancestry, hook decisions, wake attempts and
+results, and deduplicated operation retries. Offline CLI log reading supports
+inspection after daemon shutdown. Configured MCP tools are preserved by default;
+filtering unavailable executables is now explicitly opt-in. Host Codex settings
+remain untouched; children share the same configured auth directory.
+
+The manual subscription-backed game passed: =69= was first found on guess six.
+All ten individual guesses/replies were ordered and correlated, every comparison
+was correct, and the final reveal matched the original salted commitment.
+Attachment/detachment and a deliberately delayed host resume after guess five
+worked. Review of 76 tool calls found no alternate communication paths. The
+child repaired an initial unavailable-python/empty-commitment setup failure
+through daemon messaging before the first guess.
+
+[[file:docs/results/codex-number-game-2026-09-20/README.md][The trial report]] links the exact audit log, verification result and tool-call
+evidence. No reusable live-game automation was added to the repository or suite.
+
+Validation: 55 Rust tests passed (one existing host driver ignored), Clippy
+passed with warnings denied, and all 62 Nix flake checks passed. The full default
+integration run passed 65 of 70 tests. Its five failures exposed three startup
+timeouts, an Emacs fixture selecting Codex instead of shell, and retry events
+missing from session-filtered logs. After corrections, all five cases and the
+expanded offline notifier test passed together (six tests in 151.034 seconds).
+The notifier regression covers pause/resume, partial human input, work arriving
+during a turn, idle wakeup, notifier failure and manual recovery without model
+access. The full 70-test run was not repeated after these targeted corrections.
+
 * Explain agent-requested stops (2026-09-20)
 
 The reported Codex termination followed an explicit parent command to stop

@@ -1,5 +1,7 @@
 """Emacs approvals against the real daemon; never loads the user's init file."""
 import os
+import json
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -37,7 +39,7 @@ class EmacsTests(unittest.TestCase):
         leaf = child(kid, "leaf")
         child(other, "kid")
         result = subprocess.run(
-            ["emacs", "--batch", "-Q", "-L", str(ROOT / "emacs"),
+            ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
              "-l", "goblins.el", "-l", "goblins-tests.el", "-f", "goblins-test-tree-live"],
             env={**os.environ,"GOBLINS_TEST_STATE":str(daemon.state),
                  "GOBLINS_TEST_PARENT":parent["session"],"GOBLINS_TEST_CHILD":kid["session"],
@@ -52,7 +54,7 @@ class EmacsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="ge-start-") as state:
             try:
                 result = subprocess.run(
-                    ["emacs", "--batch", "-Q", "-L", str(ROOT / "emacs"),
+                    ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
                      "-l", "goblins-tests", "-f", "goblins-test-start-live"],
                     env={**os.environ, "GOBLINS_APP": str(application),
                          "GOBLINS_TEST_STATE": state},
@@ -83,7 +85,7 @@ class EmacsTests(unittest.TestCase):
                 session=agent["session"], state="pending")), None)))
             peers.append(peer)
         result = subprocess.run(
-            ["emacs", "--batch", "-Q", "-L", str(ROOT / "emacs"),
+            ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
              "-l", "goblins-tests", "-f", "goblins-test-live"],
             env={**os.environ, "GOBLINS_TEST_STATE": str(daemon.state),
                  "GOBLINS_TEST_ACCEPT": requests[0]["id"],
@@ -107,11 +109,20 @@ class EmacsTests(unittest.TestCase):
         daemon = Daemon()
         self.addCleanup(daemon.close)
         external = daemon.start()
+        # Blank selection exercises the configured default. Keep this fixture
+        # shell-only: adding Codex must never turn a default test into model work.
+        manifest = json.loads(Path(daemon.manifest).read_text())
+        manifest["goblins"] = {"shell": manifest["goblins"]["shell"]}
+        manifest_path = Path(daemon.temp.name) / "shell-only.json"
+        manifest_path.write_text(json.dumps(manifest))
+        launcher = Path(daemon.temp.name) / "goblins-shell-only"
+        launcher.write_text(f'#!/bin/sh\nexec {shlex.quote(daemon.binary)} --runtime {shlex.quote(str(manifest_path))} "$@"\n')
+        launcher.chmod(0o700)
         with tempfile.TemporaryDirectory(prefix="ge-workspace-") as workspace:
             result = subprocess.run(
-                ["emacs", "--batch", "-Q", "-L", str(ROOT / "emacs"),
+                ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
                  "-l", "goblins-tests", "-f", "goblins-test-run-live"],
-                env={**os.environ, "GOBLINS_APP": str(daemon.app),
+                env={**os.environ, "GOBLINS_APP": str(launcher),
                      "GOBLINS_TEST_STATE": str(daemon.state),
                      "GOBLINS_TEST_WORKSPACE": workspace,
                      "GOBLINS_TEST_EXTERNAL": external["session"]},
