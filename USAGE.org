@@ -494,11 +494,13 @@ package approvals. =args= are passed unchanged after these defaults.
 system defaults below Codex's user/project/CLI layers. Native hooks from
 =codexSettings.hooks= are appended to Goblins' SessionStart/UserPromptSubmit/Stop handlers.
 Codex treats this system source as managed; no host hook-trust changes or
-blanket hook-trust bypass is needed. The matching skill is mounted at
-=/etc/codex/skills/goblins/SKILL.md=.
+blanket hook-trust bypass is needed. The messaging skill is mounted at
+=/etc/codex/skills/goblins/SKILL.md= and the live package-request skill at
+=/etc/codex/skills/goblins-packages/SKILL.md=.
 
-SessionStart supplies messaging instructions. Stop queries inbox metadata and,
-when work remains, requests a continuation telling the agent to fetch it.
+SessionStart supplies Goblins context but does not ask Codex to inspect an inbox.
+The current user request remains primary. Stop queries inbox metadata and, when
+work remains, requests a continuation telling the agent to fetch it.
 The hook never claims an item or pastes its contents. It respects
 =stop_hook_active= to prevent endless continuation loops; the skill instructs
 the agent to process items sequentially until empty. A failed status check

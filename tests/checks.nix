@@ -80,6 +80,7 @@ in
         root = ../.;
         fileset = pkgs.lib.fileset.unions [
           ../nix
+          ../skills
           ../Cargo.toml
           ../Cargo.lock
           ../src
@@ -90,6 +91,7 @@ in
     in
     api.mkGoblins {
       goblins.shell = api.goblins.shell;
+      goblins.codex = api.goblins.codex;
     };
   runtime-no-python =
     let
@@ -282,6 +284,7 @@ in
         { codexConfigDir = "relative"; }
         { env.CODEX_HOME = "/different"; }
         { injectedFiles."codex/config.toml" = "override"; }
+        { injectedFiles."codex/skills/goblins-packages/SKILL.md" = "override"; }
       ];
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

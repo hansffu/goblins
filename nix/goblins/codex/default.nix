@@ -6,6 +6,7 @@ let
   managedFiles = [
     "codex/config.toml"
     "codex/skills/goblins/SKILL.md"
+    "codex/skills/goblins-packages/SKILL.md"
   ];
   runtimeDirectory =
     path:
@@ -38,7 +39,9 @@ in
     "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" (
       settings // { hooks = hooks.mkHooks (settings.hooks or { }); }
     );
-    "codex/skills/goblins/SKILL.md" = builtins.readFile ./goblins/SKILL.md;
+    "codex/skills/goblins/SKILL.md" = builtins.readFile ../../../skills/goblins/SKILL.md;
+    "codex/skills/goblins-packages/SKILL.md" =
+      builtins.readFile ../../../skills/goblins-packages/SKILL.md;
   };
 
   # Preserve ordinary mkGoblin options, including ones added in the future.

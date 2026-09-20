@@ -63,13 +63,16 @@ class CodexConfigTests(unittest.TestCase):
         terminal.expect("CODEX_DIR=" + re.escape(str(self.codex)))
         terminal.expect(r"CODEX_ARG=literal \$\(false\) argument")
         terminal.expect("codex-probe>")
-        terminal.send("test -r /etc/codex/skills/goblins/SKILL.md && test -r /etc/codex/config.toml; printf 'SETUP=%s\\n' \"$?\"; echo changed >> /etc/codex/config.toml; printf 'READONLY=%s\\n' \"$?\"; test -e \"$HOME/secret\"; printf 'SECRET=%s\\n' \"$?\"; cat /etc/goblins-test.conf\n")
+        terminal.send("test -r /etc/codex/skills/goblins/SKILL.md && test -r /etc/codex/skills/goblins-packages/SKILL.md && test -r /etc/codex/config.toml; printf 'SETUP=%s\\n' \"$?\"; echo changed >> /etc/codex/config.toml; printf 'READONLY=%s\\n' \"$?\"; test -e \"$HOME/secret\"; printf 'SECRET=%s\\n' \"$?\"; cat /etc/goblins-test.conf\n")
         terminal.expect(r"(?:^|\n)SETUP=0\n")
         terminal.expect(r"(?:^|\n)READONLY=1\n")
         terminal.expect(r"(?:^|\n)SECRET=1\n")
         terminal.expect(r"(?:^|\n)sandbox-only\n")
         context = self.hook(terminal, "SessionStart")
         self.assertEqual(context["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        instructions = context["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("Do not check the inbox proactively", instructions)
+        self.assertNotIn("Check goblins inbox status for initial work", instructions)
         self.assertEqual(self.hook(terminal, "Stop"), {})
         parent = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
         self.d.rpc.call("messages.send", {"key": "task", "to": parent, "body": "private message body"})

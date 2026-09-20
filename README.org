@@ -215,7 +215,7 @@ Start =goblins server start= and =goblins tui=, then use =goblins run shell= or
 =goblins run codex --name snikk= in another terminal. The default package also
 includes =shell= and =codex=. =mkCodexGoblin= accepts the =mkGoblin= options,
 adds the Codex directory as a writable startup mount, and installs managed
-hooks and a messaging skill under sandbox-only =/etc/codex=. It never installs
+hooks plus messaging and package-request skills under sandbox-only =/etc/codex=. It never installs
 those files into your host Codex configuration. The selected directory must
 already exist; use a string such as ="$HOME/.codex"= or ="/path/to/codex"=,
 not a Nix path that would copy credentials into the store.
@@ -275,7 +275,8 @@ package, app, check, and development-shell outputs.
 | =nix/lib.nix= | Public constructors and presets |
 | =nix/mk-goblin.nix=, =nix/mk-goblins.nix= | Sandbox and host-package composition |
 | =nix/goblins/mk-codex.nix= | Codex options composed with =mkGoblin= |
-| =nix/goblins/codex/= | Codex launcher, hooks, managed config and messaging skill |
+| =nix/goblins/codex/= | Codex launcher, hooks and managed config |
+| =skills/= | Reusable Goblins agent skills |
 | =nix/internal/= | Shared Nix argument validation |
 | =nix/packages/goblins.nix= | Host binary, including its Rust helper, controller, and pinned catalog |
 | =nix/packages/internal-goblins.nix= | Restricted =goblins request-package= binary for the sandbox |

@@ -19,7 +19,8 @@ in [[file:DAEMON.org][DAEMON.org]] still apply.
 =mkCodexGoblin= takes the same options as =mkGoblin=, plus =codexConfigDir=
 (default =$HOME/.codex=), =codexSettings= and the native =pkg=. It shares the
 entire Codex directory with children. Generated hooks/configuration and the
-Goblins skill are immutable mounts under =/etc/codex=; no host settings are
+Goblins messaging and package-request skills are immutable mounts under
+=/etc/codex=; no host settings are
 rewritten. Native credential refresh retains the normal writable auth mount.
 Configured MCP servers are preserved by default. The optional
 =filterUnavailableMcp=true= behavior is an explicit compatibility option.
@@ -94,7 +95,8 @@ queued body. Binary attachments and general file transfer are outside scope.
 
 * Working and idle transitions
 
-SessionStart supplies the skill/context and reports working activity.
+SessionStart supplies skill/context pointers, explicitly defers inbox work to a
+notification or Stop continuation, and reports working activity.
 UserPromptSubmit reports a new turn. Stop atomically checks the authoritative
 inbox and reports whether Codex should continue or return to its prompt.
 

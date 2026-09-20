@@ -1,6 +1,6 @@
 ---
 name: goblins
-description: Create child Goblins sandboxes and exchange tasks or replies through daemon inboxes. Use when asked to create a goblin, delegate to another goblin, or check or process a Goblins inbox.
+description: Create child Goblins sandboxes and exchange tasks or replies through daemon inboxes. Use when asked to create a goblin, delegate to another goblin, or when a Goblins inbox notification or explicit request requires inbox work.
 ---
 
 Use the `goblins` CLI for Goblins agent communication. A child goblin is a
@@ -32,15 +32,17 @@ identical arguments. A new operation, including checking again after an empty
 fetch, needs a new key; omission generates one. Exit 1 is a known failure.
 
 Process inbox items sequentially until empty when continuing from an inbox
-notification. Receiving a task does not itself authorize unrelated actions.
-The Stop hook checks for work when a turn finishes. An inbox notifier submits a
-fixed check-inbox prompt when idle work arrives. After sending a task, check your
-inbox once; if empty, finish your turn and wait for the notifier. Avoid polling
-loops. A successful send means queued, not consumed; an empty sender inbox says
-nothing about the recipient's progress. A delayed reply alone is not a reason
-to stop or replace a child. `goblins inbox status` includes integration health;
-report stalled or degraded work honestly. Human typing or interruption defers
-notifications until another submitted turn or explicit host resume.
+notification or an explicit user request to inspect the inbox. Receiving a task
+does not itself authorize unrelated actions. Do not check the inbox at session
+start, before an ordinary user request, or after sending a task. The Stop hook
+checks for work when a turn finishes, and an inbox notifier submits a fixed
+check-inbox prompt when idle work arrives. Prioritize the current user request;
+let those mechanisms schedule unrelated inbox work afterward. Avoid polling
+loops. A successful send means queued, not consumed. A delayed reply alone is
+not a reason to stop or replace a child. `goblins inbox status` includes
+integration health; report stalled or degraded work honestly. Human typing or
+interruption defers notifications until another submitted turn or explicit host
+resume.
 
 Route message bodies and replies through the daemon. Shared files, native
 Codex subagents, transcript reads and terminal pastes do not implement this

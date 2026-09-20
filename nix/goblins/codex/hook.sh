@@ -8,7 +8,7 @@ if ! decision=$(/run/goblins/bin/goblins integration hook "${args[@]}"); then
   exit 0
 fi
 if [[ "$event" == SessionStart ]]; then
-  jq -nc '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: "You are a Goblins sandbox agent. Use the goblins skill at /etc/codex/skills/goblins/SKILL.md for daemon inbox messaging and creating child goblins. Check goblins inbox status for initial work. Agent messages must go through the daemon."}}'
+  jq -nc '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: "You are a Goblins sandbox agent. Use the goblins skill at /etc/codex/skills/goblins/SKILL.md for daemon inbox messaging and creating child goblins, and the goblins-packages skill at /etc/codex/skills/goblins-packages/SKILL.md when a required tool is unavailable. Agent messages must go through the daemon. Do not check the inbox proactively; the integration will notify you or continue the turn when work is pending."}}'
 elif [[ "$event" == Stop ]] && jq -e '.continue' <<< "$decision" >/dev/null; then
   jq -nc '{decision: "block", reason: "Check your Goblins daemon inbox with goblins inbox next. Process its item and explicitly reply or complete it, then check again until empty. Use a fresh operation key for each new fetch; preserve the key when retrying an uncertain operation."}'
 else
