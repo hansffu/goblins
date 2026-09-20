@@ -1,10 +1,10 @@
 { pkgs }:
 let
-  validate = import ./internal/validate.nix { inherit (pkgs) lib; };
+  validate = import ../internal/validate.nix { inherit (pkgs) lib; };
 in
 { goblins }:
 assert validate.goblins goblins;
-import ./packages/goblins.nix {
+import ../packages/goblins.nix {
   inherit pkgs goblins;
   configurations = pkgs.lib.mapAttrs (
     name: value:

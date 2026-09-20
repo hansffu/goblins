@@ -16,9 +16,8 @@
       pkgs = import nixpkgs { inherit system; };
       sandbox = agent-sandbox.lib.${system};
       goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox; };
-      goblins = goblinsLib.mkGoblins {
-        goblins.shell = goblinsLib.goblins.shell;
-        goblins.codex = goblinsLib.goblins.codex;
+      goblins = goblinsLib.builders.mkGoblins {
+        goblins = goblinsLib.defaultGoblins;
       };
     in
     {

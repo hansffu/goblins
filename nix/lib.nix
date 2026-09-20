@@ -1,15 +1,9 @@
 { pkgs, sandbox }:
 let
-  mkGoblin = import ./mk-goblin.nix { inherit pkgs sandbox; };
-  mkGoblins = import ./mk-goblins.nix { inherit pkgs; };
-  mkCodexGoblin = import ./goblins/mk-codex.nix {
-    inherit pkgs mkGoblin;
-    inherit (sandbox) commonTools;
-  };
+  builders = import ./builders { inherit pkgs sandbox; };
 in
 {
-  inherit mkGoblin mkCodexGoblin mkGoblins;
+  inherit builders;
   inherit (sandbox) commonTools;
-  goblins.shell = import ./goblins/shell.nix { inherit pkgs mkGoblin; };
-  goblins.codex = mkCodexGoblin { };
+  defaultGoblins = import ./default-goblins { inherit pkgs builders; };
 }

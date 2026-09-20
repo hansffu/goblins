@@ -240,7 +240,10 @@ The plain view additionally accepts =status= to print current state.
 
 * Nix API
 
-The root flake exports =lib.x86_64-linux.{mkGoblin,mkCodexGoblin,mkGoblins,commonTools,goblins}=. The
+The root flake exports =lib.x86_64-linux.builders= with =mkGoblin=,
+=mkCodexGoblin= and =mkGoblins=, and =lib.x86_64-linux.defaultGoblins= with
+the =shell= and =codex= presets. =commonTools= remains at
+=lib.x86_64-linux.commonTools=. The
 =packages.x86_64-linux.goblins= and default package are built with these helpers.
 See [[file:README.org::*Configure named goblins with Nix][the configuration example]].
 
@@ -248,6 +251,8 @@ Share ordinary options as an attribute set and compose agent-specific settings:
 
 #+begin_src nix
 let
+  inherit (inputs.goblins.lib.x86_64-linux) builders commonTools;
+  inherit (builders) mkGoblin mkCodexGoblin mkGoblins;
   shared = {
     allowedPackages = commonTools ++ [ pkgs.tree ];
     rwDirs = [ "$HOME/code" ];
@@ -270,8 +275,8 @@ mkGoblins {
 =injectedFiles= entries to the supplied options. Attribute-set =//= merges are shallow;
 merge nested =env= or =codexSettings= sets explicitly when extending them.
 
-Use =lib.x86_64-linux.goblins.shell= for the predefined interactive Fish
-configuration in =nix/goblins/shell.nix=. The host and inner binary definitions
+Use =lib.x86_64-linux.defaultGoblins.shell= for the predefined interactive Fish
+configuration in =nix/default-goblins/shell.nix=. The host and inner binary definitions
 live separately under =nix/packages/=. The preset uses commonTools and is the
 default =goblins run shell= configuration; custom entries still use =mkGoblin=.
 

@@ -4,7 +4,7 @@
   commonTools,
 }:
 let
-  codex = import ./codex { inherit pkgs; };
+  codex = import ../goblins/codex { inherit pkgs; };
 in
 {
   pkg ? pkgs.codex,

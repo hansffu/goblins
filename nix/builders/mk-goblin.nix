@@ -1,8 +1,8 @@
 { pkgs, sandbox }:
 let
   inherit (pkgs) lib;
-  validate = import ./internal/validate.nix { inherit lib; };
-  client = import ./packages/internal-goblins.nix { inherit pkgs; };
+  validate = import ../internal/validate.nix { inherit lib; };
+  client = import ../packages/internal-goblins.nix { inherit pkgs; };
 in
 {
   pkg,

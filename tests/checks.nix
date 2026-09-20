@@ -4,7 +4,7 @@
   sandbox,
 }:
 let
-  inherit (goblinsLib) mkGoblin mkCodexGoblin mkGoblins;
+  inherit (goblinsLib.builders) mkGoblin mkCodexGoblin mkGoblins;
   base = {
     pkg = pkgs.bashInteractive;
     binName = "bash";
@@ -89,9 +89,8 @@ in
       };
       api = import "${source}/nix/lib.nix" { inherit pkgs sandbox; };
     in
-    api.mkGoblins {
-      goblins.shell = api.goblins.shell;
-      goblins.codex = api.goblins.codex;
+    api.builders.mkGoblins {
+      goblins = api.defaultGoblins;
     };
   runtime-no-python =
     let

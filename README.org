@@ -179,12 +179,13 @@ the default package from the installation example above. Keep your existing
         ({ pkgs, ... }:
           let
             inherit (inputs.goblins.lib.x86_64-linux)
-              mkCodexGoblin mkGoblins commonTools;
+              builders defaultGoblins commonTools;
+            inherit (builders) mkCodexGoblin mkGoblins;
 
             goblins = mkGoblins {
               goblins = {
                 # Reuse the premade interactive Fish sandbox.
-                shell = inputs.goblins.lib.x86_64-linux.goblins.shell;
+                shell = defaultGoblins.shell;
 
                 # Native Codex with shared auth and sandbox-only hooks/skill.
                 codex = mkCodexGoblin {
@@ -245,14 +246,15 @@ the server; existing sessions retain their selected configuration.
 
 See [[file:USAGE.org::*Nix API][the Nix API options and limits]].
 
-Premade sandboxes live under =nix/goblins/= and are exposed through
-=inputs.goblins.lib.x86_64-linux.goblins=. The presets are =shell= (interactive Fish with =commonTools=) and =codex=.
+Builder functions live under =inputs.goblins.lib.x86_64-linux.builders=.
+Premade sandboxes live under =nix/default-goblins/= and are exposed through
+=inputs.goblins.lib.x86_64-linux.defaultGoblins=. The presets are =shell= (interactive Fish with =commonTools=) and =codex=.
 The example above customizes the Codex preset. To install just the preset, use this =mkGoblins=
 definition in the same =let= binding:
 
 #+begin_src nix
 mkGoblins {
-  goblins.shell = inputs.goblins.lib.x86_64-linux.goblins.shell;
+  goblins.shell = defaultGoblins.shell;
 }
 #+end_src
 
@@ -273,14 +275,13 @@ package, app, check, and development-shell outputs.
 | Location | Purpose |
 |----------+---------|
 | =nix/lib.nix= | Public constructors and presets |
-| =nix/mk-goblin.nix=, =nix/mk-goblins.nix= | Sandbox and host-package composition |
-| =nix/goblins/mk-codex.nix= | Codex options composed with =mkGoblin= |
+| =nix/builders/= | =mkGoblin=, =mkCodexGoblin= and =mkGoblins= constructors |
+| =nix/default-goblins/= | Default shell and Codex presets |
 | =nix/goblins/codex/= | Codex launcher, hooks and managed config |
 | =skills/= | Reusable Goblins agent skills |
 | =nix/internal/= | Shared Nix argument validation |
 | =nix/packages/goblins.nix= | Host binary, including its Rust helper, controller, and pinned catalog |
 | =nix/packages/internal-goblins.nix= | Restricted =goblins request-package= binary for the sandbox |
-| =nix/goblins/shell.nix= | Predefined interactive Fish goblin with commonTools |
 | =tests/fixtures.nix= | Runtime dependency fixtures and agent-sandbox baselines |
 | =tests/checks.nix= | Nix API validation and named configuration test build |
 | =src/main.rs= | Retained single-threaded namespace mount helper |
