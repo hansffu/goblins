@@ -21,7 +21,7 @@ in
         roDirs
         roFiles
         args
-        sandboxEtc
+        injectedFiles
         env
         ;
     in
@@ -51,14 +51,14 @@ in
     else if !builtins.isList args || !builtins.all builtins.isString args then
       fail "args must be a list of strings"
     else if
-      !builtins.isAttrs sandboxEtc
+      !builtins.isAttrs injectedFiles
       || !builtins.all (
         name:
         builtins.match "[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*" name != null
-        && (builtins.isString sandboxEtc.${name} || lib.isDerivation sandboxEtc.${name})
-      ) (builtins.attrNames sandboxEtc)
+        && (builtins.isString injectedFiles.${name} || lib.isDerivation injectedFiles.${name})
+      ) (builtins.attrNames injectedFiles)
     then
-      fail "sandboxEtc must map relative /etc file names to text or file derivations"
+      fail "injectedFiles must map relative /etc file names to text or file derivations"
     else if
       !builtins.isAttrs env
       || !builtins.all (

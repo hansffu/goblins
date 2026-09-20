@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 pub fn mounts(files: &BTreeMap<String, PathBuf>) -> Result<Vec<(PathBuf, PathBuf)>> {
     if files.len() > 128 {
-        return Err("at most 128 sandboxEtc files are supported".into());
+        return Err("at most 128 injectedFiles files are supported".into());
     }
     let mut mounts: Vec<(PathBuf, PathBuf)> = vec![];
     for (name, source) in files {
@@ -19,21 +19,21 @@ pub fn mounts(files: &BTreeMap<String, PathBuf>) -> Result<Vec<(PathBuf, PathBuf
                     })
             })
         {
-            return Err("sandboxEtc names must be relative /etc file paths".into());
+            return Err("injectedFiles names must be relative /etc file paths".into());
         }
         // Require a complete immutable store object, not an arbitrary host file
         // or a path that could escape through a symlink within a derivation.
         store_path(source)?;
         let meta = std::fs::symlink_metadata(source)?;
         if !meta.is_file() {
-            return Err("sandboxEtc sources must be regular Nix store files".into());
+            return Err("injectedFiles sources must be regular Nix store files".into());
         }
         let destination = PathBuf::from("/etc").join(name);
         if mounts
             .iter()
             .any(|(_, other)| destination.starts_with(other) || other.starts_with(&destination))
         {
-            return Err("sandboxEtc file destinations overlap".into());
+            return Err("injectedFiles file destinations overlap".into());
         }
         mounts.push((source.clone(), destination));
     }

@@ -60,10 +60,10 @@ let
     { args = "-i"; }
     { env.PATH = "/host/bin"; }
     { env.BAD = 1; }
-    { sandboxEtc = [ ]; }
-    { sandboxEtc."../escape" = "bad"; }
-    { sandboxEtc."/etc/absolute" = "bad"; }
-    { sandboxEtc."codex/config.toml" = 1; }
+    { injectedFiles = [ ]; }
+    { injectedFiles."../escape" = "bad"; }
+    { injectedFiles."/etc/absolute" = "bad"; }
+    { injectedFiles."codex/config.toml" = 1; }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
@@ -116,7 +116,7 @@ in
         ];
         codexSettings.model = "fixture-model";
         env.GOBLINS_TEST_MARKER = "inherited";
-        sandboxEtc."goblins-test.conf" = "sandbox-only\n";
+        injectedFiles."goblins-test.conf" = "sandbox-only\n";
       };
       notifier = mkCodexGoblin {
         pkg = pkgs.writeScriptBin "codex" (
@@ -281,7 +281,7 @@ in
         { codexConfigDir = null; }
         { codexConfigDir = "relative"; }
         { env.CODEX_HOME = "/different"; }
-        { sandboxEtc."codex/config.toml" = "override"; }
+        { injectedFiles."codex/config.toml" = "override"; }
       ];
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

@@ -20,7 +20,7 @@ in
   rwFiles ? [ ],
   roDirs ? [ ],
   roFiles ? [ ],
-  sandboxEtc ? { },
+  injectedFiles ? { },
   integration ? null,
 }:
 let
@@ -44,7 +44,7 @@ let
   };
   wrapped = sandbox.mkSandbox sandboxOptions;
 in
-assert validate.goblin (sandboxOptions // { inherit args integration sandboxEtc; });
+assert validate.goblin (sandboxOptions // { inherit args integration injectedFiles; });
 wrapped
 // {
   goblin = {
@@ -58,6 +58,6 @@ wrapped
         pkgs.writeText "goblins-etc-${builtins.baseNameOf name}" value
       else
         value
-    ) sandboxEtc;
+    ) injectedFiles;
   };
 }

@@ -34,7 +34,7 @@ in
     hooks.package
   ];
   mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
-  mkEtc = settings: {
+  mkInjectedFiles = settings: {
     "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" (
       settings // { hooks = hooks.mkHooks (settings.hooks or { }); }
     );
@@ -54,7 +54,7 @@ in
       pkg,
       codexConfigDir,
       env,
-      sandboxEtc,
+      injectedFiles,
     }:
     assert lib.assertMsg (
       !(pkg ? version) || lib.versionAtLeast pkg.version "0.146.0"
@@ -63,7 +63,7 @@ in
       !(env ? CODEX_HOME)
     ) "mkCodexGoblin: use codexConfigDir instead of env.CODEX_HOME";
     assert lib.assertMsg (
-      lib.intersectLists managedFiles (builtins.attrNames sandboxEtc) == [ ]
-    ) "mkCodexGoblin: sandboxEtc cannot replace the Goblins Codex config or skill";
+      lib.intersectLists managedFiles (builtins.attrNames injectedFiles) == [ ]
+    ) "mkCodexGoblin: injectedFiles cannot replace the Goblins Codex config or skill";
     builtins.seq (runtimeDirectory codexConfigDir) true;
 }

@@ -172,7 +172,7 @@ opt-in number game remain pending. App Server and Channels are not implemented.
 Codex directory, and sandbox-only managed SessionStart/Stop hooks and messaging
 skill. The pinned package is Codex 0.146.0; callers can override =pkg=.
 
-The general =sandboxEtc= mechanism mounts immutable file derivations read-only
+The general =injectedFiles= mechanism mounts immutable file derivations read-only
 under the sandbox's =/etc=. Store closures are retained with the session;
 invalid destinations/sources and overlapping host binds are rejected. No host
 configuration files are created to install Goblins hooks. Native Codex continues

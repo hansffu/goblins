@@ -16,7 +16,7 @@ in
   allowedPackages ? commonTools,
   rwDirs ? [ ],
   env ? { },
-  sandboxEtc ? { },
+  injectedFiles ? { },
   ...
 }@options:
 assert codex.validate {
@@ -24,7 +24,7 @@ assert codex.validate {
     pkg
     codexConfigDir
     env
-    sandboxEtc
+    injectedFiles
     ;
 };
 mkGoblin (
@@ -42,6 +42,6 @@ mkGoblin (
     };
     allowedPackages = allowedPackages ++ codex.packages;
     rwDirs = pkgs.lib.unique (rwDirs ++ [ codexConfigDir ]);
-    sandboxEtc = sandboxEtc // codex.mkEtc codexSettings;
+    injectedFiles = injectedFiles // codex.mkInjectedFiles codexSettings;
   }
 )

@@ -266,8 +266,8 @@ mkGoblins {
 }
 #+end_src
 
-=mkCodexGoblin= adds its required packages, config directory mount and managed
-=sandboxEtc= files to the supplied options. Attribute-set =//= merges are shallow;
+=mkCodexGoblin= adds its required packages, config directory mount and
+=injectedFiles= entries to the supplied options. Attribute-set =//= merges are shallow;
 merge nested =env= or =codexSettings= sets explicitly when extending them.
 
 Use =lib.x86_64-linux.goblins.shell= for the predefined interactive Fish
@@ -542,11 +542,17 @@ The native agent remains available for manual inbox commands.
 The subscription-backed counting game is a manual acceptance exercise, never a
 default test or a reusable automated live-game script.
 
-For other integrations, =mkGoblin.sandboxEtc= maps relative =/etc= file names
+For other integrations, =mkGoblin.injectedFiles= maps relative =/etc= file names
 to text or regular-file derivations. Files are mounted read-only only inside
 the sandbox, their store closures are retained, and overlapping host mounts
 are rejected. This supports injected configuration without editing host files.
 It is supplied by the trusted Nix manifest, never by agent RPC requests.
+
+For example, this creates =/etc/my-agent/config.json= read-only inside the sandbox:
+
+#+begin_src nix
+injectedFiles."my-agent/config.json" = ''{"enabled": true}'';
+#+end_src
 
 * Manual inbox messaging
 
