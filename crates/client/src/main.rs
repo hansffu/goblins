@@ -86,9 +86,10 @@ fn run() -> Result<i32, String> {
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nState: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
+                    record["description"].as_str().unwrap_or("unknown"),
                     record["state"].as_str().unwrap_or("unknown"),
                     record["id"].as_str().unwrap_or("unknown")
                 );

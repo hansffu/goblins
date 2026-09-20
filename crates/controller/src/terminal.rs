@@ -242,19 +242,30 @@ impl Terminal {
     pub fn integration_view(&self) -> crate::integration::View {
         let screen = self.screen.screen();
         let (row, col) = screen.cursor_position();
-        let line = screen
-            .rows(0, screen.size().1)
-            .nth(row as usize)
-            .unwrap_or_default();
         let text = screen.contents();
-        let empty_or_placeholder = (2..screen.size().1).all(|col| {
+        // Claude indents its composer in some layouts. Match the two prompt
+        // cells immediately before the cursor, while requiring any left
+        // padding to be blank and all composer contents to be empty/dimmed.
+        let prompt = col.checked_sub(2).is_some_and(|start| {
             screen
-                .cell(row, col)
+                .cell(row, start)
+                .is_some_and(|cell| matches!(cell.contents(), "›" | "❯"))
+                && screen
+                    .cell(row, start + 1)
+                    .is_none_or(|cell| cell.contents().trim().is_empty())
+                && (0..start).all(|column| {
+                    screen
+                        .cell(row, column)
+                        .is_none_or(|cell| cell.contents().trim().is_empty())
+                })
+        });
+        let empty_or_placeholder = (col..screen.size().1).all(|column| {
+            screen
+                .cell(row, column)
                 .is_none_or(|c| c.contents().trim().is_empty() || c.dim())
         });
         let ready = empty_or_placeholder
-            && col == 2
-            && line.starts_with("› ")
+            && prompt
             && !screen.hide_cursor()
             && !text.contains("esc to interrupt")
             && self.last_output.elapsed() >= std::time::Duration::from_millis(300)
@@ -579,6 +590,20 @@ mod tests {
         f.terminal.tick().unwrap();
         f.terminal.last_output -= Duration::from_secs(1);
         assert!(!f.terminal.integration_view().ready);
+    }
+
+    #[test]
+    fn wake_recognizes_an_indented_claude_composer() {
+        let mut f = Fixture::new();
+        f.terminal.detached = true;
+        f.payload
+            .write_all("\x1b[2J\x1b[H  ❯ \x1b[2mTry a command\x1b[0m\x1b[1;5H\x1b[?25h".as_bytes())
+            .unwrap();
+        f.terminal.tick().unwrap();
+        f.terminal.last_output -= Duration::from_secs(1);
+        let view = f.terminal.integration_view();
+        assert!(view.ready);
+        f.terminal.notify(view.revision).unwrap();
     }
 
     #[test]

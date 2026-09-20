@@ -14,9 +14,9 @@ pub fn mounts(files: &BTreeMap<String, PathBuf>) -> Result<Vec<(PathBuf, PathBuf
                 !part.is_empty()
                     && part != "."
                     && part != ".."
-                    && part.bytes().enumerate().all(|(i, b)| {
-                        b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || (i > 0 && b == b'.')
-                    })
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
             })
         {
             return Err("injectedFiles names must be relative /etc file paths".into());

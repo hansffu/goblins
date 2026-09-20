@@ -1,6 +1,6 @@
 ---
 name: goblins-spawn
-description: Create and manage child Goblins sandboxes for explicit goblin requests or long-lived collaborators with individually attachable agent sessions. Use for persistent roles across a task; use goblins-messaging for their coordination.
+description: MUST use when the user says Goblin, Goblins, goblins CLI, or Goblins daemon, including requests for a goblin subagent. Create and manage child Goblins sandboxes; never substitute a native Agent/team for an explicitly requested Goblin. Use goblins-messaging for coordination.
 ---
 
 A goblin is a separate native agent in a daemon-owned sandbox. For a Goblins

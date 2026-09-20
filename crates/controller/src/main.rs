@@ -229,7 +229,10 @@ fn execute(cli: Cli) -> Result<i32> {
                 "{}",
                 serde_json::json!({
                     "configuration": fs::canonicalize(runtime)?,
-                    "names": manifest.goblins.keys().collect::<Vec<_>>()
+                    "names": manifest.goblins.keys().collect::<Vec<_>>(),
+                    "descriptions": manifest.goblins.iter().map(|(name, config)| {
+                        (name.clone(), config.description.clone())
+                    }).collect::<std::collections::BTreeMap<_, _>>()
                 })
             );
         }

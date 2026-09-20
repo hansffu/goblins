@@ -8,6 +8,7 @@ in
   pkg,
   binName,
   outName ? "goblin-${binName}",
+  description ? "${binName} running in a Goblins sandbox",
   allowedPackages ? sandbox.commonTools,
   args ? [ ],
   env ? { },
@@ -44,12 +45,27 @@ let
   };
   wrapped = sandbox.mkSandbox sandboxOptions;
 in
-assert validate.goblin (sandboxOptions // { inherit args integration injectedFiles; });
+assert validate.goblin (
+  sandboxOptions
+  // {
+    inherit
+      args
+      description
+      integration
+      injectedFiles
+      ;
+  }
+);
 wrapped
 // {
   goblin = {
     build_spec = wrapped.buildSpec;
-    inherit args env integration;
+    inherit
+      args
+      description
+      env
+      integration
+      ;
     client_package = client;
     network = allowedDomains == null;
     sandbox_etc = lib.mapAttrs (

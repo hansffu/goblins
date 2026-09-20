@@ -300,6 +300,7 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =pkg= | Required Nix package providing the entry executable |
 | =binName= | Required executable name under =pkg/bin= |
 | =outName= | Agent-sandbox wrapper name; defaults to =goblin-${binName}= |
+| =description= | Single-line configuration description; defaults to =${binName} running in a Goblins sandbox= |
 | =allowedPackages= | Initially available packages; defaults to agent-sandbox =commonTools= |
 | =args= | Literal entry argument list; defaults to =[]= |
 | =env= | Literal string environment values; defaults to ={}= |
@@ -377,7 +378,8 @@ Attachment and terminal resizing are restricted to descendants; a sandbox cannot
 attach to itself, its ancestors or another branch.
 
 Every child uses its parent's already loaded configuration: a =shell= sandbox
-can start only =shell= children, and a =codex= sandbox only =codex= children.
+can start only =shell= children, a =codex= sandbox only =codex= children, and a
+=claude= sandbox only =claude= children.
 This also applies to host =--parent= launches. Children share the parent's
 workspace and pinned startup binds with the same read/write permissions.
 Changing a host path or rebuilding a configuration does not widen a child's
@@ -462,6 +464,7 @@ The default package provides =goblins run codex=. The reusable Nix helper is:
 
 #+begin_src nix
 mkCodexGoblin {
+  # description = "Codex running in a Goblins sandbox"; # default
   codexConfigDir = "$HOME/.codex"; # default, resolved at launch
   # pkg = pkgs.codex;             # override the pinned Codex package
   # allowedPackages = commonTools ++ [ pkgs.ripgrep ];
@@ -506,8 +509,9 @@ its work and handles replies. Reply-dependent work waits for the matching reply
 before proceeding. When none is available, the agent yields its turn for the
 hook or notifier to resume it.
 
-SessionStart only reports working activity to the daemon; it adds no instructions
-to Codex. Codex discovers the mounted skills through its normal skill discovery.
+SessionStart reports that the native UI is starting; it adds no instructions to
+Codex and does not falsely mark the initial empty composer as a working turn.
+Codex discovers the mounted skills through its normal skill discovery.
 The current user request remains primary. Stop queries inbox metadata and, when
 work remains, requests a continuation telling the agent to fetch it.
 The hook never claims an item or pastes its contents. It respects
@@ -564,6 +568,50 @@ For example, this creates =/etc/my-agent/config.json= read-only inside the sandb
 #+begin_src nix
 injectedFiles."my-agent/config.json" = ''{"enabled": true}'';
 #+end_src
+
+* Claude Code configuration
+
+The default package provides =goblins run claude=. The reusable helper mirrors
+the Codex integration:
+
+#+begin_src nix
+mkClaudeGoblin {
+  # description = "Claude Code running in a Goblins sandbox"; # default
+  claudeConfigDir = "$HOME/.claude"; # default, resolved at launch
+  # pkg = pkgs.claude-code;
+  # allowedPackages = commonTools ++ [ pkgs.ripgrep ];
+  claudeSettings.model = "sonnet";
+}
+#+end_src
+
+It accepts normal =mkGoblin= options and adds a writable mount of
+=claudeConfigDir=. The directory must already exist. The launcher sets
+=CLAUDE_CONFIG_DIR=, disables native auto-updates, and passes
+=--dangerously-skip-permissions= because Goblins already owns the outer sandbox
+and package approval boundary. The namespace helper uses root only while
+assembling mounts, then runs the payload as unprivileged UID/GID 1000; no
+=sudo= or host-root process is involved. Use =claudeConfigDir= rather than setting
+=env.CLAUDE_CONFIG_DIR= directly.
+
+=claudeSettings= generates sandbox-only
+=/etc/claude-code/managed-settings.json=. User hooks are retained after the
+Goblins =SessionStart=, =UserPromptSubmit= and =Stop= handlers. The shared
+=goblins-spawn=, =goblins-messaging= and =goblins-packages= skills are mounted
+under =/etc/claude-code/.claude/skills/=, Claude Code's enterprise skill scope.
+No host Claude settings or skills are rewritten. Parent and child sandboxes
+share the selected Claude directory, including file-based authentication and
+native state. Managed =skillOverrides= keep all three integration skills =on=
+for both model and direct user invocation. The shared descriptions name exact
+Goblins trigger terms and the native tools they replace.
+
+The hooks use Claude Code's native =stop_hook_active= guard and block an
+eligible Stop only long enough to tell Claude to fetch the pending daemon inbox
+item. They exchange lifecycle metadata only and never expose a message body.
+The same bounded idle notifier is used for messages queued during startup and
+arrivals after Claude has returned to its empty composer. It recognizes Claude's
+indented empty composer without accepting a nonempty draft. =UserPromptSubmit= reports lifecycle state only and does
+not add context to the user's turn. Explicit Goblins routing is described in
+the managed skill metadata that Claude sees during skill selection.
 
 * Manual inbox messaging
 
@@ -622,7 +670,7 @@ all exchanges. Follow currently polls the daemon. Audit files are private
 Use =goblins communications-log --log FILE --json= after daemon shutdown. Records contain message text, so handle them as
 conversation data. Queued and claimed items fail when their recipient stops.
 
-The Codex helper adds turn-boundary hooks, a skill and idle wakeups.
+The Codex and Claude Code helpers add turn-boundary hooks, skills and idle wakeups.
 Existing terminal attachment remains available independently of inbox commands.
 See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the protocol and verification contract.
 
@@ -672,7 +720,7 @@ session without claiming rollback. Stopping owned Nix clients does not cancel
 shared host Nix daemon work. Unresponsive filesystem/kernel calls may delay
 cleanup. Emacs status, approvals and Ghostel launches are described in
 [[file:emacs/README.org][the Emacs guide]]. The =configurations= command prints the current manifest
-path and configured names as JSON without contacting a server. Editor launches
+path, configured names and their descriptions as JSON without contacting a server. Editor launches
 use =attach SESSION --instance INSTANCE= to consume a newly created session's
 terminal stream; supplying =--instance= still requires exact IDs. Without that
 option, =attach= accepts a live agent name or immutable session ID.

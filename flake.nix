@@ -13,7 +13,10 @@
     { nixpkgs, agent-sandbox, ... }:
     let
       system = "x86_64-linux";
-      pkgs = import nixpkgs { inherit system; };
+      pkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
+      };
       sandbox = agent-sandbox.lib.${system};
       goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox; };
       goblins = goblinsLib.builders.mkGoblins {

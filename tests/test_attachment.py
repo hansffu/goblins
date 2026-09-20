@@ -60,6 +60,10 @@ class AttachmentTests(unittest.TestCase):
             [str(daemon.app), "configurations"], text=True))
         self.assertEqual(options["configuration"], daemon.manifest)
         self.assertIn("shell", options["names"])
+        self.assertEqual(
+            options["descriptions"]["shell"],
+            "fish running in a Goblins sandbox",
+        )
         agent = daemon.start()
         for session, instance, error in (
             (agent["session"], "wrong-instance", "daemon instance changed"),

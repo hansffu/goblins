@@ -21,6 +21,7 @@ pub struct Integrations {
 #[derive(Clone)]
 struct Agent {
     key: String,
+    driver: String,
     epoch: u64,
     state: String,
     paused: bool,
@@ -46,7 +47,7 @@ struct Params {
 impl Integrations {
     pub fn status(&self, actor: &str, now: u64) -> Value {
         self.states.get(actor).map_or(json!({"health":"unregistered"}), |a| {
-            json!({"epoch":a.epoch,"state":a.state,"health":if a.paused {"paused"} else if now.saturating_sub(a.last_seen)>5000 {"degraded"} else if a.attempts>=3 {"stalled"} else {"healthy"},"attempts":a.attempts})
+            json!({"driver":a.driver,"epoch":a.epoch,"state":a.state,"health":if a.paused {"paused"} else if now.saturating_sub(a.last_seen)>5000 {"degraded"} else if a.attempts>=3 {"stalled"} else {"healthy"},"attempts":a.attempts})
         })
     }
     pub fn call(
@@ -74,7 +75,10 @@ impl Integrations {
             return Ok(self.status(target, now));
         }
         if method == "integration.register" {
-            if actor == "host" || p.driver.as_deref() != Some("codex") {
+            let Some(driver @ ("codex" | "claude")) = p.driver.as_deref() else {
+                return Err((-32602, "unsupported driver".into()));
+            };
+            if actor == "host" {
                 return Err((-32602, "unsupported driver".into()));
             }
             let key = p.key.ok_or((-32602, "registration key required".into()))?;
@@ -91,7 +95,7 @@ impl Integrations {
             mailbox.record(
                 actor,
                 "integration.registered",
-                json!({"driver":"codex","epoch":self.next_epoch}),
+                json!({"driver":driver,"epoch":self.next_epoch}),
                 now,
                 audit,
             )?;
@@ -99,6 +103,7 @@ impl Integrations {
                 actor.into(),
                 Agent {
                     key,
+                    driver: driver.into(),
                     epoch: self.next_epoch,
                     state: "starting".into(),
                     paused: false,
@@ -111,7 +116,7 @@ impl Integrations {
                     head: Value::Null,
                 },
             );
-            return Ok(json!({"epoch":self.next_epoch}));
+            return Ok(json!({"epoch":self.next_epoch,"driver":driver}));
         }
         let a = self
             .states
@@ -158,7 +163,15 @@ impl Integrations {
                     }
                     next.last_hook = key;
                     match p.event.as_deref() {
-                        Some("SessionStart" | "UserPromptSubmit") => {
+                        Some("SessionStart") => {
+                            next.state = "starting".into();
+                            if next.input != view.input {
+                                next.attempts = 0;
+                                next.last_attempt = 0;
+                            }
+                            next.input = view.input;
+                        }
+                        Some("UserPromptSubmit") => {
                             next.state = "working".into();
                             next.paused = false;
                             if next.input != view.input {
@@ -219,7 +232,7 @@ impl Integrations {
             }
         }
         if let Some(event) = event {
-            mailbox.record(target,event,json!({"epoch":next.epoch,"state":next.state,"attempt":next.attempts,"hook":p.event,"continue":result["continue"],"terminal_revision":view.revision}),now,audit)?;
+            mailbox.record(target,event,json!({"driver":next.driver,"epoch":next.epoch,"state":next.state,"attempt":next.attempts,"hook":p.event,"continue":result["continue"],"terminal_revision":view.revision}),now,audit)?;
         }
         *a = next;
         result["integration"] = self.status(target, now);
@@ -319,6 +332,13 @@ mod tests {
         fn tick(&mut self) -> Value {
             self.call("integration.tick", json!({"epoch":1})).unwrap()
         }
+    }
+    #[test]
+    fn startup_message_wakes_after_session_start() {
+        let mut f = Fixture::new();
+        f.hook("SessionStart", false);
+        f.send();
+        assert_eq!(f.tick()["notify"], true);
     }
     #[test]
     fn empty_stop_then_arrival_and_busy_continuation_do_not_claim() {

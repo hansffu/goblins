@@ -40,6 +40,8 @@ pub struct SessionRecord {
     pub path: String,
     /// Reusable Nix configuration key, distinct from the per-launch agent name.
     pub name: String,
+    #[serde(default)]
+    pub description: String,
     pub configuration: String,
     pub state: String,
     pub identity: Option<Identity>,
@@ -601,7 +603,8 @@ impl Controller {
         json!({"id":record.id,"agent_name":record.agent_name,
             "parent":record.parent.as_deref().filter(|p| *p != scope),
             "path":self.relative_path(record, Some(scope)),"name":record.name,
-            "state":record.state,"initial_packages":record.initial_packages,
+            "description":record.description,"state":record.state,
+            "initial_packages":record.initial_packages,
             "packages":record.packages,"exit_code":record.exit_code,
             "stop_reason":record.stop_reason,
             "terminal_complete":record.terminal_complete,
@@ -830,6 +833,7 @@ impl Controller {
             parent,
             agent_name,
             name: p.name.clone(),
+            description: String::new(),
             configuration: p.configuration.clone(),
             state: "starting".into(),
             identity: None,
@@ -876,7 +880,8 @@ impl Controller {
                 let _: Empty = params(value)?;
                 let record = &self.sessions[scope].record;
                 Ok(json!({"id":record.id,"agent_name":record.agent_name,
-                    "name":record.name,"state":record.state}))
+                    "name":record.name,"description":record.description,
+                    "state":record.state}))
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -1217,8 +1222,14 @@ impl Controller {
                     if a.record.state != "running" {
                         return Err(conflict());
                     }
-                    if a.inheritance.as_ref().and_then(|i| i.integration()) != Some("codex") {
+                    let integration = a.inheritance.as_ref().and_then(|i| i.integration());
+                    if !matches!(integration, Some("codex" | "claude")) {
                         return Err((-32009, "session has no supported integration".into()));
+                    }
+                    if call.method == "integration.register"
+                        && call_params["driver"].as_str() != integration
+                    {
+                        return Err((-32009, "integration driver does not match session".into()));
                     }
                     a.terminal.integration_view()
                 } else {
@@ -1498,6 +1509,7 @@ impl Controller {
                         inheritance,
                         exit_watch,
                     } => {
+                        a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
                         a.terminal.master(master)?;
@@ -1787,6 +1799,7 @@ mod tests {
                     parent: None,
                     path: "snikk".into(),
                     name: "shell".into(),
+                    description: "Test shell running in a Goblins sandbox".into(),
                     configuration: "test".into(),
                     state: "running".into(),
                     identity: None,

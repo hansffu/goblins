@@ -12,6 +12,8 @@ use std::{
 #[serde(deny_unknown_fields)]
 pub struct Configuration {
     #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub network: bool,
     pub build_spec: PathBuf,
     pub args: Vec<String>,
@@ -72,6 +74,8 @@ impl Manifest {
 #[derive(Clone, Deserialize)]
 pub struct Launch {
     #[serde(default)]
+    pub description: String,
+    #[serde(default)]
     pub pasta: Option<PathBuf>,
     #[serde(skip)]
     pub cwd: Option<PathBuf>,
@@ -128,6 +132,7 @@ impl Configuration {
         ]);
         env.extend(self.env.clone());
         Ok(Launch {
+            description: self.description.clone(),
             pasta: if self.network {
                 Some(
                     spec["dependencies"]["pasta"]

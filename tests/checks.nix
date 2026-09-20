@@ -4,7 +4,12 @@
   sandbox,
 }:
 let
-  inherit (goblinsLib.builders) mkGoblin mkCodexGoblin mkGoblins;
+  inherit (goblinsLib.builders)
+    mkGoblin
+    mkCodexGoblin
+    mkClaudeGoblin
+    mkGoblins
+    ;
   base = {
     pkg = pkgs.bashInteractive;
     binName = "bash";
@@ -49,6 +54,9 @@ let
   ]
   ++ map (options: { goblins.bad = mkGoblin (base // options); }) [
     { binName = "../bash"; }
+    { description = ""; }
+    { description = "two\nlines"; }
+    { description = 1; }
     { allowNix = true; }
     { allowUnixSockets = false; }
     { allowedDomains = "open"; }
@@ -69,6 +77,12 @@ let
     printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
     printf 'CODEX_ARG=%s\n' "$@"
     export PS1='codex-probe> '
+    exec ${pkgs.bashInteractive}/bin/bash --noprofile --norc -i
+  '';
+  claudeProbe = pkgs.writeShellScriptBin "claude" ''
+    printf 'CLAUDE_DIR=%s\n' "$CLAUDE_CONFIG_DIR"
+    printf 'CLAUDE_ARG=%s\n' "$@"
+    export PS1='claude-probe> '
     exec ${pkgs.bashInteractive}/bin/bash --noprofile --norc -i
   '';
 in
@@ -158,6 +172,37 @@ in
           "--json"
         ];
         allowedPackages = [ ];
+      };
+    };
+  };
+  claude-goblins = mkGoblins {
+    goblins = {
+      claude = mkClaudeGoblin {
+        pkg = claudeProbe;
+        args = [ "literal $(false) argument" ];
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+        claudeSettings.model = "fixture-model";
+        env.GOBLINS_TEST_MARKER = "inherited";
+        injectedFiles."goblins-test.conf" = "sandbox-only\n";
+      };
+      custom = mkClaudeGoblin {
+        pkg = claudeProbe;
+        claudeConfigDir = "\${HOME}/custom claude";
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+      };
+      notifier = mkClaudeGoblin {
+        pkg = pkgs.writeScriptBin "claude" (
+          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_codex.py
+        );
+        allowedDomains = [ ];
+        allowedPackages = [ ];
+        env.GOBLINS_TEST_COMPOSER = "  ❯ ";
       };
     };
   };
@@ -286,6 +331,17 @@ in
         { injectedFiles."codex/skills/goblins-spawn/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-packages/SKILL.md" = "override"; }
+      ];
+    assert builtins.all
+      (options: !(builtins.tryEval (mkClaudeGoblin options).goblin.build_spec.drvPath).success)
+      [
+        { claudeConfigDir = null; }
+        { claudeConfigDir = "relative"; }
+        { env.CLAUDE_CONFIG_DIR = "/different"; }
+        { injectedFiles."claude-code/managed-settings.json" = "override"; }
+        { injectedFiles."claude-code/.claude/skills/goblins-spawn/SKILL.md" = "override"; }
+        { injectedFiles."claude-code/.claude/skills/goblins-messaging/SKILL.md" = "override"; }
+        { injectedFiles."claude-code/.claude/skills/goblins-packages/SKILL.md" = "override"; }
       ];
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

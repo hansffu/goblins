@@ -9,4 +9,8 @@ in
     inherit pkgs mkGoblin;
     inherit (sandbox) commonTools;
   };
+  mkClaudeGoblin = import ./mk-claude.nix {
+    inherit pkgs mkGoblin;
+    inherit (sandbox) commonTools;
+  };
 }

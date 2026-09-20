@@ -12,6 +12,7 @@ import tty
 
 CLI = "/run/goblins/bin/goblins"
 PROMPT = "Check your Goblins inbox and process the next item."
+COMPOSER = os.environ.get("GOBLINS_TEST_COMPOSER", "› ")
 
 def cli(*args):
     return json.loads(subprocess.check_output([CLI, *args], stderr=subprocess.DEVNULL))
@@ -20,12 +21,13 @@ def hook(event):
     return cli("integration", "hook", "--event", event)
 
 def ready():
-    sys.stdout.write("\x1b[2J\x1b[H› \x1b[?25h")
+    sys.stdout.write("\x1b[2J\x1b[H" + COMPOSER + "\x1b[?25h")
     sys.stdout.flush()
 
 old = termios.tcgetattr(0)
 tty.setraw(0)
 try:
+    hook("SessionStart")
     ready()
     text = b""
     while True:

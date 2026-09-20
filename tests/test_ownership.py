@@ -59,14 +59,21 @@ class OwnershipTests(unittest.TestCase):
         terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", "parent"])
         self.addCleanup(terminal.close)
         terminal.send("goblins status\n")
-        terminal.expect(r"Sandbox: parent\nConfiguration: shell\n")
+        terminal.expect(
+            r"Sandbox: parent\nConfiguration: shell\n"
+            r"Description: fish running in a Goblins sandbox\n"
+        )
         terminal.send("goblins run shell --name child; printf 'CHILD_EXIT=%s\\n' $status\n")
         child = self.d.wait(lambda: next((r for r in self.d.rpc.call("sessions.list", {})
                                          if r["agent_name"] == "child" and r["state"] == "running"), None))
         self.d.wait(lambda: self.d.get(child["id"])["terminal_attached"])
         terminal.send("goblins status\n")
         terminal.expect(r"Sandbox: child\nConfiguration: shell\n")
-        self.assertEqual(self.sandbox(child["id"], "sessions.status", {})["agent_name"], "child")
+        child_status = self.sandbox(child["id"], "sessions.status", {})
+        self.assertEqual(child_status["agent_name"], "child")
+        self.assertEqual(
+            child_status["description"], "fish running in a Goblins sandbox"
+        )
         terminal.send("goblins run shell --name leaf; echo LEAF_RETURN\n")
         leaf = self.d.wait(lambda: next((r for r in self.d.rpc.call("sessions.list", {})
                                         if r["agent_name"] == "leaf" and r["state"] == "running"), None))

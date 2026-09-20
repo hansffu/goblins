@@ -80,6 +80,9 @@ pub(crate) struct Inheritance {
     workspace: Arc<SharedWorkspace>,
 }
 impl Inheritance {
+    pub(crate) fn description(&self) -> &str {
+        &self.launch.description
+    }
     pub(crate) fn integration(&self) -> Option<&str> {
         self.launch.integration.as_deref()
     }
@@ -319,6 +322,13 @@ impl Session {
         );
         let mut args: Vec<String> = [
             "--unshare-all",
+            // The helper is namespace-root only while assembling mounts. Map
+            // that unprivileged host identity to an ordinary payload user so
+            // native agents do not mistake the sandbox for host root.
+            "--uid",
+            "1000",
+            "--gid",
+            "1000",
             "--hostname",
             "sandbox",
             "--cap-drop",

@@ -1,6 +1,6 @@
 ---
 name: goblins-messaging
-description: Send tasks or replies through Goblins daemon messaging, receive replies needed for the current task, and process Goblins inbox notifications or explicit inbox requests. Does not require an inbox check for unrelated user requests.
+description: MUST use whenever the user explicitly requests Goblins daemon messaging or communication with a Goblin. Send tasks, guesses, follow-ups, and replies as separate goblins CLI daemon messages; never substitute native SendMessage/team tools. Also process Goblins inbox notifications. No inbox check is needed for unrelated requests.
 ---
 
 Use the sandbox's `goblins` CLI for agent communication. To create a recipient

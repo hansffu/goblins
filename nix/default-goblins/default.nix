@@ -5,4 +5,5 @@
     inherit (builders) mkGoblin;
   };
   codex = builders.mkCodexGoblin { };
+  claude = builders.mkClaudeGoblin { };
 }

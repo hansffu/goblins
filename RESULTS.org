@@ -1,6 +1,42 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Claude Code hooks and skills integration (2026-09-20)
+
+=mkClaudeGoblin= now provides a native Claude Code profile alongside Codex. It
+shares the selected writable Claude state directory with children, installs
+sandbox-only managed =SessionStart=, =UserPromptSubmit= and =Stop= hooks, and
+mounts the existing spawning, messaging and package-request skills at Claude
+Code's enterprise skill location. The common daemon lifecycle accepts both
+trusted drivers, records the selected driver in its audit events, and recognizes
+both native empty-composer prompts for bounded idle wakeups. The default package
+now includes a =claude= preset.
+
+Validation: all 59 Rust tests passed (one host driver ignored); Nix API and
+Claude fixture builds passed; and the real-sandbox Claude tests verified custom
+and default state mounts, immutable managed files, all three shared skills,
+hook continuation/loop prevention, message-body privacy, child inheritance and
+credential-file replacement without modifying host settings.
+The sandbox payload now runs as namespace UID/GID 1000 rather than the
+namespace-root identity used temporarily for mount assembly, so Claude accepts
+the outer-sandbox =--dangerously-skip-permissions= mode without any host =sudo=
+or root process.
+The managed skill descriptions now make explicit Goblin/Goblins requests and
+daemon messaging mandatory triggers, and prohibit substituting native
+Agent/SendMessage/team tools. =UserPromptSubmit= remains lifecycle-only and
+adds no context to user turns.
+The Claude managed settings also pin all three integration skills to the =on=
+visibility state for model and user invocation. This prevents a saved
+=user-invocable-only= or =off= skill override from silently removing the
+descriptions from Claude's skill listing.
+Live audit evidence exposed two independent idle-delivery failures: Claude's
+=SessionStart= incorrectly left a fresh session in =working= state, and the
+terminal matcher required an unindented composer. Session start now remains
+wake-eligible, while the matcher accepts blank left padding but still rejects
+nonempty drafts. Configuration metadata also carries a validated =description=;
+=mkCodexGoblin= and =mkClaudeGoblin= provide agent-specific defaults, and both
+=goblins configurations= and sandbox =goblins status= expose it.
+
 * Simplify public Nix constructors (2026-09-20)
 
 =nix/lib.nix= now only assembles the public constructors and presets.

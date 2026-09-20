@@ -38,6 +38,10 @@ class CodexConfigTests(unittest.TestCase):
         self.d = Daemon(self.app, env={**os.environ, "HOME": str(self.home)})
         self.addCleanup(self.d.close)
         self.manifest = json.loads(Path(self.d.manifest).read_text())
+        self.assertEqual(
+            self.manifest["goblins"]["codex"]["description"],
+            "Codex running in a Goblins sandbox",
+        )
         self.settings = tomllib.loads(Path(self.manifest["goblins"]["codex"]["sandbox_etc"]["codex/config.toml"]).read_text())
 
     def terminal(self, name="codex", agent="chief"):

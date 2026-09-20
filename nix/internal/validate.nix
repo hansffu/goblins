@@ -2,6 +2,12 @@
 let
   fail = message: throw "mkGoblin: ${message}";
   validName = name: builtins.match "[A-Za-z_][A-Za-z0-9_-]*" name != null;
+  validEtcPath =
+    path:
+    builtins.isString path
+    && builtins.all (
+      part: part != "." && part != ".." && builtins.match "[A-Za-z0-9_.-]+" part != null
+    ) (lib.splitString "/" path);
 in
 {
   goblin =
@@ -10,6 +16,7 @@ in
       inherit (options)
         binName
         outName
+        description
         integration
         allowNix
         allowUnixSockets
@@ -27,7 +34,21 @@ in
     in
     if !validName binName || !validName outName then
       fail "binName and outName must be simple executable names"
-    else if integration != null && integration != "codex" then
+    else if
+      !builtins.isString description
+      || description == ""
+      || builtins.stringLength description > 256
+      || lib.hasInfix "\n" description
+      || lib.hasInfix "\r" description
+    then
+      fail "description must be a nonempty single-line string of at most 256 characters"
+    else if
+      integration != null
+      && !builtins.elem integration [
+        "codex"
+        "claude"
+      ]
+    then
       fail "unsupported integration driver"
     else if allowNix != false then
       fail "host Nix access is prohibited; request packages through goblins"
@@ -54,7 +75,7 @@ in
       !builtins.isAttrs injectedFiles
       || !builtins.all (
         name:
-        builtins.match "[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*" name != null
+        validEtcPath name
         && (builtins.isString injectedFiles.${name} || lib.isDerivation injectedFiles.${name})
       ) (builtins.attrNames injectedFiles)
     then

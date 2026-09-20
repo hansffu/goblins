@@ -10,6 +10,7 @@ in
   pkg ? pkgs.codex,
   binName ? "codex",
   outName ? "goblin-codex",
+  description ? "Codex running in a Goblins sandbox",
   codexConfigDir ? "$HOME/.codex",
   codexSettings ? { },
   filterUnavailableMcp ? false,
@@ -30,7 +31,12 @@ assert codex.validate {
 mkGoblin (
   codex.goblinOptions options
   // {
-    inherit binName outName env;
+    inherit
+      binName
+      outName
+      description
+      env
+      ;
     integration = "codex";
     pkg = codex.mkLauncher {
       inherit

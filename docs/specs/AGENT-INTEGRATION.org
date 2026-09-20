@@ -5,8 +5,8 @@
 
 [[file:../adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]] defines the architecture: daemon-owned inboxes with notify-then-fetch
 communication, native agent terminals, inherited authentication, and sandbox-only
-integration configuration. Codex is the first implementation. Claude Code,
-Codex App Server, Claude Channels and A2A are outside this task.
+integration configuration. Codex and Claude Code are implemented. Codex App
+Server, Claude Channels and A2A remain outside this task.
 
 This specification settles the earlier proposed protocol names. The baseline
 uses a bounded polling notifier, not a metadata subscription. Advanced drivers
@@ -23,11 +23,19 @@ Goblins spawning, messaging and package-request skills are immutable mounts unde
 =/etc/codex=; no host settings are
 rewritten. Native credential refresh retains the normal writable auth mount.
 Configured MCP servers are preserved by default. The optional
-=filterUnavailableMcp=true= behavior is an explicit compatibility option.
+=filterUnavailableMcp=true= behavior is an explicit compatibility option. Its
+default description is =Codex running in a Goblins sandbox=.
+
+=mkClaudeGoblin= follows the same contract with =claudeConfigDir=,
+=claudeSettings= and =pkg=. Its immutable managed settings and enterprise
+skills live under =/etc/claude-code=, while the selected Claude state directory
+is writable and shared with children. Its default description is =Claude Code
+running in a Goblins sandbox=.
 
 The trusted =mkGoblin.integration= setting selects the delivery profile; the
-first supported value is ="codex"=, with =null= for ordinary shells. The native
-package, mounted hooks and notifier are supplied by =mkCodexGoblin=. Children
+supported values are ="codex"= and ="claude"=, with =null= for ordinary shells.
+The native package, mounted hooks and notifier are supplied by the matching
+builder. Children
 inherit the loaded configuration, not an agent-supplied manifest.
 
 Before native launch the wrapper registers its driver and exports the returned
@@ -95,9 +103,10 @@ queued body. Binary attachments and general file transfer are outside scope.
 
 * Working and idle transitions
 
-SessionStart reports working activity to the daemon without injecting model
-instructions. Skills are available through native skill discovery.
-UserPromptSubmit reports a new turn. Stop atomically checks the authoritative
+SessionStart reports startup without injecting model instructions and remains
+eligible for a queued startup notification once the empty composer is visible.
+Skills are available through native skill discovery. UserPromptSubmit alone
+reports a new working turn. Stop atomically checks the authoritative
 inbox and reports whether Codex should continue or return to its prompt.
 
 With queued work and an eligible Stop hook, the hook blocks the stop with a
