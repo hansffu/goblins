@@ -1416,6 +1416,7 @@ impl Controller {
         for mut response in self.messaging.results.try_iter() {
             if let Ok(result) = &mut response.result
                 && result["notify"] == true
+                && result["delivery"] != "notification"
             {
                 let outcome = self
                     .sessions

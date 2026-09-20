@@ -546,9 +546,9 @@ mkCodexGoblin {
 #+end_src
 
 A sandbox notifier watches inbox metadata and requests a fixed check-inbox
-prompt when the native composer is ready. It works attached or detached and
-never fetches message bodies. User typing defers delivery; interrupted turns
-pause notification until another submitted turn or explicit host resume.
+prompt. It works attached or detached and never fetches message bodies. For
+Codex, user typing defers terminal delivery; interrupted turns pause notification
+until another submitted turn or explicit host resume.
 Terminal focus changes and cursor/device reports do not count as user typing.
 Inspect or control it with =goblins integration status/pause/resume NAME=.
 Three unanswered wake attempts become stalled; notifier failure becomes degraded.
@@ -607,11 +607,14 @@ Goblins trigger terms and the native tools they replace.
 The hooks use Claude Code's native =stop_hook_active= guard and block an
 eligible Stop only long enough to tell Claude to fetch the pending daemon inbox
 item. They exchange lifecycle metadata only and never expose a message body.
-The same bounded idle notifier is used for messages queued during startup and
-arrivals after Claude has returned to its empty composer. It recognizes Claude's
-indented empty composer without accepting a nonempty draft. =UserPromptSubmit= reports lifecycle state only and does
-not add context to the user's turn. Explicit Goblins routing is described in
-the managed skill metadata that Claude sees during skill selection.
+Messages queued during startup and idle arrivals are delivered through a
+session-scoped Claude plugin monitor. Claude turns each watcher output line into
+a native notification, so delivery does not inject editor keystrokes, alter a
+draft, or depend on ordinary versus Vim INSERT/NORMAL/VISUAL mode. The monitor
+emits only the fixed check-inbox prompt; message bodies remain daemon-owned.
+=UserPromptSubmit= reports lifecycle state only and does not add context to the
+user's turn. Explicit Goblins routing is described in the managed skill metadata
+that Claude sees during skill selection.
 
 * Manual inbox messaging
 

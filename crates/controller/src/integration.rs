@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-pub const PROMPT: &str = "Check your Goblins inbox and process the next item.";
+pub use goblins_protocol::INTEGRATION_PROMPT as PROMPT;
 #[derive(Clone, Default, Serialize)]
 pub struct View {
     pub revision: u64,
@@ -40,6 +40,7 @@ struct Params {
     driver: Option<String>,
     epoch: Option<u64>,
     event: Option<String>,
+    delivery: Option<String>,
     #[serde(default)]
     active: bool,
     session: Option<String>,
@@ -200,8 +201,16 @@ impl Integrations {
                     event = Some("integration.hook");
                 }
                 "integration.tick" => {
+                    let notification = match p.delivery.as_deref() {
+                        None | Some("terminal") => false,
+                        Some("notification") if a.driver == "claude" => true,
+                        Some("notification") => {
+                            return Err((-32602, "notification delivery requires Claude".into()));
+                        }
+                        Some(_) => return Err((-32602, "unsupported delivery mode".into())),
+                    };
                     next.last_seen = now;
-                    if view.interrupted && view.input != a.input {
+                    if !notification && view.interrupted && view.input != a.input {
                         next.paused = true;
                     }
                     if !pending {
@@ -212,8 +221,7 @@ impl Integrations {
                     // submitted turn or explicit host resume. Never erase it.
                     let eligible = pending
                         && !next.paused
-                        && view.ready
-                        && view.input == next.input
+                        && (notification || (view.ready && view.input == next.input))
                         && matches!(next.state.as_str(), "starting" | "ready")
                         && status["audit_failed"] != true;
                     if eligible
@@ -224,6 +232,11 @@ impl Integrations {
                         next.attempts += 1;
                         next.last_attempt = now;
                         result["notify"] = json!(true);
+                        result["delivery"] = json!(if notification {
+                            "notification"
+                        } else {
+                            "terminal"
+                        });
                         result["revision"] = json!(view.revision);
                         event = Some("integration.wake_attempt");
                     }
@@ -232,7 +245,7 @@ impl Integrations {
             }
         }
         if let Some(event) = event {
-            mailbox.record(target,event,json!({"driver":next.driver,"epoch":next.epoch,"state":next.state,"attempt":next.attempts,"hook":p.event,"continue":result["continue"],"terminal_revision":view.revision}),now,audit)?;
+            mailbox.record(target,event,json!({"driver":next.driver,"epoch":next.epoch,"state":next.state,"attempt":next.attempts,"hook":p.event,"continue":result["continue"],"delivery":result["delivery"],"terminal_revision":view.revision}),now,audit)?;
         }
         *a = next;
         result["integration"] = self.status(target, now);
@@ -339,6 +352,35 @@ mod tests {
         f.hook("SessionStart", false);
         f.send();
         assert_eq!(f.tick()["notify"], true);
+    }
+    #[test]
+    fn claude_notification_delivery_does_not_require_an_insertable_composer() {
+        let mut f = Fixture::new();
+        f.state.states.get_mut("child").unwrap().driver = "claude".into();
+        f.hook("SessionStart", false);
+        f.send();
+        f.view.ready = false;
+        f.view.input += 1;
+        f.view.interrupted = true;
+        let result = f
+            .call(
+                "integration.tick",
+                json!({"epoch":1,"delivery":"notification"}),
+            )
+            .unwrap();
+        assert_eq!(result["notify"], true);
+        assert_eq!(result["delivery"], "notification");
+    }
+    #[test]
+    fn notification_delivery_is_restricted_to_claude() {
+        let mut f = Fixture::new();
+        assert!(
+            f.call(
+                "integration.tick",
+                json!({"epoch":1,"delivery":"notification"}),
+            )
+            .is_err()
+        );
     }
     #[test]
     fn empty_stop_then_arrival_and_busy_continuation_do_not_claim() {

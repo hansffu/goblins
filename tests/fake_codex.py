@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import signal
+import select
 from pathlib import Path
 import termios
 import time
@@ -26,24 +27,44 @@ def ready():
 
 old = termios.tcgetattr(0)
 tty.setraw(0)
+monitor = None
 try:
     hook("SessionStart")
+    if "--plugin-dir" in sys.argv:
+        monitor = subprocess.Popen(
+            [CLI, "integration", "watch", "--epoch", os.environ["GOBLINS_INTEGRATION_EPOCH"],
+             "--delivery", "notification"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
     ready()
     text = b""
     while True:
-        data = os.read(0, 4096)
-        if not data:
-            break
-        text += data
-        # Native terminals receive focus reports even when no text was typed.
-        text = text.replace(b"\x1b[I", b"").replace(b"\x1b[O", b"")
-        if b"\r" not in text:
-            continue
-        submitted, text = text.split(b"\r", 1)
-        submitted = submitted.replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"").decode()
+        sources = [0] + ([monitor.stdout] if monitor is not None else [])
+        readable, _, _ = select.select(sources, [], [])
+        from_monitor = monitor is not None and monitor.stdout in readable
+        if from_monitor:
+            notification = monitor.stdout.readline()
+            if not notification:
+                monitor = None
+                continue
+            submitted = notification.decode().rstrip("\n")
+        else:
+            data = os.read(0, 4096)
+            if not data:
+                break
+            text += data
+            # Native terminals receive focus reports even when no text was typed.
+            text = text.replace(b"\x1b[I", b"").replace(b"\x1b[O", b"")
+            if b"\r" not in text:
+                continue
+            submitted, text = text.split(b"\r", 1)
+            submitted = submitted.replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"").decode()
         if submitted == "exit":
             break
-        hook("UserPromptSubmit")
+        if not from_monitor:
+            hook("UserPromptSubmit")
         sys.stdout.write("\x1b[2J\x1b[HWorking (esc to interrupt)\x1b[?25l")
         sys.stdout.flush()
         if submitted == "busy":
@@ -66,4 +87,7 @@ try:
             cli("reply", item["message"]["id"], "--claim-generation", str(item["claim_generation"]), "--message", "processed: " + item["message"]["body"])
         ready()
 finally:
+    if monitor is not None:
+        monitor.terminate()
+        monitor.wait()
     termios.tcsetattr(0, termios.TCSANOW, old)

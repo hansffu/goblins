@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_FRAME: usize = 4096;
 pub const REQUEST_SOCKET: &str = "/run/goblins/request.sock";
+pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the next item.";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

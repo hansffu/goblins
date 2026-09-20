@@ -36,6 +36,13 @@ wake-eligible, while the matcher accepts blank left padding but still rejects
 nonempty drafts. Configuration metadata also carries a validated =description=;
 =mkCodexGoblin= and =mkClaudeGoblin= provide agent-specific defaults, and both
 =goblins configurations= and sandbox =goblins status= expose it.
+Claude idle delivery now uses a session-scoped plugin monitor rather than PTY
+keystroke injection. The monitor runs the bounded metadata watcher and exposes
+each fixed wake line as a native Claude notification, so Vim NORMAL mode and
+custom editor/status-line configuration no longer affect delivery. Codex keeps
+its existing guarded PTY delivery. The offline Claude fixture covers plugin
+layout, monitor startup and notification-driven inbox processing without running
+a model.
 
 * Simplify public Nix constructors (2026-09-20)
 

@@ -42,6 +42,7 @@ mkGoblin (
         binName
         claudeConfigDir
         ;
+      inherit (claude) plugin;
     };
     allowedPackages = allowedPackages ++ claude.packages;
     rwDirs = pkgs.lib.unique (rwDirs ++ [ claudeConfigDir ]);

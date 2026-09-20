@@ -235,8 +235,9 @@ not a Nix path that would copy credentials into the store.
 extra native hooks; the built-in SessionStart, UserPromptSubmit and Stop handlers are retained.
 Codex uses the outer Goblins sandbox, with its nested sandbox disabled and
 approvals handled by Goblins. See [[file:USAGE.org::*Codex configuration][Codex setup and current limitations]].
-=mkClaudeGoblin= provides the equivalent Claude Code state mount, managed hooks
-and shared skills; see [[file:USAGE.org::*Claude Code configuration][Claude Code configuration]].
+=mkClaudeGoblin= provides the equivalent Claude Code state mount, managed hooks,
+shared skills and a native background notification monitor; see
+[[file:USAGE.org::*Claude Code configuration][Claude Code configuration]].
 The helper uses open internet access through a private network namespace.
 No domain allowlist or HTTP proxy is required. Set =allowedDomains = []= for
 an explicitly offline sandbox.

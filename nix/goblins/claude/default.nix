@@ -3,6 +3,7 @@
 let
   inherit (pkgs) lib;
   hooks = import ./hooks.nix { inherit pkgs; };
+  plugin = import ./plugin.nix { inherit pkgs; };
   managedFiles = [
     "claude-code/managed-settings.json"
     "claude-code/.claude/skills/goblins-spawn/SKILL.md"
@@ -31,11 +32,13 @@ let
 in
 {
   packages = [ hooks.package ];
+  inherit plugin;
   mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
   mkInjectedFiles = settings: {
     "claude-code/managed-settings.json" =
       (pkgs.formats.json { }).generate "goblins-claude-settings.json"
-        (settings
+        (
+          settings
           // {
             hooks = hooks.mkHooks (settings.hooks or { });
             skillOverrides = (settings.skillOverrides or { }) // {

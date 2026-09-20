@@ -71,11 +71,17 @@ class ClaudeConfigTests(unittest.TestCase):
     def test_mounts_hooks_skills_and_inherits_state(self):
         terminal = self.terminal()
         terminal.expect("CLAUDE_DIR=" + re.escape(str(self.claude)))
+        terminal.expect(r"CLAUDE_ARG=--plugin-dir")
+        plugin = terminal.expect(
+            r"CLAUDE_ARG=(/nix/store/[^\n]+-goblins-claude-plugin)"
+        ).group(1).decode()
         terminal.expect(r"CLAUDE_ARG=--dangerously-skip-permissions")
         terminal.expect(r"CLAUDE_ARG=literal \$\(false\) argument")
         terminal.expect("claude-probe>")
         terminal.send(
             "printf 'UID=%s\\n' \"$(id -u)\"; "
+            f"test -r {shlex.quote(plugin)}/.claude-plugin/plugin.json "
+            f"&& test -r {shlex.quote(plugin)}/monitors/monitors.json && "
             "test -r /etc/claude-code/managed-settings.json "
             "&& test -r /etc/claude-code/.claude/skills/goblins-spawn/SKILL.md "
             "&& test -r /etc/claude-code/.claude/skills/goblins-messaging/SKILL.md "

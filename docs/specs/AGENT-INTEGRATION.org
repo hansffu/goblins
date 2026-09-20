@@ -39,10 +39,16 @@ builder. Children
 inherit the loaded configuration, not an agent-supplied manifest.
 
 Before native launch the wrapper registers its driver and exports the returned
-epoch to the notifier and hooks. =goblins integration watch --epoch N= runs as
-a separate process inside that same sandbox. It checks every 500 ms using only
-the sandbox request socket. It cannot select another inbox or submit arbitrary
-terminal text. It never claims, reads or completes messages.
+epoch to the notifier and hooks. =goblins integration watch --epoch N= checks
+every 500 ms using only the sandbox request socket. It cannot select another
+inbox or submit arbitrary message text. It never claims, reads or completes
+messages.
+
+Codex runs the watcher as a separate process and uses daemon-owned PTY delivery.
+Claude loads a session-scoped Goblins plugin whose background monitor runs the
+watcher with =--delivery notification=. Each wake line becomes a native Claude
+notification, avoiding simulated editor input and remaining independent of
+Claude's normal, Vim INSERT, NORMAL and VISUAL editor states.
 
 The daemon owns the native PTY and terminal parser. A notification submits only:
 
@@ -51,7 +57,8 @@ Check your Goblins inbox and process the next item.
 #+end_quote
 
 Codex receives bracketed-paste text followed by Enter. The daemon checks the
-terminal revision again immediately before writing. A write is a notification
+terminal revision again immediately before writing. Claude receives the same
+fixed text through its native plugin monitor. A delivery is a notification
 attempt, not evidence of fetching or processing. Attempts/results and subsequent
 claims/replies are distinct communications-log events.
 

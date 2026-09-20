@@ -338,6 +338,8 @@ pub enum IntegrationCommand {
     Watch {
         #[arg(long)]
         epoch: u64,
+        #[arg(long, default_value = "terminal", value_parser = ["terminal", "notification"])]
+        delivery: String,
     },
     Hook {
         #[arg(long)]

@@ -3,7 +3,10 @@ mod cli;
 use clap::Parser;
 use goblins_protocol::{REQUEST_SOCKET, rpc};
 use serde_json::json;
-use std::{io::Read, os::unix::net::UnixStream};
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+};
 
 fn parse_args(legacy: bool, args: &[String]) -> Result<(String, String), String> {
     let mut args = args.iter();
@@ -309,11 +312,20 @@ fn integration(command: cli::IntegrationCommand) -> Result<i32, String> {
             )?
         }
         Status => call("integration.status", json!({}))?,
-        Watch { epoch } => {
+        Watch { epoch, delivery } => {
             let mut failures = 0;
             loop {
-                match call("integration.tick", json!({"epoch":epoch})) {
-                    Ok(_) => failures = 0,
+                match call(
+                    "integration.tick",
+                    json!({"epoch":epoch,"delivery":delivery}),
+                ) {
+                    Ok(result) => {
+                        failures = 0;
+                        if result["notify"] == true && result["delivery"] == "notification" {
+                            println!("{}", goblins_protocol::INTEGRATION_PROMPT);
+                            std::io::stdout().flush().map_err(|e| e.to_string())?;
+                        }
+                    }
                     Err(e) => {
                         failures += 1;
                         if failures == 1 {
