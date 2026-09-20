@@ -63,7 +63,7 @@ class CodexConfigTests(unittest.TestCase):
         terminal.expect("CODEX_DIR=" + re.escape(str(self.codex)))
         terminal.expect(r"CODEX_ARG=literal \$\(false\) argument")
         terminal.expect("codex-probe>")
-        terminal.send("test -r /etc/codex/skills/goblins/SKILL.md && test -r /etc/codex/skills/goblins-packages/SKILL.md && test -r /etc/codex/config.toml; printf 'SETUP=%s\\n' \"$?\"; echo changed >> /etc/codex/config.toml; printf 'READONLY=%s\\n' \"$?\"; test -e \"$HOME/secret\"; printf 'SECRET=%s\\n' \"$?\"; cat /etc/goblins-test.conf\n")
+        terminal.send("test -r /etc/codex/skills/goblins-spawn/SKILL.md && test -r /etc/codex/skills/goblins-messaging/SKILL.md && test -r /etc/codex/skills/goblins-packages/SKILL.md && test -r /etc/codex/config.toml; printf 'SETUP=%s\\n' \"$?\"; echo changed >> /etc/codex/config.toml; printf 'READONLY=%s\\n' \"$?\"; test -e \"$HOME/secret\"; printf 'SECRET=%s\\n' \"$?\"; cat /etc/goblins-test.conf\n")
         terminal.expect(r"(?:^|\n)SETUP=0\n")
         terminal.expect(r"(?:^|\n)READONLY=1\n")
         terminal.expect(r"(?:^|\n)SECRET=1\n")

@@ -499,9 +499,12 @@ package approvals. =args= are passed unchanged after these defaults.
 system defaults below Codex's user/project/CLI layers. Native hooks from
 =codexSettings.hooks= are appended to Goblins' SessionStart/UserPromptSubmit/Stop handlers.
 Codex treats this system source as managed; no host hook-trust changes or
-blanket hook-trust bypass is needed. The messaging skill is mounted at
-=/etc/codex/skills/goblins/SKILL.md= and the live package-request skill at
-=/etc/codex/skills/goblins-packages/SKILL.md=.
+blanket hook-trust bypass is needed. The =goblins-spawn=, =goblins-messaging=
+and =goblins-packages= skills are mounted at
+=/etc/codex/skills/NAME/SKILL.md=. Spawning creates the child; messaging assigns
+its work and handles replies. Reply-dependent work waits for the matching reply
+before proceeding. When none is available, the agent yields its turn for the
+hook or notifier to resume it.
 
 SessionStart only reports working activity to the daemon; it adds no instructions
 to Codex. Codex discovers the mounted skills through its normal skill discovery.

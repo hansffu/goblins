@@ -19,7 +19,7 @@ in [[file:DAEMON.org][DAEMON.org]] still apply.
 =mkCodexGoblin= takes the same options as =mkGoblin=, plus =codexConfigDir=
 (default =$HOME/.codex=), =codexSettings= and the native =pkg=. It shares the
 entire Codex directory with children. Generated hooks/configuration and the
-Goblins messaging and package-request skills are immutable mounts under
+Goblins spawning, messaging and package-request skills are immutable mounts under
 =/etc/codex=; no host settings are
 rewritten. Native credential refresh retains the normal writable auth mount.
 Configured MCP servers are preserved by default. The optional

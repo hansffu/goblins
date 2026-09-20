@@ -283,6 +283,8 @@ in
         { codexConfigDir = "relative"; }
         { env.CODEX_HOME = "/different"; }
         { injectedFiles."codex/config.toml" = "override"; }
+        { injectedFiles."codex/skills/goblins-spawn/SKILL.md" = "override"; }
+        { injectedFiles."codex/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-packages/SKILL.md" = "override"; }
       ];
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";

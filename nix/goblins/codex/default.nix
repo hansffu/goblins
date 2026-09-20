@@ -5,7 +5,8 @@ let
   hooks = import ./hooks.nix { inherit pkgs; };
   managedFiles = [
     "codex/config.toml"
-    "codex/skills/goblins/SKILL.md"
+    "codex/skills/goblins-spawn/SKILL.md"
+    "codex/skills/goblins-messaging/SKILL.md"
     "codex/skills/goblins-packages/SKILL.md"
   ];
   runtimeDirectory =
@@ -39,7 +40,9 @@ in
     "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" (
       settings // { hooks = hooks.mkHooks (settings.hooks or { }); }
     );
-    "codex/skills/goblins/SKILL.md" = builtins.readFile ../../../skills/goblins/SKILL.md;
+    "codex/skills/goblins-spawn/SKILL.md" = builtins.readFile ../../../skills/goblins-spawn/SKILL.md;
+    "codex/skills/goblins-messaging/SKILL.md" =
+      builtins.readFile ../../../skills/goblins-messaging/SKILL.md;
     "codex/skills/goblins-packages/SKILL.md" =
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
   };
