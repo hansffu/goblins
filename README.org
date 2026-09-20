@@ -221,7 +221,7 @@ already exist; use a string such as ="$HOME/.codex"= or ="/path/to/codex"=,
 not a Nix path that would copy credentials into the store.
 
 =codexSettings= supplies additional sandbox system configuration, including
-extra native hooks; the built-in SessionStart and Stop handlers are retained.
+extra native hooks; the built-in SessionStart, UserPromptSubmit and Stop handlers are retained.
 Codex uses the outer Goblins sandbox, with its nested sandbox disabled and
 approvals handled by Goblins. See [[file:USAGE.org::*Codex configuration][Codex setup and current limitations]].
 The helper uses open internet access through a private network namespace.
@@ -272,7 +272,11 @@ package, app, check, and development-shell outputs.
 
 | Location | Purpose |
 |----------+---------|
-| =nix/lib.nix= | =mkGoblin= and =mkGoblins= |
+| =nix/lib.nix= | Public constructors and presets |
+| =nix/mk-goblin.nix=, =nix/mk-goblins.nix= | Sandbox and host-package composition |
+| =nix/goblins/mk-codex.nix= | Codex options composed with =mkGoblin= |
+| =nix/goblins/codex/= | Codex launcher, hooks, managed config and messaging skill |
+| =nix/internal/= | Shared Nix argument validation |
 | =nix/packages/goblins.nix= | Host binary, including its Rust helper, controller, and pinned catalog |
 | =nix/packages/internal-goblins.nix= | Restricted =goblins request-package= binary for the sandbox |
 | =nix/goblins/shell.nix= | Predefined interactive Fish goblin with commonTools |

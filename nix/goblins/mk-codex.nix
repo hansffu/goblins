@@ -3,106 +3,45 @@
   mkGoblin,
   commonTools,
 }:
+let
+  codex = import ./codex { inherit pkgs; };
+in
 {
   pkg ? pkgs.codex,
   binName ? "codex",
+  outName ? "goblin-codex",
   codexConfigDir ? "$HOME/.codex",
   codexSettings ? { },
   filterUnavailableMcp ? false,
+  allowedPackages ? commonTools,
+  rwDirs ? [ ],
+  env ? { },
+  sandboxEtc ? { },
   ...
 }@options:
-let
-  inherit (pkgs) lib;
-  # A runtime path string, never a Nix path containing credentials. Expand only
-  # HOME/tilde here; all other mkGoblin environment values remain literal.
-  homePrefixes = [
-    "$HOME/"
-    "\${HOME}/"
-    "~/"
-  ];
-  homePrefix = lib.findFirst (prefix: lib.hasPrefix prefix codexConfigDir) null homePrefixes;
-  directory =
-    if homePrefix != null then
-      ''"$HOME"/${lib.escapeShellArg (lib.removePrefix homePrefix codexConfigDir)}''
-    else
-      lib.escapeShellArg codexConfigDir;
-  hook = pkgs.writeShellApplication {
-    name = "goblins-codex-hook";
-    runtimeInputs = [ pkgs.jq ];
-    text = builtins.readFile ./codex/hook.sh;
-  };
-  handler = {
-    hooks = [
-      {
-        type = "command";
-        command = "${hook}/bin/goblins-codex-hook";
-        timeout = 5;
-      }
-    ];
-  };
-  hooks = (codexSettings.hooks or { }) // {
-    SessionStart = [ handler ] ++ (codexSettings.hooks.SessionStart or [ ]);
-    UserPromptSubmit = [ handler ] ++ (codexSettings.hooks.UserPromptSubmit or [ ]);
-    Stop = [ handler ] ++ (codexSettings.hooks.Stop or [ ]);
-  };
-  etc = {
-    "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" (
-      codexSettings // { inherit hooks; }
-    );
-    "codex/skills/goblins/SKILL.md" = builtins.readFile ./codex/goblins/SKILL.md;
-  };
-  launcher = pkgs.writeShellScriptBin binName ''
-    export CODEX_HOME=${directory}
-    codex_executable=${lib.escapeShellArg "${pkg}/bin/${binName}"}
-    mcp_overrides=()
-    ${lib.optionalString filterUnavailableMcp (
-      lib.replaceStrings [ "\${coreutils}" "\${jq}" ] [ "${pkgs.coreutils}" "${pkgs.jq}" ] (
-        builtins.readFile ./codex/mcp.sh
-      )
-    )}
-    # Register before native launch; the notifier never claims inbox items.
-    registration=$(/run/goblins/bin/goblins integration register --driver codex)
-    export GOBLINS_INTEGRATION_EPOCH=$(${pkgs.jq}/bin/jq -r .epoch <<< "$registration")
-    /run/goblins/bin/goblins integration watch --epoch "$GOBLINS_INTEGRATION_EPOCH" </dev/null &
-    # Goblins owns the outer sandbox and package approvals. Nested namespace
-    # creation is prohibited by its seccomp policy.
-    exec "$codex_executable" \
-      --sandbox danger-full-access --ask-for-approval never --enable hooks "''${mcp_overrides[@]}" "$@"
-  '';
-  forwarded = builtins.removeAttrs options [
-    "pkg"
-    "binName"
-    "codexConfigDir"
-    "codexSettings"
-    "filterUnavailableMcp"
-  ];
-in
-assert lib.assertMsg (builtins.isString codexConfigDir)
-  "mkCodexGoblin: codexConfigDir must be a runtime path string";
-assert lib.assertMsg (
-  !(pkg ? version) || lib.versionAtLeast pkg.version "0.146.0"
-) "mkCodexGoblin: Codex 0.146.0 or later is required for the managed hook setup";
-assert lib.assertMsg (
-  codexConfigDir != "" && (lib.hasPrefix "/" codexConfigDir || homePrefix != null)
-) "mkCodexGoblin: codexConfigDir must be absolute or start with ~/ or $HOME/";
-assert lib.assertMsg (
-  !((options.env or { }) ? CODEX_HOME)
-) "mkCodexGoblin: use codexConfigDir instead of env.CODEX_HOME";
-assert lib.assertMsg (
-  lib.intersectLists (builtins.attrNames etc) (builtins.attrNames (options.sandboxEtc or { })) == [ ]
-) "mkCodexGoblin: sandboxEtc cannot replace the Goblins Codex config or skill";
+assert codex.validate {
+  inherit
+    pkg
+    codexConfigDir
+    env
+    sandboxEtc
+    ;
+};
 mkGoblin (
-  forwarded
+  codex.goblinOptions options
   // {
-    pkg = launcher;
+    inherit binName outName env;
     integration = "codex";
-    inherit binName;
-    outName = options.outName or "goblin-codex";
-    allowedPackages = (options.allowedPackages or commonTools) ++ [
-      pkgs.fish
-      hook
-    ];
-    rwDirs = lib.unique ((options.rwDirs or [ ]) ++ [ codexConfigDir ]);
-    sandboxEtc = (options.sandboxEtc or { }) // etc;
+    pkg = codex.mkLauncher {
+      inherit
+        pkg
+        binName
+        codexConfigDir
+        filterUnavailableMcp
+        ;
+    };
+    allowedPackages = allowedPackages ++ codex.packages;
+    rwDirs = pkgs.lib.unique (rwDirs ++ [ codexConfigDir ]);
+    sandboxEtc = sandboxEtc // codex.mkEtc codexSettings;
   }
 )

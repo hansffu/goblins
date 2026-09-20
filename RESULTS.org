@@ -1,6 +1,21 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Simplify public Nix constructors (2026-09-20)
+
+=nix/lib.nix= now only assembles the public constructors and presets.
+=mkGoblin= and =mkGoblins= have their own files, with shared validation under
+=nix/internal/=. =mkCodexGoblin= declares its options and composes a launcher,
+required packages, auth-directory mount and managed files with =mkGoblin=.
+Hook generation, runtime path handling, validation and launcher setup live under
+=nix/goblins/codex/=. Existing options, defaults and user-hook ordering are retained.
+The usage guide includes an example sharing options between shell and Codex.
+
+Validation: =nix flake check path:.= passed, including API rejection checks and
+production-only packaging. The default, custom-shell and Codex fixture config
+derivation paths are identical before and after the refactor, so their generated
+launchers, hooks, mounts and runtime configuration are unchanged.
+
 * Preserve inbox wakeups across terminal focus changes (2026-09-20)
 
 Ghostel's focus-in/out reports were counted as human input. When a report

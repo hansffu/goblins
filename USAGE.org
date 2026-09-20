@@ -240,9 +240,35 @@ The plain view additionally accepts =status= to print current state.
 
 * Nix API
 
-The root flake exports =lib.x86_64-linux.{mkGoblin,mkGoblins,commonTools,goblins}=. The
+The root flake exports =lib.x86_64-linux.{mkGoblin,mkCodexGoblin,mkGoblins,commonTools,goblins}=. The
 =packages.x86_64-linux.goblins= and default package are built with these helpers.
 See [[file:README.org::*Configure named goblins with Nix][the configuration example]].
+
+Share ordinary options as an attribute set and compose agent-specific settings:
+
+#+begin_src nix
+let
+  shared = {
+    allowedPackages = commonTools ++ [ pkgs.tree ];
+    rwDirs = [ "$HOME/code" ];
+  };
+in
+mkGoblins {
+  goblins.shell = mkGoblin (shared // {
+    pkg = pkgs.fish;
+    binName = "fish";
+    args = [ "--interactive" ];
+  });
+  goblins.codex = mkCodexGoblin (shared // {
+    codexConfigDir = "$HOME/.codex";
+    codexSettings.model_reasoning_effort = "high";
+  });
+}
+#+end_src
+
+=mkCodexGoblin= adds its required packages, config directory mount and managed
+=sandboxEtc= files to the supplied options. Attribute-set =//= merges are shallow;
+merge nested =env= or =codexSettings= sets explicitly when extending them.
 
 Use =lib.x86_64-linux.goblins.shell= for the predefined interactive Fish
 configuration in =nix/goblins/shell.nix=. The host and inner binary definitions
@@ -466,7 +492,7 @@ package approvals. =args= are passed unchanged after these defaults.
 
 =codexSettings= generates sandbox-only =/etc/codex/config.toml=. These are
 system defaults below Codex's user/project/CLI layers. Native hooks from
-=codexSettings.hooks= are appended to Goblins' SessionStart/Stop handlers.
+=codexSettings.hooks= are appended to Goblins' SessionStart/UserPromptSubmit/Stop handlers.
 Codex treats this system source as managed; no host hook-trust changes or
 blanket hook-trust bypass is needed. The matching skill is mounted at
 =/etc/codex/skills/goblins/SKILL.md=.
