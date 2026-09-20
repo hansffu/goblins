@@ -4,12 +4,15 @@ event=$(jq -r '.event' <<< "$input")
 args=(--event "$event")
 if [[ $(jq -r .active <<< "$input") == true ]]; then args+=(--active); fi
 if ! decision=$(/run/goblins/bin/goblins integration hook "${args[@]}"); then
-  jq -nc '{systemMessage: "Goblins inbox integration check failed. Check goblins inbox status manually; no inbox item was consumed."}'
+  if [[ "$event" == SessionStart ]]; then
+    printf 'Goblins SessionStart daemon update failed.\n' >&2
+    printf '{}\n'
+  else
+    jq -nc '{systemMessage: "Goblins inbox integration check failed. Check goblins inbox status manually; no inbox item was consumed."}'
+  fi
   exit 0
 fi
-if [[ "$event" == SessionStart ]]; then
-  jq -nc '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: "You are a Goblins sandbox agent. Use the goblins skill at /etc/codex/skills/goblins/SKILL.md for daemon inbox messaging and creating child goblins, and the goblins-packages skill at /etc/codex/skills/goblins-packages/SKILL.md when a required tool is unavailable. Agent messages must go through the daemon. Do not check the inbox proactively; the integration will notify you or continue the turn when work is pending."}}'
-elif [[ "$event" == Stop ]] && jq -e '.continue' <<< "$decision" >/dev/null; then
+if [[ "$event" == Stop ]] && jq -e '.continue' <<< "$decision" >/dev/null; then
   jq -nc '{decision: "block", reason: "Check your Goblins daemon inbox with goblins inbox next. Process its item and explicitly reply or complete it, then check again until empty. Use a fresh operation key for each new fetch; preserve the key when retrying an uncertain operation."}'
 else
   printf '{}\n'

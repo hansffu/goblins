@@ -95,8 +95,8 @@ queued body. Binary attachments and general file transfer are outside scope.
 
 * Working and idle transitions
 
-SessionStart supplies skill/context pointers, explicitly defers inbox work to a
-notification or Stop continuation, and reports working activity.
+SessionStart reports working activity to the daemon without injecting model
+instructions. Skills are available through native skill discovery.
 UserPromptSubmit reports a new turn. Stop atomically checks the authoritative
 inbox and reports whether Codex should continue or return to its prompt.
 

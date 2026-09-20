@@ -68,13 +68,11 @@ class CodexConfigTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)READONLY=1\n")
         terminal.expect(r"(?:^|\n)SECRET=1\n")
         terminal.expect(r"(?:^|\n)sandbox-only\n")
-        context = self.hook(terminal, "SessionStart")
-        self.assertEqual(context["hookSpecificOutput"]["hookEventName"], "SessionStart")
-        instructions = context["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("Do not check the inbox proactively", instructions)
-        self.assertNotIn("Check goblins inbox status for initial work", instructions)
-        self.assertEqual(self.hook(terminal, "Stop"), {})
         parent = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        self.assertEqual(self.sandbox(parent, "integration.status", {})["state"], "starting")
+        self.assertEqual(self.hook(terminal, "SessionStart"), {})
+        self.assertEqual(self.sandbox(parent, "integration.status", {})["state"], "working")
+        self.assertEqual(self.hook(terminal, "Stop"), {})
         self.d.rpc.call("messages.send", {"key": "task", "to": parent, "body": "private message body"})
         continuation = self.hook(terminal, "Stop")
         self.assertEqual(continuation["decision"], "block")

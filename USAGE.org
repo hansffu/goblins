@@ -503,7 +503,8 @@ blanket hook-trust bypass is needed. The messaging skill is mounted at
 =/etc/codex/skills/goblins/SKILL.md= and the live package-request skill at
 =/etc/codex/skills/goblins-packages/SKILL.md=.
 
-SessionStart supplies Goblins context but does not ask Codex to inspect an inbox.
+SessionStart only reports working activity to the daemon; it adds no instructions
+to Codex. Codex discovers the mounted skills through its normal skill discovery.
 The current user request remains primary. Stop queries inbox metadata and, when
 work remains, requests a continuation telling the agent to fetch it.
 The hook never claims an item or pastes its contents. It respects
