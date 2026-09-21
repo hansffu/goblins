@@ -103,19 +103,40 @@ Docker starts. Container bind sources are resolved there, not against the host
 root. The shell's existing seccomp restrictions remain in place. Even
 =--privileged= is relative to this nested boundary; it is not host privilege.
 
+Docker-enabled goblins default =TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false=.
+Testcontainers' Ryuk cleanup container uses the session's Docker socket without
+requesting a writable =/sys= mount. Ryuk remains enabled and can clean up after
+an abrupt JVM exit. An explicit =mkGoblin.env= value overrides this default.
+For an already-running Fish shell, apply it with
+=set -gx TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED false= before rerunning tests.
+
 Current limits:
 
-- Use =--network host= for the session's network or =--network none=. Docker
-  bridges and automatic host port publishing are disabled. A container on the
-  session network is reachable from the shell through localhost. Offline
-  configurations remain offline. Docker API access also allows changing the
-  session's network; do not treat containers as isolated from their own shell.
+- Default bridge networking, Docker builds and Compose service networks are
+  supported. Published ports (=-p= or Compose =ports=) are reachable from the
+  shell on the session's localhost, not published onto the real host.
+  =--network host= shares the session's network; =--network none= disables a
+  container's networking. Offline configurations remain offline, including
+  builds. Docker API access also allows changing the session's network; do not
+  treat containers as isolated from their own shell.
 - The workspace and explicit filesystem grants are shared with the engine;
   implicit temporary home and =/tmp= are separate. Put bind-mounted build inputs
   in =/workspace= or a granted folder, not the shell's temporary home or =/tmp=.
-- The =vfs= image store is ephemeral tmpfs: no persistent image/build cache,
-  potentially substantial RAM/swap use, and no delegated cgroup resource limits.
-  Containers and the engine are torn down with the session.
+- Images, build cache, container writable layers and named volumes use a private
+  disk-backed =overlay2= store under =$XDG_CACHE_HOME/goblins/docker/session-*=,
+  or =$HOME/.cache/goblins/docker/session-*= when =XDG_CACHE_HOME= is unset.
+  Only runtime state remains on tmpfs. The cache location must be on a disk
+  filesystem supported by rootless OverlayFS, not tmpfs; set =XDG_CACHE_HOME=
+  before starting the server to choose another disk. There is no shared cache
+  or per-session disk quota yet.
+- *Exiting the sandbox deletes its Docker data, including named volumes.* A
+  trusted supervisor stops/reaps the engine and containers before deleting the
+  store with the same subordinate-ID mapping. This also handles abrupt Goblins
+  server death and unreadable container-owned directories. Explicit host bind
+  mounts are not deleted. Power loss or killing the cleanup supervisor itself
+  can leave an orphaned store; these stores are never automatically reused.
+  Cleanup failures report the leftover path in the server log. There are no
+  delegated cgroup resource limits.
 - =/sys= and cgroup mounts must remain read-only. An unmodified =--privileged=
   invocation may fail because it requests writable sysfs; keeping
   =-v /sys:/sys:ro= allows the privileged probes used by the tests.
@@ -124,7 +145,9 @@ Current limits:
   sandbox's, not the real host's; creating fresh writable cgroup mounts is denied.
 - Non-root container users map to subordinate host IDs. They may not be able to
   write an ordinary-user-owned bind, and can leave subordinate-owned files in
-  writable grants. Container root maps to the launching host user.
+  writable grants. Container root maps to the launching host user. Entrypoints
+  can switch users/groups (for example Postgres's =gosu=); supplementary groups
+  must be within the authorized GID mapping.
 - Live Nix package grants update the shell, not the engine's initial store view.
 - The pinned Docker daemon has a small patch to allow native rootless setup
   without requiring RootlessKit's port-mapping service, and to make BuildKit
@@ -137,6 +160,13 @@ Run the local-image tests from the host (no registry or host Docker required):
 #+begin_src sh
 PYTHONPATH=tests python -m unittest test_docker -v
 #+end_src
+
+An opt-in Java test additionally verifies Postgres startup, published-port
+access, SQL and Ryuk cleanup after JVM halt. Set
+=GOBLINS_TESTCONTAINERS_CLASSPATH= to a colon-separated list of Testcontainers
+Java dependency JAR paths (verified with 2.0.5), then run
+=PYTHONPATH=tests python -m unittest test_docker.DockerTests.test_testcontainers_postgres_and_ryuk -v=.
+This check uses registry access to pull =postgres:16-alpine= and Ryuk.
 
 * Server commands, help and completion
 

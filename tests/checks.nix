@@ -138,9 +138,10 @@ in
               pkgs.coreutils
               pkgs.curl
               pkgs.python3
-            ];
-            docker.enable = true;
-            allowedDomains = if name == "offline" then [ ] else null;
+            ]
+            ++ pkgs.lib.optional (name == "java") pkgs.jdk;
+            docker.enable = name != "plain";
+            allowedDomains = if name == "shell" || name == "java" then null else [ ];
             env.PS1 = "docker-test> ";
             roDirs = [ "$GOBLINS_TEST_ROOT/readonly" ];
             rwDirs = [ "$GOBLINS_TEST_ROOT/writable" ];
@@ -149,6 +150,8 @@ in
         [
           "shell"
           "offline"
+          "plain"
+          "java"
         ]
     );
   };

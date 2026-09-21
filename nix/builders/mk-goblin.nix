@@ -31,12 +31,18 @@ let
     enable = false;
   }
   // docker;
+  effectiveEnv =
+    lib.optionalAttrs dockerOptions.enable {
+      # Ryuk needs the session Docker socket, not a writable sysfs mount.
+      # Keep its cleanup enabled without requesting a privileged container.
+      TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
+    }
+    // env;
   sandboxOptions = {
     inherit
       pkg
       binName
       outName
-      env
       allowNix
       allowUnixSockets
       allowedDomains
@@ -47,6 +53,7 @@ let
       roDirs
       roFiles
       ;
+    env = effectiveEnv;
     allowedPackages =
       allowedPackages ++ [ client ] ++ lib.optional dockerOptions.enable pkgs.docker-client;
   };
@@ -71,9 +78,9 @@ wrapped
     inherit
       args
       description
-      env
       integration
       ;
+    env = effectiveEnv;
     client_package = client;
     network = allowedDomains == null;
     docker =

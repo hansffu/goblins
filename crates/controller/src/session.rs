@@ -151,6 +151,11 @@ impl Session {
             fs::create_dir(session.directory.join(name))?;
         }
         if let Some(source) = workspace {
+            let resolved = fs::canonicalize(source)?;
+            let storage = crate::docker::storage_root(false)?;
+            if resolved.starts_with(&storage) || storage.starts_with(&resolved) {
+                return Err("workspace snapshot overlaps protected Docker storage".into());
+            }
             snapshot::snapshot(
                 source,
                 &session.directory.join("workspace"),
@@ -252,6 +257,8 @@ impl Session {
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
         let etc = crate::sandbox_etc::mounts(&self.launch.sandbox_etc)?;
         let mut private = self.launch.protected_paths.clone();
+        let docker_storage = crate::docker::storage_root(self.launch.docker.is_some())?;
+        private.push(docker_storage.clone());
         private.push(self.directory.clone());
         private.extend(etc.iter().map(|(_, destination)| destination.clone()));
         if self.binds.is_none() {
@@ -440,6 +447,7 @@ impl Session {
                 &self.launch,
                 &args,
                 &sources,
+                &docker_storage,
                 &self.directory,
                 &self.cancel,
             )?);

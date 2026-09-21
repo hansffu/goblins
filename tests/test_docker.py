@@ -1,7 +1,8 @@
 """Real per-shell Docker engines: local images, bind authority and lifecycle.
 
 Run on the host as a regular user with newuidmap/newgidmap and subuid/subgid.
-No host Docker socket, registry credentials or remote images are used.
+The default suite uses no host Docker socket, registry credentials or remote
+images. The opt-in Testcontainers check pulls Postgres and Ryuk from Docker Hub.
 """
 import os
 import http.server
@@ -38,8 +39,15 @@ class DockerTests(unittest.TestCase):
         (self.ro / "marker").write_text("readonly-ok\n")
         (self.root / "secret").write_text("host-secret\n")
         shutil.copyfile(self.image, self.rw / "image.tar.gz")
-        self.d = Daemon(self.app, env={**os.environ, "GOBLINS_TEST_ROOT": str(self.root)})
+        self.env = {**os.environ, "GOBLINS_TEST_ROOT": str(self.root), "XDG_CACHE_HOME": str(self.root / "cache")}
+        self.storage = self.root / "cache/goblins/docker"
+        self.addCleanup(self.assert_storage_empty)
+        self.d = Daemon(self.app, env=self.env)
         self.addCleanup(self.d.close)
+
+    def assert_storage_empty(self):
+        if self.storage.exists():
+            self.assertEqual(list(self.storage.iterdir()), [], "Docker storage survived session cleanup")
 
     def shell(self, name="offline"):
         session = self.d.start(name, wait=False)["session"]
@@ -66,7 +74,7 @@ class DockerTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory(prefix="nix-shell-", dir="/tmp")
         self.addCleanup(temp.cleanup)
         with patch("tempfile.tempdir", temp.name):
-            self.d = Daemon(self.app, env={**os.environ, "GOBLINS_TEST_ROOT": str(self.root)})
+            self.d = Daemon(self.app, env=self.env)
         self.addCleanup(self.d.close)
         session, terminal = self.shell()
         socket_path = self.d.state / session / "resources/docker-socket/docker.sock"
@@ -76,6 +84,7 @@ class DockerTests(unittest.TestCase):
     def test_local_image_and_bind_permissions(self):
         session, terminal = self.shell()
         self.run_ok(terminal, "docker info --format '{{json .SecurityOptions}}'")
+        self.run_ok(terminal, "test \"$(docker info --format '{{.Driver}}')\" = overlay2")
         self.load(terminal)
         self.run_ok(terminal, "docker run --rm --network none goblins-test sh -c 'echo container-ok'")
         self.run_ok(terminal, "docker run --rm --network none --user 1234:1234 goblins-test sh -c 'test \"$(id -u)\" = 1234'")
@@ -99,8 +108,41 @@ class DockerTests(unittest.TestCase):
         context = self.rw / "build"
         context.mkdir()
         (context / "Dockerfile").write_text("FROM goblins-test:latest\nRUN echo built-ok > /proof\n")
-        self.run_ok(terminal, f"docker build --network none --pull=false -t goblins-built {context}", timeout=60)
+        self.run_ok(terminal, f"docker build --pull=false -t goblins-built {context}", timeout=60)
         self.run_ok(terminal, "docker run --rm --network none goblins-built sh -c 'test \"$(cat /proof)\" = built-ok'")
+
+    def test_entrypoint_switches_user(self):
+        _, terminal = self.shell()
+        self.load(terminal)
+        # Like the Postgres entrypoint: start as root, initialize a volume,
+        # then drop supplementary groups, GID and UID before serving.
+        as_postgres = 'test "$(id -u)" = 70 && test "$(id -g)" = 70 && echo written > /data/proof'
+        entrypoint = (
+            "mkdir -p /etc; "
+            "echo postgres:x:70:70:postgres:/data:/bin/sh > /etc/passwd; "
+            "echo postgres:x:70: > /etc/group; "
+            "chown 70:70 /data; "
+            f"su -s /bin/sh postgres -c {shlex.quote(as_postgres)}"
+        )
+        self.run_ok(terminal, f"docker run --rm --network none -v user-data:/data goblins-test sh -c {shlex.quote(entrypoint)}")
+        self.run_ok(terminal, "docker run --rm --network none --user 70:70 -v user-data:/data goblins-test sh -c 'test \"$(cat /data/proof)\" = written'")
+        self.run_ok(terminal, "docker run --rm --network none --user 70:70 --group-add 2345 goblins-test sh -c 'test \"$(id -G)\" = \"70 2345\"'")
+        self.run_ok(terminal, "! docker run --rm --network none --group-add 65537 goblins-test true")
+
+    @unittest.skipUnless(os.environ.get("GOBLINS_TESTCONTAINERS_CLASSPATH"),
+                         "requires Testcontainers Java jars and registry access")
+    def test_testcontainers_postgres_and_ryuk(self):
+        _, terminal = self.shell("java")
+        jars = self.rw / "jars"
+        jars.mkdir()
+        for source in os.environ["GOBLINS_TESTCONTAINERS_CLASSPATH"].split(os.pathsep):
+            shutil.copyfile(source, jars / Path(source).name)
+        source = self.rw / "TestcontainersSmoke.java"
+        shutil.copyfile(ROOT / "tests/TestcontainersSmoke.java", source)
+        self.run_ok(terminal, f"java -cp '{jars}/*' {source}", timeout=240)
+        # The JVM halts without shutdown hooks, leaving cleanup to Ryuk.
+        query = "docker ps -aq --filter label=goblins.testcontainers-smoke=true"
+        self.run_ok(terminal, f'for attempt in $(seq 1 45); do test -z "$({query})" && break; sleep 1; done; test -z "$({query})"', timeout=60)
 
     def test_independent_engines_and_workspace(self):
         one, first = self.shell()
@@ -114,6 +156,53 @@ class DockerTests(unittest.TestCase):
         self.run_ok(second, "docker info >/dev/null")
         self.assertFalse((self.d.state / one / "resources/docker-socket/docker.sock").exists())
         print("EVIDENCE isolated image stores, shell/container shared workspace, per-session engine cleanup", flush=True)
+
+    def test_disk_cleanup_subuids_symlinks_and_other_sessions(self):
+        one, first = self.shell()
+        first_store, = self.storage.iterdir()
+        _, second = self.shell()
+        second_store, = set(self.storage.iterdir()) - {first_store}
+        self.load(first)
+        self.load(second)
+        self.run_ok(second, "docker run --rm --network none -v keep:/data goblins-test sh -c 'echo keep > /data/marker'")
+        (self.rw / "persistent").write_text("host-data\n")
+        self.run_ok(first, f"docker run --rm --network none -v disposable:/data goblins-test sh -c 'mkdir /data/locked; echo secret > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked; ln -s /run/goblins/docker-storage-parent/{second_store.name} /data/sibling; ln -s {self.rw} /data/host; dd if=/dev/zero of=/data/bulk bs=1M count=128'")
+        locked = first_store / "volumes/disposable/_data/locked"
+        self.assertNotEqual(locked.stat().st_uid, os.getuid())
+        self.assertEqual(locked.stat().st_mode & 0o777, 0)
+        self.assertEqual(first_store.stat().st_dev, self.root.stat().st_dev)
+        self.assertGreater((first_store / "volumes/disposable/_data/bulk").stat().st_blocks, 200000)
+        # The cleanup parent is hidden even from privileged containers.
+        self.run_ok(first, "docker run --rm --privileged --network none -v /sys:/sys:ro -v /run/goblins/docker-storage-parent:/probe:ro goblins-test sh -c 'test -z \"$(ls -A /probe)\"'")
+        self.run_ok(first, f"! docker run --rm --network none --mount type=bind,src={self.storage},dst=/probe goblins-test true")
+        first.send("exit\n")
+        self.d.wait(lambda: self.d.get(one)["state"] == "stopped")
+        self.assertFalse(first_store.exists())
+        self.assertTrue(second_store.exists())
+        self.assertEqual((self.rw / "persistent").read_text(), "host-data\n")
+        self.run_ok(second, "docker run --rm --network none -v keep:/data goblins-test sh -c 'test \"$(cat /data/marker)\" = keep'")
+
+    def test_cancel_startup_cleans_storage(self):
+        session = self.d.start("offline", wait=False)["session"]
+        self.d.wait(lambda: self.storage.exists() and list(self.storage.iterdir()))
+        self.d.rpc.call("sessions.stop", {"session": session})
+        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
+        self.assert_storage_empty()
+
+    def test_storage_cannot_be_granted_or_snapshotted(self):
+        self.storage.mkdir(mode=0o700, parents=True)
+        snapshot = Daemon(self.app, env=self.env, workspace=self.root)
+        self.addCleanup(snapshot.close)
+        for name in ("offline", "plain"):
+            session = snapshot.start(name, wait=False)["session"]
+            record = snapshot.wait(lambda: (r if (r := snapshot.get(session))["state"] == "failed" else None))
+            self.assertIn("protected Docker storage", record["detail"])
+        self.rw.rename(self.root / "writable-original")
+        self.rw.symlink_to(self.storage, target_is_directory=True)
+        for name in ("offline", "plain"):
+            session = self.d.start(name, wait=False)["session"]
+            record = self.d.wait(lambda: (r if (r := self.d.get(session))["state"] == "failed" else None))
+            self.assertIn("protected path", record["detail"])
 
     def test_shared_session_network(self):
         _, terminal = self.shell("shell")
@@ -143,11 +232,41 @@ class DockerTests(unittest.TestCase):
         url = f"http://{address}:{server.server_port}"
         self.run_ok(terminal, f"test \"$(curl --fail --max-time 5 {url})\" = network-ok")
         self.run_ok(terminal, f"docker run --rm --network host goblins-test sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
+        self.run_ok(terminal, f"docker run --rm goblins-test sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
         self.run_ok(offline, f"! docker run --rm --network host goblins-test wget -q -O - -T 2 {url}")
+        self.run_ok(offline, f"! docker run --rm goblins-test wget -q -O - -T 2 {url}")
+
+        # Ordinary Compose builds use the default bridge; services use a
+        # user-defined bridge with embedded DNS and session-local published ports.
+        context = self.rw / "compose"
+        context.mkdir()
+        (context / "Dockerfile").write_text(
+            f"FROM goblins-test:latest\nRUN wget -q -O /proof -T 5 {url}\n")
+        (context / "compose.yaml").write_text("""services:
+  web:
+    build: .
+    image: goblins-compose-test
+    command: ["httpd", "-f", "-p", "8080", "-h", "/"]
+    ports: ["127.0.0.1:18080:8080"]
+  client:
+    image: goblins-test
+    command: ["sleep", "300"]
+""")
+        compose = f"docker compose -p network-test -f {context}/compose.yaml"
+        self.run_ok(terminal, f"{compose} build --progress plain", timeout=60)
+        self.run_ok(terminal, f"{compose} up -d --no-build", timeout=60)
+        self.run_ok(terminal, f"{compose} exec -T client sh -c 'test \"$(wget -q -O - -T 5 http://web:8080/proof)\" = network-ok'")
+        self.run_ok(terminal, f"{compose} exec -T client sh -c 'test \"$(wget -q -O - -T 5 {url})\" = network-ok'")
+        self.run_ok(terminal, "test \"$(curl --retry 5 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18080/proof)\" = network-ok")
+        self.run_ok(offline, "! curl --fail --max-time 2 http://127.0.0.1:18080/proof")
+        # Building must not give an offline session an upstream connection.
+        self.run_ok(offline, f"! docker build --pull=false {context}", timeout=60)
+        self.run_ok(terminal, f"{compose} down", timeout=60)
 
     def test_server_death_reaps_containers(self):
         _, terminal = self.shell()
         self.load(terminal)
+        self.run_ok(terminal, "docker run --rm --network none -v crash-data:/data goblins-test sh -c 'mkdir /data/locked; echo saved > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked'")
         self.run_ok(terminal, "docker run -d --network none goblins-test sleep 300")
         descendants = set()
 
@@ -176,6 +295,7 @@ class DockerTests(unittest.TestCase):
                 return True
 
         self.d.wait(lambda: all(dead(pid, start) for pid, start in identities.items()))
+        self.d.wait(lambda: not list(self.storage.iterdir()))
 
 
 if __name__ == "__main__":

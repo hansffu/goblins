@@ -31,8 +31,9 @@ BusyBox image and a local HTTP server (no registry dependency):
   from an offline container, even with =--network host=.
 
 This is not an exhaustive security audit or ordinary Docker compatibility.
-The current =vfs= store is ephemeral tmpfs, bridge networking is disabled, and
-implicit shell/engine home and =/tmp= mounts are separate. Read-only sysfs is
+The initial =vfs=/tmpfs store has been replaced with per-session disk-backed
+=overlay2= storage (see below). Bridge networking is now enabled inside the
+session (see below). Implicit shell/engine home and =/tmp= mounts are separate. Read-only sysfs is
 mandatory; privileged probes explicitly preserve it. Cgroups are inherited
 read-only, not delegated for resource control. A narrow pinned Moby patch skips
 RootlessKit's port-mapping API when the native launcher supplies the namespace,
@@ -49,6 +50,91 @@ The =nix develop= Fish shell was also verified with =docker info=. Its longer
 =TMPDIR= exposed a host-side Unix-socket path-length limit in engine readiness;
 the check now connects through a pinned directory descriptor. A dedicated
 long-socket-path regression test passes.
+
+** Disk-backed storage and cleanup
+
+Docker now uses =overlay2= on a private directory under
+=$XDG_CACHE_HOME/goblins/docker/= (default =$HOME/.cache/goblins/docker/=).
+Images, builds, writable layers and named volumes no longer use the runtime
+tmpfs. The storage parent is protected from startup grants, and only a session's
+own data directory is exposed to its engine.
+
+An outer mapped supervisor keeps a private cleanup-parent mount, hidden from
+the engine before entering its locked mount namespace. EOF on the host lifetime
+pipe triggers namespace-scoped process teardown, reaping and symlink-safe
+deletion. Unlike a parent-death SIGKILL, this permits cleanup after abrupt server
+death, including subordinate-owned mode-000 directories. Power loss or explicit
+SIGKILL of this supervisor still requires manual orphan recovery; no disk quota
+or shared cache was added.
+
+The final disk-backed suite passed all nine tests, including startup
+cancellation, 128 MiB of allocated volume data, subordinate-owned mode-000
+directories, symlinks targeting another store, protected-cache bind/snapshot
+rejection (also without Docker enabled), and cleanup after server SIGKILL.
+The development-shell Fish smoke test verified =overlay2= and an empty storage
+parent after exit. Seven Docker-disabled bind/network/workspace integration
+tests also passed.
+
+One earlier run concurrent with baseline Nix builds timed out during container
+removal and engine startup. Both affected tests passed in isolation and the
+complete serial rerun passed; the cause of those timing failures was not
+established.
+
+** Default build and Compose networking
+
+Ordinary Docker builds failed with =network bridge not found= because the
+launcher disabled Docker's default bridge. Removed the bridge, firewall,
+forwarding and masquerading overrides: Docker now configures these inside
+the session's owned network namespace. Pasta still supplies the upstream
+connection only for online sessions; published ports belong to the session.
+
+All nine Docker integration tests passed (132.583 seconds). The build test now
+uses Docker's default network. Expanded network coverage verifies default-bridge
+egress, a Compose build with an HTTP-fetching =RUN= instruction, service-name DNS,
+Compose service egress and localhost port publishing. Another session cannot
+reach that localhost service; offline containers and builds cannot reach the
+external test endpoint. Filesystem confinement, independent stores and normal/
+crash cleanup tests also pass. Rust formatting and =git diff --check= passed.
+
+** Container entrypoint user switching
+
+The Postgres entrypoint failed because the native bootstrap wrote =deny= to
+the inner user namespace's =setgroups= control. This is inherited irreversibly
+by containers and prevents =gosu=/=su= from dropping supplementary groups.
+Removed that write: the supervisor already has =CAP_SETGID= in the mapped
+parent namespace and can install the authorized GID mapping directly.
+
+A local-image regression reproduced =su: can't set groups: Operation not
+permitted= before the fix and passed afterward. It exercises an entrypoint
+switching from root to UID/GID 70, writing a named volume, and subsequent
+access as that user, plus explicit supplementary groups.
+
+A separate disposable sandbox pulled the official =postgres:16-alpine= image,
+initialized a database, created a table, inserted/read a row and verified the
+row after a container restart. Session teardown deleted the test's Docker
+store. This smoke test uses the registry; the committed regression uses the
+local BusyBox image.
+
+All ten Docker regression tests passed (66.673 seconds), including rejection
+of an unmapped supplementary GID, filesystem confinement, bridge networking
+and normal/crash storage cleanup. Rust formatting and =git diff --check= passed.
+
+** Testcontainers and Ryuk
+
+Testcontainers Java defaults Ryuk to privileged mode, which requests a writable
+=/sys= mount and fails against the sandbox's locked read-only sysfs boundary.
+Docker-enabled =mkGoblin= configurations now default
+=TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false=, overridable through =env=.
+Ryuk remains enabled and uses the existing session Docker socket.
+
+The opt-in Java integration test passed with Testcontainers 2.0.5 and Ryuk
+0.14.0 (37.382 seconds): the official Postgres image started, its dynamically
+published port was reachable, SQL returned the expected row, and Ryuk was
+confirmed unprivileged. The JVM then halted without shutdown hooks and Ryuk
+removed the labeled Postgres container. Sandbox exit cleaned the Docker store.
+Dependency JARs were copied from the local Gradle cache into the test grant;
+Postgres and Ryuk images were pulled into the disposable session. The Nix API
+validation check, Nix formatting and =git diff --check= also passed.
 
 * Claude Code hooks and skills integration (2026-09-20)
 

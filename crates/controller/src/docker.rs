@@ -2,12 +2,16 @@
 //! plan. No host Docker socket, user service or global daemon is involved.
 use crate::{Result, config::Launch, process, unix};
 use std::{
-    ffi::CStr,
+    ffi::{CStr, CString},
     fs::{self, File},
     io::{Read, Write},
     os::{
         fd::{AsRawFd, RawFd},
-        unix::{net::UnixStream, process::CommandExt},
+        unix::{
+            ffi::{OsStrExt, OsStringExt},
+            net::UnixStream,
+            process::CommandExt,
+        },
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -16,9 +20,89 @@ use std::{
 
 pub struct Engine {
     process: Child,
+    lifetime: Option<File>,
+    _storage: Storage,
     pub user: File,
     pub net: File,
     pub net_path: PathBuf,
+}
+
+/// Resolve even a not-yet-created cache through its existing ancestors, so
+/// bind validation protects this host-only tree for Docker-disabled shells too.
+pub fn storage_root(create: bool) -> Result<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .ok_or("Docker storage requires HOME or an absolute XDG_CACHE_HOME")?;
+    if !cache.is_absolute() {
+        return Err("Docker cache directory must be absolute".into());
+    }
+    let root = cache.join("goblins/docker");
+    if create {
+        unix::private_directory(&root)?;
+    }
+    let mut ancestor = root.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(mut path) => {
+                for name in suffix.into_iter().rev() {
+                    path.push(name);
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(ancestor.file_name().ok_or("invalid Docker cache path")?);
+                ancestor = ancestor.parent().ok_or("invalid Docker cache path")?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+struct Storage {
+    path: PathBuf,
+    parent: File,
+    directory: File,
+}
+impl Storage {
+    fn new(root: &Path) -> Result<Self> {
+        let parent = File::open(root)?;
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        unix::cvt(unsafe { libc::fstatfs(parent.as_raw_fd(), &mut stat) })?;
+        if stat.f_type == libc::TMPFS_MAGIC || stat.f_type as u64 == 0x858458f6 {
+            // RAMFS_MAGIC
+            return Err("Docker storage must be disk-backed; set XDG_CACHE_HOME to a disk filesystem before starting Goblins".into());
+        }
+        let mut template =
+            CString::new(root.join("session-XXXXXX").as_os_str().as_bytes())?.into_bytes_with_nul();
+        if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        template.pop();
+        let path = PathBuf::from(std::ffi::OsString::from_vec(template));
+        let directory = File::open(&path)?;
+        Ok(Self {
+            path,
+            parent,
+            directory,
+        })
+    }
+}
+impl Drop for Storage {
+    fn drop(&mut self) {
+        // Only an EMPTY directory may be removed by the unmapped host user.
+        // The mapped guardian removes populated trees, without following links.
+        if let Err(error) = fs::remove_dir(&self.path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "Docker storage cleanup incomplete at {}: {error}",
+                    self.path.display()
+                );
+            }
+        }
+    }
 }
 
 fn subordinate(kind: &str, id: u32) -> Result<u32> {
@@ -118,6 +202,7 @@ impl Engine {
         launch: &Launch,
         filesystem: &[String],
         sources: &[RawFd],
+        storage_root: &Path,
         directory: &Path,
         cancel: &process::Cancellation,
     ) -> Result<Self> {
@@ -129,6 +214,7 @@ impl Engine {
         }
         let subuid = subordinate("uid", uid)?;
         let subgid = subordinate("gid", gid)?;
+        let storage = Storage::new(storage_root)?;
         fs::create_dir(directory.join("docker-socket"))?;
         // State paths can exceed sockaddr_un's limit (notably under
         // nix develop's nested TMPDIR). Pin the socket directory and connect
@@ -149,6 +235,7 @@ impl Engine {
         fs::write(directory.join("docker-group"), "root:x:0:\n")?;
         let (info_r, info_w) = unix::pipe()?;
         let (gate_r, gate_w) = unix::pipe()?;
+        let (lifetime_r, lifetime_w) = unix::pipe()?;
         let filter = crate::seccomp::docker_filter()?;
         let mut command = Command::new(&launch.bwrap);
         command
@@ -161,7 +248,6 @@ impl Engine {
                 "0",
                 "--cap-add",
                 "ALL",
-                "--die-with-parent",
                 "--new-session",
                 "--clearenv",
                 "--info-fd",
@@ -173,6 +259,12 @@ impl Engine {
             .args([
                 "--tmpfs",
                 "/run/docker",
+                "--bind-fd",
+                &storage.directory.as_raw_fd().to_string(),
+                "/run/docker/data",
+                "--bind-fd",
+                &storage.parent.as_raw_fd().to_string(),
+                "/run/goblins/docker-storage-parent",
                 "--tmpfs",
                 "/run/containerd",
                 "--ro-bind",
@@ -207,7 +299,11 @@ impl Engine {
             ])
             .arg(&launch.helper)
             .arg("--docker-init")
+            .arg(storage.path.file_name().unwrap())
             .arg(&config.daemon)
+            // Keep Docker's bridge, forwarding and NAT defaults. The bootstrap
+            // creates an owned network namespace, so these affect only this
+            // session; pasta separately controls its upstream connectivity.
             .args([
                 "--config-file=/run/docker/config.json",
                 "--log-level=error",
@@ -217,15 +313,10 @@ impl Engine {
                 "--data-root=/run/docker/data",
                 "--exec-root=/run/docker/exec",
                 "--pidfile=/run/docker/docker.pid",
-                "--storage-driver=vfs",
+                "--storage-driver=overlay2",
                 "--default-cgroupns-mode=host",
-                "--bridge=none",
-                "--iptables=false",
-                "--ip6tables=false",
-                "--ip-forward=false",
-                "--ip-masq=false",
             ])
-            .stdin(Stdio::null())
+            .stdin(Stdio::from(lifetime_r))
             .stdout(File::create(directory.join("docker.log"))?)
             .stderr(
                 File::options()
@@ -234,13 +325,11 @@ impl Engine {
             );
         let mut keep = sources.to_vec();
         keep.extend([info_w.as_raw_fd(), gate_r.as_raw_fd(), filter.as_raw_fd()]);
-        let parent = unsafe { libc::getpid() };
+        keep.extend([storage.parent.as_raw_fd(), storage.directory.as_raw_fd()]);
         unsafe {
             command.pre_exec(move || {
-                unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
-                if libc::getppid() != parent {
-                    return Err(std::io::ErrorKind::Interrupted.into());
-                }
+                // EOF on stdin, rather than SIGKILL, lets the trusted guardian
+                // reap containers and clean disk storage even after host death.
                 unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
                 for &fd in &keep {
                     unix::cvt(libc::fcntl(fd, libc::F_SETFD, 0))?;
@@ -252,6 +341,7 @@ impl Engine {
         drop(command);
         drop(info_w);
         drop(gate_r);
+        let mut bootstrapped = false;
         let setup = (|| -> Result<(File, File, PathBuf)> {
             let mut info = File::from(info_r);
             let mut json = String::new();
@@ -271,6 +361,7 @@ impl Engine {
             map_ids("uid", pid, uid, subuid, directory, cancel)?;
             map_ids("gid", pid, gid, subgid, directory, cancel)?;
             File::from(gate_w).write_all(b"x")?;
+            bootstrapped = true;
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 cancel.check()?;
@@ -322,12 +413,17 @@ impl Engine {
         match setup {
             Ok((user, net, net_path)) => Ok(Self {
                 process: child,
+                lifetime: Some(File::from(lifetime_w)),
+                _storage: storage,
                 user,
                 net,
                 net_path,
             }),
             Err(error) => {
-                let _ = child.kill();
+                drop(lifetime_w);
+                if !bootstrapped {
+                    let _ = child.kill();
+                }
                 let _ = child.wait();
                 let diagnostic = process::diagnostic(&directory.join("docker.log"));
                 let tail: String = diagnostic
@@ -345,7 +441,17 @@ impl Engine {
 }
 impl Drop for Engine {
     fn drop(&mut self) {
-        let _ = self.process.kill();
-        let _ = self.process.wait();
+        self.lifetime.take();
+        if let Err(error) = self.process.wait().and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "guardian exited with {status}"
+                )))
+            }
+        }) {
+            eprintln!("Docker shutdown: {error}");
+        }
     }
 }
