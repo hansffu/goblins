@@ -1,5 +1,10 @@
-{ pkgs, mkGoblin }:
+{
+  pkgs,
+  mkGoblin,
+  docker ? { },
+}:
 mkGoblin {
+  inherit docker;
   pkg = pkgs.fish;
   binName = "fish";
   args = [

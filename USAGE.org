@@ -61,6 +61,83 @@ successful grant. Package names are bounded nixpkgs attributes, including
 are rejected. Host Nix chooses the bin output when available, otherwise default.
 Development setup hooks and unrecorded plugins/data are not activated.
 
+* Per-shell Docker (Linux, no VM)
+
+Opt in on a =mkGoblin= configuration with =docker.enable = true;=. The default
+is false. The development environment enables it for the Fish shell, while
+keeping the other goblin configurations unchanged:
+
+#+begin_src sh
+nix develop
+goblins server start
+goblins run shell
+#+end_src
+
+Restart any Goblins server started from an older build before using this
+development environment. The =docker-shell= package also provides a standalone
+Docker-enabled Fish configuration:
+
+#+begin_src sh
+nix build .#docker-shell --out-link result-docker-shell
+./result-docker-shell/bin/goblins --state-dir /tmp/my-docker-goblins server start
+./result-docker-shell/bin/goblins --state-dir /tmp/my-docker-goblins run shell
+# Inside the shell:
+docker info
+docker run --rm --network host -v /workspace:/work alpine ls /work
+# Back on the host, after finishing:
+./result-docker-shell/bin/goblins --state-dir /tmp/my-docker-goblins server stop
+#+end_src
+
+Use a private, previously unused state directory. No host Docker service or
+socket is used. Start the Goblins server as your ordinary host user, outside an
+existing restricted agent sandbox. The host must provide working privileged
+=newuidmap= and =newgidmap= helpers (=/run/wrappers/bin= on NixOS or =/usr/bin=),
+and at least 65536 subordinate IDs for that user in both =/etc/subuid= and
+=/etc/subgid=. Goblins checks these prerequisites; it does not change host users,
+permissions, services or kernel configuration.
+
+Each session starts its own rootless daemon inside a separate filesystem
+sandbox assembled from the shell's initial workspace and explicit filesystem
+grants. A nested user/mount namespace locks inherited read-only mounts before
+Docker starts. Container bind sources are resolved there, not against the host
+root. The shell's existing seccomp restrictions remain in place. Even
+=--privileged= is relative to this nested boundary; it is not host privilege.
+
+Current limits:
+
+- Use =--network host= for the session's network or =--network none=. Docker
+  bridges and automatic host port publishing are disabled. A container on the
+  session network is reachable from the shell through localhost. Offline
+  configurations remain offline. Docker API access also allows changing the
+  session's network; do not treat containers as isolated from their own shell.
+- The workspace and explicit filesystem grants are shared with the engine;
+  implicit temporary home and =/tmp= are separate. Put bind-mounted build inputs
+  in =/workspace= or a granted folder, not the shell's temporary home or =/tmp=.
+- The =vfs= image store is ephemeral tmpfs: no persistent image/build cache,
+  potentially substantial RAM/swap use, and no delegated cgroup resource limits.
+  Containers and the engine are torn down with the session.
+- =/sys= and cgroup mounts must remain read-only. An unmodified =--privileged=
+  invocation may fail because it requests writable sysfs; keeping
+  =-v /sys:/sys:ro= allows the privileged probes used by the tests.
+  The engine and its containers inherit a filter denying new cgroup namespaces
+  (including =--cgroupns private=). The default cgroup namespace is the outer
+  sandbox's, not the real host's; creating fresh writable cgroup mounts is denied.
+- Non-root container users map to subordinate host IDs. They may not be able to
+  write an ordinary-user-owned bind, and can leave subordinate-owned files in
+  writable grants. Container root maps to the launching host user.
+- Live Nix package grants update the shell, not the engine's initial store view.
+- The pinned Docker daemon has a small patch to allow native rootless setup
+  without requiring RootlessKit's port-mapping service, and to make BuildKit
+  honor the launcher's outer-cgroup-namespace setting. A trusted native
+  bootstrap creates the namespaces while preserving =no_new_privs=.
+- Only the shell workflow is being investigated; AI integrations are unchanged.
+
+Run the local-image tests from the host (no registry or host Docker required):
+
+#+begin_src sh
+PYTHONPATH=tests python -m unittest test_docker -v
+#+end_src
+
 * Server commands, help and completion
 
 #+begin_src sh

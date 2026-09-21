@@ -12,7 +12,6 @@ use std::{
     thread,
     time::Duration,
 };
-
 const NS_GET_USERNS: libc::c_ulong = 0xb701;
 const NS_GET_PARENT: libc::c_ulong = 0xb702;
 const CAP_SYS_ADMIN: u32 = 21;
@@ -161,7 +160,11 @@ impl Drop for Session {
         let _ = self.0.wait();
     }
 }
+mod docker;
 fn run() -> io::Result<i32> {
+    if env::args().nth(1).as_deref() == Some("--docker-init") {
+        return docker::run();
+    }
     // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BIND_FDS BWRAP [arguments...]
     let mut args: Vec<String> = env::args().collect();
     let network = if args.get(1).is_some_and(|arg| arg == "--network-namespaces") {

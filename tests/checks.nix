@@ -58,6 +58,8 @@ let
     { description = "two\nlines"; }
     { description = 1; }
     { allowNix = true; }
+    { docker.enable = "yes"; }
+    { docker.unknown = true; }
     { allowUnixSockets = false; }
     { allowedDomains = "open"; }
     { allowedDomains = [ "example.com" ]; }
@@ -119,6 +121,47 @@ in
       touch $out
     '';
   named-goblins = configured;
+  docker-goblins = mkGoblins {
+    goblins = builtins.listToAttrs (
+      map
+        (name: {
+          inherit name;
+          value = mkGoblin {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [
+              pkgs.coreutils
+              pkgs.curl
+              pkgs.python3
+            ];
+            docker.enable = true;
+            allowedDomains = if name == "offline" then [ ] else null;
+            env.PS1 = "docker-test> ";
+            roDirs = [ "$GOBLINS_TEST_ROOT/readonly" ];
+            rwDirs = [ "$GOBLINS_TEST_ROOT/writable" ];
+          };
+        })
+        [
+          "shell"
+          "offline"
+        ]
+    );
+  };
+  docker-test-image = pkgs.dockerTools.buildImage {
+    name = "goblins-test";
+    tag = "latest";
+    copyToRoot = pkgs.buildEnv {
+      name = "docker-test-root";
+      paths = [ pkgs.pkgsStatic.busybox ];
+      pathsToLink = [ "/bin" ];
+    };
+    config.Cmd = [ "/bin/sh" ];
+  };
   codex-goblins = mkGoblins {
     goblins = {
       codex = mkCodexGoblin {
@@ -319,6 +362,8 @@ in
   };
   goblins-api =
     assert builtins.all rejected invalid;
+    assert (mkGoblin base).goblin.docker == null;
+    assert (mkGoblin (base // { docker.enable = true; })).goblin.docker != null;
     assert (mkGoblin base).goblin.network;
     assert !(mkGoblin (base // { allowedDomains = [ ]; })).goblin.network;
     assert builtins.all

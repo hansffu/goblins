@@ -1,0 +1,14 @@
+diff --git a/daemon/libnetwork/drivers_linux.go b/daemon/libnetwork/drivers_linux.go
+--- a/daemon/libnetwork/drivers_linux.go
++++ b/daemon/libnetwork/drivers_linux.go
+@@ -6,0 +7 @@ import (
++	"github.com/moby/moby/v2/daemon/internal/rootless"
+@@ -49 +50 @@ func registerPortMappers(ctx context.Context, r *drvregistry.PortMappers, cfg *config.Config) error {
+-	if cfg.Rootless {
++	if cfg.Rootless && rootless.RunningWithRootlessKit() {
+diff --git a/vendor/github.com/moby/buildkit/executor/oci/spec.go b/vendor/github.com/moby/buildkit/executor/oci/spec.go
+--- a/vendor/github.com/moby/buildkit/executor/oci/spec.go
++++ b/vendor/github.com/moby/buildkit/executor/oci/spec.go
+@@ -178 +178 @@ func GenerateSpec(ctx context.Context, meta executor.Meta, mounts []executor.Mount, id string, resolvConf, hostsFile string, namespace network.Namespace, cgroupParent string, processMode ProcessMode, idmap *user.IdentityMapping, apparmorProfile, selinuxLabel string, tracingSocket string, cdiManager *cdidevices.Manager, opts ...oci.SpecOpts) (*specs.Spec, func(), error) {
+-	if cgroupV2NamespaceSupported() {
++	if cgroupV2NamespaceSupported() && os.Getenv("GOBLINS_CGROUPNS") != "host" {

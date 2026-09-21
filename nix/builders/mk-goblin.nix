@@ -3,6 +3,7 @@ let
   inherit (pkgs) lib;
   validate = import ../internal/validate.nix { inherit lib; };
   client = import ../packages/internal-goblins.nix { inherit pkgs; };
+  dockerDaemon = import ../packages/docker.nix { inherit pkgs; };
 in
 {
   pkg,
@@ -23,8 +24,13 @@ in
   roFiles ? [ ],
   injectedFiles ? { },
   integration ? null,
+  docker ? { },
 }:
 let
+  dockerOptions = {
+    enable = false;
+  }
+  // docker;
   sandboxOptions = {
     inherit
       pkg
@@ -41,7 +47,8 @@ let
       roDirs
       roFiles
       ;
-    allowedPackages = allowedPackages ++ [ client ];
+    allowedPackages =
+      allowedPackages ++ [ client ] ++ lib.optional dockerOptions.enable pkgs.docker-client;
   };
   wrapped = sandbox.mkSandbox sandboxOptions;
 in
@@ -54,6 +61,7 @@ assert validate.goblin (
       integration
       injectedFiles
       ;
+    docker = dockerOptions;
   }
 );
 wrapped
@@ -68,6 +76,13 @@ wrapped
       ;
     client_package = client;
     network = allowedDomains == null;
+    docker =
+      if dockerOptions.enable then
+        {
+          daemon = "${dockerDaemon}/bin/dockerd";
+        }
+      else
+        null;
     sandbox_etc = lib.mapAttrs (
       name: value:
       if builtins.isString value then

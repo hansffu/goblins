@@ -1,0 +1,351 @@
+//! A per-session engine, launched by the host with exactly the shell's bind
+//! plan. No host Docker socket, user service or global daemon is involved.
+use crate::{Result, config::Launch, process, unix};
+use std::{
+    ffi::CStr,
+    fs::{self, File},
+    io::{Read, Write},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::{net::UnixStream, process::CommandExt},
+    },
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+pub struct Engine {
+    process: Child,
+    pub user: File,
+    pub net: File,
+    pub net_path: PathBuf,
+}
+
+fn subordinate(kind: &str, id: u32) -> Result<u32> {
+    let name = unsafe {
+        let mut entry: libc::passwd = std::mem::zeroed();
+        let mut result = std::ptr::null_mut();
+        let mut buffer = vec![0u8; 65536];
+        let error = libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        );
+        if error != 0 || result.is_null() {
+            return Err("cannot resolve current user for Docker UID mappings".into());
+        }
+        CStr::from_ptr(entry.pw_name).to_string_lossy().into_owned()
+    };
+    let text = fs::read_to_string(format!("/etc/sub{kind}")).map_err(|e| {
+        format!("docker.enable requires /etc/sub{kind} entries and newuidmap/newgidmap: {e}")
+    })?;
+    let numeric = unsafe { libc::getuid() }.to_string();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.len() == 3 && (fields[0] == name || fields[0] == numeric) {
+            let start: u32 = fields[1].parse()?;
+            let count: u32 = fields[2].parse()?;
+            if count >= 65536
+                && start
+                    .checked_add(65536)
+                    .is_some_and(|end| id < start || id >= end)
+            {
+                return Ok(start);
+            }
+        }
+    }
+    Err(format!("docker.enable requires at least 65536 subordinate {kind}s for {name}").into())
+}
+
+fn ready(path: &Path) -> bool {
+    (|| -> std::io::Result<bool> {
+        let mut socket = UnixStream::connect(path)?;
+        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        socket.set_write_timeout(Some(Duration::from_millis(100)))?;
+        socket.write_all(b"GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")?;
+        let mut response = String::new();
+        socket.take(4096).read_to_string(&mut response)?;
+        Ok(response.starts_with("HTTP/1.0 200 ") || response.starts_with("HTTP/1.1 200 "))
+    })()
+    .unwrap_or(false)
+}
+
+fn map_ids(
+    kind: &str,
+    pid: u32,
+    id: u32,
+    subordinate: u32,
+    directory: &Path,
+    cancel: &process::Cancellation,
+) -> Result<()> {
+    let name = format!("new{kind}map");
+    // NixOS's privileged wrappers live outside the store; conventional Linux
+    // distributions install these helpers in /usr/bin. Never expose them inside.
+    let helper = [
+        PathBuf::from("/run/wrappers/bin").join(&name),
+        PathBuf::from("/usr/bin").join(&name),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+    .ok_or_else(|| format!("docker.enable requires installed {name}"))?;
+    process::command(
+        Command::new(helper).args([
+            pid.to_string(),
+            "0".into(),
+            id.to_string(),
+            "1".into(),
+            "1".into(),
+            subordinate.to_string(),
+            "65536".into(),
+        ]),
+        directory,
+        cancel,
+    )
+    .map_err(|e| {
+        format!("Docker {name} failed (launch Goblins outside an existing restricted sandbox): {e}")
+    })?;
+    Ok(())
+}
+
+impl Engine {
+    pub fn alive(&mut self) -> bool {
+        matches!(self.process.try_wait(), Ok(None))
+    }
+
+    pub fn start(
+        launch: &Launch,
+        filesystem: &[String],
+        sources: &[RawFd],
+        directory: &Path,
+        cancel: &process::Cancellation,
+    ) -> Result<Self> {
+        let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        if uid == 0 {
+            return Err("run Docker-enabled Goblins as a non-root host user".into());
+        }
+        let subuid = subordinate("uid", uid)?;
+        let subgid = subordinate("gid", gid)?;
+        fs::create_dir(directory.join("docker-socket"))?;
+        // State paths can exceed sockaddr_un's limit (notably under
+        // nix develop's nested TMPDIR). Pin the socket directory and connect
+        // through a short procfs path; the daemon uses its short sandbox path.
+        let socket_directory = File::open(directory.join("docker-socket"))?;
+        let socket_path = PathBuf::from(format!(
+            "/proc/self/fd/{}/docker.sock",
+            socket_directory.as_raw_fd()
+        ));
+        fs::write(
+            directory.join("docker.json"),
+            r#"{"features":{"containerd-snapshotter":false}}"#,
+        )?;
+        fs::write(
+            directory.join("docker-passwd"),
+            "root:x:0:0:root:/root:/bin/sh\n",
+        )?;
+        fs::write(directory.join("docker-group"), "root:x:0:\n")?;
+        let (info_r, info_w) = unix::pipe()?;
+        let (gate_r, gate_w) = unix::pipe()?;
+        let filter = crate::seccomp::docker_filter()?;
+        let mut command = Command::new(&launch.bwrap);
+        command
+            .args([
+                "--unshare-all",
+                "--unshare-user",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
+                "--cap-add",
+                "ALL",
+                "--die-with-parent",
+                "--new-session",
+                "--clearenv",
+                "--info-fd",
+                &info_w.as_raw_fd().to_string(),
+                "--userns-block-fd",
+                &gate_r.as_raw_fd().to_string(),
+            ])
+            .args(filesystem)
+            .args([
+                "--tmpfs",
+                "/run/docker",
+                "--tmpfs",
+                "/run/containerd",
+                "--ro-bind",
+                "/sys/fs/cgroup",
+                "/run/docker/cgroup",
+                "--ro-bind",
+                "/sys",
+                "/sys",
+                "--ro-bind",
+                &directory.join("docker-passwd").display().to_string(),
+                "/etc/passwd",
+                "--ro-bind",
+                &directory.join("docker-group").display().to_string(),
+                "/etc/group",
+                "--bind",
+                &directory.join("docker-socket").display().to_string(),
+                "/run/goblins/docker-socket",
+                "--ro-bind",
+                &directory.join("docker.json").display().to_string(),
+                "/run/docker/config.json",
+                "--setenv",
+                "XDG_RUNTIME_DIR",
+                "/run/docker",
+                "--setenv",
+                "GOBLINS_CGROUPNS",
+                "host",
+                "--remount-ro",
+                "/",
+                "--seccomp",
+                &filter.as_raw_fd().to_string(),
+                "--",
+            ])
+            .arg(&launch.helper)
+            .arg("--docker-init")
+            .arg(&config.daemon)
+            .args([
+                "--config-file=/run/docker/config.json",
+                "--log-level=error",
+                "--rootless",
+                "--host=unix:///run/goblins/docker-socket/docker.sock",
+                "--group=0",
+                "--data-root=/run/docker/data",
+                "--exec-root=/run/docker/exec",
+                "--pidfile=/run/docker/docker.pid",
+                "--storage-driver=vfs",
+                "--default-cgroupns-mode=host",
+                "--bridge=none",
+                "--iptables=false",
+                "--ip6tables=false",
+                "--ip-forward=false",
+                "--ip-masq=false",
+            ])
+            .stdin(Stdio::null())
+            .stdout(File::create(directory.join("docker.log"))?)
+            .stderr(
+                File::options()
+                    .append(true)
+                    .open(directory.join("docker.log"))?,
+            );
+        let mut keep = sources.to_vec();
+        keep.extend([info_w.as_raw_fd(), gate_r.as_raw_fd(), filter.as_raw_fd()]);
+        let parent = unsafe { libc::getpid() };
+        unsafe {
+            command.pre_exec(move || {
+                unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
+                if libc::getppid() != parent {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
+                for &fd in &keep {
+                    unix::cvt(libc::fcntl(fd, libc::F_SETFD, 0))?;
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn()?;
+        drop(command);
+        drop(info_w);
+        drop(gate_r);
+        let setup = (|| -> Result<(File, File, PathBuf)> {
+            let mut info = File::from(info_r);
+            let mut json = String::new();
+            for _ in 0..20 {
+                let line = process::helper_line(&mut info, Duration::from_secs(10), cancel)?;
+                json.push_str(&line);
+                if line.trim() == "}" {
+                    break;
+                }
+            }
+            let info: serde_json::Value = serde_json::from_str(&json)?;
+            let pid = u32::try_from(
+                info["child-pid"]
+                    .as_u64()
+                    .ok_or("missing Docker namespace PID")?,
+            )?;
+            map_ids("uid", pid, uid, subuid, directory, cancel)?;
+            map_ids("gid", pid, gid, subgid, directory, cancel)?;
+            File::from(gate_w).write_all(b"x")?;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                cancel.check()?;
+                if child.try_wait()?.is_some() {
+                    return Err("Docker engine exited during startup".into());
+                }
+                if ready(&socket_path) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err("Docker engine startup timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let root = PathBuf::from(format!("/proc/{pid}/root"));
+            // Read only during trusted startup, before accepting containers.
+            // Resolve through the owned bootstrap's procfs, not host PID input.
+            let nested: u32 = fs::read_to_string(root.join("run/docker/namespace-pid"))?
+                .trim()
+                .parse()?;
+            let user = File::open(root.join(format!("proc/{nested}/ns/user")))?;
+            let net = File::open(root.join(format!("proc/{nested}/ns/net")))?;
+            // Pasta opens the net namespace AFTER entering its user namespace.
+            // Our host /proc/self/fd is no longer accessible at that point. Use
+            // the still-owned namespace keeper, whose credentials belong to it.
+            use std::os::unix::fs::MetadataExt;
+            let mut keeper = pid;
+            let mut net_path = None;
+            // Bubblewrap may retain PID 1 as a monitor above our bootstrap.
+            // Follow only the owned single-child bootstrap chain, never scan
+            // unrelated host processes or accept a sandbox-supplied host PID.
+            for _ in 0..4 {
+                let path = PathBuf::from(format!("/proc/{keeper}/ns/net"));
+                if fs::metadata(&path)?.ino() == net.metadata()?.ino() {
+                    net_path = Some(path);
+                    break;
+                }
+                let children =
+                    fs::read_to_string(format!("/proc/{keeper}/task/{keeper}/children"))?;
+                let ids: Vec<_> = children.split_whitespace().collect();
+                if ids.len() != 1 {
+                    return Err("unexpected Docker namespace keeper children".into());
+                }
+                keeper = ids[0].parse()?;
+            }
+            let net_path = net_path.ok_or("Docker namespace keeper identity mismatch")?;
+            Ok((user, net, net_path))
+        })();
+        match setup {
+            Ok((user, net, net_path)) => Ok(Self {
+                process: child,
+                user,
+                net,
+                net_path,
+            }),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let diagnostic = process::diagnostic(&directory.join("docker.log"));
+                let tail: String = diagnostic
+                    .chars()
+                    .rev()
+                    .take(380)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                Err(format!("{error}: {tail}").into())
+            }
+        }
+    }
+}
+impl Drop for Engine {
+    fn drop(&mut self) {
+        let _ = self.process.kill();
+        let _ = self.process.wait();
+    }
+}

@@ -101,6 +101,7 @@ pub struct Session {
     pub listener: Option<UnixListener>,
     helper: Option<Child>,
     network: Option<crate::network::Network>,
+    docker: Option<crate::docker::Engine>,
     pub exit_code: Option<i32>,
     helper_input: Option<File>,
     helper_output: Option<File>,
@@ -138,6 +139,7 @@ impl Session {
             listener: None,
             helper: None,
             network: None,
+            docker: None,
             exit_code: None,
             helper_input: None,
             helper_output: None,
@@ -291,6 +293,9 @@ impl Session {
         roots.extend(self.launch.initial_packages.clone());
         roots.extend(self.launch.initial_closure.clone());
         roots.extend(etc.iter().map(|(source, _)| source.clone()));
+        if let Some(docker) = &self.launch.docker {
+            roots.extend([package(&docker.daemon)?, package(&self.launch.helper)?]);
+        }
         let initial = self.closure(&roots)?;
         self.placeholders(&initial)?;
         let listener = UnixListener::bind(self.directory.join("request.sock"))?;
@@ -301,12 +306,14 @@ impl Session {
         listener.set_nonblocking(true)?;
         self.listener = Some(listener);
         if let Some(pasta) = &self.launch.pasta {
-            self.network = Some(crate::network::Network::start(
-                pasta,
-                &self.launch.posix_shell,
-                &self.directory,
-                &self.cancel,
-            )?);
+            if self.launch.docker.is_none() {
+                self.network = Some(crate::network::Network::start(
+                    pasta,
+                    &self.launch.posix_shell,
+                    &self.directory,
+                    &self.cancel,
+                )?);
+            }
             fs::write(self.directory.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
         }
         let mut path = vec![
@@ -320,7 +327,7 @@ impl Session {
                 .iter()
                 .map(|p| p.join("bin").display().to_string()),
         );
-        let mut args: Vec<String> = [
+        let mut namespace_args: Vec<String> = [
             "--unshare-all",
             // The helper is namespace-root only while assembling mounts. Map
             // that unprivileged host identity to an ordinary payload user so
@@ -338,9 +345,13 @@ impl Session {
         ]
         .map(String::from)
         .to_vec();
-        if self.network.is_some() {
+        let mut args = Vec::new();
+        if self.launch.docker.is_some() && self.launch.pasta.is_none() {
+            namespace_args.push("--share-net".into());
+        }
+        if self.launch.pasta.is_some() {
+            namespace_args.push("--share-net".into());
             args.extend([
-                "--share-net".into(),
                 "--ro-bind".into(),
                 self.directory.join("resolv.conf").display().to_string(),
                 "/etc/resolv.conf".into(),
@@ -358,8 +369,13 @@ impl Session {
         ] {
             args.extend(["--setenv".into(), name.into(), value]);
         }
-        args.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"].map(String::from));
-        args.extend(["--tmpfs".into(), binds.home.display().to_string()]);
+        args.extend(["--proc", "/proc", "--dev", "/dev"].map(String::from));
+        args.extend([
+            "--tmpfs".into(),
+            "/tmp".into(),
+            "--tmpfs".into(),
+            binds.home.display().to_string(),
+        ]);
         args.extend([
             "--bind-fd".into(),
             workspace_fd.to_string(),
@@ -415,6 +431,40 @@ impl Session {
                 destination.display().to_string(),
             ]);
         }
+        let sources: Vec<_> = binds
+            .source_fds()
+            .chain(std::iter::once(workspace_fd))
+            .collect();
+        if self.launch.docker.is_some() {
+            self.docker = Some(crate::docker::Engine::start(
+                &self.launch,
+                &args,
+                &sources,
+                &self.directory,
+                &self.cancel,
+            )?);
+            if let Some(pasta) = &self.launch.pasta {
+                let engine = self.docker.as_ref().unwrap();
+                self.network = Some(crate::network::Network::attach(
+                    pasta,
+                    engine.user.try_clone()?,
+                    engine.net.try_clone()?,
+                    &engine.net_path,
+                    &self.directory,
+                    &self.cancel,
+                )?);
+            }
+            args.extend([
+                "--ro-bind".into(),
+                self.directory.join("docker-socket").display().to_string(),
+                "/run/goblins/docker-socket".into(),
+                "--setenv".into(),
+                "DOCKER_HOST".into(),
+                "unix:///run/goblins/docker-socket/docker.sock".into(),
+            ]);
+        }
+        namespace_args.append(&mut args);
+        let mut args = namespace_args;
         args.push("--remount-ro".into());
         args.push("/".into());
         let (input, output) = if let Some(slave) = terminal {
@@ -431,8 +481,16 @@ impl Session {
         let (control_r, control_w) = unix::pipe()?;
         let (reply_r, reply_w) = unix::pipe()?;
         let mut command = Command::new(&self.launch.helper);
-        if let Some(network) = &self.network {
-            let [user, net] = network.fds();
+        let network_fds = self
+            .network
+            .as_ref()
+            .map(crate::network::Network::fds)
+            .or_else(|| {
+                self.docker
+                    .as_ref()
+                    .map(|engine| [engine.user.as_raw_fd(), engine.net.as_raw_fd()])
+            });
+        if let Some([user, net]) = network_fds {
             command.args(["--network-namespaces", &user.to_string(), &net.to_string()]);
         }
         command
@@ -440,9 +498,8 @@ impl Session {
                 input.as_raw_fd().to_string(),
                 output.as_raw_fd().to_string(),
                 filter.as_raw_fd().to_string(),
-                binds
-                    .source_fds()
-                    .chain(std::iter::once(workspace_fd))
+                sources
+                    .iter()
                     .map(|fd| fd.to_string())
                     .collect::<Vec<_>>()
                     .join(","),
@@ -457,11 +514,10 @@ impl Session {
             .stderr(File::create(self.directory.join("helper.log"))?);
         let parent = unsafe { libc::getpid() };
         let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
-        if let Some(network) = &self.network {
-            keep.extend(network.fds());
+        if let Some(fds) = network_fds {
+            keep.extend(fds);
         }
-        keep.extend(binds.source_fds());
-        keep.push(workspace_fd);
+        keep.extend(sources);
         unsafe {
             command.pre_exec(move || {
                 unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
@@ -649,6 +705,10 @@ impl Session {
         Ok(())
     }
     pub fn alive(&mut self) -> bool {
+        if self.docker.as_mut().is_some_and(|engine| !engine.alive()) {
+            self.exit_code = Some(1);
+            return false;
+        }
         match self.helper.as_mut().map(Child::try_wait) {
             Some(Ok(None)) => true,
             Some(Ok(Some(status))) => {
@@ -679,6 +739,7 @@ impl Session {
                 let _ = helper.wait();
             }
         }
+        self.docker.take();
         self.helper_input.take();
         self.helper_output.take();
         self.event("stopped", serde_json::json!({}));

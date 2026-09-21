@@ -8,7 +8,10 @@ use crate::{
 };
 use goblins_protocol::{Reply, Request};
 use std::{
-    os::{fd::OwnedFd, unix::net::UnixListener},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::net::UnixListener,
+    },
     path::PathBuf,
     sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
@@ -103,7 +106,18 @@ impl Worker {
                         Session::new_in(launch, workspace.as_deref(), token.clone(), directory)?
                     }
                 };
-                session.start(Some(slave))?;
+                if let Err(error) = session.start(Some(slave)) {
+                    // Bubblewrap writes setup errors to the payload terminal,
+                    // which is not handed to the event pump until Started.
+                    // Preserve that diagnostic instead of losing it on failure.
+                    use std::io::Read;
+                    unix::nonblocking(master.as_raw_fd())?;
+                    let mut output = Vec::new();
+                    let _ = std::fs::File::from(master)
+                        .take(4096)
+                        .read_to_end(&mut output);
+                    return Err(format!("{error}: {}", String::from_utf8_lossy(&output)).into());
+                }
                 results.try_send(Completed::Started {
                     initial_packages: session
                         .launch

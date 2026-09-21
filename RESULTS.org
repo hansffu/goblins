@@ -1,6 +1,55 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Native per-shell Docker (2026-09-21)
+
+=mkGoblin= accepts =docker.enable=, defaulting to false. The =docker-shell=
+package and =nix develop= environment opt the Fish shell in; AI configurations
+are unchanged. Each enabled
+session owns a filesystem-confined rootless Docker engine, without a VM, host
+Docker socket or separate host service/user. Standard subordinate-ID mappings
+and the host's privileged mapping helpers are still required.
+
+Five host-run =test_docker= integration tests passed with a locally built
+BusyBox image and a local HTTP server (no registry dependency):
+
+- Load and run images, including UID/GID 1234, and build/run a Dockerfile with
+  a =RUN= instruction.
+- Share workspace and explicit writable binds; reject an ungranted host file.
+- Preserve read-only grants against writable Docker bind requests and
+  privileged remount attempts. A follow-up fresh-cgroup-mount probe exposed a
+  gap in readonly mounts alone: private cgroup namespaces must also be denied.
+  An inherited engine filter now denies their creation; Docker defaults to the
+  outer sandbox's cgroup namespace instead. Both fresh mounts and explicit
+  =--cgroupns private= are denied in the passing final suite.
+- Keep concurrent engines/image stores independent and stop one without
+  disturbing another.
+- Remove the engine on shell exit and terminate engine/container descendants
+  after abrupt Goblins server death.
+- Reach a container service from the shell on the session's localhost; reach
+  a local external endpoint from an online shell/container; fail to reach it
+  from an offline container, even with =--network host=.
+
+This is not an exhaustive security audit or ordinary Docker compatibility.
+The current =vfs= store is ephemeral tmpfs, bridge networking is disabled, and
+implicit shell/engine home and =/tmp= mounts are separate. Read-only sysfs is
+mandatory; privileged probes explicitly preserve it. Cgroups are inherited
+read-only, not delegated for resource control. A narrow pinned Moby patch skips
+RootlessKit's port-mapping API when the native launcher supplies the namespace,
+and keeps BuildKit in the same outer cgroup namespace as ordinary Docker runs.
+See USAGE.org for commands, prerequisites and remaining restrictions.
+
+The existing Docker-disabled bind and network integration suites also passed
+(five tests). The Rust workspace suite passed 65 tests with one pre-existing
+ignored host-integration driver, including two new syscall-filter tests.
+Nix API/default-off and runtime-closure checks passed, as did an interactive
+Fish =docker info= smoke test. Rust/Nix formatting and =git diff --check= passed.
+
+The =nix develop= Fish shell was also verified with =docker info=. Its longer
+=TMPDIR= exposed a host-side Unix-socket path-length limit in engine readiness;
+the check now connects through a pinned directory descriptor. A dedicated
+long-socket-path regression test passes.
+
 * Claude Code hooks and skills integration (2026-09-20)
 
 =mkClaudeGoblin= now provides a native Claude Code profile alongside Codex. It

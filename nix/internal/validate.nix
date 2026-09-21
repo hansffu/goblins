@@ -30,6 +30,7 @@ in
         args
         injectedFiles
         env
+        docker
         ;
     in
     if !validName binName || !validName outName then
@@ -50,6 +51,12 @@ in
       ]
     then
       fail "unsupported integration driver"
+    else if
+      !builtins.isAttrs docker
+      || builtins.attrNames docker != [ "enable" ]
+      || !builtins.isBool docker.enable
+    then
+      fail "docker must contain only enable, a boolean"
     else if allowNix != false then
       fail "host Nix access is prohibited; request packages through goblins"
     else if allowUnixSockets != true then

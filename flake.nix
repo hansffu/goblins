@@ -22,6 +22,16 @@
       goblins = goblinsLib.builders.mkGoblins {
         goblins = goblinsLib.defaultGoblins;
       };
+      dockerShell = import ./nix/default-goblins/shell.nix {
+        inherit pkgs;
+        inherit (goblinsLib.builders) mkGoblin;
+        docker.enable = true;
+      };
+      devGoblins = goblinsLib.builders.mkGoblins {
+        goblins = goblinsLib.defaultGoblins // {
+          shell = dockerShell;
+        };
+      };
     in
     {
       lib.${system} = goblinsLib;
@@ -30,6 +40,9 @@
         inherit (goblins) helper;
         default = goblins;
         shell-runtime = goblins.config;
+        docker-shell = goblinsLib.builders.mkGoblins {
+          goblins.shell = dockerShell;
+        };
       }
       // import ./tests/fixtures.nix {
         inherit pkgs sandbox;
@@ -39,7 +52,7 @@
       formatter.${system} = pkgs.nixfmt;
       devShells.${system}.default = pkgs.mkShell {
         packages = [
-          goblins
+          devGoblins
           pkgs.rustc
           pkgs.cargo
           pkgs.rustfmt
