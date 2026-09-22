@@ -1,5 +1,5 @@
-//! A per-session engine, launched by the host with exactly the shell's bind
-//! plan. No host Docker socket, user service or global daemon is involved.
+//! A scope-owned engine, initially launched from a member's confined bind plan.
+//! No host Docker socket, user service or global daemon is involved.
 use crate::{Result, config::Launch, process, unix};
 use std::{
     ffi::{CStr, CString},
@@ -22,6 +22,8 @@ pub struct Engine {
     process: Child,
     lifetime: Option<File>,
     _storage: Storage,
+    pub root: File,
+    pub mounts: File,
 }
 
 /// Resolve even a not-yet-created cache through its existing ancestors, so
@@ -62,15 +64,56 @@ struct Storage {
     path: PathBuf,
     parent: File,
     directory: File,
+    lock: Option<File>,
 }
 impl Storage {
-    fn new(root: &Path) -> Result<Self> {
+    fn new(root: &Path, name: Option<&str>) -> Result<Self> {
         let parent = File::open(root)?;
         let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
         unix::cvt(unsafe { libc::fstatfs(parent.as_raw_fd(), &mut stat) })?;
         if stat.f_type == libc::TMPFS_MAGIC || stat.f_type as u64 == 0x858458f6 {
             // RAMFS_MAGIC
             return Err("Docker storage must be disk-backed; set XDG_CACHE_HOME to a disk filesystem before starting Goblins".into());
+        }
+        if let Some(name) = name {
+            if !goblins_protocol::docker_scope_name(name) {
+                return Err("invalid scope name".into());
+            }
+            let locks = root.join("locks");
+            unix::private_directory(&locks)?;
+            let lock = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(locks.join(name))?;
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(
+                    format!("Docker scope '{name}' is in use by another controller").into(),
+                );
+            }
+            let path = root.join(format!("scope-{name}"));
+            // Dockerd changes its data root to 0710/0711. Its parent remains
+            // host-private; do not mistake Docker's normal mode for corruption.
+            match fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    unix::private_directory(&path)?
+                }
+                Ok(meta) => {
+                    use std::os::unix::fs::MetadataExt;
+                    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
+                        return Err("unsafe named Docker data directory".into());
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+            let directory = File::open(&path)?;
+            return Ok(Self {
+                path,
+                parent,
+                directory,
+                lock: Some(lock),
+            });
         }
         let mut template =
             CString::new(root.join("session-XXXXXX").as_os_str().as_bytes())?.into_bytes_with_nul();
@@ -84,11 +127,15 @@ impl Storage {
             path,
             parent,
             directory,
+            lock: None,
         })
     }
 }
 impl Drop for Storage {
     fn drop(&mut self) {
+        if self.lock.is_some() {
+            return;
+        }
         // Only an EMPTY directory may be removed by the unmapped host user.
         // The mapped guardian removes populated trees, without following links.
         if let Err(error) = fs::remove_dir(&self.path) {
@@ -203,9 +250,10 @@ impl Engine {
         directory: &Path,
         cancel: &process::Cancellation,
         scope: &crate::docker_scope::Scope,
+        name: Option<&str>,
     ) -> Result<Self> {
         let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
-        let storage = Storage::new(storage_root)?;
+        let storage = Storage::new(storage_root, name)?;
         // State paths can exceed sockaddr_un's limit (notably under
         // nix develop's nested TMPDIR). Pin the socket directory and connect
         // through a short procfs path; the daemon uses its short sandbox path.
@@ -224,6 +272,8 @@ impl Engine {
         )?;
         fs::write(directory.join("docker-group"), "root:x:0:\n")?;
         let (lifetime_r, lifetime_w) = unix::pipe()?;
+        let (info_r, info_w) = unix::pipe()?;
+        let (ready_r, ready_w) = unix::pipe()?;
         let filter = crate::seccomp::docker_filter()?;
         let mut command = Command::new(&launch.helper);
         command
@@ -242,6 +292,8 @@ impl Engine {
                 "ALL",
                 "--new-session",
                 "--clearenv",
+                "--info-fd",
+                &info_w.as_raw_fd().to_string(),
             ])
             .args(filesystem)
             .args([
@@ -279,8 +331,6 @@ impl Engine {
                 "--setenv",
                 "GOBLINS_CGROUPNS",
                 "host",
-                "--remount-ro",
-                "/",
                 "--seccomp",
                 &filter.as_raw_fd().to_string(),
                 "--",
@@ -288,6 +338,15 @@ impl Engine {
             .arg(&launch.helper)
             .arg("--docker-init")
             .arg(storage.path.file_name().unwrap())
+            .arg(if name.is_some() { "keep" } else { "delete" })
+            .arg(
+                storage
+                    .lock
+                    .as_ref()
+                    .map_or(-1, AsRawFd::as_raw_fd)
+                    .to_string(),
+            )
+            .arg(ready_w.as_raw_fd().to_string())
             .arg(&config.daemon)
             // Keep Docker's bridge, forwarding and NAT defaults. The scope
             // owns the network namespace, so these affect only this
@@ -318,6 +377,10 @@ impl Engine {
             filter.as_raw_fd(),
         ]);
         keep.extend([storage.parent.as_raw_fd(), storage.directory.as_raw_fd()]);
+        keep.extend([info_w.as_raw_fd(), ready_w.as_raw_fd()]);
+        if let Some(lock) = &storage.lock {
+            keep.push(lock.as_raw_fd());
+        }
         unsafe {
             command.pre_exec(move || {
                 // EOF on stdin, rather than SIGKILL, lets the trusted guardian
@@ -331,7 +394,23 @@ impl Engine {
         }
         let mut child = command.spawn()?;
         drop(command);
-        let setup = (|| -> Result<()> {
+        drop((info_w, ready_w));
+        let setup = (|| -> Result<(File, File)> {
+            let mut info = File::from(info_r);
+            let mut json = String::new();
+            for _ in 0..20 {
+                let line = process::helper_line(&mut info, Duration::from_secs(10), cancel)?;
+                json.push_str(&line);
+                if line.trim() == "}" {
+                    break;
+                }
+            }
+            let info: serde_json::Value = serde_json::from_str(&json)?;
+            let pid = info["child-pid"].as_u64().ok_or("missing engine PID")?;
+            let nested: u32 =
+                process::helper_line(&mut File::from(ready_r), Duration::from_secs(15), cancel)?
+                    .trim()
+                    .parse()?;
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 cancel.check()?;
@@ -346,13 +425,19 @@ impl Engine {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Ok(())
+            let proc = format!("/proc/{pid}/root/proc/{nested}");
+            Ok((
+                File::open(format!("{proc}/root"))?,
+                File::open(format!("{proc}/ns/mnt"))?,
+            ))
         })();
         match setup {
-            Ok(()) => Ok(Self {
+            Ok((root, mounts)) => Ok(Self {
                 process: child,
                 lifetime: Some(File::from(lifetime_w)),
                 _storage: storage,
+                root,
+                mounts,
             }),
             Err(error) => {
                 drop(lifetime_w);
@@ -388,54 +473,4 @@ impl Drop for Engine {
     }
 }
 
-/// Owns a private Docker scope independently of whether its engine is running.
-/// Sharing and persistent scopes deliberately have no API yet.
-pub struct Manager {
-    engine: Option<Engine>,
-    pub scope: crate::docker_scope::Scope,
-}
-impl Manager {
-    pub fn prepare(
-        launch: &Launch,
-        directory: &Path,
-        cancel: &process::Cancellation,
-    ) -> Result<Self> {
-        Ok(Self {
-            engine: None,
-            scope: crate::docker_scope::Scope::start(launch, directory, cancel)?,
-        })
-    }
-    pub fn enabled(&self) -> bool {
-        self.engine.is_some()
-    }
-    pub fn alive(&mut self) -> bool {
-        self.scope.alive() && self.engine.as_mut().is_none_or(Engine::alive)
-    }
-    pub fn enable(
-        &mut self,
-        launch: &Launch,
-        filesystem: &[String],
-        sources: &[RawFd],
-        directory: &Path,
-        cancel: &process::Cancellation,
-    ) -> Result<()> {
-        if self.enabled() {
-            return Ok(());
-        }
-        self.engine = Some(Engine::start(
-            launch,
-            filesystem,
-            sources,
-            &storage_root(true)?,
-            directory,
-            cancel,
-            &self.scope,
-        )?);
-        Ok(())
-    }
-}
-impl Drop for Manager {
-    fn drop(&mut self) {
-        self.engine.take();
-    }
-}
+pub(crate) use crate::docker_shared::{Lease, Selection, Shared};

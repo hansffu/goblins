@@ -30,6 +30,8 @@ const MOVE_MOUNT_F_EMPTY_PATH: i32 = 0x04;
 const MOVE_MOUNT_T_EMPTY_PATH: i32 = 0x40;
 const CLOSE_RANGE_CLOEXEC: u32 = 4;
 const MAX_HELPER_COMMAND: u64 = 256;
+mod docker_bind;
+mod docker_forward;
 
 fn cvt(n: i32) -> io::Result<i32> {
     if n < 0 {
@@ -171,6 +173,12 @@ fn run() -> io::Result<i32> {
     }
     if env::args().nth(1).as_deref() == Some("--docker-init") {
         return docker::run();
+    }
+    if env::args().nth(1).as_deref() == Some("--docker-bind") {
+        return docker_bind::run();
+    }
+    if env::args().nth(1).as_deref() == Some("--docker-forward") {
+        return docker_forward::run();
     }
     // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BIND_FDS BWRAP [arguments...]
     let mut args: Vec<String> = env::args().collect();

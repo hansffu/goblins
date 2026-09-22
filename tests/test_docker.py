@@ -42,16 +42,23 @@ class DockerTests(unittest.TestCase):
         shutil.copyfile(self.image, self.rw / "image.tar.gz")
         self.env = {**os.environ, "GOBLINS_TEST_ROOT": str(self.root), "XDG_CACHE_HOME": str(self.root / "cache")}
         self.storage = self.root / "cache/goblins/docker"
+        self.named_storage = False
         self.addCleanup(self.assert_storage_empty)
         self.d = Daemon(self.app, env=self.env)
         self.addCleanup(self.d.close)
 
     def assert_storage_empty(self):
         if self.storage.exists():
-            self.assertEqual(list(self.storage.iterdir()), [], "Docker storage survived session cleanup")
+            paths = list(self.storage.glob("session-*")) if self.named_storage else list(self.storage.iterdir())
+            self.assertEqual(paths, [], "Anonymous Docker storage survived session cleanup")
 
-    def shell(self, name="offline"):
-        session = self.d.start(name, wait=False)["session"]
+    def shell(self, name="offline", cwd=None):
+        if cwd is None:
+            session = self.d.start(name, wait=False)["session"]
+        else:
+            import uuid
+            session = self.d.rpc.call("sessions.start", {"name": name, "configuration": self.d.manifest,
+                       "key": uuid.uuid4().hex, "cwd": str(cwd), "rows": 24, "cols": 100})["session"]
         terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", session])
         self.addCleanup(terminal.close)
         try:
@@ -69,12 +76,13 @@ class DockerTests(unittest.TestCase):
     def load(self, terminal):
         self.run_ok(terminal, f"docker load -i {shlex.quote(str(self.rw / 'image.tar.gz'))}")
 
-    def enable(self, session, terminal, approved=True):
-        terminal.send("goblins enable-docker --reason 'integration test'\n")
+    def enable(self, session, terminal, approved=True, options=""):
+        terminal.send("goblins enable-docker --reason 'integration test' " + options + "\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
         self.assertEqual(request["kind"], "docker")
         self.d.decide(request, approved)
-        terminal.expect('"status":"' + ("ready" if approved else "denied") + '"', timeout=60)
+        result = terminal.expect('"status":"(ready|denied|error)"', timeout=60)
+        self.assertEqual(result[1].decode(), "ready" if approved else "denied", self.d.get(session).get("detail"))
         terminal.expect("docker-test>")
 
     def test_enable_docker_on_demand(self):
@@ -122,6 +130,9 @@ class DockerTests(unittest.TestCase):
             {"kind": "docker", "reason": ""},
             {"kind": "docker", "reason": "test", "daemon": "/bin/true"},
             {"kind": "docker", "reason": "test", "session": "other"},
+            {"kind": "docker", "reason": "test", "scope": "../work"},
+            {"kind": "docker", "reason": "test", "scope": "work", "anonymous": True},
+            {"kind": "package", "package": "hello", "reason": "test", "anonymous": True},
         ):
             peer = RPC(endpoint)
             try:
@@ -131,9 +142,10 @@ class DockerTests(unittest.TestCase):
                 peer.close()
         peer = RPC(endpoint)
         self.assertIn("docker-enable", peer.init["features"])
+        self.assertIn("docker-scopes", peer.init["features"])
         peer.send("permissions.request", {"kind": "docker", "reason": "test"})
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
-        self.assertIn("private rootless", request["preview"]["description"])
+        self.assertIn("anonymous rootless", request["preview"]["description"])
         self.assert_storage_empty()
         concurrent = RPC(endpoint)
         try:
@@ -152,22 +164,42 @@ class DockerTests(unittest.TestCase):
         self.enable(session, terminal)
         self.run_ok(terminal, 'case "$(goblins status)" in *"Docker: enabled"*) true;; *) false;; esac')
 
-    def test_children_require_their_own_activation(self):
-        parent, terminal = self.shell("plain")
-        self.enable(parent, terminal)
+    def test_children_inherit_anonymous_activation(self):
+        # Inheritance must override a configured named default too.
+        parent, terminal = self.shell("scoped")
+        self.enable(parent, terminal, options="--anonymous")
         self.load(terminal)
         peer = RPC(self.d.state / parent / "resources/request.sock")
         try:
-            child = peer.call("sessions.start", {"key": "docker-child", "name": "plain",
+            child = peer.call("sessions.start", {"key": "docker-child", "name": "scoped",
                               "agent_name": "child", "detached": True})["session"]
         finally:
             peer.close()
         other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
+        self.assertTrue(self.d.get(child)["docker_enabled"])
+        self.assertIsNone(self.d.get(child)["docker_scope"])
+        self.assertFalse(self.d.permissions(session=child, state="pending"))
+        self.run_ok(other, "docker image inspect goblins-test >/dev/null")
+
+    def test_inactive_parent_inherits_child_started_anonymous_engine(self):
+        parent, terminal = self.shell("plain")
+        peer = RPC(self.d.state / parent / "resources/request.sock")
+        try:
+            child = peer.call("sessions.start", {"key": "lazy-child", "name": "plain", "detached": True})["session"]
+        finally:
+            peer.close()
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        self.addCleanup(other.close)
+        other.expect("docker-test>", timeout=60)
         self.assertFalse(self.d.get(child)["docker_enabled"])
-        self.enable(child, other)  # Must present a new approval, not inherit it.
-        self.run_ok(other, "test -z \"$(docker image ls -q)\"")
+        self.enable(child, other); self.load(other)
+        self.assertFalse(self.d.get(parent)["docker_enabled"])
+        self.run_ok(terminal, "test ! -S /run/goblins/docker-socket/docker.sock")
+        self.enable(parent, terminal)
+        self.assertEqual(len(self.engines()), 1)
+        self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
 
     def test_activation_failure_preserves_shell_and_cleans_storage(self):
         manifest = json.loads(Path(self.d.manifest).read_text())
@@ -189,6 +221,185 @@ class DockerTests(unittest.TestCase):
             self.assert_storage_empty()
             self.assertFalse(self.d.get(session)["docker_enabled"])
             self.run_ok(terminal, "test -d /workspace")
+
+    def engines(self):
+        pending = [str(self.d.process.pid)]
+        engines = set()
+        while pending:
+            pid = pending.pop()
+            try:
+                if Path(f"/proc/{pid}/comm").read_text().strip() == "dockerd":
+                    engines.add(pid)
+                for task in Path(f"/proc/{pid}/task").iterdir():
+                    pending.extend((task / "children").read_text().split())
+            except FileNotFoundError:
+                pass
+        return engines
+
+    def test_named_scope_lazy_sharing_idle_and_reuse(self):
+        self.named_storage = True
+        first, one = self.shell("scoped", cwd=self.rw)
+        second, two = self.shell("scoped", cwd=self.rw)
+        idle, three = self.shell("scoped", cwd=self.rw)
+        self.assertEqual(self.engines(), set())
+        self.assertFalse(self.storage.exists())
+        self.assertEqual(self.d.get(first)["docker_scope"], "work")
+        self.enable(first, one)
+        self.load(one)
+        self.run_ok(one, "docker run --rm -v shared:/data goblins-test sh -c 'echo shared-value > /data/value'")
+        self.enable(second, two)
+        self.assertEqual(len(self.engines()), 1)
+        a = self.d.state / first / "resources/docker-socket/docker.sock"
+        b = self.d.state / second / "resources/docker-socket/docker.sock"
+        self.assertEqual(a.stat().st_ino, b.stat().st_ino)
+        self.run_ok(two, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+        one.send("exit\n")
+        self.d.wait(lambda: self.d.get(first)["state"] == "stopped")
+        self.assertEqual(len(self.engines()), 1)
+        self.run_ok(two, "docker info >/dev/null")
+        two.send("exit\n")
+        self.d.wait(lambda: self.d.get(second)["state"] == "stopped")
+        self.d.wait(lambda: not self.engines())
+        self.assertTrue((self.storage / "scope-work").exists())
+        self.assertFalse(self.d.get(idle)["docker_enabled"])
+        self.enable(idle, three)
+        self.run_ok(three, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+        three.send("exit\n")
+        self.d.wait(lambda: self.d.get(idle)["state"] == "stopped")
+        self.d.wait(lambda: not self.engines())
+        fresh, four = self.shell("scoped", cwd=self.rw)
+        self.enable(fresh, four)
+        self.run_ok(four, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+
+    def test_network_policy_conflict_still_allows_anonymous(self):
+        self.named_storage = True
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one)
+        second, two = self.shell("scope-online", cwd=self.rw)
+        two.send("goblins enable-docker\n")
+        request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
+        self.d.decide(request, True)
+        two.expect('"status":"error"', timeout=60)
+        two.expect("docker-test>")
+        self.assertFalse(self.d.get(second)["docker_enabled"])
+        self.enable(second, two, options="--anonymous")
+        self.assertIsNone(self.d.get(second)["docker_scope"])
+        self.run_ok(two, "docker info >/dev/null")
+
+    def test_scope_selection_inheritance_and_published_ports(self):
+        self.named_storage = True
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one)
+        self.load(one)
+        second, two = self.shell("member", cwd=self.rw)
+        self.assertEqual(self.d.get(second)["docker_scope"], "other")
+        self.enable(second, two, options="--scope work")
+        self.run_ok(one, "docker run -d --name shared-web -p 18082:8080 goblins-test httpd -f -p 8080 -h /bin")
+        self.run_ok(two, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18082/sh -o /dev/null")
+        peer = RPC(self.d.state / second / "resources/request.sock")
+        try:
+            child = peer.call("sessions.start", {"key": "inherited-work", "name": "member", "detached": True})["session"]
+        finally:
+            peer.close()
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        self.addCleanup(other.close)
+        other.expect("docker-test>", timeout=60)
+        self.assertEqual(self.d.get(child)["docker_scope"], "work")
+        self.assertTrue(self.d.get(child)["docker_enabled"])
+        self.run_ok(other, "docker image inspect goblins-test >/dev/null; curl --fail http://127.0.0.1:18082/sh -o /dev/null")
+        self.enable(second, two, options="--anonymous")
+        self.assertIsNone(self.d.get(second)["docker_scope"])
+        self.run_ok(two, "test -z \"$(docker image ls -q)\"")
+        self.run_ok(other, "docker inspect shared-web >/dev/null")
+
+    def test_named_scope_live_grant_union_keeps_readonly(self):
+        self.named_storage = True
+        extra_ro = self.root / "extra-ro"; extra_ro.mkdir()
+        extra_rw = self.root / "extra-rw"; extra_rw.mkdir()
+        (extra_ro / "marker").write_text("scope-shared\n")
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one); self.load(one)
+        second, two = self.shell("extra", cwd=self.rw)
+        self.enable(second, two)
+        self.run_ok(one, f"docker run --rm -v {extra_ro}:/ro:ro -v {extra_rw}:/rw goblins-test sh -c 'test \"$(cat /ro/marker)\" = scope-shared; echo shared > /rw/marker'")
+        self.assertEqual((extra_rw / "marker").read_text(), "shared\n")
+        self.run_ok(one, f"docker run --rm --privileged -v /sys:/sys:ro -v {extra_ro}:/ro:ro goblins-test sh -c '! mount -o remount,rw /ro && ! echo bad > /ro/marker'")
+        self.run_ok(one, f"! docker run --rm --privileged -v /sys:/sys:ro -v {extra_ro}:/ro goblins-test sh -c 'echo bad > /ro/marker'")
+        two.send("exit\n")
+        self.d.wait(lambda: self.d.get(second)["state"] == "stopped")
+        self.run_ok(one, f"docker run --rm -v {extra_ro}:/ro:ro goblins-test cat /ro/marker")
+
+    def test_eager_member_joins_with_initial_packages(self):
+        self.named_storage = True
+        (self.root / "extra-ro").mkdir()
+        (self.root / "extra-rw").mkdir()
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one); self.load(one)
+        second, two = self.shell("eager-extra", cwd=self.rw)
+        self.assertTrue(self.d.get(second)["docker_enabled"])
+        self.assertEqual(self.d.get(second)["docker_scope"], "work")
+        self.assertEqual(len(self.engines()), 1)
+        self.run_ok(two, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
+
+    def test_undeclared_scope_is_not_requestable(self):
+        session, terminal = self.shell("plain")
+        self.run_ok(terminal, "! goblins enable-docker --scope work")
+        self.assertFalse(self.d.permissions(session=session, state="pending"))
+        self.assertFalse(self.d.get(session)["docker_enabled"])
+
+    def test_named_store_lock_and_reuse_between_controllers(self):
+        self.named_storage = True
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one)
+        self.load(one)
+        original = self.d
+        self.d = Daemon(self.app, env=self.env)
+        self.addCleanup(self.d.close)
+        second, two = self.shell("scoped", cwd=self.rw)
+        two.send("goblins enable-docker\n")
+        request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
+        self.d.decide(request, True)
+        two.expect('"status":"error"', timeout=60)
+        two.expect("docker-test>")
+        self.assertIn("another controller", self.d.get(second)["detail"])
+        self.run_ok(one, "docker image inspect goblins-test >/dev/null")
+        one.send("exit\n")
+        original.wait(lambda: original.get(first)["state"] == "stopped")
+        self.enable(second, two)
+        self.run_ok(two, "docker image inspect goblins-test >/dev/null")
+
+    def test_shared_scope_rejects_private_workspace_conflict(self):
+        self.named_storage = True
+        first, one = self.shell("scoped")
+        self.enable(first, one)
+        second, two = self.shell("scoped")
+        two.send("goblins enable-docker\n")
+        request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
+        self.d.decide(request, True)
+        two.expect('"status":"error"', timeout=60)
+        two.expect("docker-test>")
+        self.assertIn("mount conflict at /workspace", self.d.get(second)["detail"])
+        self.run_ok(one, "docker info >/dev/null")
+        self.enable(second, two, options="--anonymous")
+
+    def test_live_grant_rejects_engine_destination_symlink(self):
+        self.named_storage = True
+        extra_ro = self.root / "extra-ro"; extra_ro.mkdir()
+        (self.root / "extra-rw").mkdir()
+        (extra_ro / "marker").write_text("not-replaced\n")
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one); self.load(one)
+        self.run_ok(one, f"docker run --rm -v /:/engine goblins-test ln -s {self.rw} /engine{extra_ro}")
+        second, two = self.shell("extra", cwd=self.rw)
+        two.send("goblins enable-docker\n")
+        request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
+        self.d.decide(request, True)
+        two.expect('"status":"error"', timeout=60)
+        two.expect("docker-test>")
+        self.assertFalse(self.d.get(second)["docker_enabled"])
+        self.assertEqual((extra_ro / "marker").read_text(), "not-replaced\n")
+        self.run_ok(one, "docker info >/dev/null")
+        self.run_ok(one, "! docker run --rm --mount type=bind,src=/run/goblins/request.sock,dst=/socket goblins-test true")
 
     def test_long_socket_path(self):
         # Match nix develop's nested TMPDIR: the host-side Docker socket path

@@ -81,10 +81,19 @@ fn run() -> Result<i32, String> {
                 return mailbox_command(method, params);
             }
             cli::Command::RequestPackage { .. } => (),
-            cli::Command::EnableDocker { reason } => {
-                return request_permission(
-                    json!({"kind":"docker", "reason":reason.unwrap_or_else(|| "Enable Docker in this sandbox".into())}),
-                );
+            cli::Command::EnableDocker {
+                reason,
+                scope,
+                anonymous,
+            } => {
+                let mut params = json!({"kind":"docker", "reason":reason.unwrap_or_else(|| "Enable Docker in this sandbox".into())});
+                if let Some(scope) = scope {
+                    params["scope"] = json!(scope);
+                }
+                if anonymous {
+                    params["anonymous"] = json!(true);
+                }
+                return request_permission(params);
             }
             cli::Command::Completions { shell } => {
                 cli::completions(shell);
@@ -94,7 +103,7 @@ fn run() -> Result<i32, String> {
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nDocker: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nDocker: {}\nDocker scope: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -104,6 +113,7 @@ fn run() -> Result<i32, String> {
                     } else {
                         "disabled"
                     },
+                    record["docker_scope"].as_str().unwrap_or("anonymous"),
                     record["id"].as_str().unwrap_or("unknown")
                 );
                 return Ok(0);
@@ -178,6 +188,16 @@ fn request_permission(params: serde_json::Value) -> Result<i32, String> {
                 .is_some_and(|features| features.iter().any(|feature| feature == "docker-enable"))
         {
             return Err("daemon does not support on-demand Docker; start a new sandbox with an updated daemon".into());
+        }
+        if (params["scope"].is_string() || params["anonymous"] == true)
+            && !init["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|feature| feature == "docker-scopes"))
+        {
+            return Err(
+                "daemon does not support Docker scopes; start a new sandbox with an updated daemon"
+                    .into(),
+            );
         }
         socket.set_write_timeout(Some(rpc::TIMEOUT))?;
         use std::io::Write;

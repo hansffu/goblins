@@ -26,11 +26,78 @@ Enable native per-shell Docker on demand with =goblins enable-docker= inside
 the sandbox (host approval required), or at startup with
 =mkGoblin { docker.enable = true; ... }=.
 The =nix develop= environment enables it for =goblins run shell=.
-See [[file:USAGE.org::*Per-shell Docker (Linux, no VM)][Docker usage and current limitations]].
+See [[file:USAGE.org::*Docker scopes (Linux, no VM)][Docker usage and current limitations]].
 The accepted architecture is recorded in
 [[file:docs/adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001: daemon inboxes with notify-then-fetch]] and
 [[file:docs/adr/0002-per-session-rootless-docker.md][ADR 0002: per-session rootless Docker]], with
-[[file:docs/adr/0003-on-demand-docker.md][ADR 0003: private scopes and on-demand activation]].
+[[file:docs/adr/0003-on-demand-docker.md][ADR 0003: private scopes and on-demand activation]] and
+[[file:docs/adr/0004-shared-docker-scopes.md][ADR 0004: shared Docker trust groups]].
+
+* Shared Docker scopes
+
+Declare the available scopes on =mkGoblins=, and select defaults/alternatives on
+=mkGoblin= (also supported by =mkCodexGoblin= and =mkClaudeGoblin=):
+
+#+begin_src nix
+mkGoblins {
+  docker.scopes = [ "work" "ci" ];
+  goblins.work = mkGoblin {
+    pkg = pkgs.fish;
+    binName = "fish";
+    docker = {
+      defaultScope = "work";
+      allowedScopes = [ "ci" ];
+      # enable = true; # Optional: connect automatically at sandbox startup.
+    };
+  };
+}
+#+end_src
+
+Inside a sandbox, =goblins enable-docker= uses its inherited/default scope;
+=goblins enable-docker --scope ci= requests a permitted alternative. The default
+is implicitly permitted. =goblins enable-docker --anonymous= is always available,
+even without any configured scopes. Children inherit their parent's currently
+selected scope and activation, including anonymous scopes, rather than reverting
+to the configuration default. This also shares the scope network before Docker
+activation; configuring/inheriting a scope alone does not start a daemon.
+
+Members of the same named scope use one daemon, data store and socket. The daemon
+starts on first activation and stops after its last attached sandbox leaves;
+merely configuring a scope does not start Docker. Named data (including images,
+build cache, containers and volumes) persists while idle. Anonymous data is
+deleted after the last attached sandbox leaves.
+
+** Risks: named scopes are trust groups, not isolation boundaries
+
+- Every member can inspect, stop, modify or delete the group's containers,
+  images and volumes, including resources created by another member. Container
+  names, Compose project names, ports and cleanup operations can collide.
+- Docker-visible filesystem grants are combined. A member can access another
+  member's granted files through Docker, and modify its writable grants. Approved
+  grants can remain available until the shared daemon stops, even after the
+  granting sandbox exits. Read-only grants remain read-only, but secrets in them
+  are readable by the group. Only group mutually trusted workloads together.
+- Persistent images, layers, build cache and volumes can retain source code,
+  credentials and other sensitive data. Exiting a named scope does *not* erase
+  that data. Containers with restart policies may start again when the scope is
+  reactivated. There is no automatic retention limit or disk quota.
+- Members can affect the scope network. Online and offline configurations cannot
+  share a live scope. Docker =--network host= means the scope network, never the
+  real host network.
+- A shared socket cannot interpret a bind path differently for each caller.
+  Conflicting source/access-mode mappings and overlapping new grants are rejected.
+  Use the normal =goblins run= working directory or an inherited workspace;
+  independent disposable snapshots at the same =/workspace= path cannot be merged.
+- Late scope selection preserves the shell's existing network. Published IPv4
+  TCP ports are relayed to its localhost; UDP, direct container IPs and arbitrary
+  =--network host= listeners are not relayed between different scope networks.
+  A child inheriting the selected scope starts in that scope's network directly.
+
+Scopes are shared within one Goblins controller. Named stores are keyed by name
+under the host user's Docker cache; an exclusive lock prevents two controllers
+from running engines against the same store. Keep scope names distinct between
+unrelated trust groups, even across configurations. This remains native,
+shared-kernel confinement, not VM isolation.
 
 * Install on NixOS
 

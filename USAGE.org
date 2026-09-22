@@ -61,9 +61,9 @@ successful grant. Package names are bounded nixpkgs attributes, including
 are rejected. Host Nix chooses the bin output when available, otherwise default.
 Development setup hooks and unrecorded plugins/data are not activated.
 
-* Per-shell Docker (Linux, no VM)
+* Docker scopes (Linux, no VM)
 
-Inside a running sandbox, request a private Docker engine:
+Inside a running sandbox, request its selected Docker scope:
 
 #+begin_src sh
 goblins enable-docker --reason 'Run the integration test services'
@@ -71,7 +71,8 @@ docker compose up
 #+end_src
 
 Approve the Docker request in the host CLI/TUI or Emacs approval view. The
-command waits for approval and engine readiness; denial leaves Docker disabled.
+command waits for approval and engine readiness; denial does not activate or
+switch Docker.
 It also installs the Docker CLI into the running shell. Repeating the command
 after activation succeeds without another approval or a second daemon.
 =goblins status= reports whether Docker is enabled. =request-package docker=
@@ -109,15 +110,15 @@ and at least 65536 subordinate IDs for that user in both =/etc/subuid= and
 =/etc/subgid=. Goblins checks these prerequisites; it does not change host users,
 permissions, services or kernel configuration.
 
-New sessions prepare a private namespace keeper, without a Docker daemon or
+New sessions prepare a namespace keeper, without a Docker daemon or
 disk store, so later activation preserves the shell's network and existing
 connections. If the host lacks the mapping prerequisites, Docker-disabled
 sessions still start using ordinary sandbox networking; enabling Docker then
 reports the missing prerequisite and requires a fresh sandbox after fixing it.
 Already-running sessions from older builds cannot acquire this capability.
 
-Each activated session starts its own rootless daemon inside a separate filesystem
-sandbox assembled from the shell's initial workspace and explicit filesystem
+Each active scope has one rootless daemon inside a separate filesystem
+sandbox assembled from its members' workspace and explicit filesystem
 grants. A nested user/mount namespace locks inherited read-only mounts before
 Docker starts. Container bind sources are resolved there, not against the host
 root. The shell's existing seccomp restrictions remain in place. Even
@@ -149,14 +150,15 @@ Current limits:
   or =$HOME/.cache/goblins/docker/session-*= when =XDG_CACHE_HOME= is unset.
   Only runtime state remains on tmpfs. The cache location must be on a disk
   filesystem supported by rootless OverlayFS, not tmpfs; set =XDG_CACHE_HOME=
-  before starting the server to choose another disk. There is no shared cache
-  or per-session disk quota yet.
-- *Exiting the sandbox deletes its Docker data, including named volumes.* A
+  before starting the server to choose another disk. Named scopes instead use
+  =scope-NAME= and retain their shared data while idle. There is no disk quota.
+- *Anonymous scope data, including named volumes, is deleted after the last
+  attached sandbox exits.* Named scope data persists. A
   trusted supervisor stops/reaps the engine and containers before deleting the
   store with the same subordinate-ID mapping. This also handles abrupt Goblins
   server death and unreadable container-owned directories. Explicit host bind
   mounts are not deleted. Power loss or killing the cleanup supervisor itself
-  can leave an orphaned store; these stores are never automatically reused.
+  can leave an orphaned anonymous store; anonymous stores are never reused.
   Cleanup failures report the leftover path in the server log. There are no
   delegated cgroup resource limits.
 - =/sys= and cgroup mounts must remain read-only. An unmodified =--privileged=
@@ -170,14 +172,54 @@ Current limits:
   writable grants. Container root maps to the launching host user. Entrypoints
   can switch users/groups (for example Postgres's =gosu=); supplementary groups
   must be within the authorized GID mapping.
-- Live Nix package grants update the shell, not the engine's initial store view.
+- Live Nix package grants update the shell. Attaching a new member adds its
+  current package closure to the shared engine; later package-only requests do
+  not independently update the engine.
 - The pinned Docker daemon has a small patch to allow native rootless setup
   without requiring RootlessKit's port-mapping service, and to make BuildKit
   honor the launcher's outer-cgroup-namespace setting. A trusted native
   bootstrap creates the namespaces while preserving =no_new_privs=.
-- Docker activation and its approval are session-local. Child sandboxes do not
-  inherit an enabled engine or its approval. Each needs its own request (or
-  startup-enabled configuration); daemons and caches are not shared.
+- Children inherit their parent's selected scope and activation, including
+  anonymous scopes and a named scope different from the child's default.
+  Independent root sandboxes require approval unless startup-enabled.
+
+Declare shared scope names on =mkGoblins= and permitted/default selections on
+each goblin:
+
+#+begin_src nix
+mkGoblins {
+  docker.scopes = [ "work" ];
+  goblins.work = mkGoblin {
+    docker.defaultScope = "work";
+    docker.allowedScopes = [ "work" ];
+    # ... shell and filesystem configuration ...
+  };
+}
+#+end_src
+
+=goblins enable-docker --scope work= requests a named scope. The default is
+implicitly allowed. =goblins enable-docker --anonymous= always requests a fresh
+anonymous scope, even without any configured names. =goblins status= shows the
+selection. Switching does not move containers; the old daemon stops only when
+its last attached sandbox leaves. Idle named scopes retain images, build cache,
+containers and volumes on disk; they do not keep a daemon running.
+
+*Named scopes are trust groups, not isolation boundaries.* All members control
+the same Docker API, containers and data, and can access the combined filesystem
+grants of attached members. Read-only grants remain read-only but are readable
+by peers. Grants remain until the daemon stops, even if their original member
+exits. Persistent data can retain secrets. See the full [[file:README.org::*Shared Docker scopes][README risks]].
+Conflicting sources/access modes at the same path and overlapping grants are
+rejected. Use explicit compatible working directories; unrelated private
+=/workspace= snapshots cannot occupy one daemon's =/workspace=.
+
+Default and inherited scopes share the shell's network directly. A live switch
+keeps the existing shell network and relays published IPv4 TCP ports (up to 128
+ports, 64 simultaneous connections per port). It does not relay UDP, IPv6,
+container IPs or arbitrary =--network host= listeners; occupied local ports are
+not replaced. Online and offline configurations cannot share a live scope.
+Sharing is within one controller; a per-user scope-name lock prevents multiple
+controllers from concurrently opening the same persistent store.
 
 Run the local-image tests from the host (no registry or host Docker required):
 

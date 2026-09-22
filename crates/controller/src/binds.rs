@@ -29,6 +29,15 @@ pub struct Mount {
     destination: PathBuf,
     readonly: bool,
 }
+impl Mount {
+    pub(crate) fn docker_grant(&self) -> std::io::Result<(File, PathBuf, bool)> {
+        Ok((
+            self.source_fd.try_clone()?,
+            self.destination.clone(),
+            self.readonly,
+        ))
+    }
+}
 pub struct Plan {
     pub home: PathBuf,
     pub mounts: Vec<Mount>,

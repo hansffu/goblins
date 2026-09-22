@@ -36,6 +36,7 @@ pub(super) enum Completed {
     },
     Started {
         docker_enabled: bool,
+        docker_scope: Option<String>,
         initial_packages: Vec<String>,
         master: OwnedFd,
         listener: UnixListener,
@@ -51,6 +52,7 @@ pub(super) enum Completed {
         reply: Reply,
         detail: Option<String>,
         output: Option<PathBuf>,
+        docker_scope: Option<String>,
     },
     Failed(String),
     Stopped {
@@ -121,6 +123,7 @@ impl Worker {
                 }
                 results.try_send(Completed::Started {
                     docker_enabled: session.docker_enabled(),
+                    docker_scope: session.docker_scope(),
                     initial_packages: session
                         .launch
                         .initial_packages
@@ -168,7 +171,7 @@ impl Worker {
                             );
                             let result = if approved {
                                 if req.kind == "docker" {
-                                    session.enable_docker()
+                                    session.enable_docker(req.scope.as_deref(), req.anonymous)
                                 } else {
                                     session.grant_observed(
                                         &req.package,
@@ -231,6 +234,7 @@ impl Worker {
                             };
                             if results
                                 .try_send(Completed::Granted {
+                                    docker_scope: session.docker_scope(),
                                     reply,
                                     detail,
                                     output,

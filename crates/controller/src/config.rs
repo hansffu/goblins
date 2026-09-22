@@ -36,6 +36,10 @@ pub struct Docker {
     pub client: Option<PathBuf>,
     #[serde(default = "docker_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub default_scope: Option<String>,
+    #[serde(default)]
+    pub allowed_scopes: Vec<String>,
 }
 fn docker_enabled() -> bool {
     true
@@ -46,6 +50,8 @@ pub struct Manifest {
     pub api: u32,
     pub helper_api: u32,
     pub goblins: BTreeMap<String, Configuration>,
+    #[serde(default)]
+    pub docker_scopes: Vec<String>,
 }
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
@@ -72,8 +78,28 @@ impl Manifest {
             .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
     }
     pub fn select(mut self, name: &str) -> Result<Configuration> {
-        if self.api != 1 || self.helper_api != 3 {
+        if self.api != 1 || self.helper_api != 4 {
             return Err("incompatible manifest/helper API".into());
+        }
+        let scopes: std::collections::BTreeSet<_> = self.docker_scopes.iter().collect();
+        if scopes.len() != self.docker_scopes.len()
+            || scopes
+                .iter()
+                .any(|s| !goblins_protocol::docker_scope_name(s))
+        {
+            return Err("invalid Docker scope catalog".into());
+        }
+        for config in self.goblins.values() {
+            if let Some(docker) = &config.docker {
+                if docker
+                    .allowed_scopes
+                    .iter()
+                    .chain(docker.default_scope.iter())
+                    .any(|scope| !scopes.contains(scope))
+                {
+                    return Err("configuration references an undeclared Docker scope".into());
+                }
+            }
         }
         self.goblins.remove(name).ok_or_else(|| {
             format!(

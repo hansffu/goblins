@@ -97,6 +97,15 @@ pub fn diagnostic(path: &Path) -> String {
     .unwrap_or_default()
 }
 pub fn command(command: &mut Command, directory: &Path, cancel: &Cancellation) -> Result<String> {
+    command_with_fds(command, directory, cancel, &[])
+}
+/// Descriptor authority is supplied only by trusted host implementations.
+pub(crate) fn command_with_fds(
+    command: &mut Command,
+    directory: &Path,
+    cancel: &Cancellation,
+    fds: &[std::os::fd::RawFd],
+) -> Result<String> {
     cancel.check()?;
     command
         .stdin(Stdio::null())
@@ -104,6 +113,7 @@ pub fn command(command: &mut Command, directory: &Path, cancel: &Cancellation) -
         .stderr(Stdio::piped())
         .process_group(0);
     let parent = unsafe { libc::getpid() };
+    let keep = fds.to_vec();
     unsafe {
         command.pre_exec(move || {
             unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
@@ -111,6 +121,9 @@ pub fn command(command: &mut Command, directory: &Path, cancel: &Cancellation) -
                 return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
             }
             unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
+            for fd in &keep {
+                unix::cvt(libc::fcntl(*fd, libc::F_SETFD, 0))?;
+            }
             Ok(())
         });
     }

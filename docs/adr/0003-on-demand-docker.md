@@ -4,6 +4,10 @@ Date: 2026-09-22
 
 Status: Accepted
 
+Scope selection, sharing and child inheritance are extended by
+[ADR 0004](0004-shared-docker-scopes.md). The private-only behavior below records
+the original decision, not the current scope API.
+
 ## Context
 
 Users need to enable containers inside a running sandbox without restarting its

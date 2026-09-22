@@ -1,7 +1,43 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Shared Docker trust groups (2026-09-22)
+
+=mkGoblins.docker.scopes= declares named scopes; goblins select
+=docker.defaultScope= and =docker.allowedScopes=. Named members share one
+daemon, socket inode and persistent overlay2 store. The daemon stops after the
+last attached sandbox leaves. Anonymous data is deleted on last-user teardown.
+Children inherit the live selection and activation, including anonymous scopes
+and non-default selections. See [[file:docs/adr/0004-shared-docker-scopes.md][ADR 0004]] and the
+[[file:README.org::*Risks: named scopes are trust groups, not isolation boundaries][README trust-group risks]].
+
+Focused host tests verified lazy startup, shared images/volumes/socket, original
+member exit, idle/full-scope reuse, exclusive storage locking between controllers,
+scope switching and published TCP ports, and both active and inactive anonymous
+inheritance. Filesystem tests verified later members' grants, privileged
+read-only-remount denial, rejection of conflicting private workspaces and
+symlinked engine destinations, and exclusion of the controller request socket.
+Online/offline scope conflicts still allow anonymous activation.
+
+Eager shared-scope startup also contributes its initial Nix package closure;
+the focused test runs a newly joining member's =hello= from inside a container.
+The full Rust workspace (65 passed, one host-only driver ignored), 22 Emacs tests,
+10 daemon/TUI tests, Nix API/completion/runtime checks and formatting checks
+passed. Docker's real Postgres/Ryuk smoke test passed with Ryuk cleanup enabled.
+The 33-test host Docker/network/bind/bind-race/workspace regression run passed
+(591.169 seconds including cold Nix builds), alongside focused anonymous
+inheritance and eager-start/package/build checks. No host Docker service was used.
+
+There is no per-member Docker isolation inside a trust group. Grants remain
+until the engine stops, and named data persists. A live switch preserves the
+shell network and relays published IPv4 TCP only; direct container IPs, UDP,
+IPv6 and arbitrary host-network listeners are not relayed between scopes.
+Helper API 4 requires fresh controllers/sandboxes after upgrading.
+
 * On-demand private Docker scopes (2026-09-22)
+
+Historical checkpoint; sharing and child activation inheritance are extended by
+the shared-scope implementation above.
 
 The namespace/network keeper now has a session lifetime independent of the
 optional Docker engine. =goblins enable-docker= requests explicit host approval,

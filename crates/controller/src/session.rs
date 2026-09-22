@@ -23,7 +23,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -64,6 +64,11 @@ struct SessionDirectory(PathBuf);
 impl Drop for SessionDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+        if self.0.file_name().is_some_and(|n| n == "resources") {
+            if let Some(parent) = self.0.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
     }
 }
 struct SharedWorkspace {
@@ -78,8 +83,18 @@ pub(crate) struct Inheritance {
     launch: Arc<Launch>,
     binds: Arc<crate::binds::Plan>,
     workspace: Arc<SharedWorkspace>,
+    selection: Arc<Mutex<crate::docker::Selection>>,
+    _owner: Arc<SessionDirectory>,
 }
 impl Inheritance {
+    pub(crate) fn docker_allowed(&self, name: &str) -> bool {
+        self.launch.docker.as_ref().is_some_and(|d| {
+            d.default_scope.as_deref() == Some(name) || d.allowed_scopes.iter().any(|s| s == name)
+        })
+    }
+    pub(crate) fn docker_selection(&self) -> crate::docker::Selection {
+        self.selection.lock().unwrap().clone()
+    }
     pub(crate) fn description(&self) -> &str {
         &self.launch.description
     }
@@ -101,7 +116,11 @@ pub struct Session {
     pub listener: Option<UnixListener>,
     helper: Option<Child>,
     network: Option<crate::network::Network>,
-    docker: Option<crate::docker::Manager>,
+    docker: Option<crate::docker::Lease>,
+    docker_home: Option<Arc<crate::docker::Shared>>,
+    docker_selection: Arc<Mutex<crate::docker::Selection>>,
+    docker_inherit_enabled: Option<bool>,
+    docker_forward: Option<crate::docker_forward::Forward>,
     docker_filesystem: Vec<String>,
     docker_error: Option<String>,
     pub exit_code: Option<i32>,
@@ -129,6 +148,13 @@ impl Session {
             launch.cwd.map(fs::canonicalize).transpose()?
         };
         unix::private_directory(&directory)?;
+        let selection = crate::docker::Selection {
+            name: launch
+                .docker
+                .as_ref()
+                .and_then(|docker| docker.default_scope.clone()),
+            ..Default::default()
+        };
         let session = Self {
             directory_owner: Arc::new(SessionDirectory(directory.clone())),
             directory,
@@ -142,6 +168,10 @@ impl Session {
             helper: None,
             network: None,
             docker: None,
+            docker_home: None,
+            docker_selection: Arc::new(Mutex::new(selection)),
+            docker_inherit_enabled: None,
+            docker_forward: None,
             docker_filesystem: Vec::new(),
             docker_error: None,
             exit_code: None,
@@ -179,6 +209,21 @@ impl Session {
         // new_in canonicalizes cwd for root launches only. Preserve the pinned
         // parent's namespace path even when its host pathname was renamed.
         session.launch = (*inherited.launch).clone();
+        let selection = inherited.docker_selection();
+        session.docker_home = selection.scope.upgrade();
+        session.docker_inherit_enabled = Some(selection.enabled);
+        if selection.enabled
+            && let Some(client) = session
+                .launch
+                .docker
+                .as_ref()
+                .and_then(|d| d.client.clone())
+        {
+            if !session.launch.initial_packages.contains(&client) {
+                session.launch.initial_packages.push(client);
+            }
+        }
+        *session.docker_selection.lock().unwrap() = selection;
         session.binds = Some(inherited.binds);
         session.workspace = Some(inherited.workspace);
         Ok(session)
@@ -188,6 +233,8 @@ impl Session {
             launch: Arc::new(self.launch.clone()),
             binds: self.binds.as_ref().unwrap().clone(),
             workspace: self.workspace.as_ref().unwrap().clone(),
+            selection: self.docker_selection.clone(),
+            _owner: self.directory_owner.clone(),
         }
     }
     pub fn event(&self, event: &str, fields: serde_json::Value) {
@@ -324,25 +371,44 @@ impl Session {
         self.listener = Some(listener);
         if self.launch.docker.is_some() {
             fs::create_dir(self.directory.join("docker-socket"))?;
-            match crate::docker::Manager::prepare(&self.launch, &self.directory, &self.cancel) {
-                Ok(manager) => self.docker = Some(manager),
+            let prepared = match &self.docker_home {
+                Some(scope) => Ok(scope.clone()),
+                None => crate::docker::Shared::prepare(
+                    &self.launch,
+                    self.inheritance(),
+                    &self.directory,
+                    self.docker_selection.lock().unwrap().name.clone(),
+                    &self.cancel,
+                ),
+            };
+            match prepared {
+                Ok(scope) => {
+                    self.docker_selection.lock().unwrap().scope = Arc::downgrade(&scope);
+                    self.docker_home = Some(scope);
+                }
                 Err(error) if self.launch.docker.as_ref().is_some_and(|d| d.enabled) => {
                     return Err(error);
                 }
-                Err(error) => self.docker_error = Some(error.to_string()),
+                Err(error) => {
+                    self.docker_error = Some(error.to_string());
+                    // A conflicting named scope must not prevent choosing an
+                    // anonymous engine later. Keep the intended selection but
+                    // give this shell its own compatible network namespace.
+                    if self.docker_selection.lock().unwrap().name.is_some() {
+                        self.docker_home = crate::docker::Shared::prepare(
+                            &self.launch,
+                            self.inheritance(),
+                            &self.directory,
+                            None,
+                            &self.cancel,
+                        )
+                        .ok();
+                    }
+                }
             }
         }
         if let Some(pasta) = &self.launch.pasta {
-            if let Some(manager) = &self.docker {
-                self.network = Some(crate::network::Network::attach(
-                    pasta,
-                    manager.scope.user.try_clone()?,
-                    manager.scope.net.try_clone()?,
-                    &manager.scope.net_path,
-                    &self.directory,
-                    &self.cancel,
-                )?);
-            } else {
+            if self.docker_home.is_none() {
                 self.network = Some(crate::network::Network::start(
                     pasta,
                     &self.launch.posix_shell,
@@ -382,7 +448,7 @@ impl Session {
         .map(String::from)
         .to_vec();
         let mut args = Vec::new();
-        if self.docker.is_some() && self.launch.pasta.is_none() {
+        if self.docker_home.is_some() && self.launch.pasta.is_none() {
             namespace_args.push("--share-net".into());
         }
         if self.launch.pasta.is_some() {
@@ -472,8 +538,14 @@ impl Session {
             .chain(std::iter::once(workspace_fd))
             .collect();
         self.docker_filesystem = args.clone();
-        if self.launch.docker.as_ref().is_some_and(|d| d.enabled) {
-            self.enable_docker()?;
+        // Eager Docker joins need the complete initial package view too; the
+        // shell helper is launched only after the engine is ready.
+        self.mounted = initial;
+        if self
+            .docker_inherit_enabled
+            .unwrap_or_else(|| self.launch.docker.as_ref().is_some_and(|d| d.enabled))
+        {
+            self.enable_docker(None, false)?;
         }
         if self.launch.docker.is_some() {
             args.extend([
@@ -507,7 +579,7 @@ impl Session {
             .network
             .as_ref()
             .map(crate::network::Network::fds)
-            .or_else(|| self.docker.as_ref().map(|manager| manager.scope.fds()));
+            .or_else(|| self.docker_home.as_ref().map(|scope| scope.fds()));
         if let Some([user, net]) = network_fds {
             command.args(["--network-namespaces", &user.to_string(), &net.to_string()]);
         }
@@ -571,7 +643,6 @@ impl Session {
             source_mountns: fields[4].parse()?,
             mountns: fields[5].parse()?,
         });
-        self.mounted = initial;
         self.event("started", serde_json::to_value(&self.identity)?);
         Ok(())
     }
@@ -723,15 +794,22 @@ impl Session {
         Ok(())
     }
     pub fn docker_enabled(&self) -> bool {
-        self.docker
-            .as_ref()
-            .is_some_and(|manager| manager.enabled())
+        self.docker.is_some()
     }
-    pub fn enable_docker(&mut self) -> Result<()> {
-        if self.docker_enabled() {
+    pub fn docker_scope(&self) -> Option<String> {
+        self.docker_selection.lock().unwrap().name.clone()
+    }
+    pub fn enable_docker(&mut self, requested: Option<&str>, anonymous: bool) -> Result<()> {
+        if requested.is_some_and(|name| !self.inheritance().docker_allowed(name)) {
+            return Err("Docker scope is not allowed by this configuration".into());
+        }
+        if self.docker_enabled()
+            && !anonymous
+            && requested.is_none_or(|name| self.docker_scope().as_deref() == Some(name))
+        {
             return Ok(());
         }
-        if self.docker.is_none() {
+        if self.docker_home.is_none() {
             return Err(format!(
                 "Docker unavailable in this session: {}; fix prerequisites and start a new sandbox",
                 self.docker_error
@@ -745,6 +823,30 @@ impl Session {
             .docker
             .clone()
             .ok_or("Docker runtime unavailable")?;
+        let current = self.docker_selection.lock().unwrap().scope.upgrade();
+        let intended = self.docker_scope();
+        let requested = requested.or(intended.as_deref());
+        let selected = if anonymous {
+            crate::docker::Shared::prepare(
+                &self.launch,
+                self.inheritance(),
+                &self.directory,
+                None,
+                &self.cancel,
+            )?
+        } else if let Some(name) = requested {
+            crate::docker::Shared::prepare(
+                &self.launch,
+                self.inheritance(),
+                &self.directory,
+                Some(name.into()),
+                &self.cancel,
+            )?
+        } else {
+            current
+                .or_else(|| self.docker_home.clone())
+                .ok_or("missing Docker scope")?
+        };
         if let Some(client) = &config.client
             && !self.launch.initial_packages.contains(client)
         {
@@ -759,7 +861,30 @@ impl Session {
         let closure = self.closure(&[package(&config.daemon)?, package(&self.launch.helper)?])?;
         self.placeholders(&closure)?;
         let mut filesystem = self.docker_filesystem.clone();
-        for path in closure {
+        let mut grants: Vec<crate::docker_shared::Grant> = self
+            .binds
+            .as_ref()
+            .unwrap()
+            .mounts
+            .iter()
+            .map(crate::binds::Mount::docker_grant)
+            .collect::<std::io::Result<_>>()?;
+        // With an explicit cwd, /workspace is only an unused scratch alias.
+        // Real snapshots must identify the same pinned workspace when sharing.
+        if self.launch.cwd.is_none() {
+            grants.push((
+                self.workspace.as_ref().unwrap().file.try_clone()?,
+                "/workspace".into(),
+                false,
+            ));
+        }
+        for (source, destination) in crate::sandbox_etc::mounts(&self.launch.sandbox_etc)? {
+            grants.push((File::open(source)?, destination, true));
+        }
+        for path in self.mounted.union(&closure) {
+            grants.push((File::open(path)?, path.clone(), true));
+        }
+        for path in self.mounted.union(&closure) {
             filesystem.extend([
                 "--ro-bind".into(),
                 path.display().to_string(),
@@ -779,18 +904,45 @@ impl Session {
                     .as_raw_fd(),
             ))
             .collect();
-        self.docker.as_mut().unwrap().enable(
+        let lease = selected.acquire(
             &self.launch,
             &filesystem,
             &sources,
-            &self.directory,
+            grants,
+            self.inheritance(),
+            self.directory.join("store"),
             &self.cancel,
         )?;
-        self.event("docker-enabled", serde_json::json!({"scope":"private"}));
+        let socket = self.directory.join("docker-socket/docker.sock");
+        let staged = self.directory.join("docker-socket/next.sock");
+        let forward = crate::docker_forward::Forward::start(
+            self.launch.helper.clone(),
+            self.docker_home.as_ref().unwrap().clone(),
+            selected.clone(),
+            &self.directory,
+        )?;
+        fs::hard_link(selected.socket(), &staged)?;
+        fs::rename(staged, socket)?;
+        self.docker = Some(lease);
+        self.docker_forward = forward;
+        *self.docker_selection.lock().unwrap() = crate::docker::Selection {
+            scope: Arc::downgrade(&selected),
+            name: selected.name.clone(),
+            enabled: true,
+        };
+        self.event("docker-enabled", serde_json::json!({"scope":selected.name}));
         Ok(())
     }
     pub fn alive(&mut self) -> bool {
-        if self.docker.as_mut().is_some_and(|engine| !engine.alive()) {
+        if self
+            .docker_home
+            .as_ref()
+            .is_some_and(|scope| !scope.alive())
+            || self
+                .docker
+                .as_ref()
+                .is_some_and(|lease| !lease.shared.alive())
+        {
             self.exit_code = Some(1);
             return false;
         }
@@ -824,7 +976,10 @@ impl Session {
                 let _ = helper.wait();
             }
         }
+        self.docker_forward.take();
         self.docker.take();
+        self.docker_home.take();
+        self.docker_selection.lock().unwrap().enabled = false;
         self.helper_input.take();
         self.helper_output.take();
         self.event("stopped", serde_json::json!({}));

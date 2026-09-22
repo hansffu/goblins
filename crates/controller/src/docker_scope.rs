@@ -159,9 +159,6 @@ impl Scope {
     pub fn alive(&mut self) -> bool {
         matches!(self.process.try_wait(), Ok(None))
     }
-    pub fn fds(&self) -> [i32; 2] {
-        [self.user.as_raw_fd(), self.net.as_raw_fd()]
-    }
 }
 impl Drop for Scope {
     fn drop(&mut self) {

@@ -29,6 +29,8 @@ in
 let
   dockerOptions = {
     enable = false;
+    defaultScope = null;
+    allowedScopes = [ ];
   }
   // docker;
   effectiveEnv = {
@@ -86,6 +88,8 @@ wrapped
       daemon = "${dockerDaemon}/bin/dockerd";
       client = "${pkgs.docker-client}";
       enabled = dockerOptions.enable;
+      default_scope = dockerOptions.defaultScope;
+      allowed_scopes = dockerOptions.allowedScopes;
     };
     sandbox_etc = lib.mapAttrs (
       name: value:

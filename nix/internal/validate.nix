@@ -2,6 +2,8 @@
 let
   fail = message: throw "mkGoblin: ${message}";
   validName = name: builtins.match "[A-Za-z_][A-Za-z0-9_-]*" name != null;
+  validScope = name: builtins.isString name && builtins.stringLength name <= 64 && validName name;
+  scopes = names: builtins.isList names && builtins.all validScope names && lib.unique names == names;
   validEtcPath =
     path:
     builtins.isString path
@@ -10,6 +12,7 @@ let
     ) (lib.splitString "/" path);
 in
 {
+  inherit scopes;
   goblin =
     options:
     let
@@ -53,10 +56,17 @@ in
       fail "unsupported integration driver"
     else if
       !builtins.isAttrs docker
-      || builtins.attrNames docker != [ "enable" ]
+      ||
+        builtins.attrNames docker != [
+          "allowedScopes"
+          "defaultScope"
+          "enable"
+        ]
       || !builtins.isBool docker.enable
+      || !(docker.defaultScope == null || validScope docker.defaultScope)
+      || !scopes docker.allowedScopes
     then
-      fail "docker must contain only enable, a boolean"
+      fail "docker accepts enable (boolean), defaultScope (null or scope name), and allowedScopes (unique scope names)"
     else if allowNix != false then
       fail "host Nix access is prohibited; request packages through goblins"
     else if allowUnixSockets != true then

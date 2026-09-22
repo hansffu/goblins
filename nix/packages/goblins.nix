@@ -2,6 +2,7 @@
   pkgs,
   goblins,
   configurations,
+  dockerScopes ? [ ],
 }:
 let
   inherit (pkgs) lib;
@@ -16,7 +17,8 @@ let
   config = pkgs.writeText "goblins-config.json" (
     builtins.toJSON {
       api = 1;
-      helper_api = 3;
+      helper_api = 4;
+      docker_scopes = dockerScopes;
       goblins = lib.mapAttrs (
         _: configuration:
         configuration

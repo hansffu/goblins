@@ -51,6 +51,22 @@ let
     { goblins = { }; }
     { goblins.bad = pkgs.hello; }
     { goblins."../bad" = mkGoblin base; }
+    {
+      docker.scopes = [ "../bad" ];
+      goblins.shell = mkGoblin base;
+    }
+    {
+      docker.scopes = [
+        "work"
+        "work"
+      ];
+      goblins.shell = mkGoblin base;
+    }
+    { goblins.shell = mkGoblin (base // { docker.defaultScope = "missing"; }); }
+    {
+      docker.scopes = [ "work" ];
+      goblins.shell = mkGoblin (base // { docker.allowedScopes = [ "missing" ]; });
+    }
   ]
   ++ map (options: { goblins.bad = mkGoblin (base // options); }) [
     { binName = "../bash"; }
@@ -122,6 +138,10 @@ in
     '';
   named-goblins = configured;
   docker-goblins = mkGoblins {
+    docker.scopes = [
+      "work"
+      "other"
+    ];
     goblins = builtins.listToAttrs (
       map
         (name: {
@@ -139,25 +159,72 @@ in
               pkgs.curl
               pkgs.python3
             ]
-            ++ pkgs.lib.optional (name == "java") pkgs.jdk;
+            ++ pkgs.lib.optional (name == "java") pkgs.jdk
+            ++ pkgs.lib.optional (builtins.elem name [
+              "extra"
+              "eager-extra"
+            ]) pkgs.hello;
             docker.enable = builtins.elem name [
               "shell"
               "offline"
+              "eager-extra"
             ];
+            docker.defaultScope =
+              if
+                builtins.elem name [
+                  "scoped"
+                  "extra"
+                  "eager-extra"
+                  "scope-online"
+                ]
+              then
+                "work"
+              else if name == "member" then
+                "other"
+              else
+                null;
+            docker.allowedScopes =
+              if
+                builtins.elem name [
+                  "scoped"
+                  "extra"
+                  "member"
+                  "ondemand"
+                ]
+              then
+                [
+                  "work"
+                  "other"
+                ]
+              else
+                [ ];
             allowedDomains =
               if
                 builtins.elem name [
                   "shell"
                   "java"
                   "ondemand"
+                  "scope-online"
                 ]
               then
                 null
               else
                 [ ];
             env.PS1 = "docker-test> ";
-            roDirs = [ "$GOBLINS_TEST_ROOT/readonly" ];
-            rwDirs = [ "$GOBLINS_TEST_ROOT/writable" ];
+            roDirs = [
+              "$GOBLINS_TEST_ROOT/readonly"
+            ]
+            ++ pkgs.lib.optional (builtins.elem name [
+              "extra"
+              "eager-extra"
+            ]) "$GOBLINS_TEST_ROOT/extra-ro";
+            rwDirs = [
+              "$GOBLINS_TEST_ROOT/writable"
+            ]
+            ++ pkgs.lib.optional (builtins.elem name [
+              "extra"
+              "eager-extra"
+            ]) "$GOBLINS_TEST_ROOT/extra-rw";
           };
         })
         [
@@ -166,6 +233,11 @@ in
           "plain"
           "java"
           "ondemand"
+          "scoped"
+          "extra"
+          "eager-extra"
+          "member"
+          "scope-online"
         ]
     );
   };
@@ -379,6 +451,10 @@ in
   };
   goblins-api =
     assert builtins.all rejected invalid;
+    assert (mkGoblin (base // { docker.defaultScope = "work"; })).goblin.docker.default_scope == "work";
+    assert
+      (mkCodexGoblin { docker.allowedScopes = [ "work" ]; }).goblin.docker.allowed_scopes == [ "work" ];
+    assert (mkClaudeGoblin { docker.defaultScope = "work"; }).goblin.docker.default_scope == "work";
     assert !(mkGoblin base).goblin.docker.enabled;
     assert (mkGoblin (base // { docker.enable = true; })).goblin.docker.enabled;
     assert (mkGoblin base).goblin.network;

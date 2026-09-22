@@ -4,7 +4,13 @@
 //! host bind, then creates private IPC and PID namespaces. Networking belongs
 //! to the pre-existing scope, shared with the shell.
 use super::{c, cvt};
-use std::{env, fs, io, os::fd::AsRawFd, path::Path, process::Command};
+use std::{
+    env, fs,
+    io::{self, Write},
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+    path::Path,
+    process::Command,
+};
 
 fn wait(child: i32) -> io::Result<i32> {
     loop {
@@ -40,7 +46,7 @@ fn mount(kind: &str, target: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn supervise(child: i32, storage: &Path) -> io::Result<i32> {
+fn supervise(child: i32, storage: &Path, keep: bool) -> io::Result<i32> {
     let result = (|| {
         loop {
             let mut status = 0;
@@ -87,8 +93,10 @@ fn supervise(child: i32, storage: &Path) -> io::Result<i32> {
     // No untrusted writer remains. This namespace retains the full UID/GID
     // mapping and a private parent-directory mount that Docker never sees.
     // remove_dir_all does not follow symlinks within the data tree.
-    fs::remove_dir_all(storage)
-        .map_err(|error| io::Error::other(format!("Docker disk cleanup failed: {error}")))?;
+    if !keep {
+        fs::remove_dir_all(storage)
+            .map_err(|error| io::Error::other(format!("Docker disk cleanup failed: {error}")))?;
+    }
     result
 }
 
@@ -120,12 +128,42 @@ pub fn run() -> io::Result<i32> {
     let name = env::args()
         .nth(2)
         .ok_or_else(|| io::Error::other("missing Docker storage name"))?;
-    if name.len() != 14
-        || !name.starts_with("session-")
-        || !name[8..].bytes().all(|b| b.is_ascii_alphanumeric())
+    let keep = match env::args().nth(3).as_deref() {
+        Some("keep") => true,
+        Some("delete") => false,
+        _ => return Err(io::Error::other("invalid Docker storage policy")),
+    };
+    if !(if keep {
+        name.starts_with("scope-") && (7..=70).contains(&name.len())
+    } else {
+        name.starts_with("session-") && name.len() == 14
+    }) || !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
     {
         return Err(io::Error::other("invalid Docker storage name"));
     }
+    let lock_fd: i32 = env::args()
+        .nth(4)
+        .ok_or_else(|| io::Error::other("missing lock descriptor"))?
+        .parse()
+        .map_err(io::Error::other)?;
+    let lock = if keep && lock_fd >= 3 {
+        Some(unsafe { OwnedFd::from_raw_fd(lock_fd) })
+    } else if !keep && lock_fd == -1 {
+        None
+    } else {
+        return Err(io::Error::other("invalid storage lock"));
+    };
+    let ready_fd: i32 = env::args()
+        .nth(5)
+        .ok_or_else(|| io::Error::other("missing readiness descriptor"))?
+        .parse()
+        .map_err(io::Error::other)?;
+    if ready_fd < 3 || ready_fd == lock_fd {
+        return Err(io::Error::other("invalid readiness descriptor"));
+    }
+    let ready = unsafe { OwnedFd::from_raw_fd(ready_fd) };
     let storage = Path::new("/run/goblins/docker-storage-parent").join(name);
     use std::os::unix::fs::MetadataExt;
     let expected = fs::metadata("/run/docker/data")?;
@@ -146,6 +184,7 @@ pub fn run() -> io::Result<i32> {
     drop(engine_parent);
     let child = cvt(unsafe { libc::fork() })?;
     if child == 0 {
+        drop((ready, lock));
         // Hide the cleanup authority BEFORE entering the less-privileged user
         // namespace that locks inherited mounts. The guardian alone retains it.
         cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
@@ -201,13 +240,16 @@ pub fn run() -> io::Result<i32> {
         drop(socket);
         let process = Command::new(
             env::args()
-                .nth(3)
+                .nth(6)
                 .ok_or_else(|| io::Error::other("missing Docker daemon"))?,
         )
-        .args(env::args().skip(4))
+        .args(env::args().skip(7))
         .spawn()?;
         return wait(process.id() as i32);
     }
     drop(engine_user);
-    supervise(child, &storage)
+    writeln!(fs::File::from(ready), "{child}")?;
+    let result = supervise(child, &storage, keep);
+    drop(lock);
+    result
 }
