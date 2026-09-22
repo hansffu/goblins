@@ -502,7 +502,12 @@ These choices settle the open details for API 1 before implementation.
 - =initialize {api:1}= is required once per connection. Its result contains
   =api=, =instance=, =role=, =features= and =limits=. Initialization cannot select
   a role. Sandbox connections permit one subsequent =permissions.request=
-  with ={kind:"package",package,reason}=, then one terminal response and close.
+  with ={kind:"package",package,reason}= or ={kind:"docker",reason}=, then one
+  terminal response and close. The =docker-enable= feature advertises the latter.
+  Docker requests accept no nonempty package or caller-selected runtime options;
+  they use the same explicit host approval and withdrawal rules. They never
+  inherit ancestor package approval. Already-enabled sessions return ready
+  without a new approval. =docker_enabled= is separate from package grant state.
   Host connections permit sequential calls and ordered notifications; at most
   4096 calls per connection. No automatic retry of uncertain mutations.
 - Headers are ASCII, at most 256 bytes, one case-insensitive Content-Length and
@@ -531,8 +536,9 @@ These choices settle the open details for API 1 before implementation.
   an identical key/params returns the original session ID; changed params
   conflict. Keep at most 4096 launch keys for the daemon lifetime, then reject
   new launches; never silently reuse an expired key. Manifests carry
-  =api:1,helper_api:2=; configuration-only rebuilds may select new helper paths
-  implementing private helper API 2 (=READY2= startup acknowledgement).
+  =api:1,helper_api:3=; configuration-only rebuilds may select new helper paths
+  implementing private helper API 3 (scope/engine entry points and the unchanged
+  =READY2= shell startup acknowledgement).
   Incompatible manifests/helpers fail that launch.
 - =sessions.get/stop {session}= accept an exact ID or live agent name; =sessions.list {}=; =permissions.get {request}=;
   =permissions.list {session?,state?}=; =permissions.decide
@@ -618,8 +624,12 @@ acceptance object; use get to inspect its current lifecycle.
 | Snapshot | =instance= (string), =sessions= (Session array), =permissions= (Permission array) |
 | Session | =id,agent_name,name,configuration,state,terminal= (strings); =identity= (Identity or null); =initial_packages,packages= (string arrays); =pty_eof,terminal_complete,terminal_interrupted,terminal_attached,terminal_detached= (booleans); =exit_code= (integer or null); =detail,stop_reason= (strings or null) |
 | Identity | =pid,helper_userns,mount_owner,source_mountns,mountns= (integers; trusted host inspection only) |
-| Permission | =id,session,agent_name,approval,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
-| Preview | ={in_store:boolean,download:string-or-null,build_required:boolean}= or ={error:string}= |
+| Permission | =id,session,agent_name,approval,kind,package,reason,state= (strings); =approved= (boolean or null); =preview= (Preview or null); =message= (string or null) |
+| Preview | ={in_store:boolean,download:string-or-null,build_required:boolean}=, ={error:string}=, or ={description:string}= for Docker |
+
+Session records (host and sandbox views) also include =docker_enabled:boolean=.
+For =kind:"docker"=, =package= is the display label =Docker engine=, not a Nix
+attribute or an entry in the session's =packages= list.
 
 Session states are =starting,running,stopping,stopped,failed=. The =stopped=
 notification follows worker cleanup, while terminal buffering may still be

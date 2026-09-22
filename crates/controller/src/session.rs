@@ -101,7 +101,9 @@ pub struct Session {
     pub listener: Option<UnixListener>,
     helper: Option<Child>,
     network: Option<crate::network::Network>,
-    docker: Option<crate::docker::Engine>,
+    docker: Option<crate::docker::Manager>,
+    docker_filesystem: Vec<String>,
+    docker_error: Option<String>,
     pub exit_code: Option<i32>,
     helper_input: Option<File>,
     helper_output: Option<File>,
@@ -140,6 +142,8 @@ impl Session {
             helper: None,
             network: None,
             docker: None,
+            docker_filesystem: Vec::new(),
+            docker_error: None,
             exit_code: None,
             helper_input: None,
             helper_output: None,
@@ -257,7 +261,7 @@ impl Session {
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
         let etc = crate::sandbox_etc::mounts(&self.launch.sandbox_etc)?;
         let mut private = self.launch.protected_paths.clone();
-        let docker_storage = crate::docker::storage_root(self.launch.docker.is_some())?;
+        let docker_storage = crate::docker::storage_root(false)?;
         private.push(docker_storage.clone());
         private.push(self.directory.clone());
         private.extend(etc.iter().map(|(_, destination)| destination.clone()));
@@ -287,6 +291,15 @@ impl Session {
                 .map(Path::to_path_buf)
                 .ok_or("invalid executable path")
         };
+        self.root(&package(&self.launch.helper)?)?;
+        if let Some(docker) = &self.launch.docker {
+            // Preserve late-activation inputs across host configuration rebuilds
+            // and GC, without mounting the engine closure into the shell.
+            self.root(&package(&docker.daemon)?)?;
+            if let Some(client) = &docker.client {
+                self.root(client)?;
+            }
+        }
         if let Some(pasta) = &self.launch.pasta {
             // Keep the host network process available without exposing it as
             // an initially granted sandbox package.
@@ -300,9 +313,6 @@ impl Session {
         roots.extend(self.launch.initial_packages.clone());
         roots.extend(self.launch.initial_closure.clone());
         roots.extend(etc.iter().map(|(source, _)| source.clone()));
-        if let Some(docker) = &self.launch.docker {
-            roots.extend([package(&docker.daemon)?, package(&self.launch.helper)?]);
-        }
         let initial = self.closure(&roots)?;
         self.placeholders(&initial)?;
         let listener = UnixListener::bind(self.directory.join("request.sock"))?;
@@ -312,8 +322,27 @@ impl Session {
         )?;
         listener.set_nonblocking(true)?;
         self.listener = Some(listener);
+        if self.launch.docker.is_some() {
+            fs::create_dir(self.directory.join("docker-socket"))?;
+            match crate::docker::Manager::prepare(&self.launch, &self.directory, &self.cancel) {
+                Ok(manager) => self.docker = Some(manager),
+                Err(error) if self.launch.docker.as_ref().is_some_and(|d| d.enabled) => {
+                    return Err(error);
+                }
+                Err(error) => self.docker_error = Some(error.to_string()),
+            }
+        }
         if let Some(pasta) = &self.launch.pasta {
-            if self.launch.docker.is_none() {
+            if let Some(manager) = &self.docker {
+                self.network = Some(crate::network::Network::attach(
+                    pasta,
+                    manager.scope.user.try_clone()?,
+                    manager.scope.net.try_clone()?,
+                    &manager.scope.net_path,
+                    &self.directory,
+                    &self.cancel,
+                )?);
+            } else {
                 self.network = Some(crate::network::Network::start(
                     pasta,
                     &self.launch.posix_shell,
@@ -353,7 +382,7 @@ impl Session {
         .map(String::from)
         .to_vec();
         let mut args = Vec::new();
-        if self.launch.docker.is_some() && self.launch.pasta.is_none() {
+        if self.docker.is_some() && self.launch.pasta.is_none() {
             namespace_args.push("--share-net".into());
         }
         if self.launch.pasta.is_some() {
@@ -442,26 +471,11 @@ impl Session {
             .source_fds()
             .chain(std::iter::once(workspace_fd))
             .collect();
+        self.docker_filesystem = args.clone();
+        if self.launch.docker.as_ref().is_some_and(|d| d.enabled) {
+            self.enable_docker()?;
+        }
         if self.launch.docker.is_some() {
-            self.docker = Some(crate::docker::Engine::start(
-                &self.launch,
-                &args,
-                &sources,
-                &docker_storage,
-                &self.directory,
-                &self.cancel,
-            )?);
-            if let Some(pasta) = &self.launch.pasta {
-                let engine = self.docker.as_ref().unwrap();
-                self.network = Some(crate::network::Network::attach(
-                    pasta,
-                    engine.user.try_clone()?,
-                    engine.net.try_clone()?,
-                    &engine.net_path,
-                    &self.directory,
-                    &self.cancel,
-                )?);
-            }
             args.extend([
                 "--ro-bind".into(),
                 self.directory.join("docker-socket").display().to_string(),
@@ -493,11 +507,7 @@ impl Session {
             .network
             .as_ref()
             .map(crate::network::Network::fds)
-            .or_else(|| {
-                self.docker
-                    .as_ref()
-                    .map(|engine| [engine.user.as_raw_fd(), engine.net.as_raw_fd()])
-            });
+            .or_else(|| self.docker.as_ref().map(|manager| manager.scope.fds()));
         if let Some([user, net]) = network_fds {
             command.args(["--network-namespaces", &user.to_string(), &net.to_string()]);
         }
@@ -710,6 +720,73 @@ impl Session {
             "ready",
             serde_json::json!({"package":name,"output":path,"closure":closure}),
         );
+        Ok(())
+    }
+    pub fn docker_enabled(&self) -> bool {
+        self.docker
+            .as_ref()
+            .is_some_and(|manager| manager.enabled())
+    }
+    pub fn enable_docker(&mut self) -> Result<()> {
+        if self.docker_enabled() {
+            return Ok(());
+        }
+        if self.docker.is_none() {
+            return Err(format!(
+                "Docker unavailable in this session: {}; fix prerequisites and start a new sandbox",
+                self.docker_error
+                    .as_deref()
+                    .unwrap_or("configuration lacks Docker runtime support")
+            )
+            .into());
+        }
+        let config = self
+            .launch
+            .docker
+            .clone()
+            .ok_or("Docker runtime unavailable")?;
+        if let Some(client) = &config.client
+            && !self.launch.initial_packages.contains(client)
+        {
+            self.grant("docker-client", Some(client))?;
+        }
+        let package = |p: &Path| {
+            p.parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .ok_or("invalid executable path")
+        };
+        let closure = self.closure(&[package(&config.daemon)?, package(&self.launch.helper)?])?;
+        self.placeholders(&closure)?;
+        let mut filesystem = self.docker_filesystem.clone();
+        for path in closure {
+            filesystem.extend([
+                "--ro-bind".into(),
+                path.display().to_string(),
+                path.display().to_string(),
+            ]);
+        }
+        let sources: Vec<_> = self
+            .binds
+            .as_ref()
+            .ok_or("missing filesystem plan")?
+            .source_fds()
+            .chain(std::iter::once(
+                self.workspace
+                    .as_ref()
+                    .ok_or("missing workspace")?
+                    .file
+                    .as_raw_fd(),
+            ))
+            .collect();
+        self.docker.as_mut().unwrap().enable(
+            &self.launch,
+            &filesystem,
+            &sources,
+            &self.directory,
+            &self.cancel,
+        )?;
+        self.event("docker-enabled", serde_json::json!({"scope":"private"}));
         Ok(())
     }
     pub fn alive(&mut self) -> bool {

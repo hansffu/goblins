@@ -35,6 +35,7 @@ pub(super) enum Completed {
         result: std::result::Result<crate::catalog::Preview, String>,
     },
     Started {
+        docker_enabled: bool,
         initial_packages: Vec<String>,
         master: OwnedFd,
         listener: UnixListener,
@@ -119,6 +120,7 @@ impl Worker {
                     return Err(format!("{error}: {}", String::from_utf8_lossy(&output)).into());
                 }
                 results.try_send(Completed::Started {
+                    docker_enabled: session.docker_enabled(),
                     initial_packages: session
                         .launch
                         .initial_packages
@@ -165,18 +167,22 @@ impl Worker {
                                 serde_json::json!({"request":req,"approved":approved}),
                             );
                             let result = if approved {
-                                session.grant_observed(
-                                    &req.package,
-                                    output.as_deref(),
-                                    |_, _| Ok(()),
-                                    |state| {
-                                        results.try_send(Completed::Progress {
-                                            request: req.id.clone(),
-                                            state,
-                                        })?;
-                                        Ok(())
-                                    },
-                                )
+                                if req.kind == "docker" {
+                                    session.enable_docker()
+                                } else {
+                                    session.grant_observed(
+                                        &req.package,
+                                        output.as_deref(),
+                                        |_, _| Ok(()),
+                                        |state| {
+                                            results.try_send(Completed::Progress {
+                                                request: req.id.clone(),
+                                                state,
+                                            })?;
+                                            Ok(())
+                                        },
+                                    )
+                                }
                             } else {
                                 Ok(())
                             };
@@ -197,7 +203,14 @@ impl Worker {
                                 Err(error) => {
                                     let detail = error.to_string();
                                     session.event("error", serde_json::json!({"detail":detail}));
-                                    let category = if detail.starts_with("cannot resolve package") {
+                                    let category = if req.kind == "docker" {
+                                        if detail.starts_with("Docker unavailable in this session")
+                                        {
+                                            "Docker unavailable; fix host prerequisites and start a new sandbox; see host diagnostics".into()
+                                        } else {
+                                            "Docker activation failed; see host diagnostics".into()
+                                        }
+                                    } else if detail.starts_with("cannot resolve package") {
                                         format!(
                                             "cannot resolve package '{}' from pinned nixpkgs; see tui terminal",
                                             req.package

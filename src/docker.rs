@@ -1,15 +1,10 @@
 //! Trusted bootstrap, invoked only after Bubblewrap removed host paths and FDs.
-//! It maps a child user namespace before exec (unlike RootlessKit's re-exec),
-//! preserving no_new_privs. The child clones the mount namespace to lock every
-//! inherited host bind, then creates its own network, IPC and PID namespaces.
-use super::{c, cvt, pipe};
-use std::{
-    env, fs,
-    io::{self, Read, Write},
-    os::fd::AsRawFd,
-    path::Path,
-    process::Command,
-};
+//! It enters the scope's mapped child user namespace before exec, preserving
+//! no_new_privs. The child clones the mount namespace to lock every inherited
+//! host bind, then creates private IPC and PID namespaces. Networking belongs
+//! to the pre-existing scope, shared with the shell.
+use super::{c, cvt};
+use std::{env, fs, io, os::fd::AsRawFd, path::Path, process::Command};
 
 fn wait(child: i32) -> io::Result<i32> {
     loop {
@@ -139,12 +134,18 @@ pub fn run() -> io::Result<i32> {
         return Err(io::Error::other("Docker storage identity mismatch"));
     }
     cvt(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) })?;
-    let (ready_r, ready_w) = pipe()?;
-    let (go_r, go_w) = pipe()?;
+    let network = fs::File::open("/proc/self/ns/net")?;
+    let engine_user = super::fd(unsafe { libc::ioctl(network.as_raw_fd(), super::NS_GET_USERNS) })?;
+    drop(network);
+    let engine_parent =
+        super::fd(unsafe { libc::ioctl(engine_user.as_raw_fd(), super::NS_GET_PARENT) })?;
+    let own_user = fs::File::open("/proc/self/ns/user")?;
+    if super::inode(&engine_parent)? != super::inode(&own_user.into())? {
+        return Err(io::Error::other("Docker scope ancestry mismatch"));
+    }
+    drop(engine_parent);
     let child = cvt(unsafe { libc::fork() })?;
     if child == 0 {
-        drop(ready_r);
-        drop(go_w);
         // Hide the cleanup authority BEFORE entering the less-privileged user
         // namespace that locks inherited mounts. The guardian alone retains it.
         cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
@@ -157,18 +158,13 @@ pub fn run() -> io::Result<i32> {
         let null = fs::File::open("/dev/null")?;
         cvt(unsafe { libc::dup2(null.as_raw_fd(), 0) })?;
         drop(null);
-        cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) })?;
-        fs::File::from(ready_w).write_all(b"x")?;
-        fs::File::from(go_r).read_exact(&mut [0])?;
+        cvt(unsafe { libc::setns(engine_user.as_raw_fd(), libc::CLONE_NEWUSER) })?;
+        drop(engine_user);
         // The mount namespace becomes less privileged here: existing mounts
         // and their readonly/nosuid/nodev flags are locked by the kernel.
         cvt(unsafe {
             libc::unshare(
-                libc::CLONE_NEWNS
-                    | libc::CLONE_NEWNET
-                    | libc::CLONE_NEWIPC
-                    | libc::CLONE_NEWUTS
-                    | libc::CLONE_NEWPID,
+                libc::CLONE_NEWNS | libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWPID,
             )
         })?;
         let init = cvt(unsafe { libc::fork() })?;
@@ -212,28 +208,6 @@ pub fn run() -> io::Result<i32> {
         .spawn()?;
         return wait(process.id() as i32);
     }
-    drop(ready_w);
-    drop(go_r);
-    let setup = (|| -> io::Result<()> {
-        fs::File::from(ready_r).read_exact(&mut [0])?;
-        // We have CAP_SETGID in the mapped parent namespace, so gid_map can
-        // be installed without disabling setgroups. A "deny" here is inherited
-        // irreversibly by containers and breaks entrypoints such as gosu/su.
-        // The mapping still limits groups to the host user's authorized IDs.
-        for kind in ["uid", "gid"] {
-            // Preserve both extents; they map to noncontiguous host IDs.
-            fs::write(format!("/proc/{child}/{kind}_map"), "0 0 1\n1 1 65536\n")?;
-        }
-        fs::write("/run/docker/namespace-pid", child.to_string())?;
-        fs::File::from(go_w).write_all(b"x")?;
-        Ok(())
-    })();
-    if setup.is_err() {
-        unsafe {
-            libc::kill(child, libc::SIGKILL);
-        }
-    }
-    let result = supervise(child, &storage);
-    setup?;
-    result
+    drop(engine_user);
+    supervise(child, &storage)
 }

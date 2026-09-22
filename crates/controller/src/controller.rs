@@ -31,6 +31,8 @@ const GOBLIN_NAMES: &str = include_str!("goblin-names.txt");
 const QUEUE: usize = 2 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
+    #[serde(default)]
+    pub docker_enabled: bool,
     pub id: String,
     pub agent_name: String,
     /// None denotes the host root. Ownership always uses immutable IDs.
@@ -63,6 +65,8 @@ pub struct SessionRecord {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRecord {
+    #[serde(default = "goblins_protocol::package_kind")]
+    pub kind: String,
     pub id: String,
     pub session: String,
     /// Retained even after the session record is evicted or its name reused.
@@ -605,7 +609,8 @@ impl Controller {
             "path":self.relative_path(record, Some(scope)),"name":record.name,
             "description":record.description,"state":record.state,
             "initial_packages":record.initial_packages,
-            "packages":record.packages,"exit_code":record.exit_code,
+            "packages":record.packages,"docker_enabled":record.docker_enabled,
+            "exit_code":record.exit_code,
             "stop_reason":record.stop_reason,
             "terminal_complete":record.terminal_complete,
             "terminal_interrupted":record.terminal_interrupted,
@@ -825,6 +830,7 @@ impl Controller {
         };
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
+            docker_enabled: false,
             id: id.clone(),
             path: parent
                 .as_ref()
@@ -881,7 +887,7 @@ impl Controller {
                 let record = &self.sessions[scope].record;
                 Ok(json!({"id":record.id,"agent_name":record.agent_name,
                     "name":record.name,"description":record.description,
-                    "state":record.state}))
+                    "state":record.state,"docker_enabled":record.docker_enabled}))
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -982,14 +988,12 @@ impl Controller {
         } else {
             return Err(conflict());
         }
-        let package = self
-            .permissions
-            .iter()
-            .find(|r| r.id == p.request)
-            .unwrap()
-            .package
-            .clone();
-        let inherited = self.inherits_package(&p.session, &package);
+        let request = self.permissions.iter().find(|r| r.id == p.request).unwrap();
+        let inherited = if request.kind == "package" {
+            self.inherits_package(&p.session, &request.package)
+        } else {
+            None
+        };
         let a = self.sessions.get_mut(&p.session).unwrap();
         let pending = a.pending.as_ref().unwrap();
         pending.cancel.cancel();
@@ -1001,6 +1005,7 @@ impl Controller {
                 .commands
                 .try_send(Work::Decide {
                     request: Request {
+                        kind: r.kind.clone(),
                         id: p.request.clone(),
                         package: r.package.clone(),
                         reason: r.reason.clone(),
@@ -1025,7 +1030,7 @@ impl Controller {
         let decisions: Vec<_> = self
             .permissions
             .iter()
-            .filter(|r| r.state == "pending")
+            .filter(|r| r.state == "pending" && r.kind == "package")
             .filter(|r| {
                 self.sessions.get(&r.session).is_some_and(|a| {
                     a.record.state == "running"
@@ -1191,7 +1196,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1303,16 +1308,19 @@ impl Controller {
                         c.dead = true;
                         return Err((-32600, "unexpected trailing input".into()));
                     }
-                    let p: PermissionParams = params(call.params)?;
+                    let mut p: PermissionParams = params(call.params)?;
                     if !p.validate() {
-                        return Err((-32602, "invalid package or reason".into()));
+                        return Err((-32602, "invalid permission request or reason".into()));
+                    }
+                    if p.kind == "docker" {
+                        p.package = "Docker engine".into();
                     }
                     let session = session.clone();
                     let a = self.sessions.get(&session).ok_or_else(missing)?;
                     if a.record.state != "running" || a.pending.is_some() {
                         return Err(conflict());
                     }
-                    if a.record.packages.len() >= 64 {
+                    if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
                     }
                     if self.permissions.len() >= 256 {
@@ -1329,30 +1337,38 @@ impl Controller {
                     let serial = self.number();
                     let request = format!("{}-r{serial}", self.instance);
                     let approval = format!("{}-a{serial}", self.instance);
-                    let inherited_output = self.inherits_package(&session, &p.package);
-                    let auto_approve = inherited_output.is_some();
+                    let inherited_output = if p.kind == "package" {
+                        self.inherits_package(&session, &p.package)
+                    } else {
+                        None
+                    };
+                    let auto_approve = inherited_output.is_some()
+                        || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
                     let a = self.sessions.get_mut(&session).unwrap();
                     let w = a.worker.as_ref().ok_or_else(conflict)?;
                     let cancel = w.cancel.child();
-                    w.commands
-                        .try_send(if auto_approve {
-                            Work::Decide {
-                                request: Request {
-                                    id: request.clone(),
+                    if auto_approve || p.kind == "package" {
+                        w.commands
+                            .try_send(if auto_approve {
+                                Work::Decide {
+                                    request: Request {
+                                        kind: p.kind.clone(),
+                                        id: request.clone(),
+                                        package: p.package.clone(),
+                                        reason: p.reason.clone(),
+                                    },
+                                    approved: true,
+                                    output: inherited_output,
+                                }
+                            } else {
+                                Work::Preview {
+                                    approval: serial,
                                     package: p.package.clone(),
-                                    reason: p.reason.clone(),
-                                },
-                                approved: true,
-                                output: inherited_output,
-                            }
-                        } else {
-                            Work::Preview {
-                                approval: serial,
-                                package: p.package.clone(),
-                                cancel: cancel.clone(),
-                            }
-                        })
-                        .map_err(|_| capacity())?;
+                                    cancel: cancel.clone(),
+                                }
+                            })
+                            .map_err(|_| capacity())?;
+                    }
                     a.pending = Some(Pending {
                         initial_output: None,
                         id: request.clone(),
@@ -1361,6 +1377,7 @@ impl Controller {
                         cancel,
                     });
                     self.permissions.push_back(PermissionRecord {
+                        kind: p.kind.clone(),
                         id: request.clone(),
                         session,
                         agent_name: a.record.agent_name.clone(),
@@ -1369,7 +1386,7 @@ impl Controller {
                         reason: p.reason,
                         state: if auto_approve { "realizing" } else { "pending" }.into(),
                         approved: if auto_approve { Some(true) } else { None },
-                        preview: None,
+                        preview: if p.kind == "docker" { Some(json!({"description":"Start a private rootless Docker engine with this sandbox's filesystem grants and network policy; delete its images and volumes on sandbox exit."})) } else { None },
                         message: None,
                     });
                     c.waiting = Some((request, id.clone()));
@@ -1503,6 +1520,7 @@ impl Controller {
             for result in results {
                 match result {
                     Completed::Started {
+                        docker_enabled,
                         initial_packages,
                         master,
                         listener,
@@ -1510,6 +1528,7 @@ impl Controller {
                         inheritance,
                         exit_watch,
                     } => {
+                        a.record.docker_enabled = docker_enabled;
                         a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
@@ -1570,7 +1589,11 @@ impl Controller {
                                 }
                                 .into();
                                 r.message = reply.message.clone();
+                                if reply.status == "ready" && r.kind == "docker" {
+                                    a.record.docker_enabled = true;
+                                }
                                 if reply.status == "ready"
+                                    && r.kind == "package"
                                     && !a.record.packages.contains(&r.package)
                                 {
                                     a.record.packages.push(r.package.clone());
@@ -1795,6 +1818,7 @@ mod tests {
                 granted_outputs: BTreeMap::new(),
                 created: 0,
                 record: SessionRecord {
+                    docker_enabled: false,
                     id: id.clone(),
                     agent_name: "snikk".into(),
                     parent: None,
@@ -1830,6 +1854,7 @@ mod tests {
             },
         );
         d.permissions.push_back(PermissionRecord {
+            kind: "package".into(),
             id: "r".into(),
             session: id.clone(),
             agent_name: "snikk".into(),

@@ -63,9 +63,22 @@ Development setup hooks and unrecorded plugins/data are not activated.
 
 * Per-shell Docker (Linux, no VM)
 
-Opt in on a =mkGoblin= configuration with =docker.enable = true;=. The default
-is false. The development environment enables it for the Fish shell, while
-keeping the other goblin configurations unchanged:
+Inside a running sandbox, request a private Docker engine:
+
+#+begin_src sh
+goblins enable-docker --reason 'Run the integration test services'
+docker compose up
+#+end_src
+
+Approve the Docker request in the host CLI/TUI or Emacs approval view. The
+command waits for approval and engine readiness; denial leaves Docker disabled.
+It also installs the Docker CLI into the running shell. Repeating the command
+after activation succeeds without another approval or a second daemon.
+=goblins status= reports whether Docker is enabled. =request-package docker=
+remains a package request; installing a client does not enable a daemon.
+
+For automatic startup, set =mkGoblin { docker.enable = true; ... }= (default
+false). The development environment enables it for the Fish shell:
 
 #+begin_src sh
 nix develop
@@ -96,14 +109,23 @@ and at least 65536 subordinate IDs for that user in both =/etc/subuid= and
 =/etc/subgid=. Goblins checks these prerequisites; it does not change host users,
 permissions, services or kernel configuration.
 
-Each session starts its own rootless daemon inside a separate filesystem
+New sessions prepare a private namespace keeper, without a Docker daemon or
+disk store, so later activation preserves the shell's network and existing
+connections. If the host lacks the mapping prerequisites, Docker-disabled
+sessions still start using ordinary sandbox networking; enabling Docker then
+reports the missing prerequisite and requires a fresh sandbox after fixing it.
+Already-running sessions from older builds cannot acquire this capability.
+
+Each activated session starts its own rootless daemon inside a separate filesystem
 sandbox assembled from the shell's initial workspace and explicit filesystem
 grants. A nested user/mount namespace locks inherited read-only mounts before
 Docker starts. Container bind sources are resolved there, not against the host
 root. The shell's existing seccomp restrictions remain in place. Even
 =--privileged= is relative to this nested boundary; it is not host privilege.
 
-Docker-enabled goblins default =TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false=.
+Goblins default =TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED=false=, including before
+on-demand activation. =DOCKER_HOST= points at the private session socket from
+startup; it becomes usable when the engine is enabled.
 Testcontainers' Ryuk cleanup container uses the session's Docker socket without
 requesting a writable =/sys= mount. Ryuk remains enabled and can clean up after
 an abrupt JVM exit. An explicit =mkGoblin.env= value overrides this default.
@@ -153,7 +175,9 @@ Current limits:
   without requiring RootlessKit's port-mapping service, and to make BuildKit
   honor the launcher's outer-cgroup-namespace setting. A trusted native
   bootstrap creates the namespaces while preserving =no_new_privs=.
-- Only the shell workflow is being investigated; AI integrations are unchanged.
+- Docker activation and its approval are session-local. Child sandboxes do not
+  inherit an enabled engine or its approval. Each needs its own request (or
+  startup-enabled configuration); daemons and caches are not shared.
 
 Run the local-image tests from the host (no registry or host Docker required):
 

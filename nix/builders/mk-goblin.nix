@@ -31,13 +31,12 @@ let
     enable = false;
   }
   // docker;
-  effectiveEnv =
-    lib.optionalAttrs dockerOptions.enable {
-      # Ryuk needs the session Docker socket, not a writable sysfs mount.
-      # Keep its cleanup enabled without requesting a privileged container.
-      TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
-    }
-    // env;
+  effectiveEnv = {
+    # Ryuk needs the session Docker socket, not a writable sysfs mount.
+    # Keep its cleanup enabled without requesting a privileged container.
+    TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
+  }
+  // env;
   sandboxOptions = {
     inherit
       pkg
@@ -83,13 +82,11 @@ wrapped
     env = effectiveEnv;
     client_package = client;
     network = allowedDomains == null;
-    docker =
-      if dockerOptions.enable then
-        {
-          daemon = "${dockerDaemon}/bin/dockerd";
-        }
-      else
-        null;
+    docker = {
+      daemon = "${dockerDaemon}/bin/dockerd";
+      client = "${pkgs.docker-client}";
+      enabled = dockerOptions.enable;
+    };
     sandbox_etc = lib.mapAttrs (
       name: value:
       if builtins.isString value then

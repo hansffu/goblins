@@ -22,9 +22,6 @@ pub struct Engine {
     process: Child,
     lifetime: Option<File>,
     _storage: Storage,
-    pub user: File,
-    pub net: File,
-    pub net_path: PathBuf,
 }
 
 /// Resolve even a not-yet-created cache through its existing ancestors, so
@@ -105,7 +102,7 @@ impl Drop for Storage {
     }
 }
 
-fn subordinate(kind: &str, id: u32) -> Result<u32> {
+pub(crate) fn subordinate(kind: &str, id: u32) -> Result<u32> {
     let name = unsafe {
         let mut entry: libc::passwd = std::mem::zeroed();
         let mut result = std::ptr::null_mut();
@@ -156,7 +153,7 @@ fn ready(path: &Path) -> bool {
     .unwrap_or(false)
 }
 
-fn map_ids(
+pub(crate) fn map_ids(
     kind: &str,
     pid: u32,
     id: u32,
@@ -205,17 +202,10 @@ impl Engine {
         storage_root: &Path,
         directory: &Path,
         cancel: &process::Cancellation,
+        scope: &crate::docker_scope::Scope,
     ) -> Result<Self> {
         let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
-        let uid = unsafe { libc::getuid() };
-        let gid = unsafe { libc::getgid() };
-        if uid == 0 {
-            return Err("run Docker-enabled Goblins as a non-root host user".into());
-        }
-        let subuid = subordinate("uid", uid)?;
-        let subgid = subordinate("gid", gid)?;
         let storage = Storage::new(storage_root)?;
-        fs::create_dir(directory.join("docker-socket"))?;
         // State paths can exceed sockaddr_un's limit (notably under
         // nix develop's nested TMPDIR). Pin the socket directory and connect
         // through a short procfs path; the daemon uses its short sandbox path.
@@ -233,27 +223,25 @@ impl Engine {
             "root:x:0:0:root:/root:/bin/sh\n",
         )?;
         fs::write(directory.join("docker-group"), "root:x:0:\n")?;
-        let (info_r, info_w) = unix::pipe()?;
-        let (gate_r, gate_w) = unix::pipe()?;
         let (lifetime_r, lifetime_w) = unix::pipe()?;
         let filter = crate::seccomp::docker_filter()?;
-        let mut command = Command::new(&launch.bwrap);
+        let mut command = Command::new(&launch.helper);
         command
             .args([
-                "--unshare-all",
-                "--unshare-user",
-                "--uid",
-                "0",
-                "--gid",
-                "0",
+                "--docker-enter",
+                &scope.outer.as_raw_fd().to_string(),
+                &scope.net.as_raw_fd().to_string(),
+            ])
+            .arg(&launch.bwrap)
+            .args([
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--unshare-uts",
+                "--unshare-cgroup",
                 "--cap-add",
                 "ALL",
                 "--new-session",
                 "--clearenv",
-                "--info-fd",
-                &info_w.as_raw_fd().to_string(),
-                "--userns-block-fd",
-                &gate_r.as_raw_fd().to_string(),
             ])
             .args(filesystem)
             .args([
@@ -301,8 +289,8 @@ impl Engine {
             .arg("--docker-init")
             .arg(storage.path.file_name().unwrap())
             .arg(&config.daemon)
-            // Keep Docker's bridge, forwarding and NAT defaults. The bootstrap
-            // creates an owned network namespace, so these affect only this
+            // Keep Docker's bridge, forwarding and NAT defaults. The scope
+            // owns the network namespace, so these affect only this
             // session; pasta separately controls its upstream connectivity.
             .args([
                 "--config-file=/run/docker/config.json",
@@ -324,7 +312,11 @@ impl Engine {
                     .open(directory.join("docker.log"))?,
             );
         let mut keep = sources.to_vec();
-        keep.extend([info_w.as_raw_fd(), gate_r.as_raw_fd(), filter.as_raw_fd()]);
+        keep.extend([
+            scope.outer.as_raw_fd(),
+            scope.net.as_raw_fd(),
+            filter.as_raw_fd(),
+        ]);
         keep.extend([storage.parent.as_raw_fd(), storage.directory.as_raw_fd()]);
         unsafe {
             command.pre_exec(move || {
@@ -339,29 +331,7 @@ impl Engine {
         }
         let mut child = command.spawn()?;
         drop(command);
-        drop(info_w);
-        drop(gate_r);
-        let mut bootstrapped = false;
-        let setup = (|| -> Result<(File, File, PathBuf)> {
-            let mut info = File::from(info_r);
-            let mut json = String::new();
-            for _ in 0..20 {
-                let line = process::helper_line(&mut info, Duration::from_secs(10), cancel)?;
-                json.push_str(&line);
-                if line.trim() == "}" {
-                    break;
-                }
-            }
-            let info: serde_json::Value = serde_json::from_str(&json)?;
-            let pid = u32::try_from(
-                info["child-pid"]
-                    .as_u64()
-                    .ok_or("missing Docker namespace PID")?,
-            )?;
-            map_ids("uid", pid, uid, subuid, directory, cancel)?;
-            map_ids("gid", pid, gid, subgid, directory, cancel)?;
-            File::from(gate_w).write_all(b"x")?;
-            bootstrapped = true;
+        let setup = (|| -> Result<()> {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 cancel.check()?;
@@ -376,54 +346,16 @@ impl Engine {
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            let root = PathBuf::from(format!("/proc/{pid}/root"));
-            // Read only during trusted startup, before accepting containers.
-            // Resolve through the owned bootstrap's procfs, not host PID input.
-            let nested: u32 = fs::read_to_string(root.join("run/docker/namespace-pid"))?
-                .trim()
-                .parse()?;
-            let user = File::open(root.join(format!("proc/{nested}/ns/user")))?;
-            let net = File::open(root.join(format!("proc/{nested}/ns/net")))?;
-            // Pasta opens the net namespace AFTER entering its user namespace.
-            // Our host /proc/self/fd is no longer accessible at that point. Use
-            // the still-owned namespace keeper, whose credentials belong to it.
-            use std::os::unix::fs::MetadataExt;
-            let mut keeper = pid;
-            let mut net_path = None;
-            // Bubblewrap may retain PID 1 as a monitor above our bootstrap.
-            // Follow only the owned single-child bootstrap chain, never scan
-            // unrelated host processes or accept a sandbox-supplied host PID.
-            for _ in 0..4 {
-                let path = PathBuf::from(format!("/proc/{keeper}/ns/net"));
-                if fs::metadata(&path)?.ino() == net.metadata()?.ino() {
-                    net_path = Some(path);
-                    break;
-                }
-                let children =
-                    fs::read_to_string(format!("/proc/{keeper}/task/{keeper}/children"))?;
-                let ids: Vec<_> = children.split_whitespace().collect();
-                if ids.len() != 1 {
-                    return Err("unexpected Docker namespace keeper children".into());
-                }
-                keeper = ids[0].parse()?;
-            }
-            let net_path = net_path.ok_or("Docker namespace keeper identity mismatch")?;
-            Ok((user, net, net_path))
+            Ok(())
         })();
         match setup {
-            Ok((user, net, net_path)) => Ok(Self {
+            Ok(()) => Ok(Self {
                 process: child,
                 lifetime: Some(File::from(lifetime_w)),
                 _storage: storage,
-                user,
-                net,
-                net_path,
             }),
             Err(error) => {
                 drop(lifetime_w);
-                if !bootstrapped {
-                    let _ = child.kill();
-                }
                 let _ = child.wait();
                 let diagnostic = process::diagnostic(&directory.join("docker.log"));
                 let tail: String = diagnostic
@@ -453,5 +385,57 @@ impl Drop for Engine {
         }) {
             eprintln!("Docker shutdown: {error}");
         }
+    }
+}
+
+/// Owns a private Docker scope independently of whether its engine is running.
+/// Sharing and persistent scopes deliberately have no API yet.
+pub struct Manager {
+    engine: Option<Engine>,
+    pub scope: crate::docker_scope::Scope,
+}
+impl Manager {
+    pub fn prepare(
+        launch: &Launch,
+        directory: &Path,
+        cancel: &process::Cancellation,
+    ) -> Result<Self> {
+        Ok(Self {
+            engine: None,
+            scope: crate::docker_scope::Scope::start(launch, directory, cancel)?,
+        })
+    }
+    pub fn enabled(&self) -> bool {
+        self.engine.is_some()
+    }
+    pub fn alive(&mut self) -> bool {
+        self.scope.alive() && self.engine.as_mut().is_none_or(Engine::alive)
+    }
+    pub fn enable(
+        &mut self,
+        launch: &Launch,
+        filesystem: &[String],
+        sources: &[RawFd],
+        directory: &Path,
+        cancel: &process::Cancellation,
+    ) -> Result<()> {
+        if self.enabled() {
+            return Ok(());
+        }
+        self.engine = Some(Engine::start(
+            launch,
+            filesystem,
+            sources,
+            &storage_root(true)?,
+            directory,
+            cancel,
+            &self.scope,
+        )?);
+        Ok(())
+    }
+}
+impl Drop for Manager {
+    fn drop(&mut self) {
+        self.engine.take();
     }
 }

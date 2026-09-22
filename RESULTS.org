@@ -1,6 +1,40 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* On-demand private Docker scopes (2026-09-22)
+
+The namespace/network keeper now has a session lifetime independent of the
+optional Docker engine. =goblins enable-docker= requests explicit host approval,
+adds the configured client live, and waits for engine readiness. Startup
+=docker.enable = true= still works. There is no shared-daemon/cache configuration.
+See [[file:docs/adr/0003-on-demand-docker.md][ADR 0003]] for the decision and tradeoffs.
+
+All 19 host-run =test_docker= and =test_network= checks passed, including:
+
+- Activation without changing the running shell's network namespace; a service
+  started before activation remains reachable from a host-network container.
+- Denial, malformed/authority-bearing requests, concurrent requests, withdrawal
+  and stale approvals, idempotency, Docker status, and separate child approval.
+- Failed engine startup leaves the shell usable, removes its store, and permits
+  a subsequent request. No daemon or disk store is created before activation.
+- Existing builds, Compose bridges/DNS/published ports, offline behavior, user
+  switching, forbidden binds, read-only remount/cgroup probes, and independent
+  stores retain their previous behavior.
+- Disk cleanup, subordinate-owned files and symlink handling, cancellation, and
+  controller-death teardown, including the keeper before engine activation.
+- Testcontainers Java 2.0.5 starts Postgres and Ryuk after on-demand activation;
+  SQL works and Ryuk removes labelled resources after abrupt JVM halt.
+
+The Nix API, completion and minimal no-Python runtime checks passed. Docker's
+XFS dependency is narrowed to native =mkfs.xfs= so optional maintenance scripts
+do not add Python/DBus to every runtime. Rust workspace tests passed (65 tests,
+one host-driver test intentionally ignored), as did all 22 Emacs unit tests,
+including the new Docker approval description check.
+The 14 existing daemon/TUI/Emacs integration checks also passed across the
+regression runs; terminal-screen checks used =nix develop= for their =pyte=
+dependency. Focused failure/retry and approval/status checks passed again after
+the final Docker diagnostic and TUI-label changes.
+
 * Native per-shell Docker (2026-09-21)
 
 =mkGoblin= accepts =docker.enable=, defaulting to false. The =docker-shell=

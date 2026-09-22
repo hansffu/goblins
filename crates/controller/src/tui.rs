@@ -362,6 +362,9 @@ impl View {
             let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             if let Some(p) = &self.presented {
                 let preview = match &p.preview {
+                    Some(v) if v["description"].is_string() => {
+                        v["description"].as_str().unwrap().into()
+                    }
                     None => "Checking...".into(),
                     Some(v) if v.get("error").is_some() => format!(
                         "Unknown: {}",
@@ -383,8 +386,13 @@ impl View {
                     ),
                 };
                 let text = format!(
-                    "Sandbox: {}\nPackage: {}\n{}\nReason: {}\nStatus: {}{}",
+                    "Sandbox: {}\n{}: {}\n{}\nReason: {}\nStatus: {}{}",
                     request_label(snapshot, p),
+                    if p.kind == "docker" {
+                        "Requested"
+                    } else {
+                        "Package"
+                    },
                     safe(&p.package),
                     safe(&preview),
                     safe(&p.reason),

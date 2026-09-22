@@ -16,7 +16,7 @@ let
   config = pkgs.writeText "goblins-config.json" (
     builtins.toJSON {
       api = 1;
-      helper_api = 2;
+      helper_api = 3;
       goblins = lib.mapAttrs (
         _: configuration:
         configuration

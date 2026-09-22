@@ -26,7 +26,7 @@ class NetworkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               "path:" + str(ROOT) + "#checks.x86_64-linux.network-goblins"])) / "bin/goblins"
+                               f"git+file://{ROOT}#checks.x86_64-linux.network-goblins"])) / "bin/goblins"
 
     def setUp(self):
         self.d = Daemon(self.app)
@@ -99,20 +99,32 @@ class NetworkTests(unittest.TestCase):
         # The Nix pasta entry point is a symlink to the passt executable.
         pasta = [pid for pid, name in names.items() if name.startswith(("pasta", "passt"))]
         self.assertEqual(len(pasta), 1, names)
-        keeper = Path(f"/proc/{pasta[0]}/task/{pasta[0]}/children").read_text().split()
-        self.assertEqual(len(keeper), 1)
+        # The scope keeper is independent of pasta. Track the complete owned
+        # tree so this also verifies namespace cleanup before Docker activation.
+        descendants = set(children)
+        pending = list(children)
+        while pending:
+            pid = pending.pop()
+            for task in Path(f"/proc/{pid}/task").iterdir():
+                for child in (task / "children").read_text().split():
+                    if child not in descendants:
+                        descendants.add(child)
+                        pending.append(child)
+        identities = {pid: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+                      for pid in descendants}
         helpers = [pid for pid in children if Path(f"/proc/{pid}/comm").read_text().startswith("goblins-mount")]
         self.assertEqual(len(helpers), 1)
         events = (self.d.state / session / "resources/events.jsonl").read_text().splitlines()
         payload = str(next(json.loads(line)["fields"]["pid"] for line in events if json.loads(line)["event"] == "started"))
+        self.assertIn(payload, identities)
         self.d.process.kill()
         self.d.process.wait(timeout=5)
 
         def stopped():
-            for pid in pasta + keeper + helpers + [payload]:
+            for pid, start in identities.items():
                 try:
-                    status = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-                    if status != "Z":
+                    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                    if fields[0] != "Z" and fields[19] == start:
                         return False
                 except FileNotFoundError:
                     pass

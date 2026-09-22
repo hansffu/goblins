@@ -81,6 +81,11 @@ fn run() -> Result<i32, String> {
                 return mailbox_command(method, params);
             }
             cli::Command::RequestPackage { .. } => (),
+            cli::Command::EnableDocker { reason } => {
+                return request_permission(
+                    json!({"kind":"docker", "reason":reason.unwrap_or_else(|| "Enable Docker in this sandbox".into())}),
+                );
+            }
             cli::Command::Completions { shell } => {
                 cli::completions(shell);
                 return Ok(0);
@@ -89,11 +94,16 @@ fn run() -> Result<i32, String> {
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nDocker: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
                     record["state"].as_str().unwrap_or("unknown"),
+                    if record["docker_enabled"] == true {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
                     record["id"].as_str().unwrap_or("unknown")
                 );
                 return Ok(0);
@@ -152,6 +162,9 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     let (package, reason) = parse_args(legacy, &args)?;
+    request_permission(json!({"kind":"package","package":package,"reason":reason}))
+}
+fn request_permission(params: serde_json::Value) -> Result<i32, String> {
     let id = random_key()?;
     let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
@@ -159,13 +172,19 @@ fn run() -> Result<i32, String> {
         if init["api"] != 1 || init["role"] != "sandbox" {
             return Err("incompatible daemon".into());
         }
-        let params = json!({"kind":"package","package":package,"reason":reason});
+        if params["kind"] == "docker"
+            && !init["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|feature| feature == "docker-enable"))
+        {
+            return Err("daemon does not support on-demand Docker; start a new sandbox with an updated daemon".into());
+        }
         socket.set_write_timeout(Some(rpc::TIMEOUT))?;
         use std::io::Write;
         socket.write_all(&rpc::encode(&rpc::request(
             json!(id),
             "permissions.request",
-            params,
+            params.clone(),
         ))?)?;
         let reply = rpc::read(&mut socket)?;
         rpc::validate_response(&reply, &json!(id))?;

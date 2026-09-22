@@ -4,6 +4,10 @@ Date: 2026-09-21
 
 Status: Accepted
 
+The startup/network ownership details are refined by
+[ADR 0003: private Docker scopes and on-demand activation](0003-on-demand-docker.md).
+Filesystem confinement, ephemeral data and the no-VM decision remain unchanged.
+
 ## Context
 
 Development workflows need containers for services, image builds, Docker Compose

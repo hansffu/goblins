@@ -88,6 +88,19 @@
                             (:session "session-a" :request "a" :approval "approval-a"
                              :approved :json-false)))))))
 
+(ert-deftest goblins-docker-approval-shows-authority-description ()
+  (goblins-test--buffer
+    (let ((request (goblins-test--request "docker")))
+      (setq request (plist-put request :kind "docker")
+            request (plist-put request :package "Docker engine")
+            request (plist-put request :preview '(:description "Private engine; delete data on exit"))
+            goblins--snapshot (goblins-test--snapshot request)))
+    (goblins--render)
+    (goblins-test--goto "docker")
+    (goblins-details)
+    (should (string-match-p "Docker engine" (buffer-string)))
+    (should (string-match-p "Private engine; delete data on exit" (buffer-string)))))
+
 (ert-deftest goblins-details-retain-identity-and-never-target-a-replacement ()
   (goblins-test--buffer
     (goblins-test--goto "a")

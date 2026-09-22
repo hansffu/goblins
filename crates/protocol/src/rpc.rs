@@ -317,13 +317,14 @@ pub fn exchange(
 #[serde(deny_unknown_fields)]
 pub struct PermissionParams {
     pub kind: String,
+    #[serde(default)]
     pub package: String,
     pub reason: String,
 }
 impl PermissionParams {
     pub fn validate(&self) -> bool {
-        self.kind == "package"
-            && crate::package_name(&self.package)
+        ((self.kind == "package" && crate::package_name(&self.package))
+            || (self.kind == "docker" && self.package.is_empty()))
             && (1..=1024).contains(&self.reason.chars().count())
     }
 }

@@ -161,7 +161,14 @@ impl Drop for Session {
     }
 }
 mod docker;
+mod scope;
 fn run() -> io::Result<i32> {
+    if env::args().nth(1).as_deref() == Some("--docker-scope") {
+        return scope::run();
+    }
+    if env::args().nth(1).as_deref() == Some("--docker-enter") {
+        return scope::enter();
+    }
     if env::args().nth(1).as_deref() == Some("--docker-init") {
         return docker::run();
     }

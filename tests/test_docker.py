@@ -6,6 +6,7 @@ images. The opt-in Testcontainers check pulls Postgres and Ryuk from Docker Hub.
 """
 import os
 import http.server
+import json
 from pathlib import Path
 import shlex
 import shutil
@@ -15,7 +16,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from daemon_support import Daemon, ROOT
+from daemon_support import Daemon, ROOT, RPC
 from support import command
 from terminal_support import Terminal
 
@@ -67,6 +68,127 @@ class DockerTests(unittest.TestCase):
 
     def load(self, terminal):
         self.run_ok(terminal, f"docker load -i {shlex.quote(str(self.rw / 'image.tar.gz'))}")
+
+    def enable(self, session, terminal, approved=True):
+        terminal.send("goblins enable-docker --reason 'integration test'\n")
+        request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
+        self.assertEqual(request["kind"], "docker")
+        self.d.decide(request, approved)
+        terminal.expect('"status":"' + ("ready" if approved else "denied") + '"', timeout=60)
+        terminal.expect("docker-test>")
+
+    def test_enable_docker_on_demand(self):
+        session, terminal = self.shell("ondemand")
+        resources = self.d.state / session / "resources"
+        self.assertFalse((resources / "docker.log").exists())
+        self.assertFalse((resources / "docker-socket/docker.sock").exists())
+        self.assert_storage_empty()
+        self.run_ok(terminal, "! command -v docker; readlink /proc/self/ns/net > /workspace/network-before")
+        self.enable(session, terminal, approved=False)
+        self.assert_storage_empty()
+        self.assertFalse(self.d.get(session)["docker_enabled"])
+        # A server already running in the shell must remain reachable after activation.
+        self.run_ok(terminal, "(python -m http.server 18081 --bind 127.0.0.1 --directory /workspace >/tmp/http.log 2>&1 &)")
+        self.enable(session, terminal)
+        self.assertTrue(self.d.get(session)["docker_enabled"])
+        self.assertNotIn("Docker engine", self.d.get(session)["packages"])
+        self.run_ok(terminal, "test \"$(readlink /proc/self/ns/net)\" = \"$(cat /workspace/network-before)\"")
+        self.load(terminal)
+        self.run_ok(terminal, "docker run --rm --network host goblins-test wget -q -O - -T 5 http://127.0.0.1:18081/network-before")
+        store, = self.storage.iterdir()
+        self.run_ok(terminal, "goblins enable-docker")
+        self.assertEqual(list(self.storage.iterdir()), [store])
+        terminal.send("exit\n")
+        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
+        self.assertFalse(store.exists())
+
+    def test_on_demand_offline_and_private_scopes(self):
+        first, terminal = self.shell("plain")
+        second, other = self.shell("plain")
+        self.enable(first, terminal)
+        self.load(terminal)
+        self.assertFalse(self.d.get(second)["docker_enabled"])
+        self.run_ok(other, "! command -v docker")
+        self.enable(second, other)
+        self.run_ok(other, "test -z \"$(docker image ls -q)\"")
+        self.run_ok(terminal, "docker run --rm --network host goblins-test sh -c '! ip route | grep default'")
+        self.run_ok(terminal, f"! docker run --rm --mount type=bind,src={self.root}/secret,dst=/secret goblins-test true")
+
+    def test_docker_request_authority_and_withdrawal(self):
+        session, terminal = self.shell("plain")
+        endpoint = self.d.state / session / "resources/request.sock"
+        for params in (
+            {"kind": "docker", "package": "hello", "reason": "test"},
+            {"kind": "docker", "reason": ""},
+            {"kind": "docker", "reason": "test", "daemon": "/bin/true"},
+            {"kind": "docker", "reason": "test", "session": "other"},
+        ):
+            peer = RPC(endpoint)
+            try:
+                with self.assertRaises(ValueError):
+                    peer.call("permissions.request", params)
+            finally:
+                peer.close()
+        peer = RPC(endpoint)
+        self.assertIn("docker-enable", peer.init["features"])
+        peer.send("permissions.request", {"kind": "docker", "reason": "test"})
+        request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
+        self.assertIn("private rootless", request["preview"]["description"])
+        self.assert_storage_empty()
+        concurrent = RPC(endpoint)
+        try:
+            with self.assertRaises(ValueError):
+                concurrent.call("permissions.request", {"kind": "docker", "reason": "duplicate"})
+        finally:
+            concurrent.close()
+        peer.close()
+        self.d.wait(lambda: not self.d.permissions(session=session, state="pending"))
+        with self.assertRaises(ValueError):
+            self.d.decide(request, True)
+        self.assertFalse(self.d.get(session)["docker_enabled"])
+        self.assert_storage_empty()
+        self.run_ok(terminal, "! command -v docker")
+        # A new, explicitly approved request can still succeed after withdrawal.
+        self.enable(session, terminal)
+        self.run_ok(terminal, 'case "$(goblins status)" in *"Docker: enabled"*) true;; *) false;; esac')
+
+    def test_children_require_their_own_activation(self):
+        parent, terminal = self.shell("plain")
+        self.enable(parent, terminal)
+        self.load(terminal)
+        peer = RPC(self.d.state / parent / "resources/request.sock")
+        try:
+            child = peer.call("sessions.start", {"key": "docker-child", "name": "plain",
+                              "agent_name": "child", "detached": True})["session"]
+        finally:
+            peer.close()
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        self.addCleanup(other.close)
+        other.expect("docker-test>", timeout=60)
+        self.assertFalse(self.d.get(child)["docker_enabled"])
+        self.enable(child, other)  # Must present a new approval, not inherit it.
+        self.run_ok(other, "test -z \"$(docker image ls -q)\"")
+
+    def test_activation_failure_preserves_shell_and_cleans_storage(self):
+        manifest = json.loads(Path(self.d.manifest).read_text())
+        # A trusted host manifest with a deliberately invalid engine executable.
+        config = manifest["goblins"]["plain"]
+        config["docker"]["daemon"] = config["docker"]["client"] + "/bin/docker"
+        path = self.root / "broken-engine.json"
+        path.write_text(json.dumps(manifest))
+        session = self.d.start("plain", manifest=path)["session"]
+        terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", session])
+        self.addCleanup(terminal.close)
+        terminal.expect("docker-test>", timeout=60)
+        for _ in range(2):
+            terminal.send("goblins enable-docker\n")
+            request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
+            self.d.decide(request, True)
+            terminal.expect('"status":"error"', timeout=60)
+            terminal.expect("docker-test>")
+            self.assert_storage_empty()
+            self.assertFalse(self.d.get(session)["docker_enabled"])
+            self.run_ok(terminal, "test -d /workspace")
 
     def test_long_socket_path(self):
         # Match nix develop's nested TMPDIR: the host-side Docker socket path
@@ -132,7 +254,8 @@ class DockerTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("GOBLINS_TESTCONTAINERS_CLASSPATH"),
                          "requires Testcontainers Java jars and registry access")
     def test_testcontainers_postgres_and_ryuk(self):
-        _, terminal = self.shell("java")
+        session, terminal = self.shell("java")
+        self.enable(session, terminal)
         jars = self.rw / "jars"
         jars.mkdir()
         for source in os.environ["GOBLINS_TESTCONTAINERS_CLASSPATH"].split(os.pathsep):

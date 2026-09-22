@@ -9,8 +9,13 @@ pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the n
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub id: String,
+    #[serde(default = "package_kind")]
+    pub kind: String,
     pub package: String,
     pub reason: String,
+}
+pub fn package_kind() -> String {
+    "package".into()
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

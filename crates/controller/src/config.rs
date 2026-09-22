@@ -32,6 +32,13 @@ pub struct Configuration {
 #[serde(deny_unknown_fields)]
 pub struct Docker {
     pub daemon: PathBuf,
+    #[serde(default)]
+    pub client: Option<PathBuf>,
+    #[serde(default = "docker_enabled")]
+    pub enabled: bool,
+}
+fn docker_enabled() -> bool {
+    true
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -65,7 +72,7 @@ impl Manifest {
             .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
     }
     pub fn select(mut self, name: &str) -> Result<Configuration> {
-        if self.api != 1 || self.helper_api != 2 {
+        if self.api != 1 || self.helper_api != 3 {
             return Err("incompatible manifest/helper API".into());
         }
         self.goblins.remove(name).ok_or_else(|| {

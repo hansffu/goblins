@@ -49,6 +49,11 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Request host approval to start this sandbox's private Docker engine
+    EnableDocker {
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Launch a child using the same configuration and attach its terminal
     Run {
         config: String,

@@ -140,8 +140,21 @@ in
               pkgs.python3
             ]
             ++ pkgs.lib.optional (name == "java") pkgs.jdk;
-            docker.enable = name != "plain";
-            allowedDomains = if name == "shell" || name == "java" then null else [ ];
+            docker.enable = builtins.elem name [
+              "shell"
+              "offline"
+            ];
+            allowedDomains =
+              if
+                builtins.elem name [
+                  "shell"
+                  "java"
+                  "ondemand"
+                ]
+              then
+                null
+              else
+                [ ];
             env.PS1 = "docker-test> ";
             roDirs = [ "$GOBLINS_TEST_ROOT/readonly" ];
             rwDirs = [ "$GOBLINS_TEST_ROOT/writable" ];
@@ -152,6 +165,7 @@ in
           "offline"
           "plain"
           "java"
+          "ondemand"
         ]
     );
   };
@@ -365,8 +379,8 @@ in
   };
   goblins-api =
     assert builtins.all rejected invalid;
-    assert (mkGoblin base).goblin.docker == null;
-    assert (mkGoblin (base // { docker.enable = true; })).goblin.docker != null;
+    assert !(mkGoblin base).goblin.docker.enabled;
+    assert (mkGoblin (base // { docker.enable = true; })).goblin.docker.enabled;
     assert (mkGoblin base).goblin.network;
     assert !(mkGoblin (base // { allowedDomains = [ ]; })).goblin.network;
     assert builtins.all

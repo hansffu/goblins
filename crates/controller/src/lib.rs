@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod config;
 pub mod controller;
 mod docker;
+mod docker_scope;
 mod network;
 mod process;
 mod seccomp;

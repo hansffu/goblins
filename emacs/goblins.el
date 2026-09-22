@@ -89,12 +89,13 @@ Set this to the directory passed to `goblins --state-dir'."
       (when-let* ((preview (plist-get record :preview)))
         (goblins--field
          "Preview:"
-         (if-let* ((error (plist-get preview :error)))
-             error
-           (format "In store: %s; download: %s; build required: %s"
-                   (if (eq (plist-get preview :in_store) t) "yes" "no")
-                   (or (plist-get preview :download) "unknown")
-                   (if (eq (plist-get preview :build_required) t) "yes" "no")))))
+         (or (plist-get preview :description)
+             (if-let* ((error (plist-get preview :error)))
+                 error
+               (format "In store: %s; download: %s; build required: %s"
+                       (if (eq (plist-get preview :in_store) t) "yes" "no")
+                       (or (plist-get preview :download) "unknown")
+                       (if (eq (plist-get preview :build_required) t) "yes" "no"))))))
       (when-let* ((message (plist-get record :message)))
         (goblins--field "Message:" message))
       (insert "\n"))))
