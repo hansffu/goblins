@@ -422,6 +422,15 @@ in
       pkg = pkgs.fish;
       binName = "fish";
       args = [ "--interactive" ];
+      allowedPackages = [
+        (pkgs.writeShellScriptBin "goblins-symlink-output-probe" ''
+          test -x ${
+            pkgs.runCommand "goblins-symlink-output" { } ''
+              ln -s ${pkgs.hello}/bin/hello $out
+            ''
+          }
+        '')
+      ];
       roDirs = [ "$HOME/.config/fish" ];
     };
   };

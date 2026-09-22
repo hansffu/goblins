@@ -36,6 +36,8 @@ class BindTests(unittest.TestCase):
             client.expect(r"(?:^|\n)CONFIG=loaded\n")
             client.expect(r"(?:^|\n)config-function-loaded\n")
             client.expect(r"(?:^|\n)CONFIG_RO=1\n")
+            client.send("goblins-symlink-output-probe; printf 'SYMLINK_OUTPUT=%s\\n' $status\n")
+            client.expect(r"(?:^|\n)SYMLINK_OUTPUT=0\n")
             client.send(f"test -e {targets}/unselected-secret; printf 'STORE_SIBLING_HIDDEN=%s\\n' $status; test -e $HOME/unselected-secret; printf 'HOME_PRIVATE=%s\\n' $status\n")
             client.expect(r"(?:^|\n)STORE_SIBLING_HIDDEN=1\n")
             client.expect(r"(?:^|\n)HOME_PRIVATE=1\n")

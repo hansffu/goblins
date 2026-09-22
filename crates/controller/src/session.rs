@@ -27,30 +27,56 @@ use std::{
     time::Duration,
 };
 
-pub fn store_path(path: &Path) -> Result<PathBuf> {
-    let name = path
-        .file_name()
-        .and_then(|p| p.to_str())
-        .ok_or("invalid store path")?;
-    if path.as_os_str() != std::ffi::OsStr::new(&format!("/nix/store/{name}"))
-        || path.parent() != Some(Path::new("/nix/store"))
-        || !(34..=211).contains(&name.len())
-        || name.as_bytes()[32] != b'-'
-        || !name.bytes().enumerate().all(|(i, b)| {
+fn canonical_store_output(path: &Path) -> bool {
+    let name = path.file_name().and_then(|p| p.to_str());
+    let Some(name) = name else {
+        return false;
+    };
+    path.as_os_str() == std::ffi::OsStr::new(&format!("/nix/store/{name}"))
+        && path.parent() == Some(Path::new("/nix/store"))
+        && (34..=211).contains(&name.len())
+        && name.as_bytes()[32] == b'-'
+        && name.bytes().enumerate().all(|(i, b)| {
             if i < 32 {
                 b"0123456789abcdfghijklmnpqrsvwxyz".contains(&b)
             } else {
                 b.is_ascii_alphanumeric() || b"+-._?=".contains(&b)
             }
         })
-    {
+}
+
+fn containing_store_output(path: &Path) -> Option<PathBuf> {
+    let name = path.strip_prefix("/nix/store").ok()?.components().next()?;
+    let root = Path::new("/nix/store").join(name);
+    canonical_store_output(&root).then_some(root)
+}
+
+pub fn store_path(path: &Path) -> Result<PathBuf> {
+    if !canonical_store_output(path) {
         return Err("not a canonical store output".into());
     }
     let meta = fs::symlink_metadata(path)?;
-    if !meta.is_file() && !meta.is_dir() {
-        return Err("store output must be a regular file or directory".into());
+    if meta.is_file() || meta.is_dir() {
+        return Ok(path.to_path_buf());
     }
-    Ok(path.to_path_buf())
+    if meta.is_symlink() {
+        // A Nix output may itself be a symlink (for example, a package's
+        // helper executable output). Bubblewrap follows the source when it is
+        // mounted, so permit it only when canonical resolution remains within
+        // another well-formed store output. This preserves the host boundary
+        // while accepting valid Nix closures.
+        let resolved = fs::canonicalize(path)?;
+        let root = containing_store_output(&resolved)
+            .ok_or("store output symlink resolves outside the Nix store")?;
+        let root_meta = fs::symlink_metadata(root)?;
+        let resolved_meta = fs::metadata(&resolved)?;
+        if (root_meta.is_file() || root_meta.is_dir())
+            && (resolved_meta.is_file() || resolved_meta.is_dir())
+        {
+            return Ok(path.to_path_buf());
+        }
+    }
+    Err("store output must be a regular file, directory, or store-contained symlink".into())
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Identity {
