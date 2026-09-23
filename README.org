@@ -172,6 +172,10 @@ goblins request-package cowsay --reason "Try a live package grant"
 cowsay hello
 #+end_src
 
+Packages with overlapping command names can coexist. The first command on the
+startup PATH keeps precedence; later grants add commands without replacing
+existing ones. Each package still uses its own Nix store dependencies.
+
 Omit =--name= to get a randomly selected fantasy goblin name. The current directory is shared with the sandbox. Use
 =server start --workspace DIR= for a disposable snapshot instead. Children share
 their parent’s workspace. Explicit writable binds modify host files.

@@ -14,13 +14,23 @@ in
       posix_shell = "${pkgs.bashInteractive}/bin/bash";
       flake = "path:${pkgs.path}";
       client_package = import ../nix/packages/internal-goblins.nix { inherit pkgs; };
-      initial_packages = [ pkgs.python3 ];
+      # Duplicate Bash commands must coexist just as they do on a Nix shell PATH.
+      initial_packages = [
+        pkgs.python3
+        pkgs.bashInteractive
+        pkgs.bashNonInteractive
+      ];
       python = "${pkgs.python3}/bin/python3";
       helper = "${helper}/bin/goblins-mount-helper";
       bwrap = "${pkgs.bubblewrap}/bin/bwrap";
     }
   );
-  inherit (pkgs) jq hello tree;
+  inherit (pkgs)
+    jq
+    hello
+    tree
+    cowsay
+    ;
   script-tool = pkgs.writeScriptBin "script-tool" ''
     #!${pkgs.dash}/bin/dash
     printf '%s\n' script-interpreter-ok

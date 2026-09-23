@@ -42,9 +42,10 @@ class LiveTests(unittest.TestCase):
     def setUpClass(cls):
         cls.fixture = tempfile.TemporaryDirectory(prefix="goblins-test-")
         cls.paths = {}
-        for name in ("runtime", "jq", "script-tool", "data-tool", "collision"):
+        for name in ("runtime", "jq", "script-tool", "data-tool", "collision", "cowsay"):
+            installable = {"jq": "jq^bin", "cowsay": "cowsay^out"}.get(name, name)
             cls.paths[name] = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
-                "--out-link", str(Path(cls.fixture.name) / name), "path:" + str(Path(__file__).resolve().parents[1]) + "#" + ("jq^bin" if name == "jq" else name)]))
+                "--out-link", str(Path(cls.fixture.name) / name), "path:" + str(Path(__file__).resolve().parents[1]) + "#" + installable]))
         cls.config = json.loads(cls.paths["runtime"].read_text())
 
     @classmethod
@@ -177,13 +178,17 @@ print(json.dumps(results))''')
         self.assertEqual(session.output.readline().strip(), "CLIENT-EXIT:2")
         self.assertNotIn("data-tool", session.packages)
 
-    def test_partial_failure_collision_failed_realization_and_cleanup(self):
+    def test_duplicate_commands_failed_realization_and_cleanup(self):
         session = self.session()
+        before = probe(session, 'import shutil,json; print(json.dumps(shutil.which("bash")))')
+        session.grant("cowsay", self.paths["cowsay"])
+        after = probe(session, 'import os,shutil,json; print(json.dumps(os.path.realpath(shutil.which("bash"))))')
+        self.assertEqual(after, os.path.realpath(before))
+        self.assertIn("live-grant-ok", probe(session, 'import subprocess,json; print(json.dumps(subprocess.check_output(["cowsay", "live-grant-ok"],text=True)))'))
         session.grant("jq", self.paths["jq"])
-        current = os.readlink(session.directory / "packages/current")
-        with self.assertRaisesRegex(ValueError, "collision"):
-            session.grant("script-tool", self.paths["collision"])
-        self.assertEqual(os.readlink(session.directory / "packages/current"), current)
+        session.grant("aaa-collision", self.paths["collision"])
+        self.assertIn("aaa-collision", session.packages)
+        self.assertEqual(probe(session, 'import subprocess,json; print(json.dumps(subprocess.check_output(["jq", "-nc", "{live:true}"],text=True).strip()))'), '{"live":true}')
         session.flake = "path:/nonexistent-goblins-catalog"
         self.assertEqual(session.decide(request(package="data-tool"), True)["status"], "error")
         self.assertIsNone(session.proc.poll())

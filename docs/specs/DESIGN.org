@@ -159,7 +159,7 @@ Each grant operation:
 1. The host controller validates a nixpkgs attribute name and obtains its pinned
    output from host Nix. It creates GC roots before enumerating requisites.
 2. The controller enumerates the transitive closure through host Nix, validates
-   canonical store names, checks executable-name collisions, and prepares a
+   canonical store names, preserves first-match command precedence, and prepares a
    profile generation. It creates empty destination placeholders in a
    host-owned directory already bound read-only at =/nix/store=.
 3. The private helper protocol carries only one bounded canonical store
@@ -244,15 +244,17 @@ filesystem/kernel is not made transactional or cancellable by this milestone.
 
 A validated request starts a cancellable advisory preview with IFD disabled.
 Approval cancels that preview, then performs pinned host Nix realization,
-closure rooting, collision checks, helper-acknowledged mounts and atomic profile
+closure rooting, profile preparation, helper-acknowledged mounts and atomic profile
 publication. Permission records distinguish realizing, mounting, publishing,
 ready and failed. Host commands are read through bounded nonblocking pipes;
 stdout is capped at 8 MiB and stderr retains at most 1 MiB. This bounds diagnostic
 capture without imposing a file-size limit on Nix's own caches or store work.
 
 The stable profile path is inherited at startup. Successful additive grants
-become usable in the same payload process/mount namespace. Realization and
-collision failures preserve the running session. Failure from mount preparation
+become usable in the same payload process/mount namespace. Overlapping command
+names preserve startup PATH precedence followed by grant publication order;
+both store closures remain available. Realization and profile preparation
+failures preserve the running session. Failure from mount preparation
 through publication terminates that session; direct store paths may already be
 visible, so there is no rollback or revocation claim.
 

@@ -710,24 +710,38 @@ impl Session {
         }
         store_path(Path::new(paths[0]))
     }
-    fn profile(&self, packages: &BTreeMap<String, PathBuf>) -> Result<PathBuf> {
+    fn profile(&self, package: &Path) -> Result<PathBuf> {
         let mut entries = BTreeMap::new();
-        for path in self.launch.initial_packages.iter().chain(packages.values()) {
-            let bin = path.join("bin");
+        // Match the startup PATH, then append grants in publication order.
+        // Duplicate command names are ordinary PATH shadowing, not a reason
+        // to reject otherwise independent Nix store closures.
+        let current = self.directory.join("packages/current/bin");
+        let bins = [
+            self.launch.client_package.join("bin"),
+            self.launch
+                .shell
+                .parent()
+                .ok_or("invalid shell path")?
+                .to_path_buf(),
+        ];
+        for bin in bins
+            .into_iter()
+            .chain(self.launch.initial_packages.iter().map(|p| p.join("bin")))
+            .chain((!self.packages.is_empty()).then_some(current.clone()))
+            .chain(std::iter::once(package.join("bin")))
+        {
             if !bin.is_dir() {
                 continue;
             }
-            for entry in fs::read_dir(bin)? {
+            for entry in fs::read_dir(&bin)? {
                 let entry = entry?;
-                if let Some(previous) = entries.insert(entry.file_name(), entry.path())
-                    && previous != entry.path()
-                {
-                    return Err(format!(
-                        "package executable collision: {}",
-                        entry.file_name().to_string_lossy()
-                    )
-                    .into());
-                }
+                // Copy the store target, never a link through mutable `current`.
+                let target = if bin == current {
+                    fs::read_link(entry.path())?
+                } else {
+                    entry.path()
+                };
+                entries.entry(entry.file_name()).or_insert(target);
             }
         }
         let generation = self
@@ -774,7 +788,7 @@ impl Session {
         let mut packages = self.packages.clone();
         packages.insert(name.into(), path.clone());
         let closure = self.closure(std::slice::from_ref(&path))?;
-        let generation = self.profile(&packages)?;
+        let generation = self.profile(&path)?;
         let missing = closure
             .difference(&self.mounted)
             .cloned()

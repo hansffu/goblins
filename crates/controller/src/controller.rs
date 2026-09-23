@@ -1629,7 +1629,12 @@ impl Controller {
                                     "failed"
                                 }
                                 .into();
-                                r.message = reply.message.clone();
+                                // The sandbox gets a concise category; host
+                                // frontends need the diagnostic for this request.
+                                r.message = detail
+                                    .as_deref()
+                                    .map(bounded)
+                                    .or_else(|| reply.message.clone());
                                 if reply.status == "ready" && r.kind == "docker" {
                                     a.record.docker_enabled = true;
                                     a.record.docker_scope = docker_scope;
@@ -2102,6 +2107,33 @@ mod tests {
                 .unwrap(),
             first
         );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn failed_grant_retains_diagnostic_on_permission_record() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let detail = "could not build package 'hello': actual Nix diagnostic";
+        let id = session_with_results(
+            &mut d,
+            vec![Completed::Granted {
+                docker_scope: None,
+                reply: goblins_protocol::Reply::new(
+                    Some("r".into()),
+                    "error",
+                    Some("grant failed; see tui terminal".into()),
+                ),
+                detail: Some(detail.into()),
+                output: None,
+            }],
+        );
+        d.tick().unwrap();
+        assert_eq!(d.permissions[0].state, "failed");
+        assert_eq!(d.permissions[0].message.as_deref(), Some(detail));
+        // A later session diagnostic must not erase this request's explanation.
+        d.sessions.get_mut(&id).unwrap().record.detail = None;
+        assert_eq!(d.snapshot().permissions[0].message.as_deref(), Some(detail));
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

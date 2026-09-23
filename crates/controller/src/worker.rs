@@ -215,16 +215,16 @@ impl Worker {
                                         }
                                     } else if detail.starts_with("cannot resolve package") {
                                         format!(
-                                            "cannot resolve package '{}' from pinned nixpkgs; see tui terminal",
+                                            "cannot resolve package '{}' from pinned nixpkgs; see request details in host TUI",
                                             req.package
                                         )
                                     } else if detail.starts_with("could not build package") {
                                         format!(
-                                            "could not build package '{}'; see tui terminal",
+                                            "could not build package '{}'; see request details in host TUI",
                                             req.package
                                         )
                                     } else {
-                                        "grant failed; see tui terminal".into()
+                                        "grant failed; see request details in host TUI".into()
                                     };
                                     (
                                         Reply::new(Some(req.id), "error", Some(category)),

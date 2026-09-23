@@ -6,6 +6,69 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 
 #[test]
+fn profiles_preserve_path_precedence_across_duplicate_commands() {
+    let fixture = SessionDirectory(unix::temp_directory().unwrap());
+    let package = |name: &str, commands: &[&str]| {
+        let path = fixture.0.join(name);
+        fs::create_dir_all(path.join("bin")).unwrap();
+        for command in commands {
+            fs::write(path.join("bin").join(command), name).unwrap();
+        }
+        path
+    };
+    let client = package("client", &["goblins"]);
+    let shell = package("shell", &["bash"]);
+    let first = package("first", &["bash", "shared"]);
+    let second = package("second", &["bash", "shared"]);
+    let requested = package("requested", &["bash", "shared", "cowsay", "goblins"]);
+    let later = package("later", &["cowsay", "cowthink"]);
+    let launch: Launch = serde_json::from_value(json!({
+        "shell": shell.join("bin/bash"), "posix_shell": shell.join("bin/bash"),
+        "helper": "/unused", "bwrap": "/unused", "flake": "unused",
+        "client_package": client, "initial_packages": [first, second]
+    }))
+    .unwrap();
+    let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+    let generation = session.profile(&requested).unwrap();
+    for (name, target) in [
+        ("bash", shell.join("bin/bash")),
+        ("shared", first.join("bin/shared")),
+        ("goblins", client.join("bin/goblins")),
+        ("cowsay", requested.join("bin/cowsay")),
+    ] {
+        assert_eq!(
+            fs::read_link(generation.join("bin").join(name)).unwrap(),
+            target
+        );
+    }
+    symlink(&generation, session.directory.join("packages/current")).unwrap();
+    session.packages.insert("zzz".into(), requested.clone());
+    let next = session.profile(&later).unwrap();
+    // A later grant keeps existing winners regardless of package name order.
+    session.packages.insert("aaa".into(), later.clone());
+    fs::remove_file(session.directory.join("packages/current")).unwrap();
+    symlink(&next, session.directory.join("packages/current")).unwrap();
+    assert_eq!(
+        fs::read_link(next.join("bin/cowsay")).unwrap(),
+        requested.join("bin/cowsay")
+    );
+    assert_eq!(
+        fs::read_to_string(next.join("bin/cowsay")).unwrap(),
+        "requested"
+    );
+    assert_eq!(
+        fs::read_link(next.join("bin/cowthink")).unwrap(),
+        later.join("bin/cowthink")
+    );
+    // Repeated outputs and subsequent generations never link through `current`.
+    let repeated = session.profile(&later).unwrap();
+    assert_eq!(
+        fs::read_link(repeated.join("bin/cowsay")).unwrap(),
+        requested.join("bin/cowsay")
+    );
+}
+
+#[test]
 #[ignore = "host integration driver; run through tests/test_integration.py"]
 fn host_driver() {
     // The Python harness is the driver owner; its crash must also kill this

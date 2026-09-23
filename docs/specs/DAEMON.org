@@ -284,7 +284,7 @@ disconnects are ordered by the daemon; after approval has been accepted,
 disconnect does not imply revocation. A terminal outcome must remain distinct
 from whether its reply was delivered to the sandbox client.
 
-Retain the current failure boundary: realization/collision failure before
+Retain the current failure boundary: realization/profile preparation failure before
 mounting leaves the sandbox usable; failure during mount preparation,
 mounting or publication ends the affected session. Direct store paths may
 already be visible before the profile switches. No rollback guarantee is made.

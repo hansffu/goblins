@@ -11,6 +11,29 @@ from terminal_support import Terminal, screen_wait
 
 
 class TuiTests(unittest.TestCase):
+    def test_failed_package_displays_host_diagnostic(self):
+        d = Daemon(); self.addCleanup(d.close)
+        sandbox = d.start()
+        ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui"])
+        self.addCleanup(ui.close)
+        pending, request = d.pending(sandbox["session"], "goblinsMissingPackageForTest")
+        self.addCleanup(pending.close)
+        screen_wait(ui, lambda text: "Package: goblinsMissingPackageForTest" in text)
+        ui.send("\ty")
+        pending.peer.settimeout(30)
+        reply = receive(pending.peer)["result"]
+        self.assertEqual(reply["status"], "error")
+        record = d.rpc.call("permissions.get", {"request": request["id"]})
+        self.assertEqual(record["message"], d.get(sandbox["session"])["detail"])
+        self.assertNotIn("see request details", record["message"])
+        screen_wait(ui, lambda text: "failed" in text and "Permission request" not in text)
+        ui.send("\r")
+        text = screen_wait(ui, lambda text: "Status: failed" in text)
+        self.assertIn("cannot resolve package", text)
+        self.assertNotIn("see tui terminal", text)
+        self.assertNotIn("see request details", text)
+        ui.send("q"); self.assertEqual(ui.wait(), 0)
+
     def test_ownership_tree_navigation_folding_and_request_paths(self):
         d = Daemon(); self.addCleanup(d.close)
         parent = d.start(agent_name="parent")
