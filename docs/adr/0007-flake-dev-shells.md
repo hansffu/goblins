@@ -88,10 +88,13 @@ sandbox:
 - The `shellHook` runs only inside the sandbox, never on the host. Everything it
   can use is the generation's closure, which is already mounted, so it can run
   whenever a generation is entered without further approval.
-- A refresh enters the new generation the same way: its `env.sh`, including the
-  `shellHook`, runs inside the sandbox. How the resulting environment reaches
-  processes that are already running is decided when refresh is built; they
-  keep their old environment until then.
+- A refresh replaces `env.sh` with the new generation's and runs it once
+  inside the sandbox, so the new `shellHook` runs as it would on entering the
+  shell. Goblins does not push the new environment into running processes: no
+  `BASH_ENV`, no live `PATH` profile. The refresh command tells the agent to
+  `source /run/goblins/devshell/env.sh` (in Bash) where it needs the new
+  environment, and the agent decides when to do so. New children enter the
+  new generation normally.
 
 ### Trusted and foreign locks
 
@@ -152,8 +155,8 @@ either, a missing lock entry is an error. A refresh runs in stages:
    `d` opens the full source diff between the two store snapshots and the
    `shellHook` diff. Source and lock differences are against the last trusted
    generation. The prompt appears in the TUI and Emacs like other approvals.
-4. **Apply** after approval: build, mount the new closure, switch the `PATH`
-   profile atomically, write the new `env.sh`, and record the generation and
+4. **Apply** after approval: build, mount the new closure, write the new
+   `env.sh`, run it once inside the sandbox, and record the generation and
    its lock as trusted. A candidate lock is written into the workspace only now.
 
 Rejection leaves the workspace lock and the active generation unchanged.
@@ -214,8 +217,9 @@ store path and mounts its closure. Details are decided when it is built.
 - Agents get a project's full environment without per-package approvals, and
   every environment change is reviewed as one diff.
 - Lock changes are visible and cannot be introduced by editing a file.
-- A sandbox's environment changes only on its own refresh; running processes
-  keep their old environment until they start a new shell.
+- A sandbox's environment changes only on its own refresh, and running
+  processes keep their old environment until the agent sources the new
+  `env.sh`. Agents must be told this; the skill and the refresh output say so.
 - Dev shells mount build-time closures, which are much larger than runtime
   closures.
 - The approval interface gains a generation diff view.
