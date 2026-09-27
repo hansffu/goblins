@@ -670,6 +670,7 @@ in
         { injectedFiles."codex/skills/goblins-spawn/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-packages/SKILL.md" = "override"; }
+        { injectedFiles."codex/skills/goblins-docker/SKILL.md" = "override"; }
       ];
     assert builtins.all
       (options: !(builtins.tryEval (mkClaudeGoblin options).goblin.build_spec.drvPath).success)
@@ -681,6 +682,7 @@ in
         { injectedFiles."claude-code/.claude/skills/goblins-spawn/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-packages/SKILL.md" = "override"; }
+        { injectedFiles."claude-code/.claude/skills/goblins-docker/SKILL.md" = "override"; }
       ];
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

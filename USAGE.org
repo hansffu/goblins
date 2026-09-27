@@ -67,7 +67,6 @@ A scope is a named trust group. Its members share a network namespace, by
 default a PID namespace, managed storage directories and optionally one rootless
 Docker engine. Tools still run in each member goblin, with that goblin's own
 packages, environment and files. See [[file:docs/adr/0006-shared-scopes.md][ADR 0006]].
-Known gaps are tracked in [[file:docs/scopes-follow-ups.md][open scope issues]].
 
 #+begin_src nix
 mkGoblins {
@@ -149,6 +148,10 @@ It also installs the Docker CLI into the running shell. Repeating the command
 after activation succeeds without another approval or a second daemon.
 =goblins status= reports whether Docker is enabled. =request-package docker=
 remains a package request; installing a client does not enable a daemon.
+The Codex and Claude Code integrations install a =goblins-docker= skill that
+tells agents a missing socket under =DOCKER_HOST= means Docker is not yet
+attached, and to run =goblins enable-docker= instead of concluding that the
+sandbox has no Docker.
 
 For automatic startup, set =mkGoblin { docker.enable = true; ... }= (default
 false). The development environment enables it for the Fish shell, in a
@@ -719,8 +722,8 @@ package approvals. =args= are passed unchanged after these defaults.
 system defaults below Codex's user/project/CLI layers. Native hooks from
 =codexSettings.hooks= are appended to Goblins' SessionStart/UserPromptSubmit/Stop handlers.
 Codex treats this system source as managed; no host hook-trust changes or
-blanket hook-trust bypass is needed. The =goblins-spawn=, =goblins-messaging=
-and =goblins-packages= skills are mounted at
+blanket hook-trust bypass is needed. The =goblins-spawn=, =goblins-messaging=,
+=goblins-packages= and =goblins-docker= skills are mounted at
 =/etc/codex/skills/NAME/SKILL.md=. Spawning creates the child; messaging assigns
 its work and handles replies. Reply-dependent work waits for the matching reply
 before proceeding. When none is available, the agent yields its turn for the
@@ -813,11 +816,12 @@ assembling mounts, then runs the payload as unprivileged UID/GID 1000; no
 =claudeSettings= generates sandbox-only
 =/etc/claude-code/managed-settings.json=. User hooks are retained after the
 Goblins =SessionStart=, =UserPromptSubmit= and =Stop= handlers. The shared
-=goblins-spawn=, =goblins-messaging= and =goblins-packages= skills are mounted
+=goblins-spawn=, =goblins-messaging=, =goblins-packages= and =goblins-docker=
+skills are mounted
 under =/etc/claude-code/.claude/skills/=, Claude Code's enterprise skill scope.
 No host Claude settings or skills are rewritten. Parent and child sandboxes
 share the selected Claude directory, including file-based authentication and
-native state. Managed =skillOverrides= keep all three integration skills =on=
+native state. Managed =skillOverrides= keep all four integration skills =on=
 for both model and direct user invocation. The shared descriptions name exact
 Goblins trigger terms and the native tools they replace.
 

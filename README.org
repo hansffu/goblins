@@ -311,7 +311,7 @@ Start =goblins server start= and =goblins tui=, then use =goblins run shell=,
 =goblins run codex --name snikk= or =goblins run claude --name snikk= in another terminal.
 The default package includes all three. =mkCodexGoblin= accepts the =mkGoblin= options,
 adds the Codex directory as a writable startup mount, and installs managed
-hooks plus spawning, messaging and package-request skills under sandbox-only
+hooks plus spawning, messaging, package-request and Docker skills under sandbox-only
 =/etc/codex=. It never installs
 those files into your host Codex configuration. The selected directory must
 already exist; use a string such as ="$HOME/.codex"= or ="/path/to/codex"=,

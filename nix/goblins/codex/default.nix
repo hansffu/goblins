@@ -8,6 +8,7 @@ let
     "codex/skills/goblins-spawn/SKILL.md"
     "codex/skills/goblins-messaging/SKILL.md"
     "codex/skills/goblins-packages/SKILL.md"
+    "codex/skills/goblins-docker/SKILL.md"
   ];
   runtimeDirectory =
     path:
@@ -45,6 +46,7 @@ in
       builtins.readFile ../../../skills/goblins-messaging/SKILL.md;
     "codex/skills/goblins-packages/SKILL.md" =
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
+    "codex/skills/goblins-docker/SKILL.md" = builtins.readFile ../../../skills/goblins-docker/SKILL.md;
   };
 
   # Preserve ordinary mkGoblin options, including ones added in the future.

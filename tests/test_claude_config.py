@@ -41,7 +41,9 @@ class ClaudeConfigTests(unittest.TestCase):
             "claude-code/managed-settings.json"
         ]
         self.settings = json.loads(Path(source).read_text())
-        for skill in ["goblins-spawn", "goblins-messaging", "goblins-packages"]:
+        for skill in [
+            "goblins-spawn", "goblins-messaging", "goblins-packages", "goblins-docker",
+        ]:
             self.assertEqual(self.settings["skillOverrides"][skill], "on")
 
     def terminal(self, name="claude", agent="chief"):
@@ -85,7 +87,8 @@ class ClaudeConfigTests(unittest.TestCase):
             "test -r /etc/claude-code/managed-settings.json "
             "&& test -r /etc/claude-code/.claude/skills/goblins-spawn/SKILL.md "
             "&& test -r /etc/claude-code/.claude/skills/goblins-messaging/SKILL.md "
-            "&& test -r /etc/claude-code/.claude/skills/goblins-packages/SKILL.md; "
+            "&& test -r /etc/claude-code/.claude/skills/goblins-packages/SKILL.md "
+            "&& test -r /etc/claude-code/.claude/skills/goblins-docker/SKILL.md; "
             "printf 'SETUP=%s\\n' \"$?\"; "
             "echo changed >> /etc/claude-code/managed-settings.json; "
             "printf 'READONLY=%s\\n' \"$?\"; "

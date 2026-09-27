@@ -9,6 +9,7 @@ let
     "claude-code/.claude/skills/goblins-spawn/SKILL.md"
     "claude-code/.claude/skills/goblins-messaging/SKILL.md"
     "claude-code/.claude/skills/goblins-packages/SKILL.md"
+    "claude-code/.claude/skills/goblins-docker/SKILL.md"
   ];
   runtimeDirectory =
     path:
@@ -45,6 +46,7 @@ in
               goblins-spawn = "on";
               goblins-messaging = "on";
               goblins-packages = "on";
+              goblins-docker = "on";
             };
           }
         );
@@ -54,6 +56,8 @@ in
       builtins.readFile ../../../skills/goblins-messaging/SKILL.md;
     "claude-code/.claude/skills/goblins-packages/SKILL.md" =
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
+    "claude-code/.claude/skills/goblins-docker/SKILL.md" =
+      builtins.readFile ../../../skills/goblins-docker/SKILL.md;
   };
 
   goblinOptions =

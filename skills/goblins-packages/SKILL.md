@@ -1,6 +1,6 @@
 ---
 name: goblins-packages
-description: Request a missing command or development tool inside a Goblins sandbox through its live Nix package approval flow. Use when work requires software that is not currently available.
+description: Request a missing command or development tool inside a Goblins sandbox through its live Nix package approval flow. Use when work requires software that is not currently available. Not for Docker, containers or Testcontainers; use goblins-docker instead.
 ---
 
 Check whether the required command is already available. If it is missing,
@@ -16,6 +16,9 @@ activated; a runtime grant is not a Nix development shell.
 Exit 1 means denial or a known lookup, build or grant failure.
 Exit 2 means the outcome is unknown; do not
 automatically submit another request, because the original may still complete.
+
+Docker is not a package: to use containers, follow goblins-docker and run
+`goblins enable-docker` instead of requesting `docker`.
 
 Request only tools needed for the current task, through Goblins rather than a
 host package manager. This does not replace the project's normal dependency
