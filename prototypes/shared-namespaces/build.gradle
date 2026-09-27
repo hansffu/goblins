@@ -1,0 +1,28 @@
+repositories {
+    maven {
+        url = uri("http://127.0.0.1:${findProperty('repoPort')}")
+        allowInsecureProtocol = true
+    }
+}
+configurations { sample }
+dependencies { sample 'example:sample:1.0' }
+
+def pid = { ProcessHandle.current().pid() }
+
+tasks.register('resolve') {
+    def files = configurations.sample
+    doLast {
+        println "RESOLVED ${files.singleFile}"
+        println "DAEMON_PID ${pid()}"
+    }
+}
+
+tasks.register('hold') {
+    def marker = file("started-${findProperty('client')}")
+    def seconds = (findProperty('duration') ?: '20') as long
+    doLast {
+        println "DAEMON_PID ${pid()}"
+        marker.text = 'started'
+        Thread.sleep(seconds * 1000)
+    }
+}
