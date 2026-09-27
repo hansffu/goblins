@@ -76,9 +76,9 @@ class NetworkTests(unittest.TestCase):
         self.fetch(attached)
         attached.send("readlink /proc/self/ns/net\n")
         child_ns = attached.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
-        # Children inherit the anonymous Docker scope and its network even
-        # before activation, so they can subsequently share one engine.
-        self.assertEqual(parent_ns, child_ns)
+        # Without a scope, each sandbox has its own network namespace; a scope
+        # is how goblins share one.
+        self.assertNotEqual(parent_ns, child_ns)
         attached.expect("network-test>")
         attached.send("exit\n")
         self.d.wait(lambda: self.d.get(child)["state"] == "stopped")

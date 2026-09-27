@@ -1,11 +1,14 @@
-//! Weak registry plus explicit user leases: history never keeps a daemon alive.
+//! One live instance per named scope: namespaces, network, managed storage
+//! and an optional Docker engine. Members hold strong references; the
+//! registry only a weak one, so the last member leaving stops the scope.
 use crate::{
     Result,
-    config::Launch,
+    config::{Launch, ScopeDefinition},
     docker::{Engine, storage_root},
-    docker_scope::Scope,
     network::Network,
     process::{self, Cancellation},
+    scope_keeper::Namespaces,
+    scope_storage::Storage,
     session::Inheritance,
     unix,
 };
@@ -22,21 +25,19 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone, Default)]
-pub(crate) struct Selection {
-    pub scope: Weak<Shared>,
-    pub name: Option<String>,
-    pub enabled: bool,
-}
 pub(crate) type Grant = (File, PathBuf, bool);
 pub(crate) struct Shared {
-    pub name: Option<String>,
+    pub name: String,
+    pub definition: ScopeDefinition,
     pub directory: PathBuf,
     pub user: File,
     pub net: File,
+    pub pid: Option<File>,
     online: bool,
     state: Mutex<State>,
     _keeper: Keeper,
+    // Dropped last: temporary data outlives every member process and engine.
+    storage: Storage,
 }
 struct Keeper {
     stop: Option<std::sync::mpsc::Sender<()>>,
@@ -58,7 +59,7 @@ struct State {
     owners: Vec<Inheritance>,
     store: Option<PathBuf>,
     network: Option<Network>,
-    scope: Scope,
+    namespaces: Namespaces,
     _owner: Inheritance,
 }
 impl Drop for State {
@@ -74,7 +75,7 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, cancel: &Cancellation) -> Result<MutexGuard<
         match mutex.try_lock() {
             Ok(guard) => return Ok(guard),
             Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err("Docker scope state poisoned".into());
+                return Err("scope state poisoned".into());
             }
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
@@ -83,67 +84,76 @@ fn lock<'a, T>(mutex: &'a Mutex<T>, cancel: &Cancellation) -> Result<MutexGuard<
 type Slot = Arc<Mutex<Weak<Shared>>>;
 static NAMED: OnceLock<Mutex<BTreeMap<(PathBuf, String), Slot>>> = OnceLock::new();
 impl Shared {
+    /// Join the live instance of the launch's scope, or start it.
     pub fn prepare(
         launch: &Launch,
         owner: Inheritance,
         directory: &Path,
-        name: Option<String>,
         cancel: &Cancellation,
     ) -> Result<Arc<Self>> {
-        let slot = if let Some(name) = &name {
-            let realm = launch
-                .protected_paths
-                .last()
-                .cloned()
-                .unwrap_or_else(|| directory.to_path_buf());
-            let mut registry = lock(NAMED.get_or_init(Mutex::default), cancel)?;
-            Some(
-                registry
-                    .entry((realm, name.clone()))
-                    .or_insert_with(|| Arc::new(Mutex::new(Weak::new())))
-                    .clone(),
-            )
-        } else {
-            None
-        };
-        let mut slot_guard = slot.as_ref().map(|slot| lock(slot, cancel)).transpose()?;
-        if let Some(shared) = slot_guard.as_ref().and_then(|s| s.upgrade()) {
+        let selected = launch.scope.as_ref().ok_or("launch has no scope")?;
+        let realm = launch
+            .protected_paths
+            .last()
+            .cloned()
+            .unwrap_or_else(|| directory.to_path_buf());
+        let slot = lock(NAMED.get_or_init(Mutex::default), cancel)?
+            .entry((realm, selected.name.clone()))
+            .or_insert_with(|| Arc::new(Mutex::new(Weak::new())))
+            .clone();
+        // Serializes startup and final teardown of this scope within the
+        // controller: a new member waits instead of joining a stopping scope.
+        let mut slot_guard = lock(&slot, cancel)?;
+        if let Some(shared) = slot_guard.upgrade() {
             shared.compatible(launch)?;
             return Ok(shared);
         }
+        // A previous instance may still be stopping in another thread.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let storage = loop {
+            if let Some(storage) = Storage::open(&selected.name, &selected.definition)? {
+                break storage;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("scope '{}' did not finish stopping", selected.name).into());
+            }
+            cancel.check()?;
+            std::thread::sleep(Duration::from_millis(50));
+        };
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let path = directory.join(format!(
-            "docker-runtime-{}",
+            "scope-runtime-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         unix::private_directory(&path)?;
         fs::create_dir(path.join("docker-socket"))?;
         // Linux PDEATHSIG follows the creating THREAD. A session worker may
         // exit while other members still use this scope; keep the creator alive
-        // independently until the shared namespace and pasta have been stopped.
+        // independently until the shared namespaces and pasta have been stopped.
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (stop_tx, stop_rx) = std::sync::mpsc::channel();
         let setup_launch = launch.clone();
         let setup_path = path.clone();
         let setup_cancel = cancel.clone();
+        let pid = selected.definition.pid;
         let thread = std::thread::spawn(move || {
-            let setup = || -> Result<(Scope, Option<Network>)> {
-                let scope = Scope::start(&setup_launch, &setup_path, &setup_cancel)?;
+            let setup = || -> Result<(Namespaces, Option<Network>)> {
+                let namespaces = Namespaces::start(&setup_launch, &setup_path, pid, &setup_cancel)?;
                 let network = setup_launch
                     .pasta
                     .as_ref()
                     .map(|pasta| {
                         Network::attach(
                             pasta,
-                            scope.user.try_clone()?,
-                            scope.net.try_clone()?,
-                            &scope.net_path,
+                            namespaces.user.try_clone()?,
+                            namespaces.net.try_clone()?,
+                            &namespaces.net_path,
                             &setup_path,
                             &setup_cancel,
                         )
                     })
                     .transpose()?;
-                Ok((scope, network))
+                Ok((namespaces, network))
             };
             let result = setup();
             let success = result.is_ok();
@@ -155,12 +165,14 @@ impl Shared {
             stop: Some(stop_tx),
             thread: Some(thread),
         };
-        let (scope, network) = ready_rx.recv().map_err(|_| "Docker scope owner exited")??;
+        let (namespaces, network) = ready_rx.recv().map_err(|_| "scope owner exited")??;
         let shared = Arc::new(Self {
-            name,
+            name: selected.name.clone(),
+            definition: selected.definition.clone(),
             directory: path,
-            user: scope.user.try_clone()?,
-            net: scope.net.try_clone()?,
+            user: namespaces.user.try_clone()?,
+            net: namespaces.net.try_clone()?,
+            pid: namespaces.pid.as_ref().map(File::try_clone).transpose()?,
             online: launch.pasta.is_some(),
             state: Mutex::new(State {
                 engine: None,
@@ -169,19 +181,33 @@ impl Shared {
                 owners: vec![],
                 store: None,
                 network,
-                scope,
+                namespaces,
                 _owner: owner,
             }),
             _keeper: keeper,
+            storage,
         });
-        if let Some(guard) = slot_guard.as_mut() {
-            **guard = Arc::downgrade(&shared);
-        }
+        *slot_guard = Arc::downgrade(&shared);
         Ok(shared)
     }
     pub fn compatible(&self, launch: &Launch) -> Result<()> {
         if self.online != launch.pasta.is_some() {
-            return Err("Docker scope has a different network policy (online/offline)".into());
+            return Err(format!(
+                "scope '{}' has a different network policy (online/offline)",
+                self.name
+            )
+            .into());
+        }
+        if launch
+            .scope
+            .as_ref()
+            .is_none_or(|s| s.name != self.name || s.definition != self.definition)
+        {
+            return Err(format!(
+                "scope '{}' is running with a different definition; stop its members first",
+                self.name
+            )
+            .into());
         }
         Ok(())
     }
@@ -189,13 +215,73 @@ impl Shared {
         let Ok(mut state) = self.state.try_lock() else {
             return true;
         };
-        state.scope.alive() && state.engine.as_mut().is_none_or(Engine::alive)
+        state.namespaces.alive() && state.engine.as_mut().is_none_or(Engine::alive)
     }
-    pub fn fds(&self) -> [RawFd; 2] {
-        [self.user.as_raw_fd(), self.net.as_raw_fd()]
+    /// User, network and (when shared) PID namespace descriptors for members.
+    pub fn fds(&self) -> (RawFd, RawFd, Option<RawFd>) {
+        (
+            self.user.as_raw_fd(),
+            self.net.as_raw_fd(),
+            self.pid.as_ref().map(AsRawFd::as_raw_fd),
+        )
+    }
+    pub fn storage(&self, name: &str) -> Result<&File> {
+        self.storage.directory(name)
     }
     pub fn socket(&self) -> PathBuf {
         self.directory.join("docker-socket/docker.sock")
+    }
+    /// Kill a departed member's processes that remain in the shared PID
+    /// namespace. Payload code cannot leave its mount namespace (seccomp
+    /// denies unshare, setns and mount), so it identifies the member.
+    pub fn kill_member(&self, mountns: u64) {
+        let Some(pidns) = self
+            .pid
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .map(|m| m.ino())
+        else {
+            return;
+        };
+        for _ in 0..100 {
+            let mut found = false;
+            for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
+                let Some(id) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.parse::<i32>().ok())
+                else {
+                    continue;
+                };
+                // Pin the process before checking it, so a reused PID is
+                // never signalled on the strength of another process's check.
+                let Ok(pidfd) =
+                    unix::owned(unsafe { libc::syscall(libc::SYS_pidfd_open, id, 0) as i32 })
+                else {
+                    continue;
+                };
+                let member = |kind: &str, inode: u64| {
+                    fs::metadata(format!("/proc/{id}/ns/{kind}")).is_ok_and(|m| m.ino() == inode)
+                };
+                if member("pid", pidns) && member("mnt", mountns) {
+                    found = true;
+                    unsafe {
+                        libc::syscall(
+                            libc::SYS_pidfd_send_signal,
+                            pidfd.as_raw_fd(),
+                            libc::SIGKILL,
+                            std::ptr::null::<libc::siginfo_t>(),
+                            0,
+                        );
+                    }
+                }
+            }
+            if !found {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        eprintln!("scope '{}': member processes survived cleanup", self.name);
     }
     pub fn acquire(
         self: &Arc<Self>,
@@ -208,6 +294,9 @@ impl Shared {
         cancel: &Cancellation,
     ) -> Result<Lease> {
         self.compatible(launch)?;
+        if !self.definition.docker {
+            return Err(format!("scope '{}' does not enable Docker", self.name).into());
+        }
         let mut state = lock(&self.state, cancel)?;
         // Reject ambiguous aliases and access-mode conflicts before changing a
         // live engine. Trust groups share grants, not pathname interpretation.
@@ -226,11 +315,11 @@ impl Shared {
                     let a = source.metadata()?;
                     let b = old_source.metadata()?;
                     if (a.dev(), a.ino(), ro) != (b.dev(), b.ino(), old_ro) {
-                        return Err(format!("Docker scope mount conflict at {}: one engine cannot give members different sources or access modes at the same path", dest.display()).into());
+                        return Err(format!("scope Docker mount conflict at {}: one engine cannot give members different sources or access modes at the same path", dest.display()).into());
                     }
                 } else if dest.starts_with(old_dest) || old_dest.starts_with(dest) {
                     return Err(format!(
-                        "Docker scope has overlapping grants at {} and {}",
+                        "scope Docker engine has overlapping grants at {} and {}",
                         dest.display(),
                         old_dest.display()
                     )
@@ -269,8 +358,8 @@ impl Shared {
                 &storage_root(true)?,
                 &self.directory,
                 cancel,
-                &state.scope,
-                self.name.as_deref(),
+                &state.namespaces,
+                self.definition.persistent.then_some(self.name.as_str()),
             )?);
             state.store = Some(store);
         } else {
@@ -293,7 +382,7 @@ impl Shared {
                 }
                 let engine = state.engine.as_ref().unwrap();
                 let keep = [
-                    state.scope.outer.as_raw_fd(),
+                    state.namespaces.outer.as_raw_fd(),
                     engine.mounts.as_raw_fd(),
                     engine.root.as_raw_fd(),
                     source.as_raw_fd(),

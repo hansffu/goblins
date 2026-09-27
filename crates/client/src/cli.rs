@@ -49,16 +49,10 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Request host approval to enable or select a Docker scope
+    /// Request host approval to attach to this scope's shared Docker engine
     EnableDocker {
         #[arg(long)]
         reason: Option<String>,
-        /// Join an allowed named trust group
-        #[arg(long, conflicts_with = "anonymous")]
-        scope: Option<String>,
-        /// Create a private anonymous scope instead of using the default
-        #[arg(long)]
-        anonymous: bool,
     },
     /// Launch a child using the same configuration and attach its terminal
     Run {

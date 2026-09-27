@@ -31,7 +31,6 @@ const MOVE_MOUNT_T_EMPTY_PATH: i32 = 0x40;
 const CLOSE_RANGE_CLOEXEC: u32 = 4;
 const MAX_HELPER_COMMAND: u64 = 256;
 mod docker_bind;
-mod docker_forward;
 
 fn cvt(n: i32) -> io::Result<i32> {
     if n < 0 {
@@ -48,6 +47,20 @@ fn c(s: &str) -> CString {
 }
 fn open(path: &str, flags: i32) -> io::Result<OwnedFd> {
     fd(unsafe { libc::open(c(path).as_ptr(), flags | libc::O_CLOEXEC) })
+}
+/// Open `self/PATH` beneath the host /proc. A scope's /proc may replace
+/// /proc, and this helper is not a member of that PID namespace.
+fn own(proc: &OwnedFd, path: &str, flags: i32) -> io::Result<OwnedFd> {
+    fd(unsafe {
+        libc::openat(
+            proc.as_raw_fd(),
+            c(&format!("self/{path}")).as_ptr(),
+            flags | libc::O_CLOEXEC,
+        )
+    })
+}
+fn write_own(proc: &OwnedFd, path: &str, contents: &str) -> io::Result<()> {
+    File::from(own(proc, path, libc::O_WRONLY)?).write_all(contents.as_bytes())
 }
 fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
     let mut f = [0; 2];
@@ -155,6 +168,44 @@ fn grant(
     .map_err(|e| io::Error::other(format!("move_mount: {e}")))?;
     Ok(())
 }
+/// Children join the scope's PID namespace. Its owner is the scope user
+/// namespace, where this helper briefly has capabilities; the payload's own
+/// user namespace will not. Mount that namespace's /proc now, in a private
+/// mount namespace, so Bubblewrap can bind it instead of mounting a new one.
+fn join_pid_namespace(pid: &OwnedFd) -> io::Result<()> {
+    cvt(unsafe { libc::setns(pid.as_raw_fd(), libc::CLONE_NEWPID) })?;
+    cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
+    cvt(unsafe {
+        libc::mount(
+            std::ptr::null(),
+            c("/").as_ptr(),
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        )
+    })?;
+    // procfs belongs to the mounting process's PID namespace, which only
+    // children of setns() enter.
+    let child = cvt(unsafe { libc::fork() })?;
+    if child == 0 {
+        let result = unsafe {
+            libc::mount(
+                c("proc").as_ptr(),
+                c("/proc").as_ptr(),
+                c("proc").as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                std::ptr::null(),
+            )
+        };
+        unsafe { libc::_exit(if result == 0 { 0 } else { 1 }) };
+    }
+    let mut status = 0;
+    cvt(unsafe { libc::waitpid(child, &mut status, 0) })?;
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        return Err(io::Error::other("cannot mount scope /proc"));
+    }
+    Ok(())
+}
 struct Session(Child);
 impl Drop for Session {
     fn drop(&mut self) {
@@ -165,7 +216,7 @@ impl Drop for Session {
 mod docker;
 mod scope;
 fn run() -> io::Result<i32> {
-    if env::args().nth(1).as_deref() == Some("--docker-scope") {
+    if env::args().nth(1).as_deref() == Some("--scope-keeper") {
         return scope::run();
     }
     if env::args().nth(1).as_deref() == Some("--docker-enter") {
@@ -177,24 +228,29 @@ fn run() -> io::Result<i32> {
     if env::args().nth(1).as_deref() == Some("--docker-bind") {
         return docker_bind::run();
     }
-    if env::args().nth(1).as_deref() == Some("--docker-forward") {
-        return docker_forward::run();
-    }
-    // helper PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BIND_FDS BWRAP [arguments...]
+    // helper [--network-namespaces USER NET PID|-] PAYLOAD_STDIN PAYLOAD_STDOUT
+    //        SECCOMP_FD BIND_FDS BWRAP [arguments...]
     let mut args: Vec<String> = env::args().collect();
     let network = if args.get(1).is_some_and(|arg| arg == "--network-namespaces") {
-        if args.len() < 5 {
+        if args.len() < 6 {
             return Err(io::Error::other("missing network namespace descriptors"));
         }
         let user: RawFd = args[2].parse().map_err(io::Error::other)?;
         let net: RawFd = args[3].parse().map_err(io::Error::other)?;
-        if user < 3 || net < 3 || user == net {
+        let pid: Option<RawFd> = match args[4].as_str() {
+            "-" => None,
+            value => Some(value.parse().map_err(io::Error::other)?),
+        };
+        if user < 3 || net < 3 || user == net || pid.is_some_and(|p| p < 3 || p == user || p == net)
+        {
             return Err(io::Error::other("invalid network namespace descriptors"));
         }
-        args.drain(1..4);
-        Some((unsafe { OwnedFd::from_raw_fd(user) }, unsafe {
-            OwnedFd::from_raw_fd(net)
-        }))
+        args.drain(1..5);
+        Some((
+            unsafe { OwnedFd::from_raw_fd(user) },
+            unsafe { OwnedFd::from_raw_fd(net) },
+            pid.map(|pid| unsafe { OwnedFd::from_raw_fd(pid) }),
+        ))
     } else {
         None
     };
@@ -227,20 +283,30 @@ fn run() -> io::Result<i32> {
     if unsafe { libc::getuid() } == 0 {
         return Err(io::Error::other("refusing host uid 0"));
     }
-    if let Some((user, net)) = network {
+    let proc = open("/proc", libc::O_PATH | libc::O_DIRECTORY)?;
+    if let Some((user, net, pid)) = network {
         let owner = fd(unsafe { libc::ioctl(net.as_raw_fd(), NS_GET_USERNS) })?;
         if inode(&owner)? != inode(&user)? {
             return Err(io::Error::other("unexpected network namespace owner"));
         }
+        if let Some(pid) = &pid {
+            let owner = fd(unsafe { libc::ioctl(pid.as_raw_fd(), NS_GET_USERNS) })?;
+            if inode(&owner)? != inode(&user)? {
+                return Err(io::Error::other("unexpected PID namespace owner"));
+            }
+        }
         cvt(unsafe { libc::setns(user.as_raw_fd(), libc::CLONE_NEWUSER) })?;
         cvt(unsafe { libc::setns(net.as_raw_fd(), libc::CLONE_NEWNET) })?;
+        if let Some(pid) = pid {
+            join_pid_namespace(&pid)?;
+        }
     }
     let uid = unsafe { libc::getuid() };
     let gid = unsafe { libc::getgid() };
     cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) })?;
-    fs::write("/proc/self/setgroups", "deny")?;
-    fs::write("/proc/self/uid_map", format!("0 {uid} 1\n"))?;
-    fs::write("/proc/self/gid_map", format!("0 {gid} 1\n"))?;
+    write_own(&proc, "setgroups", "deny")?;
+    write_own(&proc, "uid_map", &format!("0 {uid} 1\n"))?;
+    write_own(&proc, "gid_map", &format!("0 {gid} 1\n"))?;
     cvt(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) })?;
     // The source mount namespace is also session-owned, never the host's.
     // open_tree requires the source mount to belong to the current namespace.
@@ -254,10 +320,11 @@ fn run() -> io::Result<i32> {
             std::ptr::null(),
         )
     })?;
-    let source_ns = open("/proc/self/ns/mnt", libc::O_RDONLY)?;
-    let own = open("/proc/self/ns/user", libc::O_RDONLY)?;
+    let source_ns = own(&proc, "ns/mnt", libc::O_RDONLY)?;
+    let own_user = own(&proc, "ns/user", libc::O_RDONLY)?;
+    drop(proc);
     let source_owner = fd(unsafe { libc::ioctl(source_ns.as_raw_fd(), NS_GET_USERNS) })?;
-    if inode(&source_owner)? != inode(&own)? {
+    if inode(&source_owner)? != inode(&own_user)? {
         return Err(io::Error::other("unexpected source mount namespace owner"));
     }
     let store = open("/nix/store", libc::O_PATH | libc::O_DIRECTORY)?;
@@ -333,7 +400,7 @@ fn run() -> io::Result<i32> {
     let ns = open(&format!("/proc/{pid}/ns/mnt"), libc::O_RDONLY)?;
     let owner = fd(unsafe { libc::ioctl(ns.as_raw_fd(), NS_GET_USERNS) })?; // NS_GET_USERNS
     let ancestor = fd(unsafe { libc::ioctl(owner.as_raw_fd(), NS_GET_PARENT) })?; // NS_GET_PARENT
-    if inode(&ancestor)? != inode(&own)? {
+    if inode(&ancestor)? != inode(&own_user)? {
         return Err(io::Error::other("unexpected mount namespace owner"));
     }
     cvt(unsafe { libc::setns(ns.as_raw_fd(), libc::CLONE_NEWNS) })?;
@@ -376,7 +443,7 @@ fn run() -> io::Result<i32> {
     writeln!(File::from(block_w), "x")?;
     println!(
         "READY2 {pid} {} {} {} {}",
-        inode(&own)?,
+        inode(&own_user)?,
         inode(&owner)?,
         inode(&source_ns)?,
         inode(&ns)?

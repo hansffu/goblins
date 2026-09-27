@@ -4,99 +4,126 @@ let
   validate = import ../internal/validate.nix { inherit lib; };
   client = import ../packages/internal-goblins.nix { inherit pkgs; };
   dockerDaemon = import ../packages/docker.nix { inherit pkgs; };
-in
-{
-  pkg,
-  binName,
-  outName ? "goblin-${binName}",
-  description ? "${binName} running in a Goblins sandbox",
-  allowedPackages ? sandbox.commonTools,
-  args ? [ ],
-  env ? { },
-  allowNix ? false,
-  allowUnixSockets ? true,
-  allowedDomains ? null,
-  allowedHostPorts ? [ ],
-  publishedPorts ? [ ],
-  rwDirs ? [ ],
-  rwFiles ? [ ],
-  roDirs ? [ ],
-  roFiles ? [ ],
-  injectedFiles ? { },
-  integration ? null,
-  docker ? { },
-}:
-let
-  dockerOptions = {
-    enable = false;
-    defaultScope = null;
-    allowedScopes = [ ];
-  }
-  // docker;
-  effectiveEnv = {
-    # Ryuk needs the session Docker socket, not a writable sysfs mount.
-    # Keep its cleanup enabled without requesting a privileged container.
-    TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
-  }
-  // env;
-  sandboxOptions = {
-    inherit
-      pkg
-      binName
-      outName
-      allowNix
-      allowUnixSockets
-      allowedDomains
-      allowedHostPorts
-      publishedPorts
-      rwDirs
-      rwFiles
-      roDirs
-      roFiles
-      ;
-    env = effectiveEnv;
-    allowedPackages =
-      allowedPackages ++ [ client ] ++ lib.optional dockerOptions.enable pkgs.docker-client;
-  };
-  wrapped = sandbox.mkSandbox sandboxOptions;
-in
-assert validate.goblin (
-  sandboxOptions
-  // {
-    inherit
-      args
-      description
-      integration
-      injectedFiles
-      ;
-    docker = dockerOptions;
-  }
-);
-wrapped
-// {
-  goblin = {
-    build_spec = wrapped.buildSpec;
-    inherit
-      args
-      description
-      integration
-      ;
-    env = effectiveEnv;
-    client_package = client;
-    network = allowedDomains == null;
-    docker = {
-      daemon = "${dockerDaemon}/bin/dockerd";
-      client = "${pkgs.docker-client}";
-      enabled = dockerOptions.enable;
-      default_scope = dockerOptions.defaultScope;
-      allowed_scopes = dockerOptions.allowedScopes;
+  # Scope defaults come first; the goblin's own values win on conflicts.
+  withDefaults =
+    defaults: options:
+    let
+      list = name: fallback: lib.unique ((defaults.${name} or [ ]) ++ (options.${name} or fallback));
+      attrs = name: (defaults.${name} or { }) // (options.${name} or { });
+    in
+    options
+    // {
+      allowedPackages = list "allowedPackages" sandbox.commonTools;
+      rwDirs = list "rwDirs" [ ];
+      rwFiles = list "rwFiles" [ ];
+      roDirs = list "roDirs" [ ];
+      roFiles = list "roFiles" [ ];
+      env = attrs "env";
+      injectedFiles = attrs "injectedFiles";
+      scopeStorage = attrs "scopeStorage";
     };
-    sandbox_etc = lib.mapAttrs (
-      name: value:
-      if builtins.isString value then
-        pkgs.writeText "goblins-etc-${builtins.baseNameOf name}" value
-      else
-        value
-    ) injectedFiles;
-  };
-}
+  mkGoblin =
+    {
+      pkg,
+      binName,
+      outName ? "goblin-${binName}",
+      description ? "${binName} running in a Goblins sandbox",
+      allowedPackages ? sandbox.commonTools,
+      args ? [ ],
+      env ? { },
+      allowNix ? false,
+      allowUnixSockets ? true,
+      allowedDomains ? null,
+      allowedHostPorts ? [ ],
+      publishedPorts ? [ ],
+      rwDirs ? [ ],
+      rwFiles ? [ ],
+      roDirs ? [ ],
+      roFiles ? [ ],
+      injectedFiles ? { },
+      integration ? null,
+      docker ? { },
+      scope ? null,
+      allowedScopes ? [ ],
+      scopeStorage ? { },
+    }@options:
+    let
+      dockerOptions = {
+        enable = false;
+      }
+      // docker;
+      effectiveEnv = {
+        # Ryuk needs the session Docker socket, not a writable sysfs mount.
+        # Keep its cleanup enabled without requesting a privileged container.
+        TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
+      }
+      // env;
+      sandboxOptions = {
+        inherit
+          pkg
+          binName
+          outName
+          allowNix
+          allowUnixSockets
+          allowedDomains
+          allowedHostPorts
+          publishedPorts
+          rwDirs
+          rwFiles
+          roDirs
+          roFiles
+          ;
+        env = effectiveEnv;
+        allowedPackages =
+          allowedPackages ++ [ client ] ++ lib.optional dockerOptions.enable pkgs.docker-client;
+      };
+      wrapped = sandbox.mkSandbox sandboxOptions;
+    in
+    assert validate.goblin (
+      sandboxOptions
+      // {
+        inherit
+          args
+          description
+          integration
+          injectedFiles
+          scope
+          allowedScopes
+          scopeStorage
+          ;
+        docker = dockerOptions;
+      }
+    );
+    wrapped
+    // {
+      # mkGoblins renders one configuration per scope the goblin may join.
+      withScopeDefaults = defaults: mkGoblin (withDefaults defaults options);
+      goblin = {
+        build_spec = wrapped.buildSpec;
+        inherit
+          args
+          description
+          integration
+          scope
+          ;
+        allowed_scopes = allowedScopes;
+        scope_storage = scopeStorage;
+        env = effectiveEnv;
+        client_package = client;
+        network = allowedDomains == null;
+        docker = {
+          daemon = "${dockerDaemon}/bin/dockerd";
+          client = "${pkgs.docker-client}";
+          enabled = dockerOptions.enable;
+        };
+        sandbox_etc = lib.mapAttrs (
+          name: value:
+          if builtins.isString value then
+            pkgs.writeText "goblins-etc-${builtins.baseNameOf name}" value
+          else
+            value
+        ) injectedFiles;
+      };
+    };
+in
+mkGoblin

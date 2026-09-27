@@ -25,9 +25,18 @@
       dockerShell = import ./nix/default-goblins/shell.nix {
         inherit pkgs;
         inherit (goblinsLib.builders) mkGoblin;
+        options = {
+          scope = "dev";
+          docker.enable = true;
+        };
+      };
+      # A temporary scope: its Docker data is deleted after the last member.
+      devScopes.dev = goblinsLib.builders.mkScope {
+        persistent = false;
         docker.enable = true;
       };
       devGoblins = goblinsLib.builders.mkGoblins {
+        scopes = devScopes;
         goblins = goblinsLib.defaultGoblins // {
           shell = dockerShell;
         };
@@ -41,6 +50,7 @@
         default = goblins;
         shell-runtime = goblins.config;
         docker-shell = goblinsLib.builders.mkGoblins {
+          scopes = devScopes;
           goblins.shell = dockerShell;
         };
       }

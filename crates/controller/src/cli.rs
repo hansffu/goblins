@@ -82,8 +82,11 @@ pub enum Command {
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
         /// Create a child of this running sandbox (name, tree path or ID)
-        #[arg(long, value_name = "PARENT")]
+        #[arg(long, value_name = "PARENT", conflicts_with = "scope")]
         parent: Option<String>,
+        /// Join this scope instead of the goblin's default (children inherit)
+        #[arg(long, value_name = "SCOPE")]
+        scope: Option<String>,
         /// Start without attaching to its terminal
         #[arg(long, visible_alias = "detached")]
         detatched: bool,

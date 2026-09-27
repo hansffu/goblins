@@ -2,7 +2,7 @@
 
 Date: 2026-09-22
 
-Status: Accepted
+Status: Superseded by [ADR 0006](0006-shared-scopes.md)
 
 ## Decision
 

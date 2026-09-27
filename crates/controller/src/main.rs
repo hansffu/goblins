@@ -199,6 +199,7 @@ fn execute(cli: Cli) -> Result<i32> {
             config,
             name,
             parent,
+            scope,
             detatched,
         } => {
             let runtime = cli
@@ -218,7 +219,11 @@ fn execute(cli: Cli) -> Result<i32> {
                 )
                 .into());
             }
-            return attachment::run(state, config, configuration, name, parent, detatched);
+            if parent.is_none() {
+                // Report an unknown or disallowed scope before starting.
+                manifest.select(&config, scope.as_deref())?;
+            }
+            return attachment::run(state, config, configuration, name, parent, scope, detatched);
         }
         Command::Configurations => {
             let runtime = cli

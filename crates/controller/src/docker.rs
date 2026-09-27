@@ -26,38 +26,8 @@ pub struct Engine {
     pub mounts: File,
 }
 
-/// Resolve even a not-yet-created cache through its existing ancestors, so
-/// bind validation protects this host-only tree for Docker-disabled shells too.
 pub fn storage_root(create: bool) -> Result<PathBuf> {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("Docker storage requires HOME or an absolute XDG_CACHE_HOME")?;
-    if !cache.is_absolute() {
-        return Err("Docker cache directory must be absolute".into());
-    }
-    let root = cache.join("goblins/docker");
-    if create {
-        unix::private_directory(&root)?;
-    }
-    let mut ancestor = root.as_path();
-    let mut suffix = Vec::new();
-    loop {
-        match fs::canonicalize(ancestor) {
-            Ok(mut path) => {
-                for name in suffix.into_iter().rev() {
-                    path.push(name);
-                }
-                return Ok(path);
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                suffix.push(ancestor.file_name().ok_or("invalid Docker cache path")?);
-                ancestor = ancestor.parent().ok_or("invalid Docker cache path")?;
-            }
-            Err(e) => return Err(e.into()),
-        }
-    }
+    unix::cache_directory("docker", create)
 }
 
 struct Storage {
@@ -76,7 +46,7 @@ impl Storage {
             return Err("Docker storage must be disk-backed; set XDG_CACHE_HOME to a disk filesystem before starting Goblins".into());
         }
         if let Some(name) = name {
-            if !goblins_protocol::docker_scope_name(name) {
+            if !goblins_protocol::scope_name(name) {
                 return Err("invalid scope name".into());
             }
             let locks = root.join("locks");
@@ -162,12 +132,12 @@ pub(crate) fn subordinate(kind: &str, id: u32) -> Result<u32> {
             &mut result,
         );
         if error != 0 || result.is_null() {
-            return Err("cannot resolve current user for Docker UID mappings".into());
+            return Err("cannot resolve current user for scope UID mappings".into());
         }
         CStr::from_ptr(entry.pw_name).to_string_lossy().into_owned()
     };
     let text = fs::read_to_string(format!("/etc/sub{kind}")).map_err(|e| {
-        format!("docker.enable requires /etc/sub{kind} entries and newuidmap/newgidmap: {e}")
+        format!("scopes require /etc/sub{kind} entries and newuidmap/newgidmap: {e}")
     })?;
     let numeric = unsafe { libc::getuid() }.to_string();
     for line in text.lines() {
@@ -184,7 +154,7 @@ pub(crate) fn subordinate(kind: &str, id: u32) -> Result<u32> {
             }
         }
     }
-    Err(format!("docker.enable requires at least 65536 subordinate {kind}s for {name}").into())
+    Err(format!("scopes require at least 65536 subordinate {kind}s for {name}").into())
 }
 
 fn ready(path: &Path) -> bool {
@@ -217,7 +187,7 @@ pub(crate) fn map_ids(
     ]
     .into_iter()
     .find(|p| p.is_file())
-    .ok_or_else(|| format!("docker.enable requires installed {name}"))?;
+    .ok_or_else(|| format!("scopes require installed {name}"))?;
     process::command(
         Command::new(helper).args([
             pid.to_string(),
@@ -232,7 +202,7 @@ pub(crate) fn map_ids(
         cancel,
     )
     .map_err(|e| {
-        format!("Docker {name} failed (launch Goblins outside an existing restricted sandbox): {e}")
+        format!("scope {name} failed (launch Goblins outside an existing restricted sandbox): {e}")
     })?;
     Ok(())
 }
@@ -249,7 +219,7 @@ impl Engine {
         storage_root: &Path,
         directory: &Path,
         cancel: &process::Cancellation,
-        scope: &crate::docker_scope::Scope,
+        scope: &crate::scope_keeper::Namespaces,
         name: Option<&str>,
     ) -> Result<Self> {
         let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
@@ -472,5 +442,3 @@ impl Drop for Engine {
         }
     }
 }
-
-pub(crate) use crate::docker_shared::{Lease, Selection, Shared};

@@ -320,21 +320,11 @@ pub struct PermissionParams {
     #[serde(default)]
     pub package: String,
     pub reason: String,
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub anonymous: bool,
 }
 impl PermissionParams {
     pub fn validate(&self) -> bool {
-        ((self.kind == "package"
-            && crate::package_name(&self.package)
-            && self.scope.is_none()
-            && !self.anonymous)
-            || (self.kind == "docker"
-                && self.package.is_empty()
-                && !(self.anonymous && self.scope.is_some())
-                && self.scope.as_deref().is_none_or(crate::docker_scope_name)))
+        ((self.kind == "package" && crate::package_name(&self.package))
+            || (self.kind == "docker" && self.package.is_empty()))
             && (1..=1024).contains(&self.reason.chars().count())
     }
 }

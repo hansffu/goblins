@@ -27,6 +27,19 @@ pub struct Configuration {
     pub integration: Option<String>,
     #[serde(default)]
     pub docker: Option<Docker>,
+    /// Default scope; `allowed_scopes` may be selected at launch instead.
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub allowed_scopes: Vec<String>,
+    /// Scope storage name to its absolute path in the sandbox.
+    #[serde(default)]
+    pub scope_storage: BTreeMap<String, PathBuf>,
+    /// The same goblin with each permitted scope's defaults merged in by Nix.
+    #[serde(default)]
+    pub scopes: BTreeMap<String, Configuration>,
+    #[serde(skip)]
+    pub selected_scope: Option<Scope>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,15 +47,26 @@ pub struct Docker {
     pub daemon: PathBuf,
     #[serde(default)]
     pub client: Option<PathBuf>,
-    #[serde(default = "docker_enabled")]
+    /// Attach to the scope's engine at startup.
+    #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
-    pub default_scope: Option<String>,
-    #[serde(default)]
-    pub allowed_scopes: Vec<String>,
 }
-fn docker_enabled() -> bool {
-    true
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeDefinition {
+    pub persistent: bool,
+    pub pid: bool,
+    #[serde(default)]
+    pub storage: Vec<String>,
+    #[serde(default)]
+    pub docker: bool,
+}
+/// The scope a launch joins, with this goblin's storage mount points.
+#[derive(Clone, Debug)]
+pub struct Scope {
+    pub name: String,
+    pub definition: ScopeDefinition,
+    pub mounts: BTreeMap<String, PathBuf>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,7 +75,19 @@ pub struct Manifest {
     pub helper_api: u32,
     pub goblins: BTreeMap<String, Configuration>,
     #[serde(default)]
-    pub docker_scopes: Vec<String>,
+    pub scopes: BTreeMap<String, ScopeDefinition>,
+}
+fn mount_path(path: &Path) -> bool {
+    use std::path::Component;
+    path.is_absolute()
+        && path.components().skip(1).count() > 0
+        && path
+            .components()
+            .skip(1)
+            .all(|c| matches!(c, Component::Normal(_)))
+        && ["/nix", "/proc", "/dev", "/run/goblins"]
+            .iter()
+            .all(|reserved| !path.starts_with(reserved))
 }
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
@@ -77,37 +113,64 @@ impl Manifest {
         serde_json::from_slice(&read_regular(path, MAX_MANIFEST_BYTES)?)
             .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
     }
-    pub fn select(mut self, name: &str) -> Result<Configuration> {
-        if self.api != 1 || self.helper_api != 4 {
+    pub fn select(mut self, name: &str, scope: Option<&str>) -> Result<Configuration> {
+        if self.api != 2 || self.helper_api != 5 {
             return Err("incompatible manifest/helper API".into());
         }
-        let scopes: std::collections::BTreeSet<_> = self.docker_scopes.iter().collect();
-        if scopes.len() != self.docker_scopes.len()
-            || scopes
-                .iter()
-                .any(|s| !goblins_protocol::docker_scope_name(s))
-        {
-            return Err("invalid Docker scope catalog".into());
-        }
-        for config in self.goblins.values() {
-            if let Some(docker) = &config.docker {
-                if docker
-                    .allowed_scopes
+        for (scope, definition) in &self.scopes {
+            if !goblins_protocol::scope_name(scope)
+                || definition
+                    .storage
                     .iter()
-                    .chain(docker.default_scope.iter())
-                    .any(|scope| !scopes.contains(scope))
-                {
-                    return Err("configuration references an undeclared Docker scope".into());
-                }
+                    .any(|s| !goblins_protocol::scope_name(s))
+            {
+                return Err("invalid scope catalog".into());
             }
         }
-        self.goblins.remove(name).ok_or_else(|| {
+        let mut config = self.goblins.remove(name).ok_or_else(|| {
             format!(
                 "unknown goblin; available: {}",
                 self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
             )
-            .into()
-        })
+        })?;
+        let permitted: Vec<_> = config
+            .scope
+            .iter()
+            .chain(&config.allowed_scopes)
+            .cloned()
+            .collect();
+        if permitted
+            .iter()
+            .any(|s| !self.scopes.contains_key(s) || !config.scopes.contains_key(s))
+        {
+            return Err("configuration references an undeclared scope".into());
+        }
+        let Some(selected) = scope.map(str::to_string).or(config.scope.clone()) else {
+            if !config.scope_storage.is_empty() {
+                return Err("scope storage requires a scope".into());
+            }
+            return Ok(config);
+        };
+        if !permitted.contains(&selected) {
+            return Err(format!(
+                "scope '{selected}' is not allowed for '{name}'; allowed: {}",
+                permitted.join(", ")
+            )
+            .into());
+        }
+        let definition = self.scopes[&selected].clone();
+        let mut variant = config.scopes.remove(&selected).unwrap();
+        for (storage, path) in &variant.scope_storage {
+            if !definition.storage.contains(storage) || !mount_path(path) {
+                return Err(format!("invalid scope storage mount '{storage}'").into());
+            }
+        }
+        variant.selected_scope = Some(Scope {
+            name: selected,
+            definition,
+            mounts: variant.scope_storage.clone(),
+        });
+        Ok(variant)
     }
 }
 /// Trusted launch configuration, never accepted over the sandbox socket.
@@ -143,6 +206,8 @@ pub struct Launch {
     pub integration: Option<String>,
     #[serde(default)]
     pub docker: Option<Docker>,
+    #[serde(skip)]
+    pub scope: Option<Scope>,
 }
 fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
@@ -213,6 +278,7 @@ impl Configuration {
             sandbox_etc: self.sandbox_etc.clone(),
             integration: self.integration.clone(),
             docker: self.docker.clone(),
+            scope: self.selected_scope.clone(),
             binds: serde_json::from_value(serde_json::json!({
                 "rw_dirs": spec["rw_dirs"], "rw_files": spec["rw_files"],
                 "ro_dirs": spec["ro_dirs"], "ro_files": spec["ro_files"],

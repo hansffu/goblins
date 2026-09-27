@@ -5,6 +5,7 @@ in
 {
   inherit mkGoblin;
   mkGoblins = import ./mk-goblins.nix { inherit pkgs; };
+  mkScope = import ./mk-scope.nix { inherit pkgs; };
   mkCodexGoblin = import ./mk-codex.nix {
     inherit pkgs mkGoblin;
     inherit (sandbox) commonTools;

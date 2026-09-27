@@ -10,9 +10,41 @@ let
     && builtins.all (
       part: part != "." && part != ".." && builtins.match "[A-Za-z0-9_.-]+" part != null
     ) (lib.splitString "/" path);
+  mountPath =
+    path:
+    builtins.isString path
+    && builtins.match "(/[A-Za-z0-9_.@+-]+)+" path != null
+    && builtins.all (part: part != "." && part != "..") (lib.splitString "/" path)
+    && builtins.all (reserved: path != reserved && !lib.hasPrefix "${reserved}/" path) [
+      "/nix"
+      "/proc"
+      "/dev"
+      "/run/goblins"
+    ];
+  storageMounts =
+    mounts:
+    builtins.isAttrs mounts
+    && builtins.all (name: validName name && mountPath mounts.${name}) (builtins.attrNames mounts)
+    && lib.unique (builtins.attrValues mounts) == builtins.attrValues mounts;
+  defaultKeys = [
+    "allowedPackages"
+    "env"
+    "rwDirs"
+    "rwFiles"
+    "roDirs"
+    "roFiles"
+    "injectedFiles"
+    "scopeStorage"
+  ];
 in
 {
-  inherit scopes;
+  inherit scopes validName;
+  scopeDefaults =
+    defaults:
+    lib.assertMsg (
+      builtins.isAttrs defaults
+      && builtins.all (name: builtins.elem name defaultKeys) (builtins.attrNames defaults)
+    ) "mkScope: defaults accepts only ${lib.concatStringsSep ", " defaultKeys}";
   goblin =
     options:
     let
@@ -34,6 +66,9 @@ in
         injectedFiles
         env
         docker
+        scope
+        allowedScopes
+        scopeStorage
         ;
     in
     if !validName binName || !validName outName then
@@ -54,19 +89,18 @@ in
       ]
     then
       fail "unsupported integration driver"
+    else if docker ? defaultScope || docker ? allowedScopes then
+      fail "docker.defaultScope and docker.allowedScopes were replaced by scope and allowedScopes; declare the scope with mkScope { docker.enable = true; }"
     else if
       !builtins.isAttrs docker
-      ||
-        builtins.attrNames docker != [
-          "allowedScopes"
-          "defaultScope"
-          "enable"
-        ]
+      || builtins.attrNames docker != [ "enable" ]
       || !builtins.isBool docker.enable
-      || !(docker.defaultScope == null || validScope docker.defaultScope)
-      || !scopes docker.allowedScopes
     then
-      fail "docker accepts enable (boolean), defaultScope (null or scope name), and allowedScopes (unique scope names)"
+      fail "docker accepts only enable (boolean)"
+    else if !(scope == null || validScope scope) || !scopes allowedScopes then
+      fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
+    else if !storageMounts scopeStorage then
+      fail "scopeStorage must map storage names to distinct absolute paths outside /nix, /proc, /dev and /run/goblins"
     else if allowNix != false then
       fail "host Nix access is prohibited; request packages through goblins"
     else if allowUnixSockets != true then

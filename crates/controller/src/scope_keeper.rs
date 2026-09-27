@@ -1,4 +1,5 @@
-//! Private scope namespaces exist independently of daemon activation.
+//! A scope's user, network and optional PID namespaces, owned by a trusted
+//! keeper independently of Docker engine activation.
 use crate::{
     Result,
     config::Launch,
@@ -18,24 +19,30 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub struct Scope {
+pub struct Namespaces {
     process: Child,
     lifetime: Option<File>,
     pub outer: File,
     pub user: File,
     pub net: File,
+    pub pid: Option<File>,
     pub net_path: PathBuf,
 }
-impl Scope {
-    pub fn start(launch: &Launch, directory: &Path, cancel: &Cancellation) -> Result<Self> {
+impl Namespaces {
+    pub fn start(
+        launch: &Launch,
+        directory: &Path,
+        share_pid: bool,
+        cancel: &Cancellation,
+    ) -> Result<Self> {
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
         if uid == 0 {
-            return Err("run Docker-enabled Goblins as a non-root host user".into());
+            return Err("run scoped Goblins as a non-root host user".into());
         }
         let subuid = subordinate("uid", uid)?;
         let subgid = subordinate("gid", gid)?;
-        let state = directory.join("docker-scope");
+        let state = directory.join("scope-keeper");
         fs::create_dir(&state)?;
         let (info_r, info_w) = unix::pipe()?;
         let (gate_r, gate_w) = unix::pipe()?;
@@ -73,10 +80,11 @@ impl Scope {
                 "--",
             ])
             .arg(&launch.helper)
-            .arg("--docker-scope")
+            .arg("--scope-keeper")
+            .args(share_pid.then_some("pid"))
             .stdin(Stdio::from(life_r))
             .stdout(Stdio::null())
-            .stderr(File::create(directory.join("docker-scope.log"))?);
+            .stderr(File::create(directory.join("scope-keeper.log"))?);
         let keep = [info_w.as_raw_fd(), gate_r.as_raw_fd()];
         unsafe {
             command.pre_exec(move || {
@@ -91,7 +99,7 @@ impl Scope {
         drop(command);
         drop(info_w);
         drop(gate_r);
-        let result = (|| -> Result<(File, File, File, PathBuf)> {
+        let result = (|| -> Result<(File, File, File, Option<File>, PathBuf)> {
             let mut info = File::from(info_r);
             let mut json = String::new();
             for _ in 0..20 {
@@ -110,7 +118,7 @@ impl Scope {
             while !state.join("ready").exists() {
                 cancel.check()?;
                 if child.try_wait()?.is_some() || Instant::now() >= deadline {
-                    return Err("Docker scope startup failed".into());
+                    return Err("scope startup failed".into());
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -119,11 +127,14 @@ impl Scope {
             let root = PathBuf::from(format!("/proc/{pid}/root"));
             let user = File::open(root.join(format!("proc/{nested}/ns/user")))?;
             let net = File::open(root.join(format!("proc/{nested}/ns/net")))?;
+            let pid_ns = share_pid
+                .then(|| File::open(root.join(format!("proc/{nested}/ns/pid_for_children"))))
+                .transpose()?;
             let mut keeper = pid;
             for _ in 0..4 {
                 let path = PathBuf::from(format!("/proc/{keeper}/ns/net"));
                 if fs::metadata(&path)?.ino() == net.metadata()?.ino() {
-                    return Ok((outer, user, net, path));
+                    return Ok((outer, user, net, pid_ns, path));
                 }
                 let children =
                     fs::read_to_string(format!("/proc/{keeper}/task/{keeper}/children"))?;
@@ -136,12 +147,13 @@ impl Scope {
             Err("scope keeper identity mismatch".into())
         })();
         match result {
-            Ok((outer, user, net, net_path)) => Ok(Self {
+            Ok((outer, user, net, pid, net_path)) => Ok(Self {
                 process: child,
                 lifetime: Some(File::from(life_w)),
                 outer,
                 user,
                 net,
+                pid,
                 net_path,
             }),
             Err(error) => {
@@ -150,7 +162,7 @@ impl Scope {
                 let _ = child.wait();
                 Err(format!(
                     "{error}: {}",
-                    process::diagnostic(&directory.join("docker-scope.log"))
+                    process::diagnostic(&directory.join("scope-keeper.log"))
                 )
                 .into())
             }
@@ -160,7 +172,7 @@ impl Scope {
         matches!(self.process.try_wait(), Ok(None))
     }
 }
-impl Drop for Scope {
+impl Drop for Namespaces {
     fn drop(&mut self) {
         self.lifetime.take();
         let _ = self.process.wait();

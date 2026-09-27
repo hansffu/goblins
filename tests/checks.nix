@@ -9,6 +9,7 @@ let
     mkCodexGoblin
     mkClaudeGoblin
     mkGoblins
+    mkScope
     ;
   base = {
     pkg = pkgs.bashInteractive;
@@ -52,22 +53,85 @@ let
     { goblins.bad = pkgs.hello; }
     { goblins."../bad" = mkGoblin base; }
     {
-      docker.scopes = [ "../bad" ];
-      goblins.shell = mkGoblin base;
-    }
-    {
-      docker.scopes = [
-        "work"
-        "work"
-      ];
-      goblins.shell = mkGoblin base;
-    }
-    { goblins.shell = mkGoblin (base // { docker.defaultScope = "missing"; }); }
-    {
       docker.scopes = [ "work" ];
-      goblins.shell = mkGoblin (base // { docker.allowedScopes = [ "missing" ]; });
+      goblins.shell = mkGoblin base;
+    }
+    {
+      scopes."../bad" = mkScope { };
+      goblins.shell = mkGoblin base;
+    }
+    {
+      scopes.work = { };
+      goblins.shell = mkGoblin base;
+    }
+    { goblins.shell = mkGoblin (base // { scope = "missing"; }); }
+    {
+      scopes.work = mkScope { };
+      goblins.shell = mkGoblin (base // { allowedScopes = [ "missing" ]; });
+    }
+    {
+      scopes.work = mkScope { };
+      goblins.shell = mkGoblin (
+        base
+        // {
+          scope = "work";
+          scopeStorage.cache = "/var/cache/x";
+        }
+      );
+    }
+    {
+      scopes.work = mkScope { storage.cache = { }; };
+      goblins.shell = mkGoblin (
+        base
+        // {
+          allowedScopes = [ "work" ];
+          scopeStorage.cache = "/var/cache/x";
+        }
+      );
+    }
+    {
+      scopes.work = mkScope { };
+      goblins = {
+        online = mkGoblin (base // { scope = "work"; });
+        offline = mkGoblin (
+          base
+          // {
+            scope = "work";
+            allowedDomains = [ ];
+          }
+        );
+      };
     }
   ]
+  ++ [
+    { goblins.shell = mkGoblin (base // { docker.enable = true; }); }
+    {
+      scopes.work = mkScope { };
+      goblins.shell = mkGoblin (
+        base
+        // {
+          scope = "work";
+          docker.enable = true;
+        }
+      );
+    }
+  ]
+  ++
+    map
+      (options: {
+        scopes.work = mkScope options;
+        goblins.shell = mkGoblin (base // { scope = "work"; });
+      })
+      [
+        { namespaces.net.enable = false; }
+        { namespaces.pid.enable = "yes"; }
+        { persistent = "yes"; }
+        { storage.cache = "/var/cache"; }
+        { storage."../bad" = { }; }
+        { docker.unknown = true; }
+        { defaults.args = [ ]; }
+        { defaults.allowedDomains = [ ]; }
+      ]
   ++ map (options: { goblins.bad = mkGoblin (base // options); }) [
     { binName = "../bash"; }
     { description = ""; }
@@ -76,6 +140,24 @@ let
     { allowNix = true; }
     { docker.enable = "yes"; }
     { docker.unknown = true; }
+    { docker.defaultScope = "work"; }
+    { docker.allowedScopes = [ "work" ]; }
+    { scope = "../bad"; }
+    {
+      allowedScopes = [
+        "work"
+        "work"
+      ];
+    }
+    { scopeStorage.cache = "relative"; }
+    { scopeStorage.cache = "/nix/store/x"; }
+    { scopeStorage.cache = "/run/goblins/x"; }
+    {
+      scopeStorage = {
+        a = "/var/cache/x";
+        b = "/var/cache/x";
+      };
+    }
     { allowUnixSockets = false; }
     { allowedDomains = "open"; }
     { allowedDomains = [ "example.com" ]; }
@@ -137,110 +219,94 @@ in
       touch $out
     '';
   named-goblins = configured;
-  docker-goblins = mkGoblins {
-    docker.scopes = [
-      "work"
-      "other"
-    ];
-    goblins = builtins.listToAttrs (
-      map
-        (name: {
-          inherit name;
-          value = mkGoblin {
-            pkg = pkgs.bashInteractive;
-            binName = "bash";
-            args = [
-              "--noprofile"
-              "--norc"
-              "-i"
-            ];
-            allowedPackages = [
-              pkgs.coreutils
-              pkgs.curl
-              pkgs.python3
-            ]
-            ++ pkgs.lib.optional (name == "java") pkgs.jdk
-            ++ pkgs.lib.optional (builtins.elem name [
-              "extra"
-              "eager-extra"
-            ]) pkgs.hello;
-            docker.enable = builtins.elem name [
-              "shell"
-              "offline"
-              "eager-extra"
-            ];
-            docker.defaultScope =
-              if
-                builtins.elem name [
-                  "scoped"
-                  "extra"
-                  "eager-extra"
-                  "scope-online"
-                ]
-              then
-                "work"
-              else if name == "member" then
-                "other"
-              else
-                null;
-            docker.allowedScopes =
-              if
-                builtins.elem name [
-                  "scoped"
-                  "extra"
-                  "member"
-                  "ondemand"
-                ]
-              then
-                [
-                  "work"
-                  "other"
-                ]
-              else
-                [ ];
-            allowedDomains =
-              if
-                builtins.elem name [
-                  "shell"
-                  "java"
-                  "ondemand"
-                  "scope-online"
-                ]
-              then
-                null
-              else
-                [ ];
-            env.PS1 = "docker-test> ";
-            roDirs = [
-              "$GOBLINS_TEST_ROOT/readonly"
-            ]
-            ++ pkgs.lib.optional (builtins.elem name [
-              "extra"
-              "eager-extra"
-            ]) "$GOBLINS_TEST_ROOT/extra-ro";
-            rwDirs = [
-              "$GOBLINS_TEST_ROOT/writable"
-            ]
-            ++ pkgs.lib.optional (builtins.elem name [
-              "extra"
-              "eager-extra"
-            ]) "$GOBLINS_TEST_ROOT/extra-rw";
-          };
-        })
-        [
-          "shell"
-          "offline"
-          "plain"
-          "java"
-          "ondemand"
-          "scoped"
-          "extra"
-          "eager-extra"
-          "member"
-          "scope-online"
-        ]
-    );
-  };
+  docker-goblins =
+    let
+      online = [
+        "shell"
+        "java"
+        "ondemand"
+      ];
+      docker = mkScope { docker.enable = true; };
+      temporary = mkScope {
+        persistent = false;
+        docker.enable = true;
+      };
+      # Temporary scopes stand in for per-shell engines: a second, independent
+      # engine is a second scope.
+      scope = {
+        shell = "online";
+        java = "online";
+        ondemand = "online";
+        offline = "offline-a";
+        plain = "offline-a";
+        scoped = "work";
+        extra = "work";
+        eager-extra = "work";
+        member = "other";
+        nodocker = "nodocker";
+        unscoped = null;
+      };
+      allowedScopes = {
+        offline = [ "offline-b" ];
+        plain = [ "offline-b" ];
+        member = [ "work" ];
+      };
+    in
+    mkGoblins {
+      scopes = {
+        work = docker;
+        other = docker;
+        online = temporary;
+        offline-a = temporary;
+        offline-b = temporary;
+        nodocker = mkScope { persistent = false; };
+      };
+      goblins = builtins.mapAttrs (
+        name: default:
+        mkGoblin {
+          pkg = pkgs.bashInteractive;
+          binName = "bash";
+          args = [
+            "--noprofile"
+            "--norc"
+            "-i"
+          ];
+          scope = default;
+          allowedScopes = allowedScopes.${name} or [ ];
+          allowedPackages = [
+            pkgs.coreutils
+            pkgs.curl
+            pkgs.python3
+          ]
+          ++ pkgs.lib.optional (name == "java") pkgs.jdk
+          ++ pkgs.lib.optional (builtins.elem name [
+            "extra"
+            "eager-extra"
+          ]) pkgs.hello;
+          docker.enable = builtins.elem name [
+            "shell"
+            "offline"
+            "eager-extra"
+          ];
+          allowedDomains = if builtins.elem name online then null else [ ];
+          env.PS1 = "docker-test> ";
+          roDirs = [
+            "$GOBLINS_TEST_ROOT/readonly"
+          ]
+          ++ pkgs.lib.optional (builtins.elem name [
+            "extra"
+            "eager-extra"
+          ]) "$GOBLINS_TEST_ROOT/extra-ro";
+          rwDirs = [
+            "$GOBLINS_TEST_ROOT/writable"
+          ]
+          ++ pkgs.lib.optional (builtins.elem name [
+            "extra"
+            "eager-extra"
+          ]) "$GOBLINS_TEST_ROOT/extra-rw";
+        }
+      ) scope;
+    };
   docker-test-image = pkgs.dockerTools.buildImage {
     name = "goblins-test";
     tag = "latest";
@@ -338,6 +404,84 @@ in
       };
     };
   };
+  scope-goblins =
+    let
+      member =
+        options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [
+              pkgs.coreutils
+              pkgs.python3
+              pkgs.util-linux
+            ];
+          }
+          // options
+          // {
+            env = {
+              PS1 = "scope-test> ";
+            }
+            // options.env or { };
+          }
+        );
+      storage = {
+        storage.cache = { };
+        defaults = {
+          scopeStorage.cache = "/var/cache/probe";
+          env.SCOPE_MARKER = "from-scope";
+          env.OVERRIDDEN = "from-scope";
+        };
+      };
+    in
+    mkGoblins {
+      scopes = {
+        work = mkScope storage;
+        scratch = mkScope (storage // { persistent = false; });
+        private = mkScope {
+          persistent = false;
+          namespaces.pid.enable = false;
+        };
+        # Gradle builds run in each member; only the Gradle home is shared.
+        builds = mkScope {
+          persistent = false;
+          storage.gradle = { };
+          defaults = {
+            allowedPackages = [
+              pkgs.gradle
+              pkgs.jdk
+            ];
+            env = {
+              GRADLE_USER_HOME = "/var/cache/gradle";
+              GRADLE_OPTS = "-Dorg.gradle.daemon.registry.base=/tmp/gradle-daemons";
+            };
+            scopeStorage.gradle = "/var/cache/gradle";
+          };
+        };
+      };
+      goblins = {
+        member = member {
+          scope = "work";
+          allowedScopes = [
+            "scratch"
+            "private"
+          ];
+          env.OVERRIDDEN = "from-goblin";
+        };
+        loner = member { allowedScopes = [ "work" ]; };
+        builder = member {
+          scope = "builds";
+          rwDirs = [ "$GOBLINS_TEST_ROOT/projects" ];
+          roDirs = [ "$GOBLINS_TEST_ROOT/repository" ];
+        };
+      };
+    };
   network-goblins = mkGoblins {
     goblins = {
       online = mkGoblin {
@@ -460,10 +604,38 @@ in
   };
   goblins-api =
     assert builtins.all rejected invalid;
-    assert (mkGoblin (base // { docker.defaultScope = "work"; })).goblin.docker.default_scope == "work";
+    assert (mkGoblin (base // { scope = "work"; })).goblin.scope == "work";
+    assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
+    assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
     assert
-      (mkCodexGoblin { docker.allowedScopes = [ "work" ]; }).goblin.docker.allowed_scopes == [ "work" ];
-    assert (mkClaudeGoblin { docker.defaultScope = "work"; }).goblin.docker.default_scope == "work";
+      let
+        merged =
+          (mkGoblin (
+            base
+            // {
+              env.A = "goblin";
+              rwDirs = [ "/goblin" ];
+            }
+          )).withScopeDefaults
+            {
+              env = {
+                A = "scope";
+                B = "scope";
+              };
+              rwDirs = [
+                "/scope"
+                "/goblin"
+              ];
+              scopeStorage.cache = "/var/cache/x";
+            };
+      in
+      merged.goblin.env == {
+        A = "goblin";
+        B = "scope";
+        TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
+      }
+      && merged.goblin.scope_storage == { cache = "/var/cache/x"; };
+    assert ((mkClaudeGoblin { }).withScopeDefaults { env.FROM_SCOPE = "1"; }).goblin.env ? FROM_SCOPE;
     assert !(mkGoblin base).goblin.docker.enabled;
     assert (mkGoblin (base // { docker.enable = true; })).goblin.docker.enabled;
     assert (mkGoblin base).goblin.network;

@@ -246,3 +246,38 @@ pub fn temp_directory() -> Result<PathBuf> {
     Ok(PathBuf::from(std::ffi::OsString::from_vec(path)))
 }
 use std::os::unix::ffi::OsStringExt;
+
+/// A host-private directory under `$XDG_CACHE_HOME/goblins`. Resolve even a
+/// not-yet-created path through its existing ancestors, so bind validation
+/// protects this host-only tree for sessions that never create it.
+pub fn cache_directory(component: &str, create: bool) -> Result<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .ok_or("Goblins storage requires HOME or an absolute XDG_CACHE_HOME")?;
+    if !cache.is_absolute() {
+        return Err("Goblins cache directory must be absolute".into());
+    }
+    let root = cache.join("goblins").join(component);
+    if create {
+        private_directory(&root)?;
+    }
+    let mut ancestor = root.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(ancestor) {
+            Ok(mut path) => {
+                for name in suffix.into_iter().rev() {
+                    path.push(name);
+                }
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(ancestor.file_name().ok_or("invalid Goblins cache path")?);
+                ancestor = ancestor.parent().ok_or("invalid Goblins cache path")?;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}

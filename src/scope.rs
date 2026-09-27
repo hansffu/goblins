@@ -1,4 +1,5 @@
-//! Trusted namespace keeper, independent of Docker and container storage.
+//! Trusted scope keeper: owns the scope's user, network and optional PID
+//! namespaces, independent of Docker and container storage.
 use super::{NS_GET_PARENT, NS_GET_USERNS, cvt, fd, inode, pipe};
 use std::{
     env, fs,
@@ -34,6 +35,11 @@ pub fn enter() -> io::Result<i32> {
 }
 
 pub fn run() -> io::Result<i32> {
+    let pid = match env::args().nth(2).as_deref() {
+        None => false,
+        Some("pid") => true,
+        Some(_) => return Err(io::Error::other("invalid scope keeper arguments")),
+    };
     let (ready_r, ready_w) = pipe()?;
     let (go_r, go_w) = pipe()?;
     let child = cvt(unsafe { libc::fork() })?;
@@ -56,6 +62,30 @@ pub fn run() -> io::Result<i32> {
         }
         cvt(unsafe { libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFFLAGS, &iface) })?;
         drop(socket);
+        if pid {
+            // Members join this PID namespace. Its init reaps orphaned member
+            // processes and, through PDEATHSIG, ends them all with the keeper.
+            cvt(unsafe { libc::unshare(libc::CLONE_NEWPID) })?;
+            // getppid() is 0 across the namespace boundary; EOF on this pipe
+            // instead detects a keeper that died before PDEATHSIG was set.
+            let (alive_r, alive_w) = pipe()?;
+            if cvt(unsafe { libc::fork() })? == 0 {
+                drop(alive_w);
+                cvt(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) })?;
+                cvt(unsafe { libc::fcntl(alive_r.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) })?;
+                if fs::File::from(alive_r).read(&mut [0]).is_ok() {
+                    unsafe { libc::_exit(1) };
+                }
+                loop {
+                    if unsafe { libc::waitpid(-1, std::ptr::null_mut(), 0) } < 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            }
+            drop(alive_r);
+            // Held for the keeper's lifetime.
+            std::mem::forget(alive_w);
+        }
         fs::write(
             "/run/goblins-scope/ready",
             unsafe { libc::getpid() }.to_string(),

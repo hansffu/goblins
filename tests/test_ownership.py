@@ -130,7 +130,7 @@ class OwnershipTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.sandbox(parent["session"], "sessions.status", {"session":unrelated["session"]})
         status = self.sandbox(parent["session"], "sessions.status", {})
-        self.assertEqual(set(status), {"id", "agent_name", "name", "state"})
+        self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "scope", "docker_enabled"})
         self.assertEqual(status["agent_name"], "parent")
         pipeline = RPC(self.d.state / parent["session"] / "resources/request.sock")
         try:

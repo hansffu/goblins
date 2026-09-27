@@ -23,7 +23,10 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -109,17 +112,20 @@ pub(crate) struct Inheritance {
     launch: Arc<Launch>,
     binds: Arc<crate::binds::Plan>,
     workspace: Arc<SharedWorkspace>,
-    selection: Arc<Mutex<crate::docker::Selection>>,
+    // Weak: a stopped parent's record must not keep its scope alive.
+    scope: Weak<crate::scope::Shared>,
+    docker: Arc<AtomicBool>,
     _owner: Arc<SessionDirectory>,
 }
 impl Inheritance {
-    pub(crate) fn docker_allowed(&self, name: &str) -> bool {
-        self.launch.docker.as_ref().is_some_and(|d| {
-            d.default_scope.as_deref() == Some(name) || d.allowed_scopes.iter().any(|s| s == name)
-        })
+    pub(crate) fn scope_name(&self) -> Option<&str> {
+        self.launch.scope.as_ref().map(|s| s.name.as_str())
     }
-    pub(crate) fn docker_selection(&self) -> crate::docker::Selection {
-        self.selection.lock().unwrap().clone()
+    pub(crate) fn docker_available(&self) -> bool {
+        self.launch
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.definition.docker)
     }
     pub(crate) fn description(&self) -> &str {
         &self.launch.description
@@ -142,13 +148,13 @@ pub struct Session {
     pub listener: Option<UnixListener>,
     helper: Option<Child>,
     network: Option<crate::network::Network>,
-    docker: Option<crate::docker::Lease>,
-    docker_home: Option<Arc<crate::docker::Shared>>,
-    docker_selection: Arc<Mutex<crate::docker::Selection>>,
+    scope: Option<Arc<crate::scope::Shared>>,
+    docker: Option<crate::scope::Lease>,
+    // Shared with children's inheritance: they start with Docker attached
+    // when their parent had it at the time they were created.
+    docker_attached: Arc<AtomicBool>,
     docker_inherit_enabled: Option<bool>,
-    docker_forward: Option<crate::docker_forward::Forward>,
     docker_filesystem: Vec<String>,
-    docker_error: Option<String>,
     pub exit_code: Option<i32>,
     helper_input: Option<File>,
     helper_output: Option<File>,
@@ -174,13 +180,6 @@ impl Session {
             launch.cwd.map(fs::canonicalize).transpose()?
         };
         unix::private_directory(&directory)?;
-        let selection = crate::docker::Selection {
-            name: launch
-                .docker
-                .as_ref()
-                .and_then(|docker| docker.default_scope.clone()),
-            ..Default::default()
-        };
         let session = Self {
             directory_owner: Arc::new(SessionDirectory(directory.clone())),
             directory,
@@ -193,13 +192,11 @@ impl Session {
             listener: None,
             helper: None,
             network: None,
+            scope: None,
             docker: None,
-            docker_home: None,
-            docker_selection: Arc::new(Mutex::new(selection)),
+            docker_attached: Arc::new(AtomicBool::new(false)),
             docker_inherit_enabled: None,
-            docker_forward: None,
             docker_filesystem: Vec::new(),
-            docker_error: None,
             exit_code: None,
             helper_input: None,
             helper_output: None,
@@ -212,9 +209,13 @@ impl Session {
         }
         if let Some(source) = workspace {
             let resolved = fs::canonicalize(source)?;
-            let storage = crate::docker::storage_root(false)?;
-            if resolved.starts_with(&storage) || storage.starts_with(&resolved) {
-                return Err("workspace snapshot overlaps protected Docker storage".into());
+            for storage in [
+                crate::docker::storage_root(false)?,
+                crate::scope_storage::root(false)?,
+            ] {
+                if resolved.starts_with(&storage) || storage.starts_with(&resolved) {
+                    return Err("workspace snapshot overlaps protected Goblins storage".into());
+                }
             }
             snapshot::snapshot(
                 source,
@@ -235,10 +236,17 @@ impl Session {
         // new_in canonicalizes cwd for root launches only. Preserve the pinned
         // parent's namespace path even when its host pathname was renamed.
         session.launch = (*inherited.launch).clone();
-        let selection = inherited.docker_selection();
-        session.docker_home = selection.scope.upgrade();
-        session.docker_inherit_enabled = Some(selection.enabled);
-        if selection.enabled
+        if session.launch.scope.is_some() {
+            session.scope = Some(
+                inherited
+                    .scope
+                    .upgrade()
+                    .ok_or("the parent's scope has stopped")?,
+            );
+        }
+        let enabled = inherited.docker.load(Ordering::SeqCst);
+        session.docker_inherit_enabled = Some(enabled);
+        if enabled
             && let Some(client) = session
                 .launch
                 .docker
@@ -249,7 +257,6 @@ impl Session {
                 session.launch.initial_packages.push(client);
             }
         }
-        *session.docker_selection.lock().unwrap() = selection;
         session.binds = Some(inherited.binds);
         session.workspace = Some(inherited.workspace);
         Ok(session)
@@ -259,7 +266,8 @@ impl Session {
             launch: Arc::new(self.launch.clone()),
             binds: self.binds.as_ref().unwrap().clone(),
             workspace: self.workspace.as_ref().unwrap().clone(),
-            selection: self.docker_selection.clone(),
+            scope: self.scope.as_ref().map(Arc::downgrade).unwrap_or_default(),
+            docker: self.docker_attached.clone(),
             _owner: self.directory_owner.clone(),
         }
     }
@@ -334,8 +342,8 @@ impl Session {
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
         let etc = crate::sandbox_etc::mounts(&self.launch.sandbox_etc)?;
         let mut private = self.launch.protected_paths.clone();
-        let docker_storage = crate::docker::storage_root(false)?;
-        private.push(docker_storage.clone());
+        private.push(crate::docker::storage_root(false)?);
+        private.push(crate::scope_storage::root(false)?);
         private.push(self.directory.clone());
         private.extend(etc.iter().map(|(_, destination)| destination.clone()));
         if self.binds.is_none() {
@@ -365,7 +373,12 @@ impl Session {
                 .ok_or("invalid executable path")
         };
         self.root(&package(&self.launch.helper)?)?;
-        if let Some(docker) = &self.launch.docker {
+        let docker = self
+            .launch
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.definition.docker);
+        if let Some(docker) = self.launch.docker.as_ref().filter(|_| docker) {
             // Preserve late-activation inputs across host configuration rebuilds
             // and GC, without mounting the engine closure into the shell.
             self.root(&package(&docker.daemon)?)?;
@@ -395,46 +408,19 @@ impl Session {
         )?;
         listener.set_nonblocking(true)?;
         self.listener = Some(listener);
-        if self.launch.docker.is_some() {
+        if self.launch.scope.is_some() && self.scope.is_none() {
+            self.scope = Some(crate::scope::Shared::prepare(
+                &self.launch,
+                self.inheritance(),
+                &self.directory,
+                &self.cancel,
+            )?);
+        }
+        if docker {
             fs::create_dir(self.directory.join("docker-socket"))?;
-            let prepared = match &self.docker_home {
-                Some(scope) => Ok(scope.clone()),
-                None => crate::docker::Shared::prepare(
-                    &self.launch,
-                    self.inheritance(),
-                    &self.directory,
-                    self.docker_selection.lock().unwrap().name.clone(),
-                    &self.cancel,
-                ),
-            };
-            match prepared {
-                Ok(scope) => {
-                    self.docker_selection.lock().unwrap().scope = Arc::downgrade(&scope);
-                    self.docker_home = Some(scope);
-                }
-                Err(error) if self.launch.docker.as_ref().is_some_and(|d| d.enabled) => {
-                    return Err(error);
-                }
-                Err(error) => {
-                    self.docker_error = Some(error.to_string());
-                    // A conflicting named scope must not prevent choosing an
-                    // anonymous engine later. Keep the intended selection but
-                    // give this shell its own compatible network namespace.
-                    if self.docker_selection.lock().unwrap().name.is_some() {
-                        self.docker_home = crate::docker::Shared::prepare(
-                            &self.launch,
-                            self.inheritance(),
-                            &self.directory,
-                            None,
-                            &self.cancel,
-                        )
-                        .ok();
-                    }
-                }
-            }
         }
         if let Some(pasta) = &self.launch.pasta {
-            if self.docker_home.is_none() {
+            if self.scope.is_none() {
                 self.network = Some(crate::network::Network::start(
                     pasta,
                     &self.launch.posix_shell,
@@ -444,6 +430,7 @@ impl Session {
             }
             fs::write(self.directory.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
         }
+        let shared_pid = self.scope.as_ref().is_some_and(|s| s.pid.is_some());
         let mut path = vec![
             "/run/goblins/packages/current/bin".into(),
             "/run/goblins/bin".into(),
@@ -456,7 +443,10 @@ impl Session {
                 .map(|p| p.join("bin").display().to_string()),
         );
         let mut namespace_args: Vec<String> = [
-            "--unshare-all",
+            "--unshare-user",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-cgroup-try",
             // The helper is namespace-root only while assembling mounts. Map
             // that unprivileged host identity to an ordinary payload user so
             // native agents do not mistake the sandbox for host root.
@@ -473,12 +463,16 @@ impl Session {
         ]
         .map(String::from)
         .to_vec();
-        let mut args = Vec::new();
-        if self.docker_home.is_some() && self.launch.pasta.is_none() {
-            namespace_args.push("--share-net".into());
+        // The helper joins the scope's (or pasta's) network namespace, and the
+        // scope's PID namespace when shared; otherwise Bubblewrap creates them.
+        if self.scope.is_none() && self.network.is_none() {
+            namespace_args.push("--unshare-net".into());
         }
+        if !shared_pid {
+            namespace_args.push("--unshare-pid".into());
+        }
+        let mut args = Vec::new();
         if self.launch.pasta.is_some() {
-            namespace_args.push("--share-net".into());
             args.extend([
                 "--ro-bind".into(),
                 self.directory.join("resolv.conf").display().to_string(),
@@ -497,7 +491,7 @@ impl Session {
         ] {
             args.extend(["--setenv".into(), name.into(), value]);
         }
-        args.extend(["--proc", "/proc", "--dev", "/dev"].map(String::from));
+        args.extend(["--dev", "/dev"].map(String::from));
         args.extend([
             "--tmpfs".into(),
             "/tmp".into(),
@@ -559,11 +553,36 @@ impl Session {
                 destination.display().to_string(),
             ]);
         }
-        let sources: Vec<_> = binds
+        let mut sources: Vec<_> = binds
             .source_fds()
             .chain(std::iter::once(workspace_fd))
             .collect();
         self.docker_filesystem = args.clone();
+        // The engine has its own PID namespace and mounts a fresh /proc.
+        self.docker_filesystem
+            .extend(["--proc", "/proc"].map(String::from));
+        if shared_pid {
+            // The helper mounted the scope's /proc; a member's own user
+            // namespace could not. Keep Bubblewrap's read-only /proc hardening.
+            args.extend(["--bind", "/proc", "/proc"].map(String::from));
+            for path in ["/proc/sys", "/proc/sysrq-trigger", "/proc/irq", "/proc/bus"] {
+                args.extend(["--ro-bind-try".into(), path.into(), path.into()]);
+            }
+        } else {
+            args.extend(["--proc", "/proc"].map(String::from));
+        }
+        // Scope storage is for members only, not the shared engine.
+        if let (Some(scope), Some(selected)) = (&self.scope, &self.launch.scope) {
+            for (name, destination) in &selected.mounts {
+                let directory = scope.storage(name)?.as_raw_fd();
+                sources.push(directory);
+                args.extend([
+                    "--bind-fd".into(),
+                    directory.to_string(),
+                    destination.display().to_string(),
+                ]);
+            }
+        }
         // Eager Docker joins need the complete initial package view too; the
         // shell helper is launched only after the engine is ready.
         self.mounted = initial;
@@ -571,9 +590,9 @@ impl Session {
             .docker_inherit_enabled
             .unwrap_or_else(|| self.launch.docker.as_ref().is_some_and(|d| d.enabled))
         {
-            self.enable_docker(None, false)?;
+            self.enable_docker()?;
         }
-        if self.launch.docker.is_some() {
+        if docker {
             args.extend([
                 "--ro-bind".into(),
                 self.directory.join("docker-socket").display().to_string(),
@@ -601,13 +620,21 @@ impl Session {
         let (control_r, control_w) = unix::pipe()?;
         let (reply_r, reply_w) = unix::pipe()?;
         let mut command = Command::new(&self.launch.helper);
-        let network_fds = self
+        let namespaces = self
             .network
             .as_ref()
-            .map(crate::network::Network::fds)
-            .or_else(|| self.docker_home.as_ref().map(|scope| scope.fds()));
-        if let Some([user, net]) = network_fds {
-            command.args(["--network-namespaces", &user.to_string(), &net.to_string()]);
+            .map(|network| {
+                let [user, net] = network.fds();
+                (user, net, None)
+            })
+            .or_else(|| self.scope.as_ref().map(|scope| scope.fds()));
+        if let Some((user, net, pid)) = namespaces {
+            command.args([
+                "--network-namespaces".into(),
+                user.to_string(),
+                net.to_string(),
+                pid.map_or_else(|| "-".into(), |pid| pid.to_string()),
+            ]);
         }
         command
             .args([
@@ -630,8 +657,9 @@ impl Session {
             .stderr(File::create(self.directory.join("helper.log"))?);
         let parent = unsafe { libc::getpid() };
         let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
-        if let Some(fds) = network_fds {
-            keep.extend(fds);
+        if let Some((user, net, pid)) = namespaces {
+            keep.extend([user, net]);
+            keep.extend(pid);
         }
         keep.extend(sources);
         unsafe {
@@ -836,57 +864,26 @@ impl Session {
     pub fn docker_enabled(&self) -> bool {
         self.docker.is_some()
     }
-    pub fn docker_scope(&self) -> Option<String> {
-        self.docker_selection.lock().unwrap().name.clone()
+    pub fn scope_name(&self) -> Option<String> {
+        self.launch.scope.as_ref().map(|s| s.name.clone())
     }
-    pub fn enable_docker(&mut self, requested: Option<&str>, anonymous: bool) -> Result<()> {
-        if requested.is_some_and(|name| !self.inheritance().docker_allowed(name)) {
-            return Err("Docker scope is not allowed by this configuration".into());
-        }
-        if self.docker_enabled()
-            && !anonymous
-            && requested.is_none_or(|name| self.docker_scope().as_deref() == Some(name))
-        {
+    /// Attach this sandbox to its scope's shared Docker engine.
+    pub fn enable_docker(&mut self) -> Result<()> {
+        if self.docker_enabled() {
             return Ok(());
         }
-        if self.docker_home.is_none() {
-            return Err(format!(
-                "Docker unavailable in this session: {}; fix prerequisites and start a new sandbox",
-                self.docker_error
-                    .as_deref()
-                    .unwrap_or("configuration lacks Docker runtime support")
-            )
-            .into());
+        let selected = self
+            .scope
+            .clone()
+            .ok_or("Docker requires a scope; start this goblin in a scope with docker.enable")?;
+        if !selected.definition.docker {
+            return Err(format!("scope '{}' does not enable Docker", selected.name).into());
         }
         let config = self
             .launch
             .docker
             .clone()
             .ok_or("Docker runtime unavailable")?;
-        let current = self.docker_selection.lock().unwrap().scope.upgrade();
-        let intended = self.docker_scope();
-        let requested = requested.or(intended.as_deref());
-        let selected = if anonymous {
-            crate::docker::Shared::prepare(
-                &self.launch,
-                self.inheritance(),
-                &self.directory,
-                None,
-                &self.cancel,
-            )?
-        } else if let Some(name) = requested {
-            crate::docker::Shared::prepare(
-                &self.launch,
-                self.inheritance(),
-                &self.directory,
-                Some(name.into()),
-                &self.cancel,
-            )?
-        } else {
-            current
-                .or_else(|| self.docker_home.clone())
-                .ok_or("missing Docker scope")?
-        };
         if let Some(client) = &config.client
             && !self.launch.initial_packages.contains(client)
         {
@@ -901,7 +898,7 @@ impl Session {
         let closure = self.closure(&[package(&config.daemon)?, package(&self.launch.helper)?])?;
         self.placeholders(&closure)?;
         let mut filesystem = self.docker_filesystem.clone();
-        let mut grants: Vec<crate::docker_shared::Grant> = self
+        let mut grants: Vec<crate::scope::Grant> = self
             .binds
             .as_ref()
             .unwrap()
@@ -955,29 +952,15 @@ impl Session {
         )?;
         let socket = self.directory.join("docker-socket/docker.sock");
         let staged = self.directory.join("docker-socket/next.sock");
-        let forward = crate::docker_forward::Forward::start(
-            self.launch.helper.clone(),
-            self.docker_home.as_ref().unwrap().clone(),
-            selected.clone(),
-            &self.directory,
-        )?;
         fs::hard_link(selected.socket(), &staged)?;
         fs::rename(staged, socket)?;
         self.docker = Some(lease);
-        self.docker_forward = forward;
-        *self.docker_selection.lock().unwrap() = crate::docker::Selection {
-            scope: Arc::downgrade(&selected),
-            name: selected.name.clone(),
-            enabled: true,
-        };
+        self.docker_attached.store(true, Ordering::SeqCst);
         self.event("docker-enabled", serde_json::json!({"scope":selected.name}));
         Ok(())
     }
     pub fn alive(&mut self) -> bool {
-        if self
-            .docker_home
-            .as_ref()
-            .is_some_and(|scope| !scope.alive())
+        if self.scope.as_ref().is_some_and(|scope| !scope.alive())
             || self
                 .docker
                 .as_ref()
@@ -1016,10 +999,14 @@ impl Session {
                 let _ = helper.wait();
             }
         }
-        self.docker_forward.take();
+        // Daemons this member started must not outlive it in the shared PID
+        // namespace, retaining its mounts and writable grants.
+        if let (Some(scope), Some(identity)) = (&self.scope, &self.identity) {
+            scope.kill_member(identity.mountns);
+        }
         self.docker.take();
-        self.docker_home.take();
-        self.docker_selection.lock().unwrap().enabled = false;
+        self.scope.take();
+        self.docker_attached.store(false, Ordering::SeqCst);
         self.helper_input.take();
         self.helper_output.take();
         self.event("stopped", serde_json::json!({}));

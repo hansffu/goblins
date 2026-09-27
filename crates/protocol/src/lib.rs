@@ -5,7 +5,7 @@ pub const MAX_FRAME: usize = 4096;
 pub const REQUEST_SOCKET: &str = "/run/goblins/request.sock";
 pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the next item.";
 
-pub fn docker_scope_name(name: &str) -> bool {
+pub fn scope_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     (1..=64).contains(&name.len())
         && bytes
@@ -22,10 +22,6 @@ pub struct Request {
     pub kind: String,
     pub package: String,
     pub reason: String,
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub anonymous: bool,
 }
 pub fn package_kind() -> String {
     "package".into()

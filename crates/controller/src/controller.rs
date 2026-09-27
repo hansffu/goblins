@@ -33,8 +33,8 @@ const QUEUE: usize = 2 * 1024 * 1024;
 pub struct SessionRecord {
     #[serde(default)]
     pub docker_enabled: bool,
-    #[serde(default)]
-    pub docker_scope: Option<String>,
+    #[serde(default, alias = "docker_scope")]
+    pub scope: Option<String>,
     pub id: String,
     pub agent_name: String,
     /// None denotes the host root. Ownership always uses immutable IDs.
@@ -69,10 +69,6 @@ pub struct SessionRecord {
 pub struct PermissionRecord {
     #[serde(default = "goblins_protocol::package_kind")]
     pub kind: String,
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub anonymous: bool,
     pub id: String,
     pub session: String,
     /// Retained even after the session record is evicted or its name reused.
@@ -273,6 +269,9 @@ struct Start {
     parent: Option<String>,
     #[serde(default)]
     cwd: Option<PathBuf>,
+    /// Scope for a root sandbox; children always inherit their parent's.
+    #[serde(default)]
+    scope: Option<String>,
     rows: u16,
     cols: u16,
     #[serde(default)]
@@ -616,7 +615,7 @@ impl Controller {
             "path":self.relative_path(record, Some(scope)),"name":record.name,
             "description":record.description,"state":record.state,
             "initial_packages":record.initial_packages,
-            "packages":record.packages,"docker_scope":record.docker_scope,"docker_enabled":record.docker_enabled,
+            "packages":record.packages,"scope":record.scope,"docker_enabled":record.docker_enabled,
             "exit_code":record.exit_code,
             "stop_reason":record.stop_reason,
             "terminal_complete":record.terminal_complete,
@@ -755,6 +754,9 @@ impl Controller {
             (_, Some(target)) => Some(self.resolve_scoped(target, scope)?),
             (None, None) => None,
         };
+        if parent.is_some() && p.scope.is_some() {
+            return Err((-32602, "children inherit their parent's scope".into()));
+        }
         let inherited = if let Some(id) = &parent {
             let a = &self.sessions[id];
             if a.record.state != "running" || a.worker.is_none() {
@@ -778,6 +780,9 @@ impl Controller {
             || !goblins_protocol::identifier(&p.name)
             || !Path::new(&p.configuration).is_absolute()
             || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
+            || p.scope
+                .as_deref()
+                .is_some_and(|s| !goblins_protocol::scope_name(s))
             || !dimensions(p.rows, p.cols)
         {
             return Err((-32602, "invalid launch parameters".into()));
@@ -832,6 +837,7 @@ impl Controller {
             None => Source::Host {
                 configuration: p.configuration.clone().into(),
                 name: p.name.clone(),
+                scope: p.scope.clone(),
                 workspace: self.workspace.clone(),
                 cwd: p.cwd.clone(),
                 state: self.state.clone(),
@@ -840,7 +846,7 @@ impl Controller {
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
             docker_enabled: false,
-            docker_scope: None,
+            scope: None,
             id: id.clone(),
             path: parent
                 .as_ref()
@@ -897,7 +903,7 @@ impl Controller {
                 let record = &self.sessions[scope].record;
                 Ok(json!({"id":record.id,"agent_name":record.agent_name,
                     "name":record.name,"description":record.description,
-                    "state":record.state,"docker_scope":record.docker_scope,"docker_enabled":record.docker_enabled}))
+                    "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled}))
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -938,6 +944,7 @@ impl Controller {
                         parent: p.parent,
                         configuration: String::new(),
                         cwd: None,
+                        scope: None,
                         rows: 24,
                         cols: 80,
                         detached: p.detached,
@@ -1019,8 +1026,6 @@ impl Controller {
                         id: p.request.clone(),
                         package: r.package.clone(),
                         reason: r.reason.clone(),
-                        scope: r.scope.clone(),
-                        anonymous: r.anonymous,
                     },
                     approved: true,
                     output: inherited.or_else(|| pending.initial_output.clone()),
@@ -1208,7 +1213,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["docker-scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["docker-scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1329,27 +1334,20 @@ impl Controller {
                     if a.record.state != "running" || a.pending.is_some() {
                         return Err(conflict());
                     }
+                    let docker_scope = a
+                        .inheritance
+                        .as_ref()
+                        .filter(|i| i.docker_available())
+                        .and_then(|i| i.scope_name())
+                        .map(str::to_string);
                     if p.kind == "docker" {
-                        if !p.anonymous && p.scope.is_none() {
-                            p.scope = a.record.docker_scope.clone();
-                        }
-                        if let Some(name) = &p.scope {
-                            if !a
-                                .inheritance
-                                .as_ref()
-                                .is_some_and(|i| i.docker_allowed(name))
-                            {
-                                return Err((
-                                    -32602,
-                                    "Docker scope is not allowed by this configuration".into(),
-                                ));
-                            }
-                        }
-                        p.package = p
-                            .scope
-                            .as_ref()
-                            .map(|s| format!("Docker scope: {s}"))
-                            .unwrap_or_else(|| "Docker engine".into());
+                        let Some(scope) = &docker_scope else {
+                            return Err((
+                                -32602,
+                                "Docker requires a scope with docker.enable".into(),
+                            ));
+                        };
+                        p.package = format!("Docker scope: {scope}");
                     }
                     if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
@@ -1374,10 +1372,7 @@ impl Controller {
                         None
                     };
                     let auto_approve = inherited_output.is_some()
-                        || (p.kind == "docker"
-                            && !p.anonymous
-                            && self.sessions[&session].record.docker_enabled
-                            && p.scope == self.sessions[&session].record.docker_scope);
+                        || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
                     let a = self.sessions.get_mut(&session).unwrap();
                     let w = a.worker.as_ref().ok_or_else(conflict)?;
                     let cancel = w.cancel.child();
@@ -1390,8 +1385,6 @@ impl Controller {
                                         id: request.clone(),
                                         package: p.package.clone(),
                                         reason: p.reason.clone(),
-                                        scope: p.scope.clone(),
-                                        anonymous: p.anonymous,
                                     },
                                     approved: true,
                                     output: inherited_output,
@@ -1414,8 +1407,6 @@ impl Controller {
                     });
                     self.permissions.push_back(PermissionRecord {
                         kind: p.kind.clone(),
-                        scope: p.scope.clone(),
-                        anonymous: p.anonymous,
                         id: request.clone(),
                         session,
                         agent_name: a.record.agent_name.clone(),
@@ -1424,7 +1415,7 @@ impl Controller {
                         reason: p.reason,
                         state: if auto_approve { "realizing" } else { "pending" }.into(),
                         approved: if auto_approve { Some(true) } else { None },
-                        preview: if p.kind == "docker" { Some(json!({"description": if let Some(scope) = &p.scope { format!("Join Docker trust group '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Named data persists after the last user leaves.") } else { "Use an anonymous rootless Docker scope, inherited by children; delete its data after the last attached sandbox exits.".into() }})) } else { None },
+                        preview: docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Children inherit the attachment.")})),
                         message: None,
                     });
                     c.waiting = Some((request, id.clone()));
@@ -1559,7 +1550,7 @@ impl Controller {
                 match result {
                     Completed::Started {
                         docker_enabled,
-                        docker_scope,
+                        scope,
                         initial_packages,
                         master,
                         listener,
@@ -1568,7 +1559,7 @@ impl Controller {
                         exit_watch,
                     } => {
                         a.record.docker_enabled = docker_enabled;
-                        a.record.docker_scope = docker_scope;
+                        a.record.scope = scope;
                         a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
@@ -1618,7 +1609,6 @@ impl Controller {
                         reply,
                         detail,
                         output,
-                        docker_scope,
                     } => {
                         if let Some(p) = a.pending.take() {
                             p.cancel.cancel();
@@ -1637,7 +1627,6 @@ impl Controller {
                                     .or_else(|| reply.message.clone());
                                 if reply.status == "ready" && r.kind == "docker" {
                                     a.record.docker_enabled = true;
-                                    a.record.docker_scope = docker_scope;
                                 }
                                 if reply.status == "ready"
                                     && r.kind == "package"
@@ -1866,7 +1855,7 @@ mod tests {
                 created: 0,
                 record: SessionRecord {
                     docker_enabled: false,
-                    docker_scope: None,
+                    scope: None,
                     id: id.clone(),
                     agent_name: "snikk".into(),
                     parent: None,
@@ -1903,8 +1892,6 @@ mod tests {
         );
         d.permissions.push_back(PermissionRecord {
             kind: "package".into(),
-            scope: None,
-            anonymous: false,
             id: "r".into(),
             session: id.clone(),
             agent_name: "snikk".into(),
@@ -2118,7 +2105,6 @@ mod tests {
         let id = session_with_results(
             &mut d,
             vec![Completed::Granted {
-                docker_scope: None,
                 reply: goblins_protocol::Reply::new(
                     Some("r".into()),
                     "error",
@@ -2153,7 +2139,6 @@ mod tests {
                     state: "publishing",
                 },
                 Completed::Granted {
-                    docker_scope: None,
                     reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
                     detail: None,
                     output: None,

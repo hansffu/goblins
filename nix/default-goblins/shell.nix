@@ -1,15 +1,17 @@
 {
   pkgs,
   mkGoblin,
-  docker ? { },
+  options ? { },
 }:
-mkGoblin {
-  inherit docker;
-  pkg = pkgs.fish;
-  binName = "fish";
-  args = [
-    "--interactive"
-    "--init-command"
-    "goblins completions fish | source"
-  ];
-}
+mkGoblin (
+  {
+    pkg = pkgs.fish;
+    binName = "fish";
+    args = [
+      "--interactive"
+      "--init-command"
+      "goblins completions fish | source"
+    ];
+  }
+  // options
+)

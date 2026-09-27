@@ -36,7 +36,7 @@ pub(super) enum Completed {
     },
     Started {
         docker_enabled: bool,
-        docker_scope: Option<String>,
+        scope: Option<String>,
         initial_packages: Vec<String>,
         master: OwnedFd,
         listener: UnixListener,
@@ -52,7 +52,6 @@ pub(super) enum Completed {
         reply: Reply,
         detail: Option<String>,
         output: Option<PathBuf>,
-        docker_scope: Option<String>,
     },
     Failed(String),
     Stopped {
@@ -69,6 +68,7 @@ pub(super) enum Source {
     Host {
         configuration: PathBuf,
         name: String,
+        scope: Option<String>,
         workspace: Option<PathBuf>,
         cwd: Option<PathBuf>,
         state: PathBuf,
@@ -94,11 +94,13 @@ impl Worker {
                     Source::Host {
                         configuration,
                         name,
+                        scope,
                         workspace,
                         cwd,
                         state,
                     } => {
-                        let config = Manifest::read(&configuration)?.select(&name)?;
+                        let config =
+                            Manifest::read(&configuration)?.select(&name, scope.as_deref())?;
                         token.check()?;
                         let mut launch = config.launch()?;
                         launch.cwd = cwd;
@@ -123,7 +125,7 @@ impl Worker {
                 }
                 results.try_send(Completed::Started {
                     docker_enabled: session.docker_enabled(),
-                    docker_scope: session.docker_scope(),
+                    scope: session.scope_name(),
                     initial_packages: session
                         .launch
                         .initial_packages
@@ -171,7 +173,7 @@ impl Worker {
                             );
                             let result = if approved {
                                 if req.kind == "docker" {
-                                    session.enable_docker(req.scope.as_deref(), req.anonymous)
+                                    session.enable_docker()
                                 } else {
                                     session.grant_observed(
                                         &req.package,
@@ -207,9 +209,10 @@ impl Worker {
                                     let detail = error.to_string();
                                     session.event("error", serde_json::json!({"detail":detail}));
                                     let category = if req.kind == "docker" {
-                                        if detail.starts_with("Docker unavailable in this session")
+                                        if detail.starts_with("Docker requires a scope")
+                                            || detail.contains("does not enable Docker")
                                         {
-                                            "Docker unavailable; fix host prerequisites and start a new sandbox; see host diagnostics".into()
+                                            detail.clone()
                                         } else {
                                             "Docker activation failed; see host diagnostics".into()
                                         }
@@ -234,7 +237,6 @@ impl Worker {
                             };
                             if results
                                 .try_send(Completed::Granted {
-                                    docker_scope: session.docker_scope(),
                                     reply,
                                     detail,
                                     output,
