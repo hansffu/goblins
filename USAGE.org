@@ -67,6 +67,7 @@ A scope is a named trust group. Its members share a network namespace, by
 default a PID namespace, managed storage directories and optionally one rootless
 Docker engine. Tools still run in each member goblin, with that goblin's own
 packages, environment and files. See [[file:docs/adr/0006-shared-scopes.md][ADR 0006]].
+Known gaps are tracked in [[file:docs/scopes-follow-ups.md][open scope issues]].
 
 #+begin_src nix
 mkGoblins {
@@ -74,18 +75,17 @@ mkGoblins {
     dev = mkScope {
       persistent = true;             # false: storage is deleted after the last member
       namespaces.pid.enable = true;  # default; the network namespace is always shared
-      storage.gradle = { };          # $XDG_CACHE_HOME/goblins/scopes/scope-dev/gradle
+      # Kept in $XDG_CACHE_HOME/goblins/scopes/scope-dev/NAME and mounted
+      # read-write at path in every member (path is optional).
+      storage.gradle.path = "$HOME/.gradle";
+      storage.m2.path = "$HOME/.m2";
       docker.enable = true;          # one shared engine for the scope's members
       # Defaults for members' mkGoblin options. Lists are combined; for env,
       # injectedFiles and scopeStorage the goblin's own value wins.
       defaults = {
         allowedPackages = [ pkgs.gradle pkgs.jdk21 ];
-        env = {
-          GRADLE_USER_HOME = "/var/cache/gradle";
-          # Keep daemons per sandbox: a daemon must not serve another mount view.
-          GRADLE_OPTS = "-Dorg.gradle.daemon.registry.base=/tmp/gradle-daemons";
-        };
-        scopeStorage.gradle = "/var/cache/gradle";
+        # Keep daemons per sandbox: a daemon must not serve another mount view.
+        env.GRADLE_OPTS = "-Dorg.gradle.daemon.registry.base=/tmp/gradle-daemons";
       };
     };
     scratch = mkScope { persistent = false; docker.enable = true; };
@@ -100,6 +100,12 @@ mkGoblins {
 }
 #+end_src
 
+- A storage =path= is the default mount location for every member. It may be
+  absolute or start with =$HOME= or =~= (the sandbox home is the host home's
+  path). A goblin overrides it with =scopeStorage.NAME = "/other/path"=; a
+  storage entry without =path= is mounted only where =scopeStorage= says. Mount
+  locations may not overlap the goblin's own file grants, so remove old
+  =rwDirs= such as =$HOME/.gradle= when moving a cache into a scope.
 - A goblin joins at most one scope, chosen when a root sandbox starts: its
   =scope=, or =goblins run CONFIG --scope NAME= for a scope in =allowedScopes=.
   A goblin without a default scope starts unscoped unless =--scope= is given.

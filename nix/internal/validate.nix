@@ -10,10 +10,12 @@ let
     && builtins.all (
       part: part != "." && part != ".." && builtins.match "[A-Za-z0-9_.-]+" part != null
     ) (lib.splitString "/" path);
+  # Absolute, or beneath the sandbox home ($HOME, ${HOME} or ~), which is the
+  # host user's home path.
   mountPath =
     path:
     builtins.isString path
-    && builtins.match "(/[A-Za-z0-9_.@+-]+)+" path != null
+    && builtins.match "(~|\\$HOME|\\$\\{HOME})?(/[A-Za-z0-9_.@+-]+)+" path != null
     && builtins.all (part: part != "." && part != "..") (lib.splitString "/" path)
     && builtins.all (reserved: path != reserved && !lib.hasPrefix "${reserved}/" path) [
       "/nix"
@@ -38,7 +40,7 @@ let
   ];
 in
 {
-  inherit scopes validName;
+  inherit scopes validName storageMounts;
   scopeDefaults =
     defaults:
     lib.assertMsg (
@@ -100,7 +102,7 @@ in
     else if !(scope == null || validScope scope) || !scopes allowedScopes then
       fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
     else if !storageMounts scopeStorage then
-      fail "scopeStorage must map storage names to distinct absolute paths outside /nix, /proc, /dev and /run/goblins"
+      fail "scopeStorage must map storage names to distinct absolute or $HOME paths outside /nix, /proc, /dev and /run/goblins"
     else if allowNix != false then
       fail "host Nix access is prohibited; request packages through goblins"
     else if allowUnixSockets != true then

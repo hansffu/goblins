@@ -127,6 +127,9 @@ let
         { namespaces.pid.enable = "yes"; }
         { persistent = "yes"; }
         { storage.cache = "/var/cache"; }
+        { storage.cache.path = "relative"; }
+        { storage.cache.path = "$OTHER/cache"; }
+        { storage.cache.mode = "ro"; }
         { storage."../bad" = { }; }
         { docker.unknown = true; }
         { defaults.args = [ ]; }
@@ -431,37 +434,42 @@ in
             // options.env or { };
           }
         );
-      storage = {
-        storage.cache = { };
-        defaults = {
-          scopeStorage.cache = "/var/cache/probe";
-          env.SCOPE_MARKER = "from-scope";
-          env.OVERRIDDEN = "from-scope";
-        };
+      env = {
+        SCOPE_MARKER = "from-scope";
+        OVERRIDDEN = "from-scope";
       };
     in
     mkGoblins {
       scopes = {
-        work = mkScope storage;
-        scratch = mkScope (storage // { persistent = false; });
+        # The scope's storage path is every member's default mount location.
+        work = mkScope {
+          storage.cache.path = "/var/cache/probe";
+          defaults = { inherit env; };
+        };
+        # Without a path, defaults (or the goblin) choose the mount location.
+        scratch = mkScope {
+          persistent = false;
+          storage.cache = { };
+          defaults = {
+            inherit env;
+            scopeStorage.cache = "/var/cache/probe";
+          };
+        };
         private = mkScope {
           persistent = false;
           namespaces.pid.enable = false;
         };
-        # Gradle builds run in each member; only the Gradle home is shared.
+        # Gradle builds run in each member; only the Gradle home, at its
+        # default location, is shared.
         builds = mkScope {
           persistent = false;
-          storage.gradle = { };
+          storage.gradle.path = "$HOME/.gradle";
           defaults = {
             allowedPackages = [
               pkgs.gradle
               pkgs.jdk
             ];
-            env = {
-              GRADLE_USER_HOME = "/var/cache/gradle";
-              GRADLE_OPTS = "-Dorg.gradle.daemon.registry.base=/tmp/gradle-daemons";
-            };
-            scopeStorage.gradle = "/var/cache/gradle";
+            env.GRADLE_OPTS = "-Dorg.gradle.daemon.registry.base=/tmp/gradle-daemons";
           };
         };
       };
@@ -635,6 +643,18 @@ in
         TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
       }
       && merged.goblin.scope_storage == { cache = "/var/cache/x"; };
+    assert
+      (mkScope {
+        storage = {
+          gradle.path = "$HOME/.gradle";
+          m2.path = "$HOME/.m2";
+          other = { };
+        };
+        defaults.scopeStorage.m2 = "/var/cache/m2";
+      }).defaults.scopeStorage == {
+        gradle = "$HOME/.gradle";
+        m2 = "/var/cache/m2";
+      };
     assert ((mkClaudeGoblin { }).withScopeDefaults { env.FROM_SCOPE = "1"; }).goblin.env ? FROM_SCOPE;
     assert !(mkGoblin base).goblin.docker.enabled;
     assert (mkGoblin (base // { docker.enable = true; })).goblin.docker.enabled;

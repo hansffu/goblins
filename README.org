@@ -46,9 +46,8 @@ Declare scopes on =mkGoblins= and select a default and alternatives on =mkGoblin
 mkGoblins {
   scopes = {
     work = mkScope {
-      storage.gradle = { };
+      storage.gradle.path = "$HOME/.gradle"; # mounted there in every member
       docker.enable = true;
-      defaults.scopeStorage.gradle = "/var/cache/gradle";
     };
     ci = mkScope { persistent = false; docker.enable = true; };
   };

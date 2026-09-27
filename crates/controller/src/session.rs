@@ -574,6 +574,18 @@ impl Session {
         // Scope storage is for members only, not the shared engine.
         if let (Some(scope), Some(selected)) = (&self.scope, &self.launch.scope) {
             for (name, destination) in &selected.mounts {
+                crate::binds::validate(destination, &private)?;
+                if let Some(grant) = binds
+                    .destinations()
+                    .find(|d| d.starts_with(destination) || destination.starts_with(d))
+                {
+                    return Err(format!(
+                        "scope storage '{name}' at {} overlaps file grant {}",
+                        destination.display(),
+                        grant.display()
+                    )
+                    .into());
+                }
                 let directory = scope.storage(name)?.as_raw_fd();
                 sources.push(directory);
                 args.extend([
@@ -656,6 +668,7 @@ impl Session {
             .stdout(Stdio::from(reply_w))
             .stderr(File::create(self.directory.join("helper.log"))?);
         let parent = unsafe { libc::getpid() };
+        let payload_limit = unix::payload_descriptor_limit();
         let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
         if let Some((user, net, pid)) = namespaces {
             keep.extend([user, net]);
@@ -673,6 +686,10 @@ impl Session {
                 unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
                 for &fd in &keep {
                     unix::cvt(libc::fcntl(fd, libc::F_SETFD, 0))?;
+                }
+                // Payloads keep the limit Goblins was started with.
+                if let Some(limit) = &payload_limit {
+                    unix::cvt(libc::setrlimit(libc::RLIMIT_NOFILE, limit))?;
                 }
                 Ok(())
             });

@@ -305,6 +305,25 @@ class DockerTests(unittest.TestCase):
         self.run_ok(three, "test -z \"$(docker image ls -q)\"")
         self.run_ok(three, "! curl --fail --max-time 2 http://127.0.0.1:18082/sh -o /dev/null")
 
+    def test_members_join_engine_under_low_descriptor_limit(self):
+        # Joining an engine grants each member's store closure. A server
+        # started with a small soft limit must neither run out of descriptors
+        # nor pass its raised limit on to sandbox payloads.
+        import resource
+        self.named_storage = True
+        (self.root / "extra-ro").mkdir()
+        (self.root / "extra-rw").mkdir()
+        _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        self.d.close()
+        self.d = Daemon(self.app, env=self.env,
+                        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard)))
+        first, one = self.shell("scoped", cwd=self.rw)
+        self.enable(first, one); self.load(one)
+        second, two = self.shell("extra", cwd=self.rw)
+        self.enable(second, two)
+        self.run_ok(two, "docker image inspect goblins-test >/dev/null")
+        self.run_ok(two, "test \"$(ulimit -n)\" = 128")
+
     def test_named_scope_live_grant_union_keeps_readonly(self):
         self.named_storage = True
         extra_ro = self.root / "extra-ro"; extra_ro.mkdir()

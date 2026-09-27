@@ -43,10 +43,15 @@ pub struct Plan {
     pub mounts: Vec<Mount>,
     pub store_targets: BTreeMap<PathBuf, PathBuf>,
 }
+impl Plan {
+    pub(crate) fn destinations(&self) -> impl Iterator<Item = &Path> {
+        self.mounts.iter().map(|m| m.destination.as_path())
+    }
+}
 
 // Expand only the agent-sandbox path syntax, never a shell expression. Literal env
 // values in mkGoblin.env do not pass through this function.
-fn expand(value: &str, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
+pub(crate) fn expand(value: &str, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
     let mut input = value;
     let mut output = String::new();
     if input.starts_with('~') {
@@ -96,7 +101,7 @@ fn expand(value: &str, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf> 
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
-fn validate(path: &Path, private: &[PathBuf]) -> Result<()> {
+pub(crate) fn validate(path: &Path, private: &[PathBuf]) -> Result<()> {
     // These trees establish the helper/control/store boundary. A startup grant
     // cannot replace them, expose their host counterparts, or cover an ancestor.
     for protected in [

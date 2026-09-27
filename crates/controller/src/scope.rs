@@ -26,6 +26,14 @@ use std::{
 };
 
 pub(crate) type Grant = (File, PathBuf, bool);
+/// A grant already given to the engine, by identity. Holding descriptors for
+/// every member's store closure would exhaust the controller's descriptor
+/// limit; the engine's own mounts keep the granted objects alive.
+type Granted = ((u64, u64), PathBuf, bool);
+fn identity(file: &File) -> std::io::Result<(u64, u64)> {
+    let meta = file.metadata()?;
+    Ok((meta.dev(), meta.ino()))
+}
 pub(crate) struct Shared {
     pub name: String,
     pub definition: ScopeDefinition,
@@ -55,7 +63,7 @@ struct State {
     // Explicit drop ordering is also used when the last Docker user leaves.
     engine: Option<Engine>,
     users: usize,
-    grants: Vec<Grant>,
+    grants: Vec<Granted>,
     owners: Vec<Inheritance>,
     store: Option<PathBuf>,
     network: Option<Network>,
@@ -301,20 +309,17 @@ impl Shared {
         // Reject ambiguous aliases and access-mode conflicts before changing a
         // live engine. Trust groups share grants, not pathname interpretation.
         for (source, dest, ro) in &grants {
-            if let Some((old_source, _, old_ro)) =
-                state.grants.iter().find(|(_, old, _)| old == dest)
+            let source = identity(source)?;
+            if state
+                .grants
+                .iter()
+                .any(|(old, old_dest, old_ro)| old_dest == dest && (*old, *old_ro) == (source, *ro))
             {
-                let a = source.metadata()?;
-                let b = old_source.metadata()?;
-                if (a.dev(), a.ino(), ro) == (b.dev(), b.ino(), old_ro) {
-                    continue;
-                }
+                continue;
             }
             for (old_source, old_dest, old_ro) in &state.grants {
                 if dest == old_dest {
-                    let a = source.metadata()?;
-                    let b = old_source.metadata()?;
-                    if (a.dev(), a.ino(), ro) != (b.dev(), b.ino(), old_ro) {
+                    if (source, ro) != (*old_source, old_ro) {
                         return Err(format!("scope Docker mount conflict at {}: one engine cannot give members different sources or access modes at the same path", dest.display()).into());
                     }
                 } else if dest.starts_with(old_dest) || old_dest.starts_with(dest) {
@@ -394,12 +399,12 @@ impl Shared {
                     .arg(dest)
                     .arg(if *ro { "ro" } else { "rw" });
                 process::command_with_fds(&mut command, &self.directory, cancel, &keep)?;
-                state.grants.push((source.try_clone()?, dest.clone(), *ro));
+                state.grants.push((identity(source)?, dest.clone(), *ro));
             }
         }
-        for grant in grants {
-            if !state.grants.iter().any(|(_, dest, _)| *dest == grant.1) {
-                state.grants.push(grant);
+        for (source, dest, ro) in grants {
+            if !state.grants.iter().any(|(_, old, _)| *old == dest) {
+                state.grants.push((identity(&source)?, dest, ro));
             }
         }
         state.owners.push(owner);

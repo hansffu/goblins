@@ -64,13 +64,9 @@ mkGoblins {
   scopes.dev = mkScope {
     persistent = true;
     namespaces.pid.enable = true;
-    storage.gradle = { };
+    storage.gradle.path = "$HOME/.gradle";
     docker.enable = true;
-    defaults = {
-      allowedPackages = [ pkgs.gradle pkgs.jdk21 ];
-      env.GRADLE_USER_HOME = "/var/cache/gradle";
-      scopeStorage.gradle = "/var/cache/gradle";
-    };
+    defaults.allowedPackages = [ pkgs.gradle pkgs.jdk21 ];
   };
   goblins.shell = mkGoblin {
     pkg = pkgs.bashInteractive;
@@ -99,15 +95,19 @@ controller selects a prepared configuration instead of merging options.
 
 A scope instance starts with its first member and stops after its last member
 exits. Persistent scopes keep their managed storage under
-`$XDG_CACHE_HOME/goblins/scopes/NAME/`. Temporary scopes share storage while
+`$XDG_CACHE_HOME/goblins/scopes/scope-NAME/`. Temporary scopes share storage while
 they have members, and delete it after the last member leaves. A later member
 of the same temporary scope starts with empty storage. A host lock prevents two
 controllers from using one persistent scope's storage at the same time.
 Managed storage is protected against ordinary filesystem grants.
 
-`scopeStorage.NAME = "/path"` mounts a storage directory read-write at that
-path in the goblin. Only members of the scope that declares the storage can use
-it.
+`storage.NAME.path` gives the storage's default mount location in every
+member, so a tool's cache can stay at its usual path (for example
+`$HOME/.gradle`). Paths are absolute or relative to the sandbox home, which has
+the host home's path, and are expanded like file grants. `scopeStorage.NAME`
+in the scope's defaults or the goblin overrides the location. Storage is mounted
+read-write; it may not overlap the goblin's own file grants. Only members of the
+scope that declares the storage can use it.
 
 ### Namespaces
 

@@ -203,6 +203,8 @@ class ScopeTests(unittest.TestCase):
         # meaningful across the scope: A sees B's daemon.
         output, _ = self.run_in(ta, f"tr '\\0' ' ' < /proc/{pid}/cmdline")
         self.assertIn("GradleDaemon", output)
+        # The scope's storage path puts the shared home at Gradle's default.
+        self.assertTrue(list((self.cache / "goblins/scopes").glob("temporary-*/gradle/caches")))
 
 
 if __name__ == "__main__":

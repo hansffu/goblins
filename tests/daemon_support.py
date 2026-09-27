@@ -68,7 +68,7 @@ def app():
 
 
 class Daemon:
-    def __init__(self, application=None, env=None, workspace=None):
+    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None):
         self.temp = tempfile.TemporaryDirectory(prefix="gd-")
         self.state = Path(self.temp.name) / "state"
         self.app = application or app()
@@ -76,7 +76,8 @@ class Daemon:
         argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "server", "start", "--foreground"]
         if workspace:
             argv += ["--workspace", str(workspace)]
-        self.process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                        preexec_fn=preexec_fn)
         assert "daemon ready" in self.process.stdout.readline(), self.process.stderr.read()
         self.rpc = self.host()
 

@@ -32,9 +32,9 @@ pub struct Configuration {
     pub scope: Option<String>,
     #[serde(default)]
     pub allowed_scopes: Vec<String>,
-    /// Scope storage name to its absolute path in the sandbox.
+    /// Scope storage name to its path in the sandbox ($HOME may be used).
     #[serde(default)]
-    pub scope_storage: BTreeMap<String, PathBuf>,
+    pub scope_storage: BTreeMap<String, String>,
     /// The same goblin with each permitted scope's defaults merged in by Nix.
     #[serde(default)]
     pub scopes: BTreeMap<String, Configuration>,
@@ -76,18 +76,6 @@ pub struct Manifest {
     pub goblins: BTreeMap<String, Configuration>,
     #[serde(default)]
     pub scopes: BTreeMap<String, ScopeDefinition>,
-}
-fn mount_path(path: &Path) -> bool {
-    use std::path::Component;
-    path.is_absolute()
-        && path.components().skip(1).count() > 0
-        && path
-            .components()
-            .skip(1)
-            .all(|c| matches!(c, Component::Normal(_)))
-        && ["/nix", "/proc", "/dev", "/run/goblins"]
-            .iter()
-            .all(|reserved| !path.starts_with(reserved))
 }
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
@@ -160,15 +148,20 @@ impl Manifest {
         }
         let definition = self.scopes[&selected].clone();
         let mut variant = config.scopes.remove(&selected).unwrap();
-        for (storage, path) in &variant.scope_storage {
-            if !definition.storage.contains(storage) || !mount_path(path) {
+        let mut mounts = BTreeMap::new();
+        for (storage, raw) in &variant.scope_storage {
+            // Expanded like file grants, with the host environment.
+            let path = crate::binds::expand(raw, |name| std::env::var(name).ok())?;
+            if !definition.storage.contains(storage) || path.parent().is_none() {
                 return Err(format!("invalid scope storage mount '{storage}'").into());
             }
+            crate::binds::validate(&path, &[])?;
+            mounts.insert(storage.clone(), path);
         }
         variant.selected_scope = Some(Scope {
             name: selected,
             definition,
-            mounts: variant.scope_storage.clone(),
+            mounts,
         });
         Ok(variant)
     }

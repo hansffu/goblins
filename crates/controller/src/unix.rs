@@ -281,3 +281,40 @@ pub fn cache_directory(component: &str, create: bool) -> Result<PathBuf> {
         }
     }
 }
+
+/// The soft descriptor limit Goblins was started with, restored for sandbox
+/// payloads (0 when unchanged).
+static PAYLOAD_NOFILE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The server holds descriptors for every session's pinned grants and, while
+/// members join a scope's Docker engine, for their store closures. The
+/// conventional soft limit of 1024 is too small for several large agents.
+pub fn raise_descriptor_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0
+        || limit.rlim_cur >= limit.rlim_max
+    {
+        return;
+    }
+    let original = limit.rlim_cur;
+    limit.rlim_cur = limit.rlim_max;
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+        PAYLOAD_NOFILE.store(original, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The limit to restore in a sandbox payload, if the server raised its own.
+pub fn payload_descriptor_limit() -> Option<libc::rlimit> {
+    let original = PAYLOAD_NOFILE.load(std::sync::atomic::Ordering::Relaxed);
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    (original != 0 && unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0).then(|| {
+        limit.rlim_cur = original;
+        limit
+    })
+}

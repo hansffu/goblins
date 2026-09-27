@@ -250,6 +250,7 @@ fn execute(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 fn main() {
+    goblins_controller::unix::raise_descriptor_limit();
     signals();
     let code = match execute(Cli::parse()) {
         Ok(code) => code,
