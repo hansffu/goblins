@@ -19,9 +19,10 @@ automatically submit another request, because the original may still complete.
 
 There is no `nix` command in the sandbox; do not try `nix develop`, `nix run`
 or `nix shell`. When `GOBLINS_DEV_SHELL` is set, the host started this sandbox
-in that project flake's dev shell: its variables and tools are already exported.
-Run `source /run/goblins/devshell/env.sh` in Bash for the full environment,
-including the dev shell's functions and `shellHook`. Editing `flake.nix` or
+in that project flake's dev shell, like `nix develop`: its tools, variables and
+`shellHook` exports are already in your environment. Run
+`source /run/goblins/devshell/env.sh` in Bash if you also need the dev shell's
+functions. Editing `flake.nix` or
 `flake.lock` does not change the running environment; report that a new dev
 shell needs the host to relaunch the sandbox. Do not edit `flake.lock` by hand.
 

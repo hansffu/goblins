@@ -15,7 +15,11 @@ FLAKE = """{
       devShells.x86_64-linux.default = pkgs.mkShellNoCC {
         packages = [ pkgs.hello ];
         DEV_MARKER = "@MARKER@";
-        shellHook = "echo hook-ran";
+        # Runs inside the sandbox on entry; its exports reach the entry program.
+        shellHook = ''
+          echo "hook-ran in $PWD"
+          export HOOK_VAR="from-hook-$DEV_MARKER"
+        '';
       };
     };
 }
@@ -52,12 +56,13 @@ class DevShellTests(unittest.TestCase):
 
     def test_launch_exports_environment_and_children_inherit_the_snapshot(self):
         terminal = self.run_cli("--dev-shell", ".", "--name", "dev")
-        terminal.send("printf 'M=%s\\n' $DEV_MARKER; hello; printf 'R=%s\\n' $GOBLINS_DEV_SHELL\n")
-        terminal.expect(r"(?:^|\n)M=original\n")
+        terminal.expect(rf"(?:^|\n)hook-ran in {self.project}\n")
+        terminal.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR; hello; printf 'R=%s\\n' $GOBLINS_DEV_SHELL\n")
+        terminal.expect(r"(?:^|\n)M=original H=from-hook-original\n")
         terminal.expect(r"(?:^|\n)Hello, world!\n")
         terminal.expect(rf"(?:^|\n)R={self.project}\n")
         terminal.send("bash -c '. /run/goblins/devshell/env.sh; printf \"S=%s\\n\" \"$DEV_MARKER\"'\n")
-        terminal.expect(r"(?:^|\n)hook-ran\n")
+        terminal.expect(r"(?:^|\n)hook-ran in ")
         terminal.expect(r"(?:^|\n)S=original\n")
         record = next(r for r in self.d.rpc.call("sessions.list", {}) if r["agent_name"] == "dev")
         self.assertEqual(record["dev_shell"], str(self.project))
@@ -65,8 +70,9 @@ class DevShellTests(unittest.TestCase):
         # Later workspace edits never reach the running generation or children.
         self.write_flake("edited")
         child = self.run_cli("--parent", "dev")
-        child.send("printf 'M=%s\\n' $DEV_MARKER\n")
-        child.expect(r"(?:^|\n)M=original\n")
+        child.expect(r"(?:^|\n)hook-ran in ")
+        child.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR\n")
+        child.expect(r"(?:^|\n)M=original H=from-hook-original\n")
 
     def test_children_cannot_choose_a_dev_shell(self):
         parent = self.d.start()

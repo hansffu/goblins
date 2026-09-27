@@ -71,20 +71,27 @@ until a refresh.
 
 ### Environment in the sandbox
 
-- Exported variables are set when the sandbox starts, filtered like
-  `nix develop` (which ignores `HOME`, `TMPDIR`, `TERM` and similar) and
-  without sandbox plumbing (`USER`, `DOCKER_HOST`, `BASH_ENV`, `GOBLINS_*`).
-  They override configured `env` values. `PATH`, `PKG_CONFIG_PATH` and
-  `XDG_DATA_DIRS` are combined instead, dev shell entries first.
-- `/run/goblins/devshell/env.sh` reproduces the full environment in Bash:
-  non-exported variables, arrays, functions and the `shellHook`. The
-  `shellHook` runs only when that file is sourced. Running it automatically
-  (once, or on every command) is decided together with refresh: a hook that
-  exports variables must run in every shell, while one that prints or
-  installs something should not run on every agent command.
-- How a refresh reaches running processes (for example `BASH_ENV` pointing at
-  the current generation's `env.sh`) is decided with refresh. Running
-  processes keep their environment either way.
+Entering a generation behaves like `nix develop -c PROGRAM`, inside the
+sandbox:
+
+- `/run/goblins/devshell/env.sh` reproduces the environment in Bash:
+  exported and non-exported variables, arrays, functions and, last, the
+  `shellHook`. Variables `nix develop` ignores (`HOME`, `TMPDIR`, `TERM` and
+  similar) and sandbox plumbing (`USER`, `DOCKER_HOST`, `BASH_ENV`,
+  `GOBLINS_*`) are left out. `PATH`, `PKG_CONFIG_PATH` and `XDG_DATA_DIRS`
+  put the dev shell's entries before the sandbox's own; other variables
+  override configured `env` values, as with `nix develop`.
+- The sandbox's entry program (shell or agent) is started by a Bash that
+  sources `env.sh` and then `exec`s it, so the `shellHook` runs on entry and
+  its exports reach the entry program and everything it starts. Children enter
+  the same way when they start.
+- The `shellHook` runs only inside the sandbox, never on the host. Everything it
+  can use is the generation's closure, which is already mounted, so it can run
+  whenever a generation is entered without further approval.
+- A refresh enters the new generation the same way: its `env.sh`, including the
+  `shellHook`, runs inside the sandbox. How the resulting environment reaches
+  processes that are already running is decided when refresh is built; they
+  keep their old environment until then.
 
 ### Trusted and foreign locks
 

@@ -484,20 +484,12 @@ impl Session {
                 "/etc/resolv.conf".into(),
             ]);
         }
-        let dev = self.launch.dev_shell.as_ref();
-        let prepend = |name: &str, value: String| -> String {
-            match dev.and_then(|d| d.variables.iter().find(|(n, _)| n == name)) {
-                Some((_, first)) if value.is_empty() => first.clone(),
-                Some((_, first)) => format!("{first}:{value}"),
-                None => value,
-            }
-        };
         for (name, value) in [
             ("HOME", binds.home.display().to_string()),
             ("LC_ALL", "C".into()),
             ("USER", "agent".into()),
             ("LOGNAME", "agent".into()),
-            ("PATH", prepend("PATH", path.join(":"))),
+            ("PATH", path.join(":")),
             ("SHELL", self.launch.posix_shell.display().to_string()),
             ("PYTHONNOUSERSITE", "1".into()),
             ("TERM", "xterm-256color".into()),
@@ -551,19 +543,7 @@ impl Session {
         for (name, value) in &self.launch.env {
             args.extend(["--setenv".into(), name.clone(), value.clone()]);
         }
-        if let Some(dev) = dev {
-            // The dev shell overrides configured values, like `nix develop`
-            // does, but extends search paths instead of replacing them.
-            for (name, value) in &dev.variables {
-                let value = match self.launch.env.get(name) {
-                    Some(own) if crate::devshell::PREPENDED.contains(&name.as_str()) => {
-                        prepend(name, own.clone())
-                    }
-                    _ if name == "PATH" => continue,
-                    _ => value.clone(),
-                };
-                args.extend(["--setenv".into(), name.clone(), value]);
-            }
+        if let Some(dev) = &self.launch.dev_shell {
             let directory = self.directory.join("devshell");
             fs::create_dir_all(&directory)?;
             fs::write(directory.join("env.sh"), &dev.script)?;
@@ -699,7 +679,18 @@ impl Session {
             ])
             .arg(&self.launch.bwrap)
             .args(args)
-            .args(["--seccomp", &filter.as_raw_fd().to_string(), "--"])
+            .args(["--seccomp", &filter.as_raw_fd().to_string(), "--"]);
+        if self.launch.dev_shell.is_some() {
+            // Enter the dev shell like `nix develop -c`: its variables and
+            // shellHook apply inside the sandbox, then the entry program
+            // inherits the resulting environment.
+            command.arg(&self.launch.posix_shell).args([
+                "-c",
+                ". /run/goblins/devshell/env.sh; exec \"$@\"",
+                "goblins-dev-shell",
+            ]);
+        }
+        command
             .arg(&self.launch.shell)
             .args(&self.launch.shell_args)
             .stdin(Stdio::from(control_r))
