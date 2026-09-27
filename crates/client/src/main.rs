@@ -94,7 +94,7 @@ fn run() -> Result<i32, String> {
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nScope: {}\nDocker: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nScope: {}\nDocker: {}\nDev shell: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -105,6 +105,7 @@ fn run() -> Result<i32, String> {
                     } else {
                         "disabled"
                     },
+                    record["dev_shell"].as_str().unwrap_or("none"),
                     record["id"].as_str().unwrap_or("unknown")
                 );
                 return Ok(0);

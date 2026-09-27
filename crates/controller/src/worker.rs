@@ -37,6 +37,7 @@ pub(super) enum Completed {
     Started {
         docker_enabled: bool,
         scope: Option<String>,
+        dev_shell: Option<String>,
         initial_packages: Vec<String>,
         master: OwnedFd,
         listener: UnixListener,
@@ -69,6 +70,7 @@ pub(super) enum Source {
         configuration: PathBuf,
         name: String,
         scope: Option<String>,
+        dev_shell: Option<String>,
         workspace: Option<PathBuf>,
         cwd: Option<PathBuf>,
         state: PathBuf,
@@ -95,6 +97,7 @@ impl Worker {
                         configuration,
                         name,
                         scope,
+                        dev_shell,
                         workspace,
                         cwd,
                         state,
@@ -108,7 +111,20 @@ impl Worker {
                             return Err("initial package limit is 128".into());
                         }
                         launch.protected_paths.push(std::fs::canonicalize(state)?);
-                        Session::new_in(launch, workspace.as_deref(), token.clone(), directory)?
+                        let mut session = Session::new_in(
+                            launch,
+                            workspace.as_deref(),
+                            token.clone(),
+                            directory,
+                        )?;
+                        if let Some(reference) = dev_shell {
+                            session.launch.dev_shell = Some(crate::devshell::prepare(
+                                &reference,
+                                &session.directory,
+                                &token,
+                            )?);
+                        }
+                        session
                     }
                 };
                 if let Err(error) = session.start(Some(slave)) {
@@ -126,6 +142,11 @@ impl Worker {
                 results.try_send(Completed::Started {
                     docker_enabled: session.docker_enabled(),
                     scope: session.scope_name(),
+                    dev_shell: session
+                        .launch
+                        .dev_shell
+                        .as_ref()
+                        .map(|d| d.reference.clone()),
                     initial_packages: session
                         .launch
                         .initial_packages

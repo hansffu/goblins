@@ -200,6 +200,7 @@ fn execute(cli: Cli) -> Result<i32> {
             name,
             parent,
             scope,
+            dev_shell,
             detatched,
         } => {
             let runtime = cli
@@ -223,7 +224,32 @@ fn execute(cli: Cli) -> Result<i32> {
                 // Report an unknown or disallowed scope before starting.
                 manifest.select(&config, scope.as_deref())?;
             }
-            return attachment::run(state, config, configuration, name, parent, scope, detatched);
+            // Resolve a relative flake path against the caller's directory.
+            let dev_shell = dev_shell
+                .map(|reference| -> goblins_controller::Result<String> {
+                    let (path, attr) = reference
+                        .split_once('#')
+                        .map_or((reference.as_str(), None), |(p, a)| (p, Some(a)));
+                    let path = fs::canonicalize(path)
+                        .map_err(|e| format!("dev shell flake {path}: {e}"))?;
+                    let reference = match attr {
+                        Some(attr) => format!("{}#{attr}", path.display()),
+                        None => path.display().to_string(),
+                    };
+                    goblins_controller::devshell::parse_reference(&reference)?;
+                    Ok(reference)
+                })
+                .transpose()?;
+            return attachment::run(
+                state,
+                config,
+                configuration,
+                name,
+                parent,
+                scope,
+                dev_shell,
+                detatched,
+            );
         }
         Command::Configurations => {
             let runtime = cli

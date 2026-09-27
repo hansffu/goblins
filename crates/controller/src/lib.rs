@@ -3,6 +3,7 @@ pub mod binds;
 pub mod catalog;
 pub mod config;
 pub mod controller;
+pub mod devshell;
 mod docker;
 mod network;
 mod process;

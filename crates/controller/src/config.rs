@@ -201,6 +201,9 @@ pub struct Launch {
     pub docker: Option<Docker>,
     #[serde(skip)]
     pub scope: Option<Scope>,
+    /// Host-evaluated flake dev shell; children inherit this generation.
+    #[serde(skip)]
+    pub dev_shell: Option<crate::devshell::DevShell>,
 }
 fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
@@ -272,6 +275,7 @@ impl Configuration {
             integration: self.integration.clone(),
             docker: self.docker.clone(),
             scope: self.selected_scope.clone(),
+            dev_shell: None,
             binds: serde_json::from_value(serde_json::json!({
                 "rw_dirs": spec["rw_dirs"], "rw_files": spec["rw_files"],
                 "ro_dirs": spec["ro_dirs"], "ro_files": spec["ro_files"],

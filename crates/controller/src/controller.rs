@@ -35,6 +35,9 @@ pub struct SessionRecord {
     pub docker_enabled: bool,
     #[serde(default, alias = "docker_scope")]
     pub scope: Option<String>,
+    /// Flake reference of the host-launched dev shell, if any.
+    #[serde(default)]
+    pub dev_shell: Option<String>,
     pub id: String,
     pub agent_name: String,
     /// None denotes the host root. Ownership always uses immutable IDs.
@@ -272,6 +275,9 @@ struct Start {
     /// Scope for a root sandbox; children always inherit their parent's.
     #[serde(default)]
     scope: Option<String>,
+    /// Absolute `PATH[#ATTR]` of a host flake dev shell; children inherit.
+    #[serde(default)]
+    dev_shell: Option<String>,
     rows: u16,
     cols: u16,
     #[serde(default)]
@@ -757,6 +763,9 @@ impl Controller {
         if parent.is_some() && p.scope.is_some() {
             return Err((-32602, "children inherit their parent's scope".into()));
         }
+        if parent.is_some() && p.dev_shell.is_some() {
+            return Err((-32602, "children inherit their parent's dev shell".into()));
+        }
         let inherited = if let Some(id) = &parent {
             let a = &self.sessions[id];
             if a.record.state != "running" || a.worker.is_none() {
@@ -783,6 +792,9 @@ impl Controller {
             || p.scope
                 .as_deref()
                 .is_some_and(|s| !goblins_protocol::scope_name(s))
+            || p.dev_shell
+                .as_deref()
+                .is_some_and(|d| crate::devshell::parse_reference(d).is_err())
             || !dimensions(p.rows, p.cols)
         {
             return Err((-32602, "invalid launch parameters".into()));
@@ -838,6 +850,7 @@ impl Controller {
                 configuration: p.configuration.clone().into(),
                 name: p.name.clone(),
                 scope: p.scope.clone(),
+                dev_shell: p.dev_shell.clone(),
                 workspace: self.workspace.clone(),
                 cwd: p.cwd.clone(),
                 state: self.state.clone(),
@@ -847,6 +860,7 @@ impl Controller {
         let record = SessionRecord {
             docker_enabled: false,
             scope: None,
+            dev_shell: None,
             id: id.clone(),
             path: parent
                 .as_ref()
@@ -903,7 +917,8 @@ impl Controller {
                 let record = &self.sessions[scope].record;
                 Ok(json!({"id":record.id,"agent_name":record.agent_name,
                     "name":record.name,"description":record.description,
-                    "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled}))
+                    "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled,
+                    "dev_shell":record.dev_shell}))
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -945,6 +960,7 @@ impl Controller {
                         configuration: String::new(),
                         cwd: None,
                         scope: None,
+                        dev_shell: None,
                         rows: 24,
                         cols: 80,
                         detached: p.detached,
@@ -1551,6 +1567,7 @@ impl Controller {
                     Completed::Started {
                         docker_enabled,
                         scope,
+                        dev_shell,
                         initial_packages,
                         master,
                         listener,
@@ -1560,6 +1577,7 @@ impl Controller {
                     } => {
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = scope;
+                        a.record.dev_shell = dev_shell;
                         a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
@@ -1856,6 +1874,7 @@ mod tests {
                 record: SessionRecord {
                     docker_enabled: false,
                     scope: None,
+                    dev_shell: None,
                     id: id.clone(),
                     agent_name: "snikk".into(),
                     parent: None,

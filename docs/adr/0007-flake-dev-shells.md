@@ -48,17 +48,20 @@ commands below, so agents do not try `nix develop` and work around the failure.
 goblins run CONFIG --dev-shell .#rust
 ```
 
-`--dev-shell FLAKEREF` is a CLI option only; `mkGoblin` has no dev shell
-setting. A relative flake reference resolves against the launch directory, or
-against the workspace root in snapshot-workspace mode.
+`--dev-shell PATH[#ATTR]` is a CLI option only; `mkGoblin` has no dev shell
+setting. It accepts local flake directories only. A relative path resolves
+against the directory where `goblins run` is invoked, including in
+snapshot-workspace mode.
 
 The host user starting a dev shell is choosing to run that code, so launch
 needs no approval. The controller:
 
 1. copies the flake source into the store and records its store path,
    `narHash` and parsed `flake.lock` as **generation 1**, with GC roots;
-2. evaluates `nix print-dev-env --json` for the flake reference in the
-   evaluator sandbox (below);
+2. evaluates `nix print-dev-env --json` on that store copy, with
+   `--no-update-lock-file` and `accept-flake-config = false`, in the evaluator
+   sandbox (below). Until the evaluator sandbox exists, launch uses host Nix
+   directly; that is acceptable only because the host chose this flake;
 3. builds the environment, mounts its closure read-only like a package grant,
    and writes the variables to `/run/goblins/devshell/env.sh`.
 
@@ -68,12 +71,20 @@ until a refresh.
 
 ### Environment in the sandbox
 
-- The dev shell's `PATH` entries come before granted packages, as with
-  `nix develop` on top of a profile.
-- `BASH_ENV` points at the current generation's `env.sh`, so every new
-  non-interactive bash (each agent command) sees the current generation.
-  Running processes keep their environment.
-- The `shellHook` runs once per generation, not on every source of `env.sh`.
+- Exported variables are set when the sandbox starts, filtered like
+  `nix develop` (which ignores `HOME`, `TMPDIR`, `TERM` and similar) and
+  without sandbox plumbing (`USER`, `DOCKER_HOST`, `BASH_ENV`, `GOBLINS_*`).
+  They override configured `env` values. `PATH`, `PKG_CONFIG_PATH` and
+  `XDG_DATA_DIRS` are combined instead, dev shell entries first.
+- `/run/goblins/devshell/env.sh` reproduces the full environment in Bash:
+  non-exported variables, arrays, functions and the `shellHook`. The
+  `shellHook` runs only when that file is sourced. Running it automatically
+  (once, or on every command) is decided together with refresh: a hook that
+  exports variables must run in every shell, while one that prints or
+  installs something should not run on every agent command.
+- How a refresh reaches running processes (for example `BASH_ENV` pointing at
+  the current generation's `env.sh`) is decided with refresh. Running
+  processes keep their environment either way.
 
 ### Trusted and foreign locks
 

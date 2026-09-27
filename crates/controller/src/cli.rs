@@ -87,6 +87,14 @@ pub enum Command {
         /// Join this scope instead of the goblin's default (children inherit)
         #[arg(long, value_name = "SCOPE")]
         scope: Option<String>,
+        /// Start in this flake's dev shell, like `nix develop` (children inherit)
+        #[arg(
+            long,
+            value_name = "FLAKE[#ATTR]",
+            conflicts_with = "parent",
+            value_hint = clap::ValueHint::DirPath
+        )]
+        dev_shell: Option<String>,
         /// Start without attaching to its terminal
         #[arg(long, visible_alias = "detached")]
         detatched: bool,
@@ -316,7 +324,7 @@ function __fish_goblins_needs_positional
     argparse -s (__fish_goblins_global_optspecs) -- $words 2>/dev/null; or return 1
     test "$argv[1]" = "$subcommand"; or return 1
     set -e argv[1]
-    argparse (__fish_goblins_global_optspecs) name= parent= detatched detached -- $argv 2>/dev/null; or return 1
+    argparse (__fish_goblins_global_optspecs) name= parent= scope= dev-shell= detatched detached -- $argv 2>/dev/null; or return 1
     test (count $argv) -eq 0
 end
 complete -c goblins -n '__fish_goblins_needs_positional run' -f -a '{}'

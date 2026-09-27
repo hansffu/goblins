@@ -61,6 +61,37 @@ successful grant. Package names are bounded nixpkgs attributes, including
 are rejected. Host Nix chooses the bin output when available, otherwise default.
 Development setup hooks and unrecorded plugins/data are not activated.
 
+* Flake dev shells
+
+Start a root sandbox in a project flake's dev shell, like =nix develop=:
+
+#+begin_src sh
+goblins run shell --dev-shell .          # devShells.<system>.default
+goblins run shell --dev-shell ~/src/app#rust
+#+end_src
+
+A relative path resolves against the directory where you run the command. The
+flake must be a local directory with a complete =flake.lock=; for a Git flake,
+the lock must be tracked. Because you start it, launch needs no approval (see
+[[file:docs/adr/0007-flake-dev-shells.md][ADR 0007]]).
+
+The host copies the flake source into the store and evaluates that copy with
+=--no-update-lock-file= and =accept-flake-config = false=. The resulting
+environment's closure is mounted read-only. Exported variables are set in the
+sandbox the way =nix develop= sets them: its =PATH=, =PKG_CONFIG_PATH= and
+=XDG_DATA_DIRS= come first, and variables =nix develop= ignores (=HOME=, =TMPDIR=,
+=TERM= and others) or that belong to the sandbox (=USER=, =DOCKER_HOST=,
+=GOBLINS_*=, ...) are left out. =GOBLINS_DEV_SHELL= names the flake reference and
+=goblins status= shows it.
+
+=/run/goblins/devshell/env.sh= reproduces the full environment in Bash,
+including non-exported variables, arrays, the dev shell's functions and its
+=shellHook=. The =shellHook= runs only when you source that file.
+
+Children always inherit their parent's dev shell, evaluated at the parent's
+launch; they cannot choose another. Later edits to the workspace flake do not
+change a running sandbox or its children. The sandbox has no =nix= command.
+
 * Scopes (Linux, no VM)
 
 A scope is a named trust group. Its members share a network namespace, by
