@@ -87,11 +87,21 @@ class DevShellTests(unittest.TestCase):
         command(["git", "-C", str(self.project), "rm", "-qf", "flake.lock"])
         result = self.d.rpc.call("sessions.start", {
             "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
-            "dev_shell": str(self.project), "rows": 24, "cols": 80})
+            "dev_shell": str(self.project), "cwd": str(self.project), "rows": 24, "cols": 80})
         record = self.d.wait(lambda: (r if (r := self.d.get(result["session"]))["state"]
                                       not in ("starting", "running", "stopping") else None), timeout=60)
         self.assertEqual(record["state"], "failed", record)
         self.assertIn("flake.lock", record["detail"])
+
+    def test_launch_requires_a_working_directory(self):
+        # Without one the sandbox sees no host files, so evaluation may see none.
+        result = self.d.rpc.call("sessions.start", {
+            "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
+            "dev_shell": str(self.project), "rows": 24, "cols": 80})
+        record = self.d.wait(lambda: (r if (r := self.d.get(result["session"]))["state"]
+                                      not in ("starting", "running", "stopping") else None), timeout=60)
+        self.assertEqual(record["state"], "failed", record)
+        self.assertIn("needs a host working directory", record["detail"])
 
     def test_launch_rejects_inputs_missing_from_the_lock(self):
         # Nix would silently fetch and use an input the lock does not mention.
@@ -101,7 +111,7 @@ class DevShellTests(unittest.TestCase):
         (self.project / "flake.nix").write_text(flake)
         result = self.d.rpc.call("sessions.start", {
             "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
-            "dev_shell": str(self.project), "rows": 24, "cols": 80})
+            "dev_shell": str(self.project), "cwd": str(self.project), "rows": 24, "cols": 80})
         record = self.d.wait(lambda: (r if (r := self.d.get(result["session"]))["state"]
                                       not in ("starting", "running", "stopping") else None), timeout=60)
         self.assertEqual(record["state"], "failed", record)
@@ -123,7 +133,7 @@ class DevShellTests(unittest.TestCase):
         (self.project / "flake.nix").write_text(flake)
         result = self.d.rpc.call("sessions.start", {
             "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
-            "dev_shell": str(self.project), "rows": 24, "cols": 80})
+            "dev_shell": str(self.project), "cwd": str(self.project), "rows": 24, "cols": 80})
         record = self.d.wait(lambda: (r if (r := self.d.get(result["session"]))["state"]
                                       not in ("starting", "running", "stopping") else None), timeout=60)
         self.assertEqual(record["state"], "failed", record)
@@ -138,6 +148,7 @@ class DevShellRefreshTests(DevShellTests):
     test_children_cannot_choose_a_dev_shell = None
     test_launch_requires_a_lock_file = None
     test_evaluation_cannot_reach_host_files_outside_the_flake = None
+    test_launch_requires_a_working_directory = None
     test_launch_rejects_inputs_missing_from_the_lock = None
 
     def setUp(self):
@@ -368,6 +379,17 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
         self.assertIn("extra", json.loads((self.project / "flake.lock").read_text())["nodes"])
         output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         self.assertIn("N=changed", output)
+
+    def test_launch_from_the_flake_directory_cannot_widen_access_to_the_repository(self):
+        # The sandbox would see only sub/, but evaluation would see all of repo/.
+        result = self.d.rpc.call("sessions.start", {
+            "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
+            "dev_shell": str(self.project), "cwd": str(self.project), "rows": 24, "cols": 80})
+        record = self.d.wait(lambda: (r if (r := self.d.get(result["session"]))["state"]
+                                      not in ("starting", "running", "stopping") else None), timeout=60)
+        self.assertEqual(record["state"], "failed", record)
+        self.assertIn(f"source tree {self.repo.resolve()} is outside the sandbox's working directory "
+                      f"{self.project.resolve()}", record["detail"])
 
 
 if __name__ == "__main__":

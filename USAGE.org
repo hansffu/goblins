@@ -135,8 +135,12 @@ an ancestor already has (same flake source and lock) is approved
 automatically. Fetches during a refresh use the goblin's own network; an
 offline goblin's evaluation is offline too.
 
-Refresh currently requires the flake's source tree to be inside the sandbox's
-working directory, and is not supported with a daemon =--workspace= snapshot.
+The flake's source tree (its Git work tree, or the flake directory) must be
+inside the sandbox's working directory, at launch and at refresh, so evaluation
+never sees files the sandbox cannot. For a flake in a repository
+subdirectory, start the sandbox from the repository root:
+=goblins run shell --dev-shell sub=. Dev shells are not supported with a daemon
+=--workspace= snapshot.
 
 * Scopes (Linux, no VM)
 

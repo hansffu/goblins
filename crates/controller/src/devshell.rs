@@ -338,11 +338,31 @@ fn realize(
     Ok((profile, variables, script))
 }
 
+/// The flake's source tree, which evaluation sees, if it lies inside the
+/// sandbox's working directory `cwd`. Evaluation may see only what the
+/// sandbox itself can see.
+pub fn visible_tree(flake: &Path, cwd: &Path) -> Result<PathBuf> {
+    let tree = source_tree(flake);
+    if !tree.starts_with(cwd) {
+        return Err(format!(
+            "the flake's source tree {} is outside the sandbox's working directory {}\n  \
+             start the sandbox in {} or a directory containing it",
+            tree.display(),
+            cwd.display(),
+            tree.display()
+        )
+        .into());
+    }
+    Ok(tree)
+}
+
 /// Snapshot and evaluate a dev shell for a host launch in the evaluator
-/// sandbox. `directory` is the session's private host directory; it receives
-/// the evaluator state and the environment GC root.
+/// sandbox. `cwd` is the sandbox's working directory, which must contain the
+/// flake's source tree. `directory` is the session's private host directory;
+/// it receives the evaluator state and the environment GC root.
 pub fn prepare(
     reference: &str,
+    cwd: &Path,
     evaluator: &Evaluator,
     directory: &Path,
     cancel: &Cancellation,
@@ -353,7 +373,7 @@ pub fn prepare(
         return Err(format!("dev shell flake {} is not a directory", path.display()).into());
     }
     // Only the flake's own source tree is visible to evaluation.
-    let visible = [source_tree(&path)];
+    let visible = [visible_tree(&path, cwd)?];
     let (root, flake, _) = snapshot(
         evaluator,
         path.as_os_str(),

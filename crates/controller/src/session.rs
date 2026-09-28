@@ -965,20 +965,12 @@ impl Session {
             .dev_shell
             .as_ref()
             .ok_or("this sandbox was not started with a dev shell")?;
-        // Evaluation may see only what the sandbox itself can see.
         let cwd = self
             .launch
             .cwd
             .as_ref()
             .ok_or("dev shell refresh is not supported with a daemon --workspace snapshot")?;
-        let tree = crate::evaluator::source_tree(&current.path);
-        if !tree.starts_with(cwd) {
-            return Err(format!(
-                "the flake's source tree {} is outside this sandbox's working directory",
-                tree.display()
-            )
-            .into());
-        }
+        let tree = crate::devshell::visible_tree(&current.path, cwd)?;
         let evaluator = self.evaluator()?;
         let candidate = crate::devshell::candidate(
             current,

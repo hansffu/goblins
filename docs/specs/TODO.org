@@ -138,29 +138,6 @@ visible to the engine, so containers bind-mounting them fail.
   store paths to an attached engine, or document the limitation.
 - Only matters when containers need those paths; lower priority.
 
-* TODO Launch must not widen access beyond the sandbox's working directory
-
-Refresh refuses a flake whose source tree (its Git work tree) extends beyond
-the sandbox's working directory (=Session::prepare_refresh=: =tree.starts_with(cwd)=).
-Launch has no such check: =goblins run shell --dev-shell .= from =repo/sub=
-evaluates with the whole =repo/= tree visible (=devshell::prepare=, visible
-=source_tree(&path)=). Since subdirectory flakes keep their whole source tree
-(=path:ROOT?dir=SUB=), a =sub/flake.nix= that an agent edited in an earlier
-session can put =repo/= content into the dev shell: a value such as
-=builtins.readFile ../secret=, or =${../.}=, which mounts a store copy of the
-tracked files through the environment's closure. Only Git-tracked files are
-affected, and the host did choose the flake, but the sandbox gets files it was
-never granted.
-
-- Apply the refresh rule at launch: refuse when the source tree is not inside
-  the launch's working directory (=Launch::cwd=, known in
-  =worker.rs= =Source::Host= before =devshell::prepare=), with an error that
-  names both paths and says to run from the repository root.
-- Or allow it only with an explicit flag (for example
-  =--dev-shell-source-tree=) if running from a subdirectory is common.
-- Test in =tests/test_devshell.py= with =DevShellSubdirectoryTests=' layout,
-  launching from =repo/sub=.
-
 * TODO Fix the pre-existing Clippy failures
 
 =cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in

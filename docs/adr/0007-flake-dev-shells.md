@@ -248,8 +248,13 @@ store path and mounts its closure. Details are decided when it is built.
   version; the environment diff ignores store-hash-only changes.
 - A refresh is also approved automatically when it equals the sandbox's own
   current generation.
-- Refresh evaluates only a flake whose source tree lies inside the sandbox's
-  working directory, so evaluation never sees files the sandbox cannot.
+- Launch and refresh evaluate only a flake whose source tree lies inside the
+  sandbox's working directory, so evaluation never sees files the sandbox
+  cannot. Without this, launching `repo/sub/flake.nix` from `repo/sub` would
+  let a flake an agent edited earlier copy tracked `repo/` files into the dev
+  shell (`builtins.readFile ../secret`, `${../.}`). A launch without a host
+  working directory (an RPC start without `cwd`, or a daemon `--workspace`
+  snapshot) cannot use a dev shell.
 
 - Refresh evaluation disables import-from-derivation
   (`allow-import-from-derivation = false`), before and after approval, so

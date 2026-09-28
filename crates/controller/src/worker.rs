@@ -136,6 +136,9 @@ impl Worker {
                             directory,
                         )?;
                         if let Some(reference) = dev_shell {
+                            let cwd = session.launch.cwd.clone().ok_or(
+                                "a dev shell needs a host working directory containing the flake",
+                            )?;
                             let evaluator = crate::evaluator::Evaluator::new(
                                 &session.directory,
                                 &session.launch.bwrap,
@@ -146,6 +149,7 @@ impl Worker {
                             )?;
                             session.launch.dev_shell = Some(crate::devshell::prepare(
                                 &reference,
+                                &cwd,
                                 &evaluator,
                                 &session.directory,
                                 &token,
