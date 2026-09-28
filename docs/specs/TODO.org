@@ -53,11 +53,12 @@ Development notes:
 * DONE =goblins flake run= (the =nix run= equivalent)
 CLOSED: [2026-09-28 Mon 23:15]
 
-Done as suggested below, confirmed with the user: only the dev shell flake,
-only the trusted generation (a changed workspace flake needs a refresh
-first), builds allowed without IFD, and =exec= in the caller's environment.
-=flake.run= is a sandbox method, not a permission kind; see "=nix run=" in
-ADR 0007 (=devshell::app=, =Session::run_app=, =DevShellFlakeRunTests=).
+Done in =4f9d6df=, as suggested below and confirmed with the user: only the
+dev shell flake, only the trusted generation (a changed workspace flake needs
+a refresh first), builds allowed without IFD, and =exec= in the caller's
+environment. =flake.run= is a sandbox method, not a permission kind; see
+"=nix run=" in ADR 0007 (=devshell::app=, =Session::run_app=,
+=DevShellFlakeRunTests=).
 
 
 The user asked for this right after =develop=. ADR 0007 sketches it under
