@@ -108,9 +108,12 @@ goblins devshell restore-lock
 #+end_src
 
 A refresh evaluates the workspace flake as the sandbox's next generation and
-asks the host. The approval shows one =nh=-style diff: changed source files,
-lock inputs, the dev shell's direct packages, environment variables, the cost
-to fetch and build, and the source diff. An agent never changes =flake.lock= by
+asks the host. The approval shows one =nh=-style diff against the last trusted
+generation: an Attention list first (changed input sources, new inputs,
+=nixConfig=, local builds, a changed =shellHook=), then changed source files,
+lock inputs, the dev shell's direct packages, environment variables, the cost,
+every package the dry run will fetch or build (including transitive ones), and
+the source diff without =flake.lock=. An agent never changes =flake.lock= by
 hand: only the lock the sandbox was launched with, or one in an approved
 generation, is trusted. Every refresh first compares the workspace lock (as
 JSON) with the trusted lock and fails on any other, naming what changed;

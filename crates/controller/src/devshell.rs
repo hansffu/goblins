@@ -647,8 +647,10 @@ pub fn apply(
 
 #[derive(Debug, Default, PartialEq)]
 struct Cost {
-    build: usize,
-    fetch: usize,
+    /// Store names of derivations the host daemon will build.
+    built: Vec<String>,
+    /// Store names of paths that will be fetched.
+    fetched: Vec<String>,
     download: Option<String>,
 }
 
@@ -671,9 +673,11 @@ fn cost(text: &str, shell: &Path) -> Cost {
             .strip_prefix("  ")
             .filter(|l| l.starts_with("/nix/store/"))
         {
+            let path = path.trim();
+            let name = store_name(path).trim_end_matches(".drv").to_string();
             match section {
-                1 if Path::new(path.trim()) != shell => cost.build += 1,
-                2 => cost.fetch += 1,
+                1 if Path::new(path) != shell => cost.built.push(name),
+                2 => cost.fetched.push(name),
                 _ => {}
             }
         } else {
@@ -739,6 +743,13 @@ fn input_lines(old: &Value, new: &Value) -> Vec<String> {
     for name in names {
         match (a.get(name), b.get(name)) {
             (Some(x), Some(y)) if x["locked"] == y["locked"] => {}
+            (Some(x), Some(y)) if node_source(x) != node_source(y) => lines.push(format!(
+                "~ {name}  {} → {}  {} → {}",
+                node_source(x),
+                node_source(y),
+                node_version(x),
+                node_version(y)
+            )),
             (Some(x), Some(y)) => lines.push(format!(
                 "~ {name}  {}  {} → {}",
                 node_source(y),
@@ -817,19 +828,108 @@ fn without_hashes(value: &str) -> String {
     out
 }
 
+fn short_value(value: &str) -> bool {
+    value.chars().count() <= 80 && !value.contains('\n')
+}
+
+/// Package names and versions of store paths entering the machine.
+fn incoming_lines(tag: &str, names: &[String], limit: usize) -> Vec<String> {
+    let mut packages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for name in names {
+        let (name, version) = package(name);
+        packages.entry(name).or_default().insert(version);
+    }
+    let mut lines: Vec<String> = packages
+        .iter()
+        .take(limit)
+        .map(|(name, versions)| {
+            let versions: Vec<_> = versions.iter().filter(|v| !v.is_empty()).cloned().collect();
+            format!("[{tag}] {name} {}", versions.join(", "))
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    if packages.len() > limit {
+        lines.push(format!("… and {} more", packages.len() - limit));
+    }
+    lines
+}
+
+/// What deserves the approver's attention before the details.
+fn attention(
+    current: &DevShell,
+    lock: &Value,
+    summary: &Summary,
+    cost: &Cost,
+    config: bool,
+) -> Vec<String> {
+    let empty = serde_json::Map::new();
+    let old = current.lock["nodes"].as_object().unwrap_or(&empty);
+    let mut lines = Vec::new();
+    for (name, node) in lock["nodes"].as_object().unwrap_or(&empty) {
+        if node.get("locked").is_none() {
+            continue;
+        }
+        match old.get(name).filter(|n| n.get("locked").is_some()) {
+            Some(previous) if node_source(previous) != node_source(node) => lines.push(format!(
+                "! input '{name}' now comes from {} (was {})",
+                node_source(node),
+                node_source(previous)
+            )),
+            None => lines.push(format!("! new input '{name}' from {}", node_source(node))),
+            _ => {}
+        }
+    }
+    if config {
+        lines.push("! the flake declares nixConfig (ignored, never applied)".into());
+    }
+    if !cost.built.is_empty() {
+        lines.push(format!(
+            "! {} derivation(s) will be built on this machine by the host Nix daemon",
+            cost.built.len()
+        ));
+    }
+    if current.summary.env.get("shellHook") != summary.env.get("shellHook") {
+        lines.push("! shellHook changed; it runs inside the sandbox after approval".into());
+    }
+    lines
+}
+
 fn env_lines(old: &Summary, new: &Summary) -> Vec<String> {
     let names: BTreeSet<_> = old.env.keys().chain(new.env.keys()).collect();
     let mut lines = Vec::new();
     for name in names.into_iter().filter(|n| !NOISY.contains(&n.as_str())) {
         match (old.env.get(name), new.env.get(name)) {
             (Some(a), Some(b)) if without_hashes(a) == without_hashes(b) => {}
-            (Some(_), Some(_)) => lines.push(format!("~ {name}")),
+            (Some(a), Some(b)) if short_value(a) && short_value(b) => lines.push(format!(
+                "~ {name}: {} → {}",
+                without_hashes(a),
+                without_hashes(b)
+            )),
+            (Some(_), Some(_)) => lines.push(format!("~ {name} (see source diff)")),
+            (None, Some(b)) if short_value(b) => {
+                lines.push(format!("+ {name} = {}", without_hashes(b)))
+            }
             (None, Some(_)) => lines.push(format!("+ {name}")),
             (Some(_), None) => lines.push(format!("- {name}")),
             (None, None) => {}
         }
     }
     lines
+}
+
+/// Drop the top-level `flake.lock` from a patch.
+fn without_lock(patch: &str) -> String {
+    let mut out = String::new();
+    for (i, chunk) in patch.split("diff --git ").enumerate() {
+        if i == 0 {
+            out.push_str(chunk);
+        } else if !chunk.starts_with("a/flake.lock b/flake.lock\n") {
+            out.push_str("diff --git ");
+            out.push_str(chunk);
+        }
+    }
+    out
 }
 
 /// `git diff --no-index` between two store trees; both are immutable and
@@ -888,7 +988,7 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, Stri
         }
         text
     };
-    let files = run(&["--numstat"])
+    let files: Vec<String> = run(&["--numstat"])
         .lines()
         .filter_map(|line| {
             let mut parts = line.splitn(3, '\t');
@@ -916,7 +1016,12 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, Stri
             patch = patch.replace(&format!("{prefix}{side}/"), prefix);
         }
     }
-    (files, patch)
+    // The lock is shown as input changes, not as JSON.
+    let files = files
+        .into_iter()
+        .filter(|f: &String| !f.starts_with("flake.lock "))
+        .collect();
+    (files, without_lock(&patch))
 }
 
 fn describe(
@@ -934,12 +1039,18 @@ fn describe(
     );
     let section = |text: &mut String, title: &str, lines: Vec<String>| {
         if lines.is_empty() {
-            text.push_str(&format!("{title:<9}unchanged\n"));
+            text.push_str(&format!("{title:<10}unchanged\n"));
         }
         for (i, line) in lines.iter().enumerate() {
-            text.push_str(&format!("{:<9}{line}\n", if i == 0 { title } else { "" }));
+            text.push_str(&format!("{:<10}{line}\n", if i == 0 { title } else { "" }));
         }
     };
+    let notes = attention(current, lock, summary, cost, config);
+    if notes.is_empty() {
+        text.push_str("Attention nothing unusual · inputs locked to allowed sources\n");
+    } else {
+        section(&mut text, "Attention", notes);
+    }
     section(&mut text, "Source", files);
     section(&mut text, "Inputs", input_lines(&current.lock, lock));
     section(
@@ -949,22 +1060,22 @@ fn describe(
     );
     section(&mut text, "Env", env_lines(&current.summary, summary));
     text.push_str(&format!(
-        "Cost     {} to fetch{} · {} to build\n",
-        cost.fetch,
+        "Cost      {} to fetch{} · {} to build\n",
+        cost.fetched.len(),
         cost.download
             .as_ref()
             .map(|d| format!(" ({d})"))
             .unwrap_or_default(),
-        cost.build
+        cost.built.len()
     ));
-    text.push_str(&format!(
-        "Checks   ✓ inputs locked to allowed sources · {}\n",
-        if config {
-            "! flake has nixConfig (ignored, never applied)"
-        } else {
-            "✓ no nixConfig"
-        }
-    ));
+    // Everything new to this machine, including transitive dependencies.
+    let incoming: Vec<String> = incoming_lines("build", &cost.built, 40)
+        .into_iter()
+        .chain(incoming_lines("fetch", &cost.fetched, 40))
+        .collect();
+    if !incoming.is_empty() {
+        section(&mut text, "Incoming", incoming);
+    }
     if !patch.trim().is_empty() {
         text.push_str("\nSource diff:\n");
         text.push_str(&patch);
@@ -1131,15 +1242,33 @@ mod tests {
     }
 
     #[test]
-    fn dry_run_cost_excludes_the_shell_itself() {
-        let text = "these 2 derivations will be built:\n  /nix/store/a-nix-shell.drv\n  /nix/store/b-tool.drv\nthese 3 paths will be fetched (1.5 MiB download, 6 MiB unpacked):\n  /nix/store/c\n  /nix/store/d\n  /nix/store/e\n";
+    fn dry_run_cost_names_what_enters_the_machine() {
+        let h = "0123456789abcdfghijklmnpqrsvwxyz";
+        let text = format!(
+            "these 2 derivations will be built:\n  /nix/store/{h}-nix-shell.drv\n  /nix/store/{h}-tool-1.2.drv\n\
+             these 2 paths will be fetched (1.5 MiB download, 6 MiB unpacked):\n  /nix/store/{h}-glibc-2.42\n  /nix/store/{h}-glibc-2.42-bin\n"
+        );
+        let cost = cost(&text, Path::new(&format!("/nix/store/{h}-nix-shell.drv")));
+        assert_eq!(cost.built, vec!["tool-1.2"]);
+        assert_eq!(cost.fetched, vec!["glibc-2.42", "glibc-2.42-bin"]);
+        assert_eq!(cost.download.as_deref(), Some("1.5 MiB"));
         assert_eq!(
-            cost(text, Path::new("/nix/store/a-nix-shell.drv")),
-            Cost {
-                build: 1,
-                fetch: 3,
-                download: Some("1.5 MiB".into())
-            }
+            incoming_lines("fetch", &cost.fetched, 40),
+            vec!["[fetch] glibc 2.42, 2.42-bin"]
+        );
+        let many: Vec<String> = (0..45).map(|i| format!("p{i}-1.0")).collect();
+        assert_eq!(
+            incoming_lines("build", &many, 40).last().unwrap(),
+            "… and 5 more"
+        );
+    }
+
+    #[test]
+    fn lock_chunks_are_left_out_of_the_source_patch() {
+        let patch = "diff --git a/flake.nix b/flake.nix\n-a\n+b\ndiff --git a/flake.lock b/flake.lock\n-x\n+y\n";
+        assert_eq!(
+            without_lock(patch),
+            "diff --git a/flake.nix b/flake.nix\n-a\n+b\n"
         );
     }
 

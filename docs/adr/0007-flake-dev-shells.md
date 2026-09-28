@@ -129,7 +129,10 @@ untested.
 |---|---|---|
 | `goblins devshell diff [--update INPUT...] [--lock]` | sandbox | none; a preview with no side effects |
 | `goblins devshell refresh [--update INPUT...] [--lock] --reason TEXT` | sandbox | host approval |
-| `goblins devshell refresh SESSION [...]` | host | trusted; shows the diff, then applies |
+| `goblins devshell restore-lock` | sandbox | none; writes the trusted lock back |
+
+There is no host-initiated refresh: the host restarts a sandbox to choose a new
+dev shell.
 
 `--update` bumps the named inputs (all inputs when none are named). `--lock`
 adds entries for inputs that `flake.nix` declares but the lock lacks. Without
@@ -140,22 +143,41 @@ either, a missing lock entry is an error. A refresh runs in stages:
    workspace flake source. With `--update` or `--lock`, the candidate lock is
    computed here, in the snapshot, not in the workspace. A dry run gives the
    closure and the paths to fetch and build without building.
-3. **Approval** shows one generation diff, in the style of `nh`:
+3. **Approval** shows one generation diff, in the style of `nh`, against the
+   last trusted generation. It is the approver's whole basis for the decision:
 
    ```
-   devshell refresh  work/agent-2   gen 3 → 4          [a]pprove [d]iff [r]eject
-   Source   flake.nix +4 −1, nix/shell.nix +2
-   Inputs   nixpkgs  9f3c1a2 (2026-09-01) → 4be07d1 (2026-09-24)
-            + rust-overlay  github:oxalica/rust-overlay @ 1a2b3c4
-   Closure  [U] rustc 1.89.0 → 1.90.1   [A] cargo-nextest 0.9.104   [R] python3 3.12.8
-            size +212 MiB · 14 to fetch · 2 to build
-   Env      + RUST_SRC_PATH   ~ shellHook (3 lines changed)
-   Checks   ✓ inputs locked, allowed hosts   ✓ no nixConfig
+   Dev shell /src/app#rust · generation 3 → 4
+   Attention ! input 'nixpkgs' now comes from github:someone/nixpkgs (was github:NixOS/nixpkgs)
+             ! 2 derivation(s) will be built on this machine by the host Nix daemon
+             ! shellHook changed; it runs inside the sandbox after approval
+   Source    flake.nix +4 −1, nix/shell.nix +2 −0
+   Inputs    ~ nixpkgs  github:NixOS/nixpkgs → github:someone/nixpkgs  9f3c1a2 (2026-09-01) → 4be07d1 (2026-09-24)
+             + rust-overlay  github:oxalica/rust-overlay @ 1a2b3c4 (2026-09-20)
+   Packages  [U] rustc 1.89.0 → 1.90.1
+             [A] cargo-nextest 0.9.104
+   Env       ~ RUST_LOG: info → debug
+             ~ shellHook (see source diff)
+   Cost      14 to fetch (38.2 MiB) · 2 to build
+   Incoming  [build] my-tool 0.3.0
+             [fetch] glibc 2.42
+             …
+   Source diff:
+   diff --git a/flake.nix b/flake.nix
+   …
    ```
 
-   `d` opens the full source diff between the two store snapshots and the
-   `shellHook` diff. Source and lock differences are against the last trusted
-   generation. The prompt appears in the TUI and Emacs like other approvals.
+   - **Attention** comes first: changed input sources, new inputs, a
+     `nixConfig`, local builds and a changed `shellHook`.
+   - **Packages** compares the dev shell's direct inputs by name and version.
+   - **Incoming** lists every path the dry run will fetch or build, grouped
+     by package, so transitive changes (a new glibc under a nixpkgs bump) are
+     visible. A full runtime-closure comparison is only possible after the
+     build, so it is not part of the approval.
+   - **Env** shows short values; store-hash-only changes are ignored.
+   - The source diff leaves out `flake.lock`, which **Inputs** shows.
+
+   The TUI (scrollable) and Emacs render it line by line, escaping each line.
 4. **Apply** after approval: build, mount the new closure, write the new
    `env.sh`, run it once inside the sandbox, and record the generation and
    its lock as trusted. A candidate lock is written into the workspace only now.
@@ -242,8 +264,7 @@ store path and mounts its closure. Details are decided when it is built.
 
 ## Deferred
 
-- `goblins devshell diff` (preview without a request) and host-initiated
-  `goblins devshell refresh SESSION`.
+- `goblins devshell diff` (preview without a request).
 - Refresh with a daemon `--workspace` snapshot.
 - A time limit on evaluation; cancellation already ends it with the request.
 
