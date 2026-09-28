@@ -54,6 +54,15 @@ fn containing_store_output(path: &Path) -> Option<PathBuf> {
     canonical_store_output(&root).then_some(root)
 }
 
+/// How long a dev shell refresh may evaluate before approval: 10 minutes, or
+/// `GOBLINS_EVALUATION_TIMEOUT` seconds in the daemon's environment.
+fn evaluation_limit() -> Duration {
+    std::env::var("GOBLINS_EVALUATION_TIMEOUT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .map_or(Duration::from_secs(600), Duration::from_secs)
+}
+
 pub fn store_path(path: &Path) -> Result<PathBuf> {
     if !canonical_store_output(path) {
         return Err("not a canonical store output".into());
@@ -971,6 +980,9 @@ impl Session {
             .ok_or("dev shell refresh is not supported with a daemon --workspace snapshot")?;
         let tree = crate::devshell::visible_tree(&current.path, cwd)?;
         let evaluator = self.evaluator()?;
+        // A flake whose evaluation never ends must not keep the request
+        // pending until someone denies it.
+        let cancel = cancel.with_limit(evaluation_limit());
         let candidate = crate::devshell::candidate(
             current,
             changes,
@@ -978,8 +990,10 @@ impl Session {
             &[tree],
             evaluator.git(),
             &self.directory,
-            cancel,
-        )?;
+            &cancel,
+        )
+        // Report a timeout or cancellation, not the interrupted command.
+        .map_err(|e| cancel.check().err().unwrap_or(e))?;
         let result = (
             serde_json::to_value(&candidate.preview)?,
             candidate.identity(&current.attr),

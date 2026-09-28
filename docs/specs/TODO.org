@@ -106,23 +106,6 @@ Lets an agent see the approval preview before asking.
 - Update the skill =skills/goblins-packages/SKILL.md= to suggest checking
   the diff before refreshing.
 
-* TODO Time limit on evaluation
-
-A flake that hangs during evaluation keeps the request pending until it is
-denied (denial cancels it).
-
-- Add a deadline to evaluator commands: =process::command_with_fds=
-  (=crates/controller/src/process.rs=) loops on =cancel.check()= every
-  =WORKER_TICK=; add an optional deadline there, or wrap the cancellation.
-- Apply it to pre-approval work (=devshell::candidate= and =prepare=:
-  metadata, lock, =derivation show=, dry run). Builds after approval
-  (=apply=, =print-dev-env=) can legitimately take long; decide separately.
-- Suggested default: 10 minutes; report "evaluation timed out after …" so
-  the request fails with a clear message.
-- Test with a flake whose evaluation never ends (for example infinite
-  recursion guarded to loop, or =builtins.fetchurl= to a blackhole) and a
-  short test-only deadline.
-
 * TODO Docker engine does not see dev shell refresh mounts
 
 A sandbox attached to its scope's Docker engine

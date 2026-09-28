@@ -1,5 +1,6 @@
 """Host-launched flake dev shells (ADR 0007) through the real CLI and sandbox."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -291,6 +292,26 @@ class DevShellRefreshTests(DevShellTests):
         output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         self.assertIn("N=original", output)
 
+    def test_refresh_evaluation_times_out(self):
+        d = Daemon(env={**os.environ, "GOBLINS_EVALUATION_TIMEOUT": "5"})
+        self.addCleanup(d.close)
+        terminal = Terminal([str(d.app), "--state-dir", str(d.state), "run", "shell",
+                             "--dev-shell", ".", "--name", "slow"], cwd=self.project)
+        self.addCleanup(terminal.close)
+        terminal.expect(r"(?:^|\n)hook-ran in ")
+        # 10^10 additions: evaluation effectively never ends.
+        flake = (self.project / "flake.nix").read_text().replace(
+            'DEV_MARKER = "original";',
+            "DEV_MARKER = toString (builtins.foldl' (a: _: builtins.foldl' (b: _: b + 1) a "
+            "(builtins.genList (x: x) 100000)) 0 (builtins.genList (x: x) 100000));")
+        (self.project / "flake.nix").write_text(flake)
+        start = time.monotonic()
+        output, code = self.run_in("goblins devshell refresh", terminal=terminal)
+        self.assertLess(time.monotonic() - start, 60)
+        self.assertEqual(code, 1, output)
+        self.assertIn("evaluation timed out after 5 s", output)
+        self.assertEqual([r["state"] for r in d.permissions() if r["kind"] == "devshell"], ["failed"])
+
     def roots(self):
         return sorted(p.name for p in (self.d.state / self.session / "resources/roots").iterdir()
                       if p.name.endswith("-source"))
@@ -331,6 +352,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
     test_denied_refresh_changes_nothing = None
     test_pending_candidate_source_is_a_gc_root = None
     test_refresh_never_builds_import_from_derivation_before_approval = None
+    test_refresh_evaluation_times_out = None
 
     def setUp(self):
         root = tempfile.TemporaryDirectory(prefix="goblin-devshell-repo-")

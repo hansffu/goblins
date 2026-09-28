@@ -11,13 +11,15 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 pub const WORKER_TICK: Duration = Duration::from_millis(20);
 #[derive(Clone, Default)]
 pub struct Cancellation {
     cancelled: Arc<AtomicBool>,
     parent: Option<Arc<AtomicBool>>,
+    /// When the work times out, and its time limit for the message.
+    deadline: Option<(Instant, Duration)>,
 }
 impl Cancellation {
     pub fn cancel(&self) {
@@ -28,6 +30,14 @@ impl Cancellation {
         Self {
             cancelled: Arc::default(),
             parent: Some(self.cancelled.clone()),
+            deadline: self.deadline,
+        }
+    }
+    /// The same cancellation, which also fails once `limit` has passed.
+    pub fn with_limit(&self, limit: Duration) -> Self {
+        Self {
+            deadline: Some((Instant::now() + limit, limit)),
+            ..self.clone()
         }
     }
     pub fn check(&self) -> Result<()> {
@@ -38,9 +48,19 @@ impl Cancellation {
                 .is_some_and(|p| p.load(Ordering::Relaxed))
         {
             Err("session cancelled".into())
+        } else if let Some((deadline, limit)) = self.deadline
+            && Instant::now() >= deadline
+        {
+            Err(format!("evaluation timed out after {}", duration(limit)).into())
         } else {
             Ok(())
         }
+    }
+}
+fn duration(limit: Duration) -> String {
+    match limit.as_secs() {
+        s if s >= 60 && s % 60 == 0 => format!("{} min", s / 60),
+        s => format!("{s} s"),
     }
 }
 struct CommandChild {
@@ -214,5 +234,29 @@ pub fn helper_line(file: &mut File, timeout: Duration, cancel: &Cancellation) ->
         if data.len() > 256 {
             return Err("oversized helper response".into());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_time_limit_fails_checks_once_it_passes() {
+        let session = Cancellation::default();
+        let limited = session.child().with_limit(Duration::ZERO);
+        let error = limited.check().unwrap_err().to_string();
+        assert_eq!(error, "evaluation timed out after 0 s");
+        assert!(limited.child().check().is_err());
+        assert!(session.check().is_ok());
+        assert!(session.with_limit(Duration::from_secs(600)).check().is_ok());
+        assert_eq!(duration(Duration::from_secs(600)), "10 min");
+        assert_eq!(duration(Duration::from_secs(90)), "90 s");
+        // Cancellation is still reported as such.
+        session.cancel();
+        assert_eq!(
+            limited.check().unwrap_err().to_string(),
+            "session cancelled"
+        );
     }
 }

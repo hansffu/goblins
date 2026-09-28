@@ -263,6 +263,12 @@ store path and mounts its closure. Details are decided when it is built.
 - A flake in a subdirectory keeps its whole source tree (`path:ROOT?dir=SUB`),
   so it can use files outside its directory as with ordinary Nix; the source
   diff compares whole trees.
+- Refresh evaluation before approval (snapshot, lock, evaluation, dry run)
+  fails after 10 minutes (`GOBLINS_EVALUATION_TIMEOUT` seconds in the daemon's
+  environment), so a flake that never finishes evaluating fails the request
+  instead of keeping it pending. Building after approval and launch have no
+  limit: launch allows import-from-derivation, whose builds can take long, and
+  the host user starting it can stop it.
 - A candidate's source snapshot is GC-rooted as soon as its preview is ready,
   so garbage collection during approval cannot remove it.
 
@@ -270,7 +276,6 @@ store path and mounts its closure. Details are decided when it is built.
 
 - `goblins devshell diff` (preview without a request).
 - Refresh with a daemon `--workspace` snapshot.
-- A time limit on evaluation; cancellation already ends it with the request.
 
 - `nix build`, `nix flake check`, `nix fmt`, templates and other flake outputs.
 - Dev shell defaults in `mkGoblin`.

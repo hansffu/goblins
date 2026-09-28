@@ -133,7 +133,9 @@ environment: source =env.sh= in Bash, or start a new shell, to use the new
 generation. New children start in it. A refresh to a generation this sandbox or
 an ancestor already has (same flake source and lock) is approved
 automatically. Fetches during a refresh use the goblin's own network; an
-offline goblin's evaluation is offline too.
+offline goblin's evaluation is offline too. Evaluation before approval fails
+after 10 minutes; set =GOBLINS_EVALUATION_TIMEOUT= (seconds) in the daemon's
+environment to change it. Building after approval has no limit.
 
 The flake's source tree (its Git work tree, or the flake directory) must be
 inside the sandbox's working directory, at launch and at refresh, so evaluation
