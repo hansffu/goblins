@@ -84,33 +84,37 @@ Set this to the directory passed to `goblins --state-dir'."
     (mapcar (lambda (file) (list (nth 0 file) (nth 1 file) (nreverse (nth 2 file))))
             (nreverse files))))
 
+;; magit-section buffers render `font-lock-face', not `face'.
 (defun goblins--insert-diff (request patch)
-  "Insert PATCH of REQUEST as magit-style sections; non-Nix files start collapsed."
+  "Insert PATCH of REQUEST like a Magit diff; non-Nix files start collapsed."
   (require 'diff-mode)
   (let* ((files (goblins--patch-files patch))
          (other (cl-count-if-not (lambda (f) (string-suffix-p ".nix" (car f))) files)))
+    (insert "\n")
     (magit-insert-section (goblins-diff-section (list 'diff request))
       (magit-insert-heading
-        (propertize (format "    Source diff (%d file%s%s)\n" (length files)
-                            (if (= (length files) 1) "" "s")
-                            (if (> other 0) (format ", %d non-Nix collapsed" other) ""))
-                    'face 'magit-section-heading))
-      (unless files (insert "      No source changes\n"))
+        (propertize "Source diff" 'font-lock-face 'magit-section-heading)
+        (format " (%d file%s%s)" (length files) (if (= (length files) 1) "" "s")
+                (if (> other 0) (format ", %d non-Nix collapsed" other) "")))
+      (unless files (insert "No source changes\n"))
       (dolist (file files)
         (let ((nix (string-suffix-p ".nix" (car file))))
           (magit-insert-section (goblins-diff-file-section (list request (car file)) (not nix))
             (magit-insert-heading
-              (propertize (format "      %-10s %s%s\n" (nth 1 file) (goblins--safe (car file))
+              (propertize (format "%-11s%s%s" (nth 1 file) (goblins--safe (car file))
                                   (if nix "" "  (not Nix)"))
-                          'face (goblins--diff-face 'magit-diff-file-heading 'diff-file-header)))
+                          'font-lock-face
+                          (goblins--diff-face 'magit-diff-file-heading 'diff-file-header)))
             (dolist (line (nth 2 file))
+              ;; The newline carries the face too, so backgrounds span the window.
               (insert (propertize
-                       (concat "      " (goblins--safe (string-replace "\t" "    " line)) "\n")
-                       'face (pcase (and (> (length line) 0) (aref line 0))
-                               (?@ (goblins--diff-face 'magit-diff-hunk-heading 'diff-hunk-header))
-                               (?+ (goblins--diff-face 'magit-diff-added 'diff-added))
-                               (?- (goblins--diff-face 'magit-diff-removed 'diff-removed))
-                               (_ (goblins--diff-face 'magit-diff-context 'diff-context))))))))))))
+                       (concat (goblins--safe (string-replace "\t" "    " line)) "\n")
+                       'font-lock-face
+                       (pcase (and (> (length line) 0) (aref line 0))
+                         (?@ (goblins--diff-face 'magit-diff-hunk-heading 'diff-hunk-header))
+                         (?+ (goblins--diff-face 'magit-diff-added 'diff-added))
+                         (?- (goblins--diff-face 'magit-diff-removed 'diff-removed))
+                         (_ (goblins--diff-face 'magit-diff-context 'diff-context))))))))))))
 
 (defun goblins--default-directory ()
   (let ((root (or (getenv "XDG_RUNTIME_DIR")
@@ -234,12 +238,16 @@ Set this to the directory passed to `goblins --state-dir'."
     (setq forest (cdr forest))))
 
 (defun goblins-toggle-tree ()
-  "Expand or collapse the selected tree branch, without displaying details."
+  "Expand or collapse the selected tree branch or diff section.
+Diff sections also fold in the details view."
   (interactive)
-  (unless goblins--details
-    (when-let* ((section (magit-current-section))
-                ((oref section children)))
-      (magit-section-toggle section))))
+  (when-let* ((section (magit-current-section)))
+    (cond
+     ((or (object-of-class-p section 'goblins-diff-section)
+          (object-of-class-p section 'goblins-diff-file-section))
+      (magit-section-toggle section))
+     ((and (not goblins--details) (oref section children))
+      (magit-section-toggle section)))))
 
 (defun goblins-details ()
   "Show the selected sandbox or request in the details view."
@@ -290,7 +298,7 @@ Set this to the directory passed to `goblins --state-dir'."
          (inhibit-read-only t))
     (erase-buffer)
     (magit-insert-section (goblins-section 'details-root)
-      (insert (propertize "Goblins details\n" 'face 'magit-section-heading)
+      (insert (propertize "Goblins details\n" 'font-lock-face 'magit-section-heading)
               (goblins--safe goblins--notice) "\n"
               "b / q: back to tree    t: terminal    a / d: decide request\n\n")
       (cond
@@ -338,7 +346,7 @@ Set this to the directory passed to `goblins --state-dir'."
                    (lambda (r) (equal (plist-get r :state) "pending")) requests)))
     (erase-buffer)
     (magit-insert-section (goblins-section 'root)
-      (insert (propertize "Goblins\n" 'face 'magit-section-heading)
+      (insert (propertize "Goblins\n" 'font-lock-face 'magit-section-heading)
               (goblins--safe goblins--directory) "\n"
               (goblins--safe goblins--notice) "\n\n")
       (magit-insert-section (goblins-section 'agents)
