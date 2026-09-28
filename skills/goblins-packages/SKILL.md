@@ -23,8 +23,14 @@ in that project flake's dev shell, like `nix develop`: its tools, variables and
 `shellHook` exports are already in your environment. Run
 `source /run/goblins/devshell/env.sh` in Bash if you also need the dev shell's
 functions. Editing `flake.nix` or
-`flake.lock` does not change the running environment; report that a new dev
-shell needs the host to relaunch the sandbox. Do not edit `flake.lock` by hand.
+`flake.lock` does not change the running environment. After changing the
+flake, run `goblins devshell refresh --reason "REASON"` (add `--lock` for new
+inputs, or `--update [INPUT...]` to update inputs) and wait for the host's
+decision. Afterwards, `source /run/goblins/devshell/env.sh` in Bash, or start a
+new shell, to use the new environment; running processes keep the old one.
+Never edit `flake.lock` by hand or with other tools: a refresh rejects any lock
+the host has not trusted. If it reports that `flake.lock` differs, run
+`goblins devshell restore-lock` and refresh with `--update` or `--lock` instead.
 
 Docker is not a package: to use containers, follow goblins-docker and run
 `goblins enable-docker` instead of requesting `docker`.

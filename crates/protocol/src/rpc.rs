@@ -320,11 +320,36 @@ pub struct PermissionParams {
     #[serde(default)]
     pub package: String,
     pub reason: String,
+    /// Dev shell refresh: flake inputs to update; empty means all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<Vec<String>>,
+    /// Dev shell refresh: lock inputs `flake.nix` declares but the lock lacks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock: bool,
+}
+/// A flake input name, or a `/`-separated path to a nested input.
+pub fn input_name(name: &str) -> bool {
+    (1..=200).contains(&name.len())
+        && name.split('/').all(|part| {
+            let mut bytes = part.bytes();
+            bytes
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                && bytes.all(|b| b.is_ascii_alphanumeric() || b"_-'".contains(&b))
+        })
 }
 impl PermissionParams {
     pub fn validate(&self) -> bool {
-        ((self.kind == "package" && crate::package_name(&self.package))
-            || (self.kind == "docker" && self.package.is_empty()))
+        let refresh = self.update.is_some() || self.lock;
+        ((self.kind == "package" && crate::package_name(&self.package) && !refresh)
+            || (self.kind == "docker" && self.package.is_empty() && !refresh)
+            || (self.kind == "devshell"
+                && self.package.is_empty()
+                && !(self.update.is_some() && self.lock)
+                && self
+                    .update
+                    .as_ref()
+                    .is_none_or(|u| u.len() <= 32 && u.iter().all(|i| input_name(i)))))
             && (1..=1024).contains(&self.reason.chars().count())
     }
 }

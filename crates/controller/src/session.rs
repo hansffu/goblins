@@ -133,6 +133,9 @@ impl Inheritance {
     pub(crate) fn integration(&self) -> Option<&str> {
         self.launch.integration.as_deref()
     }
+    pub(crate) fn dev_shell(&self) -> Option<&crate::devshell::DevShell> {
+        self.launch.dev_shell.as_ref()
+    }
     pub(crate) fn initially_available(&self, path: &Path) -> bool {
         self.launch.initial_packages.iter().any(|p| p == path)
     }
@@ -162,6 +165,7 @@ pub struct Session {
     directory_owner: Arc<SessionDirectory>,
     binds: Option<Arc<crate::binds::Plan>>,
     workspace: Option<Arc<SharedWorkspace>>,
+    candidate: Option<crate::devshell::Candidate>,
 }
 impl Session {
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
@@ -203,6 +207,7 @@ impl Session {
             cancel,
             binds: None,
             workspace: None,
+            candidate: None,
         };
         for name in ["store", "packages", "roots", "workspace"] {
             fs::create_dir(session.directory.join(name))?;
@@ -871,23 +876,7 @@ impl Session {
         // terminates this session. Direct store paths appear before publication.
         let mount = (|| -> Result<()> {
             progress("mounting")?;
-            self.placeholders(&missing)?;
-            for (count, item) in missing.iter().enumerate() {
-                self.cancel.check()?;
-                before_mount(
-                    count,
-                    &self.directory.join("store").join(item.file_name().unwrap()),
-                )?;
-                writeln!(
-                    self.helper_input.as_mut().ok_or("helper not started")?,
-                    "{}",
-                    item.file_name().unwrap().to_str().unwrap()
-                )?;
-                if self.helper_reply(Duration::from_secs(30))? != "OK" {
-                    return Err("mount not acknowledged".into());
-                }
-                self.mounted.insert(item.clone());
-            }
+            self.mount_paths(&missing, &mut before_mount)?;
             self.cancel.check()?;
             progress("publishing")?;
             let staged = self.directory.join("packages/next");
@@ -905,6 +894,144 @@ impl Session {
             "ready",
             serde_json::json!({"package":name,"output":path,"closure":closure}),
         );
+        Ok(())
+    }
+    /// Mount store paths into the running sandbox through the helper.
+    fn mount_paths(
+        &mut self,
+        missing: &BTreeSet<PathBuf>,
+        before_mount: &mut impl FnMut(usize, &Path) -> Result<()>,
+    ) -> Result<()> {
+        self.placeholders(missing)?;
+        for (count, item) in missing.iter().enumerate() {
+            self.cancel.check()?;
+            before_mount(
+                count,
+                &self.directory.join("store").join(item.file_name().unwrap()),
+            )?;
+            writeln!(
+                self.helper_input.as_mut().ok_or("helper not started")?,
+                "{}",
+                item.file_name().unwrap().to_str().unwrap()
+            )?;
+            if self.helper_reply(Duration::from_secs(30))? != "OK" {
+                return Err("mount not acknowledged".into());
+            }
+            self.mounted.insert(item.clone());
+        }
+        Ok(())
+    }
+    /// Evaluation-time network for a refresh: the goblin's own.
+    fn evaluation_network(&self) -> crate::evaluator::Network {
+        use crate::evaluator::Network;
+        let namespaces = self
+            .network
+            .as_ref()
+            .map(|n| {
+                let [user, net] = n.fds();
+                (user, net)
+            })
+            .or_else(|| self.scope.as_ref().map(|s| (s.fds().0, s.fds().1)));
+        match namespaces {
+            Some((user, net)) if self.launch.pasta.is_some() => Network::Goblin {
+                user,
+                net,
+                resolv: self.directory.join("resolv.conf"),
+            },
+            _ => Network::None,
+        }
+    }
+    fn evaluator(&self) -> Result<crate::evaluator::Evaluator> {
+        crate::evaluator::Evaluator::new(
+            &self.directory,
+            &self.launch.bwrap,
+            self.launch.env.get("SSL_CERT_FILE").map(String::as_str),
+            self.evaluation_network(),
+        )
+    }
+    /// Evaluate the workspace flake as the next dev shell generation. Returns
+    /// the approval description and the candidate's identity.
+    pub fn prepare_refresh(
+        &mut self,
+        changes: &crate::devshell::Changes,
+        cancel: &Cancellation,
+    ) -> Result<(String, String)> {
+        self.candidate = None;
+        let current = self
+            .launch
+            .dev_shell
+            .as_ref()
+            .ok_or("this sandbox was not started with a dev shell")?;
+        // Evaluation may see only what the sandbox itself can see.
+        let cwd = self
+            .launch
+            .cwd
+            .as_ref()
+            .ok_or("dev shell refresh is not supported with a daemon --workspace snapshot")?;
+        let tree = crate::evaluator::source_tree(&current.path);
+        if !tree.starts_with(cwd) {
+            return Err(format!(
+                "the flake's source tree {} is outside this sandbox's working directory",
+                tree.display()
+            )
+            .into());
+        }
+        let evaluator = self.evaluator()?;
+        let candidate = crate::devshell::candidate(
+            current,
+            changes,
+            &evaluator,
+            &[tree],
+            evaluator.git(),
+            &self.directory,
+            cancel,
+        )?;
+        let result = (
+            candidate.description.clone(),
+            candidate.identity(&current.attr),
+        );
+        self.candidate = Some(candidate);
+        Ok(result)
+    }
+    /// Build, mount and publish the prepared candidate as the current
+    /// generation. Running processes keep their environment; the agent
+    /// sources the new `env.sh`.
+    pub fn apply_refresh(&mut self) -> Result<()> {
+        let candidate = self
+            .candidate
+            .take()
+            .ok_or("no prepared dev shell refresh")?;
+        let current = self.launch.dev_shell.as_ref().ok_or("no dev shell")?;
+        let evaluator = self.evaluator()?;
+        let next = crate::devshell::apply(
+            current,
+            candidate,
+            &evaluator,
+            &self.directory,
+            &self.cancel,
+        )?;
+        self.root(&next.source)?;
+        let closure = self.closure(std::slice::from_ref(&next.profile))?;
+        let missing = closure
+            .difference(&self.mounted)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Err(error) = self.mount_paths(&missing, &mut |_, _| Ok(())) {
+            self.event(
+                "mount-failure",
+                serde_json::json!({"devshell":next.generation}),
+            );
+            self.stop();
+            return Err(error);
+        }
+        let directory = self.directory.join("devshell");
+        fs::write(directory.join("env.sh.next"), &next.script)?;
+        fs::rename(directory.join("env.sh.next"), directory.join("env.sh"))?;
+        self.event(
+            "devshell",
+            serde_json::json!({"generation":next.generation,"profile":next.profile}),
+        );
+        self.launch.dev_shell = Some(next);
         Ok(())
     }
     pub fn docker_enabled(&self) -> bool {

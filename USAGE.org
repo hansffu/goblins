@@ -88,9 +88,48 @@ shell like =nix develop -c=: a Bash inside the sandbox sources
 =goblins status= shows it. Source =env.sh= again in Bash to get the functions,
 which are not inherited by programs.
 
-Children always inherit their parent's dev shell, evaluated at the parent's
-launch; they cannot choose another. Later edits to the workspace flake do not
-change a running sandbox or its children. The sandbox has no =nix= command.
+Children start in their parent's current dev shell generation; they cannot
+choose another. Later edits to the workspace flake do not change a running
+sandbox or its children until it refreshes. The sandbox has no =nix= command.
+
+All evaluation runs in a host-side evaluator sandbox: Bubblewrap with the store,
+the Nix daemon socket, the flake's source tree and a private state directory,
+without your home, SSH agent, netrc, access tokens, system =nix.conf= or flake
+registry. The flake's =flake.lock= must lock every input =flake.nix= uses; Nix
+itself would silently fetch unlocked inputs.
+
+** Refreshing from inside the sandbox
+
+#+begin_src sh
+goblins devshell refresh --reason "picked up the new formatter"
+goblins devshell refresh --update nixpkgs   # --update alone updates all inputs
+goblins devshell refresh --lock             # lock inputs newly added to flake.nix
+goblins devshell restore-lock
+#+end_src
+
+A refresh evaluates the workspace flake as the sandbox's next generation and
+asks the host. The approval shows one =nh=-style diff: changed source files,
+lock inputs, the dev shell's direct packages, environment variables, the cost
+to fetch and build, and the source diff. An agent never changes =flake.lock= by
+hand: only the lock the sandbox was launched with, or one in an approved
+generation, is trusted. Every refresh first compares the workspace lock (as
+JSON) with the trusted lock and fails on any other, naming what changed;
+=goblins devshell restore-lock= writes the trusted lock back. With =--update= or
+=--lock= the candidate lock is computed in a private copy, validated (only
+locked https forges, https tarballs, store paths and paths inside the flake)
+and written to the workspace only after approval.
+
+After approval Goblins builds and mounts the new closure and replaces
+=/run/goblins/devshell/env.sh=; the refresh command then runs it once, so the
+new =shellHook= runs inside the sandbox. Running processes keep their old
+environment: source =env.sh= in Bash, or start a new shell, to use the new
+generation. New children start in it. A refresh to a generation this sandbox or
+an ancestor already has (same flake source and lock) is approved
+automatically. Fetches during a refresh use the goblin's own network; an
+offline goblin's evaluation is offline too.
+
+Refresh currently requires the flake's source tree to be inside the sandbox's
+working directory, and is not supported with a daemon =--workspace= snapshot.
 
 * Scopes (Linux, no VM)
 

@@ -2,7 +2,7 @@
 
 Date: 2026-09-28
 
-Status: Proposed
+Status: Accepted
 
 This decision lifts part of the "arbitrary project flakes" deferral in
 [the project plan](../specs/PLAN.org): a sandbox can use a project flake's dev
@@ -227,7 +227,25 @@ store path and mounts its closure. Details are decided when it is built.
   closures.
 - The approval interface gains a generation diff view.
 
+## Implementation notes
+
+- Nix fetches and uses inputs that `flake.lock` does not mention, even with
+  `--no-update-lock-file`, and only warns. Launch and refresh therefore require
+  the lock Nix computes (`nix flake metadata --json`'s `locks`) to equal the
+  file; otherwise the flake is rejected, or a refresh must use `--lock`.
+- The package diff lists the dev shell derivation's direct inputs by name and
+  version; the environment diff ignores store-hash-only changes.
+- A refresh is also approved automatically when it equals the sandbox's own
+  current generation.
+- Refresh evaluates only a flake whose source tree lies inside the sandbox's
+  working directory, so evaluation never sees files the sandbox cannot.
+
 ## Deferred
+
+- `goblins devshell diff` (preview without a request) and host-initiated
+  `goblins devshell refresh SESSION`.
+- Refresh with a daemon `--workspace` snapshot.
+- A time limit on evaluation; cancellation already ends it with the request.
 
 - `nix build`, `nix flake check`, `nix fmt`, templates and other flake outputs.
 - Dev shell defaults in `mkGoblin`.

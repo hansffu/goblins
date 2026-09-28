@@ -13,6 +13,22 @@ pub struct Cli {
     pub command: Command,
 }
 #[derive(Subcommand)]
+pub enum DevshellCommand {
+    /// Ask the host to switch this sandbox to the workspace flake's dev shell
+    Refresh {
+        /// Update these flake inputs first (all inputs when none are named)
+        #[arg(long, num_args = 0.., value_name = "INPUT")]
+        update: Option<Vec<String>>,
+        /// Lock inputs flake.nix declares but flake.lock lacks
+        #[arg(long, conflicts_with = "update")]
+        lock: bool,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Write this sandbox's trusted flake.lock back into the workspace
+    RestoreLock,
+}
+#[derive(Subcommand)]
 pub enum Command {
     /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
     Integration {
@@ -53,6 +69,11 @@ pub enum Command {
     EnableDocker {
         #[arg(long)]
         reason: Option<String>,
+    },
+    /// This sandbox's flake dev shell (there is no nix command)
+    Devshell {
+        #[command(subcommand)]
+        command: DevshellCommand,
     },
     /// Launch a child using the same configuration and attach its terminal
     Run {

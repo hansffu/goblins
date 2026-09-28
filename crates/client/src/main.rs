@@ -86,6 +86,7 @@ fn run() -> Result<i32, String> {
                     json!({"kind":"docker", "reason":reason.unwrap_or_else(|| "Enable Docker in this sandbox".into())}),
                 );
             }
+            cli::Command::Devshell { command } => return devshell(command),
             cli::Command::Completions { shell } => {
                 cli::completions(shell);
                 return Ok(0);
@@ -167,6 +168,81 @@ fn run() -> Result<i32, String> {
     request_permission(json!({"kind":"package","package":package,"reason":reason}))
 }
 fn request_permission(params: serde_json::Value) -> Result<i32, String> {
+    Ok(request(params)?.0)
+}
+/// Write the sandbox's trusted lock into the workspace unless it is already
+/// there. Returns whether the file changed.
+fn write_trusted_lock() -> Result<(bool, u64), String> {
+    let trusted = call("devshell.lock", json!({}))?;
+    let path = std::path::PathBuf::from(trusted["path"].as_str().ok_or("missing lock path")?);
+    let generation = trusted["generation"].as_u64().unwrap_or(0);
+    let current = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    if current.as_ref() == Some(&trusted["lock"]) {
+        return Ok((false, generation));
+    }
+    let mut text = serde_json::to_string_pretty(&trusted["lock"]).map_err(|e| e.to_string())?;
+    text.push('\n');
+    let staged = path.with_file_name(".flake.lock.goblins");
+    std::fs::write(&staged, text).map_err(|e| format!("cannot write {}: {e}", staged.display()))?;
+    std::fs::rename(&staged, &path)
+        .map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
+    Ok((true, generation))
+}
+fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
+    match command {
+        cli::DevshellCommand::RestoreLock => {
+            let (changed, generation) = write_trusted_lock()?;
+            println!(
+                "flake.lock {} the trusted lock of dev shell generation {generation}",
+                if changed { "restored to" } else { "already is" }
+            );
+            Ok(0)
+        }
+        cli::DevshellCommand::Refresh {
+            update,
+            lock,
+            reason,
+        } => {
+            let mut params = json!({"kind":"devshell","reason":reason
+                .unwrap_or_else(|| "Refresh the dev shell from the workspace flake".into())});
+            if let Some(update) = update {
+                params["update"] = json!(update);
+            }
+            if lock {
+                params["lock"] = json!(true);
+            }
+            let (code, reply) = request(params)?;
+            if code != 0 {
+                if let Some(message) = reply["message"].as_str() {
+                    eprintln!("{message}");
+                }
+                return Ok(code);
+            }
+            let (changed, generation) = write_trusted_lock()?;
+            if changed {
+                println!("flake.lock updated to the approved lock");
+            }
+            // Enter the new generation once, like nix develop: its shellHook
+            // runs here, inside the sandbox.
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", ". /run/goblins/devshell/env.sh"])
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                eprintln!("warning: the dev shell's shellHook exited with {status}");
+            }
+            println!(
+                "Dev shell generation {generation} is active. Running processes keep their \
+                 old environment: run `source /run/goblins/devshell/env.sh` in Bash (or start \
+                 a new shell) to use it. New child sandboxes start in it."
+            );
+            Ok(0)
+        }
+    }
+}
+fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String> {
     let id = random_key()?;
     let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
@@ -204,11 +280,11 @@ fn request_permission(params: serde_json::Value) -> Result<i32, String> {
     match exchange() {
         Ok(reply) => {
             println!("{}", serde_json::to_string(&reply).unwrap());
-            Ok(if reply["status"] == "ready" { 0 } else { 1 })
+            Ok((if reply["status"] == "ready" { 0 } else { 1 }, reply))
         }
         Err(e) => {
             eprintln!("goblins-request: outcome unknown; do not retry automatically: {e}");
-            Ok(2)
+            Ok((2, json!(null)))
         }
     }
 }

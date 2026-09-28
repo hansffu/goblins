@@ -28,6 +28,12 @@ pub(super) enum Work {
         approved: bool,
         output: Option<PathBuf>,
     },
+    /// Evaluate a dev shell refresh candidate for approval.
+    Refresh {
+        approval: u64,
+        changes: crate::devshell::Changes,
+        cancel: Cancel,
+    },
 }
 pub(super) enum Completed {
     Preview {
@@ -38,6 +44,7 @@ pub(super) enum Completed {
         docker_enabled: bool,
         scope: Option<String>,
         dev_shell: Option<String>,
+        dev_identity: Option<String>,
         initial_packages: Vec<String>,
         master: OwnedFd,
         listener: UnixListener,
@@ -48,6 +55,16 @@ pub(super) enum Completed {
     Progress {
         request: String,
         state: &'static str,
+    },
+    /// Approval description and candidate identity, or why it cannot refresh.
+    Refresh {
+        approval: u64,
+        result: std::result::Result<(String, String), String>,
+    },
+    /// A refresh became the current generation; children inherit it.
+    DevShell {
+        identity: String,
+        inheritance: Inheritance,
     },
     Granted {
         reply: Reply,
@@ -122,6 +139,7 @@ impl Worker {
                                 &session.directory,
                                 &session.launch.bwrap,
                                 session.launch.env.get("SSL_CERT_FILE").map(String::as_str),
+                                crate::evaluator::Network::Host,
                             )?;
                             session.launch.dev_shell = Some(crate::devshell::prepare(
                                 &reference,
@@ -153,6 +171,7 @@ impl Worker {
                         .dev_shell
                         .as_ref()
                         .map(|d| d.reference.clone()),
+                    dev_identity: session.launch.dev_shell.as_ref().map(|d| d.identity()),
                     initial_packages: session
                         .launch
                         .initial_packages
@@ -189,6 +208,21 @@ impl Worker {
                                 break;
                             }
                         }
+                        Ok(Work::Refresh {
+                            approval,
+                            changes,
+                            cancel,
+                        }) => {
+                            let result = session
+                                .prepare_refresh(&changes, &cancel)
+                                .map_err(|e| e.to_string());
+                            if results
+                                .try_send(Completed::Refresh { approval, result })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
                         Ok(Work::Decide {
                             request: req,
                             approved,
@@ -201,6 +235,20 @@ impl Worker {
                             let result = if approved {
                                 if req.kind == "docker" {
                                     session.enable_docker()
+                                } else if req.kind == "devshell" {
+                                    session.apply_refresh().and_then(|()| {
+                                        let identity = session
+                                            .launch
+                                            .dev_shell
+                                            .as_ref()
+                                            .map(|d| d.identity())
+                                            .unwrap_or_default();
+                                        results.try_send(Completed::DevShell {
+                                            identity,
+                                            inheritance: session.inheritance(),
+                                        })?;
+                                        Ok(())
+                                    })
                                 } else {
                                     session.grant_observed(
                                         &req.package,
@@ -235,7 +283,12 @@ impl Worker {
                                 Err(error) => {
                                     let detail = error.to_string();
                                     session.event("error", serde_json::json!({"detail":detail}));
-                                    let category = if req.kind == "docker" {
+                                    let category = if req.kind == "devshell" {
+                                        format!(
+                                            "dev shell refresh failed: {}",
+                                            detail.chars().take(400).collect::<String>()
+                                        )
+                                    } else if req.kind == "docker" {
                                         if detail.starts_with("Docker requires a scope")
                                             || detail.contains("does not enable Docker")
                                         {

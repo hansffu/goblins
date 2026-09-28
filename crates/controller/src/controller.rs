@@ -92,6 +92,8 @@ pub struct Snapshot {
 }
 struct Pending {
     initial_output: Option<PathBuf>,
+    /// Identity of a prepared dev shell refresh candidate.
+    dev_identity: Option<String>,
     id: String,
     serial: u64,
     connection: u64,
@@ -108,6 +110,8 @@ struct Active {
     inheritance: Option<Inheritance>,
     exit_watch: Option<OwnedFd>,
     granted_outputs: BTreeMap<String, PathBuf>,
+    /// Identity of the current trusted dev shell generation.
+    dev_identity: Option<String>,
 }
 #[derive(Clone)]
 enum Role {
@@ -892,6 +896,7 @@ impl Controller {
                 inheritance: None,
                 exit_watch: None,
                 granted_outputs: BTreeMap::new(),
+                dev_identity: None,
                 created: self.next,
                 record,
                 worker: Some(worker),
@@ -919,6 +924,19 @@ impl Controller {
                     "name":record.name,"description":record.description,
                     "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell}))
+            }
+            "devshell.lock" => {
+                let _: Empty = params(value)?;
+                let dev = self.sessions[scope]
+                    .inheritance
+                    .as_ref()
+                    .and_then(|i| i.dev_shell())
+                    .ok_or((
+                        -32602,
+                        "this sandbox was not started with a dev shell".to_string(),
+                    ))?;
+                Ok(json!({"path":dev.path.join("flake.lock"),"lock":dev.lock,
+                    "generation":dev.generation}))
             }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
@@ -1059,15 +1077,36 @@ impl Controller {
         self.dirty = true;
         Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
     }
+    /// A refresh to a generation this sandbox or an ancestor already has
+    /// grants no new trust: the host launched or approved that generation.
+    fn inherits_dev_shell(&self, session: &str, identity: &str) -> bool {
+        let mut current = Some(session);
+        while let Some(id) = current {
+            let Some(a) = self.sessions.get(id) else {
+                return false;
+            };
+            if a.dev_identity.as_deref() == Some(identity) {
+                return true;
+            }
+            current = a.record.parent.as_deref();
+        }
+        false
+    }
     fn approve_inherited_requests(&mut self) {
         let decisions: Vec<_> = self
             .permissions
             .iter()
-            .filter(|r| r.state == "pending" && r.kind == "package")
+            .filter(|r| r.state == "pending" && ["package", "devshell"].contains(&r.kind.as_str()))
             .filter(|r| {
                 self.sessions.get(&r.session).is_some_and(|a| {
                     a.record.state == "running"
                         && a.pending.as_ref().is_some_and(|p| {
+                            if r.kind == "devshell" {
+                                return p
+                                    .dev_identity
+                                    .as_deref()
+                                    .is_some_and(|i| self.inherits_dev_shell(&r.session, i));
+                            }
                             p.initial_output.is_some()
                                 || self.inherits_package(&r.session, &r.package).is_some()
                         })
@@ -1368,6 +1407,22 @@ impl Controller {
                     if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
                     }
+                    if p.kind == "devshell" {
+                        if a.record.dev_shell.is_none() {
+                            return Err((
+                                -32602,
+                                "this sandbox was not started with a dev shell".into(),
+                            ));
+                        }
+                        p.package = match (&p.update, p.lock) {
+                            (Some(inputs), _) if inputs.is_empty() => {
+                                "refresh --update (all inputs)".into()
+                            }
+                            (Some(inputs), _) => format!("refresh --update {}", inputs.join(" ")),
+                            (None, true) => "refresh --lock".into(),
+                            (None, false) => "refresh".into(),
+                        };
+                    }
                     if self.permissions.len() >= 256 {
                         let index = self
                             .permissions
@@ -1392,6 +1447,18 @@ impl Controller {
                     let a = self.sessions.get_mut(&session).unwrap();
                     let w = a.worker.as_ref().ok_or_else(conflict)?;
                     let cancel = w.cancel.child();
+                    if p.kind == "devshell" {
+                        w.commands
+                            .try_send(Work::Refresh {
+                                approval: serial,
+                                changes: crate::devshell::Changes {
+                                    update: p.update.clone(),
+                                    lock: p.lock,
+                                },
+                                cancel: cancel.clone(),
+                            })
+                            .map_err(|_| capacity())?;
+                    }
                     if auto_approve || p.kind == "package" {
                         w.commands
                             .try_send(if auto_approve {
@@ -1416,6 +1483,7 @@ impl Controller {
                     }
                     a.pending = Some(Pending {
                         initial_output: None,
+                        dev_identity: None,
                         id: request.clone(),
                         serial,
                         connection: c.id,
@@ -1568,6 +1636,7 @@ impl Controller {
                         docker_enabled,
                         scope,
                         dev_shell,
+                        dev_identity,
                         initial_packages,
                         master,
                         listener,
@@ -1578,6 +1647,7 @@ impl Controller {
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = scope;
                         a.record.dev_shell = dev_shell;
+                        a.dev_identity = dev_identity;
                         a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
@@ -1613,6 +1683,45 @@ impl Controller {
                             });
                             self.dirty = true;
                         }
+                    }
+                    Completed::Refresh { approval, result } => {
+                        let Some(p) = a.pending.as_mut().filter(|p| p.serial == approval) else {
+                            continue;
+                        };
+                        let id = p.id.clone();
+                        if !self
+                            .permissions
+                            .iter()
+                            .any(|r| r.id == id && r.state == "pending")
+                        {
+                            continue;
+                        }
+                        match result {
+                            Ok((description, identity)) => {
+                                p.dev_identity = Some(identity);
+                                let r = self.permission_mut(&id).unwrap();
+                                r.preview = Some(json!({"description": description}));
+                            }
+                            Err(error) => {
+                                // A foreign lock or failed evaluation fails the
+                                // request; the agent gets the reason to act on.
+                                let p = a.pending.take().unwrap();
+                                p.cancel.cancel();
+                                let r = self.permission_mut(&id).unwrap();
+                                r.state = "failed".into();
+                                r.message = Some(bounded(&error));
+                                self.reply_permission(&id, "error", Some(bounded(&error)));
+                            }
+                        }
+                        self.dirty = true;
+                    }
+                    Completed::DevShell {
+                        identity,
+                        inheritance,
+                    } => {
+                        a.dev_identity = Some(identity);
+                        a.inheritance = Some(inheritance);
+                        self.dirty = true;
                     }
                     Completed::Progress { request, state } => {
                         if a.pending.as_ref().is_some_and(|p| p.id == request)
@@ -1870,6 +1979,7 @@ mod tests {
                 inheritance: None,
                 exit_watch: None,
                 granted_outputs: BTreeMap::new(),
+                dev_identity: None,
                 created: 0,
                 record: SessionRecord {
                     docker_enabled: false,
@@ -1900,6 +2010,7 @@ mod tests {
                 listener: None,
                 pending: Some(Pending {
                     initial_output: None,
+                    dev_identity: None,
                     id: "r".into(),
                     serial: 1,
                     connection: 99,

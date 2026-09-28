@@ -388,13 +388,15 @@ impl View {
                 let text = format!(
                     "Sandbox: {}\n{}: {}\n{}\nReason: {}\nStatus: {}{}",
                     request_label(snapshot, p),
-                    if p.kind == "docker" {
-                        "Requested"
-                    } else {
+                    if p.kind == "package" {
                         "Package"
+                    } else {
+                        "Requested"
                     },
                     safe(&p.package),
-                    safe(&preview),
+                    // Previews such as a dev shell diff span lines; escape
+                    // each line, never the terminal's own control sequences.
+                    preview.lines().map(safe).collect::<Vec<_>>().join("\n"),
                     safe(&p.reason),
                     safe(&p.state),
                     p.message

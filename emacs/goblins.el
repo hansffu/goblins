@@ -87,15 +87,19 @@ Set this to the directory passed to `goblins --state-dir'."
       (goblins--field "Session:" (plist-get record :session))
       (goblins--field "Request:" (plist-get record :id))
       (when-let* ((preview (plist-get record :preview)))
-        (goblins--field
-         "Preview:"
-         (or (plist-get preview :description)
-             (if-let* ((error (plist-get preview :error)))
-                 error
-               (format "In store: %s; download: %s; build required: %s"
-                       (if (eq (plist-get preview :in_store) t) "yes" "no")
-                       (or (plist-get preview :download) "unknown")
-                       (if (eq (plist-get preview :build_required) t) "yes" "no"))))))
+        ;; A dev shell diff spans lines; each line is escaped on its own.
+        (let ((lines (split-string
+                      (or (plist-get preview :description)
+                          (if-let* ((error (plist-get preview :error)))
+                              error
+                            (format "In store: %s; download: %s; build required: %s"
+                                    (if (eq (plist-get preview :in_store) t) "yes" "no")
+                                    (or (plist-get preview :download) "unknown")
+                                    (if (eq (plist-get preview :build_required) t) "yes" "no"))))
+                      "\n")))
+          (goblins--field "Preview:" (car lines))
+          (dolist (line (cdr lines))
+            (goblins--field "" line))))
       (when-let* ((message (plist-get record :message)))
         (goblins--field "Message:" message))
       (insert "\n"))))

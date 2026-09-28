@@ -9,6 +9,7 @@ use crate::{
 use std::{
     ffi::OsString,
     fs,
+    os::{fd::RawFd, unix::process::CommandExt},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -22,12 +23,27 @@ flake-registry =
 ";
 const DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket";
 
+/// Where evaluation-time fetches leave the host.
+pub enum Network {
+    /// Host networking, for host-initiated launches.
+    Host,
+    /// No network, matching an offline goblin.
+    None,
+    /// The requesting goblin's user and network namespaces and its resolver.
+    Goblin {
+        user: RawFd,
+        net: RawFd,
+        resolv: PathBuf,
+    },
+}
+
 pub struct Evaluator {
     root: PathBuf,
     bwrap: PathBuf,
     nix: PathBuf,
     git: Option<PathBuf>,
     cacert: Option<String>,
+    network: Network,
 }
 
 /// Resolve a host command to its canonical store path; the evaluator sees the
@@ -56,7 +72,12 @@ impl Evaluator {
     /// `directory` is the session's private host directory. The evaluator
     /// state (configuration, fetcher cache, GC-root links) lives beneath it and
     /// is deleted with the session.
-    pub fn new(directory: &Path, bwrap: &Path, cacert: Option<&str>) -> Result<Self> {
+    pub fn new(
+        directory: &Path,
+        bwrap: &Path,
+        cacert: Option<&str>,
+        network: Network,
+    ) -> Result<Self> {
         let root = directory.join("eval");
         for name in ["conf", "cache", "state", "roots"] {
             fs::create_dir_all(root.join(name))?;
@@ -68,7 +89,18 @@ impl Evaluator {
             nix: store_command("nix").ok_or("host nix is not a Nix store command")?,
             git: store_command("git"),
             cacert: cacert.map(str::to_string),
+            network,
         })
+    }
+
+    /// A private writable copy for computing a candidate lock.
+    pub fn work(&self) -> PathBuf {
+        self.root.join("work")
+    }
+
+    /// The host `git` in the store, for diffs of store trees.
+    pub fn git(&self) -> Option<&Path> {
+        self.git.as_deref()
     }
 
     /// Where GC-root links for evaluated outputs must be created.
@@ -92,12 +124,37 @@ impl Evaluator {
             path.push(git.parent().unwrap().display().to_string());
         }
         let mut command = Command::new(&self.bwrap);
-        command.args(["--unshare-all", "--share-net", "--die-with-parent"]);
+        command.args(["--unshare-all", "--die-with-parent"]);
         command.args(["--uid", &uid, "--gid", &gid, "--clearenv"]);
         command.args(["--ro-bind", "/nix/store", "/nix/store"]);
         command.args(["--ro-bind", DAEMON_SOCKET, DAEMON_SOCKET]);
-        command.args(["--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf"]);
-        command.args(["--ro-bind-try", "/etc/hosts", "/etc/hosts"]);
+        let mut keep = Vec::new();
+        match &self.network {
+            Network::Host => {
+                command.arg("--share-net");
+                command.args(["--ro-bind-try", "/etc/resolv.conf", "/etc/resolv.conf"]);
+                command.args(["--ro-bind-try", "/etc/hosts", "/etc/hosts"]);
+            }
+            Network::None => {}
+            &Network::Goblin {
+                user,
+                net,
+                ref resolv,
+            } => {
+                // Share the joined namespace; Bubblewrap nests its own user
+                // namespace inside the goblin's, as the mount helper does.
+                command.arg("--share-net");
+                command.arg("--ro-bind").arg(resolv).arg("/etc/resolv.conf");
+                keep.extend([user, net]);
+                unsafe {
+                    command.pre_exec(move || {
+                        crate::unix::cvt(libc::setns(user, libc::CLONE_NEWUSER))?;
+                        crate::unix::cvt(libc::setns(net, libc::CLONE_NEWNET))?;
+                        Ok(())
+                    });
+                }
+            }
+        }
         // An empty private home: no dotfiles, SSH keys or credentials.
         command.args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]);
         for dir in visible {
@@ -125,6 +182,6 @@ impl Evaluator {
             command.args(["--setenv", "NIX_SSL_CERT_FILE", cacert]);
         }
         command.arg("--").arg(&self.nix).args(args);
-        process::command(&mut command, log, cancel)
+        process::command_with_fds(&mut command, log, cancel, &keep)
     }
 }
