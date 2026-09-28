@@ -91,6 +91,28 @@ class DevShellTests(unittest.TestCase):
         self.assertEqual(record["state"], "failed", record)
         self.assertIn("flake.lock", record["detail"])
 
+    def test_evaluation_cannot_reach_host_files_outside_the_flake(self):
+        # Host Nix would read this repository; the evaluator sandbox cannot see it.
+        outside = tempfile.TemporaryDirectory(prefix="goblin-devshell-outside-")
+        self.addCleanup(outside.cleanup)
+        repo = Path(outside.name)
+        (repo / "token").write_text("host-secret\n")
+        for args in (["init", "-q"], ["add", "token"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "secret"]):
+            command(["git", "-C", str(repo), *args])
+        rev = command(["git", "-C", str(repo), "rev-parse", "HEAD"])
+        flake = (self.project / "flake.nix").read_text().replace(
+            'DEV_MARKER = "original";',
+            f'DEV_MARKER = builtins.readFile "${{builtins.fetchGit {{ url = "file://{repo}"; rev = "{rev}"; }}}}/token";')
+        (self.project / "flake.nix").write_text(flake)
+        result = self.d.rpc.call("sessions.start", {
+            "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
+            "dev_shell": str(self.project), "rows": 24, "cols": 80})
+        record = self.d.wait(lambda: (r if (r := self.d.get(result["session"]))["state"]
+                                      not in ("starting", "running", "stopping") else None), timeout=60)
+        self.assertEqual(record["state"], "failed", record)
+        self.assertIn(f'"{repo}" does not exist', record["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()

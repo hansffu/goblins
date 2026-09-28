@@ -118,8 +118,14 @@ impl Worker {
                             directory,
                         )?;
                         if let Some(reference) = dev_shell {
+                            let evaluator = crate::evaluator::Evaluator::new(
+                                &session.directory,
+                                &session.launch.bwrap,
+                                session.launch.env.get("SSL_CERT_FILE").map(String::as_str),
+                            )?;
                             session.launch.dev_shell = Some(crate::devshell::prepare(
                                 &reference,
+                                &evaluator,
                                 &session.directory,
                                 &token,
                             )?);

@@ -3,11 +3,13 @@
 //! edits never change what a sandbox received at launch.
 use crate::{
     Result,
-    process::{self, Cancellation},
+    evaluator::{Evaluator, source_tree},
+    process::Cancellation,
     session::store_path,
 };
 use serde_json::Value;
 use std::{
+    ffi::OsString,
     fs::{self, OpenOptions},
     io::Read,
     os::unix::fs::OpenOptionsExt,
@@ -95,13 +97,13 @@ pub fn parse_reference(reference: &str) -> Result<(PathBuf, Option<&str>)> {
     Ok((path.to_path_buf(), attr))
 }
 
-/// A flake's nixConfig is never applied, and launch never writes a lock.
-fn nix(subcommand: &[&str]) -> std::process::Command {
-    let mut c = crate::catalog::nix();
-    c.args(["--option", "accept-flake-config", "false"])
-        .args(subcommand)
-        .args(["--no-update-lock-file", "--no-write-lock-file"]);
-    c
+/// Launch and refresh never write or update a lock.
+fn nix(subcommand: &[&str]) -> Vec<OsString> {
+    subcommand
+        .iter()
+        .chain(&["--no-update-lock-file", "--no-write-lock-file"])
+        .map(OsString::from)
+        .collect()
 }
 
 fn read_bounded(path: &Path, limit: u64, what: &str) -> Result<Vec<u8>> {
@@ -121,18 +123,25 @@ fn read_bounded(path: &Path, limit: u64, what: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Snapshot and evaluate a dev shell for a host launch. `directory` is the
-/// session's private host directory; it receives the environment GC root.
-pub fn prepare(reference: &str, directory: &Path, cancel: &Cancellation) -> Result<DevShell> {
+/// Snapshot and evaluate a dev shell for a host launch in the evaluator
+/// sandbox. `directory` is the session's private host directory; it receives
+/// the evaluator state and the environment GC root.
+pub fn prepare(
+    reference: &str,
+    evaluator: &Evaluator,
+    directory: &Path,
+    cancel: &Cancellation,
+) -> Result<DevShell> {
     let (path, attr) = parse_reference(reference)?;
     if !fs::metadata(&path)?.is_dir() {
         return Err(format!("dev shell flake {} is not a directory", path.display()).into());
     }
-    let metadata: Value = serde_json::from_str(&process::command(
-        nix(&["flake", "metadata", "--json"]).arg(&path),
-        directory,
-        cancel,
-    )?)?;
+    // Only the flake's own source tree is visible to evaluation.
+    let visible = [source_tree(&path)];
+    let mut args = nix(&["flake", "metadata", "--json"]);
+    args.push(path.clone().into());
+    let metadata: Value =
+        serde_json::from_str(&evaluator.nix(&args, &visible, directory, cancel)?)?;
     let root = store_path(Path::new(
         metadata["path"]
             .as_str()
@@ -163,16 +172,15 @@ pub fn prepare(reference: &str, directory: &Path, cancel: &Cancellation) -> Resu
         source.display(),
         attr.map(|a| format!("#{a}")).unwrap_or_default()
     );
-    let link = directory.join("roots").join("devshell-profile");
-    process::command(
-        nix(&["print-dev-env", "--json"])
-            .arg("--profile")
-            .arg(&link)
-            .arg(&installable),
-        directory,
-        cancel,
-    )
-    .map_err(|e| format!("could not evaluate dev shell {reference}: {e}"))?;
+    let link = evaluator.roots().join("devshell-profile");
+    let mut args = nix(&["print-dev-env", "--json"]);
+    args.extend(["--profile".into(), link.clone().into(), installable.into()]);
+    evaluator.nix(&args, &[], directory, cancel).map_err(|e| {
+        format!(
+            "could not evaluate dev shell {reference}: {}",
+            cause(&e.to_string())
+        )
+    })?;
     let profile = store_path(&fs::canonicalize(&link)?)?;
     let environment: Value = serde_json::from_slice(&read_bounded(
         &profile,
@@ -188,6 +196,18 @@ pub fn prepare(reference: &str, directory: &Path, cancel: &Cancellation) -> Resu
         variables,
         script,
     })
+}
+
+/// Nix prints trace frames before the actual error; lead with the latter so
+/// bounded diagnostics keep it.
+fn cause(message: &str) -> String {
+    match message
+        .rfind("\nerror:")
+        .or_else(|| message.rfind("       error:"))
+    {
+        Some(at) => message[at..].trim().to_string(),
+        None => message.to_string(),
+    }
 }
 
 fn variable_name(name: &str) -> bool {
@@ -310,6 +330,13 @@ mod tests {
         ] {
             assert!(parse_reference(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn cause_keeps_the_final_nix_error() {
+        let message = "host command failed (exit status: 1): error:\n       … while x\n\n       error: path '/tmp/x' does not exist\n";
+        assert_eq!(cause(message), "error: path '/tmp/x' does not exist");
+        assert_eq!(cause("plain"), "plain");
     }
 
     #[test]

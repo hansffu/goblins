@@ -60,8 +60,9 @@ needs no approval. The controller:
    `narHash` and parsed `flake.lock` as **generation 1**, with GC roots;
 2. evaluates `nix print-dev-env --json` on that store copy, with
    `--no-update-lock-file` and `accept-flake-config = false`, in the evaluator
-   sandbox (below). Until the evaluator sandbox exists, launch uses host Nix
-   directly; that is acceptable only because the host chose this flake;
+   sandbox (below). Only the flake's source tree (its Git work tree, or the
+   flake directory) is visible. Launch uses the host network, because the
+   sandbox's network does not exist yet;
 3. builds the environment, mounts its closure read-only like a package grant,
    and writes the variables to `/run/goblins/devshell/env.sh`.
 
@@ -186,10 +187,12 @@ sees only the store, the source snapshot and the Nix daemon socket, with:
 - `accept-flake-config = false`, `experimental-features = nix-command flakes`,
   no `--impure`, and `--no-update-lock-file` except when computing a candidate
   lock;
-- the requesting goblin's network namespace, so fetches leave the host the same
-  way the agent's own traffic does;
-- `nixpkgs` and other registry names resolved through a Goblins-pinned
-  registry, not the host's;
+- for a refresh, the requesting goblin's network namespace, so fetches leave
+  the host the same way the agent's own traffic does;
+- the host `nix` and `git` resolved to their store paths, the host's
+  `/etc/resolv.conf` and `/etc/hosts`, and nothing else from `/etc`;
+- no flake registry (`flake-registry =`), so an indirect reference must
+  already be locked; a Goblins-pinned registry can be added later;
 - a time limit, and cancellation from the approval interface.
 
 Builds still go through the host Nix daemon and its build sandbox.

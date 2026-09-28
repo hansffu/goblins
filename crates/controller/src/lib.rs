@@ -5,6 +5,7 @@ pub mod config;
 pub mod controller;
 pub mod devshell;
 mod docker;
+pub mod evaluator;
 mod network;
 mod process;
 mod scope;
