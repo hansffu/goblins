@@ -294,8 +294,7 @@ impl Shared {
     pub fn acquire(
         self: &Arc<Self>,
         launch: &Launch,
-        filesystem: &[String],
-        sources: &[RawFd],
+        filesystem: crate::docker::Filesystem,
         grants: Vec<Grant>,
         owner: Inheritance,
         store: PathBuf,
@@ -337,29 +336,31 @@ impl Shared {
             // engine. Session control sockets and package profiles do not.
             let mut args = vec![];
             let mut i = 0;
-            while i < filesystem.len() {
-                let count = match filesystem[i].as_str() {
+            while i < filesystem.args.len() {
+                let count = match filesystem.args[i].as_str() {
                     "--setenv" | "--symlink" | "--bind-fd" | "--ro-bind-fd" | "--bind"
                     | "--ro-bind" => 3,
                     _ => 2,
                 };
-                if i + count > filesystem.len() {
+                if i + count > filesystem.args.len() {
                     return Err("invalid engine filesystem plan".into());
                 }
-                let private = matches!(filesystem[i].as_str(), "--bind" | "--ro-bind")
+                let private = matches!(filesystem.args[i].as_str(), "--bind" | "--ro-bind")
                     && matches!(
-                        filesystem[i + 2].as_str(),
+                        filesystem.args[i + 2].as_str(),
                         "/run/goblins/request.sock" | "/run/goblins/packages" | "/run/goblins/bin"
                     );
                 if !private {
-                    args.extend_from_slice(&filesystem[i..i + count]);
+                    args.extend_from_slice(&filesystem.args[i..i + count]);
                 }
                 i += count;
             }
             state.engine = Some(Engine::start(
                 launch,
-                &args,
-                sources,
+                crate::docker::Filesystem {
+                    args: &args,
+                    fds: filesystem.fds,
+                },
                 &storage_root(true)?,
                 &self.directory,
                 cancel,

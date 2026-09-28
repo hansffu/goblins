@@ -3,19 +3,22 @@ use crate::{RESIZE, STOP};
 use goblins_controller::host::Client;
 use goblins_controller::{Result, unix};
 use goblins_protocol::terminal::size;
+use serde::Serialize;
 use serde_json::json;
 use std::{os::fd::AsRawFd, path::PathBuf, sync::atomic::Ordering};
 
-pub fn run(
-    state: PathBuf,
-    name: String,
-    configuration: String,
-    agent_name: Option<String>,
-    parent: Option<String>,
-    scope: Option<String>,
-    dev_shell: Option<String>,
-    detatched: bool,
-) -> Result<i32> {
+/// What a host launch asks the daemon to start (`sessions.start`).
+#[derive(Serialize)]
+pub struct Start {
+    pub name: String,
+    pub configuration: String,
+    pub agent_name: Option<String>,
+    pub parent: Option<String>,
+    pub scope: Option<String>,
+    pub dev_shell: Option<String>,
+}
+
+pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
     use std::io::Read;
     if !detatched && unsafe { libc::isatty(0) != 1 } {
         return Err("goblins run requires terminal input".into());
@@ -34,7 +37,15 @@ pub fn run(
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let launch=control.call("sessions.start",json!({"key":key,"configuration":configuration,"name":name,"agent_name":agent_name,"parent":parent,"scope":scope,"dev_shell":dev_shell,"detached":detatched,"cwd":std::env::current_dir()?,"rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}))?;
+    let mut params = serde_json::to_value(start)?;
+    params.as_object_mut().unwrap().extend([
+        ("key".into(), json!(key)),
+        ("detached".into(), json!(detatched)),
+        ("cwd".into(), json!(std::env::current_dir()?)),
+        ("rows".into(), json!(dimensions.ws_row.max(1))),
+        ("cols".into(), json!(dimensions.ws_col.max(1))),
+    ]);
+    let launch = control.call("sessions.start", params)?;
     if detatched {
         println!("{launch}");
         return Ok(0);

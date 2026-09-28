@@ -93,10 +93,10 @@ struct SessionDirectory(PathBuf);
 impl Drop for SessionDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
-        if self.0.file_name().is_some_and(|n| n == "resources") {
-            if let Some(parent) = self.0.parent() {
-                let _ = fs::remove_dir(parent);
-            }
+        if self.0.file_name().is_some_and(|n| n == "resources")
+            && let Some(parent) = self.0.parent()
+        {
+            let _ = fs::remove_dir(parent);
         }
     }
 }
@@ -257,10 +257,9 @@ impl Session {
                 .docker
                 .as_ref()
                 .and_then(|d| d.client.clone())
+            && !session.launch.initial_packages.contains(&client)
         {
-            if !session.launch.initial_packages.contains(&client) {
-                session.launch.initial_packages.push(client);
-            }
+            session.launch.initial_packages.push(client);
         }
         session.binds = Some(inherited.binds);
         session.workspace = Some(inherited.workspace);
@@ -1113,8 +1112,10 @@ impl Session {
             .collect();
         let lease = selected.acquire(
             &self.launch,
-            &filesystem,
-            &sources,
+            crate::docker::Filesystem {
+                args: &filesystem,
+                fds: &sources,
+            },
             grants,
             self.inheritance(),
             self.directory.join("store"),

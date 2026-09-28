@@ -279,7 +279,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
         ),
         tone("title"),
     )];
-    let mut row =
+    let row =
         |lines: &mut Vec<Line<'static>>, key: &str, first: &mut bool, spans: Vec<Span<'static>>| {
             let label = if *first { key } else { "" };
             *first = false;
@@ -313,7 +313,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             "nix-config" => "flake declares nixConfig (ignored, never applied)".into(),
             "local-builds" => format!("{} derivation(s) build on this machine", note["count"]),
             "shell-hook" => "shellHook changed; it runs in the sandbox".into(),
-            other => format!("{}", plain(other)),
+            other => plain(other),
         };
         row(
             &mut lines,

@@ -138,22 +138,20 @@ visible to the engine, so containers bind-mounting them fail.
   store paths to an attached engine, or document the limitation.
 - Only matters when containers need those paths; lower priority.
 
-* TODO Fix the pre-existing Clippy failures
+* TODO Fix the pre-existing Python test failures
 
-=cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in
-USAGE "Reproducible checks") fails on master and this branch with:
+=python3 -m unittest discover -s tests -p 'test_*.py'= fails 3 of 121 tests,
+both before and after the launch source-tree check (verified at =c8c3076=):
 
-- =crates/controller/src/docker.rs:111= :: =collapsible_if=
-- =crates/controller/src/docker.rs:215= :: =too_many_arguments= (8/7)
-- =crates/controller/src/scope.rs:294= :: =too_many_arguments= (8/7,
-  =Shared::acquire=)
-- =crates/controller/src/session.rs:96= :: =collapsible_if=
-- =crates/controller/src/session.rs:254= :: =collapsible_if=
-
-Collapse the =if=s with =let= chains (the code already uses them). For the
-argument counts, group related parameters into a struct rather than adding
-=#[allow]=, unless that obscures the code. =nix flake check= does not run
-Clippy, so nothing else depends on this; run the full checks afterwards.
+- =test_ownership= =test_terminal_and_status_authorization= :: the sandbox
+  status now includes =dev_shell= (added on this branch); the test's expected
+  key set does not.
+- =test_codex_config= =test_mounts_hooks_and_child_inheritance= :: status stays
+  =starting= instead of =working=.
+- =test_codex_config= =test_native_ui_discovers_managed_hooks= :: Codex stops at
+  its "Do you trust the contents of this directory?" prompt, so the UI never
+  appears. Probably a newer Codex; the other Codex failure may have the same
+  cause.
 
 * TODO Remove daemon workspace snapshots (separate branch)
 

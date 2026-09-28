@@ -242,12 +242,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 .transpose()?;
             return attachment::run(
                 state,
-                config,
-                configuration,
-                name,
-                parent,
-                scope,
-                dev_shell,
+                attachment::Start {
+                    name: config,
+                    configuration,
+                    agent_name: name,
+                    parent,
+                    scope,
+                    dev_shell,
+                },
                 detatched,
             );
         }

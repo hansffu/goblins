@@ -108,13 +108,13 @@ impl Drop for Storage {
         }
         // Only an EMPTY directory may be removed by the unmapped host user.
         // The mapped guardian removes populated trees, without following links.
-        if let Err(error) = fs::remove_dir(&self.path) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!(
-                    "Docker storage cleanup incomplete at {}: {error}",
-                    self.path.display()
-                );
-            }
+        if let Err(error) = fs::remove_dir(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "Docker storage cleanup incomplete at {}: {error}",
+                self.path.display()
+            );
         }
     }
 }
@@ -207,6 +207,14 @@ pub(crate) fn map_ids(
     Ok(())
 }
 
+/// The engine's Bubblewrap filesystem arguments and the descriptors their
+/// `--bind-fd`/`--ro-bind-fd` entries name, which must stay open for it.
+#[derive(Clone, Copy)]
+pub struct Filesystem<'a> {
+    pub args: &'a [String],
+    pub fds: &'a [RawFd],
+}
+
 impl Engine {
     pub fn alive(&mut self) -> bool {
         matches!(self.process.try_wait(), Ok(None))
@@ -214,8 +222,7 @@ impl Engine {
 
     pub fn start(
         launch: &Launch,
-        filesystem: &[String],
-        sources: &[RawFd],
+        filesystem: Filesystem,
         storage_root: &Path,
         directory: &Path,
         cancel: &process::Cancellation,
@@ -265,7 +272,7 @@ impl Engine {
                 "--info-fd",
                 &info_w.as_raw_fd().to_string(),
             ])
-            .args(filesystem)
+            .args(filesystem.args)
             .args([
                 "--tmpfs",
                 "/run/docker",
@@ -340,7 +347,7 @@ impl Engine {
                     .append(true)
                     .open(directory.join("docker.log"))?,
             );
-        let mut keep = sources.to_vec();
+        let mut keep = filesystem.fds.to_vec();
         keep.extend([
             scope.outer.as_raw_fd(),
             scope.net.as_raw_fd(),
