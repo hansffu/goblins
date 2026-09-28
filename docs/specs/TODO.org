@@ -54,10 +54,9 @@ Development notes:
 * DONE =goblins flake run= (the =nix run= equivalent)
 CLOSED: [2026-09-28 Mon 23:15]
 
-Done in =4f9d6df=, as suggested below and confirmed with the user: only the
-dev shell flake, only the trusted generation (a changed workspace flake needs
-a refresh first), builds allowed without IFD, and =exec= in the caller's
-environment. =flake.run= is a sandbox method, not a permission kind; see
+Done as suggested below and confirmed with the user: only the dev shell
+flake, only the trusted generation (a changed workspace flake needs a refresh
+first), builds allowed without IFD, and =exec= in the caller's environment. =flake.run= is a sandbox method, not a permission kind; see
 "=nix run=" in ADR 0007 (=devshell::app=, =Session::run_app=,
 =DevShellFlakeRunTests=).
 
@@ -130,9 +129,9 @@ Lets an agent see the approval preview before asking.
 * DONE Time limit on evaluation
 CLOSED: [2026-09-28 Mon 22:51]
 
-Done in =3815ed0=: refresh evaluation before approval fails after 10 minutes
-(=GOBLINS_EVALUATION_TIMEOUT= seconds in the daemon's environment). Builds after
-approval and launch have no limit; see ADR 0007.
+Done: refresh evaluation before approval fails after 10 minutes
+(=GOBLINS_EVALUATION_TIMEOUT= seconds in the daemon's environment). Builds
+after approval and launch have no limit; see ADR 0007.
 
 
 A flake that hangs during evaluation keeps the request pending until it is
@@ -169,7 +168,7 @@ bind-mounting them fail.
 * DONE Launch must not widen access beyond the sandbox's working directory
 CLOSED: [2026-09-28 Mon 20:54]
 
-Done in =b09251f=: launch refuses a source tree outside the working directory
+Done: launch refuses a source tree outside the working directory
 (=devshell::visible_tree=, shared with refresh), and a dev shell needs a host
 working directory. No flag was added.
 
@@ -198,9 +197,9 @@ never granted.
 * DONE Fix the pre-existing Clippy failures
 CLOSED: [2026-09-28 Mon 21:29]
 
-Done in =0c08b37=, with =docker::Filesystem= and =attachment::Start= for the
-argument counts. Three more errors in the binary were hidden behind these and
-are fixed too.
+Done, with =docker::Filesystem= and =attachment::Start= for the argument
+counts. Three more errors in the binary were hidden behind these and are fixed
+too.
 
 
 =cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in
