@@ -180,6 +180,21 @@
     (should (equal (cdr (assoc '(other-diff "devshell") (goblins-test--sections 'goblins-diff-section)))
                    nil))))
 
+(ert-deftest goblins-diff-from-an-older-daemon-is-still-shown ()
+  (goblins-test--buffer
+    (let ((request (goblins-test--request "old")))
+      (setq request (plist-put request :kind "devshell")
+            request (plist-put request :preview
+                               (list :description "Dev shell /src · generation 1 → 2"
+                                     :diff "diff --git a/flake.nix b/flake.nix\n@@ -1 +1 @@\n-a\n+b\n"))
+            goblins--snapshot (goblins-test--snapshot request)))
+    (goblins--render)
+    (goblins-test--goto "old")
+    (goblins-details)
+    (should (string-match-p "Dev shell /src" (buffer-string)))
+    (should (string-match-p "^Nix changes (1 file)" (buffer-string)))
+    (should (string-match-p "^\\+b" (buffer-string)))))
+
 (ert-deftest goblins-details-retain-identity-and-never-target-a-replacement ()
   (goblins-test--buffer
     (goblins-test--goto "a")
