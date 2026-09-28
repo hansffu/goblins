@@ -414,5 +414,104 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
                       f"{self.project.resolve()}", record["detail"])
 
 
+APPS = """      apps.x86_64-linux = {
+        default = { type = "app"; program = "${greet}/bin/greet"; };
+        greet = { type = "app"; program = "${greet}/bin/greet"; };
+        outside = { type = "app"; program = "/bin/sh"; };
+        # A store path the app does not build: no string context.
+        literal = { type = "app"; program = builtins.unsafeDiscardStringContext "${pkgs.hello}/bin/hello"; };
+        leak = { type = "app"; program = "${pkgs.writeShellScriptBin "leak" ''
+          echo ${builtins.readFile "${builtins.fetchGit { url = "file://@REPO@"; rev = "@REV@"; }}/token"}
+        ''}/bin/leak"; };
+      };
+      packages.x86_64-linux.tool = pkgs.writeShellScriptBin "tool" "echo tool-ran";
+      devShells.x86_64-linux.default"""
+
+
+class DevShellFlakeRunTests(DevShellRefreshTests):
+    """goblins flake run: apps from the trusted generation, with no nix in the sandbox."""
+
+    def setUp(self):
+        # A Git repository outside the flake that evaluation must not reach.
+        outside = tempfile.TemporaryDirectory(prefix="goblin-devshell-outside-")
+        self.addCleanup(outside.cleanup)
+        self.outside = Path(outside.name)
+        (self.outside / "token").write_text("host-secret")
+        for args in (["init", "-q"], ["add", "token"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "secret"]):
+            command(["git", "-C", str(self.outside), *args])
+        self.rev = command(["git", "-C", str(self.outside), "rev-parse", "HEAD"])
+        super().setUp()
+
+    def write_flake(self, marker):
+        flake = FLAKE.replace("let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {",
+                              "let pkgs = nixpkgs.legacyPackages.x86_64-linux;\n"
+                              "        greet = pkgs.writeShellScriptBin \"greet\" ''echo \"greet:@MARKER@:$*\"'';\n"
+                              "    in {")
+        flake = flake.replace("      devShells.x86_64-linux.default", APPS, 1)
+        (self.project / "flake.nix").write_text(
+            flake.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker)
+            .replace("@REPO@", str(self.outside)).replace("@REV@", self.rev))
+
+    def test_apps_and_packages_of_the_trusted_generation_run_with_arguments(self):
+        output, code = self.run_in("goblins flake run .#greet -- a 'b c'", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn("greet:original:a b c", output)
+        output, code = self.run_in("goblins flake run")
+        self.assertEqual(code, 0, output)
+        self.assertIn("greet:original:", output)
+        # A package runs its main program, as with nix run.
+        output, code = self.run_in("goblins flake run '#tool'", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn("tool-ran", output)
+        # Running a trusted app asks nothing of the host.
+        self.assertEqual(self.d.permissions(), [])
+
+    def test_programs_must_be_built_store_outputs(self):
+        output, code = self.run_in("goblins flake run '#outside'")
+        self.assertEqual(code, 1, output)
+        self.assertIn("app program /bin/sh is not a path in the store", output)
+        output, code = self.run_in("goblins flake run '#literal'")
+        self.assertEqual(code, 1, output)
+        self.assertIn("does not come from a derivation or store path", output)
+        output, code = self.run_in("goblins flake run '#missing'")
+        self.assertEqual(code, 1, output)
+        self.assertIn("has no apps.x86_64-linux.missing or packages.x86_64-linux.missing", output)
+
+    def test_only_the_dev_shell_flake_is_served(self):
+        output, code = self.run_in("goblins flake run /tmp#greet")
+        self.assertEqual(code, 2, output)
+        self.assertIn("serves only this sandbox's dev shell flake", output)
+        output, code = self.run_in("goblins flake run github:NixOS/nixpkgs#hello")
+        self.assertEqual(code, 2, output)
+        self.assertIn("serves only this sandbox's dev shell flake", output)
+        output, code = self.run_in(f"goblins flake run {self.project}#greet")
+        self.assertEqual(code, 0, output)
+
+    def test_changed_workspace_flake_needs_a_refresh_first(self):
+        self.write_flake("edited")
+        output, code = self.run_in("goblins flake run '#greet'")
+        self.assertEqual(code, 1, output)
+        self.assertIn("the workspace flake differs from dev shell generation 1", output)
+        self.assertIn("goblins devshell refresh", output)
+        n = self.send(self.terminal, "goblins devshell refresh")
+        self.d.decide(self.pending_refresh(), True)
+        self.assertEqual(self.end(self.terminal, n)[1], 0)
+        output, code = self.run_in("goblins flake run '#greet'", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn("greet:edited:", output)
+
+    def test_app_evaluation_cannot_reach_host_files_outside_the_flake(self):
+        # The dev shell launched; only the app reads the outside repository.
+        output, code = self.run_in("goblins flake run '#leak'")
+        self.assertEqual(code, 1, output)
+        self.assertIn("could not evaluate app leak", output)
+        self.assertNotIn("host-secret", output)
+
+
+for _name in dir(DevShellRefreshTests):
+    if _name.startswith("test_") and _name not in DevShellFlakeRunTests.__dict__:
+        setattr(DevShellFlakeRunTests, _name, None)
+
 if __name__ == "__main__":
     unittest.main()

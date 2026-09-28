@@ -8,7 +8,7 @@ use crate::{
 };
 use goblins_protocol::{
     Request,
-    rpc::{self, Decoder, PermissionParams},
+    rpc::{self, Decoder, FlakeRunParams, PermissionParams},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -99,6 +99,15 @@ struct Pending {
     connection: u64,
     cancel: Cancel,
 }
+/// A `flake.run` call waiting on the worker.
+struct Run {
+    serial: u64,
+    connection: u64,
+    cancel: Cancel,
+}
+fn run_key(serial: u64) -> String {
+    format!("run-{serial}")
+}
 struct Active {
     created: u64,
     record: SessionRecord,
@@ -112,6 +121,7 @@ struct Active {
     granted_outputs: BTreeMap<String, PathBuf>,
     /// Identity of the current trusted dev shell generation.
     dev_identity: Option<String>,
+    run: Option<Run>,
 }
 #[derive(Clone)]
 enum Role {
@@ -711,6 +721,10 @@ impl Controller {
             }
             self.reply_permission(&p.id, "error", Some("session stopped".into()));
         }
+        if let Some(r) = self.sessions.get_mut(id).and_then(|a| a.run.take()) {
+            r.cancel.cancel();
+            self.reply_waiting(&run_key(r.serial), Err("session stopped".into()));
+        }
         self.dirty = true;
         Ok(json!({"accepted":true}))
     }
@@ -727,7 +741,27 @@ impl Controller {
             }
         }
     }
+    /// Answer and close the connection waiting under `key`.
+    fn reply_waiting(&mut self, key: &str, result: std::result::Result<Value, String>) {
+        for c in &mut self.connections {
+            if let Some((waiting, rpc_id)) = &c.waiting
+                && waiting == key
+            {
+                c.queue(match &result {
+                    Ok(value) => rpc::result(rpc_id.clone(), value.clone()),
+                    Err(message) => rpc::error(rpc_id.clone(), -32009, message),
+                });
+                c.close = true;
+            }
+        }
+    }
     fn withdraw(&mut self, connection: u64) {
+        // A disconnected caller no longer wants its app.
+        for a in self.sessions.values_mut() {
+            if a.run.as_ref().is_some_and(|r| r.connection == connection) {
+                a.run.take().unwrap().cancel.cancel();
+            }
+        }
         let mut gone = None;
         for a in self.sessions.values_mut() {
             if a.pending
@@ -897,6 +931,7 @@ impl Controller {
                 exit_watch: None,
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
+                run: None,
                 created: self.next,
                 record,
                 worker: Some(worker),
@@ -1268,7 +1303,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1369,6 +1404,45 @@ impl Controller {
                             .map_err(|e| (-32009, e.to_string()))?;
                         c.dead = true;
                         self.dirty = true;
+                        return Ok(None);
+                    }
+                    if call.method == "flake.run" {
+                        if !c.input.is_empty() {
+                            c.dead = true;
+                            return Err((-32600, "unexpected trailing input".into()));
+                        }
+                        let p: FlakeRunParams = params(call.params)?;
+                        if !p.validate() {
+                            return Err((-32602, "invalid app name".into()));
+                        }
+                        let serial = self.number();
+                        let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
+                        if a.record.dev_shell.is_none() {
+                            return Err((
+                                -32602,
+                                "this sandbox was not started with a dev shell".into(),
+                            ));
+                        }
+                        if a.run.is_some() {
+                            return Err((-32009, "another flake run is in progress".into()));
+                        }
+                        // The trusted generation's own source and lock grant no
+                        // new trust, so nothing is asked of the host.
+                        let w = a.worker.as_ref().ok_or_else(conflict)?;
+                        let cancel = w.cancel.child();
+                        w.commands
+                            .try_send(Work::Run {
+                                serial,
+                                app: p.app,
+                                cancel: cancel.clone(),
+                            })
+                            .map_err(|_| capacity())?;
+                        a.run = Some(Run {
+                            serial,
+                            connection: c.id,
+                            cancel,
+                        });
+                        c.waiting = Some((run_key(serial), id.clone()));
                         return Ok(None);
                     }
                     if call.method != "permissions.request" {
@@ -1715,6 +1789,19 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
+                    Completed::Run { serial, result } => {
+                        if a.run.as_ref().is_some_and(|r| r.serial == serial) {
+                            a.run.take();
+                            self.reply_waiting(
+                                &run_key(serial),
+                                result
+                                    .map(|(program, generation)| {
+                                        json!({"program":program,"generation":generation})
+                                    })
+                                    .map_err(|e| bounded(&e)),
+                            );
+                        }
+                    }
                     Completed::DevShell {
                         identity,
                         inheritance,
@@ -1791,6 +1878,10 @@ impl Controller {
                                 r.state = "cancelled".into();
                             }
                             self.reply_permission(&p.id, "error", Some("payload stopped".into()));
+                        }
+                        if let Some(r) = a.run.take() {
+                            r.cancel.cancel();
+                            self.reply_waiting(&run_key(r.serial), Err("payload stopped".into()));
                         }
                         self.dirty = true;
                     }
@@ -1980,6 +2071,7 @@ mod tests {
                 exit_watch: None,
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
+                run: None,
                 created: 0,
                 record: SessionRecord {
                     docker_enabled: false,

@@ -144,6 +144,30 @@ subdirectory, start the sandbox from the repository root:
 =goblins run shell --dev-shell sub=. Dev shells are not supported with a daemon
 =--workspace= snapshot.
 
+** Running flake apps
+
+#+begin_src sh
+goblins flake run                    # apps.<system>.default
+goblins flake run '#fmt' -- --check  # arguments after --
+goblins flake run .#fmt
+#+end_src
+
+Inside a dev shell sandbox, =goblins flake run= is the =nix run= equivalent for
+the dev shell's own flake; other flakes are refused. It resolves like =nix run=:
+=apps.<system>.APP=, whose =program= must be in the store and come from what the
+app builds, else =packages.<system>.APP= with =meta.mainProgram= (or =pname=,
+or the name) under =bin/=. =APP= defaults to =default=.
+
+The app comes from the sandbox's current trusted generation, so it needs no
+approval: its source and lock are ones you launched or approved. The workspace
+flake must still equal that generation; after any edit to a tracked file,
+=goblins devshell refresh= first. Evaluation runs in the evaluator sandbox with
+the goblin's network and without import-from-derivation, and fails after the
+same 10 minutes as a refresh. Building has no limit. The app's closure is then
+mounted read-only, and the in-sandbox client =exec=s the program with the
+caller's environment and terminal, like =nix run= (the dev shell environment is
+not applied).
+
 * Scopes (Linux, no VM)
 
 A scope is a named trust group. Its members share a network namespace, by

@@ -32,6 +32,12 @@ Never edit `flake.lock` by hand or with other tools: a refresh rejects any lock
 the host has not trusted. If it reports that `flake.lock` differs, run
 `goblins devshell restore-lock` and refresh with `--update` or `--lock` instead.
 
+Instead of `nix run`, use `goblins flake run [#APP] [-- ARGS]` in a dev shell
+sandbox. It runs an app or package of the dev shell's own flake (no other
+flakes) from the current trusted generation, without asking the host. If you
+changed any tracked file of the flake's repository, it fails until you run
+`goblins devshell refresh` and the host approves.
+
 Docker is not a package: to use containers, follow goblins-docker and run
 `goblins enable-docker` instead of requesting `docker`.
 

@@ -353,6 +353,21 @@ impl PermissionParams {
             && (1..=1024).contains(&self.reason.chars().count())
     }
 }
+/// `flake.run`: an app of the sandbox's dev shell flake, `default` for none.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FlakeRunParams {
+    pub app: String,
+}
+impl FlakeRunParams {
+    pub fn validate(&self) -> bool {
+        (1..=256).contains(&self.app.len())
+            && self
+                .app
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-+'".contains(&b))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

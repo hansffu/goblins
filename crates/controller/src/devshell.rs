@@ -5,7 +5,7 @@ use crate::{
     Result,
     evaluator::{Evaluator, source_tree},
     process::Cancellation,
-    session::store_path,
+    session::{containing_store_output, store_path},
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -694,6 +694,187 @@ pub fn apply(
         script,
         summary: candidate.summary,
     })
+}
+
+/// A flake app resolved like `nix run`: the program to execute and the built
+/// outputs whose closure must be mounted.
+#[derive(Debug)]
+pub struct App {
+    pub program: PathBuf,
+    pub outputs: Vec<PathBuf>,
+}
+
+/// The store output a path inside the store belongs to, if the path has no
+/// `..` or other indirection.
+fn owning_store_path(path: &Path) -> Option<PathBuf> {
+    if !path
+        .components()
+        .skip(1)
+        .all(|c| matches!(c, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    containing_store_output(path)
+}
+
+/// Resolve and build app `name` from the sandbox's trusted generation, as
+/// `nix run` does: `apps.<system>.<name>`, whose program must be an output
+/// of its derivation, else `packages.<system>.<name>` with its main program
+/// under `bin/`. The workspace flake must still equal the trusted generation,
+/// so nothing untrusted is evaluated past the snapshot, and an agent never
+/// silently runs an app older than its edits. `evaluate` bounds evaluation;
+/// building uses `build`.
+pub fn app(
+    current: &DevShell,
+    name: &str,
+    evaluator: &Evaluator,
+    visible: &[PathBuf],
+    directory: &Path,
+    evaluate: &Cancellation,
+    build: &Cancellation,
+) -> Result<App> {
+    if parse_reference(&format!("/#{name}")).is_err() {
+        return Err("invalid app name".into());
+    }
+    check_lock(current)?;
+    let timed = |e: Box<dyn std::error::Error + Send + Sync>| evaluate.check().err().unwrap_or(e);
+    let (root, _, _) = snapshot(
+        evaluator,
+        current.path.as_os_str(),
+        visible,
+        false,
+        directory,
+        evaluate,
+    )
+    .map_err(timed)?;
+    if root != current.source {
+        return Err(format!(
+            "the workspace flake differs from dev shell generation {}; flake run uses \
+             the trusted generation only\n  first: goblins devshell refresh --reason TEXT",
+            current.generation
+        )
+        .into());
+    }
+    let flake = flake_ref(&current.source, &current.flake);
+    // A leading dot makes the attribute path absolute; Nix would otherwise
+    // also try it beneath packages and legacyPackages.
+    let eval = |attr: String, apply: &str| -> Result<Value> {
+        let mut args = nix(&["eval", "--json"]);
+        args.extend([
+            format!("{flake}#.{attr}").into(),
+            "--apply".into(),
+            apply.into(),
+        ]);
+        Ok(serde_json::from_str(&evaluator.nix(
+            &args,
+            &[],
+            directory,
+            evaluate,
+        )?)?)
+    };
+    let missing = |e: &(dyn std::error::Error + Send + Sync)| {
+        e.to_string().contains("does not provide attribute")
+    };
+    let (program, installables) = match eval(
+        format!("apps.{SYSTEM}.{name}"),
+        "app: { type = app.type or null; program = app.program; \
+         context = builtins.getContext app.program; }",
+    ) {
+        Ok(app) => {
+            if app["type"] != "app" {
+                return Err(format!("apps.{SYSTEM}.{name} is not of type \"app\"").into());
+            }
+            let program = app["program"]
+                .as_str()
+                .ok_or("app program is not a string")?;
+            // Build exactly what the program string refers to.
+            let mut installables = Vec::new();
+            for (path, entry) in app["context"].as_object().into_iter().flatten() {
+                if entry["path"] == true {
+                    installables.push(path.clone());
+                }
+                if entry["allOutputs"] == true {
+                    installables.push(format!("{path}^*"));
+                } else if let Some(outputs) = entry["outputs"].as_array() {
+                    let outputs: Vec<_> = outputs.iter().filter_map(Value::as_str).collect();
+                    if !outputs.is_empty() {
+                        installables.push(format!("{path}^{}", outputs.join(",")));
+                    }
+                }
+            }
+            (PathBuf::from(program), installables)
+        }
+        Err(e) if missing(e.as_ref()) => {
+            let package = eval(
+                format!("packages.{SYSTEM}.{name}"),
+                "p: { drv = p.drvPath; out = p.outPath; output = p.outputName or \"out\"; \
+                 main = p.meta.mainProgram or p.pname or (builtins.parseDrvName p.name).name; }",
+            )
+            .map_err(|e| {
+                if missing(e.as_ref()) {
+                    format!("the dev shell flake has no apps.{SYSTEM}.{name} or packages.{SYSTEM}.{name}")
+                        .into()
+                } else {
+                    timed(e)
+                }
+            })?;
+            let main = package["main"].as_str().unwrap_or_default();
+            if main.is_empty() || main == "." || main == ".." || main.contains('/') {
+                return Err(format!("packages.{SYSTEM}.{name} has an invalid main program").into());
+            }
+            let (Some(drv), Some(out), Some(output)) = (
+                package["drv"].as_str(),
+                package["out"].as_str(),
+                package["output"].as_str(),
+            ) else {
+                return Err(format!("packages.{SYSTEM}.{name} is not a derivation").into());
+            };
+            (
+                Path::new(out).join("bin").join(main),
+                vec![format!("{drv}^{output}")],
+            )
+        }
+        Err(e) => {
+            return Err(format!(
+                "could not evaluate app {name}: {}",
+                cause(&timed(e).to_string())
+            )
+            .into());
+        }
+    };
+    let owner = owning_store_path(&program).ok_or_else(|| {
+        format!(
+            "app program {} is not a path in the store",
+            program.display()
+        )
+    })?;
+    if installables.is_empty() {
+        return Err(format!(
+            "app program {} does not come from a derivation or store path",
+            program.display()
+        )
+        .into());
+    }
+    let mut args = nix(&["build", "--print-out-paths"]);
+    args.extend(["--out-link".into(), evaluator.roots().join("app").into()]);
+    args.extend(installables.into_iter().map(OsString::from));
+    let outputs = evaluator
+        .nix(&args, &[], directory, build)
+        .map_err(|e| format!("could not build app {name}: {}", cause(&e.to_string())))?
+        .lines()
+        .map(|p| store_path(Path::new(p)))
+        .collect::<Result<Vec<_>>>()?;
+    if !outputs.contains(&owner) {
+        return Err(format!(
+            "app program {} is not an output of what the app builds",
+            program.display()
+        )
+        .into());
+    }
+    if !fs::metadata(&program).is_ok_and(|m| m.is_file()) {
+        return Err(format!("app program {} does not exist", program.display()).into());
+    }
+    Ok(App { program, outputs })
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -1520,6 +1701,23 @@ mod tests {
             5,
         );
         assert_eq!(out, vec!["nodes.nixpkgs.locked.rev"]);
+    }
+
+    #[test]
+    fn app_programs_must_name_a_store_output_directly() {
+        let hello = "/nix/store/vzs2086bj7hmzjvkn5ggc3d8zs4ss6v8-hello-2.12.3";
+        assert_eq!(
+            owning_store_path(Path::new(&format!("{hello}/bin/hello"))),
+            Some(PathBuf::from(hello))
+        );
+        for path in [
+            "/bin/sh".to_string(),
+            format!("{hello}/../x-other/bin/sh"),
+            "/nix/store/not-a-hash/bin/x".into(),
+            "/nix/store".into(),
+        ] {
+            assert_eq!(owning_store_path(Path::new(&path)), None, "{path}");
+        }
     }
 
     #[test]

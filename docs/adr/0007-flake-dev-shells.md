@@ -6,8 +6,7 @@ Status: Accepted
 
 This decision lifts part of the "arbitrary project flakes" deferral in
 [the project plan](../specs/PLAN.org): a sandbox can use a project flake's dev
-shell. `nix run` of flake apps follows on the same mechanism. Other flake
-operations stay deferred.
+shell and run its apps. Other flake operations stay deferred.
 
 ## Context
 
@@ -220,11 +219,44 @@ Builds still go through the host Nix daemon and its build sandbox.
   because automatic approval covers only ancestors' generations.
 - In snapshot-workspace mode the lock is written only into that branch's copy.
 
-### `nix run` (next)
+### `nix run`
 
-`goblins flake run FLAKEREF [-- ARGS]` reuses the trusted snapshot, lock
-check, evaluator sandbox and approval. It requires the app's program to be a
-store path and mounts its closure. Details are decided when it is built.
+```sh
+goblins flake run [[FLAKE]#APP] [-- ARGS]
+```
+
+runs an app of the sandbox's dev shell flake, like `nix run`, with no `nix` in
+the sandbox:
+
+- **Only the dev shell flake.** A named `FLAKE` must resolve to the dev shell's
+  flake directory; other local and remote flakes are refused. `APP` defaults to
+  `default`.
+- **Only the trusted generation, without approval.** After the lock check, the
+  workspace flake is snapshotted and must equal the current generation's
+  source; otherwise the command fails and says to refresh first. The app is
+  then evaluated from that generation's store copy, whose source and lock the
+  host launched or approved, so running it grants no new trust and asks
+  nothing. Refusing a changed workspace, rather than running the older trusted
+  app, keeps an agent from silently running code older than its edits.
+- **Resolution like `nix run`.** `apps.<system>.APP` must have type `app`; its
+  `program` must be a path in the store whose store path is among the outputs
+  of what the program string's context builds. A context-free string, or a
+  path outside the store, is rejected. Otherwise `packages.<system>.APP` runs
+  `bin/` + `meta.mainProgram`, else `pname`, else the parsed name, from its
+  output. Attribute paths are absolute, so Nix does not also search
+  `packages` or `legacyPackages`.
+- **Evaluation and build** run in the evaluator sandbox with the goblin's
+  network and without import-from-derivation, as for a refresh. Evaluation
+  has the refresh time limit; building, from trusted code, has none. The
+  closure of the built outputs is mounted like a package grant.
+- **Execution.** The daemon returns only the validated program path; the
+  in-sandbox client checks that it is an existing file in the store and
+  `exec`s it with `ARGS`, the caller's environment and stdio, like `nix run`.
+  The dev shell environment is not applied.
+- **Protocol.** `flake.run` is a sandbox method, not a permission kind, since
+  there is no decision to make. Its connection waits for the worker, like
+  `permissions.request`; one run per sandbox at a time, cancelled when the
+  caller disconnects. Sandboxes advertise the `flake-run` feature.
 
 ## Consequences
 
@@ -278,6 +310,8 @@ store path and mounts its closure. Details are decided when it is built.
 - Refresh with a daemon `--workspace` snapshot.
 
 - `nix build`, `nix flake check`, `nix fmt`, templates and other flake outputs.
+- `nix run` of flakes other than the dev shell's, `legacyPackages`, and apps
+  from a workspace flake that differs from the trusted generation.
 - Dev shell defaults in `mkGoblin`.
 - Automatic approval policies beyond ancestor generations (for example
   allowlisted input updates with nothing to build).

@@ -87,6 +87,9 @@ fn run() -> Result<i32, String> {
                 );
             }
             cli::Command::Devshell { command } => return devshell(command),
+            cli::Command::Flake {
+                command: cli::FlakeCommand::Run { installable, args },
+            } => return flake_run(installable.as_deref(), args),
             cli::Command::Completions { shell } => {
                 cli::completions(shell);
                 return Ok(0);
@@ -241,6 +244,79 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
             Ok(0)
         }
     }
+}
+/// The app named by `[FLAKE]#APP`. Only the dev shell's flake is served, so
+/// a named flake must resolve to it; the daemon never evaluates another.
+fn app_name(installable: Option<&str>) -> Result<String, String> {
+    let installable = installable.unwrap_or(".");
+    let (flake, app) = installable.split_once('#').unwrap_or((installable, ""));
+    if !flake.is_empty() {
+        let trusted = call("devshell.lock", json!({}))?;
+        let lock = std::path::Path::new(trusted["path"].as_str().ok_or("missing lock path")?);
+        let resolve = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+        if flake.contains(':')
+            || resolve(std::path::Path::new(flake)).is_none()
+            || resolve(std::path::Path::new(flake)) != lock.parent().and_then(resolve)
+        {
+            return Err(format!(
+                "flake run serves only this sandbox's dev shell flake ({}); use #APP",
+                lock.parent().unwrap_or(lock).display()
+            ));
+        }
+    }
+    Ok(if app.is_empty() { "default" } else { app }.to_string())
+}
+/// A program path the daemon returned: an existing file in the store, with
+/// no `..` or other indirection in the path itself.
+fn store_program(value: &serde_json::Value) -> Result<std::path::PathBuf, String> {
+    let program = std::path::PathBuf::from(value.as_str().ok_or("missing program")?);
+    let valid = program.starts_with("/nix/store/")
+        && program
+            .components()
+            .skip(1)
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        && program.components().count() > 4
+        && program.is_file();
+    if !valid {
+        return Err(format!(
+            "daemon returned an invalid program {}",
+            program.display()
+        ));
+    }
+    Ok(program)
+}
+fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
+    let app = app_name(installable)?;
+    let (mut socket, init) = connect()?;
+    if !init["features"]
+        .as_array()
+        .is_some_and(|v| v.iter().any(|f| f == "flake-run"))
+    {
+        return Err("daemon does not support flake run".into());
+    }
+    socket
+        .set_write_timeout(Some(rpc::TIMEOUT))
+        .map_err(|e| e.to_string())?;
+    socket
+        .write_all(
+            &rpc::encode(&rpc::request(json!(1), "flake.run", json!({"app":app})))
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    // Evaluating and building can take long; the daemon bounds evaluation.
+    let reply = rpc::read(&mut socket).map_err(|e| e.to_string())?;
+    rpc::validate_response(&reply, &json!(1)).map_err(|e| e.to_string())?;
+    if let Some(error) = reply.get("error") {
+        eprintln!(
+            "goblins: {}",
+            error["message"].as_str().unwrap_or("flake run failed")
+        );
+        return Ok(1);
+    }
+    let program = store_program(&reply["result"]["program"])?;
+    use std::os::unix::process::CommandExt;
+    let error = std::process::Command::new(&program).args(args).exec();
+    Err(format!("cannot execute {}: {error}", program.display()))
 }
 fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String> {
     let id = random_key()?;

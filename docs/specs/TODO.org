@@ -50,7 +50,15 @@ Development notes:
   =--no-update-lock-file=; any new flake command must keep the completeness
   check in =snapshot= (=metadata.locks= must equal the file).
 
-* TODO =goblins flake run= (the =nix run= equivalent)
+* DONE =goblins flake run= (the =nix run= equivalent)
+CLOSED: [2026-09-28 Mon 23:15]
+
+Done as suggested below, confirmed with the user: only the dev shell flake,
+only the trusted generation (a changed workspace flake needs a refresh
+first), builds allowed without IFD, and =exec= in the caller's environment.
+=flake.run= is a sandbox method, not a permission kind; see "=nix run=" in
+ADR 0007 (=devshell::app=, =Session::run_app=, =DevShellFlakeRunTests=).
+
 
 The user asked for this right after =develop=. ADR 0007 sketches it under
 "=nix run= (next)"; decide the details below and record them in the ADR.
@@ -134,8 +142,9 @@ denied (denial cancels it).
 A sandbox attached to its scope's Docker engine
 (=Session::enable_docker=) gives the engine a filesystem view built at
 attach time from =docker_filesystem= and the then-mounted store paths.
-Paths mounted later, by =apply_refresh= or =grant_observed=, are not
-visible to the engine, so containers bind-mounting them fail.
+Paths mounted later, by =apply_refresh=, =grant_observed= or =run_app=
+(=goblins flake run=), are not visible to the engine, so containers
+bind-mounting them fail.
 
 - First verify whether package grants already have the same gap (likely);
   if so, fix both together.

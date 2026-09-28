@@ -34,6 +34,12 @@ pub(super) enum Work {
         changes: crate::devshell::Changes,
         cancel: Cancel,
     },
+    /// Build and mount a flake app from the trusted generation.
+    Run {
+        serial: u64,
+        app: String,
+        cancel: Cancel,
+    },
 }
 pub(super) enum Completed {
     Preview {
@@ -61,6 +67,12 @@ pub(super) enum Completed {
     Refresh {
         approval: u64,
         result: std::result::Result<(serde_json::Value, String), String>,
+    },
+    /// The program to execute and the generation it came from, or why the
+    /// app cannot run.
+    Run {
+        serial: u64,
+        result: std::result::Result<(PathBuf, u32), String>,
     },
     /// A refresh became the current generation; children inherit it.
     DevShell {
@@ -227,6 +239,16 @@ impl Worker {
                                 .try_send(Completed::Refresh { approval, result })
                                 .is_err()
                             {
+                                break;
+                            }
+                        }
+                        Ok(Work::Run {
+                            serial,
+                            app,
+                            cancel,
+                        }) => {
+                            let result = session.run_app(&app, &cancel).map_err(|e| e.to_string());
+                            if results.try_send(Completed::Run { serial, result }).is_err() {
                                 break;
                             }
                         }

@@ -48,7 +48,7 @@ fn canonical_store_output(path: &Path) -> bool {
         })
 }
 
-fn containing_store_output(path: &Path) -> Option<PathBuf> {
+pub(crate) fn containing_store_output(path: &Path) -> Option<PathBuf> {
     let name = path.strip_prefix("/nix/store").ok()?.components().next()?;
     let root = Path::new("/nix/store").join(name);
     canonical_store_output(&root).then_some(root)
@@ -1043,6 +1043,49 @@ impl Session {
         );
         self.launch.dev_shell = Some(next);
         Ok(())
+    }
+    /// Build a flake app from the current trusted generation and mount its
+    /// closure. Returns the validated program path and the generation. It
+    /// grants no new trust: the host launched or approved this source and lock.
+    pub fn run_app(&mut self, name: &str, cancel: &Cancellation) -> Result<(PathBuf, u32)> {
+        let current = self
+            .launch
+            .dev_shell
+            .as_ref()
+            .ok_or("this sandbox was not started with a dev shell")?;
+        let cwd = self
+            .launch
+            .cwd
+            .as_ref()
+            .ok_or("flake run is not supported with a daemon --workspace snapshot")?;
+        let tree = crate::devshell::visible_tree(&current.path, cwd)?;
+        let evaluator = self.evaluator()?;
+        let app = crate::devshell::app(
+            current,
+            name,
+            &evaluator,
+            &[tree],
+            &self.directory,
+            &cancel.with_limit(evaluation_limit()),
+            cancel,
+        )
+        .map_err(|e| cancel.check().err().unwrap_or(e))?;
+        let generation = current.generation;
+        let closure = self.closure(&app.outputs)?;
+        let missing = closure
+            .difference(&self.mounted)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Err(error) = self.mount_paths(&missing, &mut |_, _| Ok(())) {
+            self.event("mount-failure", serde_json::json!({"app":name}));
+            self.stop();
+            return Err(error);
+        }
+        self.event(
+            "flake-run",
+            serde_json::json!({"app":name,"program":app.program,"generation":generation}),
+        );
+        Ok((app.program, generation))
     }
     pub fn docker_enabled(&self) -> bool {
         self.docker.is_some()

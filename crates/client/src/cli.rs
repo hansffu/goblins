@@ -29,6 +29,17 @@ pub enum DevshellCommand {
     RestoreLock,
 }
 #[derive(Subcommand)]
+pub enum FlakeCommand {
+    /// Run an app of this sandbox's dev shell flake, like nix run
+    Run {
+        /// [FLAKE]#APP, where FLAKE must be the dev shell's flake (default: .#default)
+        installable: Option<String>,
+        /// Arguments for the app, after --
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
+}
+#[derive(Subcommand)]
 pub enum Command {
     /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
     Integration {
@@ -74,6 +85,11 @@ pub enum Command {
     Devshell {
         #[command(subcommand)]
         command: DevshellCommand,
+    },
+    /// Flake apps from this sandbox's trusted dev shell generation
+    Flake {
+        #[command(subcommand)]
+        command: FlakeCommand,
     },
     /// Launch a child using the same configuration and attach its terminal
     Run {
