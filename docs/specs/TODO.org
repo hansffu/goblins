@@ -106,6 +106,29 @@ Lets an agent see the approval preview before asking.
 - Update the skill =skills/goblins-packages/SKILL.md= to suggest checking
   the diff before refreshing.
 
+* DONE Time limit on evaluation
+CLOSED: [2026-09-28 Mon 22:51]
+
+Done in =3815ed0=: refresh evaluation before approval fails after 10 minutes
+(=GOBLINS_EVALUATION_TIMEOUT= seconds in the daemon's environment). Builds after
+approval and launch have no limit; see ADR 0007.
+
+
+A flake that hangs during evaluation keeps the request pending until it is
+denied (denial cancels it).
+
+- Add a deadline to evaluator commands: =process::command_with_fds=
+  (=crates/controller/src/process.rs=) loops on =cancel.check()= every
+  =WORKER_TICK=; add an optional deadline there, or wrap the cancellation.
+- Apply it to pre-approval work (=devshell::candidate= and =prepare=:
+  metadata, lock, =derivation show=, dry run). Builds after approval
+  (=apply=, =print-dev-env=) can legitimately take long; decide separately.
+- Suggested default: 10 minutes; report "evaluation timed out after …" so
+  the request fails with a clear message.
+- Test with a flake whose evaluation never ends (for example infinite
+  recursion guarded to loop, or =builtins.fetchurl= to a blackhole) and a
+  short test-only deadline.
+
 * TODO Docker engine does not see dev shell refresh mounts
 
 A sandbox attached to its scope's Docker engine
@@ -120,6 +143,58 @@ visible to the engine, so containers bind-mounting them fail.
   =docker.rs= for how grants reach the engine, and add a way to push new
   store paths to an attached engine, or document the limitation.
 - Only matters when containers need those paths; lower priority.
+
+* DONE Launch must not widen access beyond the sandbox's working directory
+CLOSED: [2026-09-28 Mon 20:54]
+
+Done in =b09251f=: launch refuses a source tree outside the working directory
+(=devshell::visible_tree=, shared with refresh), and a dev shell needs a host
+working directory. No flag was added.
+
+
+Refresh refuses a flake whose source tree (its Git work tree) extends beyond
+the sandbox's working directory (=Session::prepare_refresh=: =tree.starts_with(cwd)=).
+Launch has no such check: =goblins run shell --dev-shell .= from =repo/sub=
+evaluates with the whole =repo/= tree visible (=devshell::prepare=, visible
+=source_tree(&path)=). Since subdirectory flakes keep their whole source tree
+(=path:ROOT?dir=SUB=), a =sub/flake.nix= that an agent edited in an earlier
+session can put =repo/= content into the dev shell: a value such as
+=builtins.readFile ../secret=, or =${../.}=, which mounts a store copy of the
+tracked files through the environment's closure. Only Git-tracked files are
+affected, and the host did choose the flake, but the sandbox gets files it was
+never granted.
+
+- Apply the refresh rule at launch: refuse when the source tree is not inside
+  the launch's working directory (=Launch::cwd=, known in
+  =worker.rs= =Source::Host= before =devshell::prepare=), with an error that
+  names both paths and says to run from the repository root.
+- Or allow it only with an explicit flag (for example
+  =--dev-shell-source-tree=) if running from a subdirectory is common.
+- Test in =tests/test_devshell.py= with =DevShellSubdirectoryTests=' layout,
+  launching from =repo/sub=.
+
+* DONE Fix the pre-existing Clippy failures
+CLOSED: [2026-09-28 Mon 21:29]
+
+Done in =0c08b37=, with =docker::Filesystem= and =attachment::Start= for the
+argument counts. Three more errors in the binary were hidden behind these and
+are fixed too.
+
+
+=cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in
+USAGE "Reproducible checks") fails on master and this branch with:
+
+- =crates/controller/src/docker.rs:111= :: =collapsible_if=
+- =crates/controller/src/docker.rs:215= :: =too_many_arguments= (8/7)
+- =crates/controller/src/scope.rs:294= :: =too_many_arguments= (8/7,
+  =Shared::acquire=)
+- =crates/controller/src/session.rs:96= :: =collapsible_if=
+- =crates/controller/src/session.rs:254= :: =collapsible_if=
+
+Collapse the =if=s with =let= chains (the code already uses them). For the
+argument counts, group related parameters into a struct rather than adding
+=#[allow]=, unless that obscures the code. =nix flake check= does not run
+Clippy, so nothing else depends on this; run the full checks afterwards.
 
 * TODO Codex tests fail with the current Codex
 
