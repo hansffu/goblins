@@ -55,6 +55,62 @@ Set this to the directory passed to `goblins --state-dir'."
 (defclass goblins-agent-section (goblins-section) ())
 (defclass goblins-request-section (goblins-section)
   ((record :initarg :record :initform nil)))
+(defclass goblins-diff-section (goblins-section) ())
+(defclass goblins-diff-file-section (goblins-section) ())
+
+(defun goblins--diff-face (magit fallback)
+  "Use MAGIT's diff face when Magit is installed, else FALLBACK from diff-mode."
+  (if (facep magit) magit fallback))
+
+(defun goblins--patch-files (patch)
+  "Split a git PATCH into (PATH STATUS LINES) per file, without Git headers."
+  (let (files header)
+    (dolist (line (split-string patch "\n"))
+      (cond
+       ((string-prefix-p "diff --git " line)
+        (push (list (if (string-match " b/\\(.*\\)\\'" line)
+                        (match-string 1 line)
+                      (substring line 11))
+                    "modified" nil)
+              files)
+        (setq header t))
+       ((null files))
+       ((and header (string-prefix-p "new file" line)) (setf (nth 1 (car files)) "new file"))
+       ((and header (string-prefix-p "deleted file" line)) (setf (nth 1 (car files)) "deleted"))
+       ((string-prefix-p "@@" line)
+        (setq header nil)
+        (push line (nth 2 (car files))))
+       ((not header) (push line (nth 2 (car files))))))
+    (mapcar (lambda (file) (list (nth 0 file) (nth 1 file) (nreverse (nth 2 file))))
+            (nreverse files))))
+
+(defun goblins--insert-diff (request patch)
+  "Insert PATCH of REQUEST as magit-style sections; non-Nix files start collapsed."
+  (require 'diff-mode)
+  (let* ((files (goblins--patch-files patch))
+         (other (cl-count-if-not (lambda (f) (string-suffix-p ".nix" (car f))) files)))
+    (magit-insert-section (goblins-diff-section (list 'diff request))
+      (magit-insert-heading
+        (propertize (format "    Source diff (%d file%s%s)\n" (length files)
+                            (if (= (length files) 1) "" "s")
+                            (if (> other 0) (format ", %d non-Nix collapsed" other) ""))
+                    'face 'magit-section-heading))
+      (unless files (insert "      No source changes\n"))
+      (dolist (file files)
+        (let ((nix (string-suffix-p ".nix" (car file))))
+          (magit-insert-section (goblins-diff-file-section (list request (car file)) (not nix))
+            (magit-insert-heading
+              (propertize (format "      %-10s %s%s\n" (nth 1 file) (goblins--safe (car file))
+                                  (if nix "" "  (not Nix)"))
+                          'face (goblins--diff-face 'magit-diff-file-heading 'diff-file-header)))
+            (dolist (line (nth 2 file))
+              (insert (propertize
+                       (concat "      " (goblins--safe (string-replace "\t" "    " line)) "\n")
+                       'face (pcase (and (> (length line) 0) (aref line 0))
+                               (?@ (goblins--diff-face 'magit-diff-hunk-heading 'diff-hunk-header))
+                               (?+ (goblins--diff-face 'magit-diff-added 'diff-added))
+                               (?- (goblins--diff-face 'magit-diff-removed 'diff-removed))
+                               (_ (goblins--diff-face 'magit-diff-context 'diff-context))))))))))))
 
 (defun goblins--default-directory ()
   (let ((root (or (getenv "XDG_RUNTIME_DIR")
@@ -102,6 +158,9 @@ Set this to the directory passed to `goblins --state-dir'."
             (goblins--field "" line))))
       (when-let* ((message (plist-get record :message)))
         (goblins--field "Message:" message))
+      (when-let* ((patch (plist-get (plist-get record :preview) :diff))
+                  ((not (string-empty-p patch))))
+        (goblins--insert-diff (plist-get record :id) patch))
       (insert "\n"))))
 
 (defun goblins--request-agent-label (request)

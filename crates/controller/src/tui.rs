@@ -14,7 +14,8 @@ use ratatui::{
     Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
+    text::Line,
     widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use std::{
@@ -56,6 +57,13 @@ fn safe(s: &str) -> String {
     s.get(1..s.len().saturating_sub(1))
         .unwrap_or_default()
         .into()
+}
+fn has_diff(request: &PermissionRecord) -> bool {
+    request
+        .preview
+        .as_ref()
+        .and_then(|v| v["diff"].as_str())
+        .is_some_and(|d| !d.is_empty())
 }
 fn session_label(session: &SessionRecord) -> String {
     safe(if session.path.is_empty() {
@@ -161,6 +169,68 @@ struct View {
     presented: Option<PermissionRecord>,
     buttons: [Rect; 2],
     pressed: Option<(String, bool)>,
+    /// Full-screen source diff of one request: its ID, scroll offset and
+    /// whether non-Nix files are shown.
+    diff: Option<DiffView>,
+}
+struct DiffView {
+    request: String,
+    scroll: u16,
+    all: bool,
+}
+/// Colored, escaped lines of a dev shell source patch. Non-Nix files are
+/// listed but not expanded unless `all` is set.
+fn diff_lines(patch: &str, all: bool) -> Vec<Line<'static>> {
+    let color = std::env::var_os("NO_COLOR").is_none();
+    let styled = |c: Color| {
+        if color {
+            Style::default().fg(c)
+        } else {
+            Style::default()
+        }
+    };
+    let files = goblins_controller::devshell::patch_files(patch);
+    let hidden: Vec<_> = files.iter().filter(|f| !all && !f.nix()).collect();
+    let mut lines = Vec::new();
+    for file in files.iter().filter(|f| all || f.nix()) {
+        lines.push(Line::styled(
+            format!("{:<10} {}", file.status, safe(file.path)),
+            styled(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+        for line in &file.lines {
+            // Escape each line; keep indentation readable.
+            let text = safe(&line.replace('\t', "    "));
+            let style = match line.as_bytes().first() {
+                Some(b'@') => styled(Color::Cyan),
+                Some(b'+') => styled(Color::Green),
+                Some(b'-') => styled(Color::Red),
+                _ => Style::default(),
+            };
+            lines.push(Line::styled(text, style));
+        }
+        lines.push(Line::raw(""));
+    }
+    if files.is_empty() {
+        lines.push(Line::raw("No source changes"));
+    }
+    if !hidden.is_empty() {
+        lines.push(Line::styled(
+            format!("{} non-Nix file(s) hidden (a: show):", hidden.len()),
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        for file in hidden {
+            lines.push(Line::styled(
+                format!(
+                    "  {:<10} {} ({} lines)",
+                    file.status,
+                    safe(file.path),
+                    file.lines.len()
+                ),
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+    }
+    lines
 }
 impl View {
     fn new() -> Self {
@@ -180,6 +250,7 @@ impl View {
             presented: None,
             buttons: [Rect::default(); 2],
             pressed: None,
+            diff: None,
         }
     }
     fn sync(&mut self, snapshot: &Snapshot) {
@@ -217,8 +288,55 @@ impl View {
                 .position(|p| Some(&p.id) == self.selected_request.as_ref()),
         );
     }
+    fn draw_diff(&mut self, f: &mut ratatui::Frame, snapshot: &Snapshot) {
+        let Some(view) = &mut self.diff else {
+            return;
+        };
+        let request = snapshot
+            .permissions
+            .iter()
+            .find(|p| p.id == view.request)
+            .cloned();
+        let patch = request
+            .as_ref()
+            .and_then(|p| p.preview.as_ref())
+            .and_then(|v| v["diff"].as_str())
+            .unwrap_or_default();
+        let lines = diff_lines(patch, view.all);
+        view.scroll = view.scroll.min(lines.len().saturating_sub(1) as u16);
+        let areas = Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).split(f.area());
+        let title = match &request {
+            Some(p) => format!(
+                " Source diff · {} · {} · {} ",
+                request_label(snapshot, p),
+                safe(&p.package),
+                safe(&p.state)
+            ),
+            None => " Source diff · request no longer retained ".into(),
+        };
+        f.render_widget(
+            Paragraph::new(lines)
+                .block(Block::bordered().title(title))
+                .scroll((view.scroll, 0)),
+            areas[0],
+        );
+        f.render_widget(
+            Paragraph::new(format!(
+                "↑/↓ PgUp/PgDn Home/End: scroll · a: {} non-Nix files · y/n: decide · d/Esc/q: close\n{}",
+                if view.all { "hide" } else { "show" },
+                self.notice
+            )),
+            areas[1],
+        );
+        // Decisions apply to the request whose diff is displayed.
+        self.presented = request.filter(|p| Some(&p.id) == self.selected_request.as_ref());
+        self.buttons = [Rect::default(); 2];
+    }
     fn draw(&mut self, f: &mut ratatui::Frame, snapshot: &Snapshot) {
         self.sync(snapshot);
+        if self.diff.is_some() {
+            return self.draw_diff(f, snapshot);
+        }
         let has_request = self.selected_request.is_some();
         let popup = has_request && self.popup_open;
         let areas = Layout::vertical([
@@ -444,7 +562,9 @@ impl View {
             }
         }
         f.render_widget(Paragraph::new(format!(
-            "Tab: focus · ↑/↓: select · ←/→: fold or No/Yes · Enter: details · y/n: decide · q: quit\n{}", self.notice)), areas[4]);
+            "Tab: focus · ↑/↓: select · ←/→: fold or No/Yes · Enter: details · y/n: decide{} · q: quit\n{}",
+            if self.presented.as_ref().is_some_and(has_diff) { " · d: diff" } else { "" },
+            self.notice)), areas[4]);
     }
     fn selected_session<'a>(&self, snapshot: &'a Snapshot) -> Option<&'a SessionRecord> {
         snapshot
@@ -542,7 +662,43 @@ impl View {
         // No second event in the same input batch can submit this interaction.
         self.presented = None;
     }
+    fn diff_input(&mut self, key: KeyCode, client: &mut Client) {
+        let Some(view) = &mut self.diff else {
+            return;
+        };
+        match key {
+            KeyCode::Esc | KeyCode::Char('d') | KeyCode::Char('q') => self.diff = None,
+            KeyCode::Up => view.scroll = view.scroll.saturating_sub(1),
+            KeyCode::Down => view.scroll = view.scroll.saturating_add(1),
+            KeyCode::PageUp => view.scroll = view.scroll.saturating_sub(20),
+            KeyCode::PageDown => view.scroll = view.scroll.saturating_add(20),
+            KeyCode::Home => view.scroll = 0,
+            KeyCode::End => view.scroll = u16::MAX,
+            KeyCode::Char('a') => {
+                view.all = !view.all;
+                view.scroll = 0;
+            }
+            KeyCode::Char(c @ ('y' | 'n')) => {
+                self.focus = Focus::Requests;
+                self.decide(client, c == 'y');
+                if self.presented.is_none() {
+                    self.diff = None;
+                }
+            }
+            _ => (),
+        }
+    }
     fn input(&mut self, input: Event, snapshot: &Snapshot, client: &mut Client) -> bool {
+        if let Event::Key(key) = &input
+            && key.kind == KeyEventKind::Press
+            && self.diff.is_some()
+        {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                return false;
+            }
+            self.diff_input(key.code, client);
+            return true;
+        }
         match input {
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -574,6 +730,20 @@ impl View {
                 KeyCode::Enter => self.details = !self.details,
                 KeyCode::Char('y') => self.decide(client, true),
                 KeyCode::Char('n') => self.decide(client, false),
+                KeyCode::Char('d') => {
+                    if let Some(p) = snapshot
+                        .permissions
+                        .iter()
+                        .find(|p| Some(&p.id) == self.selected_request.as_ref())
+                        .filter(|p| has_diff(p))
+                    {
+                        self.diff = Some(DiffView {
+                            request: p.id.clone(),
+                            scroll: 0,
+                            all: false,
+                        });
+                    }
+                }
                 KeyCode::Esc => {
                     self.popup_open = false;
                     self.presented = None;
@@ -661,6 +831,22 @@ mod tests {
             "pty_eof":false,"terminal_complete":false,"terminal_interrupted":false
         }))
         .unwrap()
+    }
+    #[test]
+    fn diff_view_hides_non_nix_files_and_escapes_lines() {
+        let patch = "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\x1b[2J\ndiff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-x\n+y\n";
+        let text = |all| {
+            diff_lines(patch, all)
+                .iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+        };
+        let shown = text(false);
+        assert!(shown.contains(&"modified   flake.nix".to_string()));
+        assert!(shown.contains(&"+b\\u001b[2J".to_string()));
+        assert!(!shown.contains(&"-x".to_string()));
+        assert!(shown.contains(&"1 non-Nix file(s) hidden (a: show):".to_string()));
+        assert!(text(true).contains(&"-x".to_string()));
     }
     #[test]
     fn ownership_tree_preserves_identity_through_insertions_and_folding() {

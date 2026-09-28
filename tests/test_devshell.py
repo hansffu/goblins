@@ -179,14 +179,20 @@ class DevShellRefreshTests(DevShellTests):
 
     def test_approved_refresh_enters_the_edited_flake_and_keeps_running_environment(self):
         self.write_flake("edited")
+        # A tracked non-Nix file is part of the source diff too.
+        (self.project / "notes.txt").write_text("new notes\n")
+        command(["git", "-C", str(self.project), "add", "notes.txt"])
         n = self.send(self.terminal, "goblins devshell refresh --reason 'pick up flake.nix'")
         record = self.pending_refresh()
         description = record["preview"]["description"]
         self.assertIn("generation 1 → 2", description)
-        self.assertRegex(description, r"Source +flake.nix \+1 −1")
+        self.assertRegex(description, r"Source +flake.nix \+1 −1\n +notes.txt \+1 −0\n")
         self.assertIn("Attention nothing unusual", description)
         self.assertIn("~ DEV_MARKER: original → edited", description)
-        self.assertIn('-        DEV_MARKER = "original";', description)
+        diff = record["preview"]["diff"]
+        self.assertIn('-        DEV_MARKER = "original";', diff)
+        self.assertIn("diff --git a/notes.txt b/notes.txt", diff)
+        self.assertNotIn("DEV_MARKER = ", description)
         self.assertRegex(description, r"Inputs +unchanged")
         self.assertNotIn("flake.lock", description)
         self.assertEqual(record["package"], "refresh")

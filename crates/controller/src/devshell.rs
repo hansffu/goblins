@@ -60,7 +60,7 @@ pub const PREPENDED: &[&str] = &["PATH", "PKG_CONFIG_PATH", "XDG_DATA_DIRS"];
 
 /// Nix system for dev shell attributes, as for the pinned package catalog.
 const SYSTEM: &str = "x86_64-linux";
-const MAX_DIFF_BYTES: usize = 32 * 1024;
+const MAX_DIFF_BYTES: usize = 128 * 1024;
 
 /// What a generation contains, for refresh diffs: the dev shell's direct
 /// inputs by package name, and its derivation environment.
@@ -479,6 +479,8 @@ pub struct Candidate {
     pub lock: Value,
     pub summary: Summary,
     pub description: String,
+    /// Source patch against the current generation, without `flake.lock`.
+    pub diff: String,
 }
 impl Candidate {
     pub fn identity(&self, attr: &str) -> String {
@@ -591,15 +593,8 @@ pub fn candidate(
         &summary.derivation,
     );
     let generation = current.generation + 1;
-    let description = describe(
-        current,
-        generation,
-        &lock,
-        &summary,
-        &cost,
-        config,
-        source_diff(git, &current.flake, &flake),
-    );
+    let (files, diff) = source_diff(git, &current.flake, &flake);
+    let description = describe(current, generation, &lock, &summary, &cost, config, files);
     Ok(Candidate {
         generation,
         root,
@@ -607,6 +602,7 @@ pub fn candidate(
         lock,
         summary,
         description,
+        diff,
     })
 }
 
@@ -918,6 +914,54 @@ fn env_lines(old: &Summary, new: &Summary) -> Vec<String> {
     lines
 }
 
+/// One file of a source patch, for frontends.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PatchFile<'a> {
+    pub path: &'a str,
+    /// `modified`, `new file` or `deleted`.
+    pub status: &'static str,
+    /// Hunk headers and lines, without Git's file header lines.
+    pub lines: Vec<&'a str>,
+}
+impl PatchFile<'_> {
+    /// Nix files are shown by default; other source files are hidden.
+    pub fn nix(&self) -> bool {
+        self.path.ends_with(".nix")
+    }
+}
+
+/// Split a `git diff` patch by file.
+pub fn patch_files(patch: &str) -> Vec<PatchFile<'_>> {
+    let mut files: Vec<PatchFile> = Vec::new();
+    let mut header = false;
+    for line in patch.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            let path = rest
+                .rsplit_once(" b/")
+                .map(|(_, b)| b)
+                .unwrap_or(rest.trim_start_matches("a/"));
+            files.push(PatchFile {
+                path,
+                status: "modified",
+                lines: vec![],
+            });
+            header = true;
+        } else if let Some(file) = files.last_mut() {
+            if header && line.starts_with("new file") {
+                file.status = "new file";
+            } else if header && line.starts_with("deleted file") {
+                file.status = "deleted";
+            } else if line.starts_with("@@") {
+                header = false;
+                file.lines.push(line);
+            } else if !header {
+                file.lines.push(line);
+            }
+        }
+    }
+    files
+}
+
 /// Drop the top-level `flake.lock` from a patch.
 fn without_lock(patch: &str) -> String {
     let mut out = String::new();
@@ -1031,7 +1075,7 @@ fn describe(
     summary: &Summary,
     cost: &Cost,
     config: bool,
-    (files, patch): (Vec<String>, String),
+    files: Vec<String>,
 ) -> String {
     let mut text = format!(
         "Dev shell {} · generation {} → {generation}\n",
@@ -1075,10 +1119,6 @@ fn describe(
         .collect();
     if !incoming.is_empty() {
         section(&mut text, "Incoming", incoming);
-    }
-    if !patch.trim().is_empty() {
-        text.push_str("\nSource diff:\n");
-        text.push_str(&patch);
     }
     text
 }
@@ -1261,6 +1301,28 @@ mod tests {
             incoming_lines("build", &many, 40).last().unwrap(),
             "… and 5 more"
         );
+    }
+
+    #[test]
+    fn patches_split_by_file_without_git_headers() {
+        let patch = "diff --git a/flake.nix b/flake.nix\nindex 1..2 100644\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/src/main.rs b/src/main.rs\nnew file mode 100644\nindex 0..3\n--- /dev/null\n+++ b/src/main.rs\n@@ -0,0 +1 @@\n+fn main() {}\n";
+        let files = patch_files(patch);
+        assert_eq!(
+            files,
+            vec![
+                PatchFile {
+                    path: "flake.nix",
+                    status: "modified",
+                    lines: vec!["@@ -1 +1 @@", "-a", "+b"]
+                },
+                PatchFile {
+                    path: "src/main.rs",
+                    status: "new file",
+                    lines: vec!["@@ -0,0 +1 @@", "+fn main() {}"]
+                },
+            ]
+        );
+        assert!(files[0].nix() && !files[1].nix());
     }
 
     #[test]

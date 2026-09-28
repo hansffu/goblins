@@ -59,7 +59,7 @@ pub(super) enum Completed {
     /// Approval description and candidate identity, or why it cannot refresh.
     Refresh {
         approval: u64,
-        result: std::result::Result<(String, String), String>,
+        result: std::result::Result<(String, String, String), String>,
     },
     /// A refresh became the current generation; children inherit it.
     DevShell {

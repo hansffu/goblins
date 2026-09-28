@@ -177,7 +177,13 @@ either, a missing lock entry is an error. A refresh runs in stages:
    - **Env** shows short values; store-hash-only changes are ignored.
    - The source diff leaves out `flake.lock`, which **Inputs** shows.
 
-   The TUI (scrollable) and Emacs render it line by line, escaping each line.
+   The summary is `preview.description`; the source patch is `preview.diff`,
+   up to 128 KiB. Every line is escaped before display. In Emacs the request's
+   details show the patch as magit-style sections, one per file, with Magit's
+   diff faces (or `diff-mode`'s). `.nix` files are expanded and other files
+   start collapsed; expanded sections stay open across updates. In the TUI,
+   `d` opens a full-screen colored diff; `a` shows the non-Nix files, which
+   are listed but hidden by default, and `y`/`n` decide from the diff.
 4. **Apply** after approval: build, mount the new closure, write the new
    `env.sh`, run it once inside the sandbox, and record the generation and
    its lock as trusted. A candidate lock is written into the workspace only now.

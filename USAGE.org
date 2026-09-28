@@ -113,7 +113,10 @@ generation: an Attention list first (changed input sources, new inputs,
 =nixConfig=, local builds, a changed =shellHook=), then changed source files,
 lock inputs, the dev shell's direct packages, environment variables, the cost,
 every package the dry run will fetch or build (including transitive ones), and
-the source diff without =flake.lock=. An agent never changes =flake.lock= by
+the source diff without =flake.lock=. In the TUI, =d= on the request opens the
+colored source diff (=a= shows non-Nix files, =y=/=n= decide). In Emacs, the
+request's details show it as magit-style file sections; =.nix= files are
+expanded and other files start collapsed (TAB toggles). An agent never changes =flake.lock= by
 hand: only the lock the sandbox was launched with, or one in an approved
 generation, is trusted. Every refresh first compares the workspace lock (as
 JSON) with the trusted lock and fails on any other, naming what changed;

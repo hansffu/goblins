@@ -950,12 +950,12 @@ impl Session {
         )
     }
     /// Evaluate the workspace flake as the next dev shell generation. Returns
-    /// the approval description and the candidate's identity.
+    /// the approval description, the source patch and the candidate's identity.
     pub fn prepare_refresh(
         &mut self,
         changes: &crate::devshell::Changes,
         cancel: &Cancellation,
-    ) -> Result<(String, String)> {
+    ) -> Result<(String, String, String)> {
         self.candidate = None;
         let current = self
             .launch
@@ -988,6 +988,7 @@ impl Session {
         )?;
         let result = (
             candidate.description.clone(),
+            candidate.diff.clone(),
             candidate.identity(&current.attr),
         );
         self.candidate = Some(candidate);

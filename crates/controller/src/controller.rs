@@ -1697,10 +1697,10 @@ impl Controller {
                             continue;
                         }
                         match result {
-                            Ok((description, identity)) => {
+                            Ok((description, diff, identity)) => {
                                 p.dev_identity = Some(identity);
                                 let r = self.permission_mut(&id).unwrap();
-                                r.preview = Some(json!({"description": description}));
+                                r.preview = Some(json!({"description": description, "diff": diff}));
                             }
                             Err(error) => {
                                 // A foreign lock or failed evaluation fails the

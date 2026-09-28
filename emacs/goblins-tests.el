@@ -101,6 +101,47 @@
     (should (string-match-p "Docker engine" (buffer-string)))
     (should (string-match-p "Private engine; delete data on exit" (buffer-string)))))
 
+;; Dev shell refreshes show the summary and a magit-style source diff.
+(ert-deftest goblins-devshell-diff-sections-collapse-non-nix-files ()
+  (goblins-test--buffer
+    (let ((request (goblins-test--request "devshell")))
+      (setq request (plist-put request :kind "devshell")
+            request (plist-put request :package "refresh")
+            request (plist-put request :preview
+                               (list :description "Dev shell /src · generation 1 → 2\nEnv       ~ X: a → b"
+                                     :diff (concat "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n"
+                                                   "@@ -1 +1 @@\n-a\n+b\e[2J\n"
+                                                   "diff --git a/src/main.rs b/src/main.rs\nnew file mode 100644\n"
+                                                   "@@ -0,0 +1 @@\n+fn main() {}\n")))
+            goblins--snapshot (goblins-test--snapshot request)))
+    (goblins--render)
+    (goblins-test--goto "devshell")
+    (goblins-details)
+    (let ((text (buffer-string))
+          files)
+      (should (string-match-p "Env       ~ X: a → b" text))
+      (should (string-match-p "Source diff (2 files, 1 non-Nix collapsed)" text))
+      (should (string-match-p "+b\\\\u001b\\[2J" text))
+      (should-not (string-match-p "\e" text))
+      (cl-labels ((walk (section)
+                    (when (object-of-class-p section 'goblins-diff-file-section)
+                      (push (cons (cadr (oref section value)) (oref section hidden)) files))
+                    (mapc #'walk (oref section children))))
+        (walk magit-root-section)
+      (should (equal (cdr (assoc "flake.nix" files)) nil))
+      (should (cdr (assoc "src/main.rs" files)))
+      (goto-char (point-min))
+      (search-forward "+b")
+      (should (memq (get-text-property (point) 'face) '(magit-diff-added diff-added)))
+      ;; A file the user expands stays expanded when the daemon updates.
+      (goto-char (point-min))
+      (search-forward "src/main.rs")
+      (magit-section-show (magit-current-section))
+      (goblins--render)
+      (setq files nil)
+      (walk magit-root-section)
+      (should-not (cdr (assoc "src/main.rs" files)))))))
+
 (ert-deftest goblins-details-retain-identity-and-never-target-a-replacement ()
   (goblins-test--buffer
     (goblins-test--goto "a")
