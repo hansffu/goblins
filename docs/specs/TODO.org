@@ -1,0 +1,180 @@
+#+title: Open work after flake dev shells
+
+Follow-ups from branch =feat/flake-dev-shells= ([[file:../adr/0007-flake-dev-shells.md][ADR 0007]]). Read the ADR first; it
+records the trust model (only host-launched or host-approved locks are
+trusted), the evaluator sandbox and the approval preview. Usage is in the
+"Flake dev shells" section of [[file:../../USAGE.org][USAGE.org]].
+
+Where the code lives:
+
+- =crates/controller/src/devshell.rs= :: snapshot, lock checks
+  (=check_lock=, =validate_lock=, completeness in =snapshot=), candidate
+  evaluation (=candidate=), apply (=apply=), the structured =Preview= sent to
+  frontends, =patch_files=.
+- =crates/controller/src/evaluator.rs= :: Bubblewrap evaluator: store, daemon
+  socket, source tree, private state; =Network= (host, none, goblin
+  namespaces).
+- =crates/controller/src/session.rs= :: =prepare_refresh=, =apply_refresh=,
+  =mount_paths= (live mounts through the helper), =evaluation_network=.
+- =crates/controller/src/worker.rs= :: =Work::Refresh=, the =devshell= case
+  of =Work::Decide=, =Completed::Refresh= / =Completed::DevShell=.
+- =crates/controller/src/controller.rs= :: =permissions.request= with kind
+  =devshell=, =Completed::Refresh= handling, =inherits_dev_shell= (automatic
+  approval), sandbox method =devshell.lock=.
+- =crates/protocol/src/rpc.rs= :: =PermissionParams= (=update=, =lock=,
+  =validate=, =input_name=).
+- =crates/client/src/{cli,main}.rs= :: in-sandbox =goblins devshell
+  refresh|restore-lock=.
+- Frontends assemble all wording and colors from the structured preview:
+  =crates/controller/src/tui.rs= (=devshell_summary=, =diff_lines=, =d=
+  diff view) and =emacs/goblins.el= (=goblins--insert-devshell-summary=,
+  =goblins--insert-diff=).
+- Tests :: =tests/test_devshell.py= (real daemon; =DevShellTests= launch,
+  =DevShellRefreshTests= refresh), unit tests in =devshell.rs= and =tui.rs=,
+  ERT tests in =emacs/goblins-tests.el=.
+
+Development notes:
+
+- The project dev shell builds Goblins itself, so =nix develop= fails while
+  the tree does not compile. Keep a profile of the last good commit:
+  =nix develop "git+file://$PWD?rev=$(git rev-parse HEAD)" --profile /tmp/devprof=
+  and use =nix develop /tmp/devprof -c cargo …=.
+- Python tests build the app from =path:.= automatically; run them from
+  =tests/= (for example =python3 -m unittest test_devshell -v=). TUI and
+  Emacs tests need =pyte=, which the dev shell provides.
+- Test Emacs rendering with =emacs -nw= or =--batch= only. The host Emacs is
+  pgtk and opens windows on the user's session even under Xvfb.
+- Host polling in tests: a host RPC connection allows 4096 calls; poll slowly
+  on fresh connections during long evaluations (see =pending_refresh=).
+- Nix silently fetches and uses inputs missing from =flake.lock= even with
+  =--no-update-lock-file=; any new flake command must keep the completeness
+  check in =snapshot= (=metadata.locks= must equal the file).
+
+* TODO =goblins flake run= (the =nix run= equivalent)
+
+The user asked for this right after =develop=. ADR 0007 sketches it under
+"=nix run= (next)"; decide the details below and record them in the ADR.
+
+Goal: =goblins flake run [.#APP] [-- ARGS]= inside a sandbox started with
+=--dev-shell= runs a flake app, like =nix run=, with no =nix= in the sandbox.
+
+Suggested design (confirm with the user):
+
+- Scope it to the sandbox's dev shell flake (=DevShell::path=), so the same
+  trusted-lock rules apply. Arbitrary remote flakes stay out of scope.
+- Evaluate from the *trusted* generation's store source when the workspace
+  flake is unchanged; running an app from an already trusted source and lock
+  grants no new trust and can be approved automatically (compare
+  =inherits_dev_shell=). If the workspace flake differs, either require a
+  =goblins devshell refresh= first (simplest), or show the same approval
+  preview as a refresh.
+- Resolve like =nix run=: =apps.x86_64-linux.NAME= (its =program= must be
+  a store path; reject anything else), else =packages.x86_64-linux.NAME=
+  with =meta.mainProgram= (or =pname=/=name=) under =bin/=. Default =NAME=
+  is =default=.
+- Everything runs in the evaluator (=evaluator.rs=), with the goblin's
+  network (=Session::evaluation_network=). Verify how to realize an app
+  =program= string with context: for example =nix build --print-out-paths=
+  on the owning derivation, or evaluate the package and derive the path.
+- Mount the program's closure with =Session::mount_paths=, then the
+  in-sandbox client =exec=s the program with =ARGS=, keeping stdio. The daemon
+  must return only a validated store path; the client must not accept
+  anything else.
+- Protocol: probably a new permission kind (=flakerun=) or a sandbox method
+  that waits like =permissions.request= does (the connection's =waiting=
+  field). Add it to =PermissionParams::validate= and to both frontends.
+- Tests in =tests/test_devshell.py=: an app from the trusted flake runs; a
+  non-store =program= is rejected; a changed workspace flake needs refresh
+  (or approval); the host path isolation from the evaluator still holds.
+
+* TODO =goblins devshell diff= (preview without a request)
+
+Lets an agent see the approval preview before asking.
+
+- =goblins devshell diff [--update [INPUT…] | --lock]= evaluates a candidate
+  exactly like =refresh= (=devshell::candidate=) but creates no permission
+  record and changes nothing.
+- Evaluation is slow, so it must not run on the controller's event loop
+  (=sandbox_control= is synchronous). Queue it on the worker like
+  =Work::Refresh= and reply when =Completed::…= arrives, using the waiting
+  pattern of =permissions.request=.
+- Keep it separate from a pending refresh's candidate (=Session::candidate=):
+  either refuse while a refresh is pending or evaluate without storing.
+- The client prints the preview as text. Frontend rules still apply: the
+  daemon returns the structured =Preview=, and the in-sandbox client
+  (=crates/client=) formats it, escaping control and bidi characters.
+- Update the skill =skills/goblins-packages/SKILL.md= to suggest checking
+  the diff before refreshing.
+
+* TODO Time limit on evaluation
+
+A flake that hangs during evaluation keeps the request pending until it is
+denied (denial cancels it).
+
+- Add a deadline to evaluator commands: =process::command_with_fds=
+  (=crates/controller/src/process.rs=) loops on =cancel.check()= every
+  =WORKER_TICK=; add an optional deadline there, or wrap the cancellation.
+- Apply it to pre-approval work (=devshell::candidate= and =prepare=:
+  metadata, lock, =derivation show=, dry run). Builds after approval
+  (=apply=, =print-dev-env=) can legitimately take long; decide separately.
+- Suggested default: 10 minutes; report "evaluation timed out after …" so
+  the request fails with a clear message.
+- Test with a flake whose evaluation never ends (for example infinite
+  recursion guarded to loop, or =builtins.fetchurl= to a blackhole) and a
+  short test-only deadline.
+
+* TODO Docker engine does not see dev shell refresh mounts
+
+A sandbox attached to its scope's Docker engine
+(=Session::enable_docker=) gives the engine a filesystem view built at
+attach time from =docker_filesystem= and the then-mounted store paths.
+Paths mounted later, by =apply_refresh= or =grant_observed=, are not
+visible to the engine, so containers bind-mounting them fail.
+
+- First verify whether package grants already have the same gap (likely);
+  if so, fix both together.
+- Look at =crates/controller/src/scope.rs= (=acquire=, =Lease=) and
+  =docker.rs= for how grants reach the engine, and add a way to push new
+  store paths to an attached engine, or document the limitation.
+- Only matters when containers need those paths; lower priority.
+
+* TODO Fix the pre-existing Clippy failures
+
+=cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in
+USAGE "Reproducible checks") fails on master and this branch with:
+
+- =crates/controller/src/docker.rs:111= :: =collapsible_if=
+- =crates/controller/src/docker.rs:215= :: =too_many_arguments= (8/7)
+- =crates/controller/src/scope.rs:294= :: =too_many_arguments= (8/7,
+  =Shared::acquire=)
+- =crates/controller/src/session.rs:96= :: =collapsible_if=
+- =crates/controller/src/session.rs:254= :: =collapsible_if=
+
+Collapse the =if=s with =let= chains (the code already uses them). For the
+argument counts, group related parameters into a struct rather than adding
+=#[allow]=, unless that obscures the code. =nix flake check= does not run
+Clippy, so nothing else depends on this; run the full checks afterwards.
+
+* TODO Remove daemon workspace snapshots (separate branch)
+
+Do this on its own branch from master after =feat/flake-dev-shells= is
+merged, not on the dev shell branch.
+
+=goblins server start --workspace PATH= gives each root sandbox a disposable
+copy at =/workspace= (no =.git=, sockets, FIFOs or devices). The user does not
+use it, and dev shell refresh does not support it.
+
+- Remove the =--workspace= option (=crates/controller/src/cli.rs=
+  =ServerCommand=, =Controller::new(state, workspace)=, the =workspace=
+  field passed in =Source::Host=), =crates/controller/src/snapshot.rs=, the
+  snapshot branch in =Session::new_in= and its overlap check.
+- Decide what remains of =SharedWorkspace= and the =/workspace= bind: with
+  an explicit =cwd= it is only a scratch alias (see =enable_docker=). Keep
+  the ownership semantics that children share their parent's workspace.
+- Remove the refresh error "not supported with a daemon --workspace
+  snapshot" in =Session::prepare_refresh=, and the deferral in ADR 0007.
+- Remove =test_cli_retains_explicit_daemon_snapshot= (=tests/test_workspace.py=)
+  and the =Daemon(workspace=…)= support in =tests/daemon_support.py= if
+  unused; update USAGE ("State, workspace and authority"), =docs/specs=
+  (PLAN, DESIGN) and README wherever snapshots are described. Consider a
+  short ADR for the removal.
