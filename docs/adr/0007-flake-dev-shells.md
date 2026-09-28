@@ -172,6 +172,18 @@ either, a missing lock entry is an error. A refresh runs in stages:
 
 Rejection leaves the workspace lock and the active generation unchanged.
 
+`goblins devshell diff` runs stages 1 and 2 exactly as a refresh does (same
+lock check, visible source tree, evaluator, goblin network, no IFD and time
+limit) and prints the stage 3 preview in the sandbox. It creates no permission
+record and asks nothing of the host; it writes no lock, roots nothing, mounts
+nothing and keeps the generation. It evaluates without storing the candidate,
+so it may run while a refresh is pending without touching that refresh's
+candidate; the session worker runs one job at a time, so the two never share
+evaluator scratch state concurrently. The daemon returns the structured
+preview (`devshell.diff`, a waiting sandbox method like `flake.run`; sandboxes
+advertise `devshell-diff`), and the in-sandbox client assembles plain text
+from it with the TUI's wording, escaping control and bidi characters.
+
 A refresh is approved automatically when its source hash and lock equal a
 generation an ancestor already has. That generation is trusted only because the
 host launched or approved it, so no new trust is granted. This rule lives beside
@@ -255,8 +267,9 @@ the sandbox:
   The dev shell environment is not applied.
 - **Protocol.** `flake.run` is a sandbox method, not a permission kind, since
   there is no decision to make. Its connection waits for the worker, like
-  `permissions.request`; one run per sandbox at a time, cancelled when the
-  caller disconnects. Sandboxes advertise the `flake-run` feature.
+  `permissions.request`; one such waiting call (a run or a
+  `goblins devshell diff`) per sandbox at a time, cancelled when the caller
+  disconnects. Sandboxes advertise the `flake-run` feature.
 
 ## Consequences
 
@@ -306,7 +319,6 @@ the sandbox:
 
 ## Deferred
 
-- `goblins devshell diff` (preview without a request).
 - Refresh with a daemon `--workspace` snapshot.
 
 - `nix build`, `nix flake check`, `nix fmt`, templates and other flake outputs.

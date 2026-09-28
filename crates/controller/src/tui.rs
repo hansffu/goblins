@@ -10,6 +10,7 @@ use goblins_controller::{
     controller::{PermissionRecord, SessionRecord, Snapshot},
     host::Client,
 };
+use goblins_protocol::plain_text;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -57,21 +58,6 @@ fn safe(s: &str) -> String {
     s.get(1..s.len().saturating_sub(1))
         .unwrap_or_default()
         .into()
-}
-/// Escape control and bidi formatting characters only, so code and quotes
-/// in summaries and diffs stay readable while nothing can drive the terminal.
-fn plain(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_control()
-                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-            {
-                format!("\\u{:04x}", c as u32)
-            } else {
-                c.to_string()
-            }
-        })
-        .collect()
 }
 fn has_diff(request: &PermissionRecord) -> bool {
     request
@@ -228,7 +214,7 @@ fn tag(change: &str) -> Span<'static> {
     Span::styled(text, tone(kind))
 }
 fn text_of(v: &serde_json::Value) -> String {
-    plain(v.as_str().unwrap_or_default())
+    plain_text(v.as_str().unwrap_or_default())
 }
 /// Old → new, old in red and new in green; either may be absent.
 fn old_new(old: Option<String>, new: Option<String>) -> Vec<Span<'static>> {
@@ -250,7 +236,7 @@ fn locked(v: &serde_json::Value) -> Option<String> {
         text_of(&v["id"]),
         v["date"]
             .as_str()
-            .map(|d| format!(" ({})", plain(d)))
+            .map(|d| format!(" ({})", plain_text(d)))
             .unwrap_or_default()
     ))
 }
@@ -313,7 +299,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             "nix-config" => "flake declares nixConfig (ignored, never applied)".into(),
             "local-builds" => format!("{} derivation(s) build on this machine", note["count"]),
             "shell-hook" => "shellHook changed; it runs in the sandbox".into(),
-            other => plain(other),
+            other => plain_text(other),
         };
         row(
             &mut lines,
@@ -393,7 +379,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
             let mut spans = vec![tag(change), Span::raw(format!("{} ", text_of(&c["name"])))];
             match key {
                 "inputs" => {
-                    let source = |side: &str| c[side]["source"].as_str().map(plain);
+                    let source = |side: &str| c[side]["source"].as_str().map(plain_text);
                     let (old, new) = (source("old"), source("new"));
                     if old.is_some() && new.is_some() && old != new {
                         spans.extend(old_new(old, new));
@@ -408,8 +394,8 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
                     spans.push(Span::styled("(long value; see source diff)", tone("dim")))
                 }
                 _ => spans.extend(old_new(
-                    c["old"].as_str().map(plain),
-                    c["new"].as_str().map(plain),
+                    c["old"].as_str().map(plain_text),
+                    c["new"].as_str().map(plain_text),
                 )),
             }
             row(&mut lines, name, &mut first, spans);
@@ -427,7 +413,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
                 v["fetch"],
                 v["download"]
                     .as_str()
-                    .map(|d| format!(" ({})", plain(d)))
+                    .map(|d| format!(" ({})", plain_text(d)))
                     .unwrap_or_default()
             )),
             Span::styled(
@@ -481,7 +467,7 @@ fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
 /// Colored, escaped lines of a dev shell source patch: Nix files first; other
 /// files are left out entirely unless `all` is set.
 fn diff_lines(patch: &str, all: bool) -> Vec<Line<'static>> {
-    let mut files = goblins_controller::devshell::patch_files(patch);
+    let mut files = goblins_protocol::patch::patch_files(patch);
     files.sort_by_key(|f| !f.nix());
     let others = files.iter().filter(|f| !f.nix()).count();
     let mut lines = Vec::new();
@@ -502,12 +488,12 @@ fn diff_lines(patch: &str, all: bool) -> Vec<Line<'static>> {
             }
         }
         lines.push(Line::styled(
-            format!("{:<10} {}", file.status, plain(file.path)),
+            format!("{:<10} {}", file.status, plain_text(file.path)),
             tone("file"),
         ));
         for line in &file.lines {
             // Escape each line; keep indentation readable.
-            let text = plain(&line.replace('\t', "    "));
+            let text = plain_text(&line.replace('\t', "    "));
             let style = match line.as_bytes().first() {
                 Some(b'@') => tone("hunk"),
                 Some(b'+') => tone("added"),

@@ -10,7 +10,7 @@ Where the code lives:
 - =crates/controller/src/devshell.rs= :: snapshot, lock checks
   (=check_lock=, =validate_lock=, completeness in =snapshot=), candidate
   evaluation (=candidate=), apply (=apply=), the structured =Preview= sent to
-  frontends, =patch_files=.
+  frontends.
 - =crates/controller/src/evaluator.rs= :: Bubblewrap evaluator: store, daemon
   socket, source tree, private state; =Network= (host, none, goblin
   namespaces).
@@ -22,9 +22,10 @@ Where the code lives:
   =devshell=, =Completed::Refresh= handling, =inherits_dev_shell= (automatic
   approval), sandbox method =devshell.lock=.
 - =crates/protocol/src/rpc.rs= :: =PermissionParams= (=update=, =lock=,
-  =validate=, =input_name=).
+  =validate=, =input_name=), =DevShellDiffParams=. =plain_text= (escaping)
+  in =lib.rs= and =patch_files= in =patch.rs= are shared by frontends.
 - =crates/client/src/{cli,main}.rs= :: in-sandbox =goblins devshell
-  refresh|restore-lock=.
+  refresh|diff|restore-lock=; =preview.rs= renders a diff's preview as text.
 - Frontends assemble all wording and colors from the structured preview:
   =crates/controller/src/tui.rs= (=devshell_summary=, =diff_lines=, =d=
   diff view) and =emacs/goblins.el= (=goblins--insert-devshell-summary=,
@@ -96,7 +97,18 @@ Suggested design (confirm with the user):
   non-store =program= is rejected; a changed workspace flake needs refresh
   (or approval); the host path isolation from the evaluator still holds.
 
-* TODO =goblins devshell diff= (preview without a request)
+* DONE =goblins devshell diff= (preview without a request)
+CLOSED: [2026-09-29 Tue 00:03]
+
+Done as suggested below, evaluating without storing: =devshell.diff= is a
+waiting sandbox method like =flake.run= (both share one =Call= slot per
+sandbox and reply through =Completed::Call=), =Session::diff_refresh= shares
+=evaluate_candidate= with =prepare_refresh= but never touches
+=Session::candidate=, so a diff may run while a refresh is pending. The client
+renders the preview as plain text (=crates/client/src/preview.rs=) with the
+TUI's wording; =plain_text= and =patch_files= moved to =goblins_protocol= so
+both share them. See ADR 0007, Refresh (=DevShellDiffTests=).
+
 
 Lets an agent see the approval preview before asking.
 

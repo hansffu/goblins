@@ -960,30 +960,28 @@ impl Session {
             false,
         )
     }
-    /// Evaluate the workspace flake as the next dev shell generation. Returns
-    /// the structured approval preview and the candidate's identity.
-    pub fn prepare_refresh(
-        &mut self,
+    /// Evaluate the workspace flake as the next dev shell generation, as a
+    /// refresh and a diff both do. Stores nothing; the evaluator's scratch
+    /// directory is reused, which is safe because the worker is serial.
+    fn evaluate_candidate(
+        &self,
         changes: &crate::devshell::Changes,
         cancel: &Cancellation,
-    ) -> Result<(serde_json::Value, String)> {
-        self.candidate = None;
+    ) -> Result<crate::devshell::Candidate> {
         let current = self
             .launch
             .dev_shell
             .as_ref()
             .ok_or("this sandbox was not started with a dev shell")?;
-        let cwd = self
-            .launch
-            .cwd
-            .as_ref()
-            .ok_or("dev shell refresh is not supported with a daemon --workspace snapshot")?;
+        let cwd = self.launch.cwd.as_ref().ok_or(
+            "dev shell refresh and diff are not supported with a daemon --workspace snapshot",
+        )?;
         let tree = crate::devshell::visible_tree(&current.path, cwd)?;
         let evaluator = self.evaluator()?;
         // A flake whose evaluation never ends must not keep the request
         // pending until someone denies it.
         let cancel = cancel.with_limit(evaluation_limit());
-        let candidate = crate::devshell::candidate(
+        crate::devshell::candidate(
             current,
             changes,
             &evaluator,
@@ -993,7 +991,18 @@ impl Session {
             &cancel,
         )
         // Report a timeout or cancellation, not the interrupted command.
-        .map_err(|e| cancel.check().err().unwrap_or(e))?;
+        .map_err(|e| cancel.check().err().unwrap_or(e))
+    }
+    /// Evaluate the workspace flake as the next dev shell generation. Returns
+    /// the structured approval preview and the candidate's identity.
+    pub fn prepare_refresh(
+        &mut self,
+        changes: &crate::devshell::Changes,
+        cancel: &Cancellation,
+    ) -> Result<(serde_json::Value, String)> {
+        self.candidate = None;
+        let candidate = self.evaluate_candidate(changes, cancel)?;
+        let current = self.launch.dev_shell.as_ref().ok_or("no dev shell")?;
         let result = (
             serde_json::to_value(&candidate.preview)?,
             candidate.identity(&current.attr),
@@ -1002,6 +1011,17 @@ impl Session {
         self.root(&candidate.root)?;
         self.candidate = Some(candidate);
         Ok(result)
+    }
+    /// The approval preview a refresh with `changes` would show, without a
+    /// request: nothing is stored, rooted, written or mounted, and a pending
+    /// refresh's candidate is left alone.
+    pub fn diff_refresh(
+        &self,
+        changes: &crate::devshell::Changes,
+        cancel: &Cancellation,
+    ) -> Result<serde_json::Value> {
+        let candidate = self.evaluate_candidate(changes, cancel)?;
+        Ok(serde_json::to_value(&candidate.preview)?)
     }
     /// Build, mount and publish the prepared candidate as the current
     /// generation. Running processes keep their environment; the agent

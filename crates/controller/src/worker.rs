@@ -40,6 +40,12 @@ pub(super) enum Work {
         app: String,
         cancel: Cancel,
     },
+    /// Evaluate a refresh candidate for its preview only; nothing is stored.
+    Diff {
+        serial: u64,
+        changes: crate::devshell::Changes,
+        cancel: Cancel,
+    },
 }
 pub(super) enum Completed {
     Preview {
@@ -68,11 +74,11 @@ pub(super) enum Completed {
         approval: u64,
         result: std::result::Result<(serde_json::Value, String), String>,
     },
-    /// The program to execute and the generation it came from, or why the
-    /// app cannot run.
-    Run {
+    /// The reply to a sandbox call waiting on the worker (`Work::Run`,
+    /// `Work::Diff`), or why it failed.
+    Call {
         serial: u64,
-        result: std::result::Result<(PathBuf, u32), String>,
+        result: std::result::Result<serde_json::Value, String>,
     },
     /// A refresh became the current generation; children inherit it.
     DevShell {
@@ -247,8 +253,32 @@ impl Worker {
                             app,
                             cancel,
                         }) => {
-                            let result = session.run_app(&app, &cancel).map_err(|e| e.to_string());
-                            if results.try_send(Completed::Run { serial, result }).is_err() {
+                            // The program to execute and the generation it came from.
+                            let result = session
+                                .run_app(&app, &cancel)
+                                .map(|(program, generation)| {
+                                    serde_json::json!({"program":program,"generation":generation})
+                                })
+                                .map_err(|e| e.to_string());
+                            if results
+                                .try_send(Completed::Call { serial, result })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(Work::Diff {
+                            serial,
+                            changes,
+                            cancel,
+                        }) => {
+                            let result = session
+                                .diff_refresh(&changes, &cancel)
+                                .map_err(|e| e.to_string());
+                            if results
+                                .try_send(Completed::Call { serial, result })
+                                .is_err()
+                            {
                                 break;
                             }
                         }

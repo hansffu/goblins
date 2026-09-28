@@ -24,7 +24,10 @@ in that project flake's dev shell, like `nix develop`: its tools, variables and
 `source /run/goblins/devshell/env.sh` in Bash if you also need the dev shell's
 functions. Editing `flake.nix` or
 `flake.lock` does not change the running environment. After changing the
-flake, run `goblins devshell refresh --reason "REASON"` (add `--lock` for new
+flake, first run `goblins devshell diff` (with the same `--lock` or
+`--update` you intend to use) to see exactly what the host will be asked to
+approve; it asks nothing and changes nothing, so fix surprises before asking.
+Then run `goblins devshell refresh --reason "REASON"` (add `--lock` for new
 inputs, or `--update [INPUT...]` to update inputs) and wait for the host's
 decision. Afterwards, `source /run/goblins/devshell/env.sh` in Bash, or start a
 new shell, to use the new environment; running processes keep the old one.

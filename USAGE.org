@@ -104,8 +104,15 @@ itself would silently fetch unlocked inputs.
 goblins devshell refresh --reason "picked up the new formatter"
 goblins devshell refresh --update nixpkgs   # --update alone updates all inputs
 goblins devshell refresh --lock             # lock inputs newly added to flake.nix
+goblins devshell diff [--update [INPUT...] | --lock]   # preview only
 goblins devshell restore-lock
 #+end_src
+
+=goblins devshell diff= prints, as plain text, the summary and source diff a
+refresh with the same options would show the approver, without asking the host
+or changing anything: no request, no lock write, no new generation. It uses the
+same lock check, evaluator, network and time limit as a refresh, and may run
+while a refresh is pending.
 
 A refresh evaluates the workspace flake as the sandbox's next generation and
 asks the host. The approval shows an =nh=-style summary against the last

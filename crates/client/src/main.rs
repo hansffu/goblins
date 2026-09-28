@@ -1,5 +1,6 @@
 //! Untrusted request client. No controller or helper dependency.
 mod cli;
+mod preview;
 use clap::Parser;
 use goblins_protocol::{REQUEST_SOCKET, rpc};
 use serde_json::json;
@@ -203,6 +204,26 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
             );
             Ok(0)
         }
+        cli::DevshellCommand::Diff { update, lock } => {
+            let mut params = json!({});
+            if let Some(update) = update {
+                params["update"] = json!(update);
+            }
+            if lock {
+                params["lock"] = json!(true);
+            }
+            match waiting_call("devshell-diff", "devshell.diff", params)? {
+                Ok(preview) if preview.is_object() => {
+                    print!("{}", preview::render(&preview));
+                    Ok(0)
+                }
+                Ok(_) => Err("daemon returned an invalid preview".into()),
+                Err(message) => {
+                    eprintln!("goblins: {message}");
+                    Ok(1)
+                }
+            }
+        }
         cli::DevshellCommand::Refresh {
             update,
             lock,
@@ -285,35 +306,49 @@ fn store_program(value: &serde_json::Value) -> Result<std::path::PathBuf, String
     }
     Ok(program)
 }
-fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
-    let app = app_name(installable)?;
+/// One sandbox call the daemon answers from its worker, which can take long;
+/// the daemon bounds evaluation. The outer error is a connection or protocol
+/// failure; the inner one is the daemon's refusal or failure.
+fn waiting_call(
+    feature: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<Result<serde_json::Value, String>, String> {
     let (mut socket, init) = connect()?;
     if !init["features"]
         .as_array()
-        .is_some_and(|v| v.iter().any(|f| f == "flake-run"))
+        .is_some_and(|v| v.iter().any(|f| f == feature))
     {
-        return Err("daemon does not support flake run".into());
+        return Err(format!("daemon does not support {method}"));
     }
     socket
         .set_write_timeout(Some(rpc::TIMEOUT))
         .map_err(|e| e.to_string())?;
     socket
         .write_all(
-            &rpc::encode(&rpc::request(json!(1), "flake.run", json!({"app":app})))
-                .map_err(|e| e.to_string())?,
+            &rpc::encode(&rpc::request(json!(1), method, params)).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
-    // Evaluating and building can take long; the daemon bounds evaluation.
     let reply = rpc::read(&mut socket).map_err(|e| e.to_string())?;
     rpc::validate_response(&reply, &json!(1)).map_err(|e| e.to_string())?;
     if let Some(error) = reply.get("error") {
-        eprintln!(
-            "goblins: {}",
-            error["message"].as_str().unwrap_or("flake run failed")
-        );
-        return Ok(1);
+        return Ok(Err(error["message"]
+            .as_str()
+            .unwrap_or("request failed")
+            .to_string()));
     }
-    let program = store_program(&reply["result"]["program"])?;
+    Ok(Ok(reply["result"].clone()))
+}
+fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
+    let app = app_name(installable)?;
+    let result = match waiting_call("flake-run", "flake.run", json!({"app":app}))? {
+        Ok(result) => result,
+        Err(message) => {
+            eprintln!("goblins: {message}");
+            return Ok(1);
+        }
+    };
+    let program = store_program(&result["program"])?;
     use std::os::unix::process::CommandExt;
     let error = std::process::Command::new(&program).args(args).exec();
     Err(format!("cannot execute {}: {error}", program.display()))

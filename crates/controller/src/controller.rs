@@ -8,7 +8,7 @@ use crate::{
 };
 use goblins_protocol::{
     Request,
-    rpc::{self, Decoder, FlakeRunParams, PermissionParams},
+    rpc::{self, Decoder, DevShellDiffParams, FlakeRunParams, PermissionParams},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -99,14 +99,15 @@ struct Pending {
     connection: u64,
     cancel: Cancel,
 }
-/// A `flake.run` call waiting on the worker.
-struct Run {
+/// A sandbox call waiting on the worker (`flake.run`, `devshell.diff`). One
+/// at a time per sandbox; the worker runs them in turn with other work.
+struct Call {
     serial: u64,
     connection: u64,
     cancel: Cancel,
 }
-fn run_key(serial: u64) -> String {
-    format!("run-{serial}")
+fn call_key(serial: u64) -> String {
+    format!("call-{serial}")
 }
 struct Active {
     created: u64,
@@ -121,7 +122,7 @@ struct Active {
     granted_outputs: BTreeMap<String, PathBuf>,
     /// Identity of the current trusted dev shell generation.
     dev_identity: Option<String>,
-    run: Option<Run>,
+    call: Option<Call>,
 }
 #[derive(Clone)]
 enum Role {
@@ -721,9 +722,9 @@ impl Controller {
             }
             self.reply_permission(&p.id, "error", Some("session stopped".into()));
         }
-        if let Some(r) = self.sessions.get_mut(id).and_then(|a| a.run.take()) {
-            r.cancel.cancel();
-            self.reply_waiting(&run_key(r.serial), Err("session stopped".into()));
+        if let Some(w) = self.sessions.get_mut(id).and_then(|a| a.call.take()) {
+            w.cancel.cancel();
+            self.reply_waiting(&call_key(w.serial), Err("session stopped".into()));
         }
         self.dirty = true;
         Ok(json!({"accepted":true}))
@@ -756,10 +757,10 @@ impl Controller {
         }
     }
     fn withdraw(&mut self, connection: u64) {
-        // A disconnected caller no longer wants its app.
+        // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
-            if a.run.as_ref().is_some_and(|r| r.connection == connection) {
-                a.run.take().unwrap().cancel.cancel();
+            if a.call.as_ref().is_some_and(|w| w.connection == connection) {
+                a.call.take().unwrap().cancel.cancel();
             }
         }
         let mut gone = None;
@@ -931,7 +932,7 @@ impl Controller {
                 exit_watch: None,
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
-                run: None,
+                call: None,
                 created: self.next,
                 record,
                 worker: Some(worker),
@@ -1303,7 +1304,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1406,16 +1407,39 @@ impl Controller {
                         self.dirty = true;
                         return Ok(None);
                     }
-                    if call.method == "flake.run" {
+                    if matches!(call.method.as_str(), "flake.run" | "devshell.diff") {
                         if !c.input.is_empty() {
                             c.dead = true;
                             return Err((-32600, "unexpected trailing input".into()));
                         }
-                        let p: FlakeRunParams = params(call.params)?;
-                        if !p.validate() {
-                            return Err((-32602, "invalid app name".into()));
-                        }
                         let serial = self.number();
+                        let work: Box<dyn FnOnce(Cancel) -> Work> = if call.method == "flake.run" {
+                            let p: FlakeRunParams = params(call.params)?;
+                            if !p.validate() {
+                                return Err((-32602, "invalid app name".into()));
+                            }
+                            // The trusted generation's own source and lock grant
+                            // no new trust, so nothing is asked of the host.
+                            Box::new(move |cancel| Work::Run {
+                                serial,
+                                app: p.app,
+                                cancel,
+                            })
+                        } else {
+                            let p: DevShellDiffParams = params(call.params)?;
+                            if !p.validate() {
+                                return Err((-32602, "invalid flake inputs".into()));
+                            }
+                            // A preview only: no record, no candidate, no change.
+                            Box::new(move |cancel| Work::Diff {
+                                serial,
+                                changes: crate::devshell::Changes {
+                                    update: p.update,
+                                    lock: p.lock,
+                                },
+                                cancel,
+                            })
+                        };
                         let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
                         if a.record.dev_shell.is_none() {
                             return Err((
@@ -1423,26 +1447,23 @@ impl Controller {
                                 "this sandbox was not started with a dev shell".into(),
                             ));
                         }
-                        if a.run.is_some() {
-                            return Err((-32009, "another flake run is in progress".into()));
+                        if a.call.is_some() {
+                            return Err((
+                                -32009,
+                                "another flake run or dev shell diff is in progress".into(),
+                            ));
                         }
-                        // The trusted generation's own source and lock grant no
-                        // new trust, so nothing is asked of the host.
                         let w = a.worker.as_ref().ok_or_else(conflict)?;
                         let cancel = w.cancel.child();
                         w.commands
-                            .try_send(Work::Run {
-                                serial,
-                                app: p.app,
-                                cancel: cancel.clone(),
-                            })
+                            .try_send(work(cancel.clone()))
                             .map_err(|_| capacity())?;
-                        a.run = Some(Run {
+                        a.call = Some(Call {
                             serial,
                             connection: c.id,
                             cancel,
                         });
-                        c.waiting = Some((run_key(serial), id.clone()));
+                        c.waiting = Some((call_key(serial), id.clone()));
                         return Ok(None);
                     }
                     if call.method != "permissions.request" {
@@ -1789,17 +1810,10 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
-                    Completed::Run { serial, result } => {
-                        if a.run.as_ref().is_some_and(|r| r.serial == serial) {
-                            a.run.take();
-                            self.reply_waiting(
-                                &run_key(serial),
-                                result
-                                    .map(|(program, generation)| {
-                                        json!({"program":program,"generation":generation})
-                                    })
-                                    .map_err(|e| bounded(&e)),
-                            );
+                    Completed::Call { serial, result } => {
+                        if a.call.as_ref().is_some_and(|w| w.serial == serial) {
+                            a.call.take();
+                            self.reply_waiting(&call_key(serial), result.map_err(|e| bounded(&e)));
                         }
                     }
                     Completed::DevShell {
@@ -1879,9 +1893,9 @@ impl Controller {
                             }
                             self.reply_permission(&p.id, "error", Some("payload stopped".into()));
                         }
-                        if let Some(r) = a.run.take() {
-                            r.cancel.cancel();
-                            self.reply_waiting(&run_key(r.serial), Err("payload stopped".into()));
+                        if let Some(w) = a.call.take() {
+                            w.cancel.cancel();
+                            self.reply_waiting(&call_key(w.serial), Err("payload stopped".into()));
                         }
                         self.dirty = true;
                     }
@@ -2071,7 +2085,7 @@ mod tests {
                 exit_watch: None,
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
-                run: None,
+                call: None,
                 created: 0,
                 record: SessionRecord {
                     docker_enabled: false,

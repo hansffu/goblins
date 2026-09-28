@@ -368,9 +368,51 @@ impl FlakeRunParams {
                 .all(|b| b.is_ascii_alphanumeric() || b"_-+'".contains(&b))
     }
 }
+/// `devshell.diff`: the changes a refresh would make, as in
+/// `PermissionParams`, without a reason since nothing is requested.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevShellDiffParams {
+    /// Flake inputs to update; empty means all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<Vec<String>>,
+    /// Lock inputs `flake.nix` declares but the lock lacks.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock: bool,
+}
+impl DevShellDiffParams {
+    pub fn validate(&self) -> bool {
+        !(self.update.is_some() && self.lock)
+            && self
+                .update
+                .as_ref()
+                .is_none_or(|u| u.len() <= 32 && u.iter().all(|i| input_name(i)))
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn devshell_diff_params_match_refresh_rules() {
+        let diff = |v: Value| serde_json::from_value::<DevShellDiffParams>(v);
+        for ok in [
+            json!({}),
+            json!({"update":[]}),
+            json!({"update":["nixpkgs","a/b"]}),
+            json!({"lock":true}),
+        ] {
+            assert!(diff(ok.clone()).unwrap().validate(), "{ok}");
+        }
+        for bad in [
+            json!({"update":["nixpkgs"],"lock":true}),
+            json!({"update":["../x"]}),
+            json!({"update":["-x"]}),
+            json!({"update":vec!["a"; 33]}),
+        ] {
+            assert!(!diff(bad.clone()).unwrap().validate(), "{bad}");
+        }
+        assert!(diff(json!({"reason":"x"})).is_err());
+    }
     #[test]
     fn hostile_frames_and_deadlines() {
         let now = Instant::now();

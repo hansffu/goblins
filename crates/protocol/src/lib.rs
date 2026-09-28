@@ -61,7 +61,31 @@ pub fn identifier(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
 }
 
+/// Escape control and bidi formatting characters only, so code and quotes
+/// in summaries and diffs stay readable while nothing can drive the terminal
+/// or reorder text. The Emacs frontend escapes the same set.
+pub fn plain_text(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control()
+                || matches!(
+                    c,
+                    '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+            {
+                format!("\\u{:04x}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
 pub mod messages;
+pub mod patch;
 pub mod rpc;
 pub mod terminal;
 #[cfg(test)]
@@ -84,5 +108,12 @@ mod tests {
             assert!(!package_name(name));
         }
         assert!(!package_name(&"x".repeat(201)));
+    }
+    #[test]
+    fn plain_text_escapes_only_control_and_bidi_characters() {
+        assert_eq!(
+            plain_text("a \"q\" é\t\u{1b}[31m\u{202e}x\u{2066}\u{2028}\u{7f}"),
+            "a \"q\" é\\u0009\\u001b[31m\\u202ex\\u2066\\u2028\\u007f"
+        );
     }
 }

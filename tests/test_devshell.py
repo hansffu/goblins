@@ -513,5 +513,85 @@ for _name in dir(DevShellRefreshTests):
     if _name.startswith("test_") and _name not in DevShellFlakeRunTests.__dict__:
         setattr(DevShellFlakeRunTests, _name, None)
 
+class DevShellDiffTests(DevShellRefreshTests):
+    """goblins devshell diff: a refresh preview with no request and no change."""
+
+    def env_marker(self):
+        output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
+        return output
+
+    def test_diff_shows_the_edited_flake_and_changes_nothing(self):
+        output, code = self.run_in("goblins devshell diff", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn("No changes: the workspace flake matches dev shell generation 1.", output)
+        roots = self.roots()
+        self.write_flake("edited")
+        output, code = self.run_in("goblins devshell diff", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn("generation 1 → 2 (preview only; nothing was requested or changed)", output)
+        self.assertIn("ATTENTION nothing unusual", output)
+        self.assertIn("SOURCE    flake.nix +1 -1", output)
+        self.assertIn("ENV       [C] DEV_MARKER original → edited", output)
+        self.assertIn("COST      ", output)
+        self.assertIn("modified   flake.nix", output)
+        self.assertIn('-        DEV_MARKER = "original";', output)
+        self.assertIn('+        DEV_MARKER = "edited";', output)
+        # No request, no rooted candidate, no new generation.
+        self.assertEqual(self.d.permissions(), [])
+        self.assertEqual(self.roots(), roots)
+        self.assertIn("N=original", self.env_marker())
+
+    def test_diff_rejects_a_hand_edited_lock(self):
+        lock = self.project / "flake.lock"
+        edited = json.loads(lock.read_text())
+        edited["nodes"]["nixpkgs"]["locked"]["narHash"] = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        lock.write_text(json.dumps(edited, indent=2))
+        output, code = self.run_in("goblins devshell diff")
+        self.assertEqual(code, 1, output)
+        self.assertIn("flake.lock differs from the trusted lock", output)
+        self.assertIn("goblins devshell restore-lock", output)
+        self.assertEqual(self.d.permissions(), [])
+        self.assertEqual(json.loads(lock.read_text()), edited)
+
+    def test_diff_lock_shows_new_inputs_without_writing_the_lock(self):
+        lock = (self.project / "flake.lock").read_text()
+        flake = (self.project / "flake.nix").read_text().replace(
+            "inputs.nixpkgs.url",
+            f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
+        (self.project / "flake.nix").write_text(flake)
+        output, code = self.run_in("goblins devshell diff")
+        self.assertEqual(code, 1, output)
+        self.assertIn("does not lock everything flake.nix uses", output)
+        output, code = self.run_in("goblins devshell diff --lock", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn(f"ATTENTION ! new input 'extra' from path:{self.nixpkgs}", output)
+        self.assertIn(f"INPUTS    [A] extra path:{self.nixpkgs}", output)
+        self.assertEqual((self.project / "flake.lock").read_text(), lock)
+        self.assertEqual(self.d.permissions(), [])
+
+    def test_diff_while_a_refresh_is_pending_leaves_it_alone(self):
+        self.write_flake("edited")
+        output, code = self.run_in("goblins devshell refresh >/tmp/refresh.log 2>&1 &")
+        self.assertEqual(code, 0, output)
+        record = self.pending_refresh()
+        roots = self.roots()
+        # The workspace moves on; the pending candidate must not.
+        self.write_flake("later")
+        output, code = self.run_in("goblins devshell diff", timeout=300)
+        self.assertEqual(code, 0, output)
+        self.assertIn("ENV       [C] DEV_MARKER original → later", output)
+        self.assertEqual(self.roots(), roots)
+        self.assertEqual([r["state"] for r in self.d.permissions()], ["pending"])
+        self.d.decide(record, True)
+        output, code = self.run_in("wait; cat /tmp/refresh.log")
+        self.assertIn("Dev shell generation 2 is active", output)
+        # The approved candidate is the one the host saw, not the later edit.
+        self.assertIn("N=edited", self.env_marker())
+
+
+for _name in dir(DevShellRefreshTests):
+    if _name.startswith("test_") and _name not in DevShellDiffTests.__dict__:
+        setattr(DevShellDiffTests, _name, None)
+
 if __name__ == "__main__":
     unittest.main()

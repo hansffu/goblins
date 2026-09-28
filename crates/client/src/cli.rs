@@ -25,6 +25,15 @@ pub enum DevshellCommand {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Show what a refresh would change, without asking the host or changing anything
+    Diff {
+        /// Update these flake inputs first (all inputs when none are named)
+        #[arg(long, num_args = 0.., value_name = "INPUT")]
+        update: Option<Vec<String>>,
+        /// Lock inputs flake.nix declares but flake.lock lacks
+        #[arg(long, conflicts_with = "update")]
+        lock: bool,
+    },
     /// Write this sandbox's trusted flake.lock back into the workspace
     RestoreLock,
 }
