@@ -18,6 +18,8 @@ from support import command
 from terminal_support import Terminal, screen_wait
 
 
+# These run the real Codex, whose prompts change between versions.
+@unittest.skipUnless(os.environ.get("GOBLINS_TEST_CODEX"), "set GOBLINS_TEST_CODEX=1 to test Codex")
 class CodexConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
