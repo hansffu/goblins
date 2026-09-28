@@ -15,7 +15,7 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use std::{
@@ -57,6 +57,21 @@ fn safe(s: &str) -> String {
     s.get(1..s.len().saturating_sub(1))
         .unwrap_or_default()
         .into()
+}
+/// Escape control and bidi formatting characters only, so code and quotes
+/// in summaries and diffs stay readable while nothing can drive the terminal.
+fn plain(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control()
+                || matches!(c, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            {
+                format!("\\u{:04x}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 fn has_diff(request: &PermissionRecord) -> bool {
     request
@@ -178,32 +193,325 @@ struct DiffView {
     scroll: u16,
     all: bool,
 }
-/// Colored, escaped lines of a dev shell source patch. Non-Nix files are
-/// listed but not expanded unless `all` is set.
-fn diff_lines(patch: &str, all: bool) -> Vec<Line<'static>> {
-    let color = std::env::var_os("NO_COLOR").is_none();
-    let styled = |c: Color| {
-        if color {
-            Style::default().fg(c)
-        } else {
-            Style::default()
-        }
+/// Terminal styles for change states, like nh: additions green, removals
+/// red, changes and anything needing attention yellow.
+fn tone(kind: &str) -> Style {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return match kind {
+            "key" | "title" => Style::default().add_modifier(Modifier::BOLD),
+            _ => Style::default(),
+        };
+    }
+    match kind {
+        "added" => Style::default().fg(Color::Green),
+        "removed" => Style::default().fg(Color::Red),
+        "changed" | "attention" => Style::default().fg(Color::Yellow),
+        "ok" => Style::default().fg(Color::Green),
+        "key" => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+        "title" => Style::default().add_modifier(Modifier::BOLD),
+        "dim" => Style::default().add_modifier(Modifier::DIM),
+        "hunk" => Style::default().fg(Color::Cyan),
+        "file" => Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+        _ => Style::default(),
+    }
+}
+fn tag(change: &str) -> Span<'static> {
+    let (text, kind) = match change {
+        "added" => ("[A] ", "added"),
+        "removed" => ("[R] ", "removed"),
+        _ => ("[C] ", "changed"),
     };
-    let files = goblins_controller::devshell::patch_files(patch);
-    let hidden: Vec<_> = files.iter().filter(|f| !all && !f.nix()).collect();
+    Span::styled(text, tone(kind))
+}
+fn text_of(v: &serde_json::Value) -> String {
+    plain(v.as_str().unwrap_or_default())
+}
+/// Old → new, old in red and new in green; either may be absent.
+fn old_new(old: Option<String>, new: Option<String>) -> Vec<Span<'static>> {
+    match (old, new) {
+        (Some(a), Some(b)) => vec![
+            Span::styled(a, tone("removed")),
+            Span::raw(" → "),
+            Span::styled(b, tone("added")),
+        ],
+        (None, Some(b)) => vec![Span::styled(b, tone("added"))],
+        (Some(a), None) => vec![Span::styled(a, tone("removed"))],
+        (None, None) => vec![],
+    }
+}
+fn locked(v: &serde_json::Value) -> Option<String> {
+    v.as_object()?;
+    Some(format!(
+        "{}{}",
+        text_of(&v["id"]),
+        v["date"]
+            .as_str()
+            .map(|d| format!(" ({})", plain(d)))
+            .unwrap_or_default()
+    ))
+}
+fn versions(v: &serde_json::Value) -> Option<String> {
+    Some(
+        v.as_array()?
+            .iter()
+            .map(text_of)
+            .map(|s| if s.is_empty() { "?".into() } else { s })
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+fn nix_file(path: &str) -> bool {
+    path.ends_with(".nix")
+}
+/// The refresh summary, assembled here from the daemon's structured preview.
+fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
+    let list = |key: &str| v[key].as_array().cloned().unwrap_or_default();
+    let mut lines = vec![Line::styled(
+        format!(
+            "Dev shell {} · generation {} → {}",
+            text_of(&v["reference"]),
+            v["from"],
+            v["to"]
+        ),
+        tone("title"),
+    )];
+    let mut row =
+        |lines: &mut Vec<Line<'static>>, key: &str, first: &mut bool, spans: Vec<Span<'static>>| {
+            let label = if *first { key } else { "" };
+            *first = false;
+            let mut all = vec![Span::styled(format!("{label:<10}"), tone("key"))];
+            all.extend(spans);
+            lines.push(Line::from(all));
+        };
+    let mut first = true;
+    let attention = list("attention");
+    if attention.is_empty() {
+        row(
+            &mut lines,
+            "ATTENTION",
+            &mut first,
+            vec![Span::styled("nothing unusual", tone("ok"))],
+        );
+    }
+    for note in &attention {
+        let text = match note["kind"].as_str().unwrap_or_default() {
+            "input-source" => format!(
+                "input '{}' now comes from {} (was {})",
+                text_of(&note["input"]),
+                text_of(&note["new"]),
+                text_of(&note["old"])
+            ),
+            "new-input" => format!(
+                "new input '{}' from {}",
+                text_of(&note["input"]),
+                text_of(&note["source"])
+            ),
+            "nix-config" => "flake declares nixConfig (ignored, never applied)".into(),
+            "local-builds" => format!("{} derivation(s) build on this machine", note["count"]),
+            "shell-hook" => "shellHook changed; it runs in the sandbox".into(),
+            other => format!("{}", plain(other)),
+        };
+        row(
+            &mut lines,
+            "ATTENTION",
+            &mut first,
+            vec![Span::styled(format!("! {text}"), tone("attention"))],
+        );
+    }
+    let files = list("files");
+    let (nix, other): (Vec<_>, Vec<_>) = files
+        .iter()
+        .partition(|f| nix_file(f["path"].as_str().unwrap_or_default()));
+    first = true;
+    for file in &nix {
+        row(
+            &mut lines,
+            "SOURCE",
+            &mut first,
+            vec![
+                Span::raw(format!("{} ", text_of(&file["path"]))),
+                Span::styled(
+                    format!(
+                        "+{}",
+                        file["added"].as_u64().map_or("?".into(), |n| n.to_string())
+                    ),
+                    tone("added"),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!(
+                        "-{}",
+                        file["removed"]
+                            .as_u64()
+                            .map_or("?".into(), |n| n.to_string())
+                    ),
+                    tone("removed"),
+                ),
+            ],
+        );
+    }
+    if !other.is_empty() {
+        row(
+            &mut lines,
+            "SOURCE",
+            &mut first,
+            vec![Span::styled(
+                format!("{} other file(s) changed (d: diff, a: show)", other.len()),
+                tone("dim"),
+            )],
+        );
+    }
+    if files.is_empty() {
+        row(
+            &mut lines,
+            "SOURCE",
+            &mut first,
+            vec![Span::styled("unchanged", tone("dim"))],
+        );
+    }
+    for (key, name) in [
+        ("inputs", "INPUTS"),
+        ("packages", "PACKAGES"),
+        ("env", "ENV"),
+    ] {
+        let changes = list(key);
+        first = true;
+        if changes.is_empty() {
+            row(
+                &mut lines,
+                name,
+                &mut first,
+                vec![Span::styled("unchanged", tone("dim"))],
+            );
+        }
+        for c in &changes {
+            let change = c["change"].as_str().unwrap_or_default();
+            let mut spans = vec![tag(change), Span::raw(format!("{} ", text_of(&c["name"])))];
+            match key {
+                "inputs" => {
+                    let source = |side: &str| c[side]["source"].as_str().map(plain);
+                    let (old, new) = (source("old"), source("new"));
+                    if old.is_some() && new.is_some() && old != new {
+                        spans.extend(old_new(old, new));
+                        spans.push(Span::raw("  "));
+                    } else {
+                        spans.push(Span::raw(format!("{}  ", new.or(old).unwrap_or_default())));
+                    }
+                    spans.extend(old_new(locked(&c["old"]), locked(&c["new"])));
+                }
+                "packages" => spans.extend(old_new(versions(&c["old"]), versions(&c["new"]))),
+                _ if c["long"] == true => {
+                    spans.push(Span::styled("(long value; see source diff)", tone("dim")))
+                }
+                _ => spans.extend(old_new(
+                    c["old"].as_str().map(plain),
+                    c["new"].as_str().map(plain),
+                )),
+            }
+            row(&mut lines, name, &mut first, spans);
+        }
+    }
+    first = true;
+    let build = v["build"].as_u64().unwrap_or(0);
+    row(
+        &mut lines,
+        "COST",
+        &mut first,
+        vec![
+            Span::raw(format!(
+                "{} to fetch{} · ",
+                v["fetch"],
+                v["download"]
+                    .as_str()
+                    .map(|d| format!(" ({})", plain(d)))
+                    .unwrap_or_default()
+            )),
+            Span::styled(
+                format!("{build} to build"),
+                if build > 0 {
+                    tone("attention")
+                } else {
+                    Style::default()
+                },
+            ),
+        ],
+    );
+    first = true;
+    let incoming = list("incoming");
+    for item in incoming.iter().take(50) {
+        let action = item["action"].as_str().unwrap_or_default();
+        row(
+            &mut lines,
+            "INCOMING",
+            &mut first,
+            vec![
+                Span::styled(
+                    format!("[{}] ", if action == "build" { "B" } else { "F" }),
+                    tone(if action == "build" {
+                        "attention"
+                    } else {
+                        "added"
+                    }),
+                ),
+                Span::raw(format!(
+                    "{} {}",
+                    text_of(&item["name"]),
+                    versions(&item["versions"]).unwrap_or_default()
+                )),
+            ],
+        );
+    }
+    if incoming.len() > 50 {
+        row(
+            &mut lines,
+            "INCOMING",
+            &mut first,
+            vec![Span::styled(
+                format!("… and {} more", incoming.len() - 50),
+                tone("dim"),
+            )],
+        );
+    }
+    lines
+}
+/// Colored, escaped lines of a dev shell source patch: Nix files first; other
+/// files are left out entirely unless `all` is set.
+fn diff_lines(patch: &str, all: bool) -> Vec<Line<'static>> {
+    let mut files = goblins_controller::devshell::patch_files(patch);
+    files.sort_by_key(|f| !f.nix());
+    let others = files.iter().filter(|f| !f.nix()).count();
     let mut lines = Vec::new();
-    for file in files.iter().filter(|f| all || f.nix()) {
+    let mut heading_done = false;
+    for file in &files {
+        if !file.nix() && !heading_done {
+            heading_done = true;
+            lines.push(Line::styled(
+                format!(
+                    "Other changes: {others} non-Nix file(s) · a: {}",
+                    if all { "hide" } else { "show" }
+                ),
+                tone("title"),
+            ));
+            lines.push(Line::raw(""));
+            if !all {
+                break;
+            }
+        }
         lines.push(Line::styled(
-            format!("{:<10} {}", file.status, safe(file.path)),
-            styled(Color::Yellow).add_modifier(Modifier::BOLD),
+            format!("{:<10} {}", file.status, plain(file.path)),
+            tone("file"),
         ));
         for line in &file.lines {
             // Escape each line; keep indentation readable.
-            let text = safe(&line.replace('\t', "    "));
+            let text = plain(&line.replace('\t', "    "));
             let style = match line.as_bytes().first() {
-                Some(b'@') => styled(Color::Cyan),
-                Some(b'+') => styled(Color::Green),
-                Some(b'-') => styled(Color::Red),
+                Some(b'@') => tone("hunk"),
+                Some(b'+') => tone("added"),
+                Some(b'-') => tone("removed"),
                 _ => Style::default(),
             };
             lines.push(Line::styled(text, style));
@@ -212,23 +520,6 @@ fn diff_lines(patch: &str, all: bool) -> Vec<Line<'static>> {
     }
     if files.is_empty() {
         lines.push(Line::raw("No source changes"));
-    }
-    if !hidden.is_empty() {
-        lines.push(Line::styled(
-            format!("{} non-Nix file(s) hidden (a: show):", hidden.len()),
-            Style::default().add_modifier(Modifier::DIM),
-        ));
-        for file in hidden {
-            lines.push(Line::styled(
-                format!(
-                    "  {:<10} {} ({} lines)",
-                    file.status,
-                    safe(file.path),
-                    file.lines.len()
-                ),
-                Style::default().add_modifier(Modifier::DIM),
-            ));
-        }
     }
     lines
 }
@@ -339,6 +630,10 @@ impl View {
         }
         let has_request = self.selected_request.is_some();
         let popup = has_request && self.popup_open;
+        let devshell = snapshot.permissions.iter().any(|p| {
+            Some(&p.id) == self.selected_request.as_ref()
+                && p.preview.as_ref().is_some_and(|v| v["kind"] == "devshell")
+        });
         let areas = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(3),
@@ -347,7 +642,14 @@ impl View {
             } else {
                 0
             }),
-            Constraint::Length(if popup { 11 } else { 0 }),
+            Constraint::Length(if !popup {
+                0
+            } else if devshell {
+                // Refresh summaries are long; give them most of the screen.
+                (f.area().height * 3 / 5).max(11)
+            } else {
+                11
+            }),
             Constraint::Length(2),
         ])
         .split(f.area());
@@ -484,6 +786,7 @@ impl View {
                         v["description"].as_str().unwrap().into()
                     }
                     None => "Checking...".into(),
+                    Some(v) if v["kind"] == "devshell" => String::new(),
                     Some(v) if v.get("error").is_some() => format!(
                         "Unknown: {}",
                         v["error"].as_str().unwrap_or("preview failed")
@@ -503,7 +806,7 @@ impl View {
                         }
                     ),
                 };
-                let text = format!(
+                let mut text: Vec<Line> = format!(
                     "Sandbox: {}\n{}: {}\n{}\nReason: {}\nStatus: {}{}",
                     request_label(snapshot, p),
                     if p.kind == "package" {
@@ -521,7 +824,15 @@ impl View {
                         .as_ref()
                         .map(|m| format!(" · {}", safe(m)))
                         .unwrap_or_default()
-                );
+                )
+                .lines()
+                .map(|l| Line::raw(l.to_string()))
+                .collect();
+                if let Some(v) = p.preview.as_ref().filter(|v| v["kind"] == "devshell") {
+                    // Replace the generic preview line with the colored summary.
+                    text.remove(2);
+                    text.splice(2..2, devshell_summary(v));
+                }
                 f.render_widget(
                     Paragraph::new(text)
                         .wrap(Wrap { trim: false })
@@ -833,8 +1144,8 @@ mod tests {
         .unwrap()
     }
     #[test]
-    fn diff_view_hides_non_nix_files_and_escapes_lines() {
-        let patch = "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\x1b[2J\ndiff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-x\n+y\n";
+    fn diff_view_puts_nix_first_and_hides_other_files() {
+        let patch = "diff --git a/src/main.rs b/src/main.rs\n@@ -1 +1 @@\n-x\n+y\ndiff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n@@ -1 +1 @@\n-a\n+b\x1b[2J\n";
         let text = |all| {
             diff_lines(patch, all)
                 .iter()
@@ -842,11 +1153,55 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let shown = text(false);
-        assert!(shown.contains(&"modified   flake.nix".to_string()));
+        assert_eq!(shown[0], "modified   flake.nix");
         assert!(shown.contains(&"+b\\u001b[2J".to_string()));
-        assert!(!shown.contains(&"-x".to_string()));
-        assert!(shown.contains(&"1 non-Nix file(s) hidden (a: show):".to_string()));
-        assert!(text(true).contains(&"-x".to_string()));
+        assert!(shown.contains(&"Other changes: 1 non-Nix file(s) · a: show".to_string()));
+        assert!(!shown.iter().any(|l| l.contains("src/main.rs") || l == "-x"));
+        let all = text(true);
+        assert!(
+            all.contains(&"modified   src/main.rs".to_string()) && all.contains(&"-x".to_string())
+        );
+    }
+    #[test]
+    fn devshell_summary_is_assembled_from_structured_data() {
+        let preview = serde_json::json!({
+            "kind": "devshell", "reference": "/src", "from": 1, "to": 2,
+            "attention": [{"kind": "new-input", "input": "extra", "source": "github:a/b"}],
+            "files": [{"path": "flake.nix", "added": 1, "removed": 1}, {"path": "README.org", "added": 1, "removed": 0}],
+            "inputs": [{"name": "extra", "change": "added", "old": null, "new": {"source": "github:a/b", "id": "1a2b3c4", "date": null}}],
+            "packages": [{"name": "rustc", "change": "changed", "old": ["1.89.0"], "new": ["1.90.1"]}],
+            "env": [], "fetch": 2, "build": 0, "download": "1 MiB",
+            "incoming": [{"action": "fetch", "name": "glibc", "versions": ["2.42"]}], "diff": ""
+        });
+        let lines = devshell_summary(&preview);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(text[0], "Dev shell /src · generation 1 → 2");
+        assert!(text.contains(&"ATTENTION ! new input 'extra' from github:a/b".to_string()));
+        assert!(text.contains(&"SOURCE    flake.nix +1 -1".to_string()));
+        assert!(text.contains(&"          1 other file(s) changed (d: diff, a: show)".to_string()));
+        assert!(text.contains(&"INPUTS    [A] extra github:a/b  1a2b3c4".to_string()));
+        assert!(text.contains(&"PACKAGES  [C] rustc 1.89.0 → 1.90.1".to_string()));
+        assert!(text.contains(&"ENV       unchanged".to_string()));
+        assert!(text.contains(&"COST      2 to fetch (1 MiB) · 0 to build".to_string()));
+        assert!(text.contains(&"INCOMING  [F] glibc 2.42".to_string()));
+        // Old versions are red and new ones green, when colors are enabled.
+        if std::env::var_os("NO_COLOR").is_none() {
+            let rustc = lines
+                .iter()
+                .find(|l| l.to_string().contains("rustc"))
+                .unwrap();
+            let color = |t: &str| {
+                rustc
+                    .spans
+                    .iter()
+                    .find(|s| s.content == t)
+                    .unwrap()
+                    .style
+                    .fg
+            };
+            assert_eq!(color("1.89.0"), Some(Color::Red));
+            assert_eq!(color("1.90.1"), Some(Color::Green));
+        }
     }
     #[test]
     fn ownership_tree_preserves_identity_through_insertions_and_folding() {

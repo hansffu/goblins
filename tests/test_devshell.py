@@ -184,17 +184,19 @@ class DevShellRefreshTests(DevShellTests):
         command(["git", "-C", str(self.project), "add", "notes.txt"])
         n = self.send(self.terminal, "goblins devshell refresh --reason 'pick up flake.nix'")
         record = self.pending_refresh()
-        description = record["preview"]["description"]
-        self.assertIn("generation 1 → 2", description)
-        self.assertRegex(description, r"Source +flake.nix \+1 −1\n +notes.txt \+1 −0\n")
-        self.assertIn("Attention nothing unusual", description)
-        self.assertIn("~ DEV_MARKER: original → edited", description)
-        diff = record["preview"]["diff"]
-        self.assertIn('-        DEV_MARKER = "original";', diff)
-        self.assertIn("diff --git a/notes.txt b/notes.txt", diff)
-        self.assertNotIn("DEV_MARKER = ", description)
-        self.assertRegex(description, r"Inputs +unchanged")
-        self.assertNotIn("flake.lock", description)
+        # The daemon sends facts; frontends assemble sections and colors.
+        preview = record["preview"]
+        self.assertEqual((preview["kind"], preview["from"], preview["to"]), ("devshell", 1, 2))
+        self.assertNotIn("description", preview)
+        self.assertEqual(preview["files"], [{"path": "flake.nix", "added": 1, "removed": 1},
+                                            {"path": "notes.txt", "added": 1, "removed": 0}])
+        self.assertEqual(preview["attention"], [])
+        self.assertEqual(preview["inputs"], [])
+        self.assertIn({"name": "DEV_MARKER", "change": "changed", "old": "original", "new": "edited",
+                       "long": False}, preview["env"])
+        self.assertIn('-        DEV_MARKER = "original";', preview["diff"])
+        self.assertIn("diff --git a/notes.txt b/notes.txt", preview["diff"])
+        self.assertNotIn("flake.lock", preview["diff"])
         self.assertEqual(record["package"], "refresh")
         self.d.decide(record, True)
         output, code = self.end(self.terminal, n)
@@ -257,10 +259,12 @@ class DevShellRefreshTests(DevShellTests):
         n = self.send(self.terminal, "goblins devshell refresh --lock")
         record = self.pending_refresh()
         self.assertEqual(record["package"], "refresh --lock")
-        description = record["preview"]["description"]
-        self.assertIn(f"! new input 'extra' from path:{self.nixpkgs}", description)
-        self.assertIn(f"+ extra  path:{self.nixpkgs}", description)
-        self.assertNotIn('"nodes"', description)
+        preview = record["preview"]
+        self.assertEqual(preview["attention"],
+                         [{"kind": "new-input", "input": "extra", "source": f"path:{self.nixpkgs}"}])
+        self.assertEqual([(c["name"], c["change"], c["new"]["source"]) for c in preview["inputs"]],
+                         [("extra", "added", f"path:{self.nixpkgs}")])
+        self.assertNotIn('"nodes"', preview["diff"])
         self.assertNotIn("extra", json.loads((self.project / "flake.lock").read_text())["nodes"])
         self.d.decide(record, True)
         output, code = self.end(self.terminal, n)

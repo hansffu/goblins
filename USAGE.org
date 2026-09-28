@@ -108,15 +108,16 @@ goblins devshell restore-lock
 #+end_src
 
 A refresh evaluates the workspace flake as the sandbox's next generation and
-asks the host. The approval shows one =nh=-style diff against the last trusted
-generation: an Attention list first (changed input sources, new inputs,
-=nixConfig=, local builds, a changed =shellHook=), then changed source files,
-lock inputs, the dev shell's direct packages, environment variables, the cost,
-every package the dry run will fetch or build (including transitive ones), and
-the source diff without =flake.lock=. In the TUI, =d= on the request opens the
-colored source diff (=a= shows non-Nix files, =y=/=n= decide). In Emacs, the
-request's details show it as magit-style file sections; =.nix= files are
-expanded and other files start collapsed (TAB toggles). An agent never changes =flake.lock= by
+asks the host. The approval shows an =nh=-style summary against the last
+trusted generation, colored by the frontend: attention items first (changed
+input sources, new inputs, =nixConfig=, local builds, a changed =shellHook=),
+then changed Nix files, lock inputs, the dev shell's direct packages,
+environment variables, the cost and every package the dry run will fetch or
+build. In the TUI the popup shows the summary and =d= opens the colored source
+diff (Nix files first; =a= shows other files; =y=/=n= decide). In Emacs the
+request's details show the summary, then *Nix changes* and a collapsed *Other
+changes* section as magit-style diffs; TAB folds each section.
+An agent never changes =flake.lock= by
 hand: only the lock the sandbox was launched with, or one in an approved
 generation, is trusted. Every refresh first compares the workspace lock (as
 JSON) with the trusted lock and fails on any other, naming what changed;

@@ -56,10 +56,11 @@ pub(super) enum Completed {
         request: String,
         state: &'static str,
     },
-    /// Approval description and candidate identity, or why it cannot refresh.
+    /// Structured approval preview and candidate identity, or why it cannot
+    /// refresh.
     Refresh {
         approval: u64,
-        result: std::result::Result<(String, String, String), String>,
+        result: std::result::Result<(serde_json::Value, String), String>,
     },
     /// A refresh became the current generation; children inherit it.
     DevShell {

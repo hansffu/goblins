@@ -55,8 +55,24 @@ Set this to the directory passed to `goblins --state-dir'."
 (defclass goblins-agent-section (goblins-section) ())
 (defclass goblins-request-section (goblins-section)
   ((record :initarg :record :initform nil)))
-(defclass goblins-diff-section (goblins-section) ())
-(defclass goblins-diff-file-section (goblins-section) ())
+(defclass goblins-fold-section (goblins-section) ()
+  "Sections TAB folds, also in the details view.")
+(defclass goblins-summary-section (goblins-fold-section) ())
+(defclass goblins-diff-section (goblins-fold-section) ())
+(defclass goblins-diff-file-section (goblins-fold-section) ())
+
+(defface goblins-key '((t :inherit font-lock-keyword-face :weight bold))
+  "Keys in a dev shell refresh summary.")
+(defface goblins-added '((t :inherit success))
+  "Added packages, inputs and new values.")
+(defface goblins-removed '((t :inherit error))
+  "Removed packages, inputs and old values.")
+(defface goblins-changed '((t :inherit warning))
+  "Changed entries.")
+(defface goblins-attention '((t :inherit warning :weight bold))
+  "Refresh details that need the approver's attention.")
+(defface goblins-dim '((t :inherit shadow))
+  "Unchanged or secondary summary text.")
 
 (defun goblins--diff-face (magit fallback)
   "Use MAGIT's diff face when Magit is installed, else FALLBACK from diff-mode."
@@ -85,36 +101,179 @@ Set this to the directory passed to `goblins --state-dir'."
             (nreverse files))))
 
 ;; magit-section buffers render `font-lock-face', not `face'.
+(defun goblins--face (text face)
+  (propertize (goblins--safe text) 'font-lock-face face))
+
+(defun goblins--nix-file-p (path)
+  (string-suffix-p ".nix" path))
+
+(defun goblins--old-new (old new)
+  "OLD in the removed face and NEW in the added face; either may be nil."
+  (cond ((and old new) (concat (goblins--face old 'goblins-removed) " → "
+                               (goblins--face new 'goblins-added)))
+        (new (goblins--face new 'goblins-added))
+        (old (goblins--face old 'goblins-removed))
+        (t "")))
+
+(defun goblins--tag (change)
+  (pcase change
+    ("added" (propertize "[A] " 'font-lock-face 'goblins-added))
+    ("removed" (propertize "[R] " 'font-lock-face 'goblins-removed))
+    (_ (propertize "[C] " 'font-lock-face 'goblins-changed))))
+
+(defun goblins--summary-row (key value first)
+  (insert "  " (propertize (format "%-10s" (if first key "")) 'font-lock-face 'goblins-key)
+          value "\n"))
+
+(defun goblins--summary-rows (key values)
+  "Insert VALUES under KEY, or \"unchanged\"."
+  (if (null values)
+      (goblins--summary-row key (propertize "unchanged" 'font-lock-face 'goblins-dim) t)
+    (let ((first t))
+      (dolist (value values)
+        (goblins--summary-row key value first)
+        (setq first nil)))))
+
+(defun goblins--locked (locked)
+  (when locked
+    (concat (plist-get locked :id)
+            (if-let* ((date (plist-get locked :date))) (format " (%s)" date) ""))))
+
+(defun goblins--versions (versions)
+  (when versions
+    (mapconcat (lambda (v) (if (string-empty-p v) "?" v)) (append versions nil) ", ")))
+
+(defun goblins--attention-text (note)
+  (pcase (plist-get note :kind)
+    ("input-source" (format "input '%s' now comes from %s (was %s)"
+                            (plist-get note :input) (plist-get note :new) (plist-get note :old)))
+    ("new-input" (format "new input '%s' from %s" (plist-get note :input) (plist-get note :source)))
+    ("nix-config" "the flake declares nixConfig (ignored, never applied)")
+    ("local-builds" (format "%s derivation(s) will be built on this machine" (plist-get note :count)))
+    ("shell-hook" "shellHook changed; it runs inside the sandbox after approval")
+    (kind (format "%s" kind))))
+
+(defun goblins--insert-devshell-summary (request preview)
+  "Insert the refresh summary of REQUEST from its structured PREVIEW."
+  (let ((files (append (plist-get preview :files) nil)))
+    (magit-insert-section (goblins-summary-section (list 'summary request))
+      (magit-insert-heading
+        (propertize "Dev shell refresh" 'font-lock-face 'magit-section-heading)
+        (format " %s · generation %s → %s"
+                (goblins--safe (plist-get preview :reference))
+                (plist-get preview :from) (plist-get preview :to)))
+      (goblins--summary-rows
+       "Attention"
+       (or (mapcar (lambda (note) (goblins--face (concat "! " (goblins--attention-text note))
+                                                 'goblins-attention))
+                   (plist-get preview :attention))
+           (list (propertize "nothing unusual · inputs locked to allowed sources"
+                             'font-lock-face 'success))))
+      (let* ((nix (cl-remove-if-not (lambda (f) (goblins--nix-file-p (plist-get f :path))) files))
+             (other (- (length files) (length nix))))
+        (goblins--summary-rows
+         "Source"
+         (append
+          (mapcar (lambda (f)
+                    (concat (goblins--safe (plist-get f :path)) " "
+                            (goblins--face (format "+%s" (or (plist-get f :added) "?")) 'goblins-added) " "
+                            (goblins--face (format "-%s" (or (plist-get f :removed) "?")) 'goblins-removed)))
+                  nix)
+          (when (> other 0)
+            (list (propertize (format "%d other file%s changed (see Other changes)"
+                                      other (if (= other 1) "" "s"))
+                              'font-lock-face 'goblins-dim))))))
+      (goblins--summary-rows
+       "Inputs"
+       (mapcar (lambda (c)
+                 (let* ((old (plist-get c :old)) (new (plist-get c :new))
+                        (old-source (plist-get old :source)) (new-source (plist-get new :source)))
+                   (concat (goblins--tag (plist-get c :change))
+                           (goblins--safe (plist-get c :name)) "  "
+                           (if (and old-source new-source (not (equal old-source new-source)))
+                               (concat (goblins--old-new old-source new-source) "  ")
+                             (concat (goblins--safe (or new-source old-source)) "  "))
+                           (goblins--old-new (goblins--locked old) (goblins--locked new)))))
+               (plist-get preview :inputs)))
+      (goblins--summary-rows
+       "Packages"
+       (mapcar (lambda (c)
+                 (concat (goblins--tag (plist-get c :change))
+                         (goblins--safe (plist-get c :name)) " "
+                         (goblins--old-new (goblins--versions (plist-get c :old))
+                                           (goblins--versions (plist-get c :new)))))
+               (plist-get preview :packages)))
+      (goblins--summary-rows
+       "Env"
+       (mapcar (lambda (c)
+                 (concat (goblins--tag (plist-get c :change))
+                         (goblins--safe (plist-get c :name)) " "
+                         (if (eq (plist-get c :long) t)
+                             (propertize "(long value; see the diff)" 'font-lock-face 'goblins-dim)
+                           (goblins--old-new (plist-get c :old) (plist-get c :new)))))
+               (plist-get preview :env)))
+      (let ((build (or (plist-get preview :build) 0)))
+        (goblins--summary-row
+         "Cost"
+         (concat (format "%s to fetch%s · " (plist-get preview :fetch)
+                         (if-let* ((d (plist-get preview :download))) (format " (%s)" (goblins--safe d)) ""))
+                 (propertize (format "%s to build" build)
+                             'font-lock-face (if (> build 0) 'goblins-attention 'default)))
+         t))
+      (when-let* ((incoming (append (plist-get preview :incoming) nil)))
+        ;; Everything the dry run fetches or builds; long lists start folded.
+        (magit-insert-section (goblins-fold-section (list 'incoming request) (> (length incoming) 10))
+          (magit-insert-heading
+            (concat "  " (propertize (format "%-10s" "Incoming") 'font-lock-face 'goblins-key)
+                    (format "%d package%s" (length incoming) (if (= (length incoming) 1) "" "s"))))
+          (dolist (item incoming)
+            (insert "  " (make-string 10 ?\s)
+                    (if (equal (plist-get item :action) "build")
+                        (propertize "[B] " 'font-lock-face 'goblins-attention)
+                      (propertize "[F] " 'font-lock-face 'goblins-added))
+                    (goblins--safe (plist-get item :name)) " "
+                    (goblins--safe (or (goblins--versions (plist-get item :versions)) "")) "\n")))))))
+
+(defun goblins--insert-diff-files (request files)
+  (dolist (file files)
+    (let ((nix (goblins--nix-file-p (car file))))
+      (magit-insert-section (goblins-diff-file-section (list request (car file)) (not nix))
+        (magit-insert-heading
+          (propertize (format "%-11s%s" (nth 1 file) (goblins--safe (car file)))
+                      'font-lock-face
+                      (goblins--diff-face 'magit-diff-file-heading 'diff-file-header)))
+        (dolist (line (nth 2 file))
+          ;; The newline carries the face too, so backgrounds span the window.
+          (insert (propertize
+                   (concat (goblins--safe (string-replace "\t" "    " line)) "\n")
+                   'font-lock-face
+                   (pcase (and (> (length line) 0) (aref line 0))
+                     (?@ (goblins--diff-face 'magit-diff-hunk-heading 'diff-hunk-header))
+                     (?+ (goblins--diff-face 'magit-diff-added 'diff-added))
+                     (?- (goblins--diff-face 'magit-diff-removed 'diff-removed))
+                     (_ (goblins--diff-face 'magit-diff-context 'diff-context))))))))))
+
 (defun goblins--insert-diff (request patch)
-  "Insert PATCH of REQUEST like a Magit diff; non-Nix files start collapsed."
+  "Insert PATCH of REQUEST like a Magit diff: Nix files expanded first, and
+all other files in a collapsed section of their own."
   (require 'diff-mode)
   (let* ((files (goblins--patch-files patch))
-         (other (cl-count-if-not (lambda (f) (string-suffix-p ".nix" (car f))) files)))
+         (nix (cl-remove-if-not (lambda (f) (goblins--nix-file-p (car f))) files))
+         (other (cl-remove-if (lambda (f) (goblins--nix-file-p (car f))) files))
+         (count (lambda (n) (format " (%d file%s)" n (if (= n 1) "" "s")))))
     (insert "\n")
-    (magit-insert-section (goblins-diff-section (list 'diff request))
+    (magit-insert-section (goblins-diff-section (list 'nix-diff request))
       (magit-insert-heading
-        (propertize "Source diff" 'font-lock-face 'magit-section-heading)
-        (format " (%d file%s%s)" (length files) (if (= (length files) 1) "" "s")
-                (if (> other 0) (format ", %d non-Nix collapsed" other) "")))
-      (unless files (insert "No source changes\n"))
-      (dolist (file files)
-        (let ((nix (string-suffix-p ".nix" (car file))))
-          (magit-insert-section (goblins-diff-file-section (list request (car file)) (not nix))
-            (magit-insert-heading
-              (propertize (format "%-11s%s%s" (nth 1 file) (goblins--safe (car file))
-                                  (if nix "" "  (not Nix)"))
-                          'font-lock-face
-                          (goblins--diff-face 'magit-diff-file-heading 'diff-file-header)))
-            (dolist (line (nth 2 file))
-              ;; The newline carries the face too, so backgrounds span the window.
-              (insert (propertize
-                       (concat (goblins--safe (string-replace "\t" "    " line)) "\n")
-                       'font-lock-face
-                       (pcase (and (> (length line) 0) (aref line 0))
-                         (?@ (goblins--diff-face 'magit-diff-hunk-heading 'diff-hunk-header))
-                         (?+ (goblins--diff-face 'magit-diff-added 'diff-added))
-                         (?- (goblins--diff-face 'magit-diff-removed 'diff-removed))
-                         (_ (goblins--diff-face 'magit-diff-context 'diff-context))))))))))))
+        (propertize "Nix changes" 'font-lock-face 'magit-section-heading)
+        (funcall count (length nix)))
+      (unless nix (insert "No Nix changes\n"))
+      (goblins--insert-diff-files request nix))
+    (when other
+      (magit-insert-section (goblins-diff-section (list 'other-diff request) t)
+        (magit-insert-heading
+          (propertize "Other changes" 'font-lock-face 'magit-section-heading)
+          (funcall count (length other)))
+        (goblins--insert-diff-files request other)))))
 
 (defun goblins--default-directory ()
   (let ((root (or (getenv "XDG_RUNTIME_DIR")
@@ -146,8 +305,9 @@ Set this to the directory passed to `goblins --state-dir'."
       (goblins--field "Reason:" (plist-get record :reason))
       (goblins--field "Session:" (plist-get record :session))
       (goblins--field "Request:" (plist-get record :id))
-      (when-let* ((preview (plist-get record :preview)))
-        ;; A dev shell diff spans lines; each line is escaped on its own.
+      (when-let* ((preview (plist-get record :preview))
+                  ((not (equal (plist-get preview :kind) "devshell"))))
+        ;; A multi-line description is escaped line by line.
         (let ((lines (split-string
                       (or (plist-get preview :description)
                           (if-let* ((error (plist-get preview :error)))
@@ -162,9 +322,13 @@ Set this to the directory passed to `goblins --state-dir'."
             (goblins--field "" line))))
       (when-let* ((message (plist-get record :message)))
         (goblins--field "Message:" message))
-      (when-let* ((patch (plist-get (plist-get record :preview) :diff))
-                  ((not (string-empty-p patch))))
-        (goblins--insert-diff (plist-get record :id) patch))
+      (when-let* ((preview (plist-get record :preview))
+                  ((equal (plist-get preview :kind) "devshell")))
+        (insert "\n")
+        (goblins--insert-devshell-summary (plist-get record :id) preview)
+        (let ((patch (plist-get preview :diff)))
+          (unless (string-empty-p (or patch ""))
+            (goblins--insert-diff (plist-get record :id) patch))))
       (insert "\n"))))
 
 (defun goblins--request-agent-label (request)
@@ -243,8 +407,7 @@ Diff sections also fold in the details view."
   (interactive)
   (when-let* ((section (magit-current-section)))
     (cond
-     ((or (object-of-class-p section 'goblins-diff-section)
-          (object-of-class-p section 'goblins-diff-file-section))
+     ((object-of-class-p section 'goblins-fold-section)
       (magit-section-toggle section))
      ((and (not goblins--details) (oref section children))
       (magit-section-toggle section)))))

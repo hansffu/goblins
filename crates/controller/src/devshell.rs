@@ -7,6 +7,7 @@ use crate::{
     process::Cancellation,
     session::store_path,
 };
+use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -478,9 +479,7 @@ pub struct Candidate {
     pub flake: PathBuf,
     pub lock: Value,
     pub summary: Summary,
-    pub description: String,
-    /// Source patch against the current generation, without `flake.lock`.
-    pub diff: String,
+    pub preview: Preview,
 }
 impl Candidate {
     pub fn identity(&self, attr: &str) -> String {
@@ -593,16 +592,22 @@ pub fn candidate(
         &summary.derivation,
     );
     let generation = current.generation + 1;
-    let (files, diff) = source_diff(git, &current.flake, &flake);
-    let description = describe(current, generation, &lock, &summary, &cost, config, files);
+    let preview = preview(
+        current,
+        generation,
+        &lock,
+        &summary,
+        &cost,
+        config,
+        source_diff(git, &current.flake, &flake),
+    );
     Ok(Candidate {
         generation,
         root,
         flake,
         lock,
         summary,
-        description,
-        diff,
+        preview,
     })
 }
 
@@ -715,78 +720,98 @@ fn node_source(node: &Value) -> String {
     }
 }
 
-fn node_version(node: &Value) -> String {
+/// A locked input as the approver sees it: where it comes from and which
+/// revision (or content hash) and date.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Locked {
+    pub source: String,
+    pub id: String,
+    pub date: Option<String>,
+}
+fn locked(node: &Value) -> Locked {
     let l = &node["locked"];
-    let id = l["rev"]
-        .as_str()
-        .map(short)
-        .or_else(|| l["narHash"].as_str().map(|h| h.get(7..14).unwrap_or(h)))
-        .unwrap_or("?");
-    match l["lastModified"].as_i64().filter(|&t| t > 0) {
-        Some(t) => format!("{id} ({})", date(t)),
-        None => id.to_string(),
+    Locked {
+        source: node_source(node),
+        id: l["rev"]
+            .as_str()
+            .map(short)
+            .or_else(|| l["narHash"].as_str().map(|h| h.get(7..14).unwrap_or(h)))
+            .unwrap_or("?")
+            .to_string(),
+        date: l["lastModified"].as_i64().filter(|&t| t > 0).map(date),
     }
 }
 
-fn input_lines(old: &Value, new: &Value) -> Vec<String> {
+/// `added`, `removed` or `changed`, with the old and new values that apply.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Change<T> {
+    pub name: String,
+    pub change: &'static str,
+    pub old: Option<T>,
+    pub new: Option<T>,
+}
+fn change<T: PartialEq>(name: &str, old: Option<T>, new: Option<T>) -> Option<Change<T>> {
+    let change = match (&old, &new) {
+        (Some(a), Some(b)) if a == b => return None,
+        (Some(_), Some(_)) => "changed",
+        (None, Some(_)) => "added",
+        (Some(_), None) => "removed",
+        (None, None) => return None,
+    };
+    Some(Change {
+        name: name.into(),
+        change,
+        old,
+        new,
+    })
+}
+
+fn input_changes(old: &Value, new: &Value) -> Vec<Change<Locked>> {
     let empty = serde_json::Map::new();
     let (a, b) = (
         old["nodes"].as_object().unwrap_or(&empty),
         new["nodes"].as_object().unwrap_or(&empty),
     );
     let names: BTreeSet<_> = a.keys().chain(b.keys()).filter(|k| *k != "root").collect();
-    let mut lines = Vec::new();
-    for name in names {
-        match (a.get(name), b.get(name)) {
-            (Some(x), Some(y)) if x["locked"] == y["locked"] => {}
-            (Some(x), Some(y)) if node_source(x) != node_source(y) => lines.push(format!(
-                "~ {name}  {} → {}  {} → {}",
-                node_source(x),
-                node_source(y),
-                node_version(x),
-                node_version(y)
-            )),
-            (Some(x), Some(y)) => lines.push(format!(
-                "~ {name}  {}  {} → {}",
-                node_source(y),
-                node_version(x),
-                node_version(y)
-            )),
-            (None, Some(y)) if y.get("locked").is_some() => lines.push(format!(
-                "+ {name}  {} @ {}",
-                node_source(y),
-                node_version(y)
-            )),
-            (Some(x), None) if x.get("locked").is_some() => {
-                lines.push(format!("- {name}  {}", node_source(x)))
+    let fetched = |nodes: &serde_json::Map<String, Value>, name: &str| {
+        nodes
+            .get(name)
+            .filter(|n| n.get("locked").is_some())
+            .cloned()
+    };
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let (x, y) = (fetched(a, name), fetched(b, name));
+            if x.as_ref().map(|n| &n["locked"]) == y.as_ref().map(|n| &n["locked"]) {
+                return None;
             }
-            _ => {}
-        }
-    }
-    lines
+            change(name, x.as_ref().map(locked), y.as_ref().map(locked)).map(|mut c| {
+                // A re-lock to the same displayed revision still changed.
+                c.change = if c.old.is_some() && c.new.is_some() {
+                    "changed"
+                } else {
+                    c.change
+                };
+                c
+            })
+        })
+        .collect()
 }
 
-fn package_lines(old: &Summary, new: &Summary) -> Vec<String> {
+fn package_changes(old: &Summary, new: &Summary) -> Vec<Change<Vec<String>>> {
     let names: BTreeSet<_> = old.packages.keys().chain(new.packages.keys()).collect();
-    let versions = |v: &BTreeSet<String>| {
-        v.iter()
-            .map(|s| if s.is_empty() { "?" } else { s.as_str() })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut lines = Vec::new();
-    for name in names {
-        match (old.packages.get(name), new.packages.get(name)) {
-            (Some(a), Some(b)) if a == b => {}
-            (Some(a), Some(b)) => {
-                lines.push(format!("[U] {name} {} → {}", versions(a), versions(b)))
-            }
-            (None, Some(b)) => lines.push(format!("[A] {name} {}", versions(b))),
-            (Some(a), None) => lines.push(format!("[R] {name} {}", versions(a))),
-            (None, None) => {}
-        }
-    }
-    lines
+    let versions = |v: Option<&BTreeSet<String>>| v.map(|v| v.iter().cloned().collect::<Vec<_>>());
+    names
+        .into_iter()
+        .filter_map(|name| {
+            change(
+                name,
+                versions(old.packages.get(name)),
+                versions(new.packages.get(name)),
+            )
+        })
+        .collect()
 }
 
 /// Environment keys covered by the package list or always different.
@@ -824,94 +849,151 @@ fn without_hashes(value: &str) -> String {
     out
 }
 
-fn short_value(value: &str) -> bool {
-    value.chars().count() <= 80 && !value.contains('\n')
+/// Environment changes; long or multi-line values are left to the source
+/// diff (their `old`/`new` are omitted and `long` is set).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct EnvChange {
+    pub name: String,
+    pub change: &'static str,
+    pub old: Option<String>,
+    pub new: Option<String>,
+    pub long: bool,
+}
+fn env_changes(old: &Summary, new: &Summary) -> Vec<EnvChange> {
+    let short = |v: &String| v.chars().count() <= 80 && !v.contains('\n');
+    let names: BTreeSet<_> = old.env.keys().chain(new.env.keys()).collect();
+    names
+        .into_iter()
+        .filter(|n| !NOISY.contains(&n.as_str()))
+        .filter_map(|name| {
+            let (a, b) = (
+                old.env.get(name).map(|v| without_hashes(v)),
+                new.env.get(name).map(|v| without_hashes(v)),
+            );
+            let c = change(name, a, b)?;
+            let long = !c.old.iter().chain(c.new.iter()).all(short);
+            Some(EnvChange {
+                name: c.name,
+                change: c.change,
+                old: c.old.filter(|_| !long),
+                new: c.new.filter(|_| !long),
+                long,
+            })
+        })
+        .collect()
 }
 
-/// Package names and versions of store paths entering the machine.
-fn incoming_lines(tag: &str, names: &[String], limit: usize) -> Vec<String> {
+/// A store path entering the machine, by package.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Incoming {
+    pub action: &'static str,
+    pub name: String,
+    pub versions: Vec<String>,
+}
+fn incoming(action: &'static str, names: &[String]) -> Vec<Incoming> {
     let mut packages: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for name in names {
         let (name, version) = package(name);
-        packages.entry(name).or_default().insert(version);
+        let set = packages.entry(name).or_default();
+        if !version.is_empty() {
+            set.insert(version);
+        }
     }
-    let mut lines: Vec<String> = packages
-        .iter()
-        .take(limit)
-        .map(|(name, versions)| {
-            let versions: Vec<_> = versions.iter().filter(|v| !v.is_empty()).cloned().collect();
-            format!("[{tag}] {name} {}", versions.join(", "))
-                .trim_end()
-                .to_string()
+    packages
+        .into_iter()
+        .map(|(name, versions)| Incoming {
+            action,
+            name,
+            versions: versions.into_iter().collect(),
         })
-        .collect();
-    if packages.len() > limit {
-        lines.push(format!("… and {} more", packages.len() - limit));
-    }
-    lines
+        .collect()
 }
 
-/// What deserves the approver's attention before the details.
+/// What deserves the approver's attention; frontends choose the wording.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Attention {
+    InputSource {
+        input: String,
+        old: String,
+        new: String,
+    },
+    NewInput {
+        input: String,
+        source: String,
+    },
+    NixConfig,
+    LocalBuilds {
+        count: usize,
+    },
+    ShellHook,
+}
 fn attention(
     current: &DevShell,
     lock: &Value,
     summary: &Summary,
     cost: &Cost,
     config: bool,
-) -> Vec<String> {
-    let empty = serde_json::Map::new();
-    let old = current.lock["nodes"].as_object().unwrap_or(&empty);
-    let mut lines = Vec::new();
-    for (name, node) in lock["nodes"].as_object().unwrap_or(&empty) {
-        if node.get("locked").is_none() {
-            continue;
-        }
-        match old.get(name).filter(|n| n.get("locked").is_some()) {
-            Some(previous) if node_source(previous) != node_source(node) => lines.push(format!(
-                "! input '{name}' now comes from {} (was {})",
-                node_source(node),
-                node_source(previous)
-            )),
-            None => lines.push(format!("! new input '{name}' from {}", node_source(node))),
+) -> Vec<Attention> {
+    let mut notes = Vec::new();
+    for input in input_changes(&current.lock, lock) {
+        match (input.old, input.new) {
+            (Some(old), Some(new)) if old.source != new.source => {
+                notes.push(Attention::InputSource {
+                    input: input.name,
+                    old: old.source,
+                    new: new.source,
+                })
+            }
+            (None, Some(new)) => notes.push(Attention::NewInput {
+                input: input.name,
+                source: new.source,
+            }),
             _ => {}
         }
     }
     if config {
-        lines.push("! the flake declares nixConfig (ignored, never applied)".into());
+        notes.push(Attention::NixConfig);
     }
     if !cost.built.is_empty() {
-        lines.push(format!(
-            "! {} derivation(s) will be built on this machine by the host Nix daemon",
-            cost.built.len()
-        ));
+        notes.push(Attention::LocalBuilds {
+            count: cost.built.len(),
+        });
     }
     if current.summary.env.get("shellHook") != summary.env.get("shellHook") {
-        lines.push("! shellHook changed; it runs inside the sandbox after approval".into());
+        notes.push(Attention::ShellHook);
     }
-    lines
+    notes
 }
 
-fn env_lines(old: &Summary, new: &Summary) -> Vec<String> {
-    let names: BTreeSet<_> = old.env.keys().chain(new.env.keys()).collect();
-    let mut lines = Vec::new();
-    for name in names.into_iter().filter(|n| !NOISY.contains(&n.as_str())) {
-        match (old.env.get(name), new.env.get(name)) {
-            (Some(a), Some(b)) if without_hashes(a) == without_hashes(b) => {}
-            (Some(a), Some(b)) if short_value(a) && short_value(b) => lines.push(format!(
-                "~ {name}: {} → {}",
-                without_hashes(a),
-                without_hashes(b)
-            )),
-            (Some(_), Some(_)) => lines.push(format!("~ {name} (see source diff)")),
-            (None, Some(b)) if short_value(b) => {
-                lines.push(format!("+ {name} = {}", without_hashes(b)))
-            }
-            (None, Some(_)) => lines.push(format!("+ {name}")),
-            (Some(_), None) => lines.push(format!("- {name}")),
-            (None, None) => {}
-        }
-    }
-    lines
+/// A changed source file; counts are absent for binary files.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct FileChange {
+    pub path: String,
+    pub added: Option<u64>,
+    pub removed: Option<u64>,
+}
+
+/// Structured approval data for a refresh. Frontends assemble sections,
+/// wording and colors; the daemon sends facts only.
+#[derive(Clone, Debug, Serialize)]
+pub struct Preview {
+    pub kind: &'static str,
+    pub reference: String,
+    pub from: u32,
+    pub to: u32,
+    pub attention: Vec<Attention>,
+    pub files: Vec<FileChange>,
+    pub inputs: Vec<Change<Locked>>,
+    pub packages: Vec<Change<Vec<String>>>,
+    pub env: Vec<EnvChange>,
+    pub fetch: usize,
+    pub build: usize,
+    pub download: Option<String>,
+    /// Every package the dry run fetches or builds, including transitive ones.
+    pub incoming: Vec<Incoming>,
+    /// Source patch without `flake.lock`.
+    pub diff: String,
 }
 
 /// One file of a source patch, for frontends.
@@ -979,7 +1061,7 @@ fn without_lock(patch: &str) -> String {
 /// `git diff --no-index` between two store trees; both are immutable and
 /// world-readable, and no user configuration or external diff runs. Returns
 /// a per-file summary and the patch, with paths relative to the flake.
-fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, String) {
+fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<FileChange>, String) {
     if old == new {
         return (vec![], String::new());
     }
@@ -988,7 +1070,14 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, Stri
         old.strip_prefix("/nix/store"),
         new.strip_prefix("/nix/store"),
     ) else {
-        return (vec!["changed (no diff available)".into()], String::new());
+        return (
+            vec![FileChange {
+                path: "(no diff available)".into(),
+                added: None,
+                removed: None,
+            }],
+            String::new(),
+        );
     };
     let (a, b) = (a.display().to_string(), b.display().to_string());
     let run = |args: &[&str]| -> String {
@@ -1032,7 +1121,7 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, Stri
         }
         text
     };
-    let files: Vec<String> = run(&["--numstat"])
+    let files: Vec<FileChange> = run(&["--numstat"])
         .lines()
         .filter_map(|line| {
             let mut parts = line.splitn(3, '\t');
@@ -1051,7 +1140,11 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, Stri
                         .to_string()
                 }
             };
-            Some(format!("{path} +{added} −{removed}"))
+            Some(FileChange {
+                path,
+                added: added.parse().ok(),
+                removed: removed.parse().ok(),
+            })
         })
         .collect();
     let mut patch = run(&[]);
@@ -1063,64 +1156,39 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<String>, Stri
     // The lock is shown as input changes, not as JSON.
     let files = files
         .into_iter()
-        .filter(|f: &String| !f.starts_with("flake.lock "))
+        .filter(|f| f.path != "flake.lock")
         .collect();
     (files, without_lock(&patch))
 }
 
-fn describe(
+fn preview(
     current: &DevShell,
     generation: u32,
     lock: &Value,
     summary: &Summary,
     cost: &Cost,
     config: bool,
-    files: Vec<String>,
-) -> String {
-    let mut text = format!(
-        "Dev shell {} · generation {} → {generation}\n",
-        current.reference, current.generation
-    );
-    let section = |text: &mut String, title: &str, lines: Vec<String>| {
-        if lines.is_empty() {
-            text.push_str(&format!("{title:<10}unchanged\n"));
-        }
-        for (i, line) in lines.iter().enumerate() {
-            text.push_str(&format!("{:<10}{line}\n", if i == 0 { title } else { "" }));
-        }
-    };
-    let notes = attention(current, lock, summary, cost, config);
-    if notes.is_empty() {
-        text.push_str("Attention nothing unusual · inputs locked to allowed sources\n");
-    } else {
-        section(&mut text, "Attention", notes);
+    (files, diff): (Vec<FileChange>, String),
+) -> Preview {
+    let mut incoming = incoming("build", &cost.built);
+    incoming.extend(self::incoming("fetch", &cost.fetched));
+    incoming.truncate(1000);
+    Preview {
+        kind: "devshell",
+        reference: current.reference.clone(),
+        from: current.generation,
+        to: generation,
+        attention: attention(current, lock, summary, cost, config),
+        files,
+        inputs: input_changes(&current.lock, lock),
+        packages: package_changes(&current.summary, summary),
+        env: env_changes(&current.summary, summary),
+        fetch: cost.fetched.len(),
+        build: cost.built.len(),
+        download: cost.download.clone(),
+        incoming,
+        diff,
     }
-    section(&mut text, "Source", files);
-    section(&mut text, "Inputs", input_lines(&current.lock, lock));
-    section(
-        &mut text,
-        "Packages",
-        package_lines(&current.summary, summary),
-    );
-    section(&mut text, "Env", env_lines(&current.summary, summary));
-    text.push_str(&format!(
-        "Cost      {} to fetch{} · {} to build\n",
-        cost.fetched.len(),
-        cost.download
-            .as_ref()
-            .map(|d| format!(" ({d})"))
-            .unwrap_or_default(),
-        cost.built.len()
-    ));
-    // Everything new to this machine, including transitive dependencies.
-    let incoming: Vec<String> = incoming_lines("build", &cost.built, 40)
-        .into_iter()
-        .chain(incoming_lines("fetch", &cost.fetched, 40))
-        .collect();
-    if !incoming.is_empty() {
-        section(&mut text, "Incoming", incoming);
-    }
-    text
 }
 
 /// Nix prints trace frames before the actual error; lead with the latter so
@@ -1293,13 +1361,12 @@ mod tests {
         assert_eq!(cost.fetched, vec!["glibc-2.42", "glibc-2.42-bin"]);
         assert_eq!(cost.download.as_deref(), Some("1.5 MiB"));
         assert_eq!(
-            incoming_lines("fetch", &cost.fetched, 40),
-            vec!["[fetch] glibc 2.42, 2.42-bin"]
-        );
-        let many: Vec<String> = (0..45).map(|i| format!("p{i}-1.0")).collect();
-        assert_eq!(
-            incoming_lines("build", &many, 40).last().unwrap(),
-            "… and 5 more"
+            incoming("fetch", &cost.fetched),
+            vec![Incoming {
+                action: "fetch",
+                name: "glibc".into(),
+                versions: vec!["2.42".into(), "2.42-bin".into()]
+            }]
         );
     }
 
@@ -1350,12 +1417,22 @@ mod tests {
         let node = |rev: &str, t: i64| json!({"locked":{"type":"github","owner":"NixOS","repo":"nixpkgs","rev":rev,"lastModified":t,"narHash":"sha256-x"}});
         let old = json!({"nodes":{"root":{},"nixpkgs":node("9f3c1a2aaaa", 0)}});
         let new = json!({"nodes":{"root":{},"nixpkgs":node("4be07d1bbbb", 1_790_549_635),"extra":node("1a2b3c4cccc", 0)}});
+        let changes = input_changes(&old, &new);
         assert_eq!(
-            input_lines(&old, &new),
-            vec![
-                "+ extra  github:NixOS/nixpkgs @ 1a2b3c4".to_string(),
-                "~ nixpkgs  github:NixOS/nixpkgs  9f3c1a2 → 4be07d1 (2026-09-27)".to_string(),
-            ]
+            changes
+                .iter()
+                .map(|c| (c.name.as_str(), c.change))
+                .collect::<Vec<_>>(),
+            vec![("extra", "added"), ("nixpkgs", "changed")]
+        );
+        assert_eq!(changes[1].old.as_ref().unwrap().id, "9f3c1a2");
+        assert_eq!(
+            changes[1].new,
+            Some(Locked {
+                source: "github:NixOS/nixpkgs".into(),
+                id: "4be07d1".into(),
+                date: Some("2026-09-27".into())
+            })
         );
         assert_eq!(
             without_hashes("/nix/store/0123456789abcdfghijklmnpqrsvwxyz-x/bin"),

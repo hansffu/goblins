@@ -144,46 +144,29 @@ either, a missing lock entry is an error. A refresh runs in stages:
    computed here, in the snapshot, not in the workspace. A dry run gives the
    closure and the paths to fetch and build without building.
 3. **Approval** shows one generation diff, in the style of `nh`, against the
-   last trusted generation. It is the approver's whole basis for the decision:
+   last trusted generation. It is the approver's whole basis for the decision.
+   The daemon sends facts only, as a structured preview: attention items
+   (changed input sources, new inputs, `nixConfig`, local builds, a changed
+   `shellHook`), changed files with line counts, input, package and
+   environment changes (each `added`, `removed` or `changed` with old and new
+   values), fetch and build counts, every package the dry run fetches or
+   builds, and the source patch without `flake.lock`. Each frontend assembles
+   its own sections, wording and colors from it:
 
-   ```
-   Dev shell /src/app#rust · generation 3 → 4
-   Attention ! input 'nixpkgs' now comes from github:someone/nixpkgs (was github:NixOS/nixpkgs)
-             ! 2 derivation(s) will be built on this machine by the host Nix daemon
-             ! shellHook changed; it runs inside the sandbox after approval
-   Source    flake.nix +4 −1, nix/shell.nix +2 −0
-   Inputs    ~ nixpkgs  github:NixOS/nixpkgs → github:someone/nixpkgs  9f3c1a2 (2026-09-01) → 4be07d1 (2026-09-24)
-             + rust-overlay  github:oxalica/rust-overlay @ 1a2b3c4 (2026-09-20)
-   Packages  [U] rustc 1.89.0 → 1.90.1
-             [A] cargo-nextest 0.9.104
-   Env       ~ RUST_LOG: info → debug
-             ~ shellHook (see source diff)
-   Cost      14 to fetch (38.2 MiB) · 2 to build
-   Incoming  [build] my-tool 0.3.0
-             [fetch] glibc 2.42
-             …
-   Source diff:
-   diff --git a/flake.nix b/flake.nix
-   …
-   ```
+   - **Emacs** shows a collapsible summary with highlighted keys, additions
+     and new values green, removals and old values red, changes and
+     attention items in the warning color; then **Nix changes** (expanded
+     magit-style file sections) and **Other changes** (all non-Nix files,
+     collapsed with its file list). TAB folds every section; expanded
+     sections stay open across updates.
+   - **TUI** shows the same colored summary in the approval popup; `d` opens a
+     full-screen colored diff with Nix files first and other files hidden
+     until `a`; `y`/`n` decide from the diff.
 
-   - **Attention** comes first: changed input sources, new inputs, a
-     `nixConfig`, local builds and a changed `shellHook`.
-   - **Packages** compares the dev shell's direct inputs by name and version.
-   - **Incoming** lists every path the dry run will fetch or build, grouped
-     by package, so transitive changes (a new glibc under a nixpkgs bump) are
-     visible. A full runtime-closure comparison is only possible after the
-     build, so it is not part of the approval.
-   - **Env** shows short values; store-hash-only changes are ignored.
-   - The source diff leaves out `flake.lock`, which **Inputs** shows.
-
-   The summary is `preview.description`; the source patch is `preview.diff`,
-   up to 128 KiB. Every line is escaped before display. In Emacs the request's
-   details show the patch as magit-style sections, one per file, with Magit's
-   diff faces (or `diff-mode`'s). `.nix` files are expanded and other files
-   start collapsed; expanded sections stay open across updates. In the TUI,
-   `d` opens a full-screen colored diff; `a` shows the non-Nix files, which
-   are listed but hidden by default, and `y`/`n` decide from the diff.
+   Package changes compare the dev shell's direct inputs; the incoming list
+   makes transitive changes (a new glibc under a nixpkgs bump) visible. A full
+   runtime-closure comparison is only possible after the build. All
+   displayed text is escaped for control and bidi characters.
 4. **Apply** after approval: build, mount the new closure, write the new
    `env.sh`, run it once inside the sandbox, and record the generation and
    its lock as trusted. A candidate lock is written into the workspace only now.

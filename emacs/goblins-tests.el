@@ -101,53 +101,84 @@
     (should (string-match-p "Docker engine" (buffer-string)))
     (should (string-match-p "Private engine; delete data on exit" (buffer-string)))))
 
-;; Dev shell refreshes show the summary and a magit-style source diff.
-(ert-deftest goblins-devshell-diff-sections-collapse-non-nix-files ()
+;; Dev shell refreshes: the frontend assembles summary and diff sections from
+;; structured data.
+(defun goblins-test--devshell-request ()
+  (let ((request (goblins-test--request "devshell")))
+    (setq request (plist-put request :kind "devshell")
+          request (plist-put request :package "refresh")
+          request (plist-put request :preview
+                             (list :kind "devshell" :reference "/src" :from 1 :to 2
+                                   :attention [(:kind "new-input" :input "extra" :source "github:a/b")]
+                                   :files [(:path "README.org" :added 1 :removed 0)
+                                           (:path "flake.nix" :added 1 :removed 1)]
+                                   :inputs [(:name "extra" :change "added" :old nil
+                                             :new (:source "github:a/b" :id "1a2b3c4" :date nil))]
+                                   :packages [(:name "rustc" :change "changed" :old ["1.89.0"] :new ["1.90.1"])]
+                                   :env [] :fetch 2 :build 0 :download "1 MiB"
+                                   :incoming [(:action "fetch" :name "glibc" :versions ["2.42"])]
+                                   :diff (concat "diff --git a/README.org b/README.org\n"
+                                                 "@@ -0,0 +1 @@\n+notes\n"
+                                                 "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n"
+                                                 "@@ -1 +1 @@\n-a\n+b\e[2J\n"))))
+    request))
+
+(defun goblins-test--sections (class)
+  "Alist of (VALUE . HIDDEN) for sections of CLASS in the buffer."
+  (let (found)
+    (cl-labels ((walk (section)
+                  (when (eq (eieio-object-class section) class)
+                    (push (cons (oref section value) (oref section hidden)) found))
+                  (mapc #'walk (oref section children))))
+      (walk magit-root-section))
+    found))
+
+(ert-deftest goblins-devshell-summary-and-diff-sections ()
   (goblins-test--buffer
-    (let ((request (goblins-test--request "devshell")))
-      (setq request (plist-put request :kind "devshell")
-            request (plist-put request :package "refresh")
-            request (plist-put request :preview
-                               (list :description "Dev shell /src · generation 1 → 2\nEnv       ~ X: a → b"
-                                     :diff (concat "diff --git a/flake.nix b/flake.nix\n--- a/flake.nix\n+++ b/flake.nix\n"
-                                                   "@@ -1 +1 @@\n-a\n+b\e[2J\n"
-                                                   "diff --git a/src/main.rs b/src/main.rs\nnew file mode 100644\n"
-                                                   "@@ -0,0 +1 @@\n+fn main() {}\n")))
-            goblins--snapshot (goblins-test--snapshot request)))
+    (setq goblins--snapshot (goblins-test--snapshot (goblins-test--devshell-request)))
     (goblins--render)
     (goblins-test--goto "devshell")
     (goblins-details)
-    (let ((text (buffer-string))
-          files)
-      (should (string-match-p "Env       ~ X: a → b" text))
-      (should (string-match-p "^Source diff (2 files, 1 non-Nix collapsed)" text))
-      (should (string-match-p "^modified   flake.nix" text))
+    (let ((text (buffer-string)))
+      (should (string-match-p "^Dev shell refresh /src · generation 1 → 2" text))
+      (should (string-match-p "Attention ! new input 'extra' from github:a/b" text))
+      (should (string-match-p "Source    flake.nix \\+1 -1" text))
+      (should (string-match-p "1 other file changed" text))
+      (should (string-match-p "Packages  \\[C\\] rustc 1.89.0 → 1.90.1" text))
+      (should (string-match-p "Incoming  1 package" text))
       (should (string-match-p "+b\\\\u001b\\[2J" text))
       (should-not (string-match-p "\e" text))
-      (cl-labels ((walk (section)
-                    (when (object-of-class-p section 'goblins-diff-file-section)
-                      (push (cons (cadr (oref section value)) (oref section hidden)) files))
-                    (mapc #'walk (oref section children))))
-        (walk magit-root-section)
-      (should (equal (cdr (assoc "flake.nix" files)) nil))
-      (should (cdr (assoc "src/main.rs" files)))
-      (goto-char (point-min))
-      (search-forward "+b")
-      (should (memq (get-text-property (point) 'font-lock-face) '(magit-diff-added diff-added)))
-      ;; TAB folds a file in the details view.
-      (goblins-toggle-tree)
-      (setq files nil)
-      (walk magit-root-section)
-      (should (cdr (assoc "flake.nix" files)))
-      (goblins-toggle-tree)
-      ;; A file the user expands stays expanded when the daemon updates.
-      (goto-char (point-min))
-      (search-forward "src/main.rs")
-      (magit-section-show (magit-current-section))
-      (goblins--render)
-      (setq files nil)
-      (walk magit-root-section)
-      (should-not (cdr (assoc "src/main.rs" files)))))))
+      ;; Nix changes come first; other files form their own collapsed section.
+      (should (< (string-match "^Nix changes (1 file)" text)
+                 (string-match "^Other changes (1 file)" text))))
+    (should (equal (goblins-test--sections 'goblins-diff-section)
+                   '(((other-diff "devshell") . t) ((nix-diff "devshell") . nil))))
+    (should (equal (cdr (assoc '("devshell" "flake.nix")
+                               (goblins-test--sections 'goblins-diff-file-section)))
+                   nil))
+    ;; Colors: old versions removed, new ones added, keys highlighted.
+    (goto-char (point-min))
+    (search-forward "1.89.0")
+    (should (eq (get-text-property (1- (point)) 'font-lock-face) 'goblins-removed))
+    (search-forward "1.90.1")
+    (should (eq (get-text-property (1- (point)) 'font-lock-face) 'goblins-added))
+    (goto-char (point-min))
+    (search-forward "Packages")
+    (should (eq (get-text-property (1- (point)) 'font-lock-face) 'goblins-key))
+    (search-forward "+b")
+    (should (memq (get-text-property (point) 'font-lock-face) '(magit-diff-added diff-added)))
+    ;; TAB folds the summary, and expanded sections survive updates.
+    (goto-char (point-min))
+    (search-forward "Dev shell refresh")
+    (goblins-toggle-tree)
+    (should (cdar (goblins-test--sections 'goblins-summary-section)))
+    (goblins-toggle-tree)
+    (goto-char (point-min))
+    (re-search-forward "^Other changes")
+    (goblins-toggle-tree)
+    (goblins--render)
+    (should (equal (cdr (assoc '(other-diff "devshell") (goblins-test--sections 'goblins-diff-section)))
+                   nil))))
 
 (ert-deftest goblins-details-retain-identity-and-never-target-a-replacement ()
   (goblins-test--buffer

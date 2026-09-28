@@ -950,12 +950,12 @@ impl Session {
         )
     }
     /// Evaluate the workspace flake as the next dev shell generation. Returns
-    /// the approval description, the source patch and the candidate's identity.
+    /// the structured approval preview and the candidate's identity.
     pub fn prepare_refresh(
         &mut self,
         changes: &crate::devshell::Changes,
         cancel: &Cancellation,
-    ) -> Result<(String, String, String)> {
+    ) -> Result<(serde_json::Value, String)> {
         self.candidate = None;
         let current = self
             .launch
@@ -987,8 +987,7 @@ impl Session {
             cancel,
         )?;
         let result = (
-            candidate.description.clone(),
-            candidate.diff.clone(),
+            serde_json::to_value(&candidate.preview)?,
             candidate.identity(&current.attr),
         );
         self.candidate = Some(candidate);
