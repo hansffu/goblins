@@ -280,6 +280,95 @@ class DevShellRefreshTests(DevShellTests):
         output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         self.assertIn("N=original", output)
 
+    def roots(self):
+        return sorted(p.name for p in (self.d.state / self.session / "resources/roots").iterdir()
+                      if p.name.endswith("-source"))
+
+    def test_pending_candidate_source_is_a_gc_root(self):
+        before = self.roots()
+        self.write_flake("edited")
+        n = self.send(self.terminal, "goblins devshell refresh")
+        record = self.pending_refresh()
+        # The candidate's new source snapshot is rooted while approval waits.
+        self.assertEqual(len(self.roots()), len(before) + 1, self.roots())
+        self.d.decide(record, True)
+        self.assertEqual(self.end(self.terminal, n)[1], 0)
+
+    def test_refresh_never_builds_import_from_derivation_before_approval(self):
+        name = f"goblins-ifd-{uuid.uuid4().hex[:12]}"
+        # Its output path, computed without building it.
+        out = command(["nix", "eval", "--impure", "--raw", "--expr",
+                       f'let pkgs = import {self.nixpkgs} {{ system = "x86_64-linux"; }}; in '
+                       f'(pkgs.runCommand "{name}" {{}} "echo built > $out").outPath'])
+        flake = (self.project / "flake.nix").read_text().replace(
+            'DEV_MARKER = "original";',
+            f'DEV_MARKER = builtins.readFile (pkgs.runCommand "{name}" {{}} "echo built > $out");')
+        (self.project / "flake.nix").write_text(flake)
+        output, code = self.run_in("goblins devshell refresh")
+        self.assertEqual(code, 1, output)
+        self.assertIn("allow-import-from-derivation", output)
+        self.assertFalse(Path(out).exists(), out)
+
+
+class DevShellSubdirectoryTests(DevShellRefreshTests):
+    """A flake in a subdirectory of its Git repository keeps the repository as source."""
+
+    test_approved_refresh_enters_the_edited_flake_and_keeps_running_environment = None
+    test_child_refresh_to_an_inherited_generation_needs_no_approval = None
+    test_hand_edited_lock_is_rejected_until_restored = None
+    test_lock_adds_new_inputs_and_writes_the_approved_lock = None
+    test_denied_refresh_changes_nothing = None
+    test_pending_candidate_source_is_a_gc_root = None
+    test_refresh_never_builds_import_from_derivation_before_approval = None
+
+    def setUp(self):
+        root = tempfile.TemporaryDirectory(prefix="goblin-devshell-repo-")
+        self.addCleanup(root.cleanup)
+        self.repo = Path(root.name)
+        self.project = self.repo / "sub"
+        self.project.mkdir()
+        (self.repo / "marker").write_text("from-parent")
+        self.write_flake("unused")
+        command(["nix", "flake", "lock", f"path:{self.project}"])
+        command(["git", "-C", str(self.repo), "init", "-q"])
+        command(["git", "-C", str(self.repo), "add", "marker", "sub/flake.nix", "sub/flake.lock"])
+        self.d = Daemon()
+        self.addCleanup(self.d.close)
+        self.counter = 0
+        # Run from the repository root, so its whole tree is visible.
+        self.terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "run", "shell",
+                                  "--dev-shell", "sub", "--name", "dev"], cwd=self.repo)
+        self.addCleanup(self.terminal.close)
+        self.terminal.expect(r"(?:^|\n)hook-ran in ")
+        self.session = next(r for r in self.d.rpc.call("sessions.list", {}) if r["agent_name"] == "dev")["id"]
+
+    def write_flake(self, marker):
+        (self.project / "flake.nix").write_text(
+            FLAKE.replace("NIXPKGS", self.nixpkgs)
+            .replace('DEV_MARKER = "@MARKER@";', "DEV_MARKER = builtins.readFile ../marker;"))
+
+    def test_subdirectory_flake_uses_files_outside_its_directory(self):
+        output, _ = self.run_in("printf 'M=%s\\n' $DEV_MARKER")
+        self.assertIn("M=from-parent", output)
+        (self.repo / "marker").write_text("changed")
+        flake = (self.project / "flake.nix").read_text().replace(
+            "inputs.nixpkgs.url",
+            f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
+        (self.project / "flake.nix").write_text(flake)
+        n = self.send(self.terminal, "goblins devshell refresh --lock")
+        record = self.pending_refresh()
+        preview = record["preview"]
+        self.assertEqual([f["path"] for f in preview["files"]], ["marker", "sub/flake.nix"])
+        self.assertIn({"name": "DEV_MARKER", "change": "changed", "old": "from-parent", "new": "changed",
+                       "long": False}, preview["env"])
+        self.assertNotIn("flake.lock", preview["diff"])
+        self.d.decide(record, True)
+        output, code = self.end(self.terminal, n)
+        self.assertEqual(code, 0, output)
+        self.assertIn("extra", json.loads((self.project / "flake.lock").read_text())["nodes"])
+        output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
+        self.assertIn("N=changed", output)
+
 
 if __name__ == "__main__":
     unittest.main()

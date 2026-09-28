@@ -141,6 +141,8 @@ impl Worker {
                                 &session.launch.bwrap,
                                 session.launch.env.get("SSL_CERT_FILE").map(String::as_str),
                                 crate::evaluator::Network::Host,
+                                // The host chose this flake; launch may use IFD.
+                                true,
                             )?;
                             session.launch.dev_shell = Some(crate::devshell::prepare(
                                 &reference,

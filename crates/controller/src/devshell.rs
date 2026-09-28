@@ -217,8 +217,32 @@ fn snapshot(
     Ok((root, flake, config))
 }
 
-fn installable(flake: &Path, attr: &str) -> String {
-    format!("path:{}#devShells.{SYSTEM}.{attr}", flake.display())
+/// `path:` reference to a flake in a source tree. A flake in a subdirectory
+/// keeps the whole tree as its source (`?dir=`), so it can still use files
+/// outside its directory, as with ordinary Nix.
+fn flake_ref(root: &Path, flake: &Path) -> String {
+    let dir = flake
+        .strip_prefix(root)
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if dir.is_empty() {
+        return format!("path:{}", root.display());
+    }
+    let encoded: String = dir
+        .bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect();
+    format!("path:{}?dir={encoded}", root.display())
+}
+
+fn installable(root: &Path, flake: &Path, attr: &str) -> String {
+    format!("{}#devShells.{SYSTEM}.{attr}", flake_ref(root, flake))
 }
 
 /// Package name and version from a store name such as `hello-2.12.3`.
@@ -344,7 +368,7 @@ pub fn prepare(
         )
     })?;
     let lock = read_lock(&flake)?;
-    let installable = installable(&flake, &attr);
+    let installable = installable(&root, &flake, &attr);
     let summary = summarize(evaluator, &installable, directory, cancel).map_err(|e| {
         format!(
             "could not evaluate dev shell {reference}: {}",
@@ -549,36 +573,35 @@ pub fn candidate(
     if relock {
         // Compute the candidate lock in a private copy; the workspace lock
         // changes only after approval.
+        // Copy the whole source tree, so a subdirectory flake keeps it.
         let work = evaluator.work();
         let _ = fs::remove_dir_all(&work);
-        copy_tree(&flake, &work, cancel)?;
-        let target = format!("path:{}", work.display());
+        copy_tree(&root, &work, cancel)?;
+        let target = flake_ref(&work, &work.join(flake.strip_prefix(&root)?));
         let mut args: Vec<OsString> = match &changes.update {
             Some(inputs) => ["flake", "update"]
                 .iter()
                 .map(OsString::from)
                 .chain(inputs.iter().map(OsString::from))
-                .chain(["--flake".into(), target.into()])
+                .chain(["--flake".into(), target.clone().into()])
                 .collect(),
             None => ["flake", "lock"]
                 .iter()
                 .map(OsString::from)
-                .chain([target.into()])
+                .chain([target.clone().into()])
                 .collect(),
         };
         args.push("--quiet".into());
         evaluator
             .nix(&args, &[], directory, cancel)
             .map_err(|e| format!("could not update flake.lock: {}", cause(&e.to_string())))?;
-        let path = work.clone().into_os_string();
-        let mut prefixed = OsString::from("path:");
-        prefixed.push(&path);
-        (root, flake, config) = snapshot(evaluator, &prefixed, &[], true, directory, cancel)?;
+        (root, flake, config) =
+            snapshot(evaluator, OsStr::new(&target), &[], true, directory, cancel)?;
         let _ = fs::remove_dir_all(&work);
     }
     let lock = read_lock(&flake)?;
     validate_lock(&lock)?;
-    let installable = installable(&flake, &current.attr);
+    let installable = installable(&root, &flake, &current.attr);
     let summary = summarize(evaluator, &installable, directory, cancel)
         .map_err(|e| format!("could not evaluate dev shell: {}", cause(&e.to_string())))?;
     let mut args: Vec<OsString> = ["build", "--dry-run", "--no-link", "--log-format", "raw"]
@@ -599,7 +622,14 @@ pub fn candidate(
         &summary,
         &cost,
         config,
-        source_diff(git, &current.flake, &flake),
+        // Compare whole source trees: a subdirectory flake may use files
+        // outside its directory.
+        source_diff(
+            git,
+            &current.source,
+            &root,
+            &flake.strip_prefix(&root)?.join("flake.lock"),
+        ),
     );
     Ok(Candidate {
         generation,
@@ -619,7 +649,7 @@ pub fn apply(
     directory: &Path,
     cancel: &Cancellation,
 ) -> Result<DevShell> {
-    let installable = installable(&candidate.flake, &current.attr);
+    let installable = installable(&candidate.root, &candidate.flake, &current.attr);
     let link = evaluator
         .roots()
         .join(format!("devshell-{}", candidate.generation));
@@ -1044,13 +1074,15 @@ pub fn patch_files(patch: &str) -> Vec<PatchFile<'_>> {
     files
 }
 
-/// Drop the top-level `flake.lock` from a patch.
-fn without_lock(patch: &str) -> String {
+/// Drop the flake's `flake.lock` (`lock`, relative to the source tree) from a
+/// patch.
+fn without_lock(patch: &str, lock: &str) -> String {
+    let header = format!("a/{lock} b/{lock}\n");
     let mut out = String::new();
     for (i, chunk) in patch.split("diff --git ").enumerate() {
         if i == 0 {
             out.push_str(chunk);
-        } else if !chunk.starts_with("a/flake.lock b/flake.lock\n") {
+        } else if !chunk.starts_with(&header) {
             out.push_str("diff --git ");
             out.push_str(chunk);
         }
@@ -1061,7 +1093,12 @@ fn without_lock(patch: &str) -> String {
 /// `git diff --no-index` between two store trees; both are immutable and
 /// world-readable, and no user configuration or external diff runs. Returns
 /// a per-file summary and the patch, with paths relative to the flake.
-fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<FileChange>, String) {
+fn source_diff(
+    git: Option<&Path>,
+    old: &Path,
+    new: &Path,
+    lock: &Path,
+) -> (Vec<FileChange>, String) {
     if old == new {
         return (vec![], String::new());
     }
@@ -1154,11 +1191,9 @@ fn source_diff(git: Option<&Path>, old: &Path, new: &Path) -> (Vec<FileChange>, 
         }
     }
     // The lock is shown as input changes, not as JSON.
-    let files = files
-        .into_iter()
-        .filter(|f| f.path != "flake.lock")
-        .collect();
-    (files, without_lock(&patch))
+    let lock = lock.display().to_string();
+    let files = files.into_iter().filter(|f| f.path != lock).collect();
+    (files, without_lock(&patch, &lock))
 }
 
 fn preview(
@@ -1393,10 +1428,24 @@ mod tests {
     }
 
     #[test]
+    fn subdirectory_flakes_keep_their_source_tree() {
+        let root = Path::new("/nix/store/abc-source");
+        assert_eq!(flake_ref(root, root), "path:/nix/store/abc-source");
+        assert_eq!(
+            flake_ref(root, &root.join("nix/my shell")),
+            "path:/nix/store/abc-source?dir=nix/my%20shell"
+        );
+        assert_eq!(
+            installable(root, &root.join("sub"), "rust"),
+            "path:/nix/store/abc-source?dir=sub#devShells.x86_64-linux.rust"
+        );
+    }
+
+    #[test]
     fn lock_chunks_are_left_out_of_the_source_patch() {
         let patch = "diff --git a/flake.nix b/flake.nix\n-a\n+b\ndiff --git a/flake.lock b/flake.lock\n-x\n+y\n";
         assert_eq!(
-            without_lock(patch),
+            without_lock(patch, "flake.lock"),
             "diff --git a/flake.nix b/flake.nix\n-a\n+b\n"
         );
     }

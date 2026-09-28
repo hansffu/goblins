@@ -947,6 +947,9 @@ impl Session {
             &self.launch.bwrap,
             self.launch.env.get("SSL_CERT_FILE").map(String::as_str),
             self.evaluation_network(),
+            // Refresh evaluation never builds before approval, and an
+            // approved candidate evaluated without IFD needs none after.
+            false,
         )
     }
     /// Evaluate the workspace flake as the next dev shell generation. Returns
@@ -990,6 +993,8 @@ impl Session {
             serde_json::to_value(&candidate.preview)?,
             candidate.identity(&current.attr),
         );
+        // Keep the candidate's source through approval and application.
+        self.root(&candidate.root)?;
         self.candidate = Some(candidate);
         Ok(result)
     }

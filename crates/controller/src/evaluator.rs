@@ -77,12 +77,19 @@ impl Evaluator {
         bwrap: &Path,
         cacert: Option<&str>,
         network: Network,
+        import_from_derivation: bool,
     ) -> Result<Self> {
         let root = directory.join("eval");
         for name in ["conf", "cache", "state", "roots"] {
             fs::create_dir_all(root.join(name))?;
         }
-        fs::write(root.join("conf/nix.conf"), CONFIGURATION)?;
+        // Evaluation before approval must never build: import-from-derivation
+        // would run builds the preview cannot show.
+        let mut configuration = CONFIGURATION.to_string();
+        if !import_from_derivation {
+            configuration.push_str("allow-import-from-derivation = false\n");
+        }
+        fs::write(root.join("conf/nix.conf"), configuration)?;
         Ok(Self {
             root,
             bwrap: bwrap.to_path_buf(),

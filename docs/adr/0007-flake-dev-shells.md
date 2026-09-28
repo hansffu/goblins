@@ -251,6 +251,16 @@ store path and mounts its closure. Details are decided when it is built.
 - Refresh evaluates only a flake whose source tree lies inside the sandbox's
   working directory, so evaluation never sees files the sandbox cannot.
 
+- Refresh evaluation disables import-from-derivation
+  (`allow-import-from-derivation = false`), before and after approval, so
+  a preview can never build; a flake that needs IFD cannot be refreshed.
+  Launch allows it, because the host chose the flake.
+- A flake in a subdirectory keeps its whole source tree (`path:ROOT?dir=SUB`),
+  so it can use files outside its directory as with ordinary Nix; the source
+  diff compares whole trees.
+- A candidate's source snapshot is GC-rooted as soon as its preview is ready,
+  so garbage collection during approval cannot remove it.
+
 ## Deferred
 
 - `goblins devshell diff` (preview without a request).
