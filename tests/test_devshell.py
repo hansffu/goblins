@@ -295,6 +295,32 @@ class DevShellRefreshTests(DevShellTests):
         output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         self.assertIn("N=original", output)
 
+    def write_endless_flake(self):
+        # 10^10 additions: evaluation effectively never ends.
+        flake = (self.project / "flake.nix").read_text().replace(
+            'DEV_MARKER = "original";',
+            "DEV_MARKER = toString (builtins.foldl' (a: _: builtins.foldl' (b: _: b + 1) a "
+            "(builtins.genList (x: x) 100000)) 0 (builtins.genList (x: x) 100000));")
+        (self.project / "flake.nix").write_text(flake)
+
+    def test_refresh_cannot_be_approved_before_its_preview(self):
+        self.write_endless_flake()
+        n = self.send(self.terminal, "goblins devshell refresh")
+        record = self.d.wait(lambda: next((r for r in self.d.permissions(session=self.session)
+                                           if r["kind"] == "devshell" and r["state"] == "pending"), None),
+                             timeout=60)
+        self.assertIsNone(record.get("preview"))
+        # The preview is the approver's whole basis; nothing to approve yet.
+        with self.assertRaises(ValueError) as caught:
+            self.d.decide(record, True)
+        self.assertIn("still being evaluated; decide once its preview is shown", str(caught.exception))
+        self.assertEqual([r["state"] for r in self.d.permissions() if r["kind"] == "devshell"], ["pending"])
+        # Denial still cancels the evaluation.
+        self.d.decide(record, False)
+        output, code = self.end(self.terminal, n, timeout=60)
+        self.assertEqual(code, 1, output)
+        self.assertEqual([r["state"] for r in self.d.permissions() if r["kind"] == "devshell"], ["denied"])
+
     def test_refresh_evaluation_times_out(self):
         d = Daemon(env={**os.environ, "GOBLINS_EVALUATION_TIMEOUT": "5"})
         self.addCleanup(d.close)
@@ -302,12 +328,7 @@ class DevShellRefreshTests(DevShellTests):
                              "--dev-shell", ".", "--name", "slow"], cwd=self.project)
         self.addCleanup(terminal.close)
         terminal.expect(r"(?:^|\n)hook-ran in ")
-        # 10^10 additions: evaluation effectively never ends.
-        flake = (self.project / "flake.nix").read_text().replace(
-            'DEV_MARKER = "original";',
-            "DEV_MARKER = toString (builtins.foldl' (a: _: builtins.foldl' (b: _: b + 1) a "
-            "(builtins.genList (x: x) 100000)) 0 (builtins.genList (x: x) 100000));")
-        (self.project / "flake.nix").write_text(flake)
+        self.write_endless_flake()
         start = time.monotonic()
         output, code = self.run_in("goblins devshell refresh", terminal=terminal)
         self.assertLess(time.monotonic() - start, 60)

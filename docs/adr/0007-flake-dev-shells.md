@@ -166,6 +166,12 @@ either, a missing lock entry is an error. A refresh runs in stages:
    makes transitive changes (a new glibc under a nixpkgs bump) visible. A full
    runtime-closure comparison is only possible after the build. All
    displayed text is escaped for control and bidi characters.
+
+   The request is visible as soon as it is made, so the approver sees an
+   evaluation in progress and can deny it, which cancels the evaluation. It
+   cannot be approved until its preview exists: the daemon refuses approval
+   ("still being evaluated") because approval applies the candidate the
+   preview shows, and the frontends do not offer it.
 4. **Apply** after approval: build, mount the new closure, write the new
    `env.sh`, run it once inside the sandbox, and record the generation and
    its lock as trusted. A candidate lock is written into the workspace only now.

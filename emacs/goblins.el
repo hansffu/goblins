@@ -292,6 +292,11 @@ all other files in a collapsed section of their own."
 (defun goblins--field (label value)
   (insert (format "    %-12s%s\n" label (goblins--safe value))))
 
+(defun goblins--awaiting-preview-p (record)
+  "Whether RECORD is a dev shell refresh whose preview is not ready yet."
+  (and (equal (plist-get record :kind) "devshell")
+       (not (plist-get record :preview))))
+
 (defun goblins--insert-request (record &optional details)
   (magit-insert-section section
     (goblins-request-section (plist-get record :id))
@@ -320,6 +325,8 @@ all other files in a collapsed section of their own."
           (goblins--field "Preview:" (car lines))
           (dolist (line (cdr lines))
             (goblins--field "" line))))
+      (when (goblins--awaiting-preview-p record)
+        (goblins--field "Preview:" "evaluating the refresh; its preview follows"))
       (when-let* ((message (plist-get record :message)))
         (goblins--field "Message:" message))
       (when-let* ((preview (plist-get record :preview)))
@@ -742,6 +749,9 @@ Diff sections also fold in the details view."
       (user-error "Disconnected; use M-x goblins-refresh to reconnect"))
     (unless (equal (plist-get record :state) "pending")
       (user-error "Place point on a pending request"))
+    ;; The preview is the approver's whole basis for a refresh.
+    (when (and approved (goblins--awaiting-preview-p record))
+      (user-error "The refresh is still being evaluated; decide once its preview is shown"))
     (when (gethash id goblins--decisions)
       (user-error "Decision already sent for this request"))
     ;; Capture the displayed immutable identity before yielding to process I/O.

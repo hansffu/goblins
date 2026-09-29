@@ -228,7 +228,17 @@ argument counts, group related parameters into a struct rather than adding
 =#[allow]=, unless that obscures the code. =nix flake check= does not run
 Clippy, so nothing else depends on this; run the full checks afterwards.
 
-* TODO Approving a dev shell request before its preview exists
+* DONE Approving a dev shell request before its preview exists
+CLOSED: [2026-09-29 Tue 02:30]
+
+Done: the request stays visible while it evaluates, so it can be denied
+(cancelling the evaluation), but =Controller::decide= refuses approval until
+its preview exists ("still being evaluated; decide once its preview is
+shown"). The TUI, plain TUI (daemon error) and Emacs do not send an approval
+early. Root cause: an early approval cancelled the in-flight evaluation and
+queued =Work::Decide= without a candidate. See ADR 0007, Refresh stage 3
+(=test_refresh_cannot_be_approved_before_its_preview=).
+
 
 Found in a manual run: a =devshell= permission request is visible to
 frontends before its candidate evaluation has finished. Approving it then (for

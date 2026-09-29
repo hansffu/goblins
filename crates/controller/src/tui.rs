@@ -253,6 +253,10 @@ fn versions(v: &serde_json::Value) -> Option<String> {
 fn nix_file(path: &str) -> bool {
     path.ends_with(".nix")
 }
+/// A dev shell refresh can be approved only once its preview is shown.
+fn awaiting_preview(p: &PermissionRecord) -> bool {
+    p.kind == "devshell" && p.preview.is_none()
+}
 /// The refresh summary, assembled here from the daemon's structured preview.
 fn devshell_summary(v: &serde_json::Value) -> Vec<Line<'static>> {
     let list = |key: &str| v[key].as_array().cloned().unwrap_or_default();
@@ -771,6 +775,9 @@ impl View {
                     Some(v) if v["description"].is_string() => {
                         v["description"].as_str().unwrap().into()
                     }
+                    None if awaiting_preview(p) => {
+                        "Evaluating the refresh; its preview follows".into()
+                    }
                     None => "Checking...".into(),
                     Some(v) if v["kind"] == "devshell" => String::new(),
                     Some(v) if v.get("error").is_some() => format!(
@@ -944,6 +951,11 @@ impl View {
         else {
             return;
         };
+        if yes && awaiting_preview(p) {
+            self.notice =
+                "The refresh is still being evaluated; decide once its preview is shown".into();
+            return;
+        }
         self.notice = match client.decide(p, yes) {
             Ok(_) => {
                 self.popup_open = false;
@@ -1147,6 +1159,30 @@ mod tests {
         assert!(
             all.contains(&"modified   src/main.rs".to_string()) && all.contains(&"-x".to_string())
         );
+    }
+    #[test]
+    fn refresh_waits_for_its_preview_before_approval() {
+        let record = |kind: &str, preview: serde_json::Value| -> PermissionRecord {
+            serde_json::from_value(serde_json::json!({
+                "kind": kind, "id": "r", "session": "s", "agent_name": "a", "approval": "t",
+                "package": "refresh", "reason": "", "state": "pending", "approved": null,
+                "preview": preview, "message": null,
+            }))
+            .unwrap()
+        };
+        assert!(awaiting_preview(&record(
+            "devshell",
+            serde_json::Value::Null
+        )));
+        assert!(!awaiting_preview(&record(
+            "devshell",
+            serde_json::json!({"kind": "devshell"})
+        )));
+        // A package preview is informational; approval never waits for it.
+        assert!(!awaiting_preview(&record(
+            "package",
+            serde_json::Value::Null
+        )));
     }
     #[test]
     fn devshell_summary_is_assembled_from_structured_data() {

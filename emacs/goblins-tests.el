@@ -306,6 +306,23 @@
                                    :approval "approval-a"
                                    :approved (if approved t :json-false)))))))))
 
+(ert-deftest goblins-refresh-approval-waits-for-its-preview ()
+  (goblins-test--buffer
+    (setq goblins--snapshot
+          (goblins-test--snapshot
+           (append (list :kind "devshell") (goblins-test--request "a"))))
+    (goblins--render)
+    (goblins-test--goto "a")
+    (let (sent)
+      (cl-letf (((symbol-function 'goblins--request)
+                 (lambda (method params _callback) (setq sent (list method params)))))
+        (let ((goblins--connection 'test))
+          (should-error (goblins--decide t) :type 'user-error)
+          (should-not sent)
+          ;; Denial still cancels the evaluation.
+          (goblins--decide nil)
+          (should (equal (plist-get (cadr sent) :approved) :json-false)))))))
+
 (ert-deftest goblins-update-cannot-retarget-a-decision ()
   (goblins-test--buffer
     (goblins-test--goto "a")

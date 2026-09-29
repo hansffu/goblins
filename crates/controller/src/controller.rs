@@ -1057,6 +1057,15 @@ impl Controller {
             .as_ref()
             .filter(|r| r.id == p.request)
             .ok_or_else(conflict)?;
+        // The preview is the approver's whole basis for a refresh, and approval
+        // applies the candidate it shows. Denial still cancels the evaluation.
+        if p.approved && r.kind == "devshell" && pending.dev_identity.is_none() {
+            return Err((
+                -32009,
+                "the dev shell refresh is still being evaluated; decide once its preview is shown"
+                    .into(),
+            ));
+        }
         // Order a decision against bytes/EOF already present, consuming
         // unexpected input instead of letting it hide a disconnected peer.
         if let Some(peer) = self
