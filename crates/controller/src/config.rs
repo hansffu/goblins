@@ -23,6 +23,9 @@ pub struct Configuration {
     pub flake: String,
     #[serde(default)]
     pub sandbox_etc: BTreeMap<String, PathBuf>,
+    /// Further /etc files mounted only in sandboxes with a flake dev shell.
+    #[serde(default)]
+    pub dev_shell_sandbox_etc: BTreeMap<String, PathBuf>,
     #[serde(default)]
     pub integration: Option<String>,
     #[serde(default)]
@@ -196,6 +199,8 @@ pub struct Launch {
     #[serde(default)]
     pub sandbox_etc: BTreeMap<String, PathBuf>,
     #[serde(default)]
+    pub dev_shell_sandbox_etc: BTreeMap<String, PathBuf>,
+    #[serde(default)]
     pub integration: Option<String>,
     #[serde(default)]
     pub docker: Option<Docker>,
@@ -204,6 +209,17 @@ pub struct Launch {
     /// Host-evaluated flake dev shell; children inherit this generation.
     #[serde(skip)]
     pub dev_shell: Option<crate::devshell::DevShell>,
+}
+impl Launch {
+    /// The sandbox's /etc mounts, including the dev-shell-only files when it
+    /// has a dev shell.
+    pub fn etc_mounts(&self) -> Result<Vec<(PathBuf, PathBuf)>> {
+        let dev_shell = match self.dev_shell {
+            Some(_) => &self.dev_shell_sandbox_etc,
+            None => &BTreeMap::new(),
+        };
+        crate::sandbox_etc::mounts(&self.sandbox_etc, dev_shell)
+    }
 }
 fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
@@ -272,6 +288,7 @@ impl Configuration {
             env,
             protected_paths: vec![],
             sandbox_etc: self.sandbox_etc.clone(),
+            dev_shell_sandbox_etc: self.dev_shell_sandbox_etc.clone(),
             integration: self.integration.clone(),
             docker: self.docker.clone(),
             scope: self.selected_scope.clone(),

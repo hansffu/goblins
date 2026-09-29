@@ -18,6 +18,7 @@ in
   rwDirs ? [ ],
   env ? { },
   injectedFiles ? { },
+  devShellInjectedFiles ? { },
   ...
 }@options:
 assert codex.validate {
@@ -26,6 +27,7 @@ assert codex.validate {
     codexConfigDir
     env
     injectedFiles
+    devShellInjectedFiles
     ;
 };
 mkGoblin (
@@ -49,5 +51,6 @@ mkGoblin (
     allowedPackages = allowedPackages ++ codex.packages;
     rwDirs = pkgs.lib.unique (rwDirs ++ [ codexConfigDir ]);
     injectedFiles = injectedFiles // codex.mkInjectedFiles codexSettings;
+    devShellInjectedFiles = devShellInjectedFiles // codex.devShellInjectedFiles;
   }
 )

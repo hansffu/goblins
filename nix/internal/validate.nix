@@ -23,6 +23,12 @@ let
       "/dev"
       "/run/goblins"
     ];
+  etcFiles =
+    files:
+    builtins.isAttrs files
+    && builtins.all (
+      name: validEtcPath name && (builtins.isString files.${name} || lib.isDerivation files.${name})
+    ) (builtins.attrNames files);
   storageMounts =
     mounts:
     builtins.isAttrs mounts
@@ -66,6 +72,7 @@ in
         roFiles
         args
         injectedFiles
+        devShellInjectedFiles
         env
         docker
         scope
@@ -124,15 +131,13 @@ in
       fail "rwDirs, rwFiles, roDirs and roFiles must be lists of path strings"
     else if !builtins.isList args || !builtins.all builtins.isString args then
       fail "args must be a list of strings"
+    else if !etcFiles injectedFiles || !etcFiles devShellInjectedFiles then
+      fail "injectedFiles and devShellInjectedFiles must map relative /etc file names to text or file derivations"
     else if
-      !builtins.isAttrs injectedFiles
-      || !builtins.all (
-        name:
-        validEtcPath name
-        && (builtins.isString injectedFiles.${name} || lib.isDerivation injectedFiles.${name})
-      ) (builtins.attrNames injectedFiles)
+      lib.intersectLists (builtins.attrNames injectedFiles) (builtins.attrNames devShellInjectedFiles)
+      != [ ]
     then
-      fail "injectedFiles must map relative /etc file names to text or file derivations"
+      fail "injectedFiles and devShellInjectedFiles cannot name the same file"
     else if
       !builtins.isAttrs env
       || !builtins.all (

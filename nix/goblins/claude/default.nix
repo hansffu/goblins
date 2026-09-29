@@ -10,6 +10,7 @@ let
     "claude-code/.claude/skills/goblins-messaging/SKILL.md"
     "claude-code/.claude/skills/goblins-packages/SKILL.md"
     "claude-code/.claude/skills/goblins-docker/SKILL.md"
+    "claude-code/.claude/skills/goblins-devshell/SKILL.md"
   ];
   runtimeDirectory =
     path:
@@ -47,6 +48,8 @@ in
               goblins-messaging = "on";
               goblins-packages = "on";
               goblins-docker = "on";
+              # Mounted only in dev shell sandboxes.
+              goblins-devshell = "on";
             };
           }
         );
@@ -58,6 +61,10 @@ in
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
     "claude-code/.claude/skills/goblins-docker/SKILL.md" =
       builtins.readFile ../../../skills/goblins-docker/SKILL.md;
+  };
+  devShellInjectedFiles = {
+    "claude-code/.claude/skills/goblins-devshell/SKILL.md" =
+      builtins.readFile ../../../skills/goblins-devshell/SKILL.md;
   };
 
   goblinOptions =
@@ -71,12 +78,15 @@ in
       claudeConfigDir,
       env,
       injectedFiles,
+      devShellInjectedFiles,
     }:
     assert lib.assertMsg (
       !(env ? CLAUDE_CONFIG_DIR)
     ) "mkClaudeGoblin: use claudeConfigDir instead of env.CLAUDE_CONFIG_DIR";
     assert lib.assertMsg (
-      lib.intersectLists managedFiles (builtins.attrNames injectedFiles) == [ ]
+      lib.intersectLists managedFiles (
+        builtins.attrNames injectedFiles ++ builtins.attrNames devShellInjectedFiles
+      ) == [ ]
     ) "mkClaudeGoblin: injectedFiles cannot replace the Goblins Claude settings or skills";
     builtins.seq (runtimeDirectory claudeConfigDir) true;
 }

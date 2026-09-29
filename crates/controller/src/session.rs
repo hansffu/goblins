@@ -353,7 +353,7 @@ impl Session {
         Ok(())
     }
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
-        let etc = crate::sandbox_etc::mounts(&self.launch.sandbox_etc)?;
+        let etc = self.launch.etc_mounts()?;
         let mut private = self.launch.protected_paths.clone();
         private.push(crate::docker::storage_root(false)?);
         private.push(crate::scope_storage::root(false)?);
@@ -1166,7 +1166,7 @@ impl Session {
                 false,
             ));
         }
-        for (source, destination) in crate::sandbox_etc::mounts(&self.launch.sandbox_etc)? {
+        for (source, destination) in self.launch.etc_mounts()? {
             grants.push((File::open(source)?, destination, true));
         }
         for path in self.mounted.union(&closure) {

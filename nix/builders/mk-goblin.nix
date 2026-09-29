@@ -41,6 +41,8 @@ let
       roDirs ? [ ],
       roFiles ? [ ],
       injectedFiles ? { },
+      # Mounted like injectedFiles, only in sandboxes launched with a dev shell.
+      devShellInjectedFiles ? { },
       integration ? null,
       docker ? { },
       scope ? null,
@@ -78,6 +80,13 @@ let
           allowedPackages ++ [ client ] ++ lib.optional dockerOptions.enable pkgs.docker-client;
       };
       wrapped = sandbox.mkSandbox sandboxOptions;
+      etcFiles = lib.mapAttrs (
+        name: value:
+        if builtins.isString value then
+          pkgs.writeText "goblins-etc-${builtins.baseNameOf name}" value
+        else
+          value
+      );
     in
     assert validate.goblin (
       sandboxOptions
@@ -87,6 +96,7 @@ let
           description
           integration
           injectedFiles
+          devShellInjectedFiles
           scope
           allowedScopes
           scopeStorage
@@ -116,13 +126,8 @@ let
           client = "${pkgs.docker-client}";
           enabled = dockerOptions.enable;
         };
-        sandbox_etc = lib.mapAttrs (
-          name: value:
-          if builtins.isString value then
-            pkgs.writeText "goblins-etc-${builtins.baseNameOf name}" value
-          else
-            value
-        ) injectedFiles;
+        sandbox_etc = etcFiles injectedFiles;
+        dev_shell_sandbox_etc = etcFiles devShellInjectedFiles;
       };
     };
 in

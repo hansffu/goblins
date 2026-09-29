@@ -839,7 +839,8 @@ system defaults below Codex's user/project/CLI layers. Native hooks from
 Codex treats this system source as managed; no host hook-trust changes or
 blanket hook-trust bypass is needed. The =goblins-spawn=, =goblins-messaging=,
 =goblins-packages= and =goblins-docker= skills are mounted at
-=/etc/codex/skills/NAME/SKILL.md=. Spawning creates the child; messaging assigns
+=/etc/codex/skills/NAME/SKILL.md=, and =goblins-devshell= too in a sandbox
+launched with a dev shell (and its children). Spawning creates the child; messaging assigns
 its work and handles replies. Reply-dependent work waits for the matching reply
 before proceeding. When none is available, the agent yields its turn for the
 hook or notifier to resume it.
@@ -904,6 +905,10 @@ For example, this creates =/etc/my-agent/config.json= read-only inside the sandb
 injectedFiles."my-agent/config.json" = ''{"enabled": true}'';
 #+end_src
 
+=mkGoblin.devShellInjectedFiles= takes the same form but is mounted only in
+sandboxes launched with a dev shell, and their children; the two cannot name
+the same file.
+
 * Claude Code configuration
 
 The default package provides =goblins run claude=. The reusable helper mirrors
@@ -933,10 +938,12 @@ assembling mounts, then runs the payload as unprivileged UID/GID 1000; no
 Goblins =SessionStart=, =UserPromptSubmit= and =Stop= handlers. The shared
 =goblins-spawn=, =goblins-messaging=, =goblins-packages= and =goblins-docker=
 skills are mounted
-under =/etc/claude-code/.claude/skills/=, Claude Code's enterprise skill scope.
+under =/etc/claude-code/.claude/skills/=, Claude Code's enterprise skill scope;
+=goblins-devshell= is mounted there only in a sandbox launched with a dev shell
+(and its children).
 No host Claude settings or skills are rewritten. Parent and child sandboxes
 share the selected Claude directory, including file-based authentication and
-native state. Managed =skillOverrides= keep all four integration skills =on=
+native state. Managed =skillOverrides= keep all the integration skills =on=
 for both model and direct user invocation. The shared descriptions name exact
 Goblins trigger terms and the native tools they replace.
 

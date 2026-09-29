@@ -18,28 +18,7 @@ Exit 2 means the outcome is unknown; do not
 automatically submit another request, because the original may still complete.
 
 There is no `nix` command in the sandbox; do not try `nix develop`, `nix run`
-or `nix shell`. When `GOBLINS_DEV_SHELL` is set, the host started this sandbox
-in that project flake's dev shell, like `nix develop`: its tools, variables and
-`shellHook` exports are already in your environment. Run
-`source /run/goblins/devshell/env.sh` in Bash if you also need the dev shell's
-functions. Editing `flake.nix` or
-`flake.lock` does not change the running environment. After changing the
-flake, first run `goblins devshell diff` (with the same `--lock` or
-`--update` you intend to use) to see exactly what the host will be asked to
-approve; it asks nothing and changes nothing, so fix surprises before asking.
-Then run `goblins devshell refresh --reason "REASON"` (add `--lock` for new
-inputs, or `--update [INPUT...]` to update inputs) and wait for the host's
-decision. Afterwards, `source /run/goblins/devshell/env.sh` in Bash, or start a
-new shell, to use the new environment; running processes keep the old one.
-Never edit `flake.lock` by hand or with other tools: a refresh rejects any lock
-the host has not trusted. If it reports that `flake.lock` differs, run
-`goblins devshell restore-lock` and refresh with `--update` or `--lock` instead.
-
-Instead of `nix run`, use `goblins flake run [#APP] [-- ARGS]` in a dev shell
-sandbox. It runs an app or package of the dev shell's own flake (no other
-flakes) from the current trusted generation, without asking the host. If you
-changed any tracked file of the flake's repository, it fails until you run
-`goblins devshell refresh` and the host approves.
+or `nix shell`.
 
 Docker is not a package: to use containers, follow goblins-docker and run
 `goblins enable-docker` instead of requesting `docker`.

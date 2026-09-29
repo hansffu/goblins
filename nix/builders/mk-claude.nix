@@ -17,6 +17,7 @@ in
   rwDirs ? [ ],
   env ? { },
   injectedFiles ? { },
+  devShellInjectedFiles ? { },
   ...
 }@options:
 assert claude.validate {
@@ -24,6 +25,7 @@ assert claude.validate {
     claudeConfigDir
     env
     injectedFiles
+    devShellInjectedFiles
     ;
 };
 mkGoblin (
@@ -47,5 +49,6 @@ mkGoblin (
     allowedPackages = allowedPackages ++ claude.packages;
     rwDirs = pkgs.lib.unique (rwDirs ++ [ claudeConfigDir ]);
     injectedFiles = injectedFiles // claude.mkInjectedFiles claudeSettings;
+    devShellInjectedFiles = devShellInjectedFiles // claude.devShellInjectedFiles;
   }
 )

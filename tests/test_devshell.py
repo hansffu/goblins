@@ -144,6 +144,50 @@ class DevShellTests(unittest.TestCase):
         self.assertIn(f'"{repo}" does not exist', record["detail"])
 
 
+class DevShellSkillTests(DevShellTests):
+    """The goblins-devshell skill is mounted only in dev shell sandboxes."""
+    SKILL = "/etc/claude-code/.claude/skills/goblins-devshell/SKILL.md"
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
+                                "path:" + str(ROOT) + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
+
+    def setUp(self):
+        super().setUp()
+        temp = tempfile.TemporaryDirectory(prefix="goblin-devshell-home-")
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name)
+        (home / ".claude").mkdir()
+        self.d = Daemon(self.app, env={**os.environ, "HOME": str(home)})
+        self.addCleanup(self.d.close)
+
+    def run_cli(self, *args):
+        terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "run", "claude", *args],
+                            cwd=self.project)
+        self.addCleanup(terminal.close)
+        terminal.expect("claude-probe>", timeout=120)
+        return terminal
+
+    def skill_mounted(self, terminal):
+        terminal.send(f"test -r {self.SKILL}; printf 'SKILL=%s\\n' \"$?\"\n")
+        return terminal.expect(r"(?:^|\n)SKILL=(\d)\n")[1] == b"0"
+
+    def test_skill_follows_the_dev_shell(self):
+        self.assertFalse(self.skill_mounted(self.run_cli("--name", "plain")))
+        self.assertTrue(self.skill_mounted(self.run_cli("--dev-shell", ".", "--name", "dev")))
+        self.assertTrue(self.skill_mounted(self.run_cli("--parent", "dev")))
+
+    # The launch tests use the plain shell configuration and ran above.
+    test_launch_exports_environment_and_children_inherit_the_snapshot = None
+    test_children_cannot_choose_a_dev_shell = None
+    test_launch_requires_a_lock_file = None
+    test_evaluation_cannot_reach_host_files_outside_the_flake = None
+    test_launch_requires_a_working_directory = None
+    test_launch_rejects_inputs_missing_from_the_lock = None
+
+
 class DevShellRefreshTests(DevShellTests):
     """Refresh through the in-sandbox CLI with host approval (ADR 0007)."""
 

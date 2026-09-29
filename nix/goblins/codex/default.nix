@@ -9,6 +9,7 @@ let
     "codex/skills/goblins-messaging/SKILL.md"
     "codex/skills/goblins-packages/SKILL.md"
     "codex/skills/goblins-docker/SKILL.md"
+    "codex/skills/goblins-devshell/SKILL.md"
   ];
   runtimeDirectory =
     path:
@@ -48,6 +49,10 @@ in
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
     "codex/skills/goblins-docker/SKILL.md" = builtins.readFile ../../../skills/goblins-docker/SKILL.md;
   };
+  devShellInjectedFiles = {
+    "codex/skills/goblins-devshell/SKILL.md" =
+      builtins.readFile ../../../skills/goblins-devshell/SKILL.md;
+  };
 
   # Preserve ordinary mkGoblin options, including ones added in the future.
   goblinOptions =
@@ -63,6 +68,7 @@ in
       codexConfigDir,
       env,
       injectedFiles,
+      devShellInjectedFiles,
     }:
     assert lib.assertMsg (
       !(pkg ? version) || lib.versionAtLeast pkg.version "0.146.0"
@@ -71,7 +77,9 @@ in
       !(env ? CODEX_HOME)
     ) "mkCodexGoblin: use codexConfigDir instead of env.CODEX_HOME";
     assert lib.assertMsg (
-      lib.intersectLists managedFiles (builtins.attrNames injectedFiles) == [ ]
+      lib.intersectLists managedFiles (
+        builtins.attrNames injectedFiles ++ builtins.attrNames devShellInjectedFiles
+      ) == [ ]
     ) "mkCodexGoblin: injectedFiles cannot replace the Goblins Codex config or skill";
     builtins.seq (runtimeDirectory codexConfigDir) true;
 }

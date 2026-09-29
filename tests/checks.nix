@@ -175,6 +175,12 @@ let
     { injectedFiles."../escape" = "bad"; }
     { injectedFiles."/etc/absolute" = "bad"; }
     { injectedFiles."codex/config.toml" = 1; }
+    { devShellInjectedFiles = [ ]; }
+    { devShellInjectedFiles."../escape" = "bad"; }
+    {
+      injectedFiles."same.conf" = "a";
+      devShellInjectedFiles."same.conf" = "b";
+    }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
@@ -671,6 +677,8 @@ in
         { injectedFiles."codex/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-packages/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-docker/SKILL.md" = "override"; }
+        { injectedFiles."codex/skills/goblins-devshell/SKILL.md" = "override"; }
+        { devShellInjectedFiles."codex/skills/goblins-devshell/SKILL.md" = "override"; }
       ];
     assert builtins.all
       (options: !(builtins.tryEval (mkClaudeGoblin options).goblin.build_spec.drvPath).success)
@@ -683,6 +691,21 @@ in
         { injectedFiles."claude-code/.claude/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-packages/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-docker/SKILL.md" = "override"; }
+        { injectedFiles."claude-code/.claude/skills/goblins-devshell/SKILL.md" = "override"; }
+        { devShellInjectedFiles."claude-code/.claude/skills/goblins-devshell/SKILL.md" = "override"; }
       ];
+    # The dev shell skill is mounted only in sandboxes launched with a dev shell.
+    assert
+      let
+        codex = (mkCodexGoblin { }).goblin;
+        claude = (mkClaudeGoblin { }).goblin;
+      in
+      !(codex.sandbox_etc ? "codex/skills/goblins-devshell/SKILL.md")
+      && codex.dev_shell_sandbox_etc ? "codex/skills/goblins-devshell/SKILL.md"
+      && !(claude.sandbox_etc ? "claude-code/.claude/skills/goblins-devshell/SKILL.md")
+      && claude.dev_shell_sandbox_etc ? "claude-code/.claude/skills/goblins-devshell/SKILL.md";
+    assert
+      (mkGoblin (base // { devShellInjectedFiles."x.conf" = "x"; })).goblin.dev_shell_sandbox_etc
+        ? "x.conf";
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

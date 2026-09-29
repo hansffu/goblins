@@ -3,12 +3,17 @@
 use crate::{Result, session::store_path};
 use std::{collections::BTreeMap, path::PathBuf};
 
-pub fn mounts(files: &BTreeMap<String, PathBuf>) -> Result<Vec<(PathBuf, PathBuf)>> {
-    if files.len() > 128 {
+/// `dev_shell` holds the files mounted only in a dev shell sandbox; they may
+/// not share a destination with `files`.
+pub fn mounts(
+    files: &BTreeMap<String, PathBuf>,
+    dev_shell: &BTreeMap<String, PathBuf>,
+) -> Result<Vec<(PathBuf, PathBuf)>> {
+    if files.len() + dev_shell.len() > 128 {
         return Err("at most 128 injectedFiles files are supported".into());
     }
     let mut mounts: Vec<(PathBuf, PathBuf)> = vec![];
-    for (name, source) in files {
+    for (name, source) in files.iter().chain(dev_shell) {
         if name.len() > 512
             || !name.split('/').all(|part| {
                 !part.is_empty()
@@ -54,13 +59,15 @@ mod tests {
             "codex//x",
             "codex/./x",
         ] {
-            assert!(mounts(&BTreeMap::from([(name.into(), "/tmp/source".into())])).is_err());
+            let files = BTreeMap::from([(name.into(), "/tmp/source".into())]);
+            assert!(mounts(&files, &BTreeMap::new()).is_err());
+            assert!(mounts(&BTreeMap::new(), &files).is_err());
         }
         assert!(
-            mounts(&BTreeMap::from([(
-                "codex/config.toml".into(),
-                "/tmp/source".into()
-            )]))
+            mounts(
+                &BTreeMap::from([("codex/config.toml".into(), "/tmp/source".into())]),
+                &BTreeMap::new()
+            )
             .is_err()
         );
     }
