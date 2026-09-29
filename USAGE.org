@@ -362,8 +362,9 @@ Current limits:
   can switch users/groups (for example Postgres's =gosu=); supplementary groups
   must be within the authorized GID mapping.
 - Live Nix package grants update the shell. Attaching a new member adds its
-  current package closure to the shared engine; later package-only requests do
-  not independently update the engine.
+  current package closure to the shared engine, and store paths mounted later
+  (package grants, dev shell refreshes, =goblins flake run=) are added too, so
+  containers can bind-mount them.
 - The pinned Docker daemon has a small patch to allow native rootless setup
   without requiring RootlessKit's port-mapping service, and to make BuildKit
   honor the launcher's outer-cgroup-namespace setting. A trusted native

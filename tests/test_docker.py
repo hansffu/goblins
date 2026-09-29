@@ -16,7 +16,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from daemon_support import Daemon, ROOT, RPC
+from daemon_support import Daemon, ROOT, RPC, receive
 from support import command
 from terminal_support import Terminal
 
@@ -352,6 +352,20 @@ class DockerTests(unittest.TestCase):
         self.assertEqual(self.d.get(second)["scope"], "work")
         self.assertEqual(len(self.engines()), 1)
         self.run_ok(two, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
+
+    def test_engine_sees_store_paths_granted_after_attach(self):
+        self.named_storage = True
+        session, terminal = self.shell("scoped", cwd=self.rw)
+        self.enable(session, terminal); self.load(terminal)
+        # The grant's closure is mounted after the engine attached, as a dev
+        # shell refresh or flake app's is.
+        peer, request = self.d.pending(session, "hello")
+        self.addCleanup(peer.close)
+        self.d.decide(request, True)
+        peer.peer.settimeout(60)
+        self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
+        self.run_ok(terminal, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
+        self.run_ok(terminal, 'package=$(dirname "$(dirname "$(readlink -f "$(command -v hello)")")"); docker run --rm -v "$package:/granted:ro" goblins-test test -x /granted/bin/hello')
 
     def test_docker_requires_a_docker_scope(self):
         for name in ("unscoped", "nodocker"):

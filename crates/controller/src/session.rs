@@ -927,6 +927,11 @@ impl Session {
             }
             self.mounted.insert(item.clone());
         }
+        // An attached engine got the paths mounted when it attached; give it
+        // these too, so containers can bind-mount them.
+        if let Some(lease) = &self.docker {
+            lease.extend(&self.launch, missing, &self.cancel)?;
+        }
         Ok(())
     }
     /// Evaluation-time network for a refresh: the goblin's own.

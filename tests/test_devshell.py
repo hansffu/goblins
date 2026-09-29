@@ -1,6 +1,7 @@
 """Host-launched flake dev shells (ADR 0007) through the real CLI and sandbox."""
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -10,6 +11,8 @@ import uuid
 from daemon_support import Daemon, ROOT
 from support import command
 from terminal_support import Terminal
+# A module import, so its DockerTests are not collected here as well.
+import test_docker
 
 FLAKE = """{
   inputs.nixpkgs.url = "path:NIXPKGS";
@@ -592,6 +595,96 @@ class DevShellDiffTests(DevShellRefreshTests):
 for _name in dir(DevShellRefreshTests):
     if _name.startswith("test_") and _name not in DevShellDiffTests.__dict__:
         setattr(DevShellDiffTests, _name, None)
+
+
+DOCKER_FLAKE = """{
+  inputs.nixpkgs.url = "path:NIXPKGS";
+  outputs = { nixpkgs, ... }:
+    let
+      pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      # Programs report their own path, so containers can run the same file.
+      added = pkgs.writeShellScriptBin "added" ''echo "added:@MARKER@:$0"'';
+      greet = pkgs.writeShellScriptBin "greet" ''echo "greet:@MARKER@:$0"'';
+    in {
+      apps.x86_64-linux.greet = { type = "app"; program = "${greet}/bin/greet"; };
+      devShells.x86_64-linux.default = pkgs.mkShellNoCC {
+        packages = [ pkgs.hello ] ++ pkgs.lib.optional @ADDED@ added;
+        # The dev shell environment replaces the goblin's PS1.
+        shellHook = ''echo "hook-ran in $PWD"; export PS1="docker-test> "'';
+      };
+    };
+}
+"""
+
+
+class DevShellDockerTests(test_docker.DockerTests):
+    """Store paths a dev shell mounts after Docker is attached reach the engine."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        DevShellTests.setUpClass.__func__(cls)
+
+    def setUp(self):
+        super().setUp()
+        self.marker = uuid.uuid4().hex[:12]
+        self.project = self.root / "project"
+        self.project.mkdir()
+        self.write_flake(added=False)
+        command(["nix", "flake", "lock", f"path:{self.project}"])
+        command(["git", "-C", str(self.project), "init", "-q"])
+        command(["git", "-C", str(self.project), "add", "flake.nix", "flake.lock"])
+        params = {"name": "plain", "configuration": self.d.manifest, "key": uuid.uuid4().hex,
+                  "rows": 24, "cols": 100, "cwd": str(self.project), "dev_shell": str(self.project)}
+        self.session = self.d.rpc.call("sessions.start", params)["session"]
+        self.terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", self.session])
+        self.addCleanup(self.terminal.close)
+        try:
+            self.terminal.expect("docker-test>", timeout=120)
+        except AssertionError as error:
+            raise AssertionError(self.d.get(self.session).get("detail") or str(error)) from error
+        self.enable(self.session, self.terminal)
+        self.load(self.terminal)
+
+    def write_flake(self, added):
+        (self.project / "flake.nix").write_text(
+            DOCKER_FLAKE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", self.marker)
+            .replace("@ADDED@", "true" if added else "false"))
+
+    def output(self, text, timeout=300):
+        self.terminal.send(text + "; printf '\\nDOCKER_TEST_STATUS=%s\\n' \"$?\"\n")
+        result = self.terminal.expect(r"([\s\S]*?)\nDOCKER_TEST_STATUS=(\d+)\n", timeout=timeout)
+        output = result[1].decode(errors="replace")
+        self.assertEqual(result[2], b"0", output)
+        self.terminal.expect("docker-test>")
+        return output
+
+    def program(self, output, name):
+        match = re.search(rf"{name}:{self.marker}:(/nix/store/\S+)", output)
+        self.assertIsNotNone(match, output)
+        return match[1]
+
+    def test_engine_sees_a_refreshed_dev_shell(self):
+        self.write_flake(added=True)
+        self.terminal.send("goblins devshell refresh --reason 'add a tool'\n")
+        record = self.d.wait(lambda: next((r for r in self.d.permissions(session=self.session, state="pending")
+                                           if r["kind"] == "devshell" and r.get("preview")), None), timeout=180)
+        self.d.decide(record, True)
+        self.terminal.expect("Dev shell generation 2 is active", timeout=300)
+        self.terminal.expect("docker-test>")
+        program = self.program(self.output("bash -c '. /run/goblins/devshell/env.sh >/dev/null; added'"), "added")
+        output = self.output(f"docker run --rm -v /nix/store:/nix/store:ro goblins-test {program}")
+        self.assertIn(f"added:{self.marker}:{program}", output)
+
+    def test_engine_sees_a_flake_app(self):
+        program = self.program(self.output("goblins flake run .#greet"), "greet")
+        output = self.output(f"docker run --rm -v /nix/store:/nix/store:ro goblins-test {program}")
+        self.assertIn(f"greet:{self.marker}:{program}", output)
+
+
+for _name in dir(test_docker.DockerTests):
+    if _name.startswith("test_") and _name not in DevShellDockerTests.__dict__:
+        setattr(DevShellDockerTests, _name, None)
 
 if __name__ == "__main__":
     unittest.main()

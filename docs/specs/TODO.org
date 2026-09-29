@@ -149,7 +149,18 @@ denied (denial cancels it).
   recursion guarded to loop, or =builtins.fetchurl= to a blackhole) and a
   short test-only deadline.
 
-* TODO Docker engine does not see dev shell refresh mounts
+* DONE Docker engine does not see dev shell refresh mounts
+CLOSED: [2026-09-29 Tue 00:50]
+
+Done: package grants had the same gap. =Session::mount_paths= now gives an
+attached engine each newly mounted store path (=scope::Lease::extend=, which
+shares the conflict check and =--docker-bind= step with a joining member in
+=Shared::acquire=), so all three callers are covered. A failure is a mount
+failure and stops the sandbox. Tests:
+=test_engine_sees_store_paths_granted_after_attach= in =tests/test_docker.py=
+and =DevShellDockerTests= (refresh and =flake run=) in
+=tests/test_devshell.py=.
+
 
 A sandbox attached to its scope's Docker engine
 (=Session::enable_docker=) gives the engine a filesystem view built at
@@ -216,6 +227,23 @@ Collapse the =if=s with =let= chains (the code already uses them). For the
 argument counts, group related parameters into a struct rather than adding
 =#[allow]=, unless that obscures the code. =nix flake check= does not run
 Clippy, so nothing else depends on this; run the full checks afterwards.
+
+* TODO Approving a dev shell request before its preview exists
+
+Found in a manual run: a =devshell= permission request is visible to
+frontends before its candidate evaluation has finished. Approving it then (for
+example =approve TOKEN= in =goblins tui --plain= as soon as the line appears)
+is accepted, but the refresh fails with "no prepared dev shell refresh"
+(=Session::apply_refresh=, =Session::candidate= still unset). Waiting for the
+preview avoids it.
+
+- Either refuse a decision on a =devshell= request until its preview exists
+  (=Controller::decide= / the =devshell= case of =Work::Decide=), or publish
+  the request only once =Completed::Refresh= has produced the preview.
+- Whichever is chosen, both frontends (TUI, Emacs) must not offer approval
+  without a preview, and the error must be clear.
+- Test in =tests/test_devshell.py=: approve immediately after the request
+  appears (use a slow evaluation) and check the outcome.
 
 * TODO Codex tests fail with the current Codex
 
