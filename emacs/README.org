@@ -86,8 +86,10 @@ offers your locally launched terminal buffers, including retained exited ones.
 terminal buffer. Commands use the current Goblins buffer's server when available,
 otherwise =goblins-state-directory= or the default server directory.
 
-Launches use the calling buffer's =default-directory=. Each launch gets a new
-agent name from the daemon and a separate Ghostel buffer, even for the same
+Launches start in the root of the calling buffer's project.el project, or in
+its =default-directory= outside a project. When the project root has a
+=flake.nix=, =goblins-run= asks whether to use it as the sandbox's dev shell
+(like =--dev-shell .=). Each launch gets a new agent name from the daemon and a separate Ghostel buffer, even for the same
 configuration. Status marks linked agents with =[t: terminal]=. Links use
 the daemon instance and immutable session ID and live only in this Emacs
 process. Closing/reopening status preserves them; killing the terminal buffer

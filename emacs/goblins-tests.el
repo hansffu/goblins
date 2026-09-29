@@ -2,6 +2,7 @@
 
 (require 'ert)
 (require 'goblins)
+(require 'project)
 (defvar ghostel-identity)
 
 (defun goblins-test--request (id &optional state)
@@ -460,6 +461,39 @@
                                  "file://ordinary-host/tmp"))
     (should (equal called "file://ordinary-host/tmp"))))
 
+;; Launches start at the project.el root and may use its flake as the dev shell.
+(ert-deftest goblins-run-launches-from-the-project-root ()
+  (let* ((root (file-name-as-directory (make-temp-file "goblins-project" t)))
+         (sub (file-name-as-directory (expand-file-name "sub" root)))
+         (outside (file-name-as-directory (make-temp-file "goblins-outside" t)))
+         (project-find-functions
+          (list (lambda (dir)
+                  (and (string-prefix-p root (expand-file-name dir))
+                       (cons 'transient root)))))
+         prompts answer)
+    (unwind-protect
+        (cl-letf (((symbol-function 'y-or-n-p)
+                   (lambda (prompt) (push prompt prompts) answer)))
+          (make-directory sub)
+          (let ((default-directory sub))
+            ;; No flake.nix at the root: no question, no dev shell.
+            (should (equal (goblins--launch-location) (cons root nil)))
+            (should-not prompts)
+            (write-region "{}" nil (expand-file-name "flake.nix" root))
+            (should (equal (goblins--launch-location) (cons root nil)))
+            (should (string-match-p "flake\\.nix as the dev shell\\? \\'" (car prompts)))
+            (setq answer t)
+            (should (equal (goblins--launch-location)
+                           (cons root (directory-file-name (file-truename root))))))
+          (setq prompts nil)
+          ;; Outside a project: the current directory, never a dev shell.
+          (write-region "{}" nil (expand-file-name "flake.nix" outside))
+          (let ((default-directory outside))
+            (should (equal (goblins--launch-location) (cons outside nil)))
+            (should-not prompts)))
+      (delete-directory root t)
+      (delete-directory outside t))))
+
 (ert-deftest goblins-completion-enter-selects-displayed-default ()
   (let ((completing-read-function #'completing-read-default))
     ;; Exercise Emacs' completion/default handling, not a mocked choice.
@@ -477,6 +511,9 @@
   (let* ((goblins-executable (getenv "GOBLINS_APP"))
         (goblins-state-directory (getenv "GOBLINS_TEST_STATE"))
         (default-directory (file-name-as-directory (getenv "GOBLINS_TEST_WORKSPACE")))
+        ;; Launch from the workspace itself, even if a directory above it
+        ;; looks like a project (an empty /tmp/.git is enough for project.el).
+        (project-find-functions nil)
         (ghostel-query-before-killing nil)
         (completing-read-function #'completing-read-default)
         (source (generate-new-buffer " *goblins launch notes*"))

@@ -17,6 +17,7 @@
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function project-root "project" (project))
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
@@ -870,11 +871,26 @@ On other status sections, toggle their visibility."
     name))
 
 ;;;###autoload
+(defun goblins--launch-location ()
+  "Return (CWD . DEV-SHELL) for a launch from the current buffer.
+Inside a project.el project, launch from its root and, when the root has a
+flake.nix, ask whether to use it as the dev shell.  Otherwise use
+`default-directory' and no dev shell."
+  (let* ((project (and (require 'project nil t) (project-current)))
+         (cwd (expand-file-name (if project (project-root project) default-directory))))
+    (cons cwd
+          (and project
+               (file-exists-p (expand-file-name "flake.nix" cwd))
+               (y-or-n-p (format "Use %s as the dev shell? "
+                                 (abbreviate-file-name (expand-file-name "flake.nix" cwd))))
+               (directory-file-name (file-truename cwd))))))
+
 (defun goblins-run ()
   "Choose a configured goblin and launch it in a new Ghostel buffer.
-Use the current directory and this status buffer's server, or the default
-server outside a status buffer.  Only launches made here are linked by
-the terminal command."
+Launch from the current project's root, or the current directory outside a
+project; see `goblins--launch-location' for the dev shell choice.  Use this
+status buffer's server, or the default server outside a status buffer.
+Only launches made here are linked by the terminal command."
   (interactive)
   (when (file-remote-p default-directory)
     (user-error "Goblins requires a local working directory"))
@@ -882,20 +898,24 @@ the terminal command."
   (unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)
                (fboundp 'ghostel-exec))
     (user-error "goblins-run requires installed Ghostel with its native module"))
-  (let* ((cwd (expand-file-name default-directory))
-         (directory (or goblins--directory goblins-state-directory
+  (let* ((directory (or goblins--directory goblins-state-directory
                         (goblins--default-directory)))
          (executable goblins-executable)
          (configs (goblins--configurations))
-         (name (goblins--read-configuration (plist-get configs :names))))
+         (name (goblins--read-configuration (plist-get configs :names)))
+         (location (goblins--launch-location))
+         (cwd (car location))
+         (dev-shell (cdr location)))
     (goblins--ensure-connected directory)
     (let* ((connection goblins--connection)
            (instance goblins--instance)
            (launch (jsonrpc-request
                     connection 'sessions.start
-                    (list :key (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid))))
-                          :name name :configuration (plist-get configs :configuration)
-                          :cwd cwd :rows 24 :cols 80)
+                    (append
+                     (list :key (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid))))
+                           :name name :configuration (plist-get configs :configuration)
+                           :cwd cwd :rows 24 :cols 80)
+                     (and dev-shell (list :dev_shell dev-shell)))
                     :timeout 3))
            (session (plist-get launch :session))
            (key (list goblins--directory instance session))
