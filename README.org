@@ -132,6 +132,20 @@ Claude child. It shares the parent's workspace, scope and dev shell but runs
 with its own configuration's settings and access. See
 [[file:USAGE.org::*Sandbox ownership][sandbox ownership]].
 
+* Raids
+
+A raid lets goblins in different branches message each other directly. It
+shares nothing else. The host can group any goblins; inside a goblin, a member
+invites its own children or launches them into the raid:
+
+#+begin_src sh
+goblins raid invite review chief critic   # on the host; chief owns the raid
+goblins raid members                      # inside a member: names, roles, paths
+goblins send critic --message "Please review the build."
+#+end_src
+
+See [[file:USAGE.org::*Raids][raids]].
+
 * Install on NixOS
 
 Currently supported: *x86_64 Linux*, with Nix and unprivileged user namespaces.

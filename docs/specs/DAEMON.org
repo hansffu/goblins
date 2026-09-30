@@ -871,3 +871,60 @@ preserve the first cause. This field is exposed on both host and sandbox
 session records without exposing host diagnostics. Once terminal output is
 complete, an attached client with no payload exit code reports this reason
 before falling back to =detail= or an unknown exit status.
+
+** Raids
+
+See [[file:../adr/0008-raids.md][ADR 0008]]. Raids are communication-only groups of live sessions,
+held in the controller's event loop and never persisted.
+
+- State :: a raid has an ID (={instance}-raid{n}=; a reused name gets a new
+  ID), a name, an owner session ID and members with an optional role. A
+  session is in at most one raid (so at most 16 raids and 16 members); invite
+  lists hold 1..16 targets. Names and roles use the agent-name grammar. The
+  first joiner owns the raid and ownership never moves. The rules live in
+  =raid.rs=; the controller resolves targets and applies tree restrictions.
+- Reconciliation :: =reconcile_raids= removes every member that is absent or
+  not =starting=/=running=; removing the owner dissolves the raid. It runs at
+  the start of =dispatch=, in =tick= after worker results, and at the start of
+  =publish=, so stops, exits, failed launches and worker loss need no raid code
+  of their own, and a stop never publishes the old membership. Dissolution
+  never stops a session.
+- Host methods :: =raids.invite {raid,sessions}= (creates the raid with the
+  first target as owner if absent; every target is resolved with
+  =resolve_session= and checked before anything changes; members are a no-op;
+  a member of another raid fails), =raids.destroy {raid}= -> ={accepted}=,
+  =raids.members {raid}=, =raids.set_role {raid,session,role}=. Host
+  =sessions.start= gains =raid=: create with the new session as owner, or join.
+- Sandbox methods :: =raids.create {raid}=, =raids.invite {sessions}= (targets
+  resolved in the caller's subtree, then required to be direct children),
+  =raids.leave {}= -> ={accepted,dissolved}=, =raids.members {}=,
+  =raids.set_role {role}=. Sandbox =sessions.start= gains =inherit_raid=, which
+  joins the selected parent's raid and still passes the =allowed_children= and
+  parent checks. Launch joins are validated after the launch-key lookup and
+  before name allocation, applied in the same event-loop operation that
+  inserts the session, and are part of the launch key: an identical retry
+  returns the original acceptance without joining again.
+- Records :: the raid record is ={id,name,owner,members:[{id,agent_name,path,
+  name,role,state,owner}]}= with full tree paths, on both endpoints. It carries
+  no host paths, process identities, terminal endpoints or diagnostics, and
+  grants no =sessions.get/attach/stop/resize= outside the caller's subtree.
+  =SessionRecord.raid= is ={id,name,role,owner}= or null, =Snapshot.raids= lists
+  raid records, and sandbox =sessions.status= adds =raid= (with =owner_path=).
+- Faults :: invalid names, roles or lists -> -32602; a visible descendant that
+  is not a direct child -> -32602 "only direct children can be invited"; a
+  target outside the caller's subtree or an absent host raid or session ->
+  -32004; an existing name, a caller or target already in a raid, a caller or
+  parent in no raid, a target that is not running, or a stopping server ->
+  -32009 with a specific message; raid event capacity -> -32010. Both
+  endpoints advertise =raids=.
+- Events and budget :: every mutation returns ordered events (=raid.created=,
+  =raid.joined=, =raid.role=, =raid.left= with reason =left=/=stopped=/
+  =launch-failed=, =raid.dissolved= with reason =owner-left=/=destroyed=),
+  attributed to an actor and the affected sessions. The controller queues them
+  in an outbox of 256 events and keeps a daemon-wide budget of 4096; additions
+  that would exceed either are refused with -32010, removals always proceed.
+  The outbox is attached to every messaging =Work::Call= and to a =Work::Sync=
+  whenever it is nonempty, cleared only once =try_send= accepts it, and handed
+  over with a blocking send on orderly shutdown before the messaging worker
+  closes. Messaging authorization is described in
+  [[file:AGENT-INTEGRATION.org][AGENT-INTEGRATION.org]].

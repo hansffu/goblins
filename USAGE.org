@@ -709,7 +709,7 @@ immediately with JSON containing the session ID and name. Inside a sandbox,
 =goblins attach CHILD= attaches to a descendant by relative tree path, name or ID;
 =goblins detach= returns to the enclosing shell while leaving that sandbox running.
 =goblins status= prints the current sandbox's name, configuration, allowed child
-configurations, state and ID.
+configurations, state, raid and ID.
 Attachment and terminal resizing are restricted to descendants; a sandbox cannot
 attach to itself, its ancestors or another branch.
 
@@ -788,6 +788,66 @@ that have not requested it. Otherwise the request appears in the host approval
 interface. Existing pending requests become eligible when an ancestor receives
 the package. Inheritance policy is isolated in the controller's
 =inherits_package= function for future changes.
+
+* Raids
+
+A raid is a temporary group of goblins, possibly from different branches,
+configurations or scopes, whose members can find and message each other
+directly. It adds only messaging access: members share no files, terminals,
+packages or lifecycle control, and cannot read each other's inboxes. A goblin
+is in at most one raid. Raids last until dissolved or until the daemon stops;
+they are never restored.
+
+On the host:
+
+#+begin_src sh
+goblins raid invite review chief builder   # creates 'review'; chief owns it
+goblins run claude --name critic --raid review --detached
+goblins raid members review                # add --json for the record
+goblins raid set-role review critic reviewer
+goblins raid destroy review                # dissolves; stops nobody
+#+end_src
+
+=raid invite= creates the raid if it does not exist, with the first goblin as
+owner, and checks every goblin before changing anything: an absent, stopped or
+already-raided goblin fails the whole invite. Inviting a current member does
+nothing; a member of another raid is never moved. =run --raid= creates the raid
+with the new goblin as owner, or joins it. The host may invite and launch
+anywhere in the tree, also with =--parent=.
+
+Inside a goblin:
+
+#+begin_src sh
+goblins raid create review
+goblins raid invite scout helper            # direct children only
+goblins run shell --name tester --detached --inherit-raid
+goblins raid set-role builder
+goblins raid members
+goblins raid leave
+#+end_src
+
+Any member may invite its direct children; siblings, grandchildren and other
+branches cannot be recruited from inside a sandbox. =--inherit-raid= joins the
+new child to the selected parent's raid (it fails if the parent is in none)
+and still follows =allowedChildren=. =raid members= prints one line per member,
+leading with the name, role and full tree path, then configuration, state,
+owner and ID; use the path or ID with =goblins send= when a name is ambiguous.
+Roles describe work (=coordinator=, =builder=, =reviewer=, ...); several members
+can share one, a role can be changed but not cleared, and it never makes a
+goblin the owner. Roles are not message destinations.
+
+The owner leaving, stopping, exiting or failing to start dissolves the raid
+for everyone, without stopping any goblin (the owner's own descendants still
+stop through the ownership tree). A non-owner leaving removes only itself. A
+dissolved name can be reused; former members are not rejoined. After leaving
+or dissolution, new sends that relied on the raid fail as absent. Messages
+already delivered stay with their recipient, who can read, complete or requeue
+them, but a =reply= to a sender it no longer shares a raid or tree relation
+with fails with "not allowed: 'SENDER' is no longer in this goblin's raid".
+
+Host =goblins list= records and sandbox =goblins status= show each goblin's
+raid name, role and owner. Raid names and roles use the agent-name grammar
+(lowercase letters, digits and hyphens, starting with a letter, at most 32).
 
 * State, workspace and authority
 
@@ -1016,7 +1076,8 @@ file in its own filesystem and submits its UTF-8 contents, limited to 8 KiB.
 The daemon stores those contents; the recipient needs no access to the source
 pathname. The source can be removed after acceptance. Host sends use sender
 =host=. A sandbox can address its parent (=parent=) and descendants by scoped
-name, path or immutable session ID; the host can address any live session.
+name, path or immutable session ID, and members of its [[*Raids][raid]] by name, full
+tree path or ID; the host can address any live session.
 Starting sessions can receive queued work before their payload is ready.
 
 Inside the receiving sandbox, claim and answer an item:
@@ -1050,8 +1111,11 @@ goblins communications-log --session scout
 goblins communications-log --session scout --follow --json
 #+end_src
 
-The log includes acceptance, claims, replies, completion, requeue and recipient
-exit. Identical retries return the original receipt without another acceptance
+The log includes acceptance, claims, replies, completion, requeue, recipient
+exit and raid membership changes (=raid.created=, =raid.joined=, =raid.role=,
+=raid.left=, =raid.dissolved=). A =message.accepted= record's =route= is
+=raid= (with the raid's ID) when raid membership was its only authorization,
+and =tree= otherwise. Identical retries return the original receipt without another acceptance
 record. =--session= includes the selected session's subtree; omit it to inspect
 all exchanges. Follow currently polls the daemon. Audit files are private
 =STATE/communications-INSTANCE.jsonl= files and survive normal session cleanup.

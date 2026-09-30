@@ -88,6 +88,46 @@ pub mod messages;
 pub mod patch;
 pub mod rpc;
 pub mod terminal;
+/// `raid members` as text: one line per member, leading with the name, role
+/// and full tree path a sender can use as a `send` recipient.
+pub fn raid_members(record: &serde_json::Value) -> String {
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or("-").to_string();
+    let mut rows = vec![[
+        "NAME".to_string(),
+        "ROLE".into(),
+        "PATH".into(),
+        "CONFIGURATION".into(),
+        "STATE".into(),
+        "OWNER".into(),
+        "ID".into(),
+    ]];
+    for m in record["members"].as_array().into_iter().flatten() {
+        rows.push([
+            text(&m["agent_name"]),
+            text(&m["role"]),
+            text(&m["path"]),
+            text(&m["name"]),
+            text(&m["state"]),
+            if m["owner"] == true { "owner" } else { "-" }.into(),
+            text(&m["id"]),
+        ]);
+    }
+    let widths: Vec<_> = (0..7)
+        .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
+        .collect();
+    let mut out = format!("Raid {} ({})\n", text(&record["name"]), text(&record["id"]));
+    for row in rows {
+        let line: Vec<_> = row
+            .iter()
+            .zip(&widths)
+            .map(|(cell, width)| format!("{cell:width$}"))
+            .collect();
+        out.push_str(line.join("  ").trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

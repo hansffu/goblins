@@ -74,8 +74,10 @@ ends the sandbox and its helper processes.
 
 All agent messages and replies pass through the host daemon. The authenticated
 sandbox endpoint supplies sender identity. An agent can send to its running or
-starting parent and descendants, and reply to the sender of a claimed message.
-Other branches remain unavailable. Host send always uses sender =host=.
+starting parent and descendants, and to members of its raid (see Raid routes
+below). It can reply to the sender of a claimed message while a send between
+them would still be authorized. Other branches remain unavailable. Host send
+always uses sender =host=.
 
 Each message contains immutable daemon-issued message and conversation IDs,
 sender/recipient IDs and captured display paths, body, creation time/sequence,
@@ -107,6 +109,42 @@ Exactly one of =--message= and =--file= is required. =--file -= reads stdin.
 The daemon does not open a caller-supplied pathname. The recipient never needs
 access to that path, and deletion/change after acceptance cannot change the
 queued body. Binary attachments and general file transfer are outside scope.
+
+** Raid routes
+
+Raids ([[file:../adr/0008-raids.md][ADR 0008]], [[file:DAEMON.org::*Raids][DAEMON.org]]) add one route. Authorization uses
+only membership the messaging worker has recorded in the communications log,
+never the controller's copy: the controller sends raid events with each
+=Work::Call= and =Work::Sync=, and the worker records them before handling
+the call they arrived with, applying each to its logged view once written.
+A join or role change therefore authorizes nothing until it is in the log;
+removals apply even when their event cannot be written. =mailbox::Directory=
+carries no raid data.
+
+- A sandbox may send to a live member of its logged raid by name, full tree
+  path or ID; the existing ambiguity error covers name collisions. Roles are
+  never matched. =parent= and host routing are unchanged.
+- A reply is allowed when the original sender is the host, when replier and
+  sender are related in the tree in either direction, or when both are in the
+  same logged raid. Otherwise it fails with -32009 "not allowed: 'SENDER' is
+  no longer in this goblin's raid" and changes nothing: the claim stays
+  outstanding for completion or requeue.
+- Delivered messages stay with their recipient. =messages.get=, inbox
+  operations and conversation reuse do not depend on raid membership.
+- =message.accepted= data (=change=) gains =route= (="raid"= when logged raid
+  membership was the only authorization, else ="tree"=) and =raid=, the raid
+  ID or null.
+- Raid events are =raid.created {raid,name,owner}=, =raid.joined
+  {raid,session,role}=, =raid.role {raid,session,role}=, =raid.left
+  {raid,session,reason}= and =raid.dissolved {raid,reason}=, with =actor= set
+  to the initiator (a session or =host=) and =sessions= to the affected
+  members, so =--session= filtering shows an invited or dissolved member its
+  own events. They do not count against the auxiliary-event limit.
+- A write failure sets =audit_failed= and freezes messaging as for any event.
+  A capacity failure sets =raid_audit_failed=: removals still apply, later
+  additions are neither recorded nor applied, and raid-routed sends and
+  replies fail with -32009 "raid membership could not be recorded" while tree
+  routes keep working.
 
 * Working and idle transitions
 
@@ -162,7 +200,7 @@ profile and the caller's own sandbox. Host controls resolve explicit sessions.
 |--------+-------------------|
 | =messages.send= | ={key,to,body,conversation?}= -> accepted message |
 | =messages.get= | ={message}= -> visible message record |
-| =inbox.status= | ={}= -> queued, claim, head identity, revision, audit_failed, integration health |
+| =inbox.status= | ={}= -> queued, claim, head identity, revision, audit_failed, raid_audit_failed, integration health |
 | =inbox.next= | ={key}= -> message and claim_generation, or null message |
 | =messages.reply= | ={key,message,claim_generation,body}= -> reply plus completed original ID |
 | =inbox.complete= | ={key,message,claim_generation}= -> completion |
@@ -198,7 +236,7 @@ available. Already committed retry receipts remain recoverable.
 
 Events include session identities/ancestry, accepted messages, claims, replies,
 completion/requeue/failure, duplicate operation retries, integration registration,
-hook decisions and notification attempts/results. Exact message contents are
+hook decisions, notification attempts/results and raid membership changes. Exact message contents are
 available for host verification; credentials and unrelated terminal output are
 not logged. Human-readable output escapes terminal control characters.
 

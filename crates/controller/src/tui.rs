@@ -1230,6 +1230,7 @@ mod tests {
         let mut snapshot = Snapshot {
             instance: "test".into(),
             permissions: vec![],
+            raids: vec![],
             sessions: vec![
                 session("leaf", Some("kid")),
                 session("parent", None),

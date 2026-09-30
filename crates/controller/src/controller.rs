@@ -25,6 +25,9 @@ use std::{
     time::Instant,
 };
 
+mod raids;
+pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
+
 const HOSTS: usize = 32;
 const SESSIONS: usize = 16;
 const GOBLIN_NAMES: &str = include_str!("goblin-names.txt");
@@ -67,6 +70,8 @@ pub struct SessionRecord {
     #[serde(default)]
     pub stop_reason: Option<String>,
     pub detail: Option<String>,
+    #[serde(default)]
+    pub raid: Option<RaidMembership>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRecord {
@@ -89,6 +94,8 @@ pub struct Snapshot {
     pub instance: String,
     pub sessions: Vec<SessionRecord>,
     pub permissions: Vec<PermissionRecord>,
+    #[serde(default)]
+    pub raids: Vec<RaidRecord>,
 }
 struct Pending {
     initial_output: Option<PathBuf>,
@@ -297,6 +304,12 @@ struct Start {
     cols: u16,
     #[serde(default)]
     detached: bool,
+    /// Join this raid, creating it with the new goblin as owner if absent.
+    #[serde(default)]
+    raid: Option<String>,
+    /// Sandbox launches only: join the selected parent's raid.
+    #[serde(skip)]
+    inherit_raid: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -307,6 +320,8 @@ struct ChildStart {
     parent: Option<String>,
     #[serde(default)]
     detached: bool,
+    #[serde(default)]
+    inherit_raid: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -375,7 +390,7 @@ fn capacity() -> Fault {
 fn dimensions(rows: u16, cols: u16) -> bool {
     (1..=1000).contains(&rows) && (1..=1000).contains(&cols)
 }
-fn valid_agent_name(name: &str) -> bool {
+pub(crate) fn valid_agent_name(name: &str) -> bool {
     (1..=32).contains(&name.len())
         && name.as_bytes()[0].is_ascii_lowercase()
         && name
@@ -424,6 +439,11 @@ pub struct Controller {
     launches: BTreeMap<String, (Start, Value)>,
     shutdown: Option<(u64, Instant)>,
     dirty: bool,
+    /// Never persisted: raids end with the daemon.
+    raids: crate::raid::Raids,
+    /// Raid events not yet accepted by the messaging worker, in order.
+    raid_outbox: VecDeque<crate::raid::Event>,
+    raid_events: usize,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -460,6 +480,9 @@ impl Controller {
             launches: BTreeMap::new(),
             shutdown: None,
             dirty: false,
+            raids: Default::default(),
+            raid_outbox: VecDeque::new(),
+            raid_events: 0,
         })
     }
     fn number(&mut self) -> u64 {
@@ -475,6 +498,7 @@ impl Controller {
             instance: self.instance.clone(),
             sessions: self.sessions.values().map(|s| s.record.clone()).collect(),
             permissions: self.permissions.iter().cloned().collect(),
+            raids: self.raid_records(),
         }
     }
     pub fn shutdown_ready(&self) -> bool {
@@ -487,6 +511,8 @@ impl Controller {
         })
     }
     fn publish(&mut self) {
+        // A stop dispatched just before must not publish the old membership.
+        self.reconcile_raids();
         if !self.dirty {
             return;
         }
@@ -844,6 +870,7 @@ impl Controller {
                 Err(conflict())
             };
         }
+        let join = self.launch_raid(&p, parent.as_deref(), scope)?;
         let agent_name = self.allocate_name(p.agent_name.as_deref(), parent.as_deref())?;
         if self.launches.len() >= 4096
             || self
@@ -925,10 +952,11 @@ impl Controller {
             exit_code: None,
             stop_reason: None,
             detail: None,
+            raid: None,
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
         self.sessions.insert(
-            id,
+            id.clone(),
             Active {
                 inheritance: None,
                 exit_watch: None,
@@ -946,6 +974,9 @@ impl Controller {
         );
         self.launches.insert(key, (p, result.clone()));
         self.dirty = true;
+        if let Some(join) = join {
+            self.apply_launch_raid(&id, join)?;
+        }
         Ok(result)
     }
     fn sandbox_control(
@@ -963,7 +994,10 @@ impl Controller {
                     "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
                     "allowed_children":self.sessions[scope].inheritance.as_ref()
-                        .map_or(&[][..], |i| i.allowed_children())}))
+                        .map_or(&[][..], |i| i.allowed_children()),
+                    "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
+                        "role":r.role,"owner":r.owner,
+                        "owner_path":self.sessions.get(&r.owner).map(|a| &a.record.path)}))}))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
@@ -1022,6 +1056,8 @@ impl Controller {
                         rows: 24,
                         cols: 80,
                         detached: p.detached,
+                        raid: None,
+                        inherit_raid: p.inherit_raid,
                     },
                     Some(scope),
                 )?;
@@ -1043,6 +1079,7 @@ impl Controller {
                 );
                 self.stop_tree(&id, p.kill_children, Some(reason))
             }
+            m if m.starts_with("raids.") => self.sandbox_raids(scope, m, value),
             _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
         }
     }
@@ -1270,10 +1307,13 @@ impl Controller {
                 c.subscription = None;
                 Ok(json!({"accepted":true}))
             }
+            m if m.starts_with("raids.") => self.host_raids(m, value),
             _ => Err((-32601, "method unavailable on host endpoint".into())),
         }
     }
     fn dispatch(&mut self, c: &mut Connection, call: rpc::Call) {
+        // Every authorization below sees current membership.
+        self.reconcile_raids();
         // JSON-RPC notifications get no response and cannot authorize mutations.
         let Some(id) = call.id else {
             return;
@@ -1317,7 +1357,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1361,18 +1401,23 @@ impl Controller {
                 } else {
                     crate::integration::View::default()
                 };
-                self.messaging
-                    .commands
-                    .try_send(crate::messaging::Work::Call {
-                        connection: c.id,
-                        id: id.clone(),
-                        actor,
-                        method: call.method,
-                        params: call_params,
-                        directory: self.message_directory(),
-                        view,
-                    })
-                    .map_err(|_| capacity())?;
+                // The worker records queued membership before this call.
+                let work = crate::messaging::Work::Call {
+                    connection: c.id,
+                    id: id.clone(),
+                    actor,
+                    method: call.method,
+                    params: call_params,
+                    directory: self.message_directory(),
+                    view,
+                    raids: self.raid_outbox.drain(..).collect(),
+                };
+                if let Err(e) = self.messaging.commands.try_send(work) {
+                    if let crate::messaging::Work::Call { raids, .. } = unsent(e) {
+                        self.raid_outbox = raids.into();
+                    }
+                    return Err(capacity());
+                }
                 c.waiting = Some(("mailbox".into(), id.clone()));
                 return Ok(None);
             }
@@ -1993,16 +2038,24 @@ impl Controller {
                 }
             }
         }
+        self.reconcile_raids();
         self.approve_inherited_requests();
         let directory = self.message_directory();
-        if directory != self.messaging_directory
-            && self
-                .messaging
-                .commands
-                .try_send(crate::messaging::Work::Sync(directory.clone()))
-                .is_ok()
-        {
-            self.messaging_directory = directory;
+        // Queued raid events go out even when the directory is unchanged. A
+        // batch is cleared once accepted and kept for the next tick otherwise.
+        if directory != self.messaging_directory || !self.raid_outbox.is_empty() {
+            let work = crate::messaging::Work::Sync {
+                directory: directory.clone(),
+                raids: self.raid_outbox.drain(..).collect(),
+            };
+            match self.messaging.commands.try_send(work) {
+                Ok(()) => self.messaging_directory = directory,
+                Err(e) => {
+                    if let crate::messaging::Work::Sync { raids, .. } = unsent(e) {
+                        self.raid_outbox = raids.into();
+                    }
+                }
+            }
         }
         // Service pending sandbox connections before host decisions in this tick.
         self.connections
@@ -2030,11 +2083,34 @@ impl Controller {
         Ok(())
     }
 }
+fn unsent<T>(error: std::sync::mpsc::TrySendError<T>) -> T {
+    match error {
+        std::sync::mpsc::TrySendError::Full(work)
+        | std::sync::mpsc::TrySendError::Disconnected(work) => work,
+    }
+}
 fn bounded(text: &str) -> String {
     text.chars().take(512).collect()
 }
 impl Drop for Controller {
     fn drop(&mut self) {
+        // Hand queued raid events over before messaging::Service closes its
+        // channel. Drain results meanwhile so a full queue cannot deadlock.
+        // Send the current directory, not the last synced one: a member that
+        // joined this tick needs its session.started record first.
+        if !self.raid_outbox.is_empty() {
+            let mut work = crate::messaging::Work::Sync {
+                directory: self.message_directory(),
+                raids: self.raid_outbox.drain(..).collect(),
+            };
+            while let Err(std::sync::mpsc::TrySendError::Full(back)) =
+                self.messaging.commands.try_send(work)
+            {
+                work = back;
+                for _ in self.messaging.results.try_iter() {}
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
         for a in self.sessions.values() {
             if let Some(w) = &a.worker {
                 w.cancel.cancel();
@@ -2124,6 +2200,7 @@ mod tests {
                     exit_code: None,
                     stop_reason: None,
                     detail: None,
+                    raid: None,
                 },
                 worker: Some(Worker::completed(results)),
                 listener: None,
@@ -2674,6 +2751,439 @@ mod tests {
             initial["result"]["subscription"]
         );
         drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    /// A running session whose worker results the test supplies.
+    fn live(
+        d: &mut Controller,
+        id: &str,
+        parent: Option<&str>,
+    ) -> std::sync::mpsc::SyncSender<Completed> {
+        let path = match parent {
+            Some(p) => format!("{}/{id}", d.sessions[p].record.path),
+            None => id.into(),
+        };
+        session_with_results_id(d, id, vec![]);
+        let (worker, results) = Worker::idle();
+        let a = d.sessions.get_mut(id).unwrap();
+        a.worker = Some(worker);
+        a.pending = None;
+        a.record.agent_name = id.into();
+        a.record.parent = parent.map(Into::into);
+        a.record.path = path;
+        results
+    }
+    fn host_connection() -> (Connection, UnixStream) {
+        let (mut c, peer) = connection(Role::Host);
+        c.initialized = true;
+        (c, peer)
+    }
+    /// Raid events the controller handed to the (detached) messaging queue.
+    fn sent(queue: &std::sync::mpsc::Receiver<crate::messaging::Work>) -> Vec<(String, Value)> {
+        queue
+            .try_iter()
+            .flat_map(|work| match work {
+                crate::messaging::Work::Sync { raids, .. }
+                | crate::messaging::Work::Call { raids, .. } => raids,
+                crate::messaging::Work::Delivery { .. } => vec![],
+            })
+            .map(|e| (e.kind().to_string(), e.data()))
+            .collect()
+    }
+    #[test]
+    fn raid_membership_is_reconciled_after_every_way_a_session_ends() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(64);
+        d.messaging = service;
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a", None);
+        let exits = live(&mut d, "b", None);
+        let _c = live(&mut d, "c", None);
+        let fails = live(&mut d, "e", None);
+        let _f = live(&mut d, "f", None);
+        session_with_results_id(&mut d, "w", vec![]);
+        d.sessions.get_mut("w").unwrap().pending = None;
+        let record = d
+            .host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"review","sessions":["a","b","c","e","f","w"]}),
+            )
+            .unwrap();
+        assert_eq!(record["owner"], "a");
+        assert_eq!(d.sessions["f"].record.raid.as_ref().unwrap().owner, "a");
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events[0].0, "raid.created");
+        // Worker loss: the completed test worker finishes on the first tick.
+        assert_eq!(events.last().unwrap().0, "raid.left");
+        assert_eq!(events.last().unwrap().1["session"], "w");
+        assert!(d.sessions["w"].record.raid.is_none());
+        // Stop, natural exit and failed launch.
+        d.stop("c", Some("stopped by host".into())).unwrap();
+        exits
+            .send(Completed::Stopped { exit_code: Some(0) })
+            .unwrap();
+        fails.send(Completed::Failed("boom".into())).unwrap();
+        d.tick().unwrap();
+        let left: Vec<_> = sent(&queue)
+            .into_iter()
+            .map(|(kind, data)| (kind, data["session"].clone(), data["reason"].clone()))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                ("raid.left".into(), json!("b"), json!("stopped")),
+                ("raid.left".into(), json!("c"), json!("stopped")),
+                ("raid.left".into(), json!("e"), json!("launch-failed")),
+            ]
+        );
+        // The owner stopping dissolves the raid; the other member keeps running.
+        d.stop("a", None).unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.last().unwrap().0, "raid.dissolved");
+        assert_eq!(events.last().unwrap().1["reason"], "owner-left");
+        assert_eq!(d.sessions["f"].record.state, "running");
+        assert!(d.sessions["f"].record.raid.is_none());
+        assert!(d.snapshot().raids.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_stop_never_publishes_the_old_membership() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a", None);
+        let _b = live(&mut d, "b", None);
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let (mut subscriber, _sub_peer) = host_connection();
+        dispatch(
+            &mut d,
+            &mut subscriber,
+            "state.subscribe",
+            json!({}),
+            Some(json!(1)),
+        );
+        d.connections.push(subscriber);
+        dispatch(
+            &mut d,
+            &mut host,
+            "sessions.stop",
+            json!({"session":"b"}),
+            Some(json!(2)),
+        );
+        d.publish();
+        let data = d.connections[0].output.pop_back().unwrap();
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let snapshot = &rpc::parse(&data[body..]).unwrap()["params"]["snapshot"];
+        let b = snapshot["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "b")
+            .unwrap();
+        assert_eq!(b["state"], "stopping");
+        assert_eq!(b["raid"], Value::Null);
+        assert_eq!(snapshot["raids"][0]["members"].as_array().unwrap().len(), 1);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn launch_joins_follow_the_parent_and_retries_do_not_join_again() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let manifest: crate::config::Manifest = serde_json::from_value(json!({
+            "api": 2, "helper_api": 5,
+            "goblins": {"shell": {"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
+                "client_package": "/unused", "helper": "/unused", "flake": "unused",
+                "allowed_children": ["shell"]}},
+            "scopes": {},
+        }))
+        .unwrap();
+        let branch = std::sync::Arc::new(manifest.branch("shell", None).unwrap().1);
+        let _root = live(&mut d, "root", None);
+        let _kid = live(&mut d, "kid", Some("root"));
+        let _grandkid = live(&mut d, "grandkid", Some("kid"));
+        let _other = live(&mut d, "other", None);
+        for id in ["root", "kid", "grandkid", "other"] {
+            let a = d.sessions.get_mut(id).unwrap();
+            a.inheritance = Some(Inheritance::fixture("shell", branch.clone()));
+            a.record.configuration = "/loaded.json".into();
+        }
+        let child = |key: &str| json!({"key":key,"name":"shell","agent_name":null,"parent":null,"inherit_raid":true});
+        assert_eq!(
+            d.sandbox_control("root", "sessions.start", child("k1"))
+                .unwrap_err(),
+            (-32009, "parent is not in a raid".into())
+        );
+        assert!(d.launches.is_empty());
+        d.sandbox_control("root", "raids.create", json!({"raid":"review"}))
+            .unwrap();
+        let before = d.raid_outbox.len();
+        let accepted = d
+            .sandbox_control("root", "sessions.start", child("k1"))
+            .unwrap();
+        let id = accepted["session"].as_str().unwrap().to_string();
+        assert_eq!(d.sessions[&id].record.state, "starting");
+        let raid = d.sessions[&id].record.raid.clone().unwrap();
+        assert_eq!(
+            (raid.name.as_str(), raid.owner.as_str()),
+            ("review", "root")
+        );
+        let joined = d.raid_outbox.back().unwrap();
+        assert_eq!(
+            (joined.kind(), joined.actor.as_str()),
+            ("raid.joined", "root")
+        );
+        assert_eq!(d.raid_outbox.len(), before + 1);
+        // An identical retry returns the original acceptance without joining.
+        assert_eq!(
+            d.sandbox_control("root", "sessions.start", child("k1"))
+                .unwrap(),
+            accepted
+        );
+        assert_eq!(d.raid_outbox.len(), before + 1);
+        // Direct children only; other branches are not even visible.
+        assert_eq!(
+            d.sandbox_control("root", "raids.invite", json!({"sessions":["kid/grandkid"]}))
+                .unwrap_err(),
+            (-32602, "only direct children can be invited".into())
+        );
+        assert_eq!(
+            d.sandbox_control("root", "raids.invite", json!({"sessions":["other"]}))
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        assert_eq!(
+            d.sandbox_control("root", "raids.invite", json!({"sessions":["kid"]}))
+                .unwrap()["owner"],
+            "root"
+        );
+        // The invited child may invite its own child; ownership is unchanged.
+        let record = d
+            .sandbox_control("kid", "raids.invite", json!({"sessions":["grandkid"]}))
+            .unwrap();
+        assert_eq!(record["owner"], "root");
+        assert_eq!(record["members"].as_array().unwrap().len(), 4);
+        // A goblin in another raid cannot be moved.
+        d.sandbox_control("other", "raids.create", json!({"raid":"elsewhere"}))
+            .unwrap();
+        let (mut host, _peer) = host_connection();
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"review","sessions":["other"]})
+            )
+            .unwrap_err(),
+            (
+                -32009,
+                "goblin 'other' is already in raid 'elsewhere'".into()
+            )
+        );
+        // Host launches create or join by name; a retry after dissolution
+        // still returns the original acceptance.
+        let mut start = launch("h1", Some("fresh"));
+        start["raid"] = json!("brand-new");
+        let accepted = d.host(&mut host, "sessions.start", start.clone()).unwrap();
+        let fresh = accepted["session"].as_str().unwrap();
+        assert_eq!(d.raids.get("brand-new").unwrap().owner, fresh);
+        d.host(&mut host, "raids.destroy", json!({"raid":"brand-new"}))
+            .unwrap();
+        assert_eq!(
+            d.host(&mut host, "sessions.start", start).unwrap(),
+            accepted
+        );
+        assert!(d.raids.get("brand-new").is_none());
+        let mut changed = launch("h1", Some("fresh"));
+        changed["raid"] = json!("other-name");
+        assert_eq!(
+            d.host(&mut host, "sessions.start", changed).unwrap_err(),
+            conflict()
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn host_invites_validate_every_target_and_roles_never_move_ownership() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a", None);
+        let _b = live(&mut d, "b", None);
+        session_with_results_id(&mut d, "dead", vec![]);
+        d.sessions.get_mut("dead").unwrap().record.state = "stopped".into();
+        for (sessions, code) in [
+            (json!(["a", "absent"]), -32004),
+            (json!(["a", "dead"]), -32009),
+            (json!([]), -32602),
+        ] {
+            let error = d
+                .host(
+                    &mut host,
+                    "raids.invite",
+                    json!({"raid":"review","sessions":sessions}),
+                )
+                .unwrap_err();
+            assert_eq!(error.0, code, "{error:?}");
+            assert!(d.raids.get("review").is_none());
+        }
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"Bad Name","sessions":["a"]})
+            )
+            .unwrap_err()
+            .0,
+            -32602
+        );
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_role",
+                json!({"raid":"review","session":"b","role":"owner"}),
+            )
+            .unwrap();
+        assert_eq!(record["owner"], "a");
+        assert_eq!(record["members"][1]["role"], "owner");
+        assert_eq!(record["members"][1]["owner"], false);
+        for role in [json!(null), json!("")] {
+            assert_eq!(
+                d.host(
+                    &mut host,
+                    "raids.set_role",
+                    json!({"raid":"review","session":"b","role":role})
+                )
+                .unwrap_err()
+                .0,
+                -32602
+            );
+        }
+        assert_eq!(
+            d.sandbox_control("b", "raids.create", json!({"raid":"another"}))
+                .unwrap_err()
+                .1,
+            "goblin 'b' is already in raid 'review'"
+        );
+        assert_eq!(
+            d.sandbox_control("b", "raids.leave", json!({})).unwrap(),
+            json!({"accepted":true,"dissolved":false})
+        );
+        assert_eq!(
+            d.sandbox_control("b", "raids.members", json!({}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert_eq!(
+            d.sandbox_control("a", "raids.leave", json!({})).unwrap(),
+            json!({"accepted":true,"dissolved":true})
+        );
+        assert_eq!(d.sessions["b"].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_raid_outbox_survives_a_full_queue_and_bounds_only_additions() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(1);
+        d.messaging = service;
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a", None);
+        let _b = live(&mut d, "b", None);
+        d.tick().unwrap();
+        assert!(sent(&queue).is_empty());
+        // Sent even though the directory is unchanged.
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"one","sessions":["a"]}),
+        )
+        .unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "raid.created");
+        // A full queue keeps the batch, in order, for the next tick.
+        d.messaging
+            .commands
+            .try_send(crate::messaging::Work::Delivery {
+                actor: "a".into(),
+                revision: 0,
+                submitted: false,
+            })
+            .unwrap();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"one","sessions":["b"]}),
+        )
+        .unwrap();
+        d.sandbox_control("b", "raids.set_role", json!({"role":"builder"}))
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.raid_outbox.len(), 2);
+        assert!(sent(&queue).is_empty());
+        d.tick().unwrap();
+        let kinds: Vec<_> = sent(&queue).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(kinds, ["raid.joined", "raid.role"]);
+        assert!(d.raid_outbox.is_empty());
+        // A full outbox or an exhausted budget refuses additions, not removals.
+        let filler = crate::raid::Event {
+            actor: "host".into(),
+            change: crate::raid::Change::Role {
+                raid: "x".into(),
+                session: "x".into(),
+                role: "x".into(),
+            },
+        };
+        d.raid_outbox
+            .extend(std::iter::repeat_n(filler, raids::RAID_OUTBOX));
+        assert_eq!(
+            d.sandbox_control("b", "raids.set_role", json!({"role":"reviewer"}))
+                .unwrap_err()
+                .0,
+            -32010
+        );
+        d.sandbox_control("b", "raids.leave", json!({})).unwrap();
+        assert_eq!(d.raid_outbox.len(), raids::RAID_OUTBOX + 1);
+        d.raid_outbox.clear();
+        d.raid_events = 4096;
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"one","sessions":["b"]})
+            )
+            .unwrap_err()
+            .0,
+            -32010
+        );
+        d.host(&mut host, "raids.destroy", json!({"raid":"one"}))
+            .unwrap();
+        assert_eq!(d.raid_outbox.back().unwrap().kind(), "raid.dissolved");
+        // Orderly shutdown hands the outbox over before messaging closes.
+        while queue.try_recv().is_ok() {}
+        drop(d);
+        assert_eq!(sent(&queue).last().unwrap().0, "raid.dissolved");
         fs::remove_dir_all(path).unwrap();
     }
 }

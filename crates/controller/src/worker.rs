@@ -459,6 +459,19 @@ impl Worker {
             thread: None,
         }
     }
+    /// A live worker whose results the test supplies through the sender.
+    #[cfg(test)]
+    pub fn idle() -> (Self, mpsc::SyncSender<Completed>) {
+        let (commands, _) = mpsc::sync_channel(4);
+        let (sender, results) = mpsc::sync_channel(16);
+        let worker = Self {
+            cancel: Cancel::default(),
+            commands,
+            results,
+            thread: None,
+        };
+        (worker, sender)
+    }
     fn finished(&self) -> bool {
         self.thread.as_ref().is_none_or(|t| t.is_finished())
     }

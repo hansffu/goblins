@@ -32,6 +32,19 @@ pub struct Session {
 }
 pub type Directory = BTreeMap<String, Session>;
 
+/// A session's raid membership as the communications log has recorded it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RaidView {
+    pub id: String,
+    pub name: String,
+    pub role: Option<String>,
+    pub owner: String,
+}
+/// Session ID -> logged membership. Built only from recorded raid events,
+/// never from the controller's copy, so a join authorizes nothing until it
+/// is in the log.
+pub type Logged = BTreeMap<String, RaidView>;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
     pub messages: usize,
@@ -87,6 +100,10 @@ pub struct Mailbox {
     receipts: BTreeMap<(String, String, String), Receipt>,
     audit_failed: bool,
     auxiliary_events: usize,
+    raids: Logged,
+    /// A raid event could not be recorded for lack of log capacity. Raid
+    /// routes stay closed from then on; tree routes are unaffected.
+    raid_audit_failed: bool,
 }
 
 struct Change {
@@ -110,6 +127,8 @@ impl Mailbox {
             receipts: BTreeMap::new(),
             audit_failed: false,
             auxiliary_events: 0,
+            raids: Logged::new(),
+            raid_audit_failed: false,
         })
     }
 
@@ -163,6 +182,58 @@ impl Mailbox {
         Ok(())
     }
 
+    pub fn raids(&self) -> &Logged {
+        &self.raids
+    }
+
+    /// Record a batch of controller raid events in order, applying each to
+    /// the logged membership once it is written. Removals apply even when
+    /// their event cannot be written, since they only take access away;
+    /// additions apply only when recorded. Raid events do not count against
+    /// the auxiliary-event limit: the controller bounds them.
+    pub fn record_raid(&mut self, events: &[crate::raid::Event], now: u64, audit: &mut impl Audit) {
+        for raid in events {
+            let addition = raid.addition();
+            if addition && (self.audit_failed || self.raid_audit_failed) {
+                continue;
+            }
+            let recorded = !self.audit_failed && {
+                let event = Event {
+                    instance: self.instance.clone(),
+                    sequence: self.sequence + 1,
+                    timestamp: now,
+                    kind: raid.kind().into(),
+                    actor: raid.actor.clone(),
+                    sessions: raid.sessions(),
+                    data: raid.data(),
+                };
+                let reserved = self
+                    .messages
+                    .iter()
+                    .filter(|m| matches!(m.state, State::Queued | State::Claimed))
+                    .count()
+                    * 2048;
+                match audit.append(&event, reserved) {
+                    Ok(()) => {
+                        self.sequence += 1;
+                        true
+                    }
+                    Err(AuditError::Capacity) => {
+                        self.raid_audit_failed = true;
+                        false
+                    }
+                    Err(AuditError::Unavailable) => {
+                        self.audit_failed = true;
+                        false
+                    }
+                }
+            };
+            if recorded || !addition {
+                apply_raid(&mut self.raids, &raid.change);
+            }
+        }
+    }
+
     pub fn status(&self, actor: &str) -> Value {
         let inbox = || self.messages.iter().filter(|m| m.recipient == actor);
         json!({
@@ -171,6 +242,7 @@ impl Mailbox {
             "head":inbox().find(|m|matches!(m.state,State::Queued|State::Claimed)).map(|m|json!([m.id,m.claim_generation])),
             "revision":self.sequence,
             "audit_failed":self.audit_failed,
+            "raid_audit_failed":self.raid_audit_failed,
         })
     }
 
@@ -252,7 +324,10 @@ impl Mailbox {
     ) -> Result<Change> {
         match command {
             Mutation::Send(p) => {
-                let recipient = resolve(directory, actor, &p.to)?;
+                let (recipient, raid) = resolve(directory, &self.raids, actor, &p.to)?;
+                if raid.is_some() && self.raid_audit_failed {
+                    return Err(raid_unrecorded());
+                }
                 let conversation = match &p.conversation {
                     Some(id)
                         if self.messages.iter().any(|m| {
@@ -274,9 +349,10 @@ impl Mailbox {
                     sequence,
                     now,
                 );
+                // A raid route is one only logged membership authorized.
                 Ok(Change {
                     result: json!(message),
-                    data: json!({"message":message}),
+                    data: json!({"message":message,"route":if raid.is_some() {"raid"} else {"tree"},"raid":raid}),
                     messages: vec![message],
                     kind: "message.accepted",
                 })
@@ -315,6 +391,28 @@ impl Mailbox {
             Mutation::Reply(p) => {
                 let mut original = self.claim(actor, &p.message, p.claim_generation)?.clone();
                 live(directory, &original.sender)?;
+                // A reply is authorized like a send. Tree relations never
+                // change, so only replies that relied on a raid can fail;
+                // the claim stays outstanding to be completed or requeued.
+                let sender = original.sender.as_str();
+                if !(actor == "host"
+                    || sender == "host"
+                    || descendant(directory, actor, sender)
+                    || descendant(directory, sender, actor))
+                {
+                    if shared_raid(&self.raids, actor, sender).is_none() {
+                        return Err((
+                            -32009,
+                            format!(
+                                "not allowed: '{}' is no longer in this goblin's raid",
+                                original.sender_path
+                            ),
+                        ));
+                    }
+                    if self.raid_audit_failed {
+                        return Err(raid_unrecorded());
+                    }
+                }
                 let reply = self.new_message(
                     actor,
                     &original.sender,
@@ -540,21 +638,87 @@ fn descendant(directory: &Directory, child: &str, ancestor: &str) -> bool {
     false
 }
 
-fn resolve<'a>(directory: &'a Directory, actor: &str, target: &str) -> Result<&'a str> {
+fn raid_unrecorded() -> Fault {
+    (-32009, "raid membership could not be recorded".into())
+}
+
+fn apply_raid(logged: &mut Logged, change: &crate::raid::Change) {
+    use crate::raid::Change;
+    match change {
+        Change::Created { raid, name, owner } => {
+            logged.insert(
+                owner.clone(),
+                RaidView {
+                    id: raid.clone(),
+                    name: name.clone(),
+                    role: None,
+                    owner: owner.clone(),
+                },
+            );
+        }
+        Change::Joined {
+            raid,
+            session,
+            role,
+        } => {
+            // The raid is known once its creation is logged.
+            if let Some(view) = logged.values().find(|v| v.id == *raid).cloned() {
+                logged.insert(
+                    session.clone(),
+                    RaidView {
+                        role: role.clone(),
+                        ..view
+                    },
+                );
+            }
+        }
+        Change::Role {
+            raid,
+            session,
+            role,
+        } => {
+            if let Some(view) = logged.get_mut(session).filter(|v| v.id == *raid) {
+                view.role = Some(role.clone());
+            }
+        }
+        Change::Left { raid, session, .. } => {
+            if logged.get(session).is_some_and(|v| v.id == *raid) {
+                logged.remove(session);
+            }
+        }
+        Change::Dissolved { raid, .. } => logged.retain(|_, v| v.id != *raid),
+    }
+}
+
+fn shared_raid<'a>(logged: &'a Logged, a: &str, b: &str) -> Option<&'a str> {
+    logged
+        .get(a)
+        .zip(logged.get(b))
+        .filter(|(a, b)| a.id == b.id)
+        .map(|(a, _)| a.id.as_str())
+}
+
+/// The recipient, and the raid when logged raid membership was the only
+/// authorization. Roles are never matched.
+fn resolve<'a>(
+    directory: &'a Directory,
+    raids: &'a Logged,
+    actor: &str,
+    target: &str,
+) -> Result<(&'a str, Option<&'a str>)> {
     let parent = directory.get(actor).and_then(|s| s.parent.as_deref());
     if actor != "host" && target == "parent" {
-        return live(directory, parent.ok_or_else(absent)?);
+        return Ok((live(directory, parent.ok_or_else(absent)?)?, None));
     }
+    let tree = |s: &Session| {
+        actor == "host" || parent == Some(s.id.as_str()) || descendant(directory, &s.id, actor)
+    };
     let allowed = |s: &&Session| {
-        s.running
-            && s.id != actor
-            && (actor == "host"
-                || parent == Some(s.id.as_str())
-                || descendant(directory, &s.id, actor))
+        s.running && s.id != actor && (tree(s) || shared_raid(raids, actor, &s.id).is_some())
     };
     let mut candidates = directory.values().filter(allowed).filter(|s| {
         s.id == target
-            || (actor == "host" && s.path == target)
+            || s.path == target
             || s.path.rsplit('/').next() == Some(target)
             || directory
                 .get(actor)
@@ -564,7 +728,12 @@ fn resolve<'a>(directory: &'a Directory, actor: &str, target: &str) -> Result<&'
     if candidates.next().is_some() {
         return Err((-32009, "ambiguous recipient; use a path or ID".into()));
     }
-    Ok(&first.id)
+    let raid = if tree(first) {
+        None
+    } else {
+        shared_raid(raids, actor, &first.id)
+    };
+    Ok((&first.id, raid))
 }
 
 #[cfg(test)]

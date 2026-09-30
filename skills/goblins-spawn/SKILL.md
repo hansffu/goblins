@@ -37,7 +37,9 @@ for `goblins attach SESSION_ID` when direct interaction is useful.
 
 User conversations in one goblin do not automatically reach the others. Relay
 relevant task decisions through daemon messaging. Siblings cannot send directly
-to each other; use the parent to coordinate between them.
+to each other unless they share a raid; otherwise use the parent to coordinate
+between them. Launch a child into your raid with `--inherit-raid` (see
+[goblins-raids](../goblins-raids/SKILL.md)).
 
 ## Lifetime and cleanup
 

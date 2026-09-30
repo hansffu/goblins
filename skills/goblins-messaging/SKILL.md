@@ -19,7 +19,9 @@ message `id` to match replies using their `in_reply_to` and sender fields.
 
 For ongoing collaborators, send relevant decisions from direct user interaction
 to `parent` so it can relay them to affected goblins. Siblings cannot message
-each other directly, and terminal conversations are not automatically shared.
+each other directly unless they share a raid (see
+[goblins-raids](../goblins-raids/SKILL.md)), and terminal conversations are not
+automatically shared.
 
 `goblins inbox next` claims one item and returns `message` plus
 `claim_generation`. A null `message` means the inbox is empty. Read the claimed
@@ -35,7 +37,9 @@ another fetch returns that claim until it is finished. Use the returned
   to return unfinished work to the queue. This invalidates the old generation.
 
 Reply to a claimed task with `goblins reply`, including for host-originated
-tasks; this preserves correlation and routes the result to its sender.
+tasks; this preserves correlation and routes the result to its sender. A reply
+to a raid member fails once you no longer share the raid; complete the claim
+instead.
 
 ## When to check and wait
 

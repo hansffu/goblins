@@ -27,6 +27,11 @@ pub enum Command {
         #[command(subcommand)]
         command: IntegrationCommand,
     },
+    /// Group goblins from any branch so they can find and message each other
+    Raid {
+        #[command(subcommand)]
+        command: RaidCommand,
+    },
     /// Inspect daemon-recorded messages and outcomes
     CommunicationsLog {
         /// Read an audit file after daemon shutdown
@@ -98,6 +103,9 @@ pub enum Command {
         /// Start without attaching to its terminal
         #[arg(long, visible_alias = "detached")]
         detatched: bool,
+        /// Join this raid, creating it with the new goblin as owner if absent
+        #[arg(long, value_name = "RAID")]
+        raid: Option<String>,
     },
     /// Print configured goblin names and their manifest as JSON (no server needed)
     Configurations,
@@ -141,6 +149,30 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum RaidCommand {
+    /// Add goblins, creating the raid (first goblin as owner) if absent
+    Invite {
+        raid: String,
+        #[arg(required = true, value_name = "GOBLIN")]
+        goblins: Vec<String>,
+    },
+    /// Dissolve the raid without stopping its goblins
+    Destroy { raid: String },
+    /// List the raid's members, their roles and its owner
+    Members {
+        raid: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set or change a member's descriptive role (roles cannot be cleared)
+    SetRole {
+        raid: String,
+        goblin: String,
+        role: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum IntegrationCommand {
     Status { session: String },
     Pause { session: String },
@@ -174,7 +206,7 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
         .rev()
         .take(2)
         .any(|w| w == "--parent" || w == "--parent=");
-    let Some(state) = completion_state(default_state, words) else {
+    let Some((state, slot)) = completion_state(default_state, words) else {
         return 1;
     };
     let Ok(mut client) = goblins_controller::host::Client::connect(&state) else {
@@ -183,6 +215,23 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
     let Ok(records) = client.call("sessions.list", serde_json::json!({})) else {
         return 0;
     };
+    if slot == Slot::Raid {
+        // Every raid has a live owner, so the records name them all.
+        let names: std::collections::BTreeSet<_> = records
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["raid"]["name"].as_str())
+            .filter(|n| {
+                n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+            .collect();
+        for name in names {
+            println!("{name}");
+        }
+        return 0;
+    }
     if let Some(records) = records.as_array() {
         for record in records {
             if !matches!(
@@ -207,7 +256,13 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
     0
 }
 
-fn completion_state(default_state: &Path, words: Vec<String>) -> Option<PathBuf> {
+#[derive(Debug, PartialEq, Eq)]
+enum Slot {
+    Goblin,
+    Raid,
+}
+
+fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf, Slot)> {
     // Bash may split --option=value at '='. Restore it without evaluating any
     // shell text, then let the actual CLI parser identify the argument slot.
     const TARGET: &str = "__goblins_completion_target__";
@@ -230,23 +285,55 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<PathBuf>
             normalized.push(word);
         }
     }
-    let cli = Cli::try_parse_from(normalized).ok()?;
-    match cli.command? {
+    // Required arguments after the target (a raid's goblins or role) are not
+    // typed yet: stand them in so the parser can still place the target.
+    let cli = (0..=2).find_map(|extra| {
+        let mut words = normalized.clone();
+        words.extend(std::iter::repeat_n(
+            "__goblins_completion_rest__".into(),
+            extra,
+        ));
+        Cli::try_parse_from(words).ok()
+    })?;
+    let slot = match cli.command? {
         Command::Attach {
             session,
             instance: None,
-        } if session == TARGET => (),
+        } if session == TARGET => Slot::Goblin,
         Command::Detach { id_or_name }
         | Command::Kill { id_or_name, .. }
         | Command::Stop { id_or_name, .. }
-            if id_or_name == TARGET => {}
+            if id_or_name == TARGET =>
+        {
+            Slot::Goblin
+        }
         Command::Run {
             parent: Some(parent),
             ..
-        } if parent == TARGET => {}
+        } if parent == TARGET => Slot::Goblin,
+        Command::Run {
+            raid: Some(raid), ..
+        } if raid == TARGET => Slot::Raid,
+        Command::Raid { command } => match command {
+            RaidCommand::Invite { goblins, .. } if goblins.last().is_some_and(|g| g == TARGET) => {
+                Slot::Goblin
+            }
+            RaidCommand::SetRole { goblin, role, .. } if goblin == TARGET && role != TARGET => {
+                Slot::Goblin
+            }
+            RaidCommand::Invite { raid, .. }
+            | RaidCommand::Destroy { raid }
+            | RaidCommand::Members { raid, .. }
+            | RaidCommand::SetRole { raid, .. }
+                if raid == TARGET =>
+            {
+                Slot::Raid
+            }
+            _ => return None,
+        },
         _ => return None,
-    }
-    Some(cli.state_dir.unwrap_or_else(|| default_state.into()))
+    };
+    Some((cli.state_dir.unwrap_or_else(|| default_state.into()), slot))
 }
 
 pub fn completions(shell: clap_complete::Shell, runtime: Option<&Path>) -> Result<()> {
@@ -324,7 +411,7 @@ function __fish_goblins_needs_positional
     argparse -s (__fish_goblins_global_optspecs) -- $words 2>/dev/null; or return 1
     test "$argv[1]" = "$subcommand"; or return 1
     set -e argv[1]
-    argparse (__fish_goblins_global_optspecs) name= parent= scope= dev-shell= detatched detached -- $argv 2>/dev/null; or return 1
+    argparse (__fish_goblins_global_optspecs) name= parent= scope= dev-shell= raid= detatched detached -- $argv 2>/dev/null; or return 1
     test (count $argv) -eq 0
 end
 complete -c goblins -n '__fish_goblins_needs_positional run' -f -a '{}'
@@ -342,6 +429,8 @@ function __fish_goblins_agent_names
 end
 complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop' -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand run' -l raid -r -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role' -f -a '(__fish_goblins_agent_names)'
 "#
         );
     }
@@ -365,9 +454,36 @@ mod tests {
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),
-                Some(default.into())
+                Some((default.into(), Slot::Goblin))
             );
         }
+        for (words, slot) in [
+            (vec!["goblins", "raid", "invite", "review"], Slot::Goblin),
+            (
+                vec!["goblins", "raid", "invite", "review", "a"],
+                Slot::Goblin,
+            ),
+            (vec!["goblins", "raid", "invite"], Slot::Raid),
+            (vec!["goblins", "raid", "set-role"], Slot::Raid),
+            (vec!["goblins", "raid", "set-role", "review"], Slot::Goblin),
+            (vec!["goblins", "raid", "destroy"], Slot::Raid),
+            (vec!["goblins", "raid", "members"], Slot::Raid),
+            (vec!["goblins", "run", "shell", "--raid"], Slot::Raid),
+        ] {
+            assert_eq!(
+                completion_state(default, words.into_iter().map(String::from).collect()),
+                Some((default.into(), slot))
+            );
+        }
+        assert_eq!(
+            completion_state(
+                default,
+                ["goblins", "raid", "set-role", "review", "a"]
+                    .map(String::from)
+                    .to_vec()
+            ),
+            None
+        );
         for words in [
             vec!["goblins", "--state-dir", "/tmp/custom state", "attach"],
             vec!["goblins", "detach", "--state-dir=/tmp/custom state"],
@@ -375,7 +491,7 @@ mod tests {
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),
-                Some("/tmp/custom state".into())
+                Some(("/tmp/custom state".into(), Slot::Goblin))
             );
         }
         for words in [

@@ -9,6 +9,7 @@ mod docker;
 pub mod evaluator;
 mod network;
 mod process;
+pub mod raid;
 mod scope;
 mod scope_keeper;
 mod scope_storage;

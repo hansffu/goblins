@@ -8,13 +8,17 @@ struct MemoryAudit {
     events: Vec<Event>,
     fail: bool,
     full: bool,
+    /// Reject raid events for lack of capacity.
+    raid_full: bool,
 }
 impl Audit for MemoryAudit {
     fn append(&mut self, event: &Event, _: usize) -> std::result::Result<(), AuditError> {
         if self.fail {
             return Err(AuditError::Unavailable);
         }
-        if self.full && event.kind == "message.accepted" {
+        if self.full && event.kind == "message.accepted"
+            || self.raid_full && event.kind.starts_with("raid.")
+        {
             return Err(AuditError::Capacity);
         }
         self.events.push(event.clone());
@@ -90,6 +94,17 @@ impl Fixture {
     }
     fn next(&mut self, actor: &str, key: &str) -> Value {
         self.call(actor, "inbox.next", json!({"key":key})).unwrap()
+    }
+    fn record(&mut self, events: Vec<crate::raid::Event>) {
+        self.mailbox.record_raid(&events, 1000, &mut self.audit);
+    }
+    fn reply(&mut self, actor: &str, claim: &Value, key: &str) -> Result<Value> {
+        self.call(
+            actor,
+            "messages.reply",
+            json!({"key":key,"message":claim["id"],
+            "claim_generation":claim["claim_generation"],"body":"answer"}),
+        )
     }
     fn complete(&mut self, actor: &str, message: &Value, key: &str) -> Result<Value> {
         self.call(
@@ -413,4 +428,236 @@ fn sender_file_contents_survive_source_deletion_and_are_audited_once() {
     let encoded = serde_json::to_string(&f.audit.events[0]).unwrap();
     assert!(!encoded.contains('\u{001b}'));
     assert!(!encoded.contains('\n'));
+}
+
+fn raid_of(members: &[&str]) -> (crate::raid::Raids, Vec<crate::raid::Event>) {
+    let mut raids = crate::raid::Raids::default();
+    let members: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+    let events = raids
+        .invite("r1".into(), "review", &members, "host")
+        .unwrap();
+    (raids, events)
+}
+
+#[test]
+fn logged_raid_membership_permits_cross_branch_sends_until_removed() {
+    use crate::raid::Reason;
+    let mut f = Fixture::new();
+    let (mut raids, events) = raid_of(&["c", "y"]);
+    // The controller's copy authorizes nothing: only recorded events do.
+    assert_eq!(
+        f.call(
+            "c",
+            "messages.send",
+            json!({"key":"early","to":"y","body":"x"})
+        )
+        .unwrap_err(),
+        absent()
+    );
+    f.record(events);
+    let sent = f.send("c", "unrelated/scout", "path", "by path");
+    assert_eq!(sent["recipient"], "y");
+    let accepted = f.audit.events.last().unwrap();
+    assert_eq!(accepted.data["change"]["route"], "raid");
+    assert_eq!(accepted.data["change"]["raid"], "r1");
+    assert_eq!(f.send("y", "c", "id", "by id")["recipient"], "c");
+    // Raid routes add to the tree rules; tree routes stay "tree".
+    f.send("c", "parent", "tree", "up");
+    let accepted = f.audit.events.last().unwrap();
+    assert_eq!(accepted.data["change"]["route"], "tree");
+    assert_eq!(accepted.data["change"]["raid"], Value::Null);
+    // Membership never lets one member read another's inbox or messages.
+    assert_eq!(
+        f.mailbox
+            .get("x", sent["id"].as_str().unwrap())
+            .unwrap_err(),
+        absent()
+    );
+    assert_eq!(f.mailbox.status("c")["queued"], 1);
+    f.record(raids.remove("y", Reason::Left));
+    assert!(f.mailbox.raids().get("y").is_none());
+    assert_eq!(
+        f.call(
+            "c",
+            "messages.send",
+            json!({"key":"late","to":"y","body":"x"})
+        )
+        .unwrap_err(),
+        absent()
+    );
+    // Delivered messages stay with their recipient.
+    let claim = f.next("y", "fetch")["message"].clone();
+    assert_eq!(claim["id"], sent["id"]);
+}
+
+#[test]
+fn raid_paths_and_ids_resolve_and_ambiguous_names_are_rejected() {
+    let mut f = Fixture::new();
+    f.record(raid_of(&["p", "y"]).1);
+    // "scout" names both p's child and the raid member unrelated/scout.
+    assert_eq!(
+        f.call(
+            "p",
+            "messages.send",
+            json!({"key":"a","to":"scout","body":"x"})
+        )
+        .unwrap_err(),
+        (-32009, "ambiguous recipient; use a path or ID".into())
+    );
+    assert_eq!(f.send("p", "unrelated/scout", "b", "x")["recipient"], "y");
+    assert_eq!(f.send("p", "y", "c", "x")["recipient"], "y");
+    assert_eq!(f.send("p", "chief/scout", "d", "x")["recipient"], "c");
+    // Roles are never matched, and non-members gain nothing.
+    assert_eq!(
+        f.call("x", "messages.send", json!({"key":"e","to":"p","body":"x"}))
+            .unwrap_err(),
+        absent()
+    );
+}
+
+#[test]
+fn replies_need_a_shared_raid_or_tree_relation() {
+    use crate::raid::Reason;
+    let mut f = Fixture::new();
+    let (mut raids, events) = raid_of(&["x", "c"]);
+    f.record(events);
+    f.send("c", "unrelated", "ask", "question");
+    let claim = f.next("x", "fetch")["message"].clone();
+    f.record(raids.remove("c", Reason::Left));
+    assert_eq!(
+        f.reply("x", &claim, "reply").unwrap_err(),
+        (
+            -32009,
+            "not allowed: 'chief/scout' is no longer in this goblin's raid".into()
+        )
+    );
+    // The claim stays outstanding and can still be completed.
+    assert_eq!(f.mailbox.status("x")["claim"], claim["id"]);
+    assert_eq!(f.mailbox.status("c")["queued"], 0);
+    f.complete("x", &claim, "complete").unwrap();
+    // Tree relatives, in either direction and across generations, and the
+    // host are unaffected.
+    f.send("p", "scout/helper", "down", "to grandchild");
+    let claim = f.next("g", "g-fetch")["message"].clone();
+    f.reply("g", &claim, "g-reply").unwrap();
+    f.send("c", "parent", "up", "to parent");
+    let claim = f.next("p", "p-fetch")["message"].clone();
+    f.reply("p", &claim, "p-reply").unwrap();
+    f.send("host", "unrelated", "host", "from host");
+    let claim = f.next("x", "x-fetch")["message"].clone();
+    f.reply("x", &claim, "x-reply").unwrap();
+}
+
+#[test]
+fn raid_capacity_failure_closes_raid_routes_only_and_still_applies_removals() {
+    use crate::raid::Reason;
+    let mut f = Fixture::new();
+    let (mut raids, events) = raid_of(&["c", "y"]);
+    f.record(events);
+    f.send("c", "y", "before", "question");
+    let claim = f.next("y", "fetch")["message"].clone();
+    f.audit.raid_full = true;
+    let mut joined = raids.clone();
+    let join = joined
+        .invite("r1".into(), "review", &["x".to_string()], "host")
+        .unwrap();
+    f.record(join);
+    // A join whose event could not be written authorizes nothing.
+    assert!(f.mailbox.raids().get("x").is_none());
+    assert_eq!(f.mailbox.status("c")["raid_audit_failed"], true);
+    assert_eq!(f.mailbox.status("c")["audit_failed"], false);
+    let unrecorded = (-32009, "raid membership could not be recorded".to_string());
+    assert_eq!(
+        f.call(
+            "c",
+            "messages.send",
+            json!({"key":"raid","to":"y","body":"x"})
+        )
+        .unwrap_err(),
+        unrecorded
+    );
+    assert_eq!(f.reply("y", &claim, "reply").unwrap_err(), unrecorded);
+    f.send("c", "parent", "tree", "still works");
+    // Removals apply although their event cannot be written.
+    let count = f.audit.events.len();
+    f.record(raids.remove("y", Reason::Stopped));
+    assert_eq!(f.audit.events.len(), count);
+    assert!(f.mailbox.raids().get("y").is_none());
+    assert!(f.mailbox.raids().get("c").is_some());
+    f.complete("y", &claim, "complete").unwrap();
+}
+
+#[test]
+fn raid_write_failure_freezes_messaging() {
+    use crate::raid::Reason;
+    let mut f = Fixture::new();
+    let (mut raids, events) = raid_of(&["c", "y"]);
+    f.audit.fail = true;
+    f.record(events);
+    assert!(f.mailbox.raids().is_empty());
+    assert_eq!(f.mailbox.status("c")["audit_failed"], true);
+    f.audit.fail = false;
+    assert_eq!(
+        f.call(
+            "c",
+            "messages.send",
+            json!({"key":"tree","to":"parent","body":"x"})
+        )
+        .unwrap_err(),
+        (-32009, "mailbox audit unavailable".into())
+    );
+    // Later additions stay unapplied; removals still apply.
+    let mut f2 = Fixture::new();
+    f2.record(raid_of(&["c", "y"]).1);
+    f2.audit.fail = true;
+    f2.record(raids.remove("c", Reason::Left));
+    assert!(f2.mailbox.raids().is_empty());
+}
+
+#[test]
+fn raid_events_carry_actor_and_affected_sessions_in_order() {
+    use crate::raid::Reason;
+    let mut f = Fixture::new();
+    let mut raids = crate::raid::Raids::default();
+    let mut events = raids.create("r1".into(), "review", "c", "c").unwrap();
+    events.extend(raids.join("r1".into(), "review", "g", false, "c").unwrap());
+    events.extend(
+        raids
+            .invite("r1".into(), "review", &["y".to_string()], "host")
+            .unwrap(),
+    );
+    events.extend(raids.set_role("y", "builder", "host").unwrap());
+    events.extend(raids.remove("g", Reason::LaunchFailed));
+    events.extend(raids.remove("c", Reason::Left));
+    f.record(events);
+    let logged: Vec<_> = f
+        .audit
+        .events
+        .iter()
+        .map(|e| (e.kind.as_str(), e.actor.as_str(), e.sessions.clone()))
+        .collect();
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        logged,
+        [
+            ("raid.created", "c", s(&["c"])),
+            ("raid.joined", "c", s(&["g"])),
+            ("raid.joined", "host", s(&["y"])),
+            ("raid.role", "host", s(&["y"])),
+            ("raid.left", "g", s(&["g"])),
+            ("raid.left", "c", s(&["c"])),
+            ("raid.dissolved", "c", s(&["c", "y"])),
+        ]
+    );
+    assert_eq!(f.audit.events[4].data["reason"], "launch-failed");
+    assert_eq!(f.audit.events[6].data["reason"], "owner-left");
+    assert_eq!(
+        f.audit
+            .events
+            .iter()
+            .map(|e| e.sequence)
+            .collect::<Vec<_>>(),
+        (1..=7).collect::<Vec<_>>()
+    );
+    assert!(f.mailbox.raids().is_empty());
 }

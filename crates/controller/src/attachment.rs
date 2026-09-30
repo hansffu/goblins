@@ -16,6 +16,9 @@ pub struct Start {
     pub parent: Option<String>,
     pub scope: Option<String>,
     pub dev_shell: Option<String>,
+    /// Omitted when unset, so an older daemon still accepts the launch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raid: Option<String>,
 }
 
 pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {

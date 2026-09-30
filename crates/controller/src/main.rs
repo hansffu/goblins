@@ -81,6 +81,38 @@ fn execute(cli: Cli) -> Result<i32> {
             let (method, params) = command.request()?;
             return mailbox_command(&state, method, params);
         }
+        Command::Raid { command } => {
+            use cli::RaidCommand::*;
+            let mut client = Client::connect(&state)?;
+            match command {
+                Invite { raid, goblins } => println!(
+                    "{}",
+                    client.call(
+                        "raids.invite",
+                        serde_json::json!({"raid":raid,"sessions":goblins})
+                    )?
+                ),
+                Destroy { raid } => println!(
+                    "{}",
+                    client.call("raids.destroy", serde_json::json!({"raid":raid}))?
+                ),
+                Members { raid, json } => {
+                    let record = client.call("raids.members", serde_json::json!({"raid":raid}))?;
+                    if json {
+                        println!("{record}");
+                    } else {
+                        print!("{}", goblins_protocol::raid_members(&record));
+                    }
+                }
+                SetRole { raid, goblin, role } => println!(
+                    "{}",
+                    client.call(
+                        "raids.set_role",
+                        serde_json::json!({"raid":raid,"session":goblin,"role":role})
+                    )?
+                ),
+            }
+        }
         Command::Integration { command } => {
             use cli::IntegrationCommand::*;
             let (method, session) = match command {
@@ -202,6 +234,7 @@ fn execute(cli: Cli) -> Result<i32> {
             scope,
             dev_shell,
             detatched,
+            raid,
         } => {
             let runtime = cli
                 .runtime
@@ -251,6 +284,7 @@ fn execute(cli: Cli) -> Result<i32> {
                     parent,
                     scope,
                     dev_shell,
+                    raid,
                 },
                 detatched,
             );

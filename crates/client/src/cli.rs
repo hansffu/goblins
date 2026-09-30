@@ -49,6 +49,25 @@ pub enum FlakeCommand {
     },
 }
 #[derive(Subcommand)]
+pub enum RaidCommand {
+    /// Create a raid and join it as its owner
+    Create { raid: String },
+    /// Add direct children to this goblin's raid
+    Invite {
+        #[arg(required = true, value_name = "CHILD")]
+        children: Vec<String>,
+    },
+    /// Leave this goblin's raid; the owner leaving dissolves it
+    Leave,
+    /// List the raid's members, their roles and its owner
+    Members {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set or change this goblin's descriptive role (roles cannot be cleared)
+    SetRole { role: String },
+}
+#[derive(Subcommand)]
 pub enum Command {
     /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
     Integration {
@@ -95,6 +114,11 @@ pub enum Command {
         #[command(subcommand)]
         command: DevshellCommand,
     },
+    /// Collaborate with goblins in other branches: find and message members
+    Raid {
+        #[command(subcommand)]
+        command: RaidCommand,
+    },
     /// Flake apps from this sandbox's trusted dev shell generation
     Flake {
         #[command(subcommand)]
@@ -111,6 +135,9 @@ pub enum Command {
         /// Start without attaching
         #[arg(long, visible_alias = "detached")]
         detatched: bool,
+        /// Join the child to the parent's raid
+        #[arg(long)]
+        inherit_raid: bool,
     },
     /// Attach to a descendant's terminal
     Attach { session: String },
@@ -177,6 +204,9 @@ fn slot(words: Vec<String>) -> Option<bool> {
         {
             Some(true)
         }
+        Command::Raid {
+            command: RaidCommand::Invite { children },
+        } if children.last().is_some_and(|c| c == TARGET) => Some(true),
         _ => None,
     }
 }
@@ -331,6 +361,13 @@ mod tests {
             slot(["goblins", "attach"].map(String::from).to_vec()),
             Some(true)
         );
+        assert_eq!(
+            slot(["goblins", "raid", "invite"].map(String::from).to_vec()),
+            Some(true)
+        );
+        assert!(Cli::try_parse_from(["goblins", "raid", "invite"]).is_err());
+        assert!(Cli::try_parse_from(["goblins", "raid", "set-role"]).is_err());
+        assert!(Cli::try_parse_from(["goblins", "run", "shell", "--inherit-raid"]).is_ok());
     }
 }
 

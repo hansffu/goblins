@@ -699,6 +699,9 @@ in
         fish --no-config -c 'source ${configured}/share/fish/vendor_completions.d/goblins.fish; complete -C "goblins run "' > candidates
         grep -q fishy candidates
         grep -q utility candidates
+        # Options that take a value, such as --raid, precede the configuration.
+        fish --no-config -c 'source ${configured}/share/fish/vendor_completions.d/goblins.fish; complete -C "goblins run --raid crew fi"' > after-raid
+        grep -q fishy after-raid
         touch $out
       '';
 
@@ -838,6 +841,7 @@ in
         { injectedFiles."codex/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-packages/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-docker/SKILL.md" = "override"; }
+        { injectedFiles."codex/skills/goblins-raids/SKILL.md" = "override"; }
         { injectedFiles."codex/skills/goblins-devshell/SKILL.md" = "override"; }
         { devShellInjectedFiles."codex/skills/goblins-devshell/SKILL.md" = "override"; }
       ];
@@ -852,6 +856,7 @@ in
         { injectedFiles."claude-code/.claude/skills/goblins-messaging/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-packages/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-docker/SKILL.md" = "override"; }
+        { injectedFiles."claude-code/.claude/skills/goblins-raids/SKILL.md" = "override"; }
         { injectedFiles."claude-code/.claude/skills/goblins-devshell/SKILL.md" = "override"; }
         { devShellInjectedFiles."claude-code/.claude/skills/goblins-devshell/SKILL.md" = "override"; }
       ];

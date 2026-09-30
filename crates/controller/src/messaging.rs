@@ -50,8 +50,14 @@ pub enum Work {
         params: Value,
         directory: Directory,
         view: crate::integration::View,
+        raids: Vec<crate::raid::Event>,
     },
-    Sync(Directory),
+    /// Session metadata and raid events queued since the last batch. An
+    /// accepted batch is never resent.
+    Sync {
+        directory: Directory,
+        raids: Vec<crate::raid::Event>,
+    },
     Delivery {
         actor: String,
         revision: u64,
@@ -108,129 +114,189 @@ impl Service {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(state.join(format!("communications-{instance}.jsonl")))?;
-        let mut mailbox = Mailbox::new(instance.into(), Limits::default()).map_err(|(_, e)| e)?;
+        let mailbox = Mailbox::new(instance.into(), Limits::default()).map_err(|(_, e)| e)?;
         let (commands, input) = mpsc::sync_channel(64);
         let (output, results) = mpsc::sync_channel(64);
         let worker = thread::Builder::new()
             .name("goblins-mailbox".into())
             .spawn(move || {
-                let mut journal = Journal {
-                    file,
-                    bytes: 0,
-                    events: vec![],
-                };
-                let mut integrations = crate::integration::Integrations::default();
-                let mut known: Directory = BTreeMap::new();
+                let mut worker = State::new(
+                    mailbox,
+                    Journal {
+                        file,
+                        bytes: 0,
+                        events: vec![],
+                    },
+                );
                 while let Ok(work) = input.recv() {
-                    if let Work::Delivery {
-                        actor,
-                        revision,
-                        submitted,
-                    } = work
-                    {
-                        let _ = mailbox.record(
-                            &actor,
-                            "integration.wake_result",
-                            json!({"terminal_revision":revision,"submitted":submitted}),
-                            now(),
-                            &mut journal,
-                        );
-                        continue;
-                    }
-                    let directory = match &work {
-                        Work::Call { directory, .. } | Work::Sync(directory) => directory,
-                        Work::Delivery { .. } => unreachable!(),
-                    };
-                    // Session metadata is supplied only by the host controller. Retain
-                    // ancestry for log filtering after its bounded UI records expire.
-                    let stopped: Vec<_> = known
-                        .values()
-                        .filter(|s| s.running && !directory.get(&s.id).is_some_and(|s| s.running))
-                        .map(|s| s.id.clone())
-                        .collect();
-                    for (id, session) in directory.iter().filter(|(id, _)| !known.contains_key(*id))
-                    {
-                        let _ = mailbox.record(
-                            id,
-                            "session.started",
-                            json!({"parent":session.parent,"path":session.path}),
-                            now(),
-                            &mut journal,
-                        );
-                    }
-                    known.extend(directory.iter().map(|(id, s)| (id.clone(), s.clone())));
-                    for session in known.values_mut() {
-                        if !directory.contains_key(&session.id) {
-                            session.running = false;
-                        }
-                    }
-                    for id in stopped {
-                        let _ =
-                            mailbox.record(&id, "session.exited", json!({}), now(), &mut journal);
-                        let _ = mailbox.stop_recipient(&id, now(), &mut journal);
-                    }
-                    let Work::Call {
-                        connection,
-                        id,
-                        actor,
-                        method,
-                        params,
-                        directory,
-                        view,
-                    } = work
-                    else {
-                        continue;
-                    };
-                    let result = match method.as_str() {
-                        m if m.starts_with("integration.") => integrations.call(
-                            &actor,
-                            m,
-                            params,
-                            (&view, now()),
-                            &mut mailbox,
-                            &mut journal,
-                        ),
-                        "messages.get" => parse::<Get>(params)
-                            .and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m))),
-                        "inbox.status" => parse::<Empty>(params).map(|_| {
-                            let mut s = mailbox.status(&actor);
-                            s["integration"] = integrations.status(&actor, now());
-                            s
-                        }),
-                        "communications.list" if actor == "host" => {
-                            parse::<List>(params).and_then(|p| page(&journal, &known, p))
-                        }
-                        _ => Mutation::parse(&method, params)
-                            .map_err(|e| (-32602, e))
-                            .and_then(|command| {
-                                mailbox.execute(&actor, command, &directory, now(), &mut journal)
-                            }),
-                    };
-                    if output
-                        .send(Completed {
-                            connection,
-                            id,
-                            result,
-                            actor,
-                        })
-                        .is_err()
+                    if let Some(completed) = worker.handle(work)
+                        && output.send(completed).is_err()
                     {
                         break;
                     }
                 }
-                for recipient in known
-                    .keys()
-                    .map(String::as_str)
-                    .chain(std::iter::once("host"))
-                {
-                    let _ = mailbox.stop_recipient(recipient, now(), &mut journal);
-                }
+                worker.finish();
             })?;
         Ok(Self {
             commands,
             results,
             worker: Some(worker),
         })
+    }
+    /// A service whose work nobody consumes, for controller tests that
+    /// inspect or fill the queue.
+    #[cfg(test)]
+    pub fn detached(capacity: usize) -> (Self, Receiver<Work>) {
+        let (commands, input) = mpsc::sync_channel(capacity);
+        let (_, results) = mpsc::sync_channel(1);
+        (
+            Self {
+                commands,
+                results,
+                worker: None,
+            },
+            input,
+        )
+    }
+}
+
+/// The audit sink plus the events it has accepted, for log pages.
+trait Log: Audit {
+    fn events(&self) -> &[Event];
+}
+impl Log for Journal {
+    fn events(&self) -> &[Event] {
+        &self.events
+    }
+}
+
+/// The worker's serialized state: the mailbox and its logged raid view, the
+/// integrations, and the sessions it has seen.
+struct State<L> {
+    mailbox: Mailbox,
+    journal: L,
+    integrations: crate::integration::Integrations,
+    known: Directory,
+}
+impl<L: Log> State<L> {
+    fn new(mailbox: Mailbox, journal: L) -> Self {
+        Self {
+            mailbox,
+            journal,
+            integrations: crate::integration::Integrations::default(),
+            known: BTreeMap::new(),
+        }
+    }
+
+    fn handle(&mut self, work: Work) -> Option<Completed> {
+        let (mailbox, journal, integrations, known) = (
+            &mut self.mailbox,
+            &mut self.journal,
+            &mut self.integrations,
+            &mut self.known,
+        );
+        if let Work::Delivery {
+            actor,
+            revision,
+            submitted,
+        } = work
+        {
+            let _ = mailbox.record(
+                &actor,
+                "integration.wake_result",
+                json!({"terminal_revision":revision,"submitted":submitted}),
+                now(),
+                journal,
+            );
+            return None;
+        }
+        let (directory, raids) = match &work {
+            Work::Call {
+                directory, raids, ..
+            }
+            | Work::Sync { directory, raids } => (directory, raids),
+            Work::Delivery { .. } => unreachable!(),
+        };
+        // Session metadata is supplied only by the host controller. Retain
+        // ancestry for log filtering after its bounded UI records expire.
+        let stopped: Vec<_> = known
+            .values()
+            .filter(|s| s.running && !directory.get(&s.id).is_some_and(|s| s.running))
+            .map(|s| s.id.clone())
+            .collect();
+        for (id, session) in directory.iter().filter(|(id, _)| !known.contains_key(*id)) {
+            let _ = mailbox.record(
+                id,
+                "session.started",
+                json!({"parent":session.parent,"path":session.path}),
+                now(),
+                journal,
+            );
+        }
+        known.extend(directory.iter().map(|(id, s)| (id.clone(), s.clone())));
+        for session in known.values_mut() {
+            if !directory.contains_key(&session.id) {
+                session.running = false;
+            }
+        }
+        // Membership is recorded before the call it arrived with, so a
+        // message is always logged after the membership that allowed it.
+        mailbox.record_raid(raids, now(), journal);
+        for id in stopped {
+            let _ = mailbox.record(&id, "session.exited", json!({}), now(), journal);
+            let _ = mailbox.stop_recipient(&id, now(), journal);
+        }
+        let Work::Call {
+            connection,
+            id,
+            actor,
+            method,
+            params,
+            directory,
+            view,
+            ..
+        } = work
+        else {
+            return None;
+        };
+        let result = match method.as_str() {
+            m if m.starts_with("integration.") => {
+                integrations.call(&actor, m, params, (&view, now()), mailbox, journal)
+            }
+            "messages.get" => {
+                parse::<Get>(params).and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m)))
+            }
+            "inbox.status" => parse::<Empty>(params).map(|_| {
+                let mut s = mailbox.status(&actor);
+                s["integration"] = integrations.status(&actor, now());
+                s
+            }),
+            "communications.list" if actor == "host" => {
+                parse::<List>(params).and_then(|p| page(journal.events(), known, p))
+            }
+            _ => Mutation::parse(&method, params)
+                .map_err(|e| (-32602, e))
+                .and_then(|command| mailbox.execute(&actor, command, &directory, now(), journal)),
+        };
+        Some(Completed {
+            connection,
+            id,
+            result,
+            actor,
+        })
+    }
+
+    fn finish(&mut self) {
+        for recipient in self
+            .known
+            .keys()
+            .map(String::as_str)
+            .chain(std::iter::once("host"))
+        {
+            let _ = self
+                .mailbox
+                .stop_recipient(recipient, now(), &mut self.journal);
+        }
     }
 }
 
@@ -248,7 +314,7 @@ impl Drop for Service {
     }
 }
 
-fn page(journal: &Journal, directory: &Directory, p: List) -> mailbox::Result<Value> {
+fn page(journal: &[Event], directory: &Directory, p: List) -> mailbox::Result<Value> {
     if p.limit == 0 || p.limit > 100 {
         return Err((-32602, "limit must be 1..100".into()));
     }
@@ -291,7 +357,7 @@ fn page(journal: &Journal, directory: &Directory, p: List) -> mailbox::Result<Va
     let mut events = vec![];
     let mut bytes = 0;
     let mut cursor = p.after;
-    for event in journal.events.iter().filter(|e| e.sequence > p.after) {
+    for event in journal.iter().filter(|e| e.sequence > p.after) {
         if contains(&event.actor) || event.sessions.iter().any(|id| contains(id)) {
             let size = serde_json::to_vec(event)
                 .map_err(|e| (-32009, e.to_string()))?
@@ -305,7 +371,7 @@ fn page(journal: &Journal, directory: &Directory, p: List) -> mailbox::Result<Va
         cursor = event.sequence;
     }
     Ok(json!({"events":events,"cursor":cursor,"session":scope,
-        "latest":journal.events.last().map_or(0,|e|e.sequence)}))
+        "latest":journal.last().map_or(0,|e|e.sequence)}))
 }
 
 /// Offline inspection uses the same cursor/subtree filter as the live endpoint.
@@ -354,16 +420,11 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
                 .into(),
         );
     }
-    let journal = Journal {
-        file,
-        bytes: bytes.len(),
-        events,
-    };
     let mut after = 0;
     let mut result = Vec::new();
     loop {
         let p = page(
-            &journal,
+            &events,
             &known,
             List {
                 after,
@@ -379,4 +440,206 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raid::Raids;
+
+    const INSTANCE: &str = "0123456789abcdef0123456789abcdef";
+
+    /// Accepts everything unless told to fail raid events.
+    #[derive(Default)]
+    struct Faulty {
+        events: Vec<Event>,
+        raid: Option<fn() -> AuditError>,
+    }
+    impl Audit for Faulty {
+        fn append(&mut self, event: &Event, _: usize) -> std::result::Result<(), AuditError> {
+            if let Some(error) = self.raid.filter(|_| event.kind.starts_with("raid.")) {
+                return Err(error());
+            }
+            self.events.push(event.clone());
+            Ok(())
+        }
+    }
+    impl Log for Faulty {
+        fn events(&self) -> &[Event] {
+            &self.events
+        }
+    }
+
+    fn state() -> State<Faulty> {
+        State::new(
+            Mailbox::new(INSTANCE.into(), Limits::default()).unwrap(),
+            Faulty::default(),
+        )
+    }
+    fn directory() -> Directory {
+        [
+            ("a", None, "chief"),
+            ("b", Some("a"), "chief/scout"),
+            ("x", None, "other"),
+        ]
+        .into_iter()
+        .map(|(id, parent, path)| {
+            (
+                id.to_string(),
+                mailbox::Session {
+                    id: id.into(),
+                    parent: parent.map(Into::into),
+                    path: path.into(),
+                    running: true,
+                },
+            )
+        })
+        .collect()
+    }
+    fn call(actor: &str, method: &str, params: Value, raids: Vec<crate::raid::Event>) -> Work {
+        Work::Call {
+            connection: 1,
+            id: json!(1),
+            actor: actor.into(),
+            method: method.into(),
+            params,
+            directory: directory(),
+            view: Default::default(),
+            raids,
+        }
+    }
+    fn send(actor: &str, to: &str, key: &str, raids: Vec<crate::raid::Event>) -> Work {
+        call(
+            actor,
+            "messages.send",
+            json!({"key":key,"to":to,"body":"hello"}),
+            raids,
+        )
+    }
+    fn invite(raids: &mut Raids, members: &[&str]) -> Vec<crate::raid::Event> {
+        let members: Vec<_> = members.iter().map(|m| m.to_string()).collect();
+        raids
+            .invite("r1".into(), "review", &members, "host")
+            .unwrap()
+    }
+
+    #[test]
+    fn a_batch_is_recorded_once_in_order_before_the_call_it_arrived_with() {
+        let mut w = state();
+        let mut raids = Raids::default();
+        let batch = invite(&mut raids, &["b", "x"]);
+        let done = w.handle(send("x", "chief/scout", "k", batch)).unwrap();
+        assert_eq!(done.result.unwrap()["recipient"], "b");
+        let kinds: Vec<_> = w
+            .journal
+            .events
+            .iter()
+            .map(|e| e.kind.as_str())
+            .filter(|k| !k.starts_with("session."))
+            .collect();
+        assert_eq!(kinds, ["raid.created", "raid.joined", "message.accepted"]);
+        let accepted = w.journal.events.last().unwrap();
+        assert_eq!(accepted.data["change"]["route"], "raid");
+        // A later sync without new events records nothing again.
+        let count = w.journal.events.len();
+        assert!(
+            w.handle(Work::Sync {
+                directory: directory(),
+                raids: vec![]
+            })
+            .is_none()
+        );
+        assert_eq!(w.journal.events.len(), count);
+        // Events arriving on a sync are applied before the next call.
+        let left = raids.remove("x", crate::raid::Reason::Stopped);
+        w.handle(Work::Sync {
+            directory: directory(),
+            raids: left,
+        });
+        assert_eq!(w.journal.events.last().unwrap().kind, "raid.left");
+        let refused = w.handle(send("x", "chief/scout", "late", vec![])).unwrap();
+        assert_eq!(refused.result.unwrap_err().0, -32004);
+    }
+
+    #[test]
+    fn a_join_that_fails_to_write_authorizes_no_send() {
+        let mut w = state();
+        w.journal.raid = Some(|| AuditError::Unavailable);
+        let batch = invite(&mut Raids::default(), &["b", "x"]);
+        let done = w.handle(send("x", "chief/scout", "k", batch)).unwrap();
+        // A write failure freezes messaging, tree routes included.
+        assert_eq!(
+            done.result.unwrap_err(),
+            (-32009, "mailbox audit unavailable".into())
+        );
+        let done = w.handle(send("a", "scout", "tree", vec![])).unwrap();
+        assert!(done.result.is_err());
+    }
+
+    #[test]
+    fn capacity_failure_closes_raid_routes_but_not_tree_routes() {
+        let mut w = state();
+        let mut raids = Raids::default();
+        let batch = invite(&mut raids, &["x", "b"]);
+        w.handle(send("x", "chief/scout", "first", batch))
+            .unwrap()
+            .result
+            .unwrap();
+        w.journal.raid = Some(|| AuditError::Capacity);
+        let role = raids.set_role("x", "builder", "x").unwrap();
+        let done = w.handle(send("x", "chief/scout", "second", role)).unwrap();
+        assert_eq!(
+            done.result.unwrap_err(),
+            (-32009, "raid membership could not be recorded".into())
+        );
+        assert_eq!(w.mailbox.raids()["x"].role, None);
+        let status = w
+            .handle(call("x", "inbox.status", json!({}), vec![]))
+            .unwrap();
+        assert_eq!(status.result.unwrap()["raid_audit_failed"], true);
+        let tree = w.handle(send("a", "scout", "tree", vec![])).unwrap();
+        assert_eq!(tree.result.unwrap()["recipient"], "b");
+        // Removals are still applied to the logged view.
+        let left = raids.remove("b", crate::raid::Reason::Left);
+        w.handle(Work::Sync {
+            directory: directory(),
+            raids: left,
+        });
+        assert!(!w.mailbox.raids().contains_key("b"));
+        assert!(w.mailbox.raids().contains_key("x"));
+    }
+
+    #[test]
+    fn filtered_log_pages_show_raid_events_to_affected_sessions() {
+        let mut w = state();
+        let mut raids = Raids::default();
+        let mut batch = invite(&mut raids, &["a", "x"]);
+        batch.extend(raids.destroy("review", "host").unwrap());
+        w.handle(Work::Sync {
+            directory: directory(),
+            raids: batch,
+        });
+        for (session, expected) in [
+            ("x", vec!["raid.joined", "raid.dissolved"]),
+            ("chief", vec!["raid.created", "raid.dissolved"]),
+        ] {
+            let done = w
+                .handle(call(
+                    "host",
+                    "communications.list",
+                    json!({"session":session}),
+                    vec![],
+                ))
+                .unwrap();
+            let page = done.result.unwrap();
+            let kinds: Vec<_> = page["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|e| e["kind"].as_str().filter(|k| k.starts_with("raid.")))
+                .map(String::from)
+                .collect();
+            assert_eq!(kinds, expected, "{session}");
+        }
+    }
 }

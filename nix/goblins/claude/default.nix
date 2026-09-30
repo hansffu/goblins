@@ -10,6 +10,7 @@ let
     "claude-code/.claude/skills/goblins-messaging/SKILL.md"
     "claude-code/.claude/skills/goblins-packages/SKILL.md"
     "claude-code/.claude/skills/goblins-docker/SKILL.md"
+    "claude-code/.claude/skills/goblins-raids/SKILL.md"
     "claude-code/.claude/skills/goblins-devshell/SKILL.md"
   ];
   runtimeDirectory =
@@ -48,6 +49,7 @@ in
               goblins-messaging = "on";
               goblins-packages = "on";
               goblins-docker = "on";
+              goblins-raids = "on";
               # Mounted only in dev shell sandboxes.
               goblins-devshell = "on";
             };
@@ -61,6 +63,8 @@ in
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
     "claude-code/.claude/skills/goblins-docker/SKILL.md" =
       builtins.readFile ../../../skills/goblins-docker/SKILL.md;
+    "claude-code/.claude/skills/goblins-raids/SKILL.md" =
+      builtins.readFile ../../../skills/goblins-raids/SKILL.md;
   };
   devShellInjectedFiles = {
     "claude-code/.claude/skills/goblins-devshell/SKILL.md" =

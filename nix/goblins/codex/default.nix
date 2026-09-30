@@ -9,6 +9,7 @@ let
     "codex/skills/goblins-messaging/SKILL.md"
     "codex/skills/goblins-packages/SKILL.md"
     "codex/skills/goblins-docker/SKILL.md"
+    "codex/skills/goblins-raids/SKILL.md"
     "codex/skills/goblins-devshell/SKILL.md"
   ];
   runtimeDirectory =
@@ -48,6 +49,7 @@ in
     "codex/skills/goblins-packages/SKILL.md" =
       builtins.readFile ../../../skills/goblins-packages/SKILL.md;
     "codex/skills/goblins-docker/SKILL.md" = builtins.readFile ../../../skills/goblins-docker/SKILL.md;
+    "codex/skills/goblins-raids/SKILL.md" = builtins.readFile ../../../skills/goblins-raids/SKILL.md;
   };
   devShellInjectedFiles = {
     "codex/skills/goblins-devshell/SKILL.md" =

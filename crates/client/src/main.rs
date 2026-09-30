@@ -96,10 +96,12 @@ fn run() -> Result<i32, String> {
                 return Ok(0);
             }
             cli::Command::Complete { words } => return cli::complete(words),
+            cli::Command::Raid { command } => return raid(command),
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
+                let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nScope: {}\nDocker: {}\nDev shell: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nScope: {}\nDocker: {}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -120,6 +122,17 @@ fn run() -> Result<i32, String> {
                         "disabled"
                     },
                     record["dev_shell"].as_str().unwrap_or("none"),
+                    match raid["name"].as_str() {
+                        Some(name) => format!(
+                            "{name} (role: {}, owner: {})",
+                            raid["role"].as_str().unwrap_or("none"),
+                            raid["owner_path"]
+                                .as_str()
+                                .or(raid["owner"].as_str())
+                                .unwrap_or("unknown")
+                        ),
+                        None => "none".into(),
+                    },
                     record["id"].as_str().unwrap_or("unknown")
                 );
                 return Ok(0);
@@ -134,15 +147,18 @@ fn run() -> Result<i32, String> {
                 name,
                 parent,
                 detatched,
+                inherit_raid,
             } => {
                 if !detatched {
                     require_terminal()?;
                 }
-                let launch = call(
-                    "sessions.start",
-                    json!({"key":random_key()?,
-                    "name":config,"agent_name":name,"parent":parent,"detached":detatched}),
-                )?;
+                let mut params = json!({"key":random_key()?,
+                    "name":config,"agent_name":name,"parent":parent,"detached":detatched});
+                // Omitted when unset, so an older daemon still accepts the launch.
+                if inherit_raid {
+                    params["inherit_raid"] = json!(true);
+                }
+                let launch = call("sessions.start", params)?;
                 if detatched {
                     println!("{launch}");
                     return Ok(0);
@@ -179,6 +195,23 @@ fn run() -> Result<i32, String> {
     }
     let (package, reason) = parse_args(legacy, &args)?;
     request_permission(json!({"kind":"package","package":package,"reason":reason}))
+}
+fn raid(command: cli::RaidCommand) -> Result<i32, String> {
+    use cli::RaidCommand::*;
+    let (method, params, json) = match command {
+        Create { raid } => ("raids.create", json!({"raid":raid}), true),
+        Invite { children } => ("raids.invite", json!({"sessions":children}), true),
+        Leave => ("raids.leave", json!({}), true),
+        Members { json } => ("raids.members", json!({}), json),
+        SetRole { role } => ("raids.set_role", json!({"role":role}), true),
+    };
+    let result = call(method, params)?;
+    if json {
+        println!("{result}");
+    } else {
+        print!("{}", goblins_protocol::raid_members(&result));
+    }
+    Ok(0)
 }
 fn request_permission(params: serde_json::Value) -> Result<i32, String> {
     Ok(request(params)?.0)
