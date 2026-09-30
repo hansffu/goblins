@@ -617,6 +617,12 @@ in
         reviewer = member "reviewer" {
           allowedChildren = [ ];
           rwDirs = [ "$GOBLINS_TEST_ROOT/reviewer" ];
+          # Only the reviewer's closure has cowsay, which shows that the
+          # branch retained it rather than the root's own roots.
+          allowedPackages = [
+            pkgs.coreutils
+            pkgs.cowsay
+          ];
         };
         shell = member "shell" { allowedChildren = [ "reviewer" ]; };
         unlisted = member "unlisted" { };

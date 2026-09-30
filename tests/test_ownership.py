@@ -583,6 +583,41 @@ class AllowedChildrenTests(ChildrenFixture):
         result = cli("run", "reviewer", "--detached")
         self.assertIn("unknown configuration 'reviewer'", result.stderr)
 
+    def test_retained_roots_cover_a_permitted_configuration_after_a_rebuild(self):
+        manifest = json.loads(Path(self.d.manifest).read_text())
+        root = self.start_root()
+        # A rebuild no longer declares reviewer, so only the branch's roots
+        # keep its store paths from garbage collection.
+        updated = build(Path(self.builds.name), "children-goblins-updated")
+        runtime = next(word for word in updated.read_text().split() if word.endswith("-goblins-config.json"))
+        self.assertNotIn("reviewer", json.loads(Path(runtime).read_text())["goblins"])
+        top = lambda path: str(Path(*Path(path).parts[:4]))
+
+        def needed(name):
+            config = manifest["goblins"][name]
+            spec = json.loads(Path(config["build_spec"]).read_text())
+            return {
+                "executable": {top(spec["sandboxed_binary"])},
+                "closure": set(Path(spec["closure_paths_file"]).read_text().split()),
+                "helper": {top(config["helper"])},
+                "client": {top(config["client_package"])},
+                "injected files": {top(p) for p in [*config["sandbox_etc"].values(),
+                                                    *config["dev_shell_sandbox_etc"].values()]},
+            }
+        reviewer = needed("reviewer")
+        self.assertTrue(reviewer["closure"] and reviewer["injected files"])
+        # The root's own roots cover what the two configurations share, so
+        # paths only the reviewer needs are what show the branch retained it.
+        own = set().union(*needed("coordinator").values())
+        self.assertTrue(reviewer["closure"] - own and reviewer["injected files"] - own)
+        roots = self.d.state / root["session"] / "resources/roots"
+        retained = set(command(["nix-store", "--query", "--requisites",
+                                *(os.readlink(link) for link in roots.iterdir())]).split())
+        for kind, paths in reviewer.items():
+            self.assertLessEqual(paths, retained, f"{kind} not retained by the branch's roots")
+        # The retained configuration still launches from the parent's snapshot.
+        self.assertEqual(self.d.get(self.launch(root, "reviewer")["session"])["name"], "reviewer")
+
     def test_daemon_rejects_an_allowed_children_list_over_the_bound(self):
         manifest = self.root / "oversized.json"
         configuration = json.loads(Path(self.d.manifest).read_text())
