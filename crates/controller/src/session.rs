@@ -124,9 +124,19 @@ pub(crate) struct Inheritance {
     // Weak: a stopped parent's record must not keep its scope alive.
     scope: Weak<crate::scope::Shared>,
     docker: Arc<AtomicBool>,
+    /// This session's configuration key and the root's branch snapshot.
+    configuration: String,
+    branch: Arc<crate::branch::Branch>,
     _owner: Arc<SessionDirectory>,
 }
 impl Inheritance {
+    /// The configurations this session may launch as children.
+    pub(crate) fn allowed_children(&self) -> &[String] {
+        self.branch.allowed_children(&self.configuration)
+    }
+    pub(crate) fn permit(&self, child: &str) -> std::result::Result<(), String> {
+        self.branch.permit(&self.configuration, child)
+    }
     pub(crate) fn scope_name(&self) -> Option<&str> {
         self.launch.scope.as_ref().map(|s| s.name.as_str())
     }
@@ -147,6 +157,35 @@ impl Inheritance {
     }
     pub(crate) fn initially_available(&self, path: &Path) -> bool {
         self.launch.initial_packages.iter().any(|p| p == path)
+    }
+}
+#[cfg(test)]
+impl Inheritance {
+    /// A running session's capability without a sandbox, for controller tests.
+    pub(crate) fn fixture(configuration: &str, branch: Arc<crate::branch::Branch>) -> Self {
+        let owner = Arc::new(SessionDirectory(unix::temp_directory().unwrap()));
+        let launch: Launch = serde_json::from_value(serde_json::json!({
+            "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
+            "bwrap": "/unused", "flake": "unused", "client_package": "/unused",
+        }))
+        .unwrap();
+        Self {
+            launch: Arc::new(launch),
+            binds: Arc::new(
+                crate::binds::Declarations::default()
+                    .plan(&[], &Cancel::default())
+                    .unwrap(),
+            ),
+            workspace: Arc::new(SharedWorkspace {
+                file: File::open(&owner.0).unwrap(),
+                _owner: owner.clone(),
+            }),
+            scope: Weak::new(),
+            docker: Arc::default(),
+            configuration: configuration.into(),
+            branch,
+            _owner: owner,
+        }
     }
 }
 pub struct Session {
@@ -173,8 +212,13 @@ pub struct Session {
     cancel: Cancellation,
     directory_owner: Arc<SessionDirectory>,
     binds: Option<Arc<crate::binds::Plan>>,
+    // A different-configuration child opens its own binds at start, sharing
+    // only its parent's pinned working directory.
+    parent_binds: Option<Arc<crate::binds::Plan>>,
     workspace: Option<Arc<SharedWorkspace>>,
     candidate: Option<crate::devshell::Candidate>,
+    pub(crate) configuration: String,
+    pub(crate) branch: Arc<crate::branch::Branch>,
 }
 impl Session {
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
@@ -215,8 +259,11 @@ impl Session {
             helper_output: None,
             cancel,
             binds: None,
+            parent_binds: None,
             workspace: None,
             candidate: None,
+            configuration: String::new(),
+            branch: Arc::default(),
         };
         for name in ["store", "packages", "roots", "workspace"] {
             fs::create_dir(session.directory.join(name))?;
@@ -241,9 +288,13 @@ impl Session {
     }
     pub(crate) fn child(
         inherited: Inheritance,
+        configuration: &str,
         cancel: Cancel,
         directory: PathBuf,
     ) -> Result<Self> {
+        if configuration != inherited.configuration {
+            return Self::child_configuration(inherited, configuration, cancel, directory);
+        }
         let mut launch = (*inherited.launch).clone();
         launch.cwd = None;
         let mut session = Self::new_in(launch, None, cancel, directory)?;
@@ -272,6 +323,52 @@ impl Session {
         }
         session.binds = Some(inherited.binds);
         session.workspace = Some(inherited.workspace);
+        session.configuration = inherited.configuration;
+        session.branch = inherited.branch;
+        Ok(session)
+    }
+    /// A child running another configuration from the branch snapshot. It
+    /// shares the parent's workspace, scope, working directory, dev shell and
+    /// Docker attachment; everything else comes from its own definition.
+    fn child_configuration(
+        inherited: Inheritance,
+        configuration: &str,
+        cancel: Cancel,
+        directory: PathBuf,
+    ) -> Result<Self> {
+        let mut launch = inherited.branch.configuration(configuration)?.launch()?;
+        if launch.initial_packages.len() > 128 {
+            return Err("initial package limit is 128".into());
+        }
+        launch.protected_paths = inherited.launch.protected_paths.clone();
+        let mut session = Self::new_in(launch, None, cancel, directory)?;
+        session.launch.cwd = inherited.launch.cwd.clone();
+        session.launch.dev_shell = inherited.launch.dev_shell.clone();
+        if session.launch.scope.is_some() {
+            let scope = inherited
+                .scope
+                .upgrade()
+                .ok_or("the parent's scope has stopped")?;
+            scope.compatible(&session.launch)?;
+            session.scope = Some(scope);
+        }
+        let enabled = inherited.docker.load(Ordering::SeqCst)
+            || session.launch.docker.as_ref().is_some_and(|d| d.enabled);
+        session.docker_inherit_enabled = Some(enabled);
+        if enabled
+            && let Some(client) = session
+                .launch
+                .docker
+                .as_ref()
+                .and_then(|d| d.client.clone())
+            && !session.launch.initial_packages.contains(&client)
+        {
+            session.launch.initial_packages.push(client);
+        }
+        session.parent_binds = Some(inherited.binds);
+        session.workspace = Some(inherited.workspace);
+        session.configuration = configuration.to_string();
+        session.branch = inherited.branch;
         Ok(session)
     }
     pub(crate) fn inheritance(&self) -> Inheritance {
@@ -281,6 +378,8 @@ impl Session {
             workspace: self.workspace.as_ref().unwrap().clone(),
             scope: self.scope.as_ref().map(Arc::downgrade).unwrap_or_default(),
             docker: self.docker_attached.clone(),
+            configuration: self.configuration.clone(),
+            branch: self.branch.clone(),
             _owner: self.directory_owner.clone(),
         }
     }
@@ -361,7 +460,9 @@ impl Session {
         private.extend(etc.iter().map(|(_, destination)| destination.clone()));
         if self.binds.is_none() {
             let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
-            if let Some(cwd) = &self.launch.cwd {
+            if let Some(parent) = &self.parent_binds {
+                binds.share_working_directory(parent)?;
+            } else if let Some(cwd) = &self.launch.cwd {
                 binds.add_working_directory(cwd, &private)?;
             }
             self.binds = Some(Arc::new(binds));
@@ -1153,8 +1254,7 @@ impl Session {
             .binds
             .as_ref()
             .unwrap()
-            .mounts
-            .iter()
+            .mounts()
             .map(crate::binds::Mount::docker_grant)
             .collect::<std::io::Result<_>>()?;
         // With an explicit cwd, /workspace is only an unused scratch alias.

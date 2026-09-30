@@ -40,12 +40,20 @@ impl Mount {
 }
 pub struct Plan {
     pub home: PathBuf,
-    pub mounts: Vec<Mount>,
+    /// Kept apart from the declared mounts so a child with another
+    /// configuration can share its parent's pinned directory.
+    working_directory: Option<Mount>,
+    mounts: Vec<Mount>,
     pub store_targets: BTreeMap<PathBuf, PathBuf>,
 }
 impl Plan {
+    /// Every mount in bind order: the working directory first, so declared
+    /// read-only paths beneath it still take precedence.
+    pub(crate) fn mounts(&self) -> impl Iterator<Item = &Mount> {
+        self.working_directory.iter().chain(&self.mounts)
+    }
     pub(crate) fn destinations(&self) -> impl Iterator<Item = &Path> {
-        self.mounts.iter().map(|m| m.destination.as_path())
+        self.mounts().map(|m| m.destination.as_path())
     }
 }
 
@@ -135,6 +143,7 @@ impl Declarations {
         validate(&home, &[])?;
         let mut plan = Plan {
             home,
+            working_directory: None,
             mounts: vec![],
             store_targets: BTreeMap::new(),
         };
@@ -312,27 +321,40 @@ impl Plan {
         // A directory bind includes descendants. Mount it before explicit binds
         // so configured read-only paths still take precedence. Pin the source
         // using the same descriptor mechanism as other startup grants.
-        self.mounts.insert(
-            0,
-            Mount {
-                source_fd,
-                source,
-                destination: cwd.to_path_buf(),
-                readonly: false,
-            },
-        );
+        self.working_directory = Some(Mount {
+            source_fd,
+            source,
+            destination: cwd.to_path_buf(),
+            readonly: false,
+        });
+        Ok(())
+    }
+    /// Use the parent's pinned working directory: the exact object the root
+    /// launch opened, not whatever its pathname names now.
+    pub(crate) fn share_working_directory(&mut self, parent: &Plan) -> Result<()> {
+        self.working_directory = parent
+            .working_directory
+            .as_ref()
+            .map(|m| -> Result<Mount> {
+                Ok(Mount {
+                    source_fd: m.source_fd.try_clone()?,
+                    source: m.source.clone(),
+                    destination: m.destination.clone(),
+                    readonly: m.readonly,
+                })
+            })
+            .transpose()?;
         Ok(())
     }
     pub fn source_fds(&self) -> impl Iterator<Item = RawFd> + '_ {
-        self.mounts.iter().map(|m| m.source_fd.as_raw_fd())
+        self.mounts().map(|m| m.source_fd.as_raw_fd())
     }
     pub fn store_roots(&self) -> Result<BTreeSet<PathBuf>> {
         self.store_targets
             .iter()
             .flat_map(|(a, b)| [a, b])
             .chain(
-                self.mounts
-                    .iter()
+                self.mounts()
                     .map(|m| &m.source)
                     .filter(|p| p.starts_with("/nix/store")),
             )
@@ -364,7 +386,7 @@ impl Plan {
                 destination.display().to_string(),
             ]);
         }
-        for mount in &self.mounts {
+        for mount in self.mounts() {
             args.extend([
                 if mount.readonly {
                     "--ro-bind-fd"
@@ -427,5 +449,55 @@ mod tests {
         }
         assert!(validate(Path::new("/tmp"), &["/tmp/session-private".into()]).is_err());
         assert!(validate(Path::new("/home/test/.config/fish"), &[]).is_ok());
+    }
+    #[test]
+    fn shared_working_directory_stays_first_and_pinned() {
+        let root = unix::temp_directory().unwrap();
+        let (work, declared) = (root.join("work"), root.join("declared"));
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&declared).unwrap();
+        let cancel = Cancellation::default();
+        let mut parent = Declarations::default().plan(&[], &cancel).unwrap();
+        parent.add_working_directory(&work, &[]).unwrap();
+        // The child's own declared bind, opened by the child's launch.
+        let mut child = Declarations {
+            ro_dirs: vec![declared.display().to_string()],
+            ..Default::default()
+        }
+        .plan(&[], &cancel)
+        .unwrap();
+        // Replace the pathname: the child must get the parent's object.
+        let moved = root.join("moved");
+        fs::rename(&work, &moved).unwrap();
+        fs::create_dir(&work).unwrap();
+        child.share_working_directory(&parent).unwrap();
+        assert_eq!(
+            child.destinations().collect::<Vec<_>>(),
+            [&*work, &*declared]
+        );
+        let fds: Vec<_> = child.source_fds().collect();
+        assert_eq!(fds.len(), 2);
+        assert_ne!(fds[0], parent.source_fds().next().unwrap());
+        assert_eq!(
+            fs::read_link(format!("/proc/self/fd/{}", fds[0])).unwrap(),
+            moved
+        );
+        let mut args = vec![];
+        child
+            .append_args(&mut args, &root, &BTreeSet::new())
+            .unwrap();
+        assert_eq!(
+            args,
+            [
+                "--bind-fd".to_string(),
+                fds[0].to_string(),
+                work.display().to_string(),
+                "--ro-bind-fd".into(),
+                fds[1].to_string(),
+                declared.display().to_string(),
+            ]
+        );
+        drop((parent, child));
+        fs::remove_dir_all(root).unwrap();
     }
 }

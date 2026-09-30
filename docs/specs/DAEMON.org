@@ -773,7 +773,8 @@ daemon-wide name-allocation rules.
   =parent= creates a root child. A selected parent must be running. Children use
   its loaded configuration and opened filesystem grants, including its shared
   workspace, regardless of which host manifest the caller supplies. The
-  configuration key must match the parent's key.
+  configuration key must be in the selected parent's =allowed_children=; see
+  [[*Allowed child configurations][allowed child configurations]].
 - Sandbox =initialize= advertises =subtree-control= and reports only the caller's
   configuration key in =configuration=. Its socket selects its identity.
   Sandbox =sessions.start {key,name,agent_name?,parent?,detached?}= creates a child, returning
@@ -816,7 +817,7 @@ daemon-wide name-allocation rules.
   attachments. =sessions.resize {session,rows,cols}= is also descendant-scoped.
   Sandbox =initialize= advertises =subtree-terminal= and =sandbox-status=.
 - Sandbox =sessions.status {}= returns the endpoint owner's =id=, =agent_name=,
-  configuration key =name= and =state=. It accepts no target. CLI =status= prints
+  configuration key =name=, =state= and =allowed_children=. It accepts no target. CLI =status= prints
   this identity. The existing sandbox self-detach operation remains self-scoped.
   Server control, host approvals and subscriptions remain unavailable.
 
@@ -824,6 +825,41 @@ Children retain host-owned shared mount capabilities rather than reopening paths
 In particular a renamed/replaced workspace source does not widen their access.
 Workspace resource ownership is retained until the last dependent session stops;
 child startup does not copy a parent's snapshot or inherit its package mounts.
+
+** Allowed child configurations
+
+- Top-level manifest configurations carry =allowed_children=, a list of at most
+  64 configuration keys of at most 64 characters (checked when the daemon reads
+  the manifest). Nix always writes it, resolving an omitted =allowedChildren= to
+  the configuration's own key; scope variants omit it. A configuration without
+  it (an older build) permits only itself. Manifest =api= stays 2 and
+  =helper_api= 5.
+- A root launch snapshots its configuration and every configuration reachable
+  through =allowed_children=, each resolved for the root's actual scope: a
+  scopeless root requires a configuration without a default =scope=, and a
+  root in scope =S= requires =S= as the configuration's =scope= or in its
+  =allowed_scopes= (its =scopes.S= variant is used; a different default scope
+  is ignored). Resolution errors are kept per configuration. The top-level
+  store paths of every configuration a different configuration lists (live
+  build spec, helper, client, =/etc= sources, Docker packages) are GC-rooted in
+  the root session's directory. Nothing else is opened at root launch. The
+  whole branch shares this snapshot.
+- =sessions.start= with a parent, on either endpoint, requires the key in the
+  /selected parent's/ list, returning -32602 before name allocation otherwise:
+  "configuration 'X' is not an allowed child of 'Y'; allowed: ...",
+  "configuration 'Y' permits no children", or "configuration 'X' cannot be
+  launched here: REASON" for a permitted configuration the snapshot cannot
+  run. The child's record =name= is its key; =configuration= stays the parent's
+  manifest path.
+- A child with its parent's key reuses the parent's launch and opened binds as
+  before. A child with another key builds its launch from the snapshot and
+  opens that configuration's declared binds when it starts, adding the
+  parent's pinned working-directory descriptor first. It shares the parent's
+  workspace, scope, current dev shell generation and Docker attachment (also
+  attached when its own configuration enables Docker); ancestor package
+  approvals apply on request.
+- Host and sandbox =initialize= advertise =allowed-children=. The host
+  =SessionRecord= does not carry the list.
 
 ** Stop attribution
 

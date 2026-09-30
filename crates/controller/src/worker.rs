@@ -111,7 +111,11 @@ pub(super) enum Source {
         cwd: Option<PathBuf>,
         state: PathBuf,
     },
-    Child(Inheritance),
+    /// A child of a running session, using a configuration from its branch.
+    Child {
+        inherited: Inheritance,
+        configuration: String,
+    },
 }
 impl Worker {
     pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
@@ -126,9 +130,10 @@ impl Worker {
                 token.check()?;
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
                 let mut session = match source {
-                    Source::Child(inherited) => {
-                        Session::child(inherited, token.clone(), directory)?
-                    }
+                    Source::Child {
+                        inherited,
+                        configuration,
+                    } => Session::child(inherited, &configuration, token.clone(), directory)?,
                     Source::Host {
                         configuration,
                         name,
@@ -138,8 +143,8 @@ impl Worker {
                         cwd,
                         state,
                     } => {
-                        let config =
-                            Manifest::read(&configuration)?.select(&name, scope.as_deref())?;
+                        let (config, mut branch) =
+                            Manifest::read(&configuration)?.branch(&name, scope.as_deref())?;
                         token.check()?;
                         let mut launch = config.launch()?;
                         launch.cwd = cwd;
@@ -153,6 +158,12 @@ impl Worker {
                             token.clone(),
                             directory,
                         )?;
+                        // Children never reopen the manifest; retain what the
+                        // branch may launch against rebuilds and GC.
+                        branch.prepare(&session);
+                        token.check()?;
+                        session.configuration = name;
+                        session.branch = std::sync::Arc::new(branch);
                         if let Some(reference) = dev_shell {
                             let cwd = session.launch.cwd.clone().ok_or(
                                 "a dev shell needs a host working directory containing the flake",

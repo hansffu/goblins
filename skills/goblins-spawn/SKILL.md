@@ -16,17 +16,17 @@ Messaging or requesting tools alone does not require a separate goblin.
 For example, a task spanning several repositories may benefit from an
 architect and one developer goblin per application. Keep these roles available
 across implementation, review and follow-up decisions. Assign clear repository
-and file ownership: children share the workspace and inherit the parent's
-configuration and access, so all needed repositories must already be accessible.
-A child is not a separate checkout and gains no additional host access.
+and file ownership: children share the workspace, so all needed repositories
+must already be accessible. A child is not a separate checkout.
 
 ## Create and coordinate
 
-Read `goblins status` to get the current configuration name, then run
-`goblins run CONFIG --name CHILD --detached`, substituting that configuration
-and a child name. Children inherit the loaded configuration and share the
-parent's workspace. `--detached` leaves the child running without attaching its
-terminal. Use the returned identity; a `starting` response acknowledges the
+Pick a configuration from the allowed children that `goblins status` lists,
+then run `goblins run CONFIG --name CHILD --detached`, substituting that
+configuration and a child name. A child shares the parent's workspace, scope and
+dev shell but runs its own configuration and access (for example another agent
+type); it gains no access for the parent. `--detached` leaves the child running
+without attaching its terminal. Use the returned identity; a `starting` response acknowledges the
 launch, not task execution.
 
 Read [goblins-messaging](../goblins-messaging/SKILL.md) to send the child's task

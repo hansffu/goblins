@@ -810,14 +810,8 @@ impl Controller {
             if a.record.state != "running" || a.worker.is_none() {
                 return Err(conflict());
             }
-            if p.name != a.record.name {
-                return Err((
-                    -32602,
-                    "children must use their parent's configuration".into(),
-                ));
-            }
-            // A host --parent launch follows the same restriction, using the
-            // parent's already selected config rather than a newer manifest.
+            // A host --parent launch uses the parent's branch snapshot rather
+            // than a newer manifest.
             p.configuration = a.record.configuration.clone();
             p.cwd = None;
             Some(a.inheritance.clone().ok_or_else(conflict)?)
@@ -837,6 +831,11 @@ impl Controller {
             || !dimensions(p.rows, p.cols)
         {
             return Err((-32602, "invalid launch parameters".into()));
+        }
+        // The selected parent's own list, also for --parent from the host or an
+        // ancestor: a caller's permissions are never substituted.
+        if let Some(inherited) = &inherited {
+            inherited.permit(&p.name).map_err(|e| (-32602, e))?;
         }
         if let Some((old, result)) = self.launches.get(&key) {
             return if old == &p {
@@ -884,7 +883,10 @@ impl Controller {
         let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
         terminal.detached = p.detached;
         let source = match inherited {
-            Some(inherited) => Source::Child(inherited),
+            Some(inherited) => Source::Child {
+                inherited,
+                configuration: p.name.clone(),
+            },
             None => Source::Host {
                 configuration: p.configuration.clone().into(),
                 name: p.name.clone(),
@@ -959,7 +961,9 @@ impl Controller {
                 Ok(json!({"id":record.id,"agent_name":record.agent_name,
                     "name":record.name,"description":record.description,
                     "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled,
-                    "dev_shell":record.dev_shell}))
+                    "dev_shell":record.dev_shell,
+                    "allowed_children":self.sessions[scope].inheritance.as_ref()
+                        .map_or(&[][..], |i| i.allowed_children())}))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
@@ -1313,7 +1317,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2153,6 +2157,84 @@ mod tests {
     fn launch(key: &str, agent_name: Option<&str>) -> Value {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
+    }
+    #[test]
+    fn child_configurations_follow_the_selected_parents_list() {
+        let mut d = daemon();
+        let goblin = |children: Value| {
+            json!({"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
+                "client_package": "/unused", "helper": "/unused", "flake": "unused",
+                "allowed_children": children})
+        };
+        let manifest: crate::config::Manifest = serde_json::from_value(json!({
+            "api": 2, "helper_api": 5,
+            "goblins": {
+                "coordinator": goblin(json!(["coordinator", "reviewer", "scoped"])),
+                "reviewer": goblin(json!(["shell"])),
+                "shell": goblin(json!([])),
+                "scoped": {"scope": "work", "scopes": {"work": goblin(Value::Null)},
+                    "build_spec": "/unused", "args": [], "env": {}, "client_package": "/unused",
+                    "helper": "/unused", "flake": "unused"},
+            },
+            "scopes": {"work": {"persistent": false, "pid": true}},
+        }))
+        .unwrap();
+        let branch = std::sync::Arc::new(manifest.branch("coordinator", None).unwrap().1);
+        let root = session_with_results_id(&mut d, "root", vec![]);
+        let child = session_with_results_id(&mut d, "child", vec![]);
+        let leaf = session_with_results_id(&mut d, "leaf", vec![]);
+        for (id, parent, name) in [
+            (&root, None, "coordinator"),
+            (&child, Some(&root), "reviewer"),
+            (&leaf, Some(&child), "shell"),
+        ] {
+            let a = d.sessions.get_mut(id).unwrap();
+            a.record.parent = parent.cloned();
+            a.record.name = name.into();
+            a.record.agent_name = id.clone();
+            a.record.configuration = "/loaded.json".into();
+            a.inheritance = Some(Inheritance::fixture(name, branch.clone()));
+        }
+        let keys = std::cell::Cell::new(0);
+        let start = |name: &str, parent: &str| -> Start {
+            keys.set(keys.get() + 1);
+            serde_json::from_value(json!({"key": format!("k{}", keys.get()),
+                "configuration": "/newer.json", "name": name, "agent_name": null,
+                "parent": parent, "rows": 24, "cols": 80}))
+            .unwrap()
+        };
+        let refused = |d: &mut Controller, p: Start, scope: Option<&str>| {
+            let error = d.start(p, scope).unwrap_err();
+            assert_eq!(error.0, -32602);
+            error.1
+        };
+        // The host selecting a descendant uses that descendant's list.
+        assert_eq!(
+            refused(&mut d, start("coordinator", "child"), None),
+            "configuration 'coordinator' is not an allowed child of 'reviewer'; allowed: shell"
+        );
+        assert_eq!(
+            refused(&mut d, start("reviewer", "leaf"), None),
+            "configuration 'shell' permits no children"
+        );
+        // So does a sandbox selecting its descendant with --parent.
+        assert_eq!(
+            refused(&mut d, start("reviewer", "child"), Some(&root)),
+            "configuration 'reviewer' is not an allowed child of 'reviewer'; allowed: shell"
+        );
+        assert_eq!(
+            refused(&mut d, start("scoped", "."), Some(&root)),
+            "configuration 'scoped' cannot be launched here: 'scoped' requires scope 'work'; its parent has no scope"
+        );
+        // Nothing was recorded or allocated for a refused launch.
+        assert!(d.launches.is_empty());
+        assert_eq!(d.sessions.len(), 3);
+        let accepted = d.start(start("shell", "child"), None).unwrap();
+        let record = &d.sessions[accepted["session"].as_str().unwrap()].record;
+        assert_eq!(record.name, "shell");
+        assert_eq!(record.parent.as_deref(), Some(child.as_str()));
+        // The record keeps the parent's manifest, the snapshot's origin.
+        assert_eq!(record.configuration, "/loaded.json");
     }
     #[test]
     fn parent_name_stays_reserved_until_descendant_cleanup_finishes() {

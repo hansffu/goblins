@@ -41,6 +41,10 @@ pub struct Configuration {
     /// The same goblin with each permitted scope's defaults merged in by Nix.
     #[serde(default)]
     pub scopes: BTreeMap<String, Configuration>,
+    /// Configurations this one may launch as children. Nix always writes it
+    /// on top-level configurations; absent (an older build) means itself only.
+    #[serde(default)]
+    pub allowed_children: Option<Vec<String>>,
     #[serde(skip)]
     pub selected_scope: Option<Scope>,
 }
@@ -83,6 +87,8 @@ pub struct Manifest {
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// Bound on a configuration's `allowed_children`, as in mkGoblins.
+pub const MAX_CHILDREN: usize = 64;
 fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
@@ -105,6 +111,39 @@ impl Manifest {
             .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
     }
     pub fn select(mut self, name: &str, scope: Option<&str>) -> Result<Configuration> {
+        self.check()?;
+        let config = self.goblins.remove(name).ok_or_else(|| {
+            format!(
+                "unknown goblin; available: {}",
+                self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        self.resolve(name, config, scope)
+    }
+    /// Select the root like `select`, then snapshot every configuration its
+    /// `allowed_children` reach, resolved for the root's actual scope.
+    pub(crate) fn branch(
+        self,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Result<(Configuration, crate::branch::Branch)> {
+        self.check()?;
+        let config = self.goblins.get(name).cloned().ok_or_else(|| {
+            format!(
+                "unknown goblin; available: {}",
+                self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })?;
+        let root = self.resolve(name, config, scope)?;
+        let selected = root.selected_scope.as_ref().map(|s| s.name.clone());
+        let branch = crate::branch::Branch::snapshot(
+            name,
+            |key| self.children(key),
+            |key| self.select_inherited(key, selected.as_deref()),
+        );
+        Ok((root, branch))
+    }
+    fn check(&self) -> Result<()> {
         if self.api != 2 || self.helper_api != 5 {
             return Err("incompatible manifest/helper API".into());
         }
@@ -118,12 +157,56 @@ impl Manifest {
                 return Err("invalid scope catalog".into());
             }
         }
-        let mut config = self.goblins.remove(name).ok_or_else(|| {
-            format!(
-                "unknown goblin; available: {}",
-                self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
-            )
-        })?;
+        for (name, config) in &self.goblins {
+            if let Some(children) = &config.allowed_children
+                && (children.len() > MAX_CHILDREN
+                    || !children.iter().all(|c| goblins_protocol::identifier(c)))
+            {
+                return Err(format!(
+                    "invalid allowed_children for '{name}': at most {MAX_CHILDREN} names of at most 64 characters"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+    /// A top-level configuration's permitted children; unknown names have none.
+    fn children(&self, name: &str) -> Vec<String> {
+        match self.goblins.get(name) {
+            Some(config) => config
+                .allowed_children
+                .clone()
+                .unwrap_or_else(|| vec![name.to_string()]),
+            None => vec![],
+        }
+    }
+    /// Resolve a child configuration for the scope its branch runs in. A child
+    /// never selects a scope: a different default scope is ignored.
+    fn select_inherited(&self, name: &str, scope: Option<&str>) -> Result<Configuration> {
+        let config = self
+            .goblins
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("unknown goblin '{name}'"))?;
+        match (scope, &config.scope) {
+            (None, Some(required)) => {
+                Err(format!("'{name}' requires scope '{required}'; its parent has no scope").into())
+            }
+            (Some(scope), default)
+                if default.as_deref() != Some(scope)
+                    && !config.allowed_scopes.iter().any(|s| s == scope) =>
+            {
+                Err(format!("'{name}' does not allow scope '{scope}'").into())
+            }
+            _ => self.resolve(name, config, scope),
+        }
+    }
+    fn resolve(
+        &self,
+        name: &str,
+        mut config: Configuration,
+        scope: Option<&str>,
+    ) -> Result<Configuration> {
         let permitted: Vec<_> = config
             .scope
             .iter()

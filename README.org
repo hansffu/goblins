@@ -112,6 +112,26 @@ from using the same persistent scope. Keep scope names distinct between
 unrelated trust groups, even across configurations. This remains native,
 shared-kernel confinement, not VM isolation.
 
+* Child configurations
+
+By default a sandbox starts children only with its own configuration.
+=allowedChildren= (also on =mkCodexGoblin= and =mkClaudeGoblin=) lists the
+configurations it may start instead:
+
+#+begin_src nix
+mkGoblins {
+  goblins = {
+    coordinator = mkCodexGoblin { allowedChildren = [ "coordinator" "reviewer" ]; };
+    reviewer = mkClaudeGoblin { allowedChildren = [ ]; };  # no children
+  };
+}
+#+end_src
+
+Inside the coordinator, =goblins run reviewer --name review --detached= starts a
+Claude child. It shares the parent's workspace, scope and dev shell but runs
+with its own configuration's settings and access. See
+[[file:USAGE.org::*Sandbox ownership][sandbox ownership]].
+
 * Install on NixOS
 
 Currently supported: *x86_64 Linux*, with Nix and unprivileged user namespaces.

@@ -708,17 +708,59 @@ Both CLIs attach on =run= by default. =--detatched= (also =--detached=) returns
 immediately with JSON containing the session ID and name. Inside a sandbox,
 =goblins attach CHILD= attaches to a descendant by relative tree path, name or ID;
 =goblins detach= returns to the enclosing shell while leaving that sandbox running.
-=goblins status= prints the current sandbox's name, configuration, state and ID.
+=goblins status= prints the current sandbox's name, configuration, allowed child
+configurations, state and ID.
 Attachment and terminal resizing are restricted to descendants; a sandbox cannot
 attach to itself, its ancestors or another branch.
 
-Every child uses its parent's already loaded configuration: a =shell= sandbox
-can start only =shell= children, a =codex= sandbox only =codex= children, and a
-=claude= sandbox only =claude= children.
-This also applies to host =--parent= launches. Children share the parent's
-workspace and pinned startup binds with the same read/write permissions.
-Changing a host path or rebuilding a configuration does not widen a child's
-access. With daemon =--workspace=, each root child gets its own snapshot, which
+A sandbox may start children using the configurations in its
+=allowedChildren= list. Omitting the option permits only the sandbox's own
+configuration, so by default a =shell= sandbox starts only =shell= children, a
+=codex= sandbox only =codex= children and a =claude= sandbox only =claude=
+children. An explicit list replaces that default (include the configuration's
+own name to keep it), and an empty list permits no children. =mkGoblins=
+rejects names it does not declare, and lists over 64 names.
+
+#+begin_src nix
+mkGoblins {
+  goblins = {
+    coordinator = mkCodexGoblin { allowedChildren = [ "coordinator" "reviewer" "shell" ]; };
+    reviewer = mkClaudeGoblin { allowedChildren = [ ]; };
+    shell = mkGoblin { pkg = pkgs.fish; binName = "fish"; };
+  };
+}
+#+end_src
+
+Inside the coordinator, =goblins run reviewer --name review --detached=
+starts a Claude child. The check uses the selected parent's list, also for host
+=--parent= launches and for =--parent= selecting a descendant; each child uses
+its own configuration's list for further children. =goblins status= shows the
+list, and sandbox completion of =run= offers it.
+
+A child always shares its parent's workspace, working directory, scope (and so
+the scope's Docker engine) and current dev shell generation. A child with its parent's configuration
+also shares its pinned startup binds with the same read/write permissions. A
+child with another configuration instead runs that configuration's executable,
+arguments, environment, packages, =/etc= files, agent integration, network
+policy and declared binds, so it may have access its parent lacks; the parent
+gains none of it. Its declared binds are opened when the child starts, and a
+bind that cannot be opened fails only that child. It starts attached to the
+scope's Docker engine when its parent was attached, or when its own definition
+sets =docker.enable=; as for any members of one engine, they cannot mount
+different files at the same path. Package approvals of ancestors carry down on
+request as for any child. The configuration must support the inherited scope,
+or its absence; a different default scope is ignored. Otherwise the launch is
+rejected, for example with "configuration 'X' cannot be launched here: 'X' does
+not allow scope 'work'".
+
+A root launch snapshots every configuration its =allowedChildren= reach and
+keeps their Nix store paths from garbage collection. Rebuilding or replacing the
+installed configuration does not change what an existing branch may launch,
+and host =goblins run CHILD --parent P= leaves that decision to the daemon even
+when the new build no longer declares =CHILD=. Changing a host path or
+rebuilding a configuration does not widen a child's access. A server started
+from a build before =allowedChildren= reports "unknown field
+`allowed_children`" for newer configurations; restart it with the new build. With daemon =--workspace=, each root child gets its own snapshot, which
 it shares with its descendants. Shared workspace writes are visible throughout
 that branch; ownership restricts control operations, not access to these shared
 files.

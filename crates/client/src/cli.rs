@@ -100,7 +100,7 @@ pub enum Command {
         #[command(subcommand)]
         command: FlakeCommand,
     },
-    /// Launch a child using the same configuration and attach its terminal
+    /// Launch a child using a configuration this sandbox may start
     Run {
         config: String,
         #[arg(long)]
@@ -193,12 +193,27 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
         return Ok(0);
     };
     if !names {
-        if let Some(name) = init["configuration"].as_str()
-            && name
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
-        {
-            println!("{name}");
+        let configuration = |name: &str| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+        };
+        // The configurations this sandbox may start; an older daemon permits
+        // only its own configuration.
+        let status = rpc::exchange(&mut socket, json!(1), "sessions.status", json!({}))
+            .map_err(|e| e.to_string())?;
+        match status["allowed_children"].as_array() {
+            Some(names) => names
+                .iter()
+                .filter_map(|n| n.as_str())
+                .filter(|n| configuration(n))
+                .for_each(|n| println!("{n}")),
+            None => {
+                if let Some(name) = init["configuration"].as_str().filter(|n| configuration(n)) {
+                    println!("{name}");
+                }
+            }
         }
         return Ok(0);
     }

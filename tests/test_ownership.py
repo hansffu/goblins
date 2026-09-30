@@ -1,12 +1,14 @@
 """Ownership boundaries through real controller sockets, CLIs and namespaces."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 import uuid
 
-from daemon_support import Daemon, RPC, frame, receive
+from daemon_support import Daemon, RPC, ROOT, frame, receive
+from support import command
 from terminal_support import Terminal
 
 
@@ -131,7 +133,8 @@ class OwnershipTests(unittest.TestCase):
             self.sandbox(parent["session"], "sessions.status", {"session":unrelated["session"]})
         status = self.sandbox(parent["session"], "sessions.status", {})
         self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "scope", "docker_enabled",
-                                       "dev_shell"})
+                                       "dev_shell", "allowed_children"})
+        self.assertEqual(status["allowed_children"], ["shell"])
         self.assertEqual(status["agent_name"], "parent")
         pipeline = RPC(self.d.state / parent["session"] / "resources/request.sock")
         try:
@@ -309,7 +312,7 @@ class OwnershipTests(unittest.TestCase):
             "parent": parent["session"], "rows": 24, "cols": 80,
         })
         self.running(sibling)
-        with self.assertRaisesRegex(ValueError, "parent's configuration"):
+        with self.assertRaisesRegex(ValueError, "'codex' is not an allowed child of 'shell'; allowed: shell"):
             self.d.rpc.call("sessions.start", {
                 "key": "different", "configuration": self.d.manifest, "name": "codex",
                 "parent": parent["session"], "rows": 24, "cols": 80,
@@ -356,6 +359,261 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(receive(parent_request.peer)["result"]["status"], "ready")
         self.assertEqual(receive(pending.peer)["result"]["status"], "ready")
         self.assertEqual(self.d.get(child["session"])["packages"], ["hello"])
+
+
+def build(root, check):
+    return Path(command(["nix", "build", "--print-out-paths", "--out-link", root / check,
+                         f"path:{ROOT}#checks.x86_64-linux.{check}"])) / "bin/goblins"
+
+
+class ChildrenFixture(unittest.TestCase):
+    """Children using other configurations (checks.nix children-goblins)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.builds = tempfile.TemporaryDirectory(prefix="goblins-children-build-")
+        cls.app = build(Path(cls.builds.name), "children-goblins")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.builds.cleanup()
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="goblins-children-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        (self.root / "reviewer").mkdir()
+        self.d = Daemon(self.app, env={**os.environ, "GOBLINS_TEST_ROOT": str(self.root),
+                                       "XDG_CACHE_HOME": str(self.root / "cache")})
+        self.addCleanup(self.d.close)
+        self.terminals = {}
+
+    sandbox = OwnershipTests.sandbox
+    running = OwnershipTests.running
+
+    def terminal(self, launch):
+        # One attachment per sandbox, reused by later commands.
+        if launch["session"] not in self.terminals:
+            self.terminals[launch["session"]] = OwnershipTests.terminal(self, launch)
+        return self.terminals[launch["session"]]
+
+    def launch(self, owner, name, agent_name=None, wait=True, **extra):
+        launch = self.sandbox(owner["session"], "sessions.start", {
+            "key": uuid.uuid4().hex, "name": name, "agent_name": agent_name or name, **extra})
+        return self.running(launch) if wait else launch
+
+    def refused(self, owner, name, message, **extra):
+        with self.assertRaises(ValueError) as error:
+            self.launch(owner, name, **extra)
+        self.assertEqual(error.exception.args[0]["code"], -32602)
+        self.assertEqual(error.exception.args[0]["message"], message)
+
+    def host_start(self, name, **extra):
+        return self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "name": name,
+                                                  "configuration": self.d.manifest, "rows": 24, "cols": 80, **extra})
+
+    def run_in(self, launch, script, done):
+        """Run shell commands in a sandbox; they write into the shared workspace."""
+        self.terminal(launch).sendall(script.encode() + f"; touch /workspace/{done}\n".encode())
+        self.d.wait(lambda: (self.workspace / done).exists(), timeout=30)
+
+    def start_root(self, name="coordinator", **extra):
+        root = self.d.start(name, agent_name="root", **extra)
+        self.workspace = self.d.state / root["session"] / "resources/workspace"
+        return root
+
+    def failed(self, launch):
+        return self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "failed" else None), timeout=60)
+
+
+class AllowedChildrenTests(ChildrenFixture):
+    def test_child_runs_its_own_configuration_in_the_parents_workspace(self):
+        root = self.start_root()
+        root_status = self.sandbox(root["session"], "sessions.status", {})
+        self.assertEqual(root_status["allowed_children"], ["coordinator", "reviewer", "shell", "broken", "unscoped"])
+        child = self.launch(root, "reviewer")
+        record = self.d.get(child["session"])
+        self.assertEqual((record["name"], record["parent"]), ("reviewer", root["session"]))
+        self.assertEqual(record["description"], "reviewer child configuration")
+        # The record keeps the parent's manifest: the snapshot's origin.
+        self.assertEqual(record["configuration"], self.d.get(root["session"])["configuration"])
+        status = self.sandbox(child["session"], "sessions.status", {})
+        self.assertEqual((status["name"], status["allowed_children"]), ("reviewer", []))
+        # The root launch retained the permitted configuration's build spec.
+        spec = json.loads(Path(self.d.manifest).read_text())["goblins"]["reviewer"]["build_spec"]
+        self.assertTrue((self.d.state / root["session"] / "resources/roots" / Path(spec).name).is_symlink())
+        writable = self.root / "reviewer"
+        self.run_in(child, f"printf '%s' \"$CHILD_MARKER\" > /workspace/marker; cat /etc/children-test.conf > /workspace/etc; "
+                           f"echo child > {writable}/from-child; echo $? > /workspace/child-rw", "child-done")
+        self.assertEqual((self.workspace / "marker").read_text(), "reviewer")
+        self.assertEqual((self.workspace / "etc").read_text(), "reviewer\n")
+        self.assertEqual((self.workspace / "child-rw").read_text(), "0\n")
+        self.assertEqual((writable / "from-child").read_text(), "child\n")
+        # The parent gains none of the child's declared access.
+        self.run_in(root, f"printf '%s' \"$CHILD_MARKER\" > /workspace/root-marker; cat /etc/children-test.conf > /workspace/root-etc; "
+                          f"test -e {writable}; echo $? > /workspace/root-rw", "root-done")
+        self.assertEqual((self.workspace / "root-marker").read_text(), "coordinator")
+        self.assertEqual((self.workspace / "root-etc").read_text(), "coordinator\n")
+        self.assertEqual((self.workspace / "root-rw").read_text(), "1\n")
+        self.run_in(root, "goblins status > /workspace/status; goblins __complete-names -- goblins run > /workspace/complete",
+                    "status-done")
+        self.assertIn("Configuration: coordinator\nDescription: coordinator child configuration\n"
+                      "Allowed children: coordinator, reviewer, shell, broken, unscoped\n",
+                      (self.workspace / "status").read_text())
+        self.assertEqual((self.workspace / "complete").read_text().split(),
+                         ["coordinator", "reviewer", "shell", "broken", "unscoped"])
+        # A missing bind source of a permitted configuration fails only that child.
+        broken = self.failed(self.launch(root, "broken", wait=False))
+        self.assertIn("host bind", broken["detail"])
+        self.assertEqual(self.d.get(root["session"])["state"], "running")
+        # Parent exit stops a different-configuration child.
+        self.terminal(root).sendall(b"exit\n")
+        self.d.wait(lambda: self.d.get(child["session"])["state"] == "stopped")
+        self.assertIn("stopped because owner goblin", self.d.get(child["session"])["stop_reason"])
+
+    def test_each_parent_uses_its_own_list(self):
+        root = self.start_root()
+        self.refused(root, "unlisted", "configuration 'unlisted' is not an allowed child of 'coordinator'; "
+                                       "allowed: coordinator, reviewer, shell, broken, unscoped")
+        reviewer = self.launch(root, "reviewer")
+        # An empty list rejects even the parent's own configuration.
+        self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no children")
+        shell = self.launch(root, "shell")
+        leaf = self.launch(shell, "reviewer", "leaf")
+        self.assertEqual(self.d.get(leaf["session"])["parent"], shell["session"])
+        refused = "configuration 'coordinator' is not an allowed child of 'shell'; allowed: reviewer"
+        self.refused(shell, "coordinator", refused)
+        # Selecting a descendant uses its list, from the root and from the host.
+        self.refused(root, "coordinator", refused, parent="shell")
+        with self.assertRaises(ValueError) as error:
+            self.host_start("coordinator", parent=shell["session"])
+        self.assertEqual(error.exception.args[0]["message"], refused)
+        self.running(self.host_start("reviewer", parent=shell["session"], agent_name="host-leaf"))
+        self.assertEqual(self.launch(root, "coordinator", "same")["path"], "same")
+
+    def test_child_shares_the_parents_scope(self):
+        launch = self.host_start("coordinator", scope="work", agent_name="root")
+        root = self.running(launch)
+        self.workspace = self.d.state / root["session"] / "resources/workspace"
+        child = self.launch(root, "reviewer")
+        self.assertEqual(self.d.get(child["session"])["scope"], "work")
+        self.refused(root, "unscoped", "configuration 'unscoped' cannot be launched here: "
+                                       "'unscoped' does not allow scope 'work'")
+        # Members share the scope's namespaces: the child sees the root's processes.
+        self.run_in(root, "sleep 300 & echo $! > /workspace/root-sleep", "root-done")
+        pid = (self.workspace / "root-sleep").read_text().strip()
+        self.run_in(child, f"test -e /proc/{pid}; echo $? > /workspace/seen", "child-done")
+        self.assertEqual((self.workspace / "seen").read_text(), "0\n")
+
+    def test_child_shares_the_parents_dev_shell_generation(self):
+        from test_devshell import FLAKE
+        nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
+                           f'(builtins.getFlake "path:{ROOT}").inputs.nixpkgs.outPath'])
+        project = self.root / "project"
+        project.mkdir()
+        flake = lambda marker: (project / "flake.nix").write_text(
+            FLAKE.replace("NIXPKGS", nixpkgs).replace("@MARKER@", marker))
+        flake("original")
+        command(["nix", "flake", "lock", f"path:{project}"])
+        command(["git", "-C", str(project), "init", "-q"])
+        command(["git", "-C", str(project), "add", "flake.nix", "flake.lock"])
+        cli = lambda *args: subprocess.run([str(self.app), "--state-dir", str(self.d.state), "run", *args,
+                                            "--detached"], text=True, capture_output=True, cwd=project)
+        result = cli("coordinator", "--dev-shell", ".", "--name", "root")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        root = json.loads(result.stdout)
+        # Evaluating the dev shell can take a while on a cold store.
+        record = self.d.wait(lambda: (r if (r := self.d.get(root["session"]))["state"] != "starting" else None),
+                             timeout=600)
+        self.assertEqual(record["state"], "running", record)
+        self.workspace = self.d.state / root["session"] / "resources/workspace"
+        # The child gets the parent's current generation, not the edited flake.
+        flake("edited")
+        result = cli("reviewer", "--parent", "root", "--name", "child")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        child = self.running(json.loads(result.stdout))
+        self.assertEqual(self.d.get(child["session"])["dev_shell"], str(project))
+        self.run_in(child, "printf '%s %s' \"$DEV_MARKER\" \"$CHILD_MARKER\" > /workspace/marker; pwd > /workspace/cwd",
+                    "child-done")
+        self.assertEqual((self.workspace / "marker").read_text(), "original reviewer")
+        # It also shares the parent's pinned working directory.
+        self.assertEqual((self.workspace / "cwd").read_text(), f"{project}\n")
+
+    def test_parent_approvals_reach_a_different_configuration_on_request(self):
+        root = self.start_root()
+        child = self.launch(root, "reviewer")
+        request, permission = self.d.pending(root["session"])
+        self.addCleanup(request.close)
+        self.d.decide(permission, True)
+        request.peer.settimeout(120)
+        self.assertEqual(receive(request.peer)["result"]["status"], "ready")
+        self.assertEqual(self.d.get(child["session"])["packages"], [])
+        peer = RPC(self.d.state / child["session"] / "resources/request.sock")
+        self.addCleanup(peer.close)
+        peer.peer.settimeout(120)
+        result = peer.call("permissions.request", {"kind": "package", "package": "hello", "reason": "inherit"})
+        self.assertEqual(result["status"], "ready")
+        self.assertTrue(self.d.rpc.call("permissions.get", {"request": result["request"]})["approved"])
+        self.assertEqual(self.d.get(child["session"])["packages"], ["hello"])
+
+    def test_branch_keeps_its_snapshot_after_the_manifest_changes(self):
+        manifest = self.root / "mutable.json"
+        manifest.write_text(Path(self.d.manifest).read_text())
+        root = self.start_root(manifest=manifest)
+        manifest.write_text("invalid replacement manifest")
+        child = self.launch(root, "reviewer")
+        self.assertEqual(self.d.get(child["session"])["configuration"], str(manifest))
+        self.running(self.host_start("shell", parent=root["session"], agent_name="host-child"))
+
+    def test_host_cli_parent_launch_uses_the_snapshot_after_a_rebuild(self):
+        updated = build(Path(self.builds.name), "children-goblins-updated")
+        root = self.start_root()
+        cli = lambda *args: subprocess.run([str(updated), "--state-dir", str(self.d.state), *args],
+                                           text=True, capture_output=True)
+        # The new build no longer declares reviewer; the root's snapshot does.
+        result = cli("run", "reviewer", "--parent", "root", "--name", "late", "--detached")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        child = self.running(json.loads(result.stdout))
+        self.assertEqual(self.d.get(child["session"])["name"], "reviewer")
+        # Never permitted: rejected by the daemon, not the newer manifest.
+        result = cli("run", "unlisted", "--parent", "root", "--detached")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("'unlisted' is not an allowed child of 'coordinator'", result.stderr)
+        # Without --parent the installed build still decides.
+        result = cli("run", "reviewer", "--detached")
+        self.assertIn("unknown configuration 'reviewer'", result.stderr)
+
+    def test_daemon_rejects_an_allowed_children_list_over_the_bound(self):
+        manifest = self.root / "oversized.json"
+        configuration = json.loads(Path(self.d.manifest).read_text())
+        configuration["goblins"]["coordinator"]["allowed_children"] = [f"g{i}" for i in range(65)]
+        manifest.write_text(json.dumps(configuration))
+        record = self.failed(self.d.start("coordinator", manifest=manifest, wait=False))
+        self.assertIn("invalid allowed_children for 'coordinator'", record["detail"])
+
+
+class AllowedChildrenDockerTests(ChildrenFixture):
+    """Docker attachment of different-configuration children (rootless Docker)."""
+
+    def test_child_attachment_follows_parent_or_own_definition(self):
+        attached = self.start_root("attached")
+        self.assertTrue(self.d.get(attached["session"])["docker_enabled"])
+        plain = self.launch(attached, "plain")
+        self.assertTrue(self.d.get(plain["session"])["docker_enabled"])
+        # Both reach the scope's one engine.
+        self.run_in(attached, "docker info --format '{{.ID}}' > /workspace/parent-engine", "parent-done")
+        self.run_in(plain, "docker info --format '{{.ID}}' > /workspace/child-engine", "child-done")
+        engine = (self.workspace / "parent-engine").read_text()
+        self.assertTrue(engine.strip())
+        self.assertEqual((self.workspace / "child-engine").read_text(), engine)
+        # One engine cannot mount two branches' different /workspace sources.
+        self.d.rpc.call("sessions.stop", {"session": attached["session"], "kill_children": True})
+        for launch in (attached, plain):
+            self.d.wait(lambda: self.d.get(launch["session"])["state"] == "stopped")
+        detached = self.d.start("detached", agent_name="other")
+        self.assertFalse(self.d.get(detached["session"])["docker_enabled"])
+        eager = self.launch(detached, "eager")
+        self.assertTrue(self.d.get(eager["session"])["docker_enabled"])
 
 
 if __name__ == "__main__":

@@ -207,20 +207,22 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            let manifest = Manifest::read(&runtime)?;
-            if !manifest.goblins.contains_key(&config) {
-                return Err(format!(
-                    "unknown configuration '{config}'; available: {}",
-                    manifest
-                        .goblins
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-                .into());
-            }
+            // A child's configuration comes from its parent's branch snapshot,
+            // which may permit one this build no longer lists: the daemon decides.
             if parent.is_none() {
+                let manifest = Manifest::read(&runtime)?;
+                if !manifest.goblins.contains_key(&config) {
+                    return Err(format!(
+                        "unknown configuration '{config}'; available: {}",
+                        manifest
+                            .goblins
+                            .keys()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                    .into());
+                }
                 // Report an unknown or disallowed scope before starting.
                 manifest.select(&config, scope.as_deref())?;
             }

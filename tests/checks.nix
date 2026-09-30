@@ -26,6 +26,10 @@ let
         ];
         allowedPackages = [ pkgs.coreutils ];
         env.GOBLIN_MARKER = "literal $HOME $(false)";
+        allowedChildren = [
+          "fishy"
+          "utility"
+        ];
       };
       utility = mkGoblin (
         base
@@ -43,6 +47,7 @@ let
             GOBLIN_MARKER = "utility";
             PS1 = "utility> ";
           };
+          allowedChildren = [ ];
         }
       );
     };
@@ -100,6 +105,24 @@ let
             allowedDomains = [ ];
           }
         );
+      };
+    }
+  ]
+  ++ [
+    { goblins.shell = mkGoblin (base // { allowedChildren = [ "missing" ]; }); }
+    # Over the bound: 65 declared goblins, or a name longer than 64 characters.
+    (
+      let
+        names = map (i: "g${toString i}") (pkgs.lib.range 1 65);
+      in
+      {
+        goblins = pkgs.lib.genAttrs names (_: mkGoblin (base // { allowedChildren = names; }));
+      }
+    )
+    {
+      goblins = {
+        shell = mkGoblin (base // { allowedChildren = [ (pkgs.lib.fixedWidthString 65 "x" "") ]; });
+        ${pkgs.lib.fixedWidthString 65 "x" ""} = mkGoblin base;
       };
     }
   ]
@@ -181,6 +204,15 @@ let
       injectedFiles."same.conf" = "a";
       devShellInjectedFiles."same.conf" = "b";
     }
+    { allowedChildren = "bad"; }
+    {
+      allowedChildren = [
+        "bad"
+        "bad"
+      ];
+    }
+    { allowedChildren = [ "../bad" ]; }
+    { allowedChildren = [ 1 ]; }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
@@ -529,6 +561,122 @@ in
       };
     };
   };
+  # Different child configurations (tests/test_ownership.py).
+  children-goblins =
+    let
+      member =
+        name: options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            description = "${name} child configuration";
+            allowedPackages = [ pkgs.coreutils ];
+            allowedScopes = [ "work" ];
+            env = {
+              CHILD_MARKER = name;
+              PS1 = "children-test> ";
+            };
+            injectedFiles."children-test.conf" = "${name}\n";
+          }
+          // options
+        );
+      docker =
+        options:
+        {
+          scope = "docker";
+          allowedScopes = [ ];
+          # One engine cannot serve members different files at one path.
+          injectedFiles = { };
+        }
+        // options;
+    in
+    mkGoblins {
+      scopes = {
+        work = mkScope { persistent = false; };
+        docker = mkScope {
+          persistent = false;
+          docker.enable = true;
+        };
+      };
+      goblins = {
+        coordinator = member "coordinator" {
+          allowedChildren = [
+            "coordinator"
+            "reviewer"
+            "shell"
+            "broken"
+            "unscoped"
+          ];
+        };
+        reviewer = member "reviewer" {
+          allowedChildren = [ ];
+          rwDirs = [ "$GOBLINS_TEST_ROOT/reviewer" ];
+        };
+        shell = member "shell" { allowedChildren = [ "reviewer" ]; };
+        unlisted = member "unlisted" { };
+        broken = member "broken" { roDirs = [ "$GOBLINS_TEST_ROOT/missing" ]; };
+        unscoped = member "unscoped" { allowedScopes = [ ]; };
+        # Attached at start; its "plain" children attach through it.
+        attached = member "attached" (docker {
+          docker.enable = true;
+          allowedChildren = [ "plain" ];
+        });
+        plain = member "plain" (docker { });
+        # Not attached; its "eager" children attach through their own option.
+        detached = member "detached" (docker {
+          allowedChildren = [ "eager" ];
+        });
+        eager = member "eager" (docker {
+          docker.enable = true;
+        });
+      };
+    };
+  # A rebuild that removed every configuration but the coordinator.
+  children-goblins-updated = mkGoblins {
+    goblins.coordinator = mkGoblin (
+      base
+      // {
+        allowedChildren = [ ];
+        env.CHILD_MARKER = "updated";
+      }
+    );
+  };
+  allowed-children-manifest =
+    let
+      manifest = mkGoblins {
+        scopes.work = mkScope { };
+        goblins = {
+          claude = mkClaudeGoblin {
+            pkg = claudeProbe;
+            allowedChildren = [
+              "claude"
+              "codex"
+            ];
+          };
+          codex = mkCodexGoblin {
+            pkg = codexProbe;
+            allowedChildren = [ ];
+          };
+          shell = mkGoblin (base // { allowedScopes = [ "work" ]; });
+        };
+      };
+    in
+    pkgs.runCommand "goblins-allowed-children-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      # Resolved on top-level configurations (omitted means only itself) and
+      # never carried by scope variants.
+      jq -e '.api == 2 and .helper_api == 5
+        and .goblins.claude.allowed_children == ["claude", "codex"]
+        and .goblins.codex.allowed_children == []
+        and .goblins.shell.allowed_children == ["shell"]
+        and (.goblins.shell.scopes.work | has("allowed_children") | not)' ${manifest.config}
+      touch $out
+    '';
   cli-completions =
     pkgs.runCommand "goblins-cli-completions"
       {
@@ -621,6 +769,13 @@ in
     assert (mkGoblin (base // { scope = "work"; })).goblin.scope == "work";
     assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
     assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
+    assert (mkGoblin base).goblin.allowed_children == null;
+    assert (mkClaudeGoblin { allowedChildren = [ "codex" ]; }).goblin.allowed_children == [ "codex" ];
+    assert (mkCodexGoblin { allowedChildren = [ ]; }).goblin.allowed_children == [ ];
+    # Not a scope default: a scope variant keeps the goblin's own value.
+    assert
+      ((mkGoblin (base // { allowedChildren = [ "x" ]; })).withScopeDefaults { }).goblin.allowed_children
+      == [ "x" ];
     assert
       let
         merged =

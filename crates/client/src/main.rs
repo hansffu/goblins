@@ -99,10 +99,19 @@ fn run() -> Result<i32, String> {
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nState: {}\nScope: {}\nDocker: {}\nDev shell: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nScope: {}\nDocker: {}\nDev shell: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
+                    match record["allowed_children"].as_array() {
+                        Some(names) if !names.is_empty() => names
+                            .iter()
+                            .filter_map(|n| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        Some(_) => "none".into(),
+                        None => "unknown".into(),
+                    },
                     record["state"].as_str().unwrap_or("unknown"),
                     record["scope"].as_str().unwrap_or("none"),
                     if record["docker_enabled"] == true {

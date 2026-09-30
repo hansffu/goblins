@@ -48,6 +48,9 @@ let
       scope ? null,
       allowedScopes ? [ ],
       scopeStorage ? { },
+      # Configurations this one may launch as children; null means only itself.
+      # Not a scope default: mkGoblins resolves it once per configuration.
+      allowedChildren ? null,
     }@options:
     let
       dockerOptions = {
@@ -100,6 +103,7 @@ let
           scope
           allowedScopes
           scopeStorage
+          allowedChildren
           ;
         docker = dockerOptions;
       }
@@ -117,6 +121,7 @@ let
           scope
           ;
         allowed_scopes = allowedScopes;
+        allowed_children = allowedChildren;
         scope_storage = scopeStorage;
         env = effectiveEnv;
         client_package = client;
