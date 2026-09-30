@@ -1,0 +1,619 @@
+#+title: Goblins: allowed child configurations and raids (technical specification)
+#+date: 2026-09-30
+
+* Status and structure
+
+This is the technical plan for the functional specification
+[[file:CHILDREN-AND-RAIDS.org][CHILDREN-AND-RAIDS.org]]. Nothing here is implemented. The two features are
+implemented separately, in order:
+
+- [[*Part A: allowed child configurations][Part A]] :: =allowedChildren=. Self-contained; implement and try first.
+- [[*Part B: raids][Part B]] :: raids. Builds on master after Part A, but uses Part A only
+  through the ordinary launch path (=--inherit-raid= does not bypass
+  =allowedChildren=).
+
+Each part lists its code changes, protocol additions, tests and the decisions
+that need confirmation before implementing the affected behaviour. Existing
+contracts in [[file:DAEMON.org][DAEMON.org]], [[file:AGENT-INTEGRATION.org][AGENT-INTEGRATION.org]] and
+[[file:../adr/0006-shared-scopes.md][ADR 0006]] apply unless stated otherwise. Record verified behaviour in
+USAGE.org, DESIGN.org and RESULTS.org after each part lands, not before.
+
+* Decisions
+
+This table resolves the functional specification's /Open decisions/ and
+records the decisions made while planning. The functional specification is
+left unchanged; where they differ, this table applies. All rows were
+settled with the user on 2026-09-30.
+
+| Topic | Decision | Status |
+|-------+----------+--------|
+| Runtime package grants for a different child configuration | Same as a same-configuration child today: ancestor approvals carry down on request (=inherits_package=). The child also gets everything its own definition declares. | Settled 2026-09-30 |
+| Docker activation for a different child configuration | Same as today: attached when the parent was attached at creation, and also when the child's own definition sets =docker.enable=. Cooperating goblins share the scope's engine. | Settled 2026-09-30 |
+| When a child configuration's mounts are opened | Only by the child's own launch. The root launch snapshots configurations and GC-roots store paths, and opens nothing else. | Settled 2026-09-30 |
+| Messages and replies after leaving or dissolution | A delivered message belongs to its recipient, who can still read, claim, complete or requeue it. The raid only lets a sender find a recipient and permits the send. A reply is authorized like a send: when the two are no longer in the same raid (and not related in the tree), the daemon rejects it as not allowed. | Settled 2026-09-30 |
+| Multi-target host invite | Validate every target before changing membership, so a failed invite creates no raid and picks no owner. | Settled 2026-09-30 |
+| =raid list= / =raid status= | Not added. =raid members= is for discovery: it shows members and roles so a sender can pick a recipient. Communication stays one to one through =goblins send=. | Settled 2026-09-30 |
+| Clearing a role | Not supported. A role can be set or changed, never cleared; there is no =null=, empty-string or =--clear= form. | Settled 2026-09-30 |
+| Manifest compatibility | No version bump: manifest =api= stays 2, =helper_api= stays 5. A configuration without =allowed_children= (a manifest from an older build) permits only itself, exactly as today. | Settled 2026-09-30 |
+| What stays fixed for a running branch | Narrows the functional spec's "startup filesystem objects". Fixed at root launch: the permitted configurations, their settings and their Nix store objects (GC-rooted). The parent's working directory stays pinned. Not fixed: a child configuration's own host binds (for example =~/.claude=) are opened when that child launches, so they reflect what those paths name then. | Settled 2026-09-30 |
+
+* Current behaviour this changes
+
+- =Controller::start= (=crates/controller/src/controller.rs=) rejects a child
+  whose configuration key differs from the parent's ("children must use their
+  parent's configuration") and hands the worker =Source::Child(Inheritance)=.
+- =Session::child= (=session.rs=) clones the parent's =Launch=, its opened
+  bind =Plan= (including the working-directory mount), its =SharedWorkspace=,
+  its scope (=Weak<scope::Shared>=) and its live Docker attachment flag.
+- The manifest (=nix/packages/goblins.nix=, =api = 2=, =helper_api = 5=) is
+  read once per root launch in =worker.rs= (=Manifest::read(..).select(..)=).
+  A child never reopens it; this is what makes running branches immune to
+  rebuilds today (=test_children_reuse_loaded_configuration_after_manifest_changes=).
+- Messaging (=mailbox.rs=, =resolve=) lets a sandbox address its direct parent
+  and its descendants only. Replies check only that the original sender is
+  live. The controller sends the messaging worker a =Directory= of trusted
+  session metadata with every call and on change (=Work::Sync=); the worker
+  diffs it to log =session.started=/=session.exited=.
+
+* Part A: allowed child configurations
+
+** Design summary
+
+A root launch takes a /branch snapshot/: the root configuration plus every
+configuration reachable from it through =allowedChildren=, each resolved for
+the root's actual scope, with its store paths GC-rooted. The snapshot is shared
+(=Arc=) by every session in the branch. A child launch checks the selected
+parent's =allowed_children= in the event loop. The child's worker then builds
+its =Launch= from the snapshot entry and opens that configuration's own
+declared mounts; nothing of a child configuration is opened before the child
+starts. Same-configuration children keep today's code path unchanged.
+
+A different-configuration child behaves like a same-configuration child for
+everything shared: workspace, scope, dev shell, Docker attachment and
+inherited package approvals. On top of that it gets what its own definition
+declares.
+
+** Nix
+
+- =nix/builders/mk-goblin.nix= :: new argument =allowedChildren ? null=,
+  exported as =goblin.allowed_children= (null or list). Not a scope default:
+  =validate.scopeDefaults= keeps its current key list, and =withDefaults=
+  passes the option through untouched.
+- =nix/internal/validate.nix= (=goblin=) :: =allowedChildren= is =null= or a
+  list of unique strings matching =validName=. Error:
+  "allowedChildren must be null or a list of unique goblin names".
+- =nix/builders/mk-goblins.nix= :: resolve per configuration:
+  =null= becomes =[ name ]=; an explicit list is kept as is (so =[ ]= permits
+  nothing). Fail for names not in =goblins=:
+  "mkGoblins: 'coordinator' allowedChildren references undeclared goblin 'x'".
+  Bound the list at 64 entries, each name at most 64 characters (the scope
+  name bound in =validate.nix=); the daemon checks the same limits when
+  reading the manifest.
+  Emit =allowed_children= on the top-level configuration only; add it to the
+  =removeAttrs= list in =variant= so scope variants never carry an unresolved
+  =null=.
+- Presets :: =mkCodexGoblin= and =mkClaudeGoblin= forward unknown options to
+  =mkGoblin= (=goblinOptions= only removes their own keys), so they accept
+  =allowedChildren= without changes. Add a check that proves it.
+- =nix/packages/goblins.nix= :: no manifest version change (=api = 2=,
+  =helper_api = 5=). A bump would not help an older daemon, which rejects
+  unknown fields while parsing, before its version check, and reports
+  "invalid configuration PATH: unknown field `allowed_children`". Restarting
+  the server with the new build fixes it; USAGE should say so. A bump would
+  also make a new daemon reject manifests from older builds for no benefit.
+- No static scope-compatibility check in Nix: which scope a root runs in is
+  chosen at launch (=--scope=), so the check is at runtime (below).
+
+** Manifest and branch snapshot
+
+- =config.rs= :: =Configuration= gains
+  =#[serde(default)] allowed_children: Option<Vec<String>>=. On a top-level
+  configuration, =None= means =[ own key ]=, so manifests from older builds
+  keep today's behaviour. Nix always writes the field. =Manifest::select=
+  keeps its =api == 2=, =helper_api == 5= check and also enforces the list
+  bounds.
+- New =Manifest::branch(self, name, scope) -> Result<(Configuration, Branch)>=
+  replaces the root use of =select=. It selects the root exactly as =select=
+  does today, then walks =allowed_children= breadth-first from the root (a
+  visited set bounds cycles). Each reachable name is resolved with
+  =select_inherited(name, root_scope)=:
+  - root scope =None=: the configuration's =scope= must be null; use its base
+    configuration. Otherwise: "'X' requires scope 'S'; its parent has no scope".
+  - root scope =Some(S)=: =S= must be the configuration's =scope= or in
+    =allowedScopes=; use its =scopes.S= variant. A different default scope is
+    ignored, never followed. Otherwise: "'X' does not allow scope 'S'".
+  - storage mount expansion and validation are the same as =select=.
+  Resolution errors are stored per entry, not returned: a broken reachable
+  configuration must not stop the root from starting.
+- New module =crates/controller/src/branch.rs=:
+
+  #+begin_src rust
+  pub(crate) struct Branch { entries: BTreeMap<String, Entry> }
+  pub(crate) struct Entry {
+      pub allowed_children: Vec<String>,
+      /// The configuration resolved for the branch's scope, or why it cannot
+      /// run here. None for the root entry until another configuration lists it.
+      configuration: Option<std::result::Result<Configuration, String>>,
+  }
+  #+end_src
+
+  =Branch::prepare= runs on the root's worker, after =Manifest::branch= and
+  before =Session::start=. For every reachable configuration other than the
+  root (and for the root too if some other entry lists it), it GC-roots the
+  top-level store paths into the root session's =roots/= directory: the live
+  build spec (whose references retain the closure file and closure), helper
+  package, client package, =sandbox_etc=/=dev_shell_sandbox_etc= sources and
+  Docker daemon/client packages. That is about five =nix-store --add-root=
+  calls per entry; a branch with only the default self-child does none. A
+  rooting failure is recorded as that entry's error. The roots live as long
+  as the root session's directory, which outlives the whole branch because
+  parent exit stops descendants and =Inheritance= holds the directory owner.
+
+  Nothing else is read or opened at root launch. The in-memory
+  =Configuration= and the rooted store paths are enough for later rebuilds or
+  garbage collection not to change what the branch can launch.
+- =session::Inheritance= gains =configuration: String= (the key) and
+  =branch: Arc<Branch>=, plus =allowed_children()=. =Session= gains the same
+  two fields so =Session::inheritance()= passes them on. A child's
+  inheritance carries the same =Arc<Branch>=, so grandchildren resolve against
+  the root's snapshot using their own entry's list.
+
+** Binds: separating the working directory
+
+A different configuration needs the parent's working directory but its own
+declared binds. Today =Plan::add_working_directory= inserts the working
+directory as =mounts[0]=, indistinguishable from other mounts. Change =Plan= to
+hold it in =working_directory: Option<Mount>= and have =append_args=,
+=source_fds=, =destinations= and =store_roots= emit it first, preserving the
+current mount order and precedence. Add
+=Plan::share_working_directory(&mut self, parent: &Plan) -> Result<()>=, which
+clones (=try_clone=) the parent's pinned working-directory descriptor into the
+child's freshly opened plan. The child therefore shares the exact directory
+object the root opened, not whatever the path names now. The Docker grant
+path (=Mount::docker_grant=) is unaffected.
+
+** Launch path
+
+- =Controller::start=, parent branch :: replace the configuration-equality check
+  with =inheritance.allowed_children().contains(&p.name)=. This check uses the
+  /selected parent's/ inheritance, which is also what =--parent= from the host
+  or from an ancestor selects, so a caller's own permissions are never
+  substituted. Errors (-32602, before launch-key insertion or name allocation):
+  - "configuration 'X' is not an allowed child of 'Y'; allowed: a, b"
+  - "configuration 'Y' permits no children" for an empty list
+  - the entry's stored error for a permitted configuration that cannot run in
+    this branch, prefixed with "configuration 'X' cannot be launched here: ".
+  The record's =name= is the child's key; =configuration= stays the parent's
+  manifest path (the snapshot's origin).
+- =worker.rs= :: =Source::Child(Inheritance)= becomes
+  =Source::Child { inherited: Inheritance, configuration: String }=.
+- =Session::child= :: if =configuration= equals the parent's key, keep the
+  current code. Otherwise, on the child's worker, build the child's =Launch=
+  with =Configuration::launch()= from the branch entry (it reads the rooted
+  build spec and closure file) and set:
+
+  | Field | Source |
+  |-------+--------|
+  | =launch= | child's own =Launch= |
+  | =launch.cwd=, =launch.protected_paths= | parent's launch (pinned path) |
+  | =launch.dev_shell= | parent's current generation (after any refresh) |
+  | =launch.scope= | entry's (resolved for the same scope at root launch) |
+  | =binds= | left unset, so =Session::start= opens the child's own declared binds; then =share_working_directory(parent binds)= |
+  | =workspace= | parent's =SharedWorkspace= |
+  | =scope= | parent's =Weak= upgraded; "the parent's scope has stopped" otherwise |
+  | =docker_inherit_enabled= | =Some(parent attached || own docker.enable)= |
+
+  =Session::start= already opens binds only when =self.binds= is unset. For
+  a different-configuration child it must skip =add_working_directory= (the
+  pinned parent directory is added instead) and use the child's own =/etc=
+  destinations in its private paths. A bind that cannot be opened fails the
+  child's launch with the usual diagnostic; the parent is unaffected.
+
+  Everything else (executable, args, env, initial packages, =/etc= files,
+  dev-shell-only =/etc= files, integration, description, network policy)
+  comes from the child's own =Launch=, so its settings replace the parent's
+  rather than merging with them. The integration driver checked by
+  =integration.register= follows automatically from the child's inheritance.
+  Session start still calls =scope::Shared::compatible=, which catches a
+  definition mismatch.
+- Docker :: exactly as for same-configuration children today, the child starts
+  attached to the scope's engine when its parent was attached at creation
+  (the shared =docker_attached= flag). A child whose own definition sets
+  =docker.enable= is also attached at start. Either way, members attached to
+  one engine can reach each other's granted files through containers. That is
+  the scope trust model (ADR 0006) and the intended way for cooperating
+  goblins to share Docker.
+- Packages :: =Controller::inherits_package= stays as is. A child of any
+  configuration reuses an ancestor's approved store output on request,
+  without asking the host, and starts with its own configuration's initial
+  packages.
+- Network :: a scopeless child already gets its own namespace and pasta
+  instance, so a child's own =allowedDomains= applies. An online child of an
+  offline parent is allowed. That is the "declared access its parent lacks"
+  from the functional spec.
+- Lifecycle, stop attribution, subtree stop and name allocation are unchanged.
+
+** Protocol and records
+
+- Host and sandbox =initialize= advertise =allowed-children=.
+- The host =SessionRecord= does not carry =allowed_children=. Copying the list
+  into every record would repeat it up to 16 times in every snapshot, where
+  live records cannot be evicted. Host tools read it from
+  =goblins configurations= (the manifest), and the list for a running branch
+  is the one that manifest had at root launch.
+- Sandbox =sessions.status= adds =allowed_children= (bounded as above). Sandbox =sessions.list/get=
+  records are unchanged (they already carry =name=).
+- No new methods. =sessions.start= parameters are unchanged; =name= may now be
+  any permitted key.
+
+** CLI, skills and docs
+
+- =crates/client/src/cli.rs= =Run= help: "Launch a child using a configuration
+  this sandbox may start". =goblins status= prints the allowed configurations.
+  Sandbox completion of =run CONFIG= uses =sessions.status.allowed_children=.
+- Host =run CONFIG --parent P= (=crates/controller/src/main.rs=, =Command::Run=) ::
+  today the CLI reads the installed manifest and rejects a configuration it
+  does not list before contacting the daemon. That would break launches the
+  parent's snapshot still permits after a rebuild removed the configuration.
+  With =--parent=, skip the name check and send the request; the daemon
+  decides from the snapshot and returns the permission error. Without
+  =--parent=, keep the current checks (unknown configuration, scope).
+  Completion may keep using the installed manifest; filtering it by the
+  parent's list is optional.
+- =skills/goblins-spawn/SKILL.md= :: replace "Read =goblins status= to get the
+  current configuration name" and "children ... inherit the parent's
+  configuration and access" with: pick a configuration from =goblins status=;
+  a child shares the workspace, scope and dev shell but runs its own
+  configuration and access; it gains no access for the parent.
+- USAGE.org (configuration and ownership sections), the README example and
+  DAEMON.org's ownership section ("The configuration key must match the
+  parent's key" becomes the =allowed_children= rule).
+
+** Tests
+
+- Nix (=tests/checks.nix=) :: add =allowedChildren= to =configured=, e.g.
+  =fishy = [ "fishy" "utility" ]= and =utility = [ ]=. Add to =invalid= an
+  undeclared reference, a non-list, duplicates and a non-name string. A preset
+  check shows =mkClaudeGoblin { allowedChildren = [ ... ]; }= reaches the manifest.
+  A =goblins-api= style check shows =allowed_children= resolved on top-level
+  configurations and absent from variants.
+- Rust unit :: =Manifest::branch= (default self, explicit list, cycles,
+  per-entry scope errors, ignored different default scope, missing top-level
+  list treated as self only, list bounds). =Controller::start= permission errors, including the
+  host =--parent= case using the parent's list. =Plan::share_working_directory=
+  keeps the working directory first and pins the parent's descriptor.
+- Python (=tests/test_ownership.py=, new =AllowedChildrenTests=) ::
+  - a parent launches a permitted different configuration, and the child
+    reports its own =name=, env marker and =/etc= files;
+  - an unlisted configuration in the same scope is rejected, and an empty
+    list rejects even the parent's own configuration;
+  - host =sessions.start --parent= uses the descendant's list, not the root's;
+  - a grandchild uses the child's own list;
+  - the child sees its own =rwDirs= entry; the parent does not; a missing
+    bind source fails only the child's launch;
+  - Docker: a child of an attached parent starts attached to the same engine,
+    and a child whose definition sets =docker.enable= attaches at start;
+  - a package approved for the parent is available to a different-configuration
+    child on request without a new approval;
+  - the child shares the parent's workspace, scope and dev-shell generation;
+    a configuration that does not support the scope fails with the stated
+    message;
+  - after replacing the manifest file and deleting its source
+    configuration, a new child of a permitted configuration still launches
+    (extend =test_children_reuse_loaded_configuration_after_manifest_changes=,
+    whose expected error text changes);
+  - parent exit stops a different-configuration child;
+  - host CLI: start a root from one build, switch to a build that removes the
+    permitted child configuration, and =goblins run CHILD --parent ROOT= still
+    launches it; a configuration the root never permitted is still rejected,
+    by the daemon;
+  - an =allowedChildren= list over the bound is rejected in Nix, and a
+    hand-edited manifest over the bound is rejected by the daemon.
+- Opt-in agent tests :: a Codex parent launching a Claude child with
+  synthetic credentials: native mounts under =/etc/claude-code=, the Claude
+  integration registers, and =goblins attach= works.
+
+** Decisions settled for Part A (2026-09-30)
+
+- Docker :: a child with a different configuration shares Docker like a
+  same-configuration child today: attached when the parent was attached at
+  creation, and also when its own definition sets =docker.enable=. The goal is
+  goblins cooperating on one task in one scope.
+- Packages :: same as today for the same configuration: ancestor approvals
+  carry down on request. The child also gets everything its own definition
+  declares.
+- Mounts :: a child configuration's declared binds are opened only by the
+  child's own launch, not at root launch. The root launch only snapshots
+  the configuration and GC-roots its store paths.
+
+* Part B: raids
+
+** Design summary
+
+Raid state lives in the controller's event loop, next to sessions, and is
+never persisted. Membership is a set of live session IDs. A pure state module
+holds the rules. The controller resolves targets and enforces ownership-tree
+restrictions. Every membership change produces ordered, attributed events.
+The controller sends them to the messaging worker over the existing channel.
+The worker writes them to the communications log, and only then lets that
+membership authorize messages.
+
+** State: =crates/controller/src/raid.rs=
+
+#+begin_src rust
+pub struct Raid {
+    pub id: String,            // "{instance}-raid{n}"; a reused name gets a new ID
+    pub name: String,
+    pub owner: String,         // session ID
+    pub members: BTreeMap<String, Member>,
+}
+pub struct Member { pub role: Option<String>, pub joined: u64 }
+pub struct Raids { raids: BTreeMap<String, Raid>, member_of: BTreeMap<String, String> }
+#+end_src
+
+Operations, all pure and unit-tested, with typed errors that the controller
+maps to faults:
+
+- =create(id, name, owner)= :: fails if the name exists or the owner is a member.
+- =invite(new_id, name, sessions)= :: validates every target before changing
+  anything. It is a no-op for current members and fails for a member of
+  another raid. It creates the raid with =sessions[0]= as owner if absent;
+  an existing owner is kept.
+- =join(name, session)= :: used by launches. =invite= with one target, never
+  creating when called for =--inherit-raid=.
+- =remove(session) -> Option<Dissolved>= :: leave, exit, stop or failure.
+  Removing the owner dissolves the raid and clears every member.
+- =destroy(name)=, =set_role(session, role)=, =of(session)=, =get(name)=.
+
+Grammar: raid names and roles use the agent-name grammar
+=[a-z][a-z0-9-]{0,31}= (=valid_agent_name=). A role is required in
+=set_role= (no null or empty value), and =Member.role= stays =None= only until
+a role is first set. Bounds: at most one raid per
+session, so at most 16 live raids and 16 members; invite lists are limited to
+16 targets.
+
+** Controller wiring
+
+- =Controller= gains =raids: raid::Raids= and allocates IDs with =self.id("raid")=.
+- Reconciliation :: =reconcile_raids()= removes every member whose session is
+  absent or not =starting=/=running=, and dissolves raids whose owner left.
+  It is idempotent and runs at three points:
+  - at the start of =dispatch=, so every authorization sees current membership;
+  - in =tick= after worker results, before =approve_inherited_requests= and
+    the directory sync;
+  - at the start of =publish()=, because =tick= publishes right after each
+    dispatch: a stop dispatched there must not publish the old membership
+    even once.
+  Stops, natural exits, failed launches and worker loss therefore need no
+  raid code in each state transition. Dissolution never calls =stop=.
+- Launch joins :: host =Start= gains =#[serde(default)] raid: Option<String>=;
+  sandbox =ChildStart= gains =#[serde(default)] inherit_raid: bool=. Validation
+  runs after the launch-key lookup and before name allocation. =inherit_raid=
+  requires the selected parent to be a member ("parent is not in a raid").
+  The join happens in the same event-loop operation that inserts the session,
+  so a new session is a member while =starting=. The fields are part of the
+  launch key, so an identical retry returns the original acceptance without
+  joining again, even if the raid has since dissolved. =inherit_raid= goes
+  through the normal =allowed_children= and parent checks. Host
+  =run --parent P --raid R= is allowed, since the host may invite anywhere.
+- Records :: =SessionRecord= gains
+  =#[serde(default)] raid: Option<RaidMembership>= with ={id,name,role,owner}=.
+  =Snapshot= gains =#[serde(default)] raids: Vec<RaidRecord>=. Both are
+  additive, and the TUI and Emacs tolerate them. Snapshot size stays far below
+  the 900 KiB cap at these bounds.
+
+** Methods
+
+The host socket authorizes against the whole tree; the sandbox socket uses
+the endpoint's identity. The host resolves targets with =resolve_session=
+(ID, full tree path or unique live name). The sandbox resolves with
+=resolve_scoped= and then requires =record.parent == caller=.
+
+| Endpoint | Method | Params -> result |
+|----------+--------+------------------|
+| host | =raids.invite= | ={raid,sessions:[..]}= -> Raid record |
+| host | =raids.destroy= | ={raid}= -> ={accepted:true}= |
+| host | =raids.members= | ={raid}= -> Raid record |
+| host | =raids.set_role= | ={raid,session,role}= -> Raid record |
+| sandbox | =raids.create= | ={raid}= -> Raid record |
+| sandbox | =raids.invite= | ={sessions:[..]}= -> Raid record |
+| sandbox | =raids.leave= | ={}= -> ={accepted:true,dissolved:bool}= |
+| sandbox | =raids.members= | ={}= -> Raid record |
+| sandbox | =raids.set_role= | ={role}= -> Raid record |
+
+Raid record: ={id,name,owner,members:[{id,agent_name,path,name,role,state,owner}]}=,
+with the full tree =path= and =name= the configuration key. The sandbox view
+is the same record: it is what lets members find collaborators outside their
+subtree. It contains no host paths, process identities, terminal endpoints or
+diagnostics. Raid membership grants no =sessions.get/attach/stop/resize= on
+other branches.
+
+Faults: invalid name, role or list -> -32602; inviting a visible descendant
+that is not a direct child -> -32602 "only direct children can be invited";
+a target outside the caller's subtree, or an absent host raid/session ->
+-32004. These conflicts return -32009 with a specific message: the name
+already exists, the caller is already in a raid, a target is in another raid,
+the caller or parent is in no raid, a target is not live, or the server is
+stopping. Initialize advertises =raids= on both endpoints.
+
+** Messaging
+
+- Logged membership :: raid-based authorization uses only membership the
+  messaging worker has written to the communications log. It never uses the
+  controller's copy. The controller owns raid state and sends /events/; the
+  worker keeps =logged: BTreeMap<String, RaidView>= (session ID ->
+  ={id,name,role,owner}=), built by applying each event after it has been
+  recorded. =mailbox::Directory= carries no raid field. The worker passes
+  =logged= to =Mailbox::execute=, and =resolve= and the reply check read it.
+  A join or role change therefore authorizes nothing until its event is in
+  the log. Removals are applied to =logged= whether or not their event could
+  be written, because they only take access away.
+- =mailbox::resolve= :: =allowed= also accepts a target in the actor's logged
+  raid. Sandbox callers may also name a target by full tree path
+  (=s.path == target=). The existing ambiguity error
+  ("ambiguous recipient; use a path or ID") covers name collisions. =parent=
+  and host routing are unchanged, and roles are never matched.
+- Replies (=Mutation::Reply= in =Mailbox::prepare=) :: today a reply only
+  checks that the original sender is live. Add an authorization check before
+  the reply is created. A reply is allowed when the original sender is the
+  host, or when replier and sender are still related in the tree in either
+  direction (an ancestor or descendant), or when both are in the same logged
+  raid. Tree relations never change, so every reply allowed today stays
+  allowed; only replies whose message relied on a raid can become impossible.
+  Otherwise the reply fails with -32009 "not allowed: 'SENDER' is no longer in
+  this goblin's raid" and changes nothing: the claim stays outstanding, and
+  the recipient can still complete or requeue it.
+- Unchanged by design :: delivered messages stay with their recipient.
+  =messages.get= (sender/recipient only), inbox operations (recipient only)
+  and conversation reuse (participant only, still subject to the send rules)
+  do not depend on raid membership.
+- Events :: raid events come from explicit, ordered mutations, not from
+  directory differences. A diff would lose a raid created and dissolved
+  between two syncs, or a role changed and changed back. Every mutation in
+  =raid::Raids= returns its events, emitted together and in order. Each event
+  names its initiating =actor= and its affected =sessions=. Log filtering
+  (=communications.list=, =communications-log --session=) matches either
+  one, so an invited or dissolved member finds the event in its own filtered
+  log:
+
+  | Event | Data | =actor= | =sessions= |
+  |-------+------+---------+------------|
+  | =raid.created= | ={raid,name,owner}= | the creator, or =host= | the owner |
+  | =raid.joined= | ={raid,session,role}= | the inviter or launcher, or =host= | the joiner |
+  | =raid.role= | ={raid,session,role}= | whoever set it (member or =host=) | that member |
+  | =raid.left= | ={raid,session,reason}= (=left=, =stopped=, =launch-failed=) | the leaver; for a stop, exit or failed launch, the session that ended | the leaver |
+  | =raid.dissolved= | ={raid,reason}= (=owner-left=, =destroyed=) | the owner, or =host= for =raid destroy= | every session that was a member |
+
+  The existing =Mailbox::record= helper tags non-message events with the
+  actor only. Add =Mailbox::record_raid(events)=, which sets =actor= and
+  =sessions= explicitly and writes a batch through the same audit sink.
+- Outbox and flushing :: the controller appends events to a bounded outbox
+  (=VecDeque=, 256 events). =tick= attaches the whole outbox to a =Work::Sync=
+  whenever it is nonempty, even if the directory is unchanged. It is also
+  attached to any =Work::Call= dispatched earlier in the same tick, so a
+  message is always recorded after the membership that allowed it. The outbox
+  is cleared once =try_send= accepts the batch; a failed =try_send= keeps it
+  for the next tick. An accepted batch is never resent, so no event is logged
+  twice. On orderly shutdown, the controller hands a nonempty outbox to the
+  worker with a blocking =send= before =messaging::Service= closes its channel.
+  (=Service::drop= already drains results so final audit writes cannot
+  deadlock.)
+- Recording failures :: the worker records a batch before handling the call it
+  arrived with.
+  - Write failure (=AuditError::Unavailable=) :: sets =audit_failed= as today,
+    freezing every messaging mutation.
+  - Capacity (=AuditError::Capacity= at the log size limit, or the
+    auxiliary-event limit) :: sets a new =raid_audit_failed= flag. The
+    batch's removals are still applied to =logged=, but no joins or role
+    changes are. From then on, raid-based sends and replies are rejected with
+    -32009 "raid membership could not be recorded"; tree routes keep working.
+    =inbox.status= reports =raid_audit_failed=.
+  - Budget :: raid events don't count against the 16,384 auxiliary events.
+    The controller keeps a daemon-wide budget of 4,096 raid events and
+    refuses additions (create, invite, launch joins, set_role) with -32010
+    once they would exceed it. Removals always proceed; their events are kept
+    even beyond the bound, since there are at most 16 members. This keeps
+    the budget from being exhausted in normal operation, and the flag above
+    covers the log's byte limit.
+- =message.accepted= data gains =route: "tree" | "raid"= (=raid= only when
+  logged membership was the sole authorization) plus the raid ID, so a host
+  reviewer can see which exchanges relied on a raid.
+
+** CLI
+
+- Host (=crates/controller/src/cli.rs=) :: =goblins raid invite NAME GOBLIN...=,
+  =raid destroy NAME=, =raid members NAME=, =raid set-role NAME GOBLIN ROLE=,
+  and =run ... --raid NAME=. Output matches =list=/=rpc= conventions.
+  Completion of raid and goblin names uses the existing hidden
+  =__complete-names= mechanism.
+- Sandbox (=crates/client/src/cli.rs=) :: =goblins raid create NAME=,
+  =raid invite CHILD...=, =raid leave=, =raid members=, =raid set-role ROLE=,
+  and =run ... --inherit-raid=. Exit codes follow the other control commands
+  (an interrupted reply is an unknown outcome, exit 2).
+- =goblins list= (host) and =goblins status= (sandbox) show raid name, role
+  and owner. TUI and Emacs raid columns are optional follow-ups.
+
+** Skills and docs
+
+- New =skills/goblins-raids/SKILL.md=, mounted by both presets (add it to the
+  managed file lists in =nix/goblins/claude/default.nix= and
+  =nix/goblins/codex/default.nix=). It covers when to form a raid, inviting
+  direct children or launching with =--inherit-raid=, reading
+  =raid members=, messaging by path or ID, roles as descriptions only, that a
+  reply fails once the pair no longer shares the raid (complete the claim
+  instead), and
+  that the owner leaving dissolves the raid.
+- =skills/goblins-messaging= and =skills/goblins-spawn= :: "Siblings cannot
+  message each other directly" becomes "unless they share a raid".
+- A short ADR for raids as a communication-only grouping (a peer to ADR 0001
+  and 0006), plus DAEMON.org/USAGE.org sections after verification.
+
+** Tests
+
+- Rust unit (=raid.rs=) :: create, join and leave; owner removal dissolves;
+  idempotent invite; rejection for a member of another raid; failed
+  multi-target invites change nothing; a reused name gets a new ID; role
+  changes never move ownership; each mutation returns its events in order,
+  including create-then-dissolve and role changes that are later undone.
+- Rust unit (=messaging.rs=, worker with a fault-injecting =Audit=) :: a join
+  whose events fail to write authorizes no send; a write failure freezes
+  messaging; running out of capacity sets =raid_audit_failed=, rejects
+  raid-routed sends and replies but not tree routes, and still applies
+  removals; an accepted batch is recorded once, in order, before the call it
+  arrived with; =record_raid= sets =actor= and =sessions= as in the table.
+- Rust unit (=mailbox/tests.rs=) :: cross-branch sends are allowed while in
+  the same raid and rejected after removal; a reply to a raid-routed message
+  is rejected once the pair no longer shares a raid, leaving the claim
+  outstanding so it can still be completed; replies between tree relatives
+  (including grandparent/grandchild) and to the host are unaffected; full
+  paths and IDs resolve, and ambiguous names are rejected; one member cannot
+  read another member's inbox.
+- Rust unit (=controller.rs=) :: reconciliation after stop, natural exit, failed
+  launch and worker loss; a stop dispatched in a tick never publishes the old
+  membership; =inherit_raid= without a parent raid; the direct-child
+  restriction; launch-key retries; the raid outbox survives a full messaging
+  queue, keeps its order, is sent whenever nonempty even with an unchanged
+  directory, and refuses additions (-32010) but not removals when full or
+  over the event budget.
+- Python (new =tests/test_raids.py=), following the functional acceptance list:
+  - the host invites two independent roots; the first is owner and both
+    message each other from inside their sandboxes;
+  - a member invites its direct child and launches one with =--inherit-raid=;
+    the owner is unchanged;
+  - inviting a sibling or grandchild, moving a goblin from another raid, and
+    taking ownership through a role all fail;
+  - a non-owner leaves and the raid continues; the owner exits and the raid
+    disappears; the remaining members keep running, new sends between them
+    fail, and a reply to an earlier raid message fails as not allowed while
+    the recipient can still read and complete it;
+  - =raid destroy= stops no goblin; a destroyed name can be reused without
+    rejoining former members;
+  - the communications log contains the raid events and =route=;
+  - flushing without other traffic: create and dissolve a raid through the
+    host RPC, make no inbox, send or =communications-log= call (they would
+    flush the outbox as a side effect), and read the log file directly: both
+    events are there. After =server stop=, events queued just before are in
+    the file too;
+  - filtered logs: =communications-log --session INVITED= shows a host
+    invitation, and each former member's filtered log shows the
+    dissolution.
+
+** Decisions settled for Part B (2026-09-30)
+
+- B1. Messages after leaving or dissolution :: delivered messages live with
+  the recipient. Raid membership is only what lets a sender find a recipient
+  and send. A reply needs the same authorization as a send, so it is rejected
+  once the pair shares neither a raid nor a tree relation (see /Replies/
+  under Messaging).
+- B2. Multi-target host invite :: validate every target first.
+  =Raids::invite= above is written that way.
+- B3. Discovery :: =raid members= is the discovery command. It exists so a
+  member can see who is in the raid and their roles, and pick a recipient.
+  Communication stays one to one through =goblins send=. No separate
+  =raid list= or =raid status= commands are added. The members output leads
+  with each member's name, role and path so it can be used as the recipient
+  for =send=.
+- B4. Roles :: set or changed only, never cleared.
+
+Broadcasts, role routing, ownership transfer, member removal and shared raid
+resources remain out of scope, as the functional specification states.

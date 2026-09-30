@@ -1,0 +1,256 @@
+#+title: Goblins: allowed child configurations and raids
+#+date: 2026-09-30
+
+* Status and purpose
+
+This is a functional specification for two planned features. It describes
+user-visible behaviour, not implementation or protocol design. It does not
+claim that these features are implemented.
+
+The first feature lets a goblin launch children using explicitly permitted
+configurations, including configurations for other agent types. The second
+introduces /raids/: temporary groups of goblins collaborating on a feature or
+a short period of related work.
+
+Implement and try =allowedChildren= first. Raid functionality is defined here
+for subsequent work. Items under /Open decisions/ remain proposals to settle
+before implementing the affected behaviour.
+
+* Concepts
+
+- A /launch configuration/ describes what a goblin runs and its declared
+  environment and access. Several configurations can use the same agent type.
+- A /running goblin/ is an instance of a configuration, with its own identity,
+  terminal and inbox.
+- A /parent/ owns its children and their lifecycle.
+- A /scope/ shares namespaces, managed storage and optionally Docker.
+- A /raid/ gives its members discovery and communication access. Members may
+  come from different branches of the parent/child tree and different scopes.
+
+These features retain named =mkGoblin= configurations. They do not introduce
+multiple launch modes inside a single =mkGoblin= definition.
+
+* Feature 1: allowed child configurations
+
+** Configuration
+
+=mkGoblin= and the agent presets accept =allowedChildren=: a list of named
+configurations this configuration may launch as children.
+
+- Omitting the option preserves existing behaviour: only the same
+  configuration may be launched as a child.
+- An explicit list replaces that default. Include the configuration's own
+  name to permit children using itself as well.
+- An empty list permits no children.
+- References to nonexistent configurations are configuration errors.
+- Sharing a scope does not by itself authorize launching another configuration.
+
+Example:
+
+#+begin_src nix
+mkGoblins {
+  scopes.work = mkScope { };
+  goblins = {
+    coordinator = mkCodexGoblin {
+      scope = "work";
+      allowedChildren = [ "coordinator" "reviewer" "shell" ];
+    };
+    reviewer = mkClaudeGoblin {
+      scope = "work";
+      allowedChildren = [ ];
+    };
+    shell = mkGoblin {
+      pkg = pkgs.fish;
+      binName = "fish";
+      scope = "work";
+    };
+  };
+}
+#+end_src
+
+** Launching children
+
+Inside the coordinator:
+
+#+begin_src sh
+goblins run reviewer --name review --detached
+goblins run shell --name build --detached
+#+end_src
+
+The selected configuration must be in the selected parent's =allowedChildren=.
+This applies both to sandbox launches and host launches using =--parent=.
+Selecting a descendant with =--parent= uses that descendant's permitted child
+configurations; it does not substitute the caller's permissions.
+
+An unauthorized configuration is rejected with an explanation. Starting a
+different agent type follows the same launch and attachment behaviour as
+starting a child of the same type.
+
+** Child environment and access
+
+The child inherits the parent's actual scope, shared workspace and current
+dev-shell generation, if any. It cannot select another scope or dev shell at
+launch. Its configuration must support the inherited scope, including the
+absence of a scope. A different default scope does not redirect the child.
+
+The selected child configuration supplies its executable, arguments, agent
+integration, settings, packages, environment and declared mounts. This includes
+the appropriate credentials for its agent type. The child's own settings take
+the place of the parent's launch settings; they are not a blanket union of
+both configurations.
+
+An explicitly permitted child may have declared access its parent lacks.
+Permitting that configuration authorizes the parent to delegate work through
+those capabilities. The parent does not thereby receive the child's mounts
+or credentials in its own sandbox.
+
+Each child uses its own configuration's =allowedChildren= for further
+delegation. Consequently, permitting a configuration also permits the
+delegation it can perform through its own allowed children.
+
+Children retain the parent's configuration snapshot. Rebuilding or replacing
+the installed configuration does not change which configurations an existing
+branch can launch, their declared access, or the startup filesystem objects
+they use.
+
+** Lifecycle and communication
+
+The child remains part of the ownership tree. Parent exit stops its subtree,
+and existing attachment and stop permissions continue to follow ownership.
+Launching a child does not automatically assign it a task or copy conversation
+history. Existing inbox messaging can be used to assign work.
+
+Launching an allowed child alone does not join it to a raid. Raid inheritance
+requires the separate option described below.
+
+* Feature 2: raids
+
+** Purpose and membership
+
+A raid is a temporary collaboration group, typically for one feature or up to
+one day of related features. Time is descriptive, not an expiration timer.
+
+A goblin belongs to at most one raid. Goblins in different branches, using
+different configurations or belonging to different scopes can share a raid.
+Joining grants discovery and messaging access to the other members, without
+sharing their files, credentials, namespaces, terminals or lifecycle control.
+
+Raid names are unique within the current daemon session. Raids are not
+restored after daemon restart. A dissolved raid's name can be reused for a
+new raid; former members are not automatically rejoined.
+
+** Host commands
+
+| Command | Behaviour |
+|---------+-----------|
+| =goblins raid invite NAME GOBLIN [GOBLIN...]= | Create the raid if absent and add the specified goblins. The first listed goblin becomes owner when creating it. |
+| =goblins run CONFIG ... --raid NAME= | Launch and join. Create the raid if absent, with the new goblin as owner; otherwise join as a member. |
+| =goblins raid destroy NAME= | Dissolve the raid without stopping its goblins. |
+| =goblins raid members NAME= | List the raid's members, their roles and its owner. |
+| =goblins raid set-role NAME GOBLIN ROLE= | Change a member's descriptive role. |
+
+There is no host =raid create= command and no empty raid waiting for its first
+member. Inviting to an existing raid preserves its owner. The host can invite
+goblins anywhere in the ownership tree.
+
+** Commands inside a goblin
+
+| Command | Behaviour |
+|---------+-----------|
+| =goblins raid create NAME= | Create the raid and join as owner. Fail if the name already exists or the caller already belongs to a raid. |
+| =goblins raid invite CHILD [CHILD...]= | Add direct children to the caller's current raid. |
+| =goblins raid leave= | Leave the current raid. If the caller owns it, dissolve it. |
+| =goblins run CONFIG ... --inherit-raid= | Launch a child and join it to the selected parent's current raid. |
+| =goblins raid set-role ROLE= | Change the caller's descriptive role. |
+| =goblins raid members= | List the current raid's members, their roles and its owner. |
+
+Any member can invite its direct children; this is not limited to the owner.
+The sandbox invite command cannot recruit siblings, grandchildren or unrelated
+goblins. An invitation joins the target immediately, without an acceptance step.
+
+Inviting an existing member of the same raid leaves its membership unchanged.
+Inviting a goblin in another raid fails rather than moving it implicitly.
+Launches using raid inheritance fail if the selected parent has no raid.
+=--inherit-raid= does not override =allowedChildren= or ownership restrictions.
+
+** Ownership, roles and lifetime
+
+The first joiner owns the raid. Subsequent invitations and launches do not
+replace the owner. Ownership transfer is outside this first version.
+
+A non-owner leaving or exiting removes only that member. When the owner
+leaves or exits, the raid immediately dissolves and all remaining members lose
+their membership. The same applies when the owner is stopped or its launch
+fails. The raid does not elect a replacement owner.
+
+Dissolving a raid does not itself stop any goblin. Independently, an owner's
+exit can stop its descendants through the ordinary parent/child lifecycle.
+Other members keep running unless their own lifecycle also requires stopping.
+
+Roles such as =coordinator=, =builder= and =reviewer= describe work. They grant
+no permissions, multiple members can share a role, and membership does not
+require setting one. Ownership is shown separately and cannot be acquired by
+changing a role.
+
+** Discovery and communication
+
+The members listing identifies the raid and shows each member's name/path,
+identity, configuration, role, state and owner status. This lets members find
+collaborators outside their own subtree.
+
+Members use ordinary inbox messaging to contact one another directly:
+
+#+begin_src sh
+goblins raid members
+goblins send review --message "The build passes; please review."
+#+end_src
+
+An ambiguous name requires a full path or immutable goblin identity. Roles do
+not serve as message destinations in this version.
+
+Raid membership adds communication access to the existing parent/descendant
+messaging rules. Leaving or dissolution removes access based on raid
+membership; any independently permitted parent/descendant communication remains
+available. Membership does not allow reading another member's inbox.
+
+* Open decisions
+
+The following details were not settled in the discussion:
+
+- How runtime package grants and Docker activation carry over when launching
+  a different child configuration. Startup declarations and inherited scope
+  are defined above; runtime additions need a separate rule.
+- What happens to already accepted messages and replies when a member leaves
+  or a raid dissolves. Suggested default: keep accepted messages available to
+  their recipients and allow replies to those messages, while preventing new
+  sends that relied solely on former membership.
+- Whether a host invitation naming several goblins should fail as a whole if
+  any target is invalid or already in another raid. Suggested default: validate
+  all targets before changing membership, so a failed invitation does not
+  accidentally create a raid or select an unexpected owner.
+- Whether to add host =raid list= and sandbox =raid status= for discovery.
+  They are useful additions, but were not part of the agreed command set.
+
+Broadcast messaging, role-based routing, task queues, ownership transfer,
+member-removal commands and shared raid resources are outside this first
+version.
+
+* User-visible acceptance examples
+
+- A Codex coordinator explicitly permits a Claude reviewer and a shell. It can
+  launch both, and each reports and runs its selected configuration.
+- A configuration not in the parent's list is rejected, even if it shares
+  the parent's scope. An empty list prevents all child launches.
+- A child shares the parent's workspace and selected scope while using its
+  own declared agent configuration and credentials.
+- A running branch continues to use its original child configurations after
+  the host rebuilds Goblins. Parent exit still stops its descendants.
+- The host invites two independently launched goblins into a new raid. The
+  first is owner; both can discover and directly message the other.
+- A raid member invites its direct child or launches one with
+  =--inherit-raid=. The child joins as a member, without changing the owner.
+- A member cannot invite a sibling, silently move a goblin from another raid,
+  or gain ownership by changing its role.
+- A non-owner leaves and the raid continues. The owner leaves or exits and
+  the raid disappears. Remaining independent members keep running and cannot
+  initiate new messages using the dissolved raid's membership.
