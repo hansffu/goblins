@@ -14,8 +14,16 @@ Communication stays one to one through
 Form a raid when collaborators outside your parent/descendant line must
 exchange messages, for example a reviewer launched by the host and a
 developer in another branch, or siblings that would otherwise relay everything
-through their parent. Your parent and descendants are always reachable without
-a raid. A goblin belongs to at most one raid.
+through their parent. Your direct parent and your descendants are always
+reachable without a raid. A goblin belongs to at most one raid.
+
+## Am I in a raid?
+
+The host or your parent can add you to a raid without notifying you.
+`goblins status` shows your current raid, role and owner, if any. When you are
+asked to work with other goblins or with raid members, check
+`goblins status` or `goblins raid members` before assuming you can only reach
+your parent and descendants.
 
 ## Create, invite and launch
 

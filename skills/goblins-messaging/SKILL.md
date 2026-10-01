@@ -21,7 +21,9 @@ For ongoing collaborators, send relevant decisions from direct user interaction
 to `parent` so it can relay them to affected goblins. Siblings cannot message
 each other directly unless they share a raid (see
 [goblins-raids](../goblins-raids/SKILL.md)), and terminal conversations are not
-automatically shared.
+automatically shared. You may have been added to a raid without being told:
+when asked to contact other goblins, check `goblins status` or
+`goblins raid members` for recipients beyond your parent and descendants.
 
 `goblins inbox next` claims one item and returns `message` plus
 `claim_generation`. A null `message` means the inbox is empty. Read the claimed

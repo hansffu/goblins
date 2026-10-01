@@ -23,11 +23,11 @@ must already be accessible. A child is not a separate checkout.
 
 Pick a configuration from the allowed children that `goblins status` lists,
 then run `goblins run CONFIG --name CHILD --detached`, substituting that
-configuration and a child name. A child shares the parent's workspace, scope and
-dev shell but runs its own configuration and access (for example another agent
-type); it gains no access for the parent. `--detached` leaves the child running
-without attaching its terminal. Use the returned identity; a `starting` response acknowledges the
-launch, not task execution.
+configuration and a child name. A child shares the parent's workspace, scope
+and dev shell but runs its own configuration and access (for example another
+agent type); it gains no access for the parent. `--detached` leaves the child
+running without attaching its terminal. Use the returned identity; a
+`starting` response acknowledges the launch, not task execution.
 
 Read [goblins-messaging](../goblins-messaging/SKILL.md) to send the child's task
 and handle its replies through the daemon. Provide the role, relevant context,
