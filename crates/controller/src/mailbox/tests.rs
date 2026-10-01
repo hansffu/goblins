@@ -12,9 +12,12 @@ struct MemoryAudit {
     raid_full: bool,
     /// Reject operation outcomes that carry a notice for lack of capacity.
     notice_full: bool,
+    /// A byte limit enforced like the journal's, with the bytes written.
+    limit: Option<usize>,
+    bytes: usize,
 }
 impl Audit for MemoryAudit {
-    fn append(&mut self, event: &Event, _: usize) -> std::result::Result<(), AuditError> {
+    fn append(&mut self, event: &Event, reserved: usize) -> std::result::Result<(), AuditError> {
         if self.fail {
             return Err(AuditError::Unavailable);
         }
@@ -26,6 +29,14 @@ impl Audit for MemoryAudit {
         {
             return Err(AuditError::Capacity);
         }
+        let line = serde_json::to_vec(event).unwrap().len() + 1;
+        if self
+            .limit
+            .is_some_and(|limit| self.bytes + line + reserved > limit)
+        {
+            return Err(AuditError::Capacity);
+        }
+        self.bytes += line;
         self.events.push(event.clone());
         Ok(())
     }
@@ -875,4 +886,39 @@ fn only_recent_outcomes_are_remembered() {
     )]);
     assert_eq!(f.kinds().last(), Some(&"operation.duplicate"));
     assert_eq!(f.audit.events.len(), recorded + 1);
+}
+
+#[test]
+fn other_events_leave_queued_messages_room_to_be_fetched_and_completed() {
+    let mut f = Fixture::new();
+    f.send("p", "c", "one", "first");
+    f.send("p", "c", "two", "second");
+    // Exactly the reserve for two queued messages remains.
+    f.audit.limit = Some(f.audit.bytes + 2 * 2 * 2048);
+    let recorded = f.audit.events.len();
+    for n in 0..10 {
+        f.operations(vec![completed(&format!("r{n}"), "c", "denied", false)]);
+        let _ = f.mailbox.record(
+            "c",
+            "integration.wake_attempt",
+            json!({"attempt":n}),
+            1000,
+            &mut f.audit,
+        );
+        f.mailbox.record_raid(
+            &crate::raid::Raids::default()
+                .invite(format!("raid{n}"), "review", &["c".into()], "host")
+                .unwrap(),
+            1000,
+            &mut f.audit,
+        );
+    }
+    assert_eq!(f.audit.events.len(), recorded);
+    assert_eq!(f.mailbox.status("c")["audit_failed"], false);
+    for key in ["first", "second"] {
+        let claim = f.next("c", key);
+        let mut message = claim["message"].clone();
+        message["claim_generation"] = claim["claim_generation"].clone();
+        f.complete("c", &message, &format!("{key}-done")).unwrap();
+    }
 }

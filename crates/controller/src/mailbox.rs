@@ -193,18 +193,25 @@ impl Mailbox {
                 ),
             data,
         };
-        let reserved = self
-            .messages
-            .iter()
-            .filter(|m| matches!(m.state, State::Queued | State::Claimed))
-            .count()
-            * 2048;
+        let reserved = self.reserved_bytes();
         if let Err(e) = audit.append(&event, reserved) {
             return Err(self.audit_error(e));
         }
         self.sequence += 1;
         self.auxiliary_events += 1;
         Ok(())
+    }
+
+    /// Log space kept for every unresolved message: a fetch and a completion
+    /// for a queued item, a completion for a claimed one. Events that are not
+    /// themselves such a transition must leave it free.
+    fn reserved_bytes(&self) -> usize {
+        self.messages
+            .iter()
+            .filter(|m| m.state.unresolved())
+            .map(|m| if m.state == State::Queued { 2 } else { 1 })
+            .sum::<usize>()
+            * 2048
     }
 
     pub fn raids(&self) -> &Logged {
@@ -232,12 +239,7 @@ impl Mailbox {
                     sessions: raid.sessions(),
                     data: raid.data(),
                 };
-                let reserved = self
-                    .messages
-                    .iter()
-                    .filter(|m| matches!(m.state, State::Queued | State::Claimed))
-                    .count()
-                    * 2048;
+                let reserved = self.reserved_bytes();
                 match audit.append(&event, reserved) {
                     Ok(()) => {
                         self.sequence += 1;
@@ -437,12 +439,7 @@ impl Mailbox {
             sessions: vec![operation.session.clone()],
             data,
         };
-        let reserved = self
-            .messages
-            .iter()
-            .filter(|m| m.state.unresolved())
-            .count()
-            * 2048;
+        let reserved = self.reserved_bytes();
         if let Err(e) = audit.append(&event, reserved) {
             return Err(self.audit_error(e));
         }
