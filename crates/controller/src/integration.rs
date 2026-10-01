@@ -257,7 +257,7 @@ impl Integrations {
 mod tests {
     use super::*;
     use crate::mailbox::{AuditError, Directory, Event, Limits, Session};
-    use goblins_protocol::messages::{Mutation, Send};
+    use goblins_protocol::messages::{Claim, Mutation, Next, Send};
     #[derive(Default)]
     struct Log {
         events: Vec<Event>,
@@ -345,6 +345,128 @@ mod tests {
         fn tick(&mut self) -> Value {
             self.call("integration.tick", json!({"epoch":1})).unwrap()
         }
+    }
+    impl Fixture {
+        fn directory() -> Directory {
+            Directory::from([(
+                "child".into(),
+                Session {
+                    id: "child".into(),
+                    path: "child".into(),
+                    parent: None,
+                    running: true,
+                },
+            )])
+        }
+        /// A Goblins-owned operation finishing, as the controller reports it.
+        fn finish(&mut self, request: &str, status: &str) {
+            let event = crate::operation::Event {
+                request: request.into(),
+                session: "child".into(),
+                actor: "goblins".into(),
+                change: crate::operation::Change::Completed {
+                    kind: "docker".into(),
+                    subject: "Docker scope: work".into(),
+                    status: status.into(),
+                    message: None,
+                    notify: true,
+                },
+            };
+            self.inbox
+                .record_operations(&[event], &Self::directory(), self.now, &mut self.log);
+        }
+        fn fetch_and_complete(&mut self, key: &str) -> Value {
+            let claim = self
+                .inbox
+                .execute(
+                    "child",
+                    Mutation::Next(Next { key: key.into() }),
+                    &Self::directory(),
+                    self.now,
+                    &mut self.log,
+                )
+                .unwrap();
+            let message = claim["message"].clone();
+            self.inbox
+                .execute(
+                    "child",
+                    Mutation::Complete(Claim {
+                        key: format!("{key}-done"),
+                        message: message["id"].as_str().unwrap().into(),
+                        claim_generation: claim["claim_generation"].as_u64().unwrap(),
+                    }),
+                    &Self::directory(),
+                    self.now,
+                    &mut self.log,
+                )
+                .unwrap();
+            message
+        }
+    }
+    #[test]
+    fn operation_completion_wakes_an_idle_agent_with_an_empty_inbox() {
+        for status in ["ready", "denied", "failed", "withdrawn", "cancelled"] {
+            let mut f = Fixture::new();
+            f.hook("UserPromptSubmit", false);
+            // The agent yielded while its operation was pending.
+            assert_eq!(f.hook("Stop", false)["continue"], false);
+            assert_eq!(f.tick()["notify"], false);
+            f.finish("r1", status);
+            assert_eq!(f.tick()["notify"], true, "{status}");
+            let notice = f.fetch_and_complete("fetch");
+            assert_eq!(notice["operation"]["status"], status);
+            assert_eq!(f.inbox.status("child")["queued"], 0);
+        }
+    }
+    #[test]
+    fn operation_completion_while_working_continues_at_stop_without_a_wakeup() {
+        let mut f = Fixture::new();
+        f.hook("UserPromptSubmit", false);
+        f.finish("r1", "ready");
+        // A working agent gets no terminal or notification wakeup.
+        assert_eq!(f.tick()["notify"], false);
+        f.now += 30001;
+        assert_eq!(f.tick()["notify"], false);
+        // Its turn end is held open once to fetch the notice.
+        assert_eq!(f.hook("Stop", false)["continue"], true);
+        assert_eq!(f.fetch_and_complete("fetch")["operation"]["request"], "r1");
+        assert_eq!(f.hook("Stop", true)["continue"], false);
+        assert_eq!(f.tick()["notify"], false);
+        // A duplicate outcome after it was handled does not resume it again.
+        f.finish("r1", "ready");
+        assert_eq!(f.tick()["notify"], false);
+    }
+    #[test]
+    fn operation_completion_respects_human_input_and_pause() {
+        let mut f = Fixture::new();
+        f.hook("UserPromptSubmit", false);
+        f.hook("Stop", false);
+        f.view.input += 1;
+        f.finish("r1", "ready");
+        assert_eq!(f.tick()["notify"], false);
+        f.state.states.get_mut("child").unwrap().paused = true;
+        f.view.input -= 1;
+        assert_eq!(f.tick()["notify"], false);
+        f.state.states.get_mut("child").unwrap().paused = false;
+        assert_eq!(f.tick()["notify"], true);
+    }
+    #[test]
+    fn operation_completion_reaches_claude_through_its_notification_monitor() {
+        let mut f = Fixture::new();
+        f.state.states.get_mut("child").unwrap().driver = "claude".into();
+        f.hook("UserPromptSubmit", false);
+        f.hook("Stop", false);
+        // Claude's composer state does not matter for native notifications.
+        f.view.ready = false;
+        f.finish("r1", "denied");
+        let result = f
+            .call(
+                "integration.tick",
+                json!({"epoch":1,"delivery":"notification"}),
+            )
+            .unwrap();
+        assert_eq!(result["notify"], true);
+        assert_eq!(result["delivery"], "notification");
     }
     #[test]
     fn startup_message_wakes_after_session_start() {

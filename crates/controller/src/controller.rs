@@ -105,6 +105,8 @@ struct Pending {
     serial: u64,
     connection: u64,
     cancel: Cancel,
+    /// The requester has an agent integration to wake with a completion notice.
+    notify: bool,
 }
 /// A sandbox call waiting on the worker (`flake.run`, `devshell.diff`). One
 /// at a time per sandbox; the worker runs them in turn with other work.
@@ -444,6 +446,10 @@ pub struct Controller {
     /// Raid events not yet accepted by the messaging worker, in order.
     raid_outbox: VecDeque<crate::raid::Event>,
     raid_events: usize,
+    /// Operation lifecycle events not yet accepted by the messaging worker,
+    /// in order. Completions are never dropped; new requests are refused
+    /// while this is full.
+    operation_outbox: VecDeque<crate::operation::Event>,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -483,6 +489,7 @@ impl Controller {
             raids: Default::default(),
             raid_outbox: VecDeque::new(),
             raid_events: 0,
+            operation_outbox: VecDeque::new(),
         })
     }
     fn number(&mut self) -> u64 {
@@ -556,6 +563,31 @@ impl Controller {
     }
     fn permission_mut(&mut self, id: &str) -> Option<&mut PermissionRecord> {
         self.permissions.iter_mut().find(|p| p.id == id)
+    }
+    fn operation(&mut self, request: &str, actor: &str, change: crate::operation::Change) {
+        if let Some(r) = self.permissions.iter().find(|r| r.id == request) {
+            self.operation_outbox.push_back(crate::operation::Event {
+                request: request.into(),
+                session: r.session.clone(),
+                actor: actor.into(),
+                change,
+            });
+        }
+    }
+    /// Queue the terminal outcome the record now holds. Call once per
+    /// request, after its state is final; `message` is what the sandbox sees.
+    fn operation_finished(&mut self, request: &str, notify: bool, message: Option<String>) {
+        let Some(r) = self.permissions.iter().find(|r| r.id == request) else {
+            return;
+        };
+        let change = crate::operation::Change::Completed {
+            kind: r.kind.clone(),
+            subject: r.package.clone(),
+            status: r.state.clone(),
+            message,
+            notify,
+        };
+        self.operation(request, goblins_protocol::messages::NOTICE_SENDER, change);
     }
     fn allocate_name(
         &self,
@@ -747,6 +779,7 @@ impl Controller {
                 r.state = "cancelled".into();
             }
             self.reply_permission(&p.id, "error", Some("session stopped".into()));
+            self.operation_finished(&p.id, p.notify, Some("session stopped".into()));
         }
         if let Some(w) = self.sessions.get_mut(id).and_then(|a| a.call.take()) {
             w.cancel.cancel();
@@ -803,15 +836,16 @@ impl Controller {
                 {
                     let p = a.pending.take().unwrap();
                     p.cancel.cancel();
-                    gone = Some(p.id);
+                    gone = Some((p.id, p.notify));
                     break;
                 }
             }
         }
-        if let Some(id) = gone {
+        if let Some((id, notify)) = gone {
             if let Some(r) = self.permission_mut(&id) {
                 r.state = "withdrawn".into();
             }
+            self.operation_finished(&id, notify, None);
             self.dirty = true;
         }
     }
@@ -1083,7 +1117,8 @@ impl Controller {
             _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
         }
     }
-    fn decide(&mut self, p: Decision) -> std::result::Result<Value, Fault> {
+    /// `actor` is `host`, or the daemon for an inherited approval.
+    fn decide(&mut self, p: Decision, actor: &str) -> std::result::Result<Value, Fault> {
         let r = self
             .permissions
             .iter()
@@ -1133,6 +1168,7 @@ impl Controller {
         };
         let a = self.sessions.get_mut(&p.session).unwrap();
         let pending = a.pending.as_ref().unwrap();
+        let notify = pending.notify;
         pending.cancel.cancel();
         if p.approved {
             let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
@@ -1157,8 +1193,16 @@ impl Controller {
         let r = self.permission_mut(&p.request).unwrap();
         r.approved = Some(p.approved);
         r.state = if p.approved { "realizing" } else { "denied" }.into();
+        self.operation(
+            &p.request,
+            actor,
+            crate::operation::Change::Decided {
+                approved: p.approved,
+            },
+        );
         if !p.approved {
             self.reply_permission(&p.request, "denied", None);
+            self.operation_finished(&p.request, notify, None);
         }
         self.dirty = true;
         Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
@@ -1206,7 +1250,7 @@ impl Controller {
             })
             .collect();
         for decision in decisions {
-            let _ = self.decide(decision);
+            let _ = self.decide(decision, goblins_protocol::messages::NOTICE_SENDER);
         }
     }
     fn host(
@@ -1287,7 +1331,7 @@ impl Controller {
                         .ok_or_else(missing)?
                 ))
             }
-            "permissions.decide" => self.decide(params(value)?),
+            "permissions.decide" => self.decide(params(value)?, "host"),
             "state.subscribe" => {
                 let _: Empty = params(value)?;
                 if c.subscription.is_some() {
@@ -1411,10 +1455,15 @@ impl Controller {
                     directory: self.message_directory(),
                     view,
                     raids: self.raid_outbox.drain(..).collect(),
+                    operations: self.operation_outbox.drain(..).collect(),
                 };
                 if let Err(e) = self.messaging.commands.try_send(work) {
-                    if let crate::messaging::Work::Call { raids, .. } = unsent(e) {
+                    if let crate::messaging::Work::Call {
+                        raids, operations, ..
+                    } = unsent(e)
+                    {
                         self.raid_outbox = raids.into();
+                        self.operation_outbox = operations.into();
                     }
                     return Err(capacity());
                 }
@@ -1576,6 +1625,11 @@ impl Controller {
                             (None, false) => "refresh".into(),
                         };
                     }
+                    // Completions must not be dropped, so a backlog the
+                    // messaging worker has not accepted refuses new requests.
+                    if self.operation_outbox.len() >= 1024 {
+                        return Err(capacity());
+                    }
                     if self.permissions.len() >= 256 {
                         let index = self
                             .permissions
@@ -1598,6 +1652,11 @@ impl Controller {
                     let auto_approve = inherited_output.is_some()
                         || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
                     let a = self.sessions.get_mut(&session).unwrap();
+                    let notify = a
+                        .inheritance
+                        .as_ref()
+                        .and_then(|i| i.integration())
+                        .is_some();
                     let w = a.worker.as_ref().ok_or_else(conflict)?;
                     let cancel = w.cancel.child();
                     if p.kind == "devshell" {
@@ -1641,6 +1700,7 @@ impl Controller {
                         serial,
                         connection: c.id,
                         cancel,
+                        notify,
                     });
                     self.permissions.push_back(PermissionRecord {
                         kind: p.kind.clone(),
@@ -1655,6 +1715,15 @@ impl Controller {
                         preview: docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Children inherit the attachment.")})),
                         message: None,
                     });
+                    let r = self.permissions.back().unwrap();
+                    let change = crate::operation::Change::Requested {
+                        kind: r.kind.clone(),
+                        subject: r.package.clone(),
+                        reason: r.reason.clone(),
+                        automatic: auto_approve,
+                    };
+                    let session = r.session.clone();
+                    self.operation(&request, &session, change);
                     c.waiting = Some((request, id.clone()));
                     self.dirty = true;
                     Ok(None)
@@ -1864,6 +1933,7 @@ impl Controller {
                                 r.state = "failed".into();
                                 r.message = Some(bounded(&error));
                                 self.reply_permission(&id, "error", Some(bounded(&error)));
+                                self.operation_finished(&id, p.notify, Some(bounded(&error)));
                             }
                         }
                         self.dirty = true;
@@ -1924,6 +1994,7 @@ impl Controller {
                                     }
                                 }
                             }
+                            self.operation_finished(&p.id, p.notify, reply.message.clone());
                             self.reply_permission(&p.id, &reply.status, reply.message);
                         }
                         a.record.detail = detail.map(|e| bounded(&e));
@@ -1950,6 +2021,11 @@ impl Controller {
                                 r.state = "cancelled".into();
                             }
                             self.reply_permission(&p.id, "error", Some("payload stopped".into()));
+                            self.operation_finished(
+                                &p.id,
+                                p.notify,
+                                Some("payload stopped".into()),
+                            );
                         }
                         if let Some(w) = a.call.take() {
                             w.cancel.cancel();
@@ -1980,6 +2056,11 @@ impl Controller {
                             r.state = "cancelled".into();
                         }
                         self.reply_permission(&p.id, "error", Some("session worker exited".into()));
+                        self.operation_finished(
+                            &p.id,
+                            p.notify,
+                            Some("session worker exited".into()),
+                        );
                     }
                     self.dirty = true;
                 }
@@ -2043,16 +2124,24 @@ impl Controller {
         let directory = self.message_directory();
         // Queued raid events go out even when the directory is unchanged. A
         // batch is cleared once accepted and kept for the next tick otherwise.
-        if directory != self.messaging_directory || !self.raid_outbox.is_empty() {
+        if directory != self.messaging_directory
+            || !self.raid_outbox.is_empty()
+            || !self.operation_outbox.is_empty()
+        {
             let work = crate::messaging::Work::Sync {
                 directory: directory.clone(),
                 raids: self.raid_outbox.drain(..).collect(),
+                operations: self.operation_outbox.drain(..).collect(),
             };
             match self.messaging.commands.try_send(work) {
                 Ok(()) => self.messaging_directory = directory,
                 Err(e) => {
-                    if let crate::messaging::Work::Sync { raids, .. } = unsent(e) {
+                    if let crate::messaging::Work::Sync {
+                        raids, operations, ..
+                    } = unsent(e)
+                    {
                         self.raid_outbox = raids.into();
+                        self.operation_outbox = operations.into();
                     }
                 }
             }
@@ -2098,10 +2187,31 @@ impl Drop for Controller {
         // channel. Drain results meanwhile so a full queue cannot deadlock.
         // Send the current directory, not the last synced one: a member that
         // joined this tick needs its session.started record first.
-        if !self.raid_outbox.is_empty() {
+        // Operations still pending end with the daemon; record that outcome.
+        let pending: Vec<_> = self
+            .sessions
+            .values_mut()
+            .filter_map(|a| a.pending.take())
+            .collect();
+        for p in pending {
+            p.cancel.cancel();
+            if let Some(r) = self.permission_mut(&p.id) {
+                r.state = "cancelled".into();
+            }
+            self.operation_finished(&p.id, p.notify, Some("daemon stopped".into()));
+        }
+        if !self.raid_outbox.is_empty() || !self.operation_outbox.is_empty() {
+            let mut directory = self.message_directory();
+            // Every session is going away: queue no notice that nobody can read.
+            if !self.operation_outbox.is_empty() {
+                for session in directory.values_mut() {
+                    session.running = false;
+                }
+            }
             let mut work = crate::messaging::Work::Sync {
-                directory: self.message_directory(),
+                directory,
                 raids: self.raid_outbox.drain(..).collect(),
+                operations: self.operation_outbox.drain(..).collect(),
             };
             while let Err(std::sync::mpsc::TrySendError::Full(back)) =
                 self.messaging.commands.try_send(work)
@@ -2211,6 +2321,7 @@ mod tests {
                     serial: 1,
                     connection: 99,
                     cancel: Cancel::default(),
+                    notify: false,
                 }),
                 terminal,
                 directory,
@@ -2755,6 +2866,221 @@ mod tests {
     }
 
     /// A running session whose worker results the test supplies.
+    fn operations(
+        queue: &std::sync::mpsc::Receiver<crate::messaging::Work>,
+    ) -> Vec<crate::operation::Event> {
+        queue
+            .try_iter()
+            .flat_map(|work| match work {
+                crate::messaging::Work::Sync { operations, .. }
+                | crate::messaging::Work::Call { operations, .. } => operations,
+                crate::messaging::Work::Delivery { .. } => vec![],
+            })
+            .collect()
+    }
+    fn outcome(event: &crate::operation::Event) -> (&str, Option<&str>, bool) {
+        match &event.change {
+            crate::operation::Change::Completed {
+                status,
+                message,
+                notify,
+                ..
+            } => (status, message.as_deref(), *notify),
+            other => panic!("not a completion: {other:?}"),
+        }
+    }
+    #[test]
+    fn every_terminal_outcome_is_queued_once_with_the_sandbox_message() {
+        let path = unix::temp_directory().unwrap();
+        for (results, status, message) in [
+            (
+                vec![Completed::Granted {
+                    reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
+                    detail: None,
+                    output: None,
+                }],
+                "ready",
+                None,
+            ),
+            (
+                vec![Completed::Granted {
+                    reply: goblins_protocol::Reply::new(
+                        Some("r".into()),
+                        "error",
+                        Some("grant failed; see tui terminal".into()),
+                    ),
+                    detail: Some("host-only Nix diagnostic".into()),
+                    output: None,
+                }],
+                "failed",
+                Some("grant failed; see tui terminal"),
+            ),
+            (
+                vec![Completed::Stopped { exit_code: Some(0) }],
+                "cancelled",
+                Some("payload stopped"),
+            ),
+        ] {
+            let mut d = Controller::new(&path, None).unwrap();
+            let (service, queue) = crate::messaging::Service::detached(8);
+            d.messaging = service;
+            let id = session_with_results(&mut d, results);
+            d.sessions
+                .get_mut(&id)
+                .unwrap()
+                .pending
+                .as_mut()
+                .unwrap()
+                .notify = true;
+            d.tick().unwrap();
+            d.tick().unwrap();
+            let events = operations(&queue);
+            assert_eq!(events.len(), 1, "{status}");
+            assert_eq!(events[0].request, "r");
+            assert_eq!(events[0].session, id);
+            assert_eq!(events[0].kind(), "operation.completed");
+            assert_eq!(outcome(&events[0]), (status, message, true));
+            drop(d);
+            // Nothing was pending at shutdown, so nothing more is reported.
+            assert!(operations(&queue).is_empty());
+        }
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn stop_withdrawal_and_shutdown_end_pending_operations() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(64);
+        d.messaging = service;
+        let stopped = session_with_results_id(&mut d, "stopped", vec![]);
+        d.stop(&stopped, Some("stopped by host".into())).unwrap();
+        let withdrawn = session_with_results_id(&mut d, "withdrawn", vec![]);
+        d.permissions.back_mut().unwrap().state = "pending".into();
+        d.permissions.back_mut().unwrap().id = "w".into();
+        d.sessions
+            .get_mut(&withdrawn)
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .id = "w".into();
+        d.withdraw(99);
+        // A second loss of the same connection reports nothing new.
+        d.withdraw(99);
+        let shutdown = session_with_results_id(&mut d, "shutdown", vec![]);
+        let (worker, _results) = Worker::idle();
+        d.sessions.get_mut(&shutdown).unwrap().worker = Some(worker);
+        d.permissions.back_mut().unwrap().id = "s".into();
+        d.sessions
+            .get_mut(&shutdown)
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .id = "s".into();
+        d.tick().unwrap();
+        let events = operations(&queue);
+        let outcomes: Vec<_> = events
+            .iter()
+            .map(|e| (e.session.as_str(), outcome(e).0, outcome(e).1))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("stopped", "cancelled", Some("session stopped")),
+                ("withdrawn", "withdrawn", None),
+            ]
+        );
+        drop(d);
+        let events = operations(&queue);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].request, "s");
+        assert_eq!(outcome(&events[0]).1, Some("daemon stopped"));
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn requests_are_logged_and_a_full_queue_keeps_outcomes_in_order() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(1);
+        d.messaging = service;
+        let _results = live(&mut d, "a", None);
+        let (worker, _results, _commands) = Worker::listening();
+        d.sessions.get_mut("a").unwrap().worker = Some(worker);
+        d.tick().unwrap();
+        while queue.try_recv().is_ok() {}
+        // Fill the queue so the next batches cannot be handed over.
+        d.messaging
+            .commands
+            .try_send(crate::messaging::Work::Delivery {
+                actor: "a".into(),
+                revision: 0,
+                submitted: false,
+            })
+            .unwrap();
+        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        c.initialized = true;
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(1)),
+                method: "permissions.request".into(),
+                params: json!({"kind":"package","package":"hello","reason":"test"}),
+            },
+        );
+        // The request waits for its terminal result.
+        assert!(c.output.is_empty());
+        let request = d.permissions.back().unwrap().clone();
+        assert_eq!(request.state, "pending");
+        d.connections.push(c);
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: request.id.clone(),
+                approval: request.approval.clone(),
+                approved: false,
+            },
+            "host",
+        )
+        .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.operation_outbox.len(), 3);
+        assert!(operations(&queue).is_empty());
+        d.tick().unwrap();
+        let kinds: Vec<_> = operations(&queue).iter().map(|e| e.kind()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "operation.requested",
+                "operation.decided",
+                "operation.completed"
+            ]
+        );
+        assert!(d.operation_outbox.is_empty());
+        // A backlog refuses new requests rather than dropping outcomes.
+        let filler = crate::operation::Event {
+            request: "x".into(),
+            session: "a".into(),
+            actor: "a".into(),
+            change: crate::operation::Change::Decided { approved: true },
+        };
+        d.operation_outbox.extend(std::iter::repeat_n(filler, 1024));
+        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        c.initialized = true;
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut c,
+                "permissions.request",
+                json!({"kind":"package","package":"hello","reason":"again"}),
+                Some(json!(2))
+            )["error"]["code"],
+            -32010
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
     fn live(
         d: &mut Controller,
         id: &str,

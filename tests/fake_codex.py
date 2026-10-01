@@ -69,6 +69,8 @@ try:
         sys.stdout.flush()
         if submitted == "busy":
             time.sleep(2)
+        elif submitted == "long-busy":
+            time.sleep(8)
         elif submitted == "notifier-fail":
             for path in Path("/proc").glob("[0-9]*/cmdline"):
                 try:
@@ -84,7 +86,11 @@ try:
                 if hook("Stop")["continue"]:
                     continue
                 break
-            cli("reply", item["message"]["id"], "--claim-generation", str(item["claim_generation"]), "--message", "processed: " + item["message"]["body"])
+            if item["message"].get("operation"):
+                # Operation notices take no reply.
+                cli("inbox", "complete", item["message"]["id"], "--claim-generation", str(item["claim_generation"]))
+            else:
+                cli("reply", item["message"]["id"], "--claim-generation", str(item["claim_generation"]), "--message", "processed: " + item["message"]["body"])
         ready()
 finally:
     if monitor is not None:

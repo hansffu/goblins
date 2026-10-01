@@ -36,6 +36,11 @@ Choose the flags for the task:
      existing environment where possible; do not retry unchanged.
    - Exit 2: unknown outcome. Do not resubmit on your own; the original
      request may still complete.
+   If you end your turn while the refresh is pending, its outcome arrives
+   as an operation notice in your inbox (see goblins-messaging). If the
+   refresh command itself did not finish, for example after exit 2, a ready
+   notice means the generation is active but the workspace lock may still be
+   the old one: run `goblins devshell restore-lock` to write the approved lock.
 3. Existing processes, including your current shell and any shell it starts,
    keep the old environment. Separate command executions may not keep
    environment changes, so source `env.sh` in the same Bash command that

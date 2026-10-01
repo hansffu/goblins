@@ -16,6 +16,8 @@ activated; a runtime grant is not a Nix development shell.
 Exit 1 means denial or a known lookup, build or grant failure.
 Exit 2 means the outcome is unknown; do not
 automatically submit another request, because the original may still complete.
+If you end your turn while a request is pending, its outcome arrives as an
+operation notice in your inbox (see goblins-messaging).
 
 There is no `nix` command in the sandbox; do not try `nix develop`, `nix run`
 or `nix shell`.

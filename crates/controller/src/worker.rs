@@ -459,6 +459,19 @@ impl Worker {
             thread: None,
         }
     }
+    /// A live worker whose commands the test receives.
+    #[cfg(test)]
+    pub fn listening() -> (Self, mpsc::SyncSender<Completed>, mpsc::Receiver<Work>) {
+        let (commands, received) = mpsc::sync_channel(4);
+        let (sender, results) = mpsc::sync_channel(16);
+        let worker = Self {
+            cancel: Cancel::default(),
+            commands,
+            results,
+            thread: None,
+        };
+        (worker, sender, received)
+    }
     /// A live worker whose results the test supplies through the sender.
     #[cfg(test)]
     pub fn idle() -> (Self, mpsc::SyncSender<Completed>) {

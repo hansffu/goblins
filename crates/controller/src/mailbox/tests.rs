@@ -661,3 +661,162 @@ fn raid_events_carry_actor_and_affected_sessions_in_order() {
     );
     assert!(f.mailbox.raids().is_empty());
 }
+
+fn operation(
+    request: &str,
+    session: &str,
+    change: crate::operation::Change,
+) -> crate::operation::Event {
+    crate::operation::Event {
+        request: request.into(),
+        session: session.into(),
+        actor: session.into(),
+        change,
+    }
+}
+fn requested(request: &str, session: &str) -> crate::operation::Event {
+    operation(
+        request,
+        session,
+        crate::operation::Change::Requested {
+            kind: "docker".into(),
+            subject: "Docker scope: work".into(),
+            reason: "integration tests".into(),
+            automatic: false,
+        },
+    )
+}
+fn completed(request: &str, session: &str, status: &str, notify: bool) -> crate::operation::Event {
+    crate::operation::Event {
+        actor: NOTICE_SENDER.into(),
+        ..operation(
+            request,
+            session,
+            crate::operation::Change::Completed {
+                kind: "docker".into(),
+                subject: "Docker scope: work".into(),
+                status: status.into(),
+                message: (status == "failed").then(|| "engine unavailable".into()),
+                notify,
+            },
+        )
+    }
+}
+impl Fixture {
+    fn operations(&mut self, events: Vec<crate::operation::Event>) {
+        self.mailbox
+            .record_operations(&events, &self.directory, 1000, &mut self.audit);
+    }
+    fn kinds(&self) -> Vec<&str> {
+        self.audit.events.iter().map(|e| e.kind.as_str()).collect()
+    }
+}
+
+#[test]
+fn an_operation_outcome_queues_one_correlated_notice() {
+    let mut f = Fixture::new();
+    f.operations(vec![requested("r1", "c")]);
+    assert_eq!(
+        f.mailbox.status("c")["operations"],
+        json!([{"request":"r1","kind":"docker","subject":"Docker scope: work","state":"pending"}])
+    );
+    // Only the requester sees its outstanding operations.
+    assert_eq!(f.mailbox.status("p")["operations"], json!([]));
+    f.operations(vec![operation(
+        "r1",
+        "c",
+        crate::operation::Change::Decided { approved: true },
+    )]);
+    assert_eq!(f.mailbox.status("c")["operations"][0]["state"], "running");
+    // An empty inbox does not mean the operation is finished.
+    assert_eq!(f.mailbox.status("c")["queued"], 0);
+    f.operations(vec![completed("r1", "c", "ready", true)]);
+    assert_eq!(f.mailbox.status("c")["operations"], json!([]));
+    assert_eq!(f.mailbox.status("c")["queued"], 1);
+    let event = f.audit.events.last().unwrap();
+    assert_eq!(event.kind, "operation.completed");
+    assert_eq!(event.actor, NOTICE_SENDER);
+    assert_eq!(event.sessions, ["c"]);
+    assert_eq!(event.data["status"], "ready");
+    let notice_id = event.data["notice"]["id"].clone();
+    // Retried or duplicated delivery queues nothing more.
+    f.operations(vec![
+        completed("r1", "c", "ready", true),
+        requested("r1", "c"),
+    ]);
+    assert_eq!(f.mailbox.status("c")["queued"], 1);
+    assert_eq!(f.kinds().last(), Some(&"operation.duplicate"));
+    let claim = f.next("c", "fetch");
+    let notice = &claim["message"];
+    assert_eq!(notice["id"], notice_id);
+    assert_eq!(notice["sender"], NOTICE_SENDER);
+    assert_eq!(
+        notice["operation"],
+        json!({"request":"r1","kind":"docker","subject":"Docker scope: work","status":"ready","message":null})
+    );
+    assert!(notice["body"].as_str().unwrap().contains("r1"));
+    let mut message = notice.clone();
+    message["claim_generation"] = claim["claim_generation"].clone();
+    assert_eq!(f.reply("c", &message, "reply").unwrap_err().0, -32009);
+    // The refused reply left the claim outstanding.
+    f.complete("c", &message, "done").unwrap();
+    assert_eq!(f.next("c", "again")["message"], Value::Null);
+}
+
+#[test]
+fn concurrent_outcomes_stay_with_their_own_requests() {
+    let mut f = Fixture::new();
+    f.operations(vec![requested("r1", "c"), requested("r2", "s")]);
+    f.operations(vec![
+        completed("r2", "s", "denied", true),
+        completed("r1", "c", "failed", true),
+    ]);
+    let c = f.next("c", "c")["message"].clone();
+    let s = f.next("s", "s")["message"].clone();
+    assert_eq!(c["operation"]["request"], "r1");
+    assert_eq!(c["operation"]["status"], "failed");
+    assert_eq!(c["operation"]["message"], "engine unavailable");
+    assert!(c["body"].as_str().unwrap().contains("engine unavailable"));
+    assert_eq!(s["operation"]["request"], "r2");
+    assert_eq!(s["operation"]["status"], "denied");
+}
+
+#[test]
+fn outcomes_nobody_can_read_are_logged_without_a_notice() {
+    let mut f = Fixture::new();
+    f.directory.get_mut("s").unwrap().running = false;
+    f.operations(vec![
+        requested("plain", "c"),
+        completed("plain", "c", "cancelled", false),
+        requested("gone", "s"),
+        completed("gone", "s", "cancelled", true),
+    ]);
+    let undelivered: Vec<_> = f
+        .audit
+        .events
+        .iter()
+        .filter(|e| e.kind == "operation.completed")
+        .map(|e| {
+            assert!(e.data["notice"].is_null());
+            e.data["undelivered"].as_str().unwrap()
+        })
+        .collect();
+    assert_eq!(
+        undelivered,
+        ["no agent integration", "recipient not running"]
+    );
+    assert_eq!(f.mailbox.status("c")["queued"], 0);
+    // A later notice to a stopped recipient fails with its inbox.
+    f.operations(vec![completed("late", "c", "withdrawn", true)]);
+    f.mailbox.stop_recipient("c", 1000, &mut f.audit).unwrap();
+    assert_eq!(f.mailbox.status("c")["queued"], 0);
+}
+
+#[test]
+fn a_failed_audit_queues_no_notice() {
+    let mut f = Fixture::new();
+    f.audit.fail = true;
+    f.operations(vec![completed("r1", "c", "ready", true)]);
+    assert_eq!(f.mailbox.status("c")["queued"], 0);
+    assert_eq!(f.mailbox.status("c")["audit_failed"], true);
+}

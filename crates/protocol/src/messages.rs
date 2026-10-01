@@ -276,6 +276,27 @@ pub struct Message {
     pub state: State,
     pub claim_generation: u64,
     pub failure: Option<String>,
+    /// Set only on daemon-authored operation completion notices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<Operation>,
+}
+
+/// Sender of operation completion notices. Not a session or the host.
+pub const NOTICE_SENDER: &str = "goblins";
+
+/// The terminal outcome of a Goblins-owned operation a sandbox requested,
+/// correlated by the daemon-issued request ID.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Operation {
+    pub request: String,
+    /// `package`, `docker` or `devshell`.
+    pub kind: String,
+    /// The package, Docker scope or refresh the request named.
+    pub subject: String,
+    /// `ready`, `denied`, `failed`, `withdrawn` or `cancelled`.
+    pub status: String,
+    /// The sandbox-facing explanation, never a host diagnostic.
+    pub message: Option<String>,
 }
 
 #[cfg(test)]

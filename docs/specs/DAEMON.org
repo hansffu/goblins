@@ -282,7 +282,10 @@ Preview completion is not a decision and cannot grant access. Cancellation of
 preview work must remain separate from session cancellation. Decisions and
 disconnects are ordered by the daemon; after approval has been accepted,
 disconnect does not imply revocation. A terminal outcome must remain distinct
-from whether its reply was delivered to the sandbox client.
+from whether its reply was delivered to the sandbox client. Each terminal
+outcome is also recorded in the communications log and, for sessions with an
+agent integration, queued as an inbox notice to the requester (see
+[[file:AGENT-INTEGRATION.org::*Operation completion notices][AGENT-INTEGRATION.org]]).
 
 Retain the current failure boundary: realization/profile preparation failure before
 mounting leaves the sandbox usable; failure during mount preparation,

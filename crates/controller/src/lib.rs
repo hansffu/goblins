@@ -24,6 +24,7 @@ mod worker;
 pub mod host;
 pub mod mailbox;
 pub mod messaging;
+pub mod operation;
 mod sandbox_etc;
 mod terminal;
 

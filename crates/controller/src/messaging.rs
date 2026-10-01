@@ -51,12 +51,14 @@ pub enum Work {
         directory: Directory,
         view: crate::integration::View,
         raids: Vec<crate::raid::Event>,
+        operations: Vec<crate::operation::Event>,
     },
-    /// Session metadata and raid events queued since the last batch. An
-    /// accepted batch is never resent.
+    /// Session metadata, raid and operation events queued since the last
+    /// batch. An accepted batch is never resent.
     Sync {
         directory: Directory,
         raids: Vec<crate::raid::Event>,
+        operations: Vec<crate::operation::Event>,
     },
     Delivery {
         actor: String,
@@ -210,11 +212,18 @@ impl<L: Log> State<L> {
             );
             return None;
         }
-        let (directory, raids) = match &work {
+        let (directory, raids, operations) = match &work {
             Work::Call {
-                directory, raids, ..
+                directory,
+                raids,
+                operations,
+                ..
             }
-            | Work::Sync { directory, raids } => (directory, raids),
+            | Work::Sync {
+                directory,
+                raids,
+                operations,
+            } => (directory, raids, operations),
             Work::Delivery { .. } => unreachable!(),
         };
         // Session metadata is supplied only by the host controller. Retain
@@ -242,6 +251,9 @@ impl<L: Log> State<L> {
         // Membership is recorded before the call it arrived with, so a
         // message is always logged after the membership that allowed it.
         mailbox.record_raid(raids, now(), journal);
+        // Outcomes are recorded before the call too: an inbox fetch that
+        // arrives with a completion sees its notice.
+        mailbox.record_operations(operations, directory, now(), journal);
         for id in stopped {
             let _ = mailbox.record(&id, "session.exited", json!({}), now(), journal);
             let _ = mailbox.stop_recipient(&id, now(), journal);
@@ -506,6 +518,7 @@ mod tests {
             directory: directory(),
             view: Default::default(),
             raids,
+            operations: vec![],
         }
     }
     fn send(actor: &str, to: &str, key: &str, raids: Vec<crate::raid::Event>) -> Work {
@@ -545,7 +558,8 @@ mod tests {
         assert!(
             w.handle(Work::Sync {
                 directory: directory(),
-                raids: vec![]
+                raids: vec![],
+                operations: vec![],
             })
             .is_none()
         );
@@ -555,6 +569,7 @@ mod tests {
         w.handle(Work::Sync {
             directory: directory(),
             raids: left,
+            operations: vec![],
         });
         assert_eq!(w.journal.events.last().unwrap().kind, "raid.left");
         let refused = w.handle(send("x", "chief/scout", "late", vec![])).unwrap();
@@ -604,9 +619,112 @@ mod tests {
         w.handle(Work::Sync {
             directory: directory(),
             raids: left,
+            operations: vec![],
         });
         assert!(!w.mailbox.raids().contains_key("b"));
         assert!(w.mailbox.raids().contains_key("x"));
+    }
+
+    #[test]
+    fn a_fetch_sees_the_outcome_it_arrived_with_and_the_log_shows_each_wait() {
+        let mut w = state();
+        let event = |change| crate::operation::Event {
+            request: "r1".into(),
+            session: "b".into(),
+            actor: "b".into(),
+            change,
+        };
+        w.handle(Work::Sync {
+            directory: directory(),
+            raids: vec![],
+            operations: vec![event(crate::operation::Change::Requested {
+                kind: "docker".into(),
+                subject: "Docker scope: work".into(),
+                reason: "tests".into(),
+                automatic: false,
+            })],
+        });
+        let status = w
+            .handle(call("b", "inbox.status", json!({}), vec![]))
+            .unwrap();
+        assert_eq!(status.result.unwrap()["operations"][0]["state"], "pending");
+        let Work::Call {
+            connection,
+            id,
+            actor,
+            method,
+            params,
+            directory,
+            view,
+            raids,
+            ..
+        } = call("b", "inbox.next", json!({"key":"fetch"}), vec![])
+        else {
+            unreachable!()
+        };
+        let fetch = Work::Call {
+            connection,
+            id,
+            actor,
+            method,
+            params,
+            directory,
+            view,
+            raids,
+            operations: vec![
+                crate::operation::Event {
+                    actor: "host".into(),
+                    ..event(crate::operation::Change::Decided { approved: true })
+                },
+                crate::operation::Event {
+                    actor: "goblins".into(),
+                    ..event(crate::operation::Change::Completed {
+                        kind: "docker".into(),
+                        subject: "Docker scope: work".into(),
+                        status: "ready".into(),
+                        message: None,
+                        notify: true,
+                    })
+                },
+            ],
+        };
+        let claimed = w.handle(fetch).unwrap().result.unwrap();
+        assert_eq!(claimed["message"]["operation"]["request"], "r1");
+        // Approval wait, execution wait, notice and response are separate events.
+        let kinds: Vec<_> = w
+            .journal
+            .events
+            .iter()
+            .map(|e| e.kind.as_str())
+            .filter(|k| !k.starts_with("session."))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "operation.requested",
+                "operation.decided",
+                "operation.completed",
+                "message.claimed"
+            ]
+        );
+        // The requester's filtered log shows its operation's lifecycle.
+        let page = w
+            .handle(call(
+                "host",
+                "communications.list",
+                json!({"session":"chief/scout"}),
+                vec![],
+            ))
+            .unwrap()
+            .result
+            .unwrap();
+        let shown = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["kind"].as_str().unwrap().starts_with("operation."))
+            .count();
+        assert_eq!(shown, 3);
     }
 
     #[test]
@@ -618,6 +736,7 @@ mod tests {
         w.handle(Work::Sync {
             directory: directory(),
             raids: batch,
+            operations: vec![],
         });
         for (session, expected) in [
             ("x", vec!["raid.joined", "raid.dissolved"]),

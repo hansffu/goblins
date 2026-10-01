@@ -189,6 +189,74 @@ goblins integration pause chief
 goblins integration resume chief
 #+end_src
 
+* Operation completion notices
+
+Package grants, Docker attachment and dev shell refreshes are Goblins-owned
+operations: =permissions.request= returns one terminal result to a CLI that
+blocks until host approval and execution finish. An agent can yield while that
+command still waits (for example in a background terminal), and nothing used
+to resume it when the result arrived, since wakeups follow inbox state only.
+A developer/QA raid stalled this way after =goblins enable-docker= until the
+user asked for status.
+
+Each terminal outcome of a sandbox permission request therefore also queues
+one daemon-authored notice in the requester's inbox. The existing notifier,
+Stop hook and Claude monitor deliver it like any other item, so no new
+delivery path, prompt or hook exists, and human input, interruption, pause and
+the bounded retry rules apply unchanged. Operations the sandbox runs itself,
+including arbitrary shell processes, get no notice; nor do =flake.run= and
+=devshell.diff=, whose results are only useful to their waiting command.
+
+- Identity :: a notice has sender =goblins= (neither a session nor the host)
+  and a =message.operation= object ={request,kind,subject,status,message}=.
+  =request= is the daemon-issued permission request ID that the CLI also
+  prints. =status= is the final record state: =ready=, =denied=, =failed=,
+  =withdrawn= (connection closed before a decision) or =cancelled= (session,
+  payload, worker or daemon stopped). =message= is the sandbox-facing text,
+  never the host diagnostic. Each notice starts its own conversation.
+- Semantics :: a notice is sent for every terminal outcome, also when the
+  waiting CLI received the same result and the agent is still working. The
+  daemon cannot tell whether the model read the CLI output, and suppressing
+  the notice for an active agent would lose exactly the backgrounded case at
+  its next Stop. A working agent gets no wakeup; its Stop hook continues the
+  turn once to fetch the notice. An agent that already handled the result
+  just completes it. =messages.reply= to a notice fails with -32009 and leaves
+  the claim outstanding; complete or requeue it instead.
+- Eligibility :: notices go only to sessions whose trusted configuration has
+  an integration (=codex= or =claude=) and that are live when the outcome is
+  recorded. Others get a logged outcome with =notice: null= and =undelivered=
+  set to ="no agent integration"=, ="recipient not running"=,
+  ="mailbox capacity reached"= or ="mailbox audit unavailable"=. A notice
+  queued before its recipient stops fails with the rest of that inbox.
+- Delivery :: the controller queues =operation.requested=,
+  =operation.decided= and =operation.completed= events in an ordered outbox
+  that rides on every messaging =Work::Call= and on =Work::Sync= while it is
+  nonempty, exactly like the raid outbox, and is cleared only once
+  =try_send= accepts it. The worker records them before the call they arrive
+  with. Completions are never dropped: while 1024 events are unaccepted, new
+  permission requests fail with -32010. Orderly daemon shutdown records still
+  pending operations as =cancelled= ("daemon stopped") without notices and
+  hands the outbox over before the messaging worker closes.
+- Duplicates :: the worker remembers every request whose outcome it recorded.
+  A repeated completion records =operation.duplicate= and queues nothing, and
+  a repeated request record is ignored. A notice never resubmits or retries
+  the operation.
+- Status :: =inbox.status= adds =operations=, the caller's own unfinished
+  operations as the log records them: ={request,kind,subject,state}= with
+  =state= =pending= (awaiting a decision) or =running= (approved or
+  automatic, executing).
+
+The communications log distinguishes the phases of a wait. Approval wait runs
+from =operation.requested= (data ={request,kind,subject,reason,automatic}=,
+actor the requester) to =operation.decided= (={request,approved}=, actor
+=host=, or =goblins= for an inherited approval). Execution wait runs to
+=operation.completed= (={request,kind,subject,status,message,notice}=, actor
+=goblins=), which also queues the notice. Notification delivery then appears
+as =integration.wake_attempt=, =integration.wake_result= or a Stop
+=integration.hook= continuation, and the agent's response as
+=message.claimed= and =message.completed= for the notice ID. All carry the
+requester in =sessions=, so =--session= filtering shows them.
+
 * Settled protocol
 
 JSON-RPC framing, endpoint authentication and bounded connections are unchanged.
@@ -200,7 +268,7 @@ profile and the caller's own sandbox. Host controls resolve explicit sessions.
 |--------+-------------------|
 | =messages.send= | ={key,to,body,conversation?}= -> accepted message |
 | =messages.get= | ={message}= -> visible message record |
-| =inbox.status= | ={}= -> queued, claim, head identity, revision, audit_failed, raid_audit_failed, integration health |
+| =inbox.status= | ={}= -> queued, claim, head identity, revision, audit_failed, raid_audit_failed, unfinished operations, integration health |
 | =inbox.next= | ={key}= -> message and claim_generation, or null message |
 | =messages.reply= | ={key,message,claim_generation,body}= -> reply plus completed original ID |
 | =inbox.complete= | ={key,message,claim_generation}= -> completion |
@@ -236,7 +304,8 @@ available. Already committed retry receipts remain recoverable.
 
 Events include session identities/ancestry, accepted messages, claims, replies,
 completion/requeue/failure, duplicate operation retries, integration registration,
-hook decisions, notification attempts/results and raid membership changes. Exact message contents are
+hook decisions, notification attempts/results, raid membership changes and the
+lifecycle of sandbox permission requests (see Operation completion notices). Exact message contents are
 available for host verification; credentials and unrelated terminal output are
 not logged. Human-readable output escapes terminal control characters.
 

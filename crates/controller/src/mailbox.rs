@@ -3,10 +3,10 @@
 //! The caller supplies authenticated identity and trusted session metadata.
 //! Execute this core on a serialized host worker: its audit sink may block.
 //! A transition is published only after the sink accepts its audit record.
-use goblins_protocol::messages::{Message, Mutation, State};
+use goblins_protocol::messages::{Message, Mutation, NOTICE_SENDER, Operation, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type Fault = (i32, String);
 pub type Result<T> = std::result::Result<T, Fault>;
@@ -104,6 +104,22 @@ pub struct Mailbox {
     /// A raid event could not be recorded for lack of log capacity. Raid
     /// routes stay closed from then on; tree routes are unaffected.
     raid_audit_failed: bool,
+    /// Operations requested and not yet finished, as logged.
+    operations: BTreeMap<String, Outstanding>,
+    /// Requests whose terminal outcome is recorded. A repeated completion
+    /// queues no second notice.
+    finished: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct Outstanding {
+    #[serde(skip)]
+    session: String,
+    request: String,
+    kind: String,
+    subject: String,
+    /// `pending` awaits a decision, `running` is approved and executing.
+    state: &'static str,
 }
 
 struct Change {
@@ -129,6 +145,8 @@ impl Mailbox {
             auxiliary_events: 0,
             raids: Logged::new(),
             raid_audit_failed: false,
+            operations: BTreeMap::new(),
+            finished: BTreeSet::new(),
         })
     }
 
@@ -234,6 +252,180 @@ impl Mailbox {
         }
     }
 
+    /// Record a batch of controller operation events in order. A terminal
+    /// outcome queues one notice to the requesting session when it has an
+    /// integration and is still live; the notice and its outcome share one
+    /// event. A repeated outcome for the same request is logged as a
+    /// duplicate and changes nothing.
+    pub fn record_operations(
+        &mut self,
+        events: &[crate::operation::Event],
+        directory: &Directory,
+        now: u64,
+        audit: &mut impl Audit,
+    ) {
+        use crate::operation::Change;
+        for operation in events {
+            let session = &operation.session;
+            let request = &operation.request;
+            match &operation.change {
+                Change::Requested {
+                    kind,
+                    subject,
+                    automatic,
+                    ..
+                } => {
+                    if self.finished.contains(request) || self.operations.contains_key(request) {
+                        continue;
+                    }
+                    let _ = self.operation_event(operation, operation.data(), now, audit);
+                    // Bounded by one pending request per live session; a lost
+                    // completion must not grow this without limit.
+                    if self.operations.len() >= 256 {
+                        self.operations.pop_first();
+                    }
+                    self.operations.insert(
+                        request.clone(),
+                        Outstanding {
+                            session: session.clone(),
+                            request: request.clone(),
+                            kind: kind.clone(),
+                            subject: subject.clone(),
+                            state: if *automatic { "running" } else { "pending" },
+                        },
+                    );
+                }
+                Change::Decided { approved } => {
+                    let _ = self.operation_event(operation, operation.data(), now, audit);
+                    if let Some(o) = self.operations.get_mut(request) {
+                        o.state = if *approved { "running" } else { "pending" };
+                    }
+                }
+                Change::Completed {
+                    kind,
+                    subject,
+                    status,
+                    message,
+                    notify,
+                } => {
+                    if self.finished.contains(request) {
+                        let _ = self.record(
+                            session,
+                            "operation.duplicate",
+                            json!({"request":request,"status":status}),
+                            now,
+                            audit,
+                        );
+                        continue;
+                    }
+                    self.finished.insert(request.clone());
+                    self.operations.remove(request);
+                    let mut data = operation.data();
+                    let notice = match (notify, live(directory, session)) {
+                        (false, _) => Err("no agent integration"),
+                        (true, Err(_)) => Err("recipient not running"),
+                        (true, Ok(_)) if self.audit_failed => Err("mailbox audit unavailable"),
+                        (true, Ok(_)) => {
+                            let sequence = self.sequence + 1;
+                            let mut notice = self.new_message(
+                                NOTICE_SENDER,
+                                session,
+                                &crate::operation::notice(
+                                    request,
+                                    kind,
+                                    subject,
+                                    status,
+                                    message.as_deref(),
+                                ),
+                                format!("{}-c{sequence}", self.instance),
+                                None,
+                                directory,
+                                sequence,
+                                now,
+                            );
+                            notice.operation = Some(Operation {
+                                request: request.clone(),
+                                kind: kind.clone(),
+                                subject: subject.clone(),
+                                status: status.clone(),
+                                message: message.clone(),
+                            });
+                            match self.check_capacity(std::slice::from_ref(&notice)) {
+                                Ok(reserved) => Ok((notice, reserved)),
+                                Err(_) => Err("mailbox capacity reached"),
+                            }
+                        }
+                    };
+                    match notice {
+                        Ok((notice, reserved)) => {
+                            data["notice"] = json!(notice);
+                            let event = Event {
+                                instance: self.instance.clone(),
+                                sequence: self.sequence + 1,
+                                timestamp: now,
+                                kind: operation.kind().into(),
+                                actor: operation.actor.clone(),
+                                sessions: vec![session.clone()],
+                                data,
+                            };
+                            match audit.append(&event, reserved * 2048) {
+                                Ok(()) => {
+                                    self.sequence += 1;
+                                    self.apply(vec![notice]);
+                                }
+                                Err(error) => {
+                                    self.audit_error(error);
+                                }
+                            }
+                        }
+                        Err(reason) => {
+                            data["notice"] = Value::Null;
+                            data["undelivered"] = json!(reason);
+                            let _ = self.operation_event(operation, data, now, audit);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// An auxiliary operation event attributed to its requesting session.
+    fn operation_event(
+        &mut self,
+        operation: &crate::operation::Event,
+        data: Value,
+        now: u64,
+        audit: &mut impl Audit,
+    ) -> Result<()> {
+        if self.audit_failed {
+            return Err((-32009, "mailbox audit unavailable".into()));
+        }
+        if self.auxiliary_events >= 16384 {
+            return Err(capacity());
+        }
+        let event = Event {
+            instance: self.instance.clone(),
+            sequence: self.sequence + 1,
+            timestamp: now,
+            kind: operation.kind().into(),
+            actor: operation.actor.clone(),
+            sessions: vec![operation.session.clone()],
+            data,
+        };
+        let reserved = self
+            .messages
+            .iter()
+            .filter(|m| m.state.unresolved())
+            .count()
+            * 2048;
+        if let Err(e) = audit.append(&event, reserved) {
+            return Err(self.audit_error(e));
+        }
+        self.sequence += 1;
+        self.auxiliary_events += 1;
+        Ok(())
+    }
+
     pub fn status(&self, actor: &str) -> Value {
         let inbox = || self.messages.iter().filter(|m| m.recipient == actor);
         json!({
@@ -243,6 +435,7 @@ impl Mailbox {
             "revision":self.sequence,
             "audit_failed":self.audit_failed,
             "raid_audit_failed":self.raid_audit_failed,
+            "operations":self.operations.values().filter(|o| o.session == actor).collect::<Vec<_>>(),
         })
     }
 
@@ -390,6 +583,13 @@ impl Mailbox {
             }
             Mutation::Reply(p) => {
                 let mut original = self.claim(actor, &p.message, p.claim_generation)?.clone();
+                if original.sender == NOTICE_SENDER {
+                    return Err((
+                        -32009,
+                        "operation notices take no reply; complete the claim with goblins inbox complete"
+                            .into(),
+                    ));
+                }
                 live(directory, &original.sender)?;
                 // A reply is authorized like a send. Tree relations never
                 // change, so only replies that relied on a raid can fail;
@@ -508,6 +708,7 @@ impl Mailbox {
             state: State::Queued,
             claim_generation: 0,
             failure: None,
+            operation: None,
         }
     }
 
