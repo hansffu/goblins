@@ -10,6 +10,8 @@ struct MemoryAudit {
     full: bool,
     /// Reject raid events for lack of capacity.
     raid_full: bool,
+    /// Reject operation outcomes that carry a notice for lack of capacity.
+    notice_full: bool,
 }
 impl Audit for MemoryAudit {
     fn append(&mut self, event: &Event, _: usize) -> std::result::Result<(), AuditError> {
@@ -18,6 +20,9 @@ impl Audit for MemoryAudit {
         }
         if self.full && event.kind == "message.accepted"
             || self.raid_full && event.kind.starts_with("raid.")
+            || self.notice_full
+                && event.kind == "operation.completed"
+                && !event.data["notice"].is_null()
         {
             return Err(AuditError::Capacity);
         }
@@ -819,4 +824,55 @@ fn a_failed_audit_queues_no_notice() {
     f.operations(vec![completed("r1", "c", "ready", true)]);
     assert_eq!(f.mailbox.status("c")["queued"], 0);
     assert_eq!(f.mailbox.status("c")["audit_failed"], true);
+}
+
+#[test]
+fn a_notice_the_log_cannot_hold_still_records_its_outcome() {
+    let mut f = Fixture::new();
+    f.audit.notice_full = true;
+    f.operations(vec![completed("r1", "c", "ready", true)]);
+    let event = f.audit.events.last().unwrap();
+    assert_eq!(event.kind, "operation.completed");
+    assert!(event.data["notice"].is_null());
+    assert_eq!(
+        event.data["undelivered"],
+        "communications log capacity reached"
+    );
+    assert_eq!(f.mailbox.status("c")["queued"], 0);
+    assert_eq!(f.mailbox.status("c")["audit_failed"], false);
+    f.operations(vec![completed("r1", "c", "ready", true)]);
+    assert_eq!(f.kinds().last(), Some(&"operation.duplicate"));
+}
+
+#[test]
+fn outcomes_are_recorded_after_the_auxiliary_budget_is_spent() {
+    let mut f = Fixture::new();
+    f.mailbox.auxiliary_events = 16384;
+    f.operations(vec![
+        requested("r1", "c"),
+        completed("r1", "c", "denied", false),
+    ]);
+    assert_eq!(f.kinds(), ["operation.completed"]);
+    assert_eq!(f.mailbox.auxiliary_events, 16384);
+}
+
+#[test]
+fn only_recent_outcomes_are_remembered() {
+    let mut f = Fixture::new();
+    let events = (0..=FINISHED)
+        .map(|n| completed(&format!("r{n}"), "c", "ready", false))
+        .collect();
+    f.operations(events);
+    assert_eq!(f.mailbox.finished.len(), FINISHED);
+    assert_eq!(f.mailbox.finished_order.len(), FINISHED);
+    assert!(!f.mailbox.finished.contains("r0"));
+    let recorded = f.audit.events.len();
+    f.operations(vec![completed(
+        &format!("r{FINISHED}"),
+        "c",
+        "ready",
+        false,
+    )]);
+    assert_eq!(f.kinds().last(), Some(&"operation.duplicate"));
+    assert_eq!(f.audit.events.len(), recorded + 1);
 }

@@ -6,7 +6,12 @@
 use goblins_protocol::messages::{Message, Mutation, NOTICE_SENDER, Operation, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+/// Recently finished requests remembered to discard a resent outcome. The
+/// controller resends only a batch the worker never accepted, so duplicates
+/// can only be recent.
+const FINISHED: usize = 1024;
 
 pub type Fault = (i32, String);
 pub type Result<T> = std::result::Result<T, Fault>;
@@ -106,9 +111,10 @@ pub struct Mailbox {
     raid_audit_failed: bool,
     /// Operations requested and not yet finished, as logged.
     operations: BTreeMap<String, Outstanding>,
-    /// Requests whose terminal outcome is recorded. A repeated completion
-    /// queues no second notice.
+    /// The last FINISHED requests whose terminal outcome was handled, oldest
+    /// first. A repeated completion queues no second notice.
     finished: BTreeSet<String>,
+    finished_order: VecDeque<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,6 +153,7 @@ impl Mailbox {
             raid_audit_failed: false,
             operations: BTreeMap::new(),
             finished: BTreeSet::new(),
+            finished_order: VecDeque::new(),
         })
     }
 
@@ -278,7 +285,7 @@ impl Mailbox {
                     if self.finished.contains(request) || self.operations.contains_key(request) {
                         continue;
                     }
-                    let _ = self.operation_event(operation, operation.data(), now, audit);
+                    let _ = self.operation_event(operation, operation.data(), true, now, audit);
                     // Bounded by one pending request per live session; a lost
                     // completion must not grow this without limit.
                     if self.operations.len() >= 256 {
@@ -296,7 +303,7 @@ impl Mailbox {
                     );
                 }
                 Change::Decided { approved } => {
-                    let _ = self.operation_event(operation, operation.data(), now, audit);
+                    let _ = self.operation_event(operation, operation.data(), true, now, audit);
                     if let Some(o) = self.operations.get_mut(request) {
                         o.state = if *approved { "running" } else { "pending" };
                     }
@@ -318,7 +325,13 @@ impl Mailbox {
                         );
                         continue;
                     }
+                    if self.finished_order.len() >= FINISHED
+                        && let Some(oldest) = self.finished_order.pop_front()
+                    {
+                        self.finished.remove(&oldest);
+                    }
                     self.finished.insert(request.clone());
+                    self.finished_order.push_back(request.clone());
                     self.operations.remove(request);
                     let mut data = operation.data();
                     let notice = match (notify, live(directory, session)) {
@@ -356,9 +369,10 @@ impl Mailbox {
                             }
                         }
                     };
-                    match notice {
+                    let undelivered = match notice {
                         Ok((notice, reserved)) => {
-                            data["notice"] = json!(notice);
+                            let mut full = data.clone();
+                            full["notice"] = json!(notice);
                             let event = Event {
                                 instance: self.instance.clone(),
                                 sequence: self.sequence + 1,
@@ -366,41 +380,52 @@ impl Mailbox {
                                 kind: operation.kind().into(),
                                 actor: operation.actor.clone(),
                                 sessions: vec![session.clone()],
-                                data,
+                                data: full,
                             };
                             match audit.append(&event, reserved * 2048) {
                                 Ok(()) => {
                                     self.sequence += 1;
                                     self.apply(vec![notice]);
+                                    None
+                                }
+                                // The compact outcome may still fit.
+                                Err(AuditError::Capacity) => {
+                                    Some("communications log capacity reached")
                                 }
                                 Err(error) => {
                                     self.audit_error(error);
+                                    None
                                 }
                             }
                         }
-                        Err(reason) => {
-                            data["notice"] = Value::Null;
-                            data["undelivered"] = json!(reason);
-                            let _ = self.operation_event(operation, data, now, audit);
-                        }
+                        Err(reason) => Some(reason),
+                    };
+                    if let Some(reason) = undelivered {
+                        data["notice"] = Value::Null;
+                        data["undelivered"] = json!(reason);
+                        // Outcomes are bounded by requests, not by the
+                        // auxiliary budget that ticks and hooks consume.
+                        let _ = self.operation_event(operation, data, false, now, audit);
                     }
                 }
             }
         }
     }
 
-    /// An auxiliary operation event attributed to its requesting session.
+    /// An operation event attributed to its requesting session. `counted`
+    /// events are auxiliary and stop at the auxiliary-event limit.
     fn operation_event(
         &mut self,
         operation: &crate::operation::Event,
         data: Value,
+        counted: bool,
         now: u64,
         audit: &mut impl Audit,
     ) -> Result<()> {
         if self.audit_failed {
             return Err((-32009, "mailbox audit unavailable".into()));
         }
-        if self.auxiliary_events >= 16384 {
+        if counted && self.auxiliary_events >= 16384 {
             return Err(capacity());
         }
         let event = Event {
@@ -422,7 +447,7 @@ impl Mailbox {
             return Err(self.audit_error(e));
         }
         self.sequence += 1;
-        self.auxiliary_events += 1;
+        self.auxiliary_events += usize::from(counted);
         Ok(())
     }
 

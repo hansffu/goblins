@@ -226,7 +226,9 @@ including arbitrary shell processes, get no notice; nor do =flake.run= and
   an integration (=codex= or =claude=) and that are live when the outcome is
   recorded. Others get a logged outcome with =notice: null= and =undelivered=
   set to ="no agent integration"=, ="recipient not running"=,
-  ="mailbox capacity reached"= or ="mailbox audit unavailable"=. A notice
+  ="mailbox capacity reached"=, ="mailbox audit unavailable"= or
+  ="communications log capacity reached"= (the log has room for the outcome
+  but not for the notice and its reserved claim and completion). A notice
   queued before its recipient stops fails with the rest of that inbox.
 - Delivery :: the controller queues =operation.requested=,
   =operation.decided= and =operation.completed= events in an ordered outbox
@@ -237,9 +239,11 @@ including arbitrary shell processes, get no notice; nor do =flake.run= and
   permission requests fail with -32010. Orderly daemon shutdown records still
   pending operations as =cancelled= ("daemon stopped") without notices and
   hands the outbox over before the messaging worker closes.
-- Duplicates :: the worker remembers every request whose outcome it recorded.
-  A repeated completion records =operation.duplicate= and queues nothing, and
-  a repeated request record is ignored. A notice never resubmits or retries
+- Duplicates :: the worker remembers the last 1024 requests whose outcome it
+  handled; the controller resends only a batch the worker never accepted, so
+  duplicates can only be recent. A repeated completion records
+  =operation.duplicate= and queues nothing, and a repeated request record is
+  ignored. A notice never resubmits or retries
   the operation.
 - Status :: =inbox.status= adds =operations=, the caller's own unfinished
   operations as the log records them: ={request,kind,subject,state}= with
@@ -255,7 +259,9 @@ actor the requester) to =operation.decided= (={request,approved}=, actor
 as =integration.wake_attempt=, =integration.wake_result= or a Stop
 =integration.hook= continuation, and the agent's response as
 =message.claimed= and =message.completed= for the notice ID. All carry the
-requester in =sessions=, so =--session= filtering shows them.
+requester in =sessions=, so =--session= filtering shows them. Requested and
+decided events count against the auxiliary-event limit; outcomes do not, so
+they are recorded after integration ticks and hooks have spent it.
 
 * Settled protocol
 
