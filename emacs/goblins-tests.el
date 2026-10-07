@@ -4,6 +4,7 @@
 (require 'goblins)
 (require 'goblins-workspace)
 (require 'goblins-views)
+(require 'goblins-raids)
 (require 'project)
 (defvar ghostel-identity)
 
@@ -828,7 +829,9 @@
              (setq goblins--sidebar-source source)
              (goblins--sidebar-render)
              ,@body))
-       (kill-buffer source)
+       (when (buffer-live-p source)
+         (with-current-buffer source (setq goblins--connection nil))
+         (kill-buffer source))
        (kill-buffer sidebar))))
 
 (defconst goblins-test--raid-sessions
@@ -846,7 +849,7 @@
     (let ((text (buffer-string)))
       (should (< (string-match "raid alpha" text) (string-match "raid zeta" text)))
       (should (< (string-match "raid zeta" text) (string-match "session-b" text)))
-      (should (string-match-p "▾ raid zeta\n  ▾ /p/one/\n    . session-a \\!1\n      . session-c"
+      (should (string-match-p "▾ raid zeta\n  ▾ /p/one/\n    . session-a (shell) !1\n      . session-c (shell)"
                               (replace-regexp-in-string "[●○◌✗]" "." text)))
       (should (string-match-p "▾ /p/two/\n  . session-b" text))
       (should (string-match-p "▾ unknown\n  . session-e"
@@ -867,7 +870,7 @@
     (should (eq (key-binding (kbd "k")) #'goblins-sidebar-previous))
     (should (eq (key-binding (kbd "p")) #'goblins-sidebar-permissions))
     (should (eq (key-binding (kbd "RET")) #'goblins-sidebar-open))
-    (goblins-sidebar-open)
+    (goblins-sidebar-toggle)
     (should-not (string-match-p "session-d" (buffer-string)))
     (should (string-match-p "▸ raid alpha" (buffer-string)))
     ;; Folds survive re-renders, and point stays on the same line.
@@ -885,7 +888,7 @@
             (puthash (list "/tmp/goblins-test" "daemon-a" "session-a") terminal
                      goblins--terminal-buffers)
             (goblins-sidebar-next)
-            (cl-letf (((symbol-function 'goblins--show-in-main)
+            (cl-letf (((symbol-function 'goblins--display-main)
                        (lambda (buffer) (setq shown buffer))))
               (goblins-sidebar-next)
               (should (equal (get-text-property (point) 'goblins-id) "session-a"))
@@ -1065,6 +1068,221 @@
       (should refreshed)
       (should (buffer-live-p goblins--sidebar-source))
       (kill-buffer goblins--sidebar-source))))
+
+;;; Raids
+
+(defmacro goblins-test--raid-sidebar (&rest body)
+  "Run BODY in a sidebar over two raid members, a loner and a stopped goblin."
+  (declare (indent 0))
+  `(goblins-test--sidebar
+       (list (goblins-test--session "session-a" :cwd "/p/one"
+                                    :raid '(:id "r1" :name "crew" :owner "session-a"))
+             (goblins-test--session "session-b" :cwd "/p/one"
+                                    :raid '(:id "r1" :name "crew" :owner "session-a"))
+             (goblins-test--session "session-c" :cwd "/p/two")
+             (goblins-test--session "session-d" :cwd "/p/two" :state "stopped"))
+     (with-current-buffer source
+       (setq goblins--connection t goblins--subscription "s"
+             goblins--snapshot
+             (plist-put goblins--snapshot :raids
+                        [(:id "r1" :name "crew" :owner "session-a"
+                          :members [(:id "session-a" :path "session-a" :name "shell"
+                                     :state "running" :owner t)
+                                    (:id "session-b" :path "session-b" :name "shell"
+                                     :state "running" :owner :json-false :role "reviewer")])])))
+     (goblins--sidebar-render)
+     ,@body))
+
+(defmacro goblins-test--raid-calls (var &rest body)
+  "Run BODY with `goblins--raid-call' recording (METHOD . PARAMS) in VAR."
+  (declare (indent 1))
+  `(let (,var)
+     (cl-letf (((symbol-function 'goblins--raid-call)
+                (lambda (_source method params) (push (cons method params) ,var) nil))
+               ((symbol-function 'goblins--display-main) #'ignore))
+       ,@body)))
+
+(ert-deftest goblins-sidebar-shows-the-goblin-type-next-to-the-name ()
+  (goblins-test--raid-sidebar
+    (should (string-match-p "session-a (shell)" (buffer-string)))))
+
+(ert-deftest goblins-sidebar-ret-on-a-raid-opens-its-page ()
+  (goblins-test--raid-sidebar
+    (let (shown)
+      (cl-letf (((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+        (goto-char (point-min))
+        (should (equal (get-text-property (point) 'goblins-raid) "crew"))
+        (goblins-sidebar-open)
+        (should (eq (buffer-local-value 'goblins--view-source shown) source))
+        (should (equal (buffer-local-value 'goblins--view-session shown) "crew"))
+        ;; Directory headings still fold.
+        (goblins-sidebar-next)
+        (goblins-sidebar-open)
+        (should-not (string-match-p "session-a" (buffer-string)))
+        (kill-buffer shown)))))
+
+(ert-deftest goblins-raid-page-lists-members-and-who-could-join ()
+  (goblins-test--raid-sidebar
+    (let ((page (goblins-raid-buffer source "crew")))
+      (unwind-protect
+          (with-current-buffer page
+            (let ((text (substring-no-properties (buffer-string))))
+              (should (string-match-p "raid crew +2 members · owner session-a" text))
+              (should (string-match-p "Members (2)" text))
+              (should (string-match-p "session-a (shell)  owner" text))
+              (should (string-match-p "session-b (shell)  reviewer" text))
+              (should (string-match-p "Available to invite (1)\n.*session-c" text))
+              ;; Stopped goblins and members are not candidates.
+              (should-not (string-match-p "Available[^z]*session-d" text)))
+            (goblins-raid-next)
+            (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+            (goblins-raid-next)
+            (goblins-raid-next)
+            (should (eq (get-text-property (point) 'goblins-raid-line) 'candidate))
+            (goblins-raid-previous 2)
+            (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+            ;; Snapshot changes redraw it; a dissolved raid says so.
+            (with-current-buffer source
+              (setq goblins--snapshot (plist-put goblins--snapshot :raids [])))
+            (with-current-buffer source (goblins--views-after-snapshot))
+            (should (string-match-p "no longer exists" (buffer-string))))
+        (kill-buffer page)))))
+
+(ert-deftest goblins-raid-page-invites-and-kicks ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (let ((page (goblins-raid-buffer source "crew")))
+        (unwind-protect
+            (with-current-buffer page
+              ;; On a candidate line, i invites that goblin.
+              (goto-char (point-min))
+              (re-search-forward "session-c")
+              (goblins-raid-invite)
+              (should (equal (pop calls)
+                             '(raids.invite :raid "crew" :sessions ["session-c"])))
+              ;; Elsewhere it asks which goblin.
+              (goto-char (point-min))
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_prompt choices &rest _) (caar choices))))
+                (goblins-raid-invite))
+              (should (equal (car (pop calls)) 'raids.invite))
+              ;; x kicks the member at point after confirming; candidates cannot be kicked.
+              (goto-char (point-min))
+              (re-search-forward "session-b (shell)")
+              (cl-letf (((symbol-function 'y-or-n-p) (lambda (prompt)
+                                                       (should-not (string-match-p "owner" prompt))
+                                                       t)))
+                (goblins-raid-kick))
+              (should (equal (pop calls) '(raids.kick :raid "crew" :session "session-b")))
+              (goto-char (point-min))
+              (re-search-forward "session-a (shell)")
+              (let (asked)
+                (cl-letf (((symbol-function 'y-or-n-p)
+                           (lambda (prompt) (setq asked prompt) nil)))
+                  (goblins-raid-kick))
+                (should (string-match-p "dissolves the raid" asked))
+                (should-not calls))
+              (goto-char (point-min))
+              (re-search-forward "session-c")
+              (should-error (goblins-raid-kick) :type 'user-error))
+          (kill-buffer page))))))
+
+(ert-deftest goblins-raid-command-creates-or-joins-around-a-goblin ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (goto-char (point-min))
+      (re-search-forward "session-c")
+      (beginning-of-line)
+      (let (page)
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "fresh"))
+                  ((symbol-function 'goblins-raid-buffer)
+                   (lambda (_source name) (setq page name) (current-buffer))))
+          (call-interactively #'goblins-raid))
+        (should (equal (pop calls) '(raids.invite :raid "fresh" :sessions ["session-c"])))
+        (should (equal page "fresh")))
+      ;; A goblin already in a raid cannot start another.
+      (goto-char (point-min))
+      (re-search-forward "session-a")
+      (beginning-of-line)
+      (should-error (call-interactively #'goblins-raid) :type 'user-error)
+      ;; Without a goblin in context the choice is among raid-less running ones.
+      (let (page asked)
+        (goto-char (point-min))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (prompt choices &rest _)
+                     (if (string-match-p "around" prompt)
+                         (progn (setq asked (mapcar #'car choices)) (caar choices))
+                       "crew")))
+                  ((symbol-function 'goblins-raid-buffer)
+                   (lambda (_source name) (setq page name) (current-buffer))))
+          (call-interactively #'goblins-raid))
+        (should (equal (length asked) 1))
+        (should (string-match-p "session-c" (car asked)))
+        (should (equal (pop calls) '(raids.invite :raid "crew" :sessions ["session-c"])))
+        (should (equal page "crew"))))))
+
+(ert-deftest goblins-raid-command-uses-the-goblin-buffer ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (let ((terminal (generate-new-buffer " *goblins test terminal*")))
+        (unwind-protect
+            (with-current-buffer terminal
+              (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
+              (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) source))
+                        ((symbol-function 'completing-read) (lambda (&rest _) "crew"))
+                        ((symbol-function 'goblins-raid-buffer)
+                         (lambda (&rest _) (current-buffer))))
+                (call-interactively #'goblins-raid))
+              (should (equal (pop calls) '(raids.invite :raid "crew" :sessions ["session-c"]))))
+          (kill-buffer terminal))))))
+
+(ert-deftest goblins-sidebar-i-invites-the-goblin-to-a-raid-you-pick ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (goto-char (point-min))
+      (re-search-forward "session-c")
+      (beginning-of-line)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt names &rest _) (should (equal names '("crew"))) "crew")))
+        (goblins-sidebar-invite))
+      (should (equal (pop calls) '(raids.invite :raid "crew" :sessions ["session-c"])))
+      ;; Already in a raid.
+      (goto-char (point-min))
+      (re-search-forward "session-a")
+      (beginning-of-line)
+      (should-error (goblins-sidebar-invite) :type 'user-error)
+      ;; On a raid heading, pick the goblin instead.
+      (goto-char (point-min))
+      (cl-letf (((symbol-function 'completing-read) (lambda (_p choices &rest _) (caar choices))))
+        (goblins-sidebar-invite))
+      (should (equal (pop calls) '(raids.invite :raid "crew" :sessions ["session-c"]))))))
+
+(ert-deftest goblins-sidebar-keys-follow-the-raid-bindings ()
+  (with-temp-buffer
+    (goblins-sidebar-mode)
+    (dolist (binding '(("r" . goblins-raid) ("i" . goblins-sidebar-invite)
+                       ("I" . goblins-sidebar-info) ("c" . goblins-sidebar-run)
+                       ("C" . goblins-sidebar-run-in-project)
+                       ("p" . goblins-sidebar-permissions)))
+      (should (eq (key-binding (kbd (car binding))) (cdr binding))))))
+
+(ert-deftest goblins-raid-refusals-do-not-drop-the-connection ()
+  (let ((source (generate-new-buffer " *goblins test source*")))
+    (unwind-protect
+        (with-current-buffer source
+          (goblins-status-mode)
+          (setq goblins--connection t goblins--subscription "s")
+          (cl-letf (((symbol-function 'jsonrpc-request)
+                     (lambda (&rest _)
+                       (signal 'jsonrpc-error
+                               '("request failed" (jsonrpc-error-code . -32009)
+                                 (jsonrpc-error-message . "goblin 'x' is already in raid 'y'"))))))
+            (let ((err (should-error (goblins--raid-call source 'raids.invite nil)
+                                     :type 'user-error)))
+              (should (string-match-p "already in raid" (cadr err)))))
+          (should goblins--connection)
+          (setq goblins--connection nil))
+      (kill-buffer source))))
 
 
 ;;; goblins-tests.el ends here

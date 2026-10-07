@@ -34,6 +34,8 @@
 
 (defvar-local goblins--view-source nil
   "The status buffer whose snapshot this view shows.")
+(defvar-local goblins--view-render nil
+  "Function that redraws this view when the snapshot changes.")
 (defvar-local goblins--view-session nil
   "Immutable ID of the goblin this view is about.")
 
@@ -63,6 +65,46 @@
       (goblins--safe (or (plist-get session :path) (plist-get session :agent_name)))
     (goblins--safe id)))
 
+(defconst goblins--sidebar-buffer-name "*Goblins Sidebar*")
+
+(defun goblins--main-window ()
+  "Return the most recently used window that is not the sidebar."
+  (let ((windows (cl-remove-if (lambda (w)
+                                 (or (window-parameter w 'window-side)
+                                     (window-minibuffer-p w)))
+                               (window-list))))
+    (car (sort windows (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+
+(defun goblins--show-in-main (buffer)
+  "Display BUFFER in the main window and select it."
+  (let ((window (or (goblins--main-window)
+                    (user-error "No window for the main view"))))
+    (set-window-buffer window buffer)
+    (select-window window)
+    buffer))
+
+(defun goblins--display-main (buffer)
+  "Show BUFFER in the workspace's main window, or pop it up outside a workspace."
+  (if (get-buffer-window goblins--sidebar-buffer-name)
+      (goblins--show-in-main buffer)
+    (pop-to-buffer buffer)))
+
+(defun goblins-open-session (source id)
+  "Show the terminal of session ID of SOURCE's server, attaching if needed."
+  (with-current-buffer source
+    (let ((session (goblins--snapshot-session goblins--snapshot id)))
+      (if-let* ((buffer (goblins--terminal-buffer id)))
+          (goblins--display-main buffer)
+        (unless session (user-error "The daemon no longer retains this goblin"))
+        (when (member (plist-get session :state) '("stopped" "failed"))
+          (user-error "This goblin has finished"))
+        (goblins--open-terminal
+         id (plist-get session :agent_name)
+         (if (stringp (plist-get session :cwd))
+             (file-name-as-directory (plist-get session :cwd))
+           default-directory)
+         #'goblins--display-main)))))
+
 (defun goblins--view-goto (position)
   "Move point, and the point of every window showing this buffer, to POSITION."
   (goto-char position)
@@ -78,6 +120,7 @@
                    (equal goblins--view-session session))
         (setq goblins--view-source source goblins--view-session session)
         (setq-local goblins--view-fresh t))
+      (setq goblins--view-render render)
       (setq goblins--directory (buffer-local-value 'goblins--directory source))
       (funcall render))
     buffer))
@@ -91,11 +134,9 @@
     (dolist (buffer (buffer-list))
       (when (eq (buffer-local-value 'goblins--view-source buffer) source)
         (with-current-buffer buffer
-          (condition-case err
-              (cond ((derived-mode-p 'goblins-info-mode) (goblins--info-render))
-                    ((derived-mode-p 'goblins-permissions-mode)
-                     (goblins--permissions-render)))
-            (error (message "goblins view: %s" (error-message-string err)))))))))
+          (when goblins--view-render
+            (condition-case err (funcall goblins--view-render)
+              (error (message "goblins view: %s" (error-message-string err))))))))))
 (add-hook 'goblins-snapshot-hook #'goblins--views-after-snapshot)
 
 ;;;; Info

@@ -19,6 +19,7 @@
 (require 'subr-x)
 (require 'goblins)
 (require 'goblins-views)
+(require 'goblins-raids)
 (require 'project)
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
@@ -48,8 +49,6 @@ The default closes the sidebar and restores the configuration saved by
   "Raid and directory headings in the sidebar." :group 'goblins)
 (defface goblins-sidebar-active '((t :inherit highlight :extend t))
   "The goblin whose terminal is shown in the main window." :group 'goblins)
-
-(defconst goblins--sidebar-buffer-name "*Goblins Sidebar*")
 
 (defvar-local goblins--sidebar-source nil
   "The status buffer whose snapshot this sidebar shows.")
@@ -113,14 +112,17 @@ Directories and sessions keep snapshot order inside each group."
           (and (equal (get-text-property (point-min) prop) (cdr key))
                (point-min))))))
 
-(defun goblins--sidebar-insert-group (key indent label collapsed)
-  "Insert the heading of group KEY; return non-nil unless it is in COLLAPSED."
-  (let ((folded (member key collapsed)))
-    (insert (propertize
-             (concat (make-string indent ?\s) (if folded "▸ " "▾ ")
-                     (goblins--safe label) "\n")
-             'face 'goblins-sidebar-header
-             'goblins-group key))
+(defun goblins--sidebar-insert-group (key indent label collapsed &optional properties)
+  "Insert the heading of group KEY, with text PROPERTIES.
+Return non-nil unless KEY is in COLLAPSED."
+  (let* ((folded (member key collapsed))
+         (text (propertize
+               (concat (make-string indent ?\s) (if folded "▸ " "▾ ")
+                       (goblins--safe label) "\n")
+               'face 'goblins-sidebar-header
+               'goblins-group key)))
+    (add-text-properties 0 (length text) properties text)
+    (insert text)
     (not folded)))
 
 (defun goblins--sidebar-insert-tree (tree depth group-key permissions)
@@ -133,6 +135,8 @@ Directories and sessions keep snapshot order inside each group."
     (insert (make-string (* 2 depth) ?\s)
             (goblins--state-glyph (plist-get session :state)) " "
             (if finished (propertize name 'face 'goblins-dim) name)
+            (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
+                        'face 'goblins-dim)
             (if (> pending 0)
                 (propertize (format " !%d" pending) 'face 'goblins-attention)
               "")
@@ -166,7 +170,8 @@ The text is built apart from the sidebar so a failure cannot blank it."
                 (when (or (null rkey)
                           (goblins--sidebar-insert-group
                            (list 'raid rkey) 0
-                           (format "raid %s" (or (cadr raid) rkey)) collapsed))
+                           (format "raid %s" (or (cadr raid) rkey)) collapsed
+                           (list 'goblins-raid (or (cadr raid) rkey))))
                   (dolist (dir (cddr raid))
                     (let ((gkey (list 'dir rkey (car dir))))
                       (when (goblins--sidebar-insert-group
@@ -217,22 +222,6 @@ The text is built apart from the sidebar so a failure cannot blank it."
 
 (defun goblins--sidebar-window ()
   (get-buffer-window goblins--sidebar-buffer-name))
-
-(defun goblins--main-window ()
-  "Return the most recently used window that is not the sidebar."
-  (let ((windows (cl-remove-if (lambda (w)
-                                 (or (window-parameter w 'window-side)
-                                     (window-minibuffer-p w)))
-                               (window-list))))
-    (car (sort windows (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
-
-(defun goblins--show-in-main (buffer)
-  "Display BUFFER in the main window and select it."
-  (let ((window (or (goblins--main-window)
-                    (user-error "No window for the main view"))))
-    (set-window-buffer window buffer)
-    (select-window window)
-    buffer))
 
 (defun goblins--sidebar-update-active ()
   "Mark the goblin whose terminal is shown in the main window."
@@ -311,23 +300,17 @@ The text is built apart from the sidebar so a failure cannot blank it."
 
 (defun goblins-sidebar-open ()
   "Show the goblin at point in the main window, attaching if necessary.
-On a group heading, fold or unfold it."
+On a raid heading open its page; on a directory heading fold or unfold it."
   (interactive)
-  (if-let* ((id (get-text-property (line-beginning-position) 'goblins-id)))
-      (let* ((source (goblins--sidebar-ensure-source))
-             (session (goblins--sidebar-session id)))
-        (with-current-buffer source
-          (if-let* ((buffer (goblins--terminal-buffer id)))
-              (goblins--show-in-main buffer)
-            (when (member (plist-get session :state) '("stopped" "failed"))
-              (user-error "This goblin has finished"))
-            (goblins--open-terminal
-             id (plist-get session :agent_name)
-             (if (stringp (plist-get session :cwd))
-                 (file-name-as-directory (plist-get session :cwd))
-               default-directory)
-             #'goblins--show-in-main))))
-    (goblins-sidebar-toggle)))
+  (cond
+   ((get-text-property (line-beginning-position) 'goblins-id)
+    (goblins-open-session (goblins--sidebar-ensure-source)
+                          (get-text-property (line-beginning-position) 'goblins-id)))
+   ((get-text-property (line-beginning-position) 'goblins-raid)
+    (goblins--display-main
+     (goblins-raid-buffer (goblins--sidebar-ensure-source)
+                          (get-text-property (line-beginning-position) 'goblins-raid))))
+   (t (goblins-sidebar-toggle))))
 
 (defun goblins--sidebar-goblin-at-point ()
   "Return (SOURCE . SESSION-ID) for the goblin on this line."
@@ -341,6 +324,34 @@ The current request is focused; earlier ones follow as history."
   (interactive)
   (let ((goblin (goblins--sidebar-goblin-at-point)))
     (goblins--show-in-main (goblins-permissions-buffer (car goblin) (cdr goblin)))))
+
+(defun goblins-sidebar-invite ()
+  "Invite the goblin at point into a raid you choose.
+On a raid heading, invite a goblin you choose into that raid."
+  (interactive)
+  (let ((id (get-text-property (line-beginning-position) 'goblins-id))
+        (raid (get-text-property (line-beginning-position) 'goblins-raid))
+        (source (goblins--sidebar-ensure-source)))
+    (cond
+     (id
+      (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
+             (names (mapcar (lambda (r) (plist-get r :name)) (goblins--snapshot-raids snapshot))))
+        (unless names (user-error "No raid yet; create one with r"))
+        (when (goblins--session-raid-id (goblins--snapshot-session snapshot id))
+          (user-error "%s is already in a raid"
+                      (goblins--session-path (goblins--snapshot-session snapshot id))))
+        (goblins-invite-to-raid
+         source id (completing-read
+                    (format "Invite %s to raid: "
+                            (goblins--session-path (goblins--snapshot-session snapshot id)))
+                    names nil t))))
+     (raid
+      (let ((snapshot (buffer-local-value 'goblins--snapshot source)))
+        (goblins--raid-invite
+         source raid (plist-get (goblins--read-session (goblins--raid-candidates snapshot)
+                                                       (format "Invite to %s: " raid))
+                                :id))))
+     (t (user-error "Select a goblin or a raid")))))
 
 (defun goblins-sidebar-info ()
   "Show what the daemon knows about the goblin at point in the main window."
@@ -405,10 +416,11 @@ The current request is focused; earlier ones follow as history."
     (dolist (binding '(("j" . goblins-sidebar-next) ("k" . goblins-sidebar-previous)
                        ("<down>" . goblins-sidebar-next) ("<up>" . goblins-sidebar-previous)
                        ("RET" . goblins-sidebar-open) ("p" . goblins-sidebar-permissions)
-                       ("i" . goblins-sidebar-info) ("?" . describe-mode)
+                       ("i" . goblins-sidebar-invite) ("I" . goblins-sidebar-info)
+                       ("r" . goblins-raid) ("?" . describe-mode)
                        ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
                        ("g" . goblins-sidebar-refresh)
-                       ("r" . goblins-sidebar-run) ("R" . goblins-sidebar-run-in-project)
+                       ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
                        ("q" . goblins-workspace-quit)))
       (define-key map (kbd (car binding)) (cdr binding)))
     map))
@@ -421,13 +433,15 @@ The current request is focused; earlier ones follow as history."
     (kbd "k") #'goblins-sidebar-previous
     (kbd "RET") #'goblins-sidebar-open
     (kbd "p") #'goblins-sidebar-permissions
-    (kbd "i") #'goblins-sidebar-info
+    (kbd "i") #'goblins-sidebar-invite
+    (kbd "I") #'goblins-sidebar-info
+    (kbd "r") #'goblins-raid
     (kbd "?") #'describe-mode
     (kbd "TAB") #'goblins-sidebar-toggle
     (kbd "<tab>") #'goblins-sidebar-toggle
     (kbd "gr") #'goblins-sidebar-refresh
-    (kbd "r") #'goblins-sidebar-run
-    (kbd "R") #'goblins-sidebar-run-in-project
+    (kbd "c") #'goblins-sidebar-run
+    (kbd "C") #'goblins-sidebar-run-in-project
     (kbd "q") #'goblins-workspace-quit))
 
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"

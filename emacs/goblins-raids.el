@@ -1,0 +1,315 @@
+;;; goblins-raids.el --- Raid pages and commands for Goblins -*- lexical-binding: t; -*-
+
+;; Version: 0.1.0
+;; Package-Requires: ((emacs "28.1") (magit-section "4.0.0"))
+;; Keywords: tools, processes
+
+;;; Commentary:
+;; A raid is a group of goblins that can find and message each other.
+;; `goblins-raid' creates one around a goblin (or adds the goblin to an
+;; existing one) and opens its page, which lists the members and the running
+;; goblins that could still be invited.  Invitations join immediately; there
+;; is no acceptance step.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'subr-x)
+(require 'goblins)
+(require 'goblins-views)
+
+(declare-function goblins--sidebar-ensure-source "goblins-workspace" ())
+(declare-function goblins--main-window "goblins-views" ())
+(declare-function evil-set-initial-state "evil-core" (mode state))
+(declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+
+(defconst goblins--raid-buffer-name "*Goblins Raid*")
+
+;;;; Data
+
+(defun goblins--session-raid-id (session)
+  (let ((raid (plist-get session :raid)))
+    (and (listp raid) (plist-get raid :id))))
+
+(defun goblins--session-path (session)
+  "The tree path of SESSION, or its name when the daemon sent no path."
+  (let ((path (plist-get session :path)))
+    (if (and (stringp path) (not (string-empty-p path))) path (plist-get session :agent_name))))
+
+(defun goblins--snapshot-raids (snapshot)
+  (append (plist-get snapshot :raids) nil))
+
+(defun goblins--snapshot-raid (snapshot name)
+  (cl-find name (goblins--snapshot-raids snapshot)
+           :key (lambda (r) (plist-get r :name)) :test #'equal))
+
+(defun goblins--raid-candidates (snapshot)
+  "Running sessions in SNAPSHOT that belong to no raid."
+  (cl-remove-if-not
+   (lambda (s) (and (equal (plist-get s :state) "running")
+                    (not (goblins--session-raid-id s))))
+   (append (plist-get snapshot :sessions) nil)))
+
+(defun goblins--session-choice (session)
+  "A completion label for SESSION."
+  (let ((cwd (plist-get session :cwd)))
+    (format "%s (%s)%s" (goblins--safe (goblins--session-path session))
+            (goblins--safe (plist-get session :name))
+            (if (stringp cwd) (concat "  " (abbreviate-file-name cwd)) ""))))
+
+(defun goblins--read-session (sessions prompt)
+  "Choose one of SESSIONS, with PROMPT, and return its record."
+  (unless sessions (user-error "No running goblin outside a raid"))
+  (let* ((choices (mapcar (lambda (s) (cons (goblins--session-choice s) s)) sessions))
+         (choice (assoc (completing-read prompt choices nil t) choices)))
+    (unless choice (user-error "Select a goblin"))
+    (cdr choice)))
+
+(defun goblins--raid-call (source method params)
+  "Call the host METHOD with PARAMS on SOURCE's connection.
+Daemon refusals become `user-error's and leave the connection alone."
+  (with-current-buffer source
+    (unless (and goblins--connection goblins--subscription)
+      (user-error "Disconnected; reconnect with g in the sidebar"))
+    (condition-case err
+        (jsonrpc-request goblins--connection method params :timeout 5)
+      (jsonrpc-error
+       (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
+
+(defun goblins--raid-invite (source raid-name session-id)
+  "Add SESSION-ID to the raid RAID-NAME on SOURCE's server, creating it if absent."
+  (goblins--raid-call source 'raids.invite
+                      (list :raid raid-name :sessions (vector session-id))))
+
+;;;; Page
+
+(defvar-local goblins--raid-source nil)
+
+(defun goblins--raid-member-line (member session)
+  (let ((start (point)))
+    (insert "  " (goblins--state-glyph (plist-get member :state)) " "
+            (goblins--safe (plist-get member :path))
+            (propertize (format " (%s)" (goblins--safe (plist-get member :name)))
+                        'face 'goblins-dim)
+            (if (eq (plist-get member :owner) t)
+                (propertize "  owner" 'face 'goblins-attention) "")
+            (if-let* ((role (plist-get member :role)) ((stringp role)))
+                (propertize (format "  %s" (goblins--safe role)) 'face 'goblins-key) "")
+            (if-let* ((cwd (plist-get session :cwd)) ((stringp cwd)))
+                (propertize (format "  %s" (abbreviate-file-name cwd)) 'face 'goblins-dim)
+              "")
+            "\n")
+    (add-text-properties start (point)
+                         (list 'goblins-id (plist-get member :id) 'goblins-raid-line 'member))))
+
+(defun goblins--raid-candidate-line (session)
+  (let ((start (point)))
+    (insert "  " (goblins--state-glyph (plist-get session :state)) " "
+            (goblins--safe (goblins--session-path session))
+            (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
+                        'face 'goblins-dim)
+            (if-let* ((cwd (plist-get session :cwd)) ((stringp cwd)))
+                (propertize (format "  %s" (abbreviate-file-name cwd)) 'face 'goblins-dim)
+              "")
+            "\n")
+    (add-text-properties start (point)
+                         (list 'goblins-id (plist-get session :id) 'goblins-raid-line 'candidate))))
+
+(defun goblins--raid-key-at (pos)
+  (save-excursion (goto-char pos)
+                  (get-text-property (line-beginning-position) 'goblins-id)))
+
+(defun goblins--raid-render ()
+  "Redraw the raid page from the current snapshot, keeping the selected line."
+  (let* ((inhibit-read-only t)
+         (snapshot (goblins--view-snapshot))
+         (name goblins--view-session)
+         (raid (and snapshot (goblins--snapshot-raid snapshot name)))
+         (members (and raid (append (plist-get raid :members) nil)))
+         (candidates (and raid (goblins--raid-candidates snapshot)))
+         (key (goblins--raid-key-at (point)))
+         (line (line-number-at-pos)))
+    (erase-buffer)
+    (cond
+     ((null snapshot)
+      (insert (propertize "Not connected to the server\n" 'face 'goblins-dim)))
+     ((null raid)
+      (insert (propertize (format "raid %s" (goblins--safe name)) 'face 'bold) "\n\n"
+              (propertize "This raid no longer exists. Its goblins keep running.\n"
+                          'face 'goblins-dim)))
+     (t
+      (insert (propertize (format "raid %s" (goblins--safe name)) 'face 'bold)
+              (propertize (format "   %d member%s · owner %s"
+                                  (length members) (if (= (length members) 1) "" "s")
+                                  (goblins--session-label snapshot (plist-get raid :owner)))
+                          'face 'goblins-dim)
+              "\n\n")
+      (insert (propertize (format "Members (%d)" (length members)) 'face 'goblins-heading) "\n")
+      (dolist (member members)
+        (goblins--raid-member-line
+         member (goblins--snapshot-session snapshot (plist-get member :id))))
+      (insert "\n" (propertize (format "Available to invite (%d)" (length candidates))
+                               'face 'goblins-heading)
+              "\n")
+      (if (null candidates)
+          (insert (propertize "  every running goblin is in a raid\n" 'face 'goblins-dim))
+        (dolist (session candidates) (goblins--raid-candidate-line session)))))
+    (goto-char (point-min))
+    (let ((pos (or (and key (text-property-any (point-min) (point-max) 'goblins-id key))
+                   (progn (forward-line (1- line)) (point)))))
+      (goblins--view-goto (save-excursion (goto-char pos) (line-beginning-position))))))
+
+;;;; Commands
+
+(defun goblins-raid-next (&optional n)
+  "Move to the next goblin line, N times."
+  (interactive "p")
+  (let ((direction (if (< (or n 1) 0) -1 1)))
+    (dotimes (_ (abs (or n 1)))
+      (let ((start (point)) found)
+        (while (and (not found) (zerop (forward-line direction)))
+          (when (get-text-property (point) 'goblins-id) (setq found t)))
+        (if found (beginning-of-line) (goto-char start))))))
+
+(defun goblins-raid-previous (&optional n)
+  "Move to the previous goblin line, N times."
+  (interactive "p")
+  (goblins-raid-next (- (or n 1))))
+
+(defun goblins--raid-line ()
+  "Return (KIND . SESSION-ID) for the goblin line at point, or nil."
+  (let ((kind (get-text-property (line-beginning-position) 'goblins-raid-line)))
+    (and kind (cons kind (get-text-property (line-beginning-position) 'goblins-id)))))
+
+(defun goblins-raid-open ()
+  "Show the terminal of the goblin at point, attaching if necessary."
+  (interactive)
+  (let ((line (goblins--raid-line)))
+    (unless line (user-error "Select a goblin"))
+    (goblins-open-session goblins--view-source (cdr line))))
+
+(defun goblins-raid-invite ()
+  "Invite a goblin into this raid: the one at point, or one you choose."
+  (interactive)
+  (let* ((snapshot (goblins--view-snapshot))
+         (line (goblins--raid-line))
+         (session (if (eq (car line) 'candidate)
+                      (goblins--snapshot-session snapshot (cdr line))
+                    (goblins--read-session (goblins--raid-candidates snapshot)
+                                           (format "Invite to %s: " goblins--view-session)))))
+    (goblins--raid-invite goblins--view-source goblins--view-session (plist-get session :id))
+    (message "Invited %s to raid %s" (goblins--session-path session) goblins--view-session)))
+
+(defun goblins-raid-kick ()
+  "Remove the member at point from this raid."
+  (interactive)
+  (let* ((snapshot (goblins--view-snapshot))
+         (line (goblins--raid-line))
+         (raid (goblins--snapshot-raid snapshot goblins--view-session))
+         (session (and (eq (car line) 'member)
+                       (goblins--snapshot-session snapshot (cdr line)))))
+    (unless session (user-error "Select a member to kick"))
+    (let ((owner (equal (plist-get raid :owner) (plist-get session :id))))
+      (when (y-or-n-p (format "Kick %s out of raid %s%s? "
+                              (goblins--session-path session) goblins--view-session
+                              (if owner " (the owner: this dissolves the raid)" "")))
+        (goblins--raid-call goblins--view-source 'raids.kick
+                            (list :raid goblins--view-session :session (plist-get session :id)))
+        (message "Kicked %s out of raid %s" (goblins--session-path session) goblins--view-session)))))
+
+(defun goblins-raid-refresh ()
+  "Reconnect to the server for a fresh snapshot."
+  (interactive)
+  (with-current-buffer goblins--view-source (goblins-refresh)))
+
+(defvar goblins-raid-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (dolist (binding '(("j" . goblins-raid-next) ("k" . goblins-raid-previous)
+                       ("<down>" . goblins-raid-next) ("<up>" . goblins-raid-previous)
+                       ("RET" . goblins-raid-open) ("i" . goblins-raid-invite)
+                       ("x" . goblins-raid-kick) ("g" . goblins-raid-refresh)
+                       ("q" . quit-window)))
+      (define-key map (kbd (car binding)) (cdr binding)))
+    map))
+
+(with-eval-after-load 'evil
+  (evil-set-initial-state 'goblins-raid-mode 'motion)
+  (evil-define-key* 'motion goblins-raid-mode-map
+    (kbd "j") #'goblins-raid-next
+    (kbd "k") #'goblins-raid-previous
+    (kbd "RET") #'goblins-raid-open
+    (kbd "i") #'goblins-raid-invite
+    (kbd "x") #'goblins-raid-kick
+    (kbd "gr") #'goblins-raid-refresh
+    (kbd "q") #'quit-window))
+
+(define-derived-mode goblins-raid-mode special-mode "Goblins-Raid"
+  "Members of a raid, and the goblins that could join it.
+\\<goblins-raid-mode-map>
+\\[goblins-raid-invite] invites, \\[goblins-raid-kick] kicks, \\[goblins-raid-open] opens the goblin at point."
+  (setq-local truncate-lines t
+              header-line-format " Raid   i invite   x kick   RET open   q back")
+  (hl-line-mode 1)
+  (setq-local revert-buffer-function (lambda (&rest _) (goblins-raid-refresh))))
+
+(defun goblins-raid-buffer (source name)
+  "Return the page of the raid called NAME on SOURCE's server."
+  (goblins--view-buffer goblins--raid-buffer-name #'goblins-raid-mode
+                        #'goblins--raid-render source name))
+
+;;;; Creating and joining
+
+(defun goblins--raid-context ()
+  "Return (SOURCE . SESSION-ID) for the goblin in the current context, or nil.
+That is the goblin on this sidebar line, else the goblin shown in the main
+window, or the goblin whose terminal is the current buffer."
+  (cond
+   ((derived-mode-p 'goblins-sidebar-mode)
+    (let ((shown (and (goblins--main-window)
+                      (buffer-local-value 'goblins--session-key
+                                          (window-buffer (goblins--main-window))))))
+      (cond ((get-text-property (line-beginning-position) 'goblins-id)
+             (cons (goblins--sidebar-ensure-source)
+                   (get-text-property (line-beginning-position) 'goblins-id)))
+            (shown (cons (goblins--sidebar-ensure-source) (nth 2 shown))))))
+   (goblins--session-key
+    (cons (goblins--status-buffer (car goblins--session-key))
+          (nth 2 goblins--session-key)))))
+
+;;;###autoload
+(defun goblins-raid ()
+  "Create a raid around a goblin, or add it to an existing one, and open the page.
+The goblin is the one on this sidebar line or in this terminal buffer;
+otherwise choose a running goblin that is not in a raid."
+  (interactive)
+  (let* ((context (goblins--raid-context))
+         (source (or (car context)
+                     (and (derived-mode-p 'goblins-sidebar-mode) (goblins--sidebar-ensure-source))
+                     (goblins--connect)))
+         (snapshot (buffer-local-value 'goblins--snapshot source))
+         (session (if context
+                      (or (goblins--snapshot-session snapshot (cdr context))
+                          (user-error "The daemon no longer retains this goblin"))
+                    (goblins--read-session (goblins--raid-candidates snapshot)
+                                           "Create a raid around: ")))
+         (names (mapcar (lambda (r) (plist-get r :name)) (goblins--snapshot-raids snapshot))))
+    (when-let* ((id (goblins--session-raid-id session)))
+      (user-error "%s is already in a raid" (goblins--session-path session)))
+    (let ((name (string-trim (completing-read "Raid (new or existing): " names))))
+      (when (string-empty-p name) (user-error "Name the raid"))
+      (goblins--raid-invite source name (plist-get session :id))
+      (goblins--display-main (goblins-raid-buffer source name)))))
+
+(defun goblins-invite-to-raid (source session-id raid-name)
+  "Add SESSION-ID to the existing raid RAID-NAME on SOURCE's server."
+  (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
+         (session (goblins--snapshot-session snapshot session-id)))
+    (unless session (user-error "The daemon no longer retains this goblin"))
+    (when (goblins--session-raid-id session)
+      (user-error "%s is already in a raid" (goblins--session-path session)))
+    (goblins--raid-invite source raid-name session-id)
+    (message "Added %s to raid %s" (goblins--session-path session) raid-name)))
+
+(provide 'goblins-raids)
+;;; goblins-raids.el ends here
