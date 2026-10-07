@@ -2,6 +2,7 @@
 
 (require 'ert)
 (require 'goblins)
+(require 'goblins-workspace)
 (require 'project)
 (defvar ghostel-identity)
 
@@ -799,5 +800,142 @@
     (while (and (not (funcall predicate)) (< (float-time) deadline))
       (accept-process-output nil 0.02))
     (should (funcall predicate))))
+
+;;; Workspace sidebar
+
+(defun goblins-test--session (id &rest props)
+  (append (list :id id :agent_name id :name "shell" :state "running"
+                :initial_packages [] :packages [])
+          props))
+
+(defmacro goblins-test--sidebar (sessions &rest body)
+  "Run BODY in a sidebar rendering SESSIONS from a fake status buffer."
+  (declare (indent 1))
+  `(let ((source (generate-new-buffer " *goblins test source*"))
+         (sidebar (generate-new-buffer " *goblins test sidebar*")))
+     (unwind-protect
+         (progn
+           (with-current-buffer source
+             (goblins-status-mode)
+             (setq goblins--directory "/tmp/goblins-test"
+                   goblins--instance "daemon-a"
+                   goblins--snapshot
+                   (list :instance "daemon-a" :sessions (vconcat ,sessions)
+                         :permissions (vector (goblins-test--request "a")))))
+           (with-current-buffer sidebar
+             (goblins-sidebar-mode)
+             (setq goblins--sidebar-source source)
+             (goblins--sidebar-render)
+             ,@body))
+       (kill-buffer source)
+       (kill-buffer sidebar))))
+
+(defconst goblins-test--raid-sessions
+  (list (goblins-test--session "session-a" :cwd "/p/one"
+                               :raid '(:id "r1" :name "zeta"))
+        (goblins-test--session "session-b" :cwd "/p/two")
+        (goblins-test--session "session-c" :cwd "/p/one" :parent "session-a"
+                               :raid '(:id "r1" :name "zeta"))
+        (goblins-test--session "session-d" :cwd "/p/two"
+                               :raid '(:id "r0" :name "alpha"))
+        (goblins-test--session "session-e")))
+
+(ert-deftest goblins-sidebar-groups-by-raid-then-directory ()
+  (goblins-test--sidebar goblins-test--raid-sessions
+    (let ((text (buffer-string)))
+      (should (< (string-match "raid alpha" text) (string-match "raid zeta" text)))
+      (should (< (string-match "raid zeta" text) (string-match "session-b" text)))
+      (should (string-match-p "▾ raid zeta\n  ▾ /p/one/\n    . session-a \\!1\n      . session-c"
+                              (replace-regexp-in-string "[●○◌✗]" "." text)))
+      (should (string-match-p "▾ /p/two/\n  . session-b" text))
+      (should (string-match-p "▾ unknown\n  . session-e"
+                              (replace-regexp-in-string "[●○◌✗]" "." text))))))
+
+(ert-deftest goblins-sidebar-navigates-and-folds ()
+  (goblins-test--sidebar goblins-test--raid-sessions
+    (should buffer-read-only)
+    (goto-char (point-min))
+    (goblins-sidebar-next)
+    (should (get-text-property (point) 'goblins-group))
+    (goblins-sidebar-next)
+    (should (equal (get-text-property (point) 'goblins-id) "session-d"))
+    (goblins-sidebar-previous)
+    (goblins-sidebar-previous)
+    (should (equal (get-text-property (point) 'goblins-group) '(raid "r0")))
+    (should (eq (key-binding (kbd "j")) #'goblins-sidebar-next))
+    (should (eq (key-binding (kbd "k")) #'goblins-sidebar-previous))
+    (should (eq (key-binding (kbd "p")) #'goblins-sidebar-permissions))
+    (should (eq (key-binding (kbd "RET")) #'goblins-sidebar-open))
+    (goblins-sidebar-open)
+    (should-not (string-match-p "session-d" (buffer-string)))
+    (should (string-match-p "▸ raid alpha" (buffer-string)))
+    ;; Folds survive re-renders, and point stays on the same line.
+    (goblins--sidebar-render)
+    (should-not (string-match-p "session-d" (buffer-string)))
+    (should (equal (get-text-property (point) 'goblins-group) '(raid "r0")))))
+
+(ert-deftest goblins-sidebar-open-shows-the-terminal-in-the-main-window ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p"))
+    (let* ((terminal (generate-new-buffer " *goblins test terminal*"))
+           (goblins--terminal-buffers (make-hash-table :test #'equal))
+           (shown nil))
+      (unwind-protect
+          (progn
+            (puthash (list "/tmp/goblins-test" "daemon-a" "session-a") terminal
+                     goblins--terminal-buffers)
+            (goblins-sidebar-next)
+            (cl-letf (((symbol-function 'goblins--show-in-main)
+                       (lambda (buffer) (setq shown buffer))))
+              (goblins-sidebar-next)
+              (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+              (goblins-sidebar-open))
+            (should (eq shown terminal)))
+        (kill-buffer terminal)))))
+
+(ert-deftest goblins-workspace-switch-function-is-pluggable ()
+  (let (calls)
+    (cl-letf (((symbol-function 'goblins--status-buffer)
+               (lambda (&optional _) (current-buffer)))
+              ((symbol-function 'goblins--sidebar-window) (lambda () nil))
+              ((symbol-function 'goblins--sidebar-buffer) (lambda (_) (current-buffer)))
+              ((symbol-function 'goblins-refresh) #'ignore)
+              ((symbol-function 'display-buffer-in-side-window) (lambda (&rest _) (selected-window)))
+              ((symbol-function 'set-window-dedicated-p) #'ignore))
+      (let ((goblins-workspace-switch-or-create-function
+             (lambda (name) (push name calls))))
+        (save-window-excursion (goblins-workspace))
+        (should (equal calls '("goblins")))))))
+
+(ert-deftest goblins-workspace-default-switch-saves-and-restores-windows ()
+  (save-window-excursion
+    (delete-other-windows)
+    (split-window)
+    (should (= (length (window-list)) 2))
+    (goblins-workspace-default-switch "goblins")
+    (should (= (length (window-list)) 1))
+    (goblins-workspace-default-quit)
+    (should (= (length (window-list)) 2))
+    (should-not (frame-parameter nil 'goblins-workspace-saved-config))))
+
+(ert-deftest goblins-workspace-opens-the-most-recent-goblin-terminal ()
+  (goblins-test--sidebar nil
+    (let ((older (generate-new-buffer " *older*"))
+          (newer (generate-new-buffer " *newer*")))
+      (unwind-protect
+          (progn
+            (dolist (b (list older newer))
+              (with-current-buffer b
+                (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "x"))))
+            ;; `buffer-list' is most recently used first.
+            (bury-buffer older)
+            (switch-to-buffer newer)
+            (should (eq (goblins--initial-main-buffer source) newer))
+            (with-current-buffer newer (setq-local goblins--session-key nil))
+            (with-current-buffer older
+              (setq-local goblins--session-key (list "/other/server" "daemon-a" "x")))
+            (should (eq (goblins--initial-main-buffer source) source)))
+        (kill-buffer older)
+        (kill-buffer newer)))))
+
 
 ;;; goblins-tests.el ends here

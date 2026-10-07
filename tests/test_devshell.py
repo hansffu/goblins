@@ -72,11 +72,14 @@ class DevShellTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)S=original\n")
         record = next(r for r in self.d.rpc.call("sessions.list", {}) if r["agent_name"] == "dev")
         self.assertEqual(record["dev_shell"], str(self.project))
+        self.assertEqual(record["cwd"], str(self.project))
 
         # Later workspace edits never reach the running generation or children.
         self.write_flake("edited")
         child = self.run_cli("--parent", "dev")
         child.expect(r"(?:^|\n)hook-ran in ")
+        child_record = next(r for r in self.d.rpc.call("sessions.list", {}) if r.get("parent") == record["id"])
+        self.assertEqual(child_record["cwd"], str(self.project))
         child.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR\n")
         child.expect(r"(?:^|\n)M=original H=from-hook-original\n")
 

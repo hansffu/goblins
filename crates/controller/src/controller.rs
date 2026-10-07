@@ -41,6 +41,9 @@ pub struct SessionRecord {
     /// Flake reference of the host-launched dev shell, if any.
     #[serde(default)]
     pub dev_shell: Option<String>,
+    /// Working directory the sandbox was launched in (children inherit it).
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
     pub id: String,
     pub agent_name: String,
     /// None denotes the host root. Ownership always uses immutable IDs.
@@ -958,11 +961,16 @@ impl Controller {
                 state: self.state.clone(),
             },
         };
+        let cwd = match &parent {
+            Some(id) => self.sessions[id].record.cwd.clone(),
+            None => p.cwd.clone().filter(|_| self.workspace.is_none()),
+        };
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
             docker_enabled: false,
             scope: None,
             dev_shell: None,
+            cwd,
             id: id.clone(),
             path: parent
                 .as_ref()
@@ -2290,6 +2298,7 @@ mod tests {
                     docker_enabled: false,
                     scope: None,
                     dev_shell: None,
+                    cwd: None,
                     id: id.clone(),
                     agent_name: "snikk".into(),
                     parent: None,

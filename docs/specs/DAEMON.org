@@ -640,6 +640,8 @@ acceptance object; use get to inspect its current lifecycle.
 Session records (host and sandbox views) also include =docker_enabled:boolean=
 and =docker_scope:string-or-null= (null means anonymous). Permission records
 include =scope:string-or-null= and =anonymous:boolean=.
+Session records also carry =cwd:string-or-null=, the working directory the host
+launched the sandbox in (children inherit it; null with a daemon workspace).
 For =kind:"docker"=, =package= is a display label for the engine/scope, not a Nix
 attribute or an entry in the session's =packages= list.
 

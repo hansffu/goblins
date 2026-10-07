@@ -116,6 +116,36 @@ dependencies, run a package manager, or alter your Emacs configuration.
 Nix-managed Emacs packages can be used
 directly; there is no need to download another copy of Magit.
 
+* Workspace
+
+=M-x goblins-workspace= opens a sidebar listing every goblin, grouped by raid
+and then by project directory, beside a main window.  The main window shows the
+last used goblin terminal, or the status buffer when there is none.
+
+| Key (also Evil motion state) | Action                                            |
+|------------------------------+---------------------------------------------------|
+| =j= / =k=                    | next / previous goblin or group                   |
+| =RET=                        | show or attach the goblin; fold a group heading   |
+| =p=                          | show the status buffer (pending requests, =a=/=d=)|
+| =TAB=                        | fold the group                                    |
+| =R=                          | run a goblin from the main window's project       |
+| =g= / =gr=                   | reconnect                                         |
+| =q=                          | leave the workspace                               |
+
+Bring your own workspace package by setting
+=goblins-workspace-switch-or-create-function= (called with the name
+=goblins-workspace-name=).  The default saves the window configuration and uses
+the whole frame; =goblins-workspace-quit-function= restores it.
+
+#+begin_src emacs-lisp
+(setq goblins-workspace-switch-or-create-function
+      #'tabspaces-switch-or-create-workspace)
+#+end_src
+
+Agent terminals draw no-break spaces without an underline, which fixes
+Claude's thinking indicator; set =goblins-remove-nobreak-underline= to nil to
+disable.
+
 * Checks
 
 Run with an Emacs that already has =magit-section= on its load path:

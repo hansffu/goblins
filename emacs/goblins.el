@@ -298,15 +298,18 @@ all other files in a collapsed section of their own."
   (and (equal (plist-get record :kind) "devshell")
        (not (plist-get record :preview))))
 
-(defun goblins--insert-request (record &optional details)
+(defun goblins--insert-request (record &optional details hide heading)
+  "Insert RECORD as a section; DETAILS adds its fields and preview.
+HIDE starts it folded and HEADING replaces the default heading text."
   (magit-insert-section section
-    (goblins-request-section (plist-get record :id))
+    (goblins-request-section (plist-get record :id) hide)
     (oset section record record)
     (magit-insert-heading
-      (format "  %s  %s  [%s]"
-              (goblins--request-agent-label record)
-              (goblins--safe (plist-get record :package))
-              (goblins--safe (plist-get record :state))))
+      (or heading
+          (format "  %s  %s  [%s]"
+                  (goblins--request-agent-label record)
+                  (goblins--safe (plist-get record :package))
+                  (goblins--safe (plist-get record :state)))))
     (when details
       (goblins--field "Reason:" (plist-get record :reason))
       (goblins--field "Session:" (plist-get record :session))
@@ -501,7 +504,8 @@ Diff sections also fold in the details view."
 
 (defun goblins--render ()
   (goblins--update-header)
-  (if goblins--details (goblins--render-details) (goblins--render-overview)))
+  (if goblins--details (goblins--render-details) (goblins--render-overview))
+  (run-hooks 'goblins-snapshot-hook))
 
 (defun goblins--render-overview ()
   "Render state, preserving section identity and folding across updates."
@@ -744,8 +748,12 @@ Diff sections also fold in the details view."
                      (cl-remove-if-not
                       (lambda (request) (equal (plist-get request :state) "pending"))
                       (append (plist-get goblins--snapshot :permissions) nil)))
-             "No pending requests")))
-         (id (plist-get record :id)))
+             "No pending requests"))))
+    (goblins--decide-record record approved)))
+
+(defun goblins--decide-record (record approved)
+  "Send the decision APPROVED for RECORD, a pending request, from a status buffer."
+  (let ((id (plist-get record :id)))
     (unless (and goblins--connection goblins--subscription)
       (user-error "Disconnected; use M-x goblins-refresh to reconnect"))
     (unless (equal (plist-get record :state) "pending")
@@ -885,64 +893,94 @@ flake.nix, ask whether to use it as the dev shell.  Otherwise use
                                  (abbreviate-file-name (expand-file-name "flake.nix" cwd))))
                (directory-file-name (file-truename cwd))))))
 
-(defun goblins-run ()
+(defcustom goblins-remove-nobreak-underline t
+  "Whether agent terminals draw no-break spaces without an underline.
+Claude's TUI uses U+00A0 in glyphs such as its thinking indicator, and Emacs
+paints those with the underlined `nobreak-space' face."
+  :type 'boolean)
+
+(defvar goblins-snapshot-hook nil
+  "Normal hook run in a status buffer after it renders a new snapshot.")
+
+(defun goblins--require-ghostel ()
+  ;; Require the installed module directly, bypassing Ghostel's auto-download.
+  (unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)
+               (fboundp 'ghostel-exec))
+    (user-error "Goblins terminals require installed Ghostel with its native module")))
+
+(defun goblins--open-terminal (session agent-name cwd &optional display)
+  "Attach a new Ghostel buffer to SESSION and return it.
+Call in a connected status buffer.  AGENT-NAME names the buffer and CWD is its
+`default-directory'.  DISPLAY, default `pop-to-buffer', shows the new buffer.
+On failure the buffer is killed and the error re-signalled."
+  (goblins--require-ghostel)
+  (let* ((instance goblins--instance)
+         (key (list goblins--directory instance session))
+         (executable goblins-executable)
+         (buffer (generate-new-buffer (format "*Goblin: %s*" agent-name))))
+    (condition-case err
+        (progn
+          (with-current-buffer buffer (setq default-directory cwd))
+          (funcall (or display #'pop-to-buffer) buffer)
+          (let ((ghostel-kill-buffer-on-exit nil))
+            (ghostel-exec buffer executable
+                          (list "--state-dir" (car key) "attach" session
+                                "--instance" instance)
+                          `((kind . goblins) (session . ,session) (instance . ,instance))))
+          (with-current-buffer buffer
+            (setq-local goblins--session-key key)
+            (setq-local goblins--directory (car key))
+            (setq-local ghostel-kill-buffer-on-exit nil)
+            (when goblins-remove-nobreak-underline
+              (face-remap-add-relative 'nobreak-space :underline nil))
+            (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
+          (puthash key buffer goblins--terminal-buffers)
+          (goblins--render-status-buffers)
+          buffer)
+      (error
+       (when (buffer-live-p buffer) (kill-buffer buffer))
+       (signal (car err) (cdr err))))))
+
+(defun goblins-run (&optional directory display)
   "Choose a configured goblin and launch it in a new Ghostel buffer.
 Launch from the current project's root, or the current directory outside a
 project; see `goblins--launch-location' for the dev shell choice.  Use this
 status buffer's server, or the default server outside a status buffer.
+DIRECTORY, if given, replaces the current directory as the launch location,
+and DISPLAY, default `pop-to-buffer', shows the new terminal.  The status
+buffer is never displayed.
 Only launches made here are linked by the terminal command."
   (interactive)
-  (when (file-remote-p default-directory)
-    (user-error "Goblins requires a local working directory"))
-  ;; Require the installed module directly, bypassing Ghostel's auto-download.
-  (unless (and (require 'ghostel nil t) (require 'ghostel-module nil t)
-               (fboundp 'ghostel-exec))
-    (user-error "goblins-run requires installed Ghostel with its native module"))
-  (let* ((directory (or goblins--directory goblins-state-directory
-                        (goblins--default-directory)))
-         (executable goblins-executable)
-         (configs (goblins--configurations))
-         (name (goblins--read-configuration (plist-get configs :names)))
-         (location (goblins--launch-location))
-         (cwd (car location))
-         (dev-shell (cdr location)))
-    (goblins--ensure-connected directory)
-    (let* ((connection goblins--connection)
-           (instance goblins--instance)
-           (launch (jsonrpc-request
-                    connection 'sessions.start
-                    (append
-                     (list :key (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid))))
-                           :name name :configuration (plist-get configs :configuration)
-                           :cwd cwd :rows 24 :cols 80)
-                     (and dev-shell (list :dev_shell dev-shell)))
-                    :timeout 3))
-           (session (plist-get launch :session))
-           (key (list goblins--directory instance session))
-           (buffer (generate-new-buffer
-                    (format "*Goblin: %s*" (plist-get launch :agent_name)))))
-      (condition-case err
-          (progn
-            (with-current-buffer buffer (setq default-directory cwd))
-            (pop-to-buffer buffer)
-            (let ((ghostel-kill-buffer-on-exit nil))
-              (ghostel-exec buffer executable
-                            (list "--state-dir" (car key) "attach" session
-                                  "--instance" instance)
-                            `((kind . goblins) (session . ,session) (instance . ,instance))))
-            (with-current-buffer buffer
-              (setq-local goblins--session-key key)
-              (setq-local goblins--directory (car key))
-              (setq-local ghostel-kill-buffer-on-exit nil)
-              (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
-            (puthash key buffer goblins--terminal-buffers)
-            (goblins--render-status-buffers)
-            buffer)
-        (error
-         (when (buffer-live-p buffer) (kill-buffer buffer))
-         (ignore-errors
-           (jsonrpc-request connection 'sessions.stop (list :session session) :timeout 3))
-         (signal (car err) (cdr err)))))))
+  (let ((default-directory (file-name-as-directory
+                            (expand-file-name (or directory default-directory)))))
+    (when (file-remote-p default-directory)
+      (user-error "Goblins requires a local working directory"))
+    (goblins--require-ghostel)
+    (let* ((state-directory (or goblins--directory goblins-state-directory
+                                (goblins--default-directory)))
+           (configs (goblins--configurations))
+           (name (goblins--read-configuration (plist-get configs :names)))
+           (location (goblins--launch-location))
+           (cwd (car location))
+           (dev-shell (cdr location))
+           (status (goblins--connect state-directory)))
+      (with-current-buffer status
+        (let* ((connection goblins--connection)
+               (launch (jsonrpc-request
+                        connection 'sessions.start
+                        (append
+                         (list :key (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid))))
+                               :name name :configuration (plist-get configs :configuration)
+                               :cwd cwd :rows 24 :cols 80)
+                         (and dev-shell (list :dev_shell dev-shell)))
+                        :timeout 3))
+               (session (plist-get launch :session)))
+          (condition-case err
+              (goblins--open-terminal session (plist-get launch :agent_name) cwd display)
+            (error
+             (ignore-errors
+               (jsonrpc-request connection 'sessions.stop (list :session session) :timeout 3))
+             (signal (car err) (cdr err)))))))))
 
 (defvar goblins-status-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1019,6 +1057,21 @@ Use \[goblins-refresh] to reconnect."
   (unless (and (derived-mode-p 'goblins-status-mode) goblins--directory)
     (pop-to-buffer (goblins--status-buffer))))
 
+(defun goblins--connect (&optional directory)
+  "Return DIRECTORY's status buffer, connected and with a snapshot.
+Unlike `goblins-status' this never displays the buffer."
+  (let ((buffer (goblins--status-buffer directory)))
+    (with-current-buffer buffer
+      (unless (or goblins--connection (process-live-p goblins--server-process))
+        (goblins-refresh))
+      (let ((deadline (+ (float-time) 3)))
+        (while (and goblins--connection (not goblins--subscription)
+                    (< (float-time) deadline))
+          (accept-process-output nil 0.01)))
+      (unless goblins--subscription
+        (user-error "Server disconnected; use M-x goblins-start-server")))
+    buffer))
+
 (defun goblins--ensure-connected (&optional directory)
   "Open status for DIRECTORY and await its initial snapshot."
   (goblins-status directory)
@@ -1028,6 +1081,8 @@ Use \[goblins-refresh] to reconnect."
       (accept-process-output nil 0.01)))
   (unless goblins--subscription
     (user-error "Server disconnected; use M-x goblins-start-server")))
+
+;;;###autoload (autoload 'goblins-workspace "goblins-workspace" nil t)
 
 ;;;###autoload
 (defun goblins-status (&optional directory)
