@@ -898,7 +898,10 @@ held in the controller's event loop and never persisted.
   first target as owner if absent; every target is resolved with
   =resolve_session= and checked before anything changes; members are a no-op;
   a member of another raid fails), =raids.destroy {raid}= -> ={accepted}=,
-  =raids.members {raid}=, =raids.set_role {raid,session,role}=. Host
+  =raids.members {raid}=, =raids.set_role {raid,session,role}=,
+  =raids.kick {raid,session}= -> ={accepted,dissolved}= (removes a member with
+  reason =kicked=; kicking the owner dissolves the raid, like the owner
+  leaving). Host
   =sessions.start= gains =raid=: create with the new session as owner, or join.
 - Sandbox methods :: =raids.create {raid}=, =raids.invite {sessions}= (targets
   resolved in the caller's subtree, then required to be direct children),
@@ -923,7 +926,7 @@ held in the controller's event loop and never persisted.
   -32009 with a specific message; raid event capacity -> -32010. Both
   endpoints advertise =raids=.
 - Events and budget :: every mutation returns ordered events (=raid.created=,
-  =raid.joined=, =raid.role=, =raid.left= with reason =left=/=stopped=/
+  =raid.joined=, =raid.role=, =raid.left= with reason =left=/=kicked=/=stopped=/
   =launch-failed=, =raid.dissolved= with reason =owner-left=/=destroyed=),
   attributed to an actor and the affected sessions. The controller queues them
   in an outbox of 256 events and keeps a daemon-wide budget of 4096; additions

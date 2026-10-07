@@ -38,6 +38,8 @@ pub enum Reason {
     Left,
     Stopped,
     LaunchFailed,
+    /// Removed by the host, with `raids.kick`.
+    Kicked,
 }
 impl Reason {
     fn as_str(self) -> &'static str {
@@ -45,6 +47,7 @@ impl Reason {
             Self::Left => "left",
             Self::Stopped => "stopped",
             Self::LaunchFailed => "launch-failed",
+            Self::Kicked => "kicked",
         }
     }
 }
@@ -296,13 +299,25 @@ impl Raids {
     /// Leave, exit, stop or failed launch. Removing the owner dissolves the
     /// raid and clears every member; it never stops anyone.
     pub fn remove(&mut self, session: &str, reason: Reason) -> Vec<Event> {
+        self.leave(session, session, reason)
+    }
+
+    /// The host removes a member. Kicking the owner dissolves the raid.
+    pub fn kick(&mut self, session: &str, actor: &str) -> Result<Vec<Event>> {
+        if !self.member_of.contains_key(session) {
+            return Err(Error::NotMember(session.into()));
+        }
+        Ok(self.leave(session, actor, Reason::Kicked))
+    }
+
+    fn leave(&mut self, session: &str, actor: &str, reason: Reason) -> Vec<Event> {
         let Some(name) = self.member_of.remove(session) else {
             return vec![];
         };
         let raid = self.raids.get_mut(&name).expect("member of a live raid");
         raid.members.remove(session);
         let mut events = vec![Event {
-            actor: session.into(),
+            actor: actor.into(),
             change: Change::Left {
                 raid: raid.id.clone(),
                 session: session.into(),
@@ -310,7 +325,7 @@ impl Raids {
             },
         }];
         if raid.owner == session {
-            events.extend(self.dissolve(&name, session, false));
+            events.extend(self.dissolve(&name, actor, false));
         }
         events
     }
@@ -375,6 +390,25 @@ mod tests {
     }
     fn kinds(events: &[Event]) -> Vec<&'static str> {
         events.iter().map(Event::kind).collect()
+    }
+
+    #[test]
+    fn the_host_kicks_members_and_dissolves_on_the_owner() {
+        let mut r = Raids::default();
+        r.create("r1".into(), "review", "a", "a").unwrap();
+        r.join("r2".into(), "review", "b", false, "a").unwrap();
+        assert_eq!(
+            r.kick("z", "host").unwrap_err(),
+            Error::NotMember("z".into())
+        );
+        let events = r.kick("b", "host").unwrap();
+        assert_eq!(kinds(&events), ["raid.left"]);
+        assert_eq!(events[0].actor, "host");
+        assert_eq!(events[0].data()["reason"], "kicked");
+        assert!(r.of("b").is_none() && r.of("a").is_some());
+        let events = r.kick("a", "host").unwrap();
+        assert_eq!(kinds(&events), ["raid.left", "raid.dissolved"]);
+        assert!(r.of("a").is_none());
     }
 
     #[test]

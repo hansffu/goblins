@@ -122,6 +122,22 @@ class RaidTests(unittest.TestCase):
         self.assertEqual([(e["actor"], e["sessions"], e["data"]["session"]) for e in joined],
                          [("host", [beta], beta)])
 
+    def test_the_host_kicks_members_and_kicking_the_owner_dissolves_the_raid(self):
+        alpha = self.d.start(agent_name="alpha")["session"]
+        beta = self.d.start(agent_name="beta")["session"]
+        self.cli("raid", "invite", "crew", "alpha", "beta")
+        self.assertEqual(self.host_refused("raids.kick", {"raid": "crew", "session": "nobody"})["code"], -32004)
+        self.assertEqual(self.host_refused("raids.kick", {"raid": "absent", "session": beta})["code"], -32004)
+        kicked = self.d.rpc.call("raids.kick", {"raid": "crew", "session": beta})
+        self.assertEqual(kicked, {"accepted": True, "dissolved": False})
+        listed = {r["id"]: r for r in json.loads(self.cli("list").stdout)}
+        self.assertIsNone(listed[beta]["raid"])
+        self.assertEqual(listed[alpha]["raid"]["name"], "crew")
+        self.assertEqual(self.host_refused("raids.kick", {"raid": "crew", "session": beta})["code"], -32009)
+        kicked = self.d.rpc.call("raids.kick", {"raid": "crew", "session": alpha})
+        self.assertEqual(kicked, {"accepted": True, "dissolved": True})
+        self.assertEqual(self.host_refused("raids.members", {"raid": "crew"})["code"], -32004)
+
     def test_members_recruit_direct_children_only_and_never_take_ownership(self):
         root = self.d.start(agent_name="root")["session"]
         other = self.d.start(agent_name="other")["session"]

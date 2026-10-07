@@ -57,6 +57,12 @@ struct Name {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Kick {
+    raid: String,
+    session: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HostRole {
     raid: String,
     session: String,
@@ -330,6 +336,24 @@ impl Controller {
             "raids.members" => {
                 let p: Name = params(value)?;
                 self.raid_value(&p.raid)
+            }
+            "raids.kick" => {
+                let p: Kick = params(value)?;
+                self.raid_value(&p.raid)?;
+                let id = self.resolve_session(&p.session)?;
+                if self.raids.of(&id).is_none_or(|r| r.name != p.raid) {
+                    return Err((
+                        -32009,
+                        format!("goblin '{}' is not in raid '{}'", self.path_of(&id), p.raid),
+                    ));
+                }
+                let mut next = self.raids.clone();
+                let events = next.kick(&id, "host").map_err(|e| self.raid_fault(e))?;
+                let dissolved = events
+                    .iter()
+                    .any(|e| matches!(e.change, raid::Change::Dissolved { .. }));
+                self.raid_commit(next, events)?;
+                Ok(json!({"accepted":true,"dissolved":dissolved}))
             }
             "raids.set_role" => {
                 let p: HostRole = params(value)?;
