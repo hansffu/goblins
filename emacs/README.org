@@ -126,11 +126,17 @@ last used goblin terminal, or the status buffer when there is none.
 |------------------------------+---------------------------------------------------|
 | =j= / =k=                    | next / previous goblin or group                   |
 | =RET=                        | show or attach the goblin; fold a group heading   |
-| =p=                          | show the status buffer (pending requests, =a=/=d=)|
+| =p=                          | permissions of the goblin: current request, history |
+| =i=                          | info: everything the daemon knows about the goblin |
 | =TAB=                        | fold the group                                    |
-| =R=                          | run a goblin from the main window's project       |
+| =r=                          | run a goblin in the project at point              |
+| =R=                          | run a goblin in a project you choose              |
 | =g= / =gr=                   | reconnect                                         |
 | =q=                          | leave the workspace                               |
+
+In the permissions view the current request is focused: =a= accepts, =d= denies,
+=RET= folds a request, =q= goes back.  Add sections to the info view with
+=goblins-info-section-functions=.
 
 Bring your own workspace package by setting
 =goblins-workspace-switch-or-create-function= (called with the name

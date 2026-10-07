@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'goblins)
 (require 'goblins-workspace)
+(require 'goblins-views)
 (require 'project)
 (defvar ghostel-identity)
 
@@ -804,9 +805,9 @@
 ;;; Workspace sidebar
 
 (defun goblins-test--session (id &rest props)
-  (append (list :id id :agent_name id :name "shell" :state "running"
-                :initial_packages [] :packages [])
-          props))
+  (append props
+          (list :id id :agent_name id :name "shell" :state "running"
+                :initial_packages [] :packages [])))
 
 (defmacro goblins-test--sidebar (sessions &rest body)
   "Run BODY in a sidebar rendering SESSIONS from a fake status buffer."
@@ -936,6 +937,134 @@
             (should (eq (goblins--initial-main-buffer source) source)))
         (kill-buffer older)
         (kill-buffer newer)))))
+
+;;; Views
+
+(defun goblins-test--request-in (id session state &optional package)
+  (list :id id :session session :approval (concat "approval-" id) :agent_name session
+        :package (or package "hello") :reason "because" :state state :kind "package"))
+
+(defmacro goblins-test--view (snapshot-permissions &rest body)
+  "Run BODY in a status buffer holding two goblins and SNAPSHOT-PERMISSIONS."
+  (declare (indent 1))
+  `(let ((source (generate-new-buffer " *goblins test source*")))
+     (unwind-protect
+         (progn
+           (with-current-buffer source
+             (goblins-status-mode)
+             (setq goblins--directory "/tmp/goblins-test" goblins--instance "daemon-a"
+                   goblins--decisions (make-hash-table :test #'equal)
+                   goblins--snapshot
+                   (list :instance "daemon-a"
+                         :sessions (vector (goblins-test--session
+                                            "session-a" :cwd "/p/one" :packages ["fish"]
+                                            :raid '(:id "r1" :name "crew" :owner "session-b"))
+                                           (goblins-test--session "session-b" :cwd "/p/one"))
+                         :raids [(:id "r1" :name "crew"
+                                  :members [(:path "session-a") (:path "session-b")])]
+                         :permissions (vconcat ,snapshot-permissions))))
+           ,@body)
+       (dolist (name (list goblins--info-buffer-name goblins--permissions-buffer-name))
+         (when (get-buffer name) (kill-buffer name)))
+       (kill-buffer source))))
+
+(ert-deftest goblins-permissions-view-focuses-the-current-request-and-folds-history ()
+  (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "ready" "fish")
+                            (goblins-test--request-in "r2" "session-b" "pending" "other")
+                            (goblins-test--request-in "r3" "session-a" "denied" "curl")
+                            (goblins-test--request-in "r4" "session-a" "pending" "ripgrep"))
+    (with-current-buffer (goblins-permissions-buffer source "session-a")
+      (let ((text (buffer-string)))
+        ;; Scoped to the selected goblin.
+        (should-not (string-match-p "other" text))
+        (should (string-match-p "Current request" text))
+        (should (< (string-match "ripgrep" text) (string-match "History (2)" text)))
+        ;; Newest history first.
+        (should (< (string-match "curl" text) (string-match "fish" text))))
+      (should (equal (oref (magit-current-section) value) "r4"))
+      (should (string-match-p "ripgrep" (buffer-substring (line-beginning-position)
+                                                          (line-end-position))))
+      (dolist (id '("r1" "r3"))
+        (should (oref (goblins--find-request-section id) hidden)))
+      (should-not (oref (goblins--find-request-section "r4") hidden)))))
+
+(ert-deftest goblins-permissions-view-focuses-newly-arrived-requests ()
+  (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "ready"))
+    (with-current-buffer (goblins-permissions-buffer source "session-a")
+      (should (equal (plist-get (goblins--view-session-record) :id) "session-a"))
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put (copy-sequence goblins--snapshot) :permissions
+                         (vector (goblins-test--request-in "r1" "session-a" "ready")
+                                 (goblins-test--request-in "r2" "session-a" "pending")))))
+      (goblins--permissions-render)
+      (should (equal (oref (magit-current-section) value) "r2")))))
+
+(ert-deftest goblins-permissions-view-decides-through-the-status-buffer ()
+  (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "pending"))
+    (let (decided)
+      (cl-letf (((symbol-function 'goblins--decide-record)
+                 (lambda (record approved)
+                   (setq decided (list (current-buffer) (plist-get record :id) approved)))))
+        (with-current-buffer (goblins-permissions-buffer source "session-a")
+          (goblins-permissions-accept)
+          (should (equal decided (list source "r1" t)))
+          (goblins-permissions-deny)
+          (should (equal decided (list source "r1" nil))))))))
+
+(ert-deftest goblins-info-view-shows-what-the-daemon-knows ()
+  (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "ready" "fish")
+                            (goblins-test--request-in "r2" "session-a" "denied" "curl"))
+    (with-current-buffer (goblins-info-buffer source "session-a")
+      (let ((text (buffer-string)))
+        (should (string-match-p "Directory +/p/one" text))
+        (should (string-match-p "Granted +fish" text))
+        (should (string-match-p "fish +ready" text))
+        (should (string-match-p "curl +denied" text))
+        (should (string-match-p "Name +crew" text))
+        (should (string-match-p "Owner +session-b" text))
+        (should (string-match-p "Members +session-a, session-b" text)))
+      ;; Extra sections plug in.
+      (let ((goblins-info-section-functions
+             (cons (lambda (session _snapshot)
+                     (insert "EXTRA " (plist-get session :id)))
+                   goblins-info-section-functions)))
+        (goblins--info-render)
+        (should (string-match-p "EXTRA session-a" (buffer-string)))))))
+
+(ert-deftest goblins-sidebar-runs-in-the-project-at-point ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one")
+                               (goblins-test--session "session-b"))
+    (let (call)
+      (cl-letf (((symbol-function 'goblins-run)
+                 (lambda (&optional directory display) (setq call (list directory display))))
+                ((symbol-function 'project-prompt-project-dir) (lambda () "/chosen/")))
+        (goto-char (point-min))
+        ;; The directory group heading, then the goblin under it.
+        (goblins-sidebar-run)
+        (should (equal call '("/p/one" goblins--show-in-main)))
+        (goblins-sidebar-next)
+        (setq call nil)
+        (goblins-sidebar-run)
+        (should (equal (car call) "/p/one"))
+        (goblins-sidebar-run-in-project)
+        (should (equal call '("/chosen/" goblins--show-in-main)))
+        ;; A goblin without a directory, and a raid-less unknown group, cannot run.
+        (goto-char (point-min))
+        (goblins-sidebar-next 3)
+        (should-error (goblins-sidebar-run) :type 'user-error)))))
+
+(ert-deftest goblins-sidebar-recovers-when-its-status-buffer-is-killed ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p"))
+    (let ((refreshed nil))
+      (kill-buffer source)
+      (goblins--sidebar-render)
+      (should (string-match-p "No server" (buffer-string)))
+      (cl-letf (((symbol-function 'goblins-refresh) (lambda () (setq refreshed t))))
+        (goblins-sidebar-refresh))
+      (should refreshed)
+      (should (buffer-live-p goblins--sidebar-source))
+      (kill-buffer goblins--sidebar-source))))
 
 
 ;;; goblins-tests.el ends here

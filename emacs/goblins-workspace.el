@@ -286,9 +286,7 @@ The text is built apart from the sidebar so a failure cannot blank it."
   "Return this sidebar's status buffer, recreating and reconnecting it if killed."
   (unless (buffer-live-p goblins--sidebar-source)
     (setq goblins--sidebar-source (goblins--status-buffer goblins--directory))
-    (if (buffer-live-p goblins--sidebar-source)
-      (with-current-buffer goblins--sidebar-source (goblins-refresh))
-    (goblins--sidebar-ensure-source)))
+    (with-current-buffer goblins--sidebar-source (goblins-refresh)))
   goblins--sidebar-source)
 
 (defun goblins--sidebar-session (id)
@@ -381,7 +379,9 @@ The current request is focused; earlier ones follow as history."
 (defun goblins-sidebar-refresh ()
   "Reconnect the server buffer for a fresh snapshot."
   (interactive)
-  (with-current-buffer goblins--sidebar-source (goblins-refresh)))
+  (if (buffer-live-p goblins--sidebar-source)
+      (with-current-buffer goblins--sidebar-source (goblins-refresh))
+    (goblins--sidebar-ensure-source)))
 
 (defun goblins-workspace-default-quit ()
   "Close the sidebar and restore the saved window configuration."

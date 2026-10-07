@@ -335,6 +335,8 @@ end of the buffer.  Add your own to show more.")
             (insert (propertize "  No earlier requests\n" 'font-lock-face 'goblins-dim))
           (dolist (record history)
             (goblins--insert-request record t t (goblins--permission-heading record))))))
+    ;; Apply the folded flags of the history entries to display overlays.
+    (magit-section-show magit-root-section)
     (goto-char (point-min))
     (let ((focus (or (and arrived (goblins--find-request-section (plist-get arrived :id)))
                      (and goblins--view-fresh pending
