@@ -125,14 +125,22 @@ last used goblin terminal, or the status buffer when there is none.
 | Key (also Evil motion state) | Action                                            |
 |------------------------------+---------------------------------------------------|
 | =j= / =k=                    | next / previous goblin or group                   |
-| =RET=                        | show or attach the goblin; fold a group heading   |
+| =RET=                        | goblin: show or attach; raid heading: raid page; directory heading: fold |
 | =p=                          | permissions of the goblin: current request, history |
-| =i=                          | info: everything the daemon knows about the goblin |
+| =I=                          | info: everything the daemon knows about the goblin |
+| =r=                          | create a raid (or join an existing one) around the goblin at point or in the main window, then open its page |
+| =i=                          | invite the goblin at point into a raid you pick; on a raid heading, invite a goblin into it |
 | =TAB=                        | fold the group                                    |
-| =r=                          | run a goblin in the project at point              |
-| =R=                          | run a goblin in a project you choose              |
+| =c=                          | run a goblin in the project at point              |
+| =C=                          | run a goblin in a project you choose              |
 | =g= / =gr=                   | reconnect                                         |
 | =q=                          | leave the workspace                               |
+
+=M-x goblins-raid= does the same as =r= from a goblin terminal buffer.  The
+raid page lists the members and the running goblins that could join; =i=
+invites (the goblin at point, or one you choose), =x= kicks the member at
+point (kicking the owner dissolves the raid) and =RET= opens a goblin.
+Invitations join at once; there is no acceptance step.
 
 In the permissions view the current request is focused: =a= accepts, =d= denies,
 =RET= folds a request, =q= goes back.  Add sections to the info view with
