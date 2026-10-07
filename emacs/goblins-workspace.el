@@ -18,6 +18,8 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'goblins)
+(require 'goblins-views)
+(require 'project)
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
@@ -42,12 +44,8 @@ your workspace package instead, for example
 The default closes the sidebar and restores the configuration saved by
 `goblins-workspace-default-switch'.  Set this to close your workspace instead.")
 
-(defface goblins-sidebar-header '((t :inherit font-lock-keyword-face :weight bold))
+(defface goblins-sidebar-header '((t :inherit goblins-heading))
   "Raid and directory headings in the sidebar." :group 'goblins)
-(defface goblins-sidebar-running '((t :inherit success))
-  "Running goblins in the sidebar." :group 'goblins)
-(defface goblins-sidebar-failed '((t :inherit error))
-  "Failed goblins in the sidebar." :group 'goblins)
 (defface goblins-sidebar-active '((t :inherit highlight :extend t))
   "The goblin whose terminal is shown in the main window." :group 'goblins)
 
@@ -115,23 +113,15 @@ Directories and sessions keep snapshot order inside each group."
           (and (equal (get-text-property (point-min) prop) (cdr key))
                (point-min))))))
 
-(defun goblins--sidebar-glyph (session)
-  (let ((state (plist-get session :state)))
-    (cond ((equal state "running")
-           (propertize "●" 'font-lock-face 'goblins-sidebar-running))
-          ((equal state "failed")
-           (propertize "✗" 'font-lock-face 'goblins-sidebar-failed))
-          ((equal state "stopped") (propertize "○" 'font-lock-face 'goblins-dim))
-          (t (propertize "◌" 'font-lock-face 'goblins-dim)))))
-
-(defun goblins--sidebar-insert-group (key indent label)
-  (let ((collapsed (member key goblins--sidebar-collapsed)))
+(defun goblins--sidebar-insert-group (key indent label collapsed)
+  "Insert the heading of group KEY; return non-nil unless it is in COLLAPSED."
+  (let ((folded (member key collapsed)))
     (insert (propertize
-             (concat (make-string indent ?\s) (if collapsed "▸ " "▾ ")
+             (concat (make-string indent ?\s) (if folded "▸ " "▾ ")
                      (goblins--safe label) "\n")
-             'font-lock-face 'goblins-sidebar-header
+             'face 'goblins-sidebar-header
              'goblins-group key))
-    (not collapsed)))
+    (not folded)))
 
 (defun goblins--sidebar-insert-tree (tree depth group-key permissions)
   (let* ((session (car tree))
@@ -141,19 +131,57 @@ Directories and sessions keep snapshot order inside each group."
          (finished (member (plist-get session :state) '("stopped" "failed")))
          (start (point)))
     (insert (make-string (* 2 depth) ?\s)
-            (goblins--sidebar-glyph session) " "
-            (if finished (propertize name 'font-lock-face 'goblins-dim) name)
+            (goblins--state-glyph (plist-get session :state)) " "
+            (if finished (propertize name 'face 'goblins-dim) name)
             (if (> pending 0)
-                (propertize (format " !%d" pending) 'font-lock-face 'goblins-attention)
+                (propertize (format " !%d" pending) 'face 'goblins-attention)
               "")
             "\n")
     (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
     (dolist (child (cdr tree))
       (goblins--sidebar-insert-tree child (1+ depth) group-key permissions))))
 
+(defun goblins--sidebar-text (source collapsed)
+  "Return the sidebar text for SOURCE's snapshot, folding the groups in COLLAPSED.
+The text is built apart from the sidebar so a failure cannot blank it."
+  (with-temp-buffer
+    (let ((snapshot (and (buffer-live-p source)
+                         (buffer-local-value 'goblins--snapshot source))))
+      (if (not snapshot)
+          (insert (propertize
+                   (format "%s\n" (goblins--safe
+                                   (if (buffer-live-p source)
+                                       (replace-regexp-in-string
+                                        "\\<r to reconnect" "g to reconnect"
+                                        (buffer-local-value 'goblins--notice source))
+                                     "No server; g to reconnect")))
+                   'face 'goblins-dim))
+        (let ((sessions (append (plist-get snapshot :sessions) nil))
+              (permissions (append (plist-get snapshot :permissions) nil)))
+          (if (null sessions)
+              (insert (propertize "No goblins\n" 'face 'goblins-dim))
+            (dolist (raid (goblins--sidebar-groups sessions))
+              (let* ((rkey (car raid))
+                     (indent (if rkey 2 0)))
+                (when (or (null rkey)
+                          (goblins--sidebar-insert-group
+                           (list 'raid rkey) 0
+                           (format "raid %s" (or (cadr raid) rkey)) collapsed))
+                  (dolist (dir (cddr raid))
+                    (let ((gkey (list 'dir rkey (car dir))))
+                      (when (goblins--sidebar-insert-group
+                             gkey indent
+                             (if (string-empty-p (car dir)) "unknown"
+                               (abbreviate-file-name (file-name-as-directory (car dir))))
+                             collapsed)
+                        (dolist (tree (goblins--agent-forest (cdr dir)))
+                          (goblins--sidebar-insert-tree
+                           tree (1+ (/ indent 2)) gkey permissions)))))))))))
+      (buffer-string))))
+
 (defun goblins--sidebar-render ()
   "Redraw the sidebar from its source buffer's snapshot, keeping point."
-  (let* ((source goblins--sidebar-source)
+  (let* ((text (goblins--sidebar-text goblins--sidebar-source goblins--sidebar-collapsed))
          (inhibit-read-only t)
          (windows (get-buffer-window-list (current-buffer) nil t))
          (keys (mapcar (lambda (w) (cons w (goblins--sidebar-key-at (window-point w))))
@@ -161,36 +189,7 @@ Directories and sessions keep snapshot order inside each group."
          (point-key (goblins--sidebar-key-at (point)))
          (line (line-number-at-pos)))
     (erase-buffer)
-    (if (not (and (buffer-live-p source)
-                  (buffer-local-value 'goblins--snapshot source)))
-        (insert (propertize
-                 (format "%s\n" (goblins--safe
-                                 (if (buffer-live-p source)
-                                     (buffer-local-value 'goblins--notice source)
-                                   "No server")))
-                 'font-lock-face 'goblins-dim))
-      (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
-             (sessions (append (plist-get snapshot :sessions) nil))
-             (permissions (append (plist-get snapshot :permissions) nil)))
-        (if (null sessions)
-            (insert (propertize "No goblins\n" 'font-lock-face 'goblins-dim))
-          (dolist (raid (goblins--sidebar-groups sessions))
-            (let* ((rkey (car raid))
-                   (indent (if rkey 2 0))
-                   (show (or (null rkey)
-                             (goblins--sidebar-insert-group
-                              (list 'raid rkey) 0
-                              (format "raid %s" (or (cadr raid) rkey))))))
-              (when show
-                (dolist (dir (cddr raid))
-                  (let ((gkey (list 'dir rkey (car dir))))
-                    (when (goblins--sidebar-insert-group
-                           gkey indent
-                           (if (string-empty-p (car dir)) "unknown"
-                             (abbreviate-file-name (file-name-as-directory (car dir)))))
-                      (dolist (tree (goblins--agent-forest (cdr dir)))
-                        (goblins--sidebar-insert-tree
-                         tree (1+ (/ indent 2)) gkey permissions)))))))))))
+    (insert text)
     (dolist (entry keys)
       (when (window-live-p (car entry))
         (set-window-point (car entry)
@@ -206,7 +205,9 @@ Directories and sessions keep snapshot order inside each group."
   "Redraw every sidebar showing SOURCE."
   (dolist (buffer (buffer-list))
     (when (eq (buffer-local-value 'goblins--sidebar-source buffer) source)
-      (with-current-buffer buffer (goblins--sidebar-render)))))
+      (with-current-buffer buffer
+        (condition-case err (goblins--sidebar-render)
+          (error (message "goblins sidebar: %s" (error-message-string err))))))))
 
 (defun goblins--sidebar-after-snapshot ()
   (goblins--sidebar-render-for (current-buffer)))
@@ -225,11 +226,6 @@ Directories and sessions keep snapshot order inside each group."
                                (window-list))))
     (car (sort windows (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
 
-(defun goblins--main-buffer-default-directory ()
-  (if-let* ((window (goblins--main-window)))
-      (buffer-local-value 'default-directory (window-buffer window))
-    default-directory))
-
 (defun goblins--show-in-main (buffer)
   "Display BUFFER in the main window and select it."
   (let ((window (or (goblins--main-window)
@@ -247,7 +243,10 @@ Directories and sessions keep snapshot order inside each group."
       (let* ((window (goblins--main-window))
              (shown (and window (window-buffer window)))
              (key (and shown (buffer-local-value 'goblins--session-key shown)))
-             (pos (and key (goblins--sidebar-find (cons 'id (nth 2 key))))))
+             (id (if key
+                     (nth 2 key)
+                   (and shown (buffer-local-value 'goblins--view-session shown))))
+             (pos (and id (goblins--sidebar-find (cons 'id id)))))
         (when pos
           (setq goblins--sidebar-active-overlay
                 (make-overlay pos (save-excursion (goto-char pos)
@@ -283,6 +282,15 @@ Directories and sessions keep snapshot order inside each group."
   (interactive "p")
   (goblins-sidebar-next (- (or n 1))))
 
+(defun goblins--sidebar-ensure-source ()
+  "Return this sidebar's status buffer, recreating and reconnecting it if killed."
+  (unless (buffer-live-p goblins--sidebar-source)
+    (setq goblins--sidebar-source (goblins--status-buffer goblins--directory))
+    (if (buffer-live-p goblins--sidebar-source)
+      (with-current-buffer goblins--sidebar-source (goblins-refresh))
+    (goblins--sidebar-ensure-source)))
+  goblins--sidebar-source)
+
 (defun goblins--sidebar-session (id)
   (cl-find id (append (plist-get (buffer-local-value 'goblins--snapshot goblins--sidebar-source)
                                  :sessions)
@@ -308,9 +316,8 @@ Directories and sessions keep snapshot order inside each group."
 On a group heading, fold or unfold it."
   (interactive)
   (if-let* ((id (get-text-property (line-beginning-position) 'goblins-id)))
-      (let* ((source goblins--sidebar-source)
+      (let* ((source (goblins--sidebar-ensure-source))
              (session (goblins--sidebar-session id)))
-        (unless (buffer-live-p source) (user-error "Goblins server buffer is gone"))
         (with-current-buffer source
           (if-let* ((buffer (goblins--terminal-buffer id)))
               (goblins--show-in-main buffer)
@@ -324,20 +331,52 @@ On a group heading, fold or unfold it."
              #'goblins--show-in-main))))
     (goblins-sidebar-toggle)))
 
+(defun goblins--sidebar-goblin-at-point ()
+  "Return (SOURCE . SESSION-ID) for the goblin on this line."
+  (let ((id (get-text-property (line-beginning-position) 'goblins-id)))
+    (unless id (user-error "Select a goblin"))
+    (cons (goblins--sidebar-ensure-source) id)))
+
 (defun goblins-sidebar-permissions ()
-  "Show the Goblins status buffer, with its pending requests, in the main window."
+  "Show the permission requests of the goblin at point in the main window.
+The current request is focused; earlier ones follow as history."
   (interactive)
-  (unless (buffer-live-p goblins--sidebar-source)
-    (user-error "Goblins server buffer is gone"))
-  (goblins--show-in-main goblins--sidebar-source))
+  (let ((goblin (goblins--sidebar-goblin-at-point)))
+    (goblins--show-in-main (goblins-permissions-buffer (car goblin) (cdr goblin)))))
+
+(defun goblins-sidebar-info ()
+  "Show what the daemon knows about the goblin at point in the main window."
+  (interactive)
+  (let ((goblin (goblins--sidebar-goblin-at-point)))
+    (goblins--show-in-main (goblins-info-buffer (car goblin) (cdr goblin)))))
+
+(defun goblins--sidebar-directory-at-point ()
+  "Return the project directory of the goblin or directory group on this line."
+  (let* ((props (list (get-text-property (line-beginning-position) 'goblins-id)
+                      (get-text-property (line-beginning-position) 'goblins-group)))
+         (id (car props))
+         (group (or (cadr props)
+                    (get-text-property (line-beginning-position) 'goblins-in-group)))
+         (cwd (if id
+                  (plist-get (goblins--sidebar-session id) :cwd)
+                (and (eq (car-safe group) 'dir) (nth 2 group)))))
+    (if (and (stringp cwd) (not (string-empty-p cwd)))
+        cwd
+      (user-error "Select a goblin or a directory with a known project"))))
+
+(defun goblins--sidebar-run-in (directory)
+  (with-current-buffer (goblins--sidebar-ensure-source)
+    (goblins-run directory #'goblins--show-in-main)))
 
 (defun goblins-sidebar-run ()
-  "Launch a new goblin from the main window's project."
+  "Run a new goblin in the project of the goblin or directory at point."
   (interactive)
-  (let ((directory (goblins--main-buffer-default-directory)))
-    (when-let* ((window (goblins--main-window))) (select-window window))
-    (with-current-buffer goblins--sidebar-source
-      (let ((default-directory directory)) (goblins-run)))))
+  (goblins--sidebar-run-in (goblins--sidebar-directory-at-point)))
+
+(defun goblins-sidebar-run-in-project ()
+  "Choose a project, then run a new goblin there."
+  (interactive)
+  (goblins--sidebar-run-in (project-prompt-project-dir)))
 
 (defun goblins-sidebar-refresh ()
   "Reconnect the server buffer for a fresh snapshot."
@@ -366,9 +405,11 @@ On a group heading, fold or unfold it."
     (dolist (binding '(("j" . goblins-sidebar-next) ("k" . goblins-sidebar-previous)
                        ("<down>" . goblins-sidebar-next) ("<up>" . goblins-sidebar-previous)
                        ("RET" . goblins-sidebar-open) ("p" . goblins-sidebar-permissions)
+                       ("i" . goblins-sidebar-info) ("?" . describe-mode)
                        ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
-                       ("g" . goblins-sidebar-refresh) ("r" . goblins-sidebar-refresh)
-                       ("R" . goblins-sidebar-run) ("q" . goblins-workspace-quit)))
+                       ("g" . goblins-sidebar-refresh)
+                       ("r" . goblins-sidebar-run) ("R" . goblins-sidebar-run-in-project)
+                       ("q" . goblins-workspace-quit)))
       (define-key map (kbd (car binding)) (cdr binding)))
     map))
 
@@ -380,11 +421,13 @@ On a group heading, fold or unfold it."
     (kbd "k") #'goblins-sidebar-previous
     (kbd "RET") #'goblins-sidebar-open
     (kbd "p") #'goblins-sidebar-permissions
+    (kbd "i") #'goblins-sidebar-info
+    (kbd "?") #'describe-mode
     (kbd "TAB") #'goblins-sidebar-toggle
     (kbd "<tab>") #'goblins-sidebar-toggle
     (kbd "gr") #'goblins-sidebar-refresh
-    (kbd "r") #'goblins-sidebar-refresh
-    (kbd "R") #'goblins-sidebar-run
+    (kbd "r") #'goblins-sidebar-run
+    (kbd "R") #'goblins-sidebar-run-in-project
     (kbd "q") #'goblins-workspace-quit))
 
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"
@@ -396,7 +439,7 @@ On a group heading, fold or unfold it."
               cursor-type nil
               window-size-fixed 'width
               mode-line-format nil
-              header-line-format " Goblins   RET open   p permissions"
+              header-line-format " Goblins   ? keys"
               revert-buffer-function (lambda (&rest _) (goblins-sidebar-refresh)))
   (hl-line-mode 1))
 
@@ -446,9 +489,9 @@ Switching or creating the workspace is delegated to
     (with-current-buffer source
       (unless (or goblins--connection (process-live-p goblins--server-process))
         (goblins-refresh)))
-    (if (goblins--sidebar-window)
-        (when-let* ((window (goblins--main-window))) (select-window window))
-      (let ((sidebar (goblins--sidebar-buffer source)))
+    (let ((sidebar (goblins--sidebar-buffer source)))
+      (if (goblins--sidebar-window)
+          (when-let* ((window (goblins--main-window))) (select-window window))
         (set-window-buffer (selected-window) (goblins--initial-main-buffer source))
         (let ((window (display-buffer-in-side-window
                        sidebar `((side . left) (slot . 0)
