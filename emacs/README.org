@@ -118,29 +118,37 @@ directly; there is no need to download another copy of Magit.
 
 * Workspace
 
-=M-x goblins-workspace= opens a sidebar listing every goblin, grouped by raid
-and then by project directory, beside a main window.  The main window shows the
-last used goblin terminal, or the status buffer when there is none.
+=M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by
+raid and then by project directory, each with its type, beside a main window.
+The main window shows the last used goblin terminal, or the status buffer when
+there is none.  Stopped and failed goblins are hidden (the status buffer still
+lists them; set =goblins-sidebar-show-finished= to show them).  =!N= marks
+pending permission requests, on goblins and on the headings above them.  Folds
+last for the Emacs session.
 
-| Key (also Evil motion state) | Action                                            |
-|------------------------------+---------------------------------------------------|
-| =j= / =k=                    | next / previous goblin or group                   |
-| =RET=                        | goblin: show or attach; raid heading: raid page; directory heading: fold |
-| =p=                          | permissions of the goblin: current request, history |
-| =I=                          | info: everything the daemon knows about the goblin |
-| =r=                          | create a raid (or join an existing one) around the goblin at point or in the main window, then open its page |
-| =i=                          | invite the goblin at point into a raid you pick; on a raid heading, invite a goblin into it |
-| =TAB=                        | fold the group                                    |
-| =c=                          | run a goblin in the project at point              |
-| =C=                          | run a goblin in a project you choose              |
-| =g= / =gr=                   | reconnect                                         |
-| =q=                          | leave the workspace                               |
+| Key (also Evil motion state) | Action                                                   |
+|------------------------------+----------------------------------------------------------|
+| =j= / =k=                    | next / previous goblin or group                          |
+| =n=                          | next goblin waiting for a decision (unfolds groups)      |
+| =RET=                        | goblin: show or attach; raid: open its page; directory: fold |
+| =TAB=                        | fold the group                                           |
+| =p=                          | permissions of the goblin: current request, history      |
+| =I=                          | info: everything the daemon knows about the goblin       |
+| =K=                          | stop the goblin (and its running descendants)            |
+| =r=                          | create a raid around the goblin at point or in the main window, or add it to one, and open the raid page |
+| =i=                          | invite the goblin into a raid you pick; on a raid, invite a goblin into it |
+| =D=                          | on a raid: dissolve it (its goblins keep running)        |
+| =c= / =C=                    | run a goblin in the project at point / a project you choose |
+| =g= / =gr=                   | reconnect                                                |
+| =?=                          | key help                                                 |
+| =q=                          | leave the workspace                                      |
 
-=M-x goblins-raid= does the same as =r= from a goblin terminal buffer.  The
-raid page lists the members and the running goblins that could join; =i=
-invites (the goblin at point, or one you choose), =x= kicks the member at
-point (kicking the owner dissolves the raid) and =RET= opens a goblin.
-Invitations join at once; there is no acceptance step.
+The raid page lists the members (role, directory, =[term]= when an Emacs
+terminal is open) and the running goblins that could join.  =i= invites the
+goblin at point or one you choose, =x= kicks the member at point (kicking the
+owner dissolves the raid), =R= sets a member's role, =D= dissolves the raid,
+=RET= opens a goblin and =?= lists the keys.  Invitations join at once; there
+is no acceptance step.
 
 In the permissions view the current request is focused: =a= accepts, =d= denies,
 =RET= folds a request, =q= goes back.  Add sections to the info view with
@@ -156,6 +164,39 @@ the whole frame; =goblins-workspace-quit-function= restores it.
       #'tabspaces-switch-or-create-workspace)
 #+end_src
 
+** Anywhere
+
+- =M-x goblins-switch= completes over the running goblins, annotated with type,
+  raid, directory and pending requests, and shows (or attaches) the chosen one.
+- =M-x goblins-raid= is the sidebar's =r= from any goblin terminal.
+- =goblins-attention-mode= shows =Goblins!N= in the mode line while requests are
+  pending (click it to open the workspace) and announces new ones through
+  =goblins-attention-notify-function= (an echo-area message by default).  For
+  your own reaction, add a function to =goblins-request-hook=; it receives each
+  request record once, when it becomes pending.
+- A lost connection is retried after =goblins-reconnect-delays= (1, 2, 5, 10,
+  then every 30 seconds); =r= in the status buffer or =g= in the sidebar
+  reconnects at once.
+
+** Goblin terminals
+
+Every Ghostel buffer attached to a goblin turns on the minor mode =goblin-mode=,
+so you can give those buffers keys of your own:
+
+#+begin_src emacs-lisp
+(define-key goblin-mode-map (kbd "C-c C-w") #'goblins-workspace)
+(with-eval-after-load 'evil
+  (evil-define-key 'normal goblin-mode-map (kbd "g i") #'goblin-info))
+#+end_src
+
+Its own keys are under =C-c g=: =w= workspace, =s= switch, =i= info, =p=
+permissions, =r= raid, =K= stop.  It is a minor mode rather than a mode derived
+from =ghostel-mode= because =ghostel-exec= always puts the buffer in
+=ghostel-mode= itself and Ghostel refuses major-mode changes while the terminal
+runs; a minor mode composes with Ghostel and with evil-ghostel (also a minor
+mode), and =C-c= is one of Ghostel's =ghostel-keymap-exceptions=, so =C-c= keys
+reach Emacs in every input mode.
+
 Agent terminals draw no-break spaces without an underline, which fixes
 Claude's thinking indicator; set =goblins-remove-nobreak-underline= to nil to
 disable.
@@ -166,13 +207,17 @@ Run with an Emacs that already has =magit-section= on its load path:
 
 #+begin_src sh
 emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
-  -f batch-byte-compile emacs/goblins.el
+  -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
+  emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el
 emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
 
 The Python integration tests exercise server start/stop/restart, real approvals,
-and two simultaneous Ghostel launches with working-directory input and status
-links. They skip when Emacs or =magit-section= is unavailable; the Ghostel test
+two simultaneous Ghostel launches with working-directory input and status
+links, and the whole workspace (sidebar, permissions, raids, stopping,
+reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal.
+Each starts its own daemon on a temporary state directory and socket, so a
+daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test
 also requires its installed native module. These commands use =-Q= and do not
 load your init file or install Emacs packages.
