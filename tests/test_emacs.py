@@ -1,5 +1,12 @@
 """Emacs approvals against the real daemon; never loads the user's init file."""
 import os
+import pty
+import select
+import signal
+import struct
+import fcntl
+import termios
+import time
 import json
 import shlex
 from pathlib import Path
@@ -131,6 +138,74 @@ class EmacsTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((Path(workspace) / "emacs-launch.txt").read_text(), "ghostel-run-ok")
 
+
+    def test_live_workspace_in_a_terminal_emacs(self):
+        """Drive the workspace in a real `emacs -nw` against an isolated daemon.
+
+        The daemon runs on a temporary state directory and socket, so the
+        user's own daemon is never touched, and Emacs runs in a pseudo
+        terminal, so no window appears."""
+        daemon = Daemon()
+        self.addCleanup(daemon.close)
+        projects = tempfile.TemporaryDirectory(prefix="ge-projects-")
+        self.addCleanup(projects.cleanup)
+        one, two = Path(projects.name) / "one", Path(projects.name) / "two"
+        one.mkdir()
+        two.mkdir()
+
+        def start(name, cwd):
+            launch = daemon.rpc.call("sessions.start", {
+                "key": uuid.uuid4().hex, "name": "shell", "agent_name": name,
+                "configuration": daemon.manifest, "cwd": str(cwd), "detached": True,
+                "rows": 24, "cols": 100})
+            daemon.wait(lambda: daemon.get(launch["session"])["state"] == "running", timeout=90)
+            return launch["session"]
+
+        ids = {name: start(name, cwd) for name, cwd in
+               [("alpha", one), ("beta", one), ("delta", two), ("gamma", two)]}
+        peer, request = daemon.pending(ids["gamma"], "hello")
+        self.addCleanup(peer.close)
+        result = Path(projects.name) / "result"
+        argv = ["emacs", "-nw", "-Q", "--eval", "(setq load-prefer-newer t)",
+                "-L", str(ROOT / "emacs"), "-l", "goblins-tests",
+                "--eval", "(goblins-test-workspace-live)"]
+        env = {**os.environ, "TERM": "xterm-256color",
+               "GOBLINS_APP": str(daemon.app),
+               "GOBLINS_TEST_STATE": str(daemon.state),
+               "GOBLINS_TEST_RESULT": str(result),
+               "GOBLINS_TEST_PROJECT_ONE": str(one)}
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvpe(argv[0], argv, env)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
+        screen, deadline, status = b"", time.monotonic() + 240, None
+        while status is None and time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                try:
+                    screen = (screen + os.read(fd, 65536))[-20000:]
+                except OSError:
+                    pass
+            done, code = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = code
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        os.close(fd)
+        self.assertIsNotNone(status, "terminal Emacs timed out: " + screen.decode(errors="replace")[-2000:])
+        self.assertTrue(result.exists(), screen.decode(errors="replace")[-2000:])
+        ghostel = subprocess.run(
+            ["emacs", "--batch", "-Q", "--eval",
+             '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
+            capture_output=True, timeout=10).returncode == 0
+        # Attaching a terminal is covered whenever Ghostel is installed.
+        self.assertEqual(result.read_text(), "ok ghostel" if ghostel else "ok")
+        # The daemon saw every action.
+        self.assertEqual(daemon.permissions(session=ids["gamma"])[0]["state"], "denied")
+        self.assertIn(daemon.get(ids["delta"])["state"], ("stopping", "stopped"))
+        self.assertIsNone(daemon.get(ids["alpha"])["raid"])
+        self.assertIsNone(daemon.get(ids["beta"])["raid"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

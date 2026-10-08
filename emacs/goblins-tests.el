@@ -11,6 +11,7 @@
 (setq goblins-reconnect-delays nil)
 (require 'project)
 (defvar ghostel-identity)
+(defvar ghostel-query-before-killing)
 
 (defun goblins-test--request (id &optional state)
   (list :id id :session "session-a" :approval (concat "approval-" id)
@@ -1551,6 +1552,147 @@
           (when (get-buffer name) (kill-buffer name))))))
   (with-temp-buffer
     (should-error (goblin-info) :type 'user-error)))
+
+;;; Live workspace, from tests/test_emacs.py in a terminal Emacs (emacs -nw)
+
+(defun goblins-test--in-sidebar (&optional text)
+  "Select the sidebar window, on the first line matching TEXT if given."
+  (select-window (get-buffer-window goblins--sidebar-buffer-name))
+  (goto-char (point-min))
+  (when text
+    (re-search-forward text)
+    (beginning-of-line)))
+
+(defun goblins-test--sidebar-text ()
+  (with-current-buffer goblins--sidebar-buffer-name
+    (substring-no-properties (buffer-string))))
+
+(defun goblins-test--live-session (source name)
+  (cl-find name (append (plist-get (buffer-local-value 'goblins--snapshot source) :sessions) nil)
+           :key (lambda (s) (plist-get s :agent_name)) :test #'equal))
+
+(defun goblins-test--workspace-scenario ()
+  (let* ((goblins-state-directory (getenv "GOBLINS_TEST_STATE"))
+         (goblins-executable (or (getenv "GOBLINS_APP") goblins-executable))
+         (goblins-reconnect-delays '(0.2))
+         (project-one (abbreviate-file-name
+                       (file-name-as-directory (getenv "GOBLINS_TEST_PROJECT_ONE"))))
+         (ghostel-query-before-killing nil)
+         ghostel-used source sidebar page)
+    (goblins-workspace)
+    (setq sidebar (get-buffer goblins--sidebar-buffer-name)
+          source (buffer-local-value 'goblins--sidebar-source sidebar))
+    (should (window-parameter (get-buffer-window sidebar) 'window-side))
+    ;; The main window shows the status buffer: no goblin terminal yet.
+    (should (eq (window-buffer (goblins--main-window)) source))
+    (goblins-test--wait (lambda () (string-match-p "gamma (shell) !1" (goblins-test--sidebar-text))))
+    (let ((text (goblins-test--sidebar-text)))
+      (should (string-match-p (concat (regexp-quote project-one) "\n  ● alpha (shell)\n  ● beta (shell)")
+                              text))
+      ;; The directory of the waiting goblin carries its count too.
+      (should (string-match-p "/ !1\n  ● delta (shell)\n  ● gamma (shell) !1" text)))
+    ;; Attention: the mode line counts the request.
+    (goblins-attention-mode 1)
+    (should (string-match-p "Goblins!1" goblins--mode-line-string))
+    ;; n finds the waiting goblin, p shows its request focused, d denies it.
+    (goblins-test--in-sidebar)
+    (goblins-sidebar-next-pending)
+    (should (looking-at-p "  ● gamma"))
+    (goblins-sidebar-permissions)
+    (with-current-buffer (window-buffer (goblins--main-window))
+      (should (eq major-mode 'goblins-permissions-mode))
+      (should (equal (plist-get (oref (magit-current-section) record) :package) "hello"))
+      (goblins-permissions-deny)
+      (goblins-test--wait (lambda () (string-match-p "History (1)" (buffer-string))))
+      (should (string-match-p "hello  denied" (buffer-string))))
+    (goblins-test--wait (lambda () (equal goblins--mode-line-string "")))
+    ;; I shows the goblin's info.
+    (goblins-test--in-sidebar "  ● alpha")
+    (goblins-sidebar-info)
+    (with-current-buffer (window-buffer (goblins--main-window))
+      (should (string-match-p (concat "Directory +" (regexp-quote (directory-file-name project-one)))
+                              (buffer-string))))
+    ;; r creates a raid around alpha and opens its page.
+    (goblins-test--in-sidebar "  ● alpha")
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
+      (goblins-raid))
+    (setq page (get-buffer goblins--raid-buffer-name))
+    (should (eq (window-buffer (goblins--main-window)) page))
+    (with-current-buffer page
+      (goblins-test--wait (lambda () (string-match-p "Members (1)\n  ● alpha (shell)  owner"
+                                                     (buffer-string))))
+      ;; i invites the candidate at point; R sets its role; x kicks it.
+      (goto-char (point-min))
+      (re-search-forward "Available")
+      (re-search-forward "● beta")
+      (goblins-raid-invite)
+      (goblins-test--wait (lambda () (string-match-p "Members (2)" (buffer-string))))
+      (goto-char (point-min))
+      (re-search-forward "● beta")
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "reviewer")))
+        (goblins-raid-set-role))
+      (goblins-test--wait (lambda () (string-match-p "beta (shell)  reviewer" (buffer-string))))
+      (goto-char (point-min))
+      (re-search-forward "● beta")
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+        (goblins-raid-kick))
+      (goblins-test--wait (lambda () (string-match-p "Members (1)" (buffer-string)))))
+    ;; i in the sidebar invites beta again, choosing the raid.
+    (goblins-test--wait (lambda () (string-match-p "raid crew" (goblins-test--sidebar-text))))
+    (goblins-test--in-sidebar "  ● beta")
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
+      (goblins-sidebar-invite))
+    (goblins-test--wait
+     (lambda () (equal (plist-get (plist-get (goblins-test--live-session source "beta") :raid) :name)
+                       "crew")))
+    ;; K stops delta, which then leaves the sidebar.
+    (goblins-test--in-sidebar "  ● delta")
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+      (goblins-sidebar-stop))
+    (goblins-test--wait (lambda () (not (string-match-p "delta" (goblins-test--sidebar-text)))))
+    ;; D on the raid heading dissolves the raid; the page says so.
+    (goblins-test--in-sidebar "raid crew")
+    (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+      (goblins-sidebar-destroy-raid))
+    (goblins-test--wait (lambda () (not (string-match-p "raid crew" (goblins-test--sidebar-text)))))
+    (with-current-buffer page
+      (should (string-match-p "no longer exists" (buffer-string))))
+    ;; A lost stream reconnects by itself.
+    (with-current-buffer source (goblins--fail "Simulated loss"))
+    (should (string-match-p "reconnecting" (buffer-local-value 'goblins--notice source)))
+    (goblins-test--wait (lambda () (equal (buffer-local-value 'goblins--notice source) "Connected")))
+    (goblins-test--wait (lambda () (string-match-p "alpha" (goblins-test--sidebar-text))))
+    ;; Switching attaches a terminal in goblin-mode, shown in the main window.
+    (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "alpha")))
+        (goblins-switch))
+      (let ((terminal (window-buffer (goblins--main-window))))
+        (with-current-buffer terminal
+          (should (derived-mode-p 'ghostel-mode))
+          (should goblin-mode)
+          (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions)))
+        (goblins-test--in-sidebar "  ● alpha")
+        (should (overlays-at (point)))
+        (kill-buffer terminal)
+        (setq ghostel-used t)))
+    (goblins-attention-mode -1)
+    ;; q leaves the workspace.
+    (goblins-test--in-sidebar)
+    (goblins-workspace-quit)
+    (should-not (get-buffer goblins--sidebar-buffer-name))
+    (if ghostel-used "ok ghostel" "ok")))
+
+(defun goblins-test-workspace-live ()
+  "Run the workspace scenario, write ok or the failure to the result file, exit."
+  (let ((result (getenv "GOBLINS_TEST_RESULT")))
+    (condition-case err
+        (write-region (goblins-test--workspace-scenario) nil result)
+      (error (write-region (format "%S\n%s" err (goblins-test--sidebar-text-safe))
+                           nil result)))
+    (kill-emacs 0)))
+
+(defun goblins-test--sidebar-text-safe ()
+  (if (get-buffer goblins--sidebar-buffer-name) (goblins-test--sidebar-text) "(no sidebar)"))
 
 
 ;;; goblins-tests.el ends here
