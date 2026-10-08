@@ -31,11 +31,6 @@
   (let ((raid (plist-get session :raid)))
     (and (listp raid) (plist-get raid :id))))
 
-(defun goblins--session-path (session)
-  "The tree path of SESSION, or its name when the daemon sent no path."
-  (let ((path (plist-get session :path)))
-    (if (and (stringp path) (not (string-empty-p path))) path (plist-get session :agent_name))))
-
 (defun goblins--snapshot-raids (snapshot)
   (append (plist-get snapshot :raids) nil))
 
@@ -65,27 +60,17 @@
     (unless choice (user-error "Select a goblin"))
     (cdr choice)))
 
-(defun goblins--raid-call (source method params)
-  "Call the host METHOD with PARAMS on SOURCE's connection.
-Daemon refusals become `user-error's and leave the connection alone."
-  (with-current-buffer source
-    (unless (and goblins--connection goblins--subscription)
-      (user-error "Disconnected; reconnect with g in the sidebar"))
-    (condition-case err
-        (jsonrpc-request goblins--connection method params :timeout 5)
-      (jsonrpc-error
-       (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
-
 (defun goblins--raid-invite (source raid-name session-id)
   "Add SESSION-ID to the raid RAID-NAME on SOURCE's server, creating it if absent."
-  (goblins--raid-call source 'raids.invite
+  (goblins--host-call source 'raids.invite
                       (list :raid raid-name :sessions (vector session-id))))
 
 ;;;; Page
 
 (defvar-local goblins--raid-source nil)
 
-(defun goblins--raid-member-line (member session)
+(defun goblins--raid-member-line (member session terminal)
+  "Insert MEMBER of a raid; SESSION is its record and TERMINAL its Emacs buffer."
   (let ((start (point)))
     (insert "  " (goblins--state-glyph (plist-get member :state)) " "
             (goblins--safe (plist-get member :path))
@@ -97,6 +82,10 @@ Daemon refusals become `user-error's and leave the connection alone."
                 (propertize (format "  %s" (goblins--safe role)) 'face 'goblins-key) "")
             (if-let* ((cwd (plist-get session :cwd)) ((stringp cwd)))
                 (propertize (format "  %s" (abbreviate-file-name cwd)) 'face 'goblins-dim)
+              "")
+            (if terminal
+                (propertize "  [term]" 'face 'goblins-key
+                            'help-echo (format "Open in %s" (buffer-name terminal)))
               "")
             "\n")
     (add-text-properties start (point)
@@ -147,7 +136,9 @@ Daemon refusals become `user-error's and leave the connection alone."
       (insert (propertize (format "Members (%d)" (length members)) 'face 'goblins-heading) "\n")
       (dolist (member members)
         (goblins--raid-member-line
-         member (goblins--snapshot-session snapshot (plist-get member :id))))
+         member (goblins--snapshot-session snapshot (plist-get member :id))
+         (with-current-buffer goblins--view-source
+           (goblins--terminal-buffer (plist-get member :id)))))
       (insert "\n" (propertize (format "Available to invite (%d)" (length candidates))
                                'face 'goblins-heading)
               "\n")
@@ -213,9 +204,52 @@ Daemon refusals become `user-error's and leave the connection alone."
       (when (y-or-n-p (format "Kick %s out of raid %s%s? "
                               (goblins--session-path session) goblins--view-session
                               (if owner " (the owner: this dissolves the raid)" "")))
-        (goblins--raid-call goblins--view-source 'raids.kick
+        (goblins--host-call goblins--view-source 'raids.kick
                             (list :raid goblins--view-session :session (plist-get session :id)))
         (message "Kicked %s out of raid %s" (goblins--session-path session) goblins--view-session)))))
+
+(defun goblins-raid-set-role ()
+  "Set the descriptive role of the member at point.
+Roles can be changed but not cleared."
+  (interactive)
+  (let* ((snapshot (goblins--view-snapshot))
+         (line (goblins--raid-line))
+         (raid (goblins--snapshot-raid snapshot goblins--view-session))
+         (member (and (eq (car line) 'member)
+                      (cl-find (cdr line) (append (plist-get raid :members) nil)
+                               :key (lambda (m) (plist-get m :id)) :test #'equal))))
+    (unless member (user-error "Select a member"))
+    (let ((role (string-trim (read-string (format "Role for %s: " (plist-get member :path))
+                                          (and (stringp (plist-get member :role))
+                                               (plist-get member :role))))))
+      (when (string-empty-p role) (user-error "Roles can be changed but not cleared"))
+      (goblins--host-call goblins--view-source 'raids.set_role
+                          (list :raid goblins--view-session :session (cdr line) :role role))
+      (message "%s is now %s" (plist-get member :path) role))))
+
+(defun goblins-destroy-raid (source name)
+  "Dissolve the raid NAME on SOURCE's server after confirming."
+  (when (y-or-n-p (format "Dissolve raid %s?  Its goblins keep running. " name))
+    (goblins--host-call source 'raids.destroy (list :raid name))
+    (message "Dissolved raid %s" name)))
+
+(defun goblins-raid-destroy ()
+  "Dissolve this raid after confirming.  Its goblins keep running."
+  (interactive)
+  (goblins-destroy-raid goblins--view-source goblins--view-session))
+
+(defun goblins-raid-help ()
+  "Describe the raid page keys."
+  (interactive)
+  (goblins--describe-keys
+   "Goblins raid page"
+   '(("Move" ("j / k" . "next / previous goblin"))
+     ("Members" ("RET" . "show or attach the goblin's terminal")
+                ("x" . "kick the member (kicking the owner dissolves the raid)")
+                ("R" . "set the member's role"))
+     ("Raid" ("i" . "invite the goblin at point, or choose one")
+             ("D" . "dissolve the raid; its goblins keep running"))
+     ("Page" ("g" . "reconnect") ("q" . "back") ("?" . "this help")))))
 
 (defun goblins-raid-refresh ()
   "Reconnect to the server for a fresh snapshot."
@@ -228,8 +262,9 @@ Daemon refusals become `user-error's and leave the connection alone."
     (dolist (binding '(("j" . goblins-raid-next) ("k" . goblins-raid-previous)
                        ("<down>" . goblins-raid-next) ("<up>" . goblins-raid-previous)
                        ("RET" . goblins-raid-open) ("i" . goblins-raid-invite)
-                       ("x" . goblins-raid-kick) ("g" . goblins-raid-refresh)
-                       ("q" . quit-window)))
+                       ("x" . goblins-raid-kick) ("R" . goblins-raid-set-role)
+                       ("D" . goblins-raid-destroy) ("?" . goblins-raid-help)
+                       ("g" . goblins-raid-refresh) ("q" . quit-window)))
       (define-key map (kbd (car binding)) (cdr binding)))
     map))
 
@@ -241,6 +276,9 @@ Daemon refusals become `user-error's and leave the connection alone."
     (kbd "RET") #'goblins-raid-open
     (kbd "i") #'goblins-raid-invite
     (kbd "x") #'goblins-raid-kick
+    (kbd "R") #'goblins-raid-set-role
+    (kbd "D") #'goblins-raid-destroy
+    (kbd "?") #'goblins-raid-help
     (kbd "gr") #'goblins-raid-refresh
     (kbd "q") #'quit-window))
 
@@ -249,7 +287,7 @@ Daemon refusals become `user-error's and leave the connection alone."
 \\<goblins-raid-mode-map>
 \\[goblins-raid-invite] invites, \\[goblins-raid-kick] kicks, \\[goblins-raid-open] opens the goblin at point."
   (setq-local truncate-lines t
-              header-line-format " Raid   i invite   x kick   RET open   q back")
+              header-line-format " Raid   i invite   x kick   R role   D dissolve   ? help")
   (hl-line-mode 1)
   (setq-local revert-buffer-function (lambda (&rest _) (goblins-raid-refresh))))
 

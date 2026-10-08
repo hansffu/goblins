@@ -52,8 +52,20 @@ The default closes the sidebar and restores the configuration saved by
 
 (defvar-local goblins--sidebar-source nil
   "The status buffer whose snapshot this sidebar shows.")
-(defvar-local goblins--sidebar-collapsed nil
-  "Group keys whose members are hidden.")
+(defcustom goblins-sidebar-show-finished nil
+  "Whether the sidebar lists stopped and failed goblins.
+The status buffer always lists them."
+  :type 'boolean :group 'goblins)
+
+(defvar goblins--sidebar-folds (make-hash-table :test #'equal)
+  "Folded group keys per server state directory, for this Emacs session only.")
+
+(defun goblins--sidebar-collapsed ()
+  "Group keys whose members are hidden in this sidebar's server."
+  (gethash goblins--directory goblins--sidebar-folds))
+
+(defun goblins--sidebar-set-collapsed (keys)
+  (puthash goblins--directory keys goblins--sidebar-folds))
 (defvar-local goblins--sidebar-active-overlay nil)
 
 ;;;; Data
@@ -112,15 +124,21 @@ Directories and sessions keep snapshot order inside each group."
           (and (equal (get-text-property (point-min) prop) (cdr key))
                (point-min))))))
 
-(defun goblins--sidebar-insert-group (key indent label collapsed &optional properties)
-  "Insert the heading of group KEY, with text PROPERTIES.
+(defun goblins--sidebar-badge (pending)
+  (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-attention) ""))
+
+(defun goblins--sidebar-insert-group (key indent label collapsed &optional properties pending)
+  "Insert the heading of group KEY, with text PROPERTIES and a PENDING badge.
 Return non-nil unless KEY is in COLLAPSED."
   (let* ((folded (member key collapsed))
-         (text (propertize
-               (concat (make-string indent ?\s) (if folded "▸ " "▾ ")
-                       (goblins--safe label) "\n")
-               'face 'goblins-sidebar-header
-               'goblins-group key)))
+         (text (concat
+                (propertize
+                 (concat (make-string indent ?\s) (if folded "▸ " "▾ ")
+                         (goblins--safe label))
+                 'face 'goblins-sidebar-header)
+                (goblins--sidebar-badge (or pending 0))
+                "\n")))
+    (add-text-properties 0 (length text) (list 'goblins-group key) text)
     (add-text-properties 0 (length text) properties text)
     (insert text)
     (not folded)))
@@ -137,13 +155,30 @@ Return non-nil unless KEY is in COLLAPSED."
             (if finished (propertize name 'face 'goblins-dim) name)
             (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
                         'face 'goblins-dim)
-            (if (> pending 0)
-                (propertize (format " !%d" pending) 'face 'goblins-attention)
-              "")
+            (goblins--sidebar-badge pending)
             "\n")
     (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
+    (when (> pending 0)
+      (put-text-property start (point) 'goblins-pending t))
     (dolist (child (cdr tree))
       (goblins--sidebar-insert-tree child (1+ depth) group-key permissions))))
+
+(defun goblins--sidebar-finished-p (session)
+  (member (plist-get session :state) '("stopped" "failed")))
+
+(defun goblins--sidebar-sessions (snapshot)
+  "The sessions of SNAPSHOT the sidebar lists."
+  (let ((sessions (append (plist-get snapshot :sessions) nil)))
+    (if goblins-sidebar-show-finished
+        sessions
+      (cl-remove-if #'goblins--sidebar-finished-p sessions))))
+
+(defun goblins--sidebar-group-keys (session)
+  "The keys of the groups that contain SESSION."
+  (let* ((rkey (goblins--session-raid-id session))
+         (cwd (plist-get session :cwd))
+         (dir (if (stringp cwd) (directory-file-name cwd) "")))
+    (delq nil (list (and rkey (list 'raid rkey)) (list 'dir rkey dir)))))
 
 (defun goblins--sidebar-text (source collapsed)
   "Return the sidebar text for SOURCE's snapshot, folding the groups in COLLAPSED.
@@ -156,14 +191,18 @@ The text is built apart from the sidebar so a failure cannot blank it."
                    (format "%s\n" (goblins--safe
                                    (if (buffer-live-p source)
                                        (replace-regexp-in-string
-                                        "\\<r to reconnect" "g to reconnect"
+                                        "\\<r\\( to reconnect\\| now\\)" "g\\1"
                                         (buffer-local-value 'goblins--notice source))
                                      "No server; g to reconnect")))
                    'face 'goblins-dim))
-        (let ((sessions (append (plist-get snapshot :sessions) nil))
-              (permissions (append (plist-get snapshot :permissions) nil)))
+        (let* ((sessions (goblins--sidebar-sessions snapshot))
+               (permissions (append (plist-get snapshot :permissions) nil))
+               (count (lambda (members)
+                        (apply #'+ (mapcar (lambda (s) (goblins--sidebar-pending
+                                                        (plist-get s :id) permissions))
+                                           members)))))
           (if (null sessions)
-              (insert (propertize "No goblins\n" 'face 'goblins-dim))
+              (insert (propertize "No running goblins\n" 'face 'goblins-dim))
             (dolist (raid (goblins--sidebar-groups sessions))
               (let* ((rkey (car raid))
                      (indent (if rkey 2 0)))
@@ -171,14 +210,15 @@ The text is built apart from the sidebar so a failure cannot blank it."
                           (goblins--sidebar-insert-group
                            (list 'raid rkey) 0
                            (format "raid %s" (or (cadr raid) rkey)) collapsed
-                           (list 'goblins-raid (or (cadr raid) rkey))))
+                           (list 'goblins-raid (or (cadr raid) rkey))
+                           (funcall count (apply #'append (mapcar #'cdr (cddr raid))))))
                   (dolist (dir (cddr raid))
                     (let ((gkey (list 'dir rkey (car dir))))
                       (when (goblins--sidebar-insert-group
                              gkey indent
                              (if (string-empty-p (car dir)) "unknown"
                                (abbreviate-file-name (file-name-as-directory (car dir))))
-                             collapsed)
+                             collapsed nil (funcall count (cdr dir)))
                         (dolist (tree (goblins--agent-forest (cdr dir)))
                           (goblins--sidebar-insert-tree
                            tree (1+ (/ indent 2)) gkey permissions)))))))))))
@@ -186,7 +226,7 @@ The text is built apart from the sidebar so a failure cannot blank it."
 
 (defun goblins--sidebar-render ()
   "Redraw the sidebar from its source buffer's snapshot, keeping point."
-  (let* ((text (goblins--sidebar-text goblins--sidebar-source goblins--sidebar-collapsed))
+  (let* ((text (goblins--sidebar-text goblins--sidebar-source (goblins--sidebar-collapsed)))
          (inhibit-read-only t)
          (windows (get-buffer-window-list (current-buffer) nil t))
          (keys (mapcar (lambda (w) (cons w (goblins--sidebar-key-at (window-point w))))
@@ -290,10 +330,9 @@ The text is built apart from the sidebar so a failure cannot blank it."
   (let ((key (or (get-text-property (line-beginning-position) 'goblins-group)
                  (get-text-property (line-beginning-position) 'goblins-in-group))))
     (unless key (user-error "Nothing to fold here"))
-    (setq goblins--sidebar-collapsed
-          (if (member key goblins--sidebar-collapsed)
-              (delete key goblins--sidebar-collapsed)
-            (cons key goblins--sidebar-collapsed)))
+    (let ((folds (goblins--sidebar-collapsed)))
+      (goblins--sidebar-set-collapsed
+       (if (member key folds) (remove key folds) (cons key folds))))
     (let ((anchor (cons 'group key)))
       (goblins--sidebar-render)
       (when-let* ((pos (goblins--sidebar-find anchor))) (goto-char pos)))))
@@ -387,6 +426,84 @@ On a raid heading, invite a goblin you choose into that raid."
   (interactive)
   (goblins--sidebar-run-in (project-prompt-project-dir)))
 
+(defun goblins--sidebar-search-pending ()
+  "Return the start of the next goblin line with a pending request after this
+line, wrapping around but excluding this line, or nil."
+  (let* ((here (line-beginning-position))
+         (from (save-excursion (forward-line 1) (point)))
+         (found (or (text-property-any from (point-max) 'goblins-pending t)
+                    (text-property-any (point-min) here 'goblins-pending t))))
+    (and found (save-excursion (goto-char found) (line-beginning-position)))))
+
+(defun goblins-sidebar-next-pending ()
+  "Move to the next goblin with a pending request, unfolding its groups."
+  (interactive)
+  (unless (goblins--sidebar-search-pending)
+    ;; A folded group may hide it: unfold the groups of every waiting goblin.
+    (let* ((snapshot (buffer-local-value 'goblins--snapshot (goblins--sidebar-ensure-source)))
+           (pending (delete-dups
+                     (mapcar (lambda (r) (plist-get r :session))
+                             (cl-remove-if-not
+                              (lambda (r) (equal (plist-get r :state) "pending"))
+                              (append (plist-get snapshot :permissions) nil)))))
+           (keys (apply #'append
+                        (mapcar (lambda (id)
+                                  (when-let* ((session (goblins--snapshot-session snapshot id)))
+                                    (goblins--sidebar-group-keys session)))
+                                pending))))
+      (when keys
+        (goblins--sidebar-set-collapsed
+         (cl-set-difference (goblins--sidebar-collapsed) keys :test #'equal))
+        (goblins--sidebar-render))))
+  (if-let* ((target (goblins--sidebar-search-pending)))
+      (goto-char target)
+    (message "No other goblin is waiting for a decision")))
+
+(defun goblins-sidebar-stop ()
+  "Stop the goblin at point, and its children, after confirming."
+  (interactive)
+  (let* ((goblin (goblins--sidebar-goblin-at-point))
+         (source (car goblin))
+         (snapshot (buffer-local-value 'goblins--snapshot source))
+         (session (goblins--snapshot-session snapshot (cdr goblin)))
+         (children (goblins--live-descendants snapshot (cdr goblin))))
+    (when (y-or-n-p (format "Stop %s%s? " (goblins--session-path session)
+                            (if children
+                                (format " and its %d running descendant%s"
+                                        (length children) (if (cdr children) "s" ""))
+                              "")))
+      (goblins--host-call source 'sessions.stop
+                          (append (list :session (cdr goblin))
+                                  (and children (list :kill_children t))))
+      (message "Stopping %s" (goblins--session-path session)))))
+
+(defun goblins-sidebar-destroy-raid ()
+  "Dissolve the raid on this heading after confirming.  Its goblins keep running."
+  (interactive)
+  (let ((raid (get-text-property (line-beginning-position) 'goblins-raid)))
+    (unless raid (user-error "Select a raid heading"))
+    (goblins-destroy-raid (goblins--sidebar-ensure-source) raid)))
+
+(defun goblins-sidebar-help ()
+  "Describe the sidebar keys."
+  (interactive)
+  (goblins--describe-keys
+   "Goblins sidebar"
+   '(("Move" ("j / k" . "next / previous line")
+             ("n" . "next goblin waiting for a decision")
+             ("TAB" . "fold the group"))
+     ("Goblin" ("RET" . "show or attach its terminal")
+               ("p" . "permission requests")
+               ("I" . "info")
+               ("K" . "stop it (and its children)"))
+     ("Raids" ("r" . "create a raid around the goblin, or join one")
+              ("i" . "invite the goblin to a raid; on a raid, invite into it")
+              ("RET" . "on a raid: open its page")
+              ("D" . "on a raid: dissolve it"))
+     ("Run" ("c" . "run a goblin in the project at point")
+            ("C" . "run a goblin in a project you choose"))
+     ("Workspace" ("g" . "reconnect") ("q" . "leave") ("?" . "this help")))))
+
 (defun goblins-sidebar-refresh ()
   "Reconnect the server buffer for a fresh snapshot."
   (interactive)
@@ -417,7 +534,9 @@ On a raid heading, invite a goblin you choose into that raid."
                        ("<down>" . goblins-sidebar-next) ("<up>" . goblins-sidebar-previous)
                        ("RET" . goblins-sidebar-open) ("p" . goblins-sidebar-permissions)
                        ("i" . goblins-sidebar-invite) ("I" . goblins-sidebar-info)
-                       ("r" . goblins-raid) ("?" . describe-mode)
+                       ("r" . goblins-raid) ("?" . goblins-sidebar-help)
+                       ("n" . goblins-sidebar-next-pending) ("K" . goblins-sidebar-stop)
+                       ("D" . goblins-sidebar-destroy-raid)
                        ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
                        ("g" . goblins-sidebar-refresh)
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
@@ -436,7 +555,10 @@ On a raid heading, invite a goblin you choose into that raid."
     (kbd "i") #'goblins-sidebar-invite
     (kbd "I") #'goblins-sidebar-info
     (kbd "r") #'goblins-raid
-    (kbd "?") #'describe-mode
+    (kbd "?") #'goblins-sidebar-help
+    (kbd "n") #'goblins-sidebar-next-pending
+    (kbd "K") #'goblins-sidebar-stop
+    (kbd "D") #'goblins-sidebar-destroy-raid
     (kbd "TAB") #'goblins-sidebar-toggle
     (kbd "<tab>") #'goblins-sidebar-toggle
     (kbd "gr") #'goblins-sidebar-refresh
@@ -470,8 +592,7 @@ On a raid heading, invite a goblin you choose into that raid."
   (let ((buffer (get-buffer-create goblins--sidebar-buffer-name)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'goblins-sidebar-mode) (goblins-sidebar-mode))
-      (unless (eq goblins--sidebar-source source)
-        (setq goblins--sidebar-source source goblins--sidebar-collapsed nil))
+      (setq goblins--sidebar-source source)
       (setq goblins--directory (buffer-local-value 'goblins--directory source))
       (goblins--sidebar-render))
     buffer))

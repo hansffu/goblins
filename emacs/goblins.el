@@ -21,6 +21,7 @@
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
+(declare-function goblin-mode "goblins-terminal" (&optional arg))
 
 (defgroup goblins nil "Goblins agent status and approvals." :group 'tools)
 
@@ -51,6 +52,22 @@ Set this to the directory passed to `goblins --state-dir'."
   "Emacs-only mapping from (directory instance session) to Ghostel buffers.")
 (defvar-local goblins--session-key nil)
 (defvar goblins-run-history nil)
+
+(defcustom goblins-reconnect-delays '(1 2 5 10 30)
+  "Seconds to wait before each attempt to reconnect a lost server connection.
+The last delay repeats until a connection succeeds.  nil disables reconnecting."
+  :type '(repeat number))
+
+(defvar goblins-request-hook nil
+  "Abnormal hook run with each permission request that became pending.
+Functions run in the server's status buffer and receive the request record.
+Requests already pending when Emacs first connects are not announced.")
+
+(defvar-local goblins--reconnect-timer nil)
+(defvar-local goblins--reconnect-attempt 0)
+(defvar-local goblins--seen-requests 'unset
+  "IDs of the pending requests already announced, or `unset' before the first
+snapshot.")
 
 (defclass goblins-section (magit-section) ())
 (defclass goblins-agent-section (goblins-section) ())
@@ -558,19 +575,58 @@ Diff sections also fold in the details view."
     (when connection
       (jsonrpc-shutdown connection t))))
 
+(defun goblins--cancel-reconnect ()
+  (when goblins--reconnect-timer
+    (cancel-timer goblins--reconnect-timer)
+    (setq goblins--reconnect-timer nil)))
+
+(defun goblins--schedule-reconnect ()
+  "Arrange the next reconnection attempt; return its delay, or nil if none."
+  (goblins--cancel-reconnect)
+  (when-let* ((delays goblins-reconnect-delays)
+              (delay (nth (min goblins--reconnect-attempt (1- (length delays))) delays)))
+    (let ((buffer (current-buffer)))
+      (setq goblins--reconnect-timer
+            (run-at-time
+             delay nil
+             (lambda ()
+               (when (buffer-live-p buffer)
+                 (with-current-buffer buffer
+                   (setq goblins--reconnect-timer nil)
+                   (unless (or goblins--connection (process-live-p goblins--server-process))
+                     (setq goblins--reconnect-attempt (1+ goblins--reconnect-attempt))
+                     (goblins--connect-now))))))))
+    delay))
+
 (defun goblins--fail (message)
-  (setq goblins--notice
-        (concat message
-                (when (and goblins--decisions
-                           (let (pending)
-                             (maphash (lambda (_id state)
-                                        (when (eq state t) (setq pending t)))
-                                      goblins--decisions)
-                             pending))
-                  "; in-flight decision outcome unknown")
-                "; r to reconnect"))
   (goblins--disconnect)
+  (let ((delay (goblins--schedule-reconnect)))
+    (setq goblins--notice
+          (concat message
+                  (when (and goblins--decisions
+                             (let (pending)
+                               (maphash (lambda (_id state)
+                                          (when (eq state t) (setq pending t)))
+                                        goblins--decisions)
+                               pending))
+                    "; in-flight decision outcome unknown")
+                  (if delay
+                      (format "; reconnecting in %ss (r now)" delay)
+                    "; r to reconnect"))))
   (goblins--render))
+
+(defun goblins--note-requests ()
+  "Run `goblins-request-hook' for requests that became pending."
+  (let ((pending (cl-remove-if-not
+                  (lambda (r) (equal (plist-get r :state) "pending"))
+                  (append (plist-get goblins--snapshot :permissions) nil))))
+    (unless (eq goblins--seen-requests 'unset)
+      (dolist (record pending)
+        (unless (member (plist-get record :id) goblins--seen-requests)
+          (with-demoted-errors "goblins-request-hook: %S"
+            (run-hook-with-args 'goblins-request-hook record)))))
+    ;; Settled requests never become pending again, so only pending IDs matter.
+    (setq goblins--seen-requests (mapcar (lambda (r) (plist-get r :id)) pending))))
 
 (defun goblins--server-command (action)
   "Run server ACTION asynchronously for this buffer's state directory."
@@ -638,6 +694,7 @@ Diff sections also fold in the details view."
       (progn
         (setq goblins--sequence (plist-get params :sequence)
               goblins--snapshot (plist-get params :snapshot))
+        (goblins--note-requests)
         (goblins--render))
     (goblins--fail "State stream changed or lost events")))
 
@@ -675,6 +732,12 @@ Diff sections also fold in the details view."
   (goblins--ensure-status-buffer)
   (when (process-live-p goblins--server-process)
     (user-error "A server command is in progress; status will update automatically"))
+  (setq goblins--reconnect-attempt 0)
+  (goblins--connect-now))
+
+(defun goblins--connect-now ()
+  "Connect this status buffer and subscribe to the daemon's state."
+  (goblins--cancel-reconnect)
   (goblins--disconnect)
   ;; Clear stale display before changing daemon identities.
   (setq goblins--snapshot nil goblins--instance nil goblins--sequence nil
@@ -724,10 +787,23 @@ Diff sections also fold in the details view."
                     (setq goblins--subscription (plist-get state :subscription)
                           goblins--sequence (plist-get state :sequence)
                           goblins--snapshot (plist-get state :snapshot)
-                          goblins--notice "Connected")
+                          goblins--notice "Connected"
+                          goblins--reconnect-attempt 0)
+                    (goblins--note-requests)
                     (goblins--render))))))))
       (error (goblins--fail (format "Cannot connect: %s"
                                    (error-message-string err)))))))
+
+(defun goblins--host-call (source method params)
+  "Call the host METHOD with PARAMS on SOURCE's connection and return the result.
+Daemon refusals become `user-error's and leave the connection alone."
+  (with-current-buffer source
+    (unless (and goblins--connection goblins--subscription)
+      (user-error "Disconnected from the Goblins server"))
+    (condition-case err
+        (jsonrpc-request goblins--connection method params :timeout 5)
+      (jsonrpc-error
+       (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
 
 (defun goblins--decide (approved)
   (let* ((record
@@ -933,6 +1009,7 @@ On failure the buffer is killed and the error re-signalled."
             (setq-local ghostel-kill-buffer-on-exit nil)
             (when goblins-remove-nobreak-underline
               (face-remap-add-relative 'nobreak-space :underline nil))
+            (goblin-mode 1)
             (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
           (puthash key buffer goblins--terminal-buffers)
           (goblins--render-status-buffers)
@@ -1034,7 +1111,8 @@ Use \[goblins-accept] to accept and \[goblins-deny] to deny.
 Use \[goblins-refresh] to reconnect."
   (goblins--update-header)
   (setq-local revert-buffer-function (lambda (&rest _) (goblins-refresh)))
-  (add-hook 'kill-buffer-hook #'goblins--disconnect nil t))
+  (add-hook 'kill-buffer-hook #'goblins--disconnect nil t)
+  (add-hook 'kill-buffer-hook #'goblins--cancel-reconnect nil t))
 
 (defun goblins--resolve-directory (&optional directory)
   "Resolve DIRECTORY, the current Goblins context, or the configured default."
@@ -1098,4 +1176,7 @@ With a prefix argument, prompt for the daemon state directory."
     (goblins-refresh)))
 
 (provide 'goblins)
+
+;; Terminals turn on `goblin-mode'; loaded last since it builds on this file.
+(require 'goblins-terminal)
 ;;; goblins.el ends here
