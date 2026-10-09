@@ -55,6 +55,14 @@ let
   rejected = configuration: !(builtins.tryEval (mkGoblins configuration).config.drvPath).success;
   invalid = [
     { goblins = { }; }
+    {
+      editor.vim.enable = true;
+      goblins.shell = mkGoblin base;
+    }
+    {
+      editor.emacs.enable = "yes";
+      goblins.shell = mkGoblin base;
+    }
     { goblins.bad = pkgs.hello; }
     { goblins."../bad" = mkGoblin base; }
     {
@@ -528,6 +536,29 @@ in
         };
       };
     };
+  # editor.emacs.enable (tests/test_editor.py): the TRAMP tools and EDITOR
+  # reach every goblin, also scope variants; a goblin's own env wins.
+  editor-goblins = mkGoblins {
+    editor.emacs.enable = true;
+    scopes.work = mkScope { persistent = false; };
+    goblins = {
+      plain = mkGoblin {
+        pkg = pkgs.bashInteractive;
+        binName = "bash";
+        args = [
+          "--noprofile"
+          "--norc"
+          "-i"
+        ];
+        allowedPackages = [ pkgs.hello ];
+        env = {
+          PS1 = "editor-test> ";
+          VISUAL = "custom-visual";
+        };
+        allowedScopes = [ "work" ];
+      };
+    };
+  };
   network-goblins = mkGoblins {
     goblins = {
       online = mkGoblin {

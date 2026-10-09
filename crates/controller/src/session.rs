@@ -152,6 +152,9 @@ impl Inheritance {
     pub(crate) fn integration(&self) -> Option<&str> {
         self.launch.integration.as_deref()
     }
+    pub(crate) fn editor(&self) -> Option<&crate::config::Editor> {
+        self.launch.editor.as_ref()
+    }
     pub(crate) fn dev_shell(&self) -> Option<&crate::devshell::DevShell> {
         self.launch.dev_shell.as_ref()
     }
@@ -370,6 +373,7 @@ impl Session {
         let mut session = Self::new_in(launch, None, cancel, directory)?;
         session.launch.cwd = inherited.launch.cwd.clone();
         session.launch.dev_shell = inherited.launch.dev_shell.clone();
+        session.launch.editor = inherited.launch.editor.clone();
         if session.launch.scope.is_some() {
             let scope = inherited
                 .scope

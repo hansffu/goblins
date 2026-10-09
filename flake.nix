@@ -37,6 +37,7 @@
       };
       devGoblins = goblinsLib.builders.mkGoblins {
         scopes = devScopes;
+        editor.emacs.enable = true;
         goblins = goblinsLib.defaultGoblins // {
           shell = dockerShell;
         };

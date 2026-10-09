@@ -72,6 +72,10 @@ class Terminal:
         self.buffer += chunk
         return True
 
+    def resize(self, rows, cols):
+        """Resize the terminal; the kernel sends its foreground job SIGWINCH."""
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
     def wait(self):
         for _ in range(100):
             if select.select([self.fd], [], [], 0)[0]:

@@ -5,6 +5,7 @@ Run on the host as a regular user with newuidmap/newgidmap and subuid/subgid.
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -107,6 +108,36 @@ class ScopeTests(unittest.TestCase):
         output, _ = self.run_in(tb, "for i in $(seq 50); do out=$(" + self.FIND + "sleep 1001); "
                                     "[ -z \"$out\" ] && echo GONE && break; sleep .1; done")
         self.assertIn("GONE", output)
+
+    def test_exec_teardown_and_isolation_in_a_shared_pid_namespace(self):
+        a, b = self.start(), self.start()
+        ta = self.terminal(a)
+        exec_ = [str(self.app), "--state-dir", str(self.d.state), "exec"]
+        # goblins-init is an ordinary member PID here, a subreaper rather
+        # than the namespace's init. Its execs, even one that left the exec's
+        # process group, still end with its goblin.
+        background = subprocess.Popen(
+            [*exec_, a, "--", "sh", "-c", "trap '' HUP TERM; setsid sleep 1002 & sleep 1003; wait"],
+            stderr=subprocess.DEVNULL)
+        self.addCleanup(background.wait)
+        find = [*exec_, b, "--", "sh", "-c", self.FIND + "sleep 100"]
+        self.d.wait(lambda: len(subprocess.run(find, capture_output=True, text=True).stdout.split()) == 2)
+        # Another member sees the processes but neither init's descriptors nor
+        # any socket in the scope.
+        script = (r'for d in /proc/[0-9]*; do '
+                  r'[ "$(head -c 29 $d/cmdline 2>/dev/null)" = /run/goblins/bin/goblins-init ] && '
+                  r'{ ls $d/fd >/dev/null 2>&1 && echo INIT_FD_READABLE || echo hidden; }; '
+                  r'for f in $d/fd/*; do case "$(readlink $f 2>/dev/null)" in socket:*) echo SOCKET $f;; esac; done; '
+                  r'done')
+        output = subprocess.run([*exec_, b, "--", "sh", "-c", script], capture_output=True,
+                                text=True, timeout=30).stdout
+        self.assertEqual(output.split(), ["hidden", "hidden"], output)
+        ta.send("exit 6\n")
+        self.assertEqual(ta.wait(), 6)
+        self.d.wait(lambda: subprocess.run(find, capture_output=True, text=True).stdout.split() == [])
+        self.assertEqual(self.d.get(a)["exit_code"], 6)
+        self.assertEqual(self.d.get(b)["state"], "running")
+        self.assertNotEqual(background.wait(timeout=10), 0)
 
     def test_temporary_scope_storage_is_deleted_and_persistent_kept(self):
         scratch = self.start(scope="scratch")

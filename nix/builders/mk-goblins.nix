@@ -7,9 +7,32 @@ in
   goblins,
   scopes ? { },
   docker ? null,
+  # editor.emacs.enable: sandboxes open files in the host's Emacs over TRAMP
+  # (EDITOR and VISUAL), and get the tools the /goblins: TRAMP method needs.
+  editor ? { },
 }:
 let
   fail = message: throw "mkGoblins: ${message}";
+  emacs = {
+    enable = false;
+    command = "emacsclient";
+  }
+  // (editor.emacs or { });
+  # Defaults for every goblin; a goblin's own env still wins.
+  editorDefaults = {
+    allowedPackages = with pkgs; [
+      coreutils
+      gnused
+      gnugrep
+      findutils
+      gawk
+    ];
+    env = {
+      EDITOR = "/run/goblins/bin/goblins-editor";
+      VISUAL = "/run/goblins/bin/goblins-editor";
+    };
+  };
+  withEditor = value: if emacs.enable then value.withScopeDefaults editorDefaults else value;
   names =
     goblin: lib.unique (lib.optional (goblin.scope != null) goblin.scope ++ goblin.allowed_scopes);
   # One complete configuration per scope: scope defaults are merged in Nix.
@@ -44,8 +67,11 @@ let
     else
       children;
   configurations = lib.mapAttrs (
-    name: value:
-    if !(builtins.isAttrs value && value ? goblin && value ? withScopeDefaults) then
+    name: original:
+    let
+      value = withEditor original;
+    in
+    if !(builtins.isAttrs original && original ? goblin && original ? withScopeDefaults) then
       fail "'${name}' must be built with mkGoblin"
     else if value.goblin.scope == null && value.goblin.scope_storage != { } then
       fail "'${name}' sets scopeStorage without a default scope"
@@ -75,6 +101,21 @@ let
   ) scopes;
 in
 assert validate.goblins goblins;
+assert lib.assertMsg (
+  builtins.isAttrs editor
+  && builtins.all (name: name == "emacs") (builtins.attrNames editor)
+  && builtins.isAttrs (editor.emacs or { })
+  && builtins.all (
+    name:
+    builtins.elem name [
+      "enable"
+      "command"
+    ]
+  ) (builtins.attrNames (editor.emacs or { }))
+  && builtins.isBool emacs.enable
+  && builtins.isString emacs.command
+  && emacs.command != ""
+) "mkGoblins: editor accepts only emacs = { enable = BOOL; command = \"emacsclient\"; }";
 assert
   docker == null
   || fail "docker.scopes was replaced by scopes = { NAME = mkScope { docker.enable = true; }; }";
@@ -89,6 +130,14 @@ assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
 )) "mkGoblins: members of a scope must have the same allowedDomains network policy";
 import ../packages/goblins.nix {
   inherit pkgs goblins configurations;
+  editor =
+    if emacs.enable then
+      {
+        kind = "emacs";
+        inherit (emacs) command;
+      }
+    else
+      null;
   scopes = lib.mapAttrs (_: scope: {
     inherit (scope)
       persistent

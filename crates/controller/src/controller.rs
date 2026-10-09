@@ -25,6 +25,7 @@ use std::{
     time::Instant,
 };
 
+mod editor;
 mod exec;
 mod raids;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
@@ -465,6 +466,7 @@ pub struct Controller {
     connections: Vec<Connection>,
     sessions: BTreeMap<String, Active>,
     execs: BTreeMap<u64, exec::Exec>,
+    edits: Vec<editor::Edit>,
     permissions: VecDeque<PermissionRecord>,
     launches: BTreeMap<String, (Start, Value)>,
     shutdown: Option<(u64, Instant)>,
@@ -511,6 +513,7 @@ impl Controller {
             connections: vec![],
             sessions: BTreeMap::new(),
             execs: BTreeMap::new(),
+            edits: Vec::new(),
             permissions: VecDeque::new(),
             launches: BTreeMap::new(),
             shutdown: None,
@@ -816,6 +819,7 @@ impl Controller {
         }
         let message = format!("goblin {} has stopped", self.sessions[id].record.path);
         self.end_execs(id, &message);
+        self.end_edits(id);
         self.dirty = true;
         Ok(json!({"accepted":true}))
     }
@@ -848,6 +852,7 @@ impl Controller {
     }
     fn withdraw(&mut self, connection: u64) {
         self.exec_withdraw(connection);
+        self.edit_withdraw(connection);
         // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
             if a.call.as_ref().is_some_and(|w| w.connection == connection) {
@@ -1445,7 +1450,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1560,6 +1565,15 @@ impl Controller {
                         c.dead = true;
                         self.dirty = true;
                         return Ok(None);
+                    }
+                    if call.method == "editor.open" {
+                        if !c.input.is_empty() {
+                            c.dead = true;
+                            return Err((-32600, "unexpected trailing input".into()));
+                        }
+                        return self
+                            .editor_open(c, &session, id.clone(), call.params)
+                            .map(|()| None);
                     }
                     if matches!(call.method.as_str(), "flake.run" | "devshell.diff") {
                         if !c.input.is_empty() {
@@ -1855,6 +1869,7 @@ impl Controller {
             }
         }
         self.poll_init();
+        self.poll_edits();
         for _ in 0..HOSTS {
             match self.listener.accept() {
                 Ok((p, _))
@@ -2158,6 +2173,7 @@ impl Controller {
                     let message = format!("goblin {} has stopped", self.sessions[&id].record.path);
                     self.end_execs(&id, &message);
                 }
+                self.end_edits(&id);
                 let children: Vec<_> = self
                     .sessions
                     .iter()

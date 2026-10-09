@@ -83,6 +83,17 @@ pub struct Manifest {
     pub goblins: BTreeMap<String, Configuration>,
     #[serde(default)]
     pub scopes: BTreeMap<String, ScopeDefinition>,
+    /// The host editor sandboxes may open files in (`editor.emacs.enable`).
+    #[serde(default)]
+    pub editor: Option<Editor>,
+}
+/// A host editor command, run without a shell with editor-specific arguments.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Editor {
+    /// Only `emacs` exists: `command` is emacsclient-compatible.
+    pub kind: String,
+    pub command: String,
 }
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
@@ -109,6 +120,19 @@ impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
         serde_json::from_slice(&read_regular(path, MAX_MANIFEST_BYTES)?)
             .map_err(|e| format!("invalid configuration {}: {e}", path.display()).into())
+    }
+    /// The configured host editor, if any.
+    pub fn editor(&self) -> Result<Option<Editor>> {
+        match &self.editor {
+            Some(editor)
+                if editor.kind != "emacs"
+                    || editor.command.is_empty()
+                    || editor.command.contains('\0') =>
+            {
+                Err("invalid editor configuration".into())
+            }
+            editor => Ok(editor.clone()),
+        }
     }
     pub fn select(mut self, name: &str, scope: Option<&str>) -> Result<Configuration> {
         self.check()?;
@@ -292,6 +316,9 @@ pub struct Launch {
     /// Host-evaluated flake dev shell; children inherit this generation.
     #[serde(skip)]
     pub dev_shell: Option<crate::devshell::DevShell>,
+    /// The manifest's host editor; children inherit it.
+    #[serde(skip)]
+    pub editor: Option<Editor>,
 }
 impl Launch {
     /// The sandbox's /etc mounts, including the dev-shell-only files when it
@@ -376,6 +403,7 @@ impl Configuration {
             docker: self.docker.clone(),
             scope: self.selected_scope.clone(),
             dev_shell: None,
+            editor: None,
             binds: serde_json::from_value(serde_json::json!({
                 "rw_dirs": spec["rw_dirs"], "rw_files": spec["rw_files"],
                 "ro_dirs": spec["ro_dirs"], "ro_files": spec["ro_files"],

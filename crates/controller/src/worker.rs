@@ -145,10 +145,12 @@ impl Worker {
                         cwd,
                         state,
                     } => {
-                        let (config, mut branch) =
-                            Manifest::read(&configuration)?.branch(&name, scope.as_deref())?;
+                        let manifest = Manifest::read(&configuration)?;
+                        let editor = manifest.editor()?;
+                        let (config, mut branch) = manifest.branch(&name, scope.as_deref())?;
                         token.check()?;
                         let mut launch = config.launch()?;
+                        launch.editor = editor;
                         launch.cwd = cwd;
                         if launch.initial_packages.len() > 128 {
                             return Err("initial package limit is 128".into());

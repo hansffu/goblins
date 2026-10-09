@@ -3,6 +3,7 @@
   goblins,
   configurations,
   scopes ? { },
+  editor ? null,
 }:
 let
   inherit (pkgs) lib;
@@ -33,7 +34,7 @@ let
     builtins.toJSON {
       api = 2;
       helper_api = 5;
-      inherit scopes;
+      inherit scopes editor;
       goblins = lib.mapAttrs (
         _: configuration:
         prepare configuration
