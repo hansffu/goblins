@@ -197,6 +197,8 @@ pub struct Session {
     pub input: Option<File>,
     pub output: Option<File>,
     pub listener: Option<UnixListener>,
+    /// The daemon's end of the private channel to this sandbox's goblins-init.
+    pub control: Option<OwnedFd>,
     helper: Option<Child>,
     network: Option<crate::network::Network>,
     scope: Option<Arc<crate::scope::Shared>>,
@@ -247,6 +249,7 @@ impl Session {
             input: None,
             output: None,
             listener: None,
+            control: None,
             helper: None,
             network: None,
             scope: None,
@@ -763,7 +766,9 @@ impl Session {
         let filter = seccomp::filter()?;
         let (control_r, control_w) = unix::pipe()?;
         let (reply_r, reply_w) = unix::pipe()?;
+        let (init_control, init_peer) = goblins_protocol::init::pair()?;
         let mut command = Command::new(&self.launch.helper);
+        command.args(["--init-control".into(), init_peer.as_raw_fd().to_string()]);
         let namespaces = self
             .network
             .as_ref()
@@ -794,6 +799,13 @@ impl Session {
             .arg(&self.launch.bwrap)
             .args(args)
             .args(["--seccomp", &filter.as_raw_fd().to_string(), "--"]);
+        // goblins-init is the payload's root process; with a dev shell it runs
+        // inside it, so every exec inherits the dev shell's environment.
+        let init = [
+            "/run/goblins/bin/goblins-init".to_string(),
+            init_peer.as_raw_fd().to_string(),
+            "--".into(),
+        ];
         if self.launch.dev_shell.is_some() {
             // Enter the dev shell like `nix develop -c`: its variables and
             // shellHook apply inside the sandbox, then the entry program
@@ -805,6 +817,7 @@ impl Session {
             ]);
         }
         command
+            .args(init)
             .arg(&self.launch.shell)
             .args(&self.launch.shell_args)
             .stdin(Stdio::from(control_r))
@@ -812,7 +825,12 @@ impl Session {
             .stderr(File::create(self.directory.join("helper.log"))?);
         let parent = unsafe { libc::getpid() };
         let payload_limit = unix::payload_descriptor_limit();
-        let mut keep = vec![input.as_raw_fd(), output.as_raw_fd(), filter.as_raw_fd()];
+        let mut keep = vec![
+            input.as_raw_fd(),
+            output.as_raw_fd(),
+            filter.as_raw_fd(),
+            init_peer.as_raw_fd(),
+        ];
         if let Some((user, net, pid)) = namespaces {
             keep.extend([user, net]);
             keep.extend(pid);
@@ -839,6 +857,8 @@ impl Session {
         }
         self.cancel.check()?;
         self.helper = Some(command.spawn()?);
+        drop(init_peer);
+        self.control = Some(init_control);
         // Retain the pinned handles in the inheritance capability for future
         // children; these temporary command references are no longer needed.
         drop(command);

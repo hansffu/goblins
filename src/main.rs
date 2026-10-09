@@ -228,9 +228,26 @@ fn run() -> io::Result<i32> {
     if env::args().nth(1).as_deref() == Some("--docker-bind") {
         return docker_bind::run();
     }
-    // helper [--network-namespaces USER NET PID|-] PAYLOAD_STDIN PAYLOAD_STDOUT
-    //        SECCOMP_FD BIND_FDS BWRAP [arguments...]
+    // helper [--init-control FD] [--network-namespaces USER NET PID|-]
+    //        PAYLOAD_STDIN PAYLOAD_STDOUT SECCOMP_FD BIND_FDS BWRAP [arguments...]
     let mut args: Vec<String> = env::args().collect();
+    // The daemon's private channel to goblins-init passes through Bubblewrap
+    // to the payload unchanged; this helper never reads it.
+    let init_control = if args.get(1).is_some_and(|arg| arg == "--init-control") {
+        let control: RawFd = args
+            .get(2)
+            .ok_or_else(|| io::Error::other("missing init control descriptor"))?
+            .parse()
+            .map_err(io::Error::other)?;
+        if control < 3 {
+            return Err(io::Error::other("invalid init control descriptor"));
+        }
+        cvt(unsafe { libc::fcntl(control, libc::F_GETFD) })?;
+        args.drain(1..3);
+        Some(unsafe { OwnedFd::from_raw_fd(control) })
+    } else {
+        None
+    };
     let network = if args.get(1).is_some_and(|arg| arg == "--network-namespaces") {
         if args.len() < 6 {
             return Err(io::Error::other("missing network namespace descriptors"));
@@ -268,6 +285,9 @@ fn run() -> io::Result<i32> {
         let source: RawFd = value.parse().map_err(io::Error::other)?;
         if source < 3
             || [input, output, seccomp].contains(&source)
+            || init_control
+                .as_ref()
+                .is_some_and(|c| c.as_raw_fd() == source)
             || sources.iter().any(|fd: &OwnedFd| fd.as_raw_fd() == source)
         {
             return Err(io::Error::other("invalid startup source descriptor"));
@@ -345,14 +365,15 @@ fn run() -> io::Result<i32> {
     cmd.stderr(Stdio::from(payload_output));
     let mut keep = vec![info_w.as_raw_fd(), block_r.as_raw_fd(), seccomp];
     keep.extend(sources.iter().map(AsRawFd::as_raw_fd));
+    keep.extend(init_control.as_ref().map(AsRawFd::as_raw_fd));
     unsafe {
         cmd.pre_exec(move || {
             // A shell attachment supplies a fresh PTY slave, never the approval
-            // terminal. Make it this payload's controlling terminal before
-            // Bubblewrap builds the sandbox. Pipe-based gate tests skip this.
+            // terminal. Leave the controller's session, but do not take the
+            // PTY as this session's controlling terminal: goblins-init starts
+            // the agent in a session of its own that takes it instead.
             if libc::isatty(0) == 1 {
                 cvt(libc::setsid())?;
-                cvt(libc::ioctl(0, libc::TIOCSCTTY, 0))?;
             }
             // Mark all other descriptors close-on-exec, including controller pipes.
             cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) as i32)?;
@@ -367,6 +388,7 @@ fn run() -> io::Result<i32> {
     // Bubblewrap consumes and closes bind-fd handles before payload execution.
     // The supervising helper must not retain them either.
     drop(sources);
+    drop(init_control);
     drop(info_w);
     drop(block_r);
     // The original inherited seccomp fd belongs solely to this helper now.

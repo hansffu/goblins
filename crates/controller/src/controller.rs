@@ -131,6 +131,8 @@ struct Active {
     directory: PathBuf,
     inheritance: Option<Inheritance>,
     exit_watch: Option<OwnedFd>,
+    /// The private channel to the sandbox's goblins-init.
+    init: Option<OwnedFd>,
     granted_outputs: BTreeMap<String, PathBuf>,
     /// Identity of the current trusted dev shell generation.
     dev_identity: Option<String>,
@@ -1002,6 +1004,7 @@ impl Controller {
             Active {
                 inheritance: None,
                 exit_watch: None,
+                init: None,
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
                 call: None,
@@ -1869,11 +1872,13 @@ impl Controller {
                         dev_identity,
                         initial_packages,
                         master,
+                        control,
                         listener,
                         identity,
                         inheritance,
                         exit_watch,
                     } => {
+                        a.init = Some(control);
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = scope;
                         a.record.dev_shell = dev_shell;
@@ -2047,6 +2052,7 @@ impl Controller {
                 a.worker.take();
                 a.inheritance.take();
                 a.exit_watch.take();
+                a.init.take();
                 // A worker can lose its final try_send when its bounded result
                 // queue is full (or panic). Never retain a live session after
                 // its producer is gone, even without a Stopped result.
@@ -2290,6 +2296,7 @@ mod tests {
             Active {
                 inheritance: None,
                 exit_watch: None,
+                init: None,
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
                 call: None,

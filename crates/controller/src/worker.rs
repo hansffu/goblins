@@ -59,6 +59,8 @@ pub(super) enum Completed {
         dev_identity: Option<String>,
         initial_packages: Vec<String>,
         master: OwnedFd,
+        /// The private channel to the sandbox's goblins-init.
+        control: OwnedFd,
         listener: UnixListener,
         identity: Identity,
         inheritance: Inheritance,
@@ -215,6 +217,7 @@ impl Worker {
                         .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
                         .collect(),
                     master,
+                    control: session.control.take().unwrap(),
                     listener: session.listener.take().unwrap(),
                     identity: session.identity.clone().unwrap(),
                     inheritance: session.inheritance(),
