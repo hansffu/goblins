@@ -426,38 +426,35 @@ On a raid heading, invite a goblin you choose into that raid."
   (interactive)
   (goblins--sidebar-run-in (project-prompt-project-dir)))
 
-(defun goblins--sidebar-search-pending ()
-  "Return the start of the next goblin line with a pending request after this
-line, wrapping around but excluding this line, or nil."
-  (let* ((here (line-beginning-position))
-         (from (save-excursion (forward-line 1) (point)))
-         (found (or (text-property-any from (point-max) 'goblins-pending t)
-                    (text-property-any (point-min) here 'goblins-pending t))))
-    (and found (save-excursion (goto-char found) (line-beginning-position)))))
+(defun goblins--sidebar-next-waiting (source key)
+  "Return the ID of the next goblin of SOURCE with a pending request after the
+line identified by KEY, in sidebar order with every group unfolded.  Wrap
+around, but never return the goblin on that line itself."
+  (with-temp-buffer
+    (insert (goblins--sidebar-text source nil))
+    (let* ((here (and key (goblins--sidebar-find key)))
+           (from (if here (save-excursion (goto-char here) (forward-line 1) (point))
+                   (point-min)))
+           (found (or (text-property-any from (point-max) 'goblins-pending t)
+                      (and here (text-property-any (point-min) here 'goblins-pending t)))))
+      (and found (get-text-property found 'goblins-id)))))
 
 (defun goblins-sidebar-next-pending ()
-  "Move to the next goblin with a pending request, unfolding its groups."
+  "Move to the next goblin with a pending request, unfolding its groups.
+Goblins in folded groups count too, in the order of the unfolded sidebar."
   (interactive)
-  (unless (goblins--sidebar-search-pending)
-    ;; A folded group may hide it: unfold the groups of every waiting goblin.
-    (let* ((snapshot (buffer-local-value 'goblins--snapshot (goblins--sidebar-ensure-source)))
-           (pending (delete-dups
-                     (mapcar (lambda (r) (plist-get r :session))
-                             (cl-remove-if-not
-                              (lambda (r) (equal (plist-get r :state) "pending"))
-                              (append (plist-get snapshot :permissions) nil)))))
-           (keys (apply #'append
-                        (mapcar (lambda (id)
-                                  (when-let* ((session (goblins--snapshot-session snapshot id)))
-                                    (goblins--sidebar-group-keys session)))
-                                pending))))
-      (when keys
-        (goblins--sidebar-set-collapsed
-         (cl-set-difference (goblins--sidebar-collapsed) keys :test #'equal))
-        (goblins--sidebar-render))))
-  (if-let* ((target (goblins--sidebar-search-pending)))
-      (goto-char target)
-    (message "No other goblin is waiting for a decision")))
+  (let* ((source (goblins--sidebar-ensure-source))
+         (target (goblins--sidebar-next-waiting source (goblins--sidebar-key-at (point)))))
+    (if (not target)
+        (message "No other goblin is waiting for a decision")
+      (let* ((session (goblins--snapshot-session
+                       (buffer-local-value 'goblins--snapshot source) target))
+             (keys (goblins--sidebar-group-keys session))
+             (folds (goblins--sidebar-collapsed)))
+        (when (cl-intersection folds keys :test #'equal)
+          (goblins--sidebar-set-collapsed (cl-set-difference folds keys :test #'equal))
+          (goblins--sidebar-render))
+        (goto-char (goblins--sidebar-find (cons 'id target)))))))
 
 (defun goblins-sidebar-stop ()
   "Stop the goblin at point, and its children, after confirming."

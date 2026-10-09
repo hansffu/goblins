@@ -413,8 +413,8 @@ end of the buffer.  Add your own to show more.")
         (let ((restored (magit-get-section ident)))
           (goblins--view-goto (min (+ (oref restored start) offset)
                                    (max (point-min) (1- (oref restored end))))))))
-      (setq goblins--permissions-seen
-            (append (mapcar (lambda (r) (plist-get r :id)) pending) goblins--permissions-seen)
+      ;; Settled requests never become pending again, so only pending IDs matter.
+      (setq goblins--permissions-seen (mapcar (lambda (r) (plist-get r :id)) pending)
             goblins--view-fresh nil))))
 
 (defun goblins-permissions-decide (approved)

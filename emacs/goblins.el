@@ -1160,7 +1160,9 @@ Unlike `goblins-status' this never displays the buffer."
   (unless goblins--subscription
     (user-error "Server disconnected; use M-x goblins-start-server")))
 
-;;;###autoload (autoload 'goblins-workspace "goblins-workspace" nil t)
+;; The workspace lives in its own file, which loads only when first used.  A
+;; plain autoload form, not a cookie, so it works without generated autoloads.
+(autoload 'goblins-workspace "goblins-workspace" nil t)
 
 ;;;###autoload
 (defun goblins-status (&optional directory)

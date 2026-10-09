@@ -1694,5 +1694,71 @@
 (defun goblins-test--sidebar-text-safe ()
   (if (get-buffer goblins--sidebar-buffer-name) (goblins-test--sidebar-text) "(no sidebar)"))
 
+;;; Review fixes
+
+(ert-deftest goblins-workspace-is-a-command-after-requiring-goblins ()
+  "The documented setup only requires `goblins'; the workspace must still load."
+  (with-temp-buffer
+    (let ((code (call-process
+                 (expand-file-name invocation-name invocation-directory) nil t nil
+                 "--batch" "-Q" "-L" (file-name-directory (locate-library "goblins"))
+                 "--eval" "(require 'goblins)"
+                 "--eval" (concat "(kill-emacs (if (and (commandp 'goblins-workspace)"
+                                  " (not (featurep 'goblins-workspace))) 0 1))"))))
+      (should (eq code 0)))))
+
+(ert-deftest goblins-sidebar-next-pending-reaches-goblins-in-folded-groups ()
+  "Two visible waiting goblins must not hide a third one in a folded group."
+  (goblins-test--sidebar goblins-test--raid-sessions
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :permissions
+                       (vector (goblins-test--request-in "x" "session-a" "pending")
+                               (goblins-test--request-in "y" "session-b" "pending")
+                               (goblins-test--request-in "z" "session-e" "pending")))))
+    (goblins--sidebar-render)
+    ;; Fold /p/two/ (session-b, waiting) and raid alpha (nobody waiting).
+    (goto-char (point-min))
+    (goblins-sidebar-toggle)
+    (goto-char (point-min))
+    (re-search-forward "^▾ /p/two/")
+    (goblins-sidebar-toggle)
+    (should-not (string-match-p "session-b" (buffer-string)))
+    (goto-char (point-min))
+    (let (visited)
+      (dotimes (_ 4)
+        (goblins-sidebar-next-pending)
+        (push (get-text-property (point) 'goblins-id) visited))
+      (should (equal (nreverse visited) '("session-a" "session-b" "session-e" "session-a"))))
+    ;; Only the group of the goblin moved to was unfolded.
+    (should (string-match-p "▸ raid alpha" (buffer-string)))
+    (should (string-match-p "▾ /p/two/" (buffer-string)))
+    ;; With nobody else waiting, n stays put.
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :permissions
+                       (vector (goblins-test--request-in "x" "session-a" "pending")))))
+    (goblins--sidebar-render)
+    (goto-char (point-min))
+    (re-search-forward "session-a")
+    (beginning-of-line)
+    (let ((here (point)))
+      (goblins-sidebar-next-pending)
+      (should (= (point) here)))))
+
+(ert-deftest goblins-permissions-view-remembers-each-pending-request-once ()
+  (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "pending")
+                            (goblins-test--request-in "r2" "session-a" "ready"))
+    (with-current-buffer (goblins-permissions-buffer source "session-a")
+      (dotimes (_ 50) (goblins--permissions-render))
+      (should (equal goblins--permissions-seen '("r1")))
+      ;; Settled requests are forgotten.
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :permissions
+                         (vector (goblins-test--request-in "r1" "session-a" "denied")))))
+      (goblins--permissions-render)
+      (should-not goblins--permissions-seen))))
+
 
 ;;; goblins-tests.el ends here
