@@ -116,6 +116,38 @@ pub enum Command {
         #[arg(long)]
         instance: Option<String>,
     },
+    /// Run a command inside a running goblin's sandbox (its own $SHELL by default)
+    Exec {
+        /// Allocate a terminal: always (-t), auto (when stdin is one) or never
+        #[arg(
+            short = 't',
+            long = "tty",
+            value_name = "WHEN",
+            num_args = 0..=1,
+            require_equals = true,
+            default_value = "never",
+            default_missing_value = "always",
+            value_parser = ["always", "auto", "never"]
+        )]
+        tty: String,
+        /// Set an environment variable for the command
+        #[arg(short = 'e', long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Working directory inside the sandbox
+        #[arg(short = 'w', long = "workdir", value_name = "DIR")]
+        workdir: Option<String>,
+        /// Require this daemon instance (for editors)
+        #[arg(long)]
+        instance: Option<String>,
+        /// Require this exact session ID; the name is never resolved again
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+        /// Name, tree path (gribble/snaga or gribble.snaga) or session ID
+        goblin: String,
+        /// Command and arguments, after --
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
     /// Detach a sandbox's terminal by live name or immutable session ID
     Detach { id_or_name: String },
     /// List agent names, session IDs, configurations and lifecycle state
@@ -300,6 +332,11 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
             session,
             instance: None,
         } if session == TARGET => Slot::Goblin,
+        Command::Exec {
+            goblin,
+            instance: None,
+            ..
+        } if goblin == TARGET => Slot::Goblin,
         Command::Detach { id_or_name }
         | Command::Kill { id_or_name, .. }
         | Command::Stop { id_or_name, .. }
@@ -445,6 +482,8 @@ mod tests {
         let default = Path::new("/tmp/default");
         for words in [
             vec!["goblins", "attach"],
+            vec!["goblins", "exec"],
+            vec!["goblins", "exec", "-t"],
             vec!["goblins", "detach"],
             vec!["goblins", "kill"],
             vec!["goblins", "stop"],
@@ -525,6 +564,25 @@ mod tests {
             Some(Command::Detach { id_or_name }) if id_or_name == "snikk")
         );
         assert!(Cli::try_parse_from(["goblins", "detatch", "snikk"]).is_err());
+        let exec = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Some(Command::Exec {
+                tty,
+                goblin,
+                command,
+                ..
+            }) => (tty, goblin, command),
+            _ => panic!("not exec"),
+        };
+        assert_eq!(
+            exec(&["goblins", "exec", "-t", "snikk"]),
+            ("always".into(), "snikk".into(), vec![])
+        );
+        assert_eq!(
+            exec(&["goblins", "exec", "--tty=auto", "a.b", "--", "ls", "-l"]),
+            ("auto".into(), "a.b".into(), vec!["ls".into(), "-l".into()])
+        );
+        assert_eq!(exec(&["goblins", "exec", "snikk"]).0, "never");
+        assert!(Cli::try_parse_from(["goblins", "exec", "snikk", "ls"]).is_err());
         for args in [
             vec!["goblins", "attach"],
             vec!["goblins", "kill"],

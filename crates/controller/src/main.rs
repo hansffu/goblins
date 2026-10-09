@@ -2,6 +2,7 @@
 //! The controller library never opens the approval terminal.
 mod attachment;
 mod cli;
+mod exec;
 mod plain;
 mod server;
 mod tui;
@@ -303,6 +304,28 @@ fn execute(cli: Cli) -> Result<i32> {
                         (name.clone(), config.description.clone())
                     }).collect::<std::collections::BTreeMap<_, _>>()
                 })
+            );
+        }
+        Command::Exec {
+            tty,
+            env,
+            workdir,
+            instance,
+            session,
+            goblin,
+            command,
+        } => {
+            return exec::run(
+                state,
+                exec::Options {
+                    goblin,
+                    command,
+                    tty,
+                    env,
+                    workdir,
+                    instance,
+                    session,
+                },
             );
         }
         Command::Attach { session, instance } => {

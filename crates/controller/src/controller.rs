@@ -25,6 +25,7 @@ use std::{
     time::Instant,
 };
 
+mod exec;
 mod raids;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
 
@@ -75,6 +76,12 @@ pub struct SessionRecord {
     pub detail: Option<String>,
     #[serde(default)]
     pub raid: Option<RaidMembership>,
+    /// Live interactive shells (`goblins exec -t`) in the sandbox.
+    #[serde(default)]
+    pub shells: u32,
+    /// Live non-interactive execs: TRAMP, eshell and scripts.
+    #[serde(default)]
+    pub execs: u32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRecord {
@@ -159,6 +166,10 @@ struct Connection {
     calls: usize,
     body_bytes: usize,
     subscription: Option<String>,
+    /// Descriptors received with the pending frame, for `sessions.exec`.
+    fds: Vec<OwnedFd>,
+    /// The exec this connection holds open; only signals may follow.
+    exec: Option<u64>,
 }
 impl Connection {
     fn new(id: u64, role: Role, peer: UnixStream) -> Result<Self> {
@@ -180,6 +191,8 @@ impl Connection {
             calls: 0,
             body_bytes: 0,
             subscription: None,
+            fds: Vec::new(),
+            exec: None,
         })
     }
     fn queue(&mut self, value: Value) {
@@ -221,13 +234,22 @@ impl Connection {
             return None;
         }
         let mut bytes = [0; 16384];
-        match self.peer.read(&mut bytes) {
-            Ok(0) => {
+        let waiting = self.waiting.is_some() && self.exec.is_none();
+        match goblins_protocol::init::receive(self.peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT)
+        {
+            Ok((0, _)) => {
                 self.dead = true;
                 return None;
             }
-            Ok(n) => {
-                if self.waiting.is_some() || self.input.len() + n > 32768 {
+            Ok((n, fds)) => {
+                // Only host clients pass descriptors, and only for one exec.
+                if matches!(self.role, Role::Host) {
+                    self.fds.extend(fds);
+                }
+                if waiting
+                    || self.input.len() + n > 32768
+                    || self.fds.len() > goblins_protocol::init::MAX_FDS
+                {
                     self.dead = true;
                     return None;
                 }
@@ -243,7 +265,7 @@ impl Connection {
                 return None;
             }
         }
-        if self.waiting.is_some() {
+        if waiting {
             return None;
         }
         match self.decoder.push(&self.input, Instant::now()) {
@@ -442,6 +464,7 @@ pub struct Controller {
     sequence: u64,
     connections: Vec<Connection>,
     sessions: BTreeMap<String, Active>,
+    execs: BTreeMap<u64, exec::Exec>,
     permissions: VecDeque<PermissionRecord>,
     launches: BTreeMap<String, (Start, Value)>,
     shutdown: Option<(u64, Instant)>,
@@ -487,6 +510,7 @@ impl Controller {
             sequence: 0,
             connections: vec![],
             sessions: BTreeMap::new(),
+            execs: BTreeMap::new(),
             permissions: VecDeque::new(),
             launches: BTreeMap::new(),
             shutdown: None,
@@ -790,6 +814,8 @@ impl Controller {
             w.cancel.cancel();
             self.reply_waiting(&call_key(w.serial), Err("session stopped".into()));
         }
+        let message = format!("goblin {} has stopped", self.sessions[id].record.path);
+        self.end_execs(id, &message);
         self.dirty = true;
         Ok(json!({"accepted":true}))
     }
@@ -821,6 +847,7 @@ impl Controller {
         }
     }
     fn withdraw(&mut self, connection: u64) {
+        self.exec_withdraw(connection);
         // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
             if a.call.as_ref().is_some_and(|w| w.connection == connection) {
@@ -997,6 +1024,8 @@ impl Controller {
             stop_reason: None,
             detail: None,
             raid: None,
+            shells: 0,
+            execs: 0,
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
         self.sessions.insert(
@@ -1310,6 +1339,10 @@ impl Controller {
                 let id = self.resolve_session(&p.session)?;
                 self.detach(&id)
             }
+            "sessions.kill_execs" => {
+                let p: SessionId = params(value)?;
+                self.kill_execs(&p.session)
+            }
             "sessions.resize" => {
                 let p: Resize = params(value)?;
                 if !dimensions(p.rows, p.cols) {
@@ -1412,7 +1445,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1482,6 +1515,9 @@ impl Controller {
                 return Ok(None);
             }
             match &c.role {
+                Role::Host if call.method == "sessions.exec" => {
+                    self.exec_start(c, id.clone(), call.params).map(|()| None)
+                }
                 Role::Host => self.host(c, &call.method, call.params).map(Some),
                 Role::Sandbox(session) => {
                     let session = session.clone();
@@ -1818,6 +1854,7 @@ impl Controller {
                 });
             }
         }
+        self.poll_init();
         for _ in 0..HOSTS {
             match self.listener.accept() {
                 Ok((p, _))
@@ -2117,6 +2154,10 @@ impl Controller {
             if exited {
                 let _ = self.stop_tree(&id, true, None);
             } else if stopped {
+                if self.execs.values().any(|e| e.session() == id) {
+                    let message = format!("goblin {} has stopped", self.sessions[&id].record.path);
+                    self.end_execs(&id, &message);
+                }
                 let children: Vec<_> = self
                     .sessions
                     .iter()
@@ -2170,7 +2211,14 @@ impl Controller {
             };
             let mut c = self.connections.remove(index);
             if let Some(call) = c.read() {
-                self.dispatch(&mut c, call);
+                match c.exec {
+                    Some(exec) => self.exec_input(&mut c, exec, call),
+                    None => self.dispatch(&mut c, call),
+                }
+            }
+            // Descriptors not taken by the frame they came with are closed.
+            if c.waiting.is_none() {
+                c.fds.clear();
             }
             c.flush();
             if c.dead {
@@ -2327,6 +2375,8 @@ mod tests {
                     stop_reason: None,
                     detail: None,
                     raid: None,
+                    shells: 0,
+                    execs: 0,
                 },
                 worker: Some(Worker::completed(results)),
                 listener: None,

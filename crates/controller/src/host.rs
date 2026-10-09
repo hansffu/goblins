@@ -60,6 +60,27 @@ impl Client {
             params,
         )?)
     }
+    /// Send a request with descriptors attached, without reading its reply.
+    /// Returns the request ID.
+    pub fn send_with_fds(
+        &mut self,
+        method: &str,
+        params: Value,
+        fds: &[std::os::fd::RawFd],
+    ) -> Result<Value> {
+        use std::os::fd::AsRawFd;
+        self.next += 1;
+        let id = json!(self.next);
+        let frame = rpc::encode(&rpc::request(id.clone(), method, params))?;
+        self.stream.set_write_timeout(Some(rpc::TIMEOUT))?;
+        // One message: the descriptors arrive with the request's first byte.
+        goblins_protocol::init::send(self.stream.as_raw_fd(), &frame, fds)?;
+        Ok(id)
+    }
+    /// The connection itself, for a caller that keeps it open (an exec).
+    pub fn into_stream(self) -> UnixStream {
+        self.stream
+    }
     pub fn mailbox_call(
         &mut self,
         method: &str,
