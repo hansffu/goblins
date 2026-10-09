@@ -1775,6 +1775,25 @@
   (should-not (goblins--osc7-directory "file://sandbox/x%0Ay" "gribble"))
   (should-not (goblins--osc7-directory "/plain" "gribble")))
 
+(ert-deftest goblins-terminals-track-directories-as-goblins-paths ()
+  (with-temp-buffer
+    (setq-local ghostel-identity '((kind . goblins-shell) (host . "gribble.snaga")))
+    (let ((called nil))
+      (goblins--ghostel-directory (lambda (_) (setq called t)) "file://sandbox/tmp/x")
+      (should-not called)
+      (should (equal default-directory "/goblins:gribble.snaga:/tmp/x/")))
+    (setq-local ghostel-identity '((kind . exec)))
+    (let ((called nil))
+      (goblins--ghostel-directory (lambda (_) (setq called t)) "file://host/tmp/y")
+      (should called))))
+
+(ert-deftest goblins-exec-summary-counts-shells-and-tramp ()
+  (should (equal (goblins--exec-summary (list :shells 0 :execs 0)) ""))
+  (should (equal (substring-no-properties (goblins--exec-summary (list :shells 1 :execs 3)))
+                 " · 1 shell · tramp"))
+  (should (equal (substring-no-properties (goblins--exec-summary (list :shells 2)))
+                 " · 2 shells")))
+
 (ert-deftest goblins-tramp-resolves-names-like-the-daemon ()
   (let ((sessions (list (list :id "s1" :path "gribble" :agent_name "gribble" :state "stopped")
                         (list :id "s2" :path "gribble" :agent_name "gribble" :state "running")
