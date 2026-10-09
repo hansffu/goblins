@@ -197,9 +197,53 @@ runs; a minor mode composes with Ghostel and with evil-ghostel (also a minor
 mode), and =C-c= is one of Ghostel's =ghostel-keymap-exceptions=, so =C-c= keys
 reach Emacs in every input mode.
 
+Also under =C-c g=: =S= opens a shell inside the goblin and =f= visits a file
+inside it.
+
 Agent terminals draw no-break spaces without an underline, which fixes
 Claude's thinking indicator; set =goblins-remove-nobreak-underline= to nil to
 disable.
+
+* Inside goblins: TRAMP, shells and the editor
+
+=goblins-tramp.el= loads with TRAMP and adds the =/goblins:= method:
+
+#+begin_example
+C-x C-f /goblins:gribble:/tmp/diagram.svg
+C-x C-f /goblins:gribble.snaga:/workspace/     ; a child: its tree path, with . for /
+#+end_example
+
+The host is an agent name, a tree path or a session ID, and running goblins
+complete after =/goblins:=. The method's login program is =goblins exec=, so
+dired, saving, eshell, =shell-command=, compile, grep, magit and eglot work
+inside the sandbox, with its live =PATH=; asynchronous processes each run as
+their own exec (=tramp-direct-async-process=). Killing a compilation or
+deleting a process ends its remote process group too. =/goblins:= always means
+the daemon of =goblins-state-directory=.
+
+- *Pinning.* Names are reused, so the first connection to a host pins it to
+  that goblin's (state directory, daemon instance, session ID), and every later
+  command of the connection passes the pin to =goblins exec=. A command for a
+  stopped goblin fails rather than reach a new goblin with the same name, even
+  if Emacs missed the stop, and changing =goblins-state-directory= does not move
+  existing connections.
+- *When a goblin stops*, its =/goblins:= buffers and processes are killed
+  (unsaved changes are discarded), then the pin is released. Goblin terminals
+  are kept and return to your home directory. =/goblins:= buffers are never
+  saved in desktops, and no connection data is persisted.
+- *Files a goblin wrote* get only safe file-local variables and no =eval:=,
+  also when emacsclient visits them. Their major mode still comes from the
+  file name, and your own mode hooks still run on their contents.
+- *Shells.* =M-x goblins-shell= opens the goblin's own =$SHELL=, with its dev
+  shell, in a Ghostel buffer next to the agent's terminal (in a goblin terminal
+  or =/goblins:= buffer it uses that goblin; with a prefix argument it asks). Shells
+  and goblin terminals track their directory (OSC 7) as =/goblins:= paths. In
+  the sidebar, =S= opens a shell in the goblin at point and =X= kills its shells
+  and commands; goblins show =· 1 shell · tramp= while they are in use.
+- *The sandbox's =EDITOR=.* With =editor.emacs.enable= on =mkGoblins=,
+  =goblins-editor= inside a sandbox opens files here through emacsclient,
+  always as =/goblins:= paths; it needs a running Emacs server
+  (=M-x server-start=). Finish each file with =C-x #=.
 
 * Checks
 
@@ -208,7 +252,8 @@ Run with an Emacs that already has =magit-section= on its load path:
 #+begin_src sh
 emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
-  emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el
+  emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
+  emacs/goblins-tramp.el
 emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
@@ -216,7 +261,9 @@ python3 -m unittest discover -s tests -p test_emacs.py
 The Python integration tests exercise server start/stop/restart, real approvals,
 two simultaneous Ghostel launches with working-directory input and status
 links, and the whole workspace (sidebar, permissions, raids, stopping,
-reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal.
+reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as
+well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a
+blocking =goblins-editor= against daemons built with =editor.emacs.enable=.
 Each starts its own daemon on a temporary state directory and socket, so a
 daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test
 also requires its installed native module. These commands use =-Q= and do not

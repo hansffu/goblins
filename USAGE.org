@@ -573,6 +573,68 @@ Page Up/Down scroll request details; Ctrl-C also closes the frontend. Preview es
 may be Unknown. Colors use the terminal palette; =NO_COLOR= suppresses colors.
 The plain view additionally accepts =status= to print current state.
 
+* Shells, commands and editors inside a running goblin
+
+Every sandbox's root process is =goblins-init=. It starts the agent on the
+sandbox's terminal, reaps everything orphaned to it, and runs the commands the
+host asks for. When the agent exits, init hangs up those commands, kills
+whatever is left below it, and exits with the agent's status, so the sandbox
+still ends with its agent. Init's channel to the daemon is an inherited
+socket: nothing in the sandbox can open, find or impersonate it.
+
+#+begin_src sh
+goblins exec -t snikk                       # the sandbox's own $SHELL, on a new terminal
+goblins exec snikk -- git status            # a command; stdout, stderr and the exit code pass through
+goblins exec -w /tmp -e TERM=dumb snikk.kid -- make test   # a child, by tree path (. or /)
+goblins exec --tty=auto snikk -- sh         # a terminal only when stdin is one
+goblins rpc sessions.kill_execs '{"session":"snikk"}'
+#+end_src
+
+- The goblin is a name, a tree path (=gribble/snaga= or =gribble.snaga=) or a
+  session ID. Processes run with the goblin's uid, namespaces, seccomp filter,
+  environment and dev shell, each in its own session and process group.
+- With =-t= the terminal is created on the host and its master stays with the
+  client; closing the client hangs up the shell, like =ssh -t=. Without it the
+  client relays its stdio through pipes and passes the bytes through exactly;
+  closing stdin is end of file for the command.
+- The client keeps its daemon connection open while the command runs. If the
+  client dies, even with SIGKILL, the command's process group gets SIGHUP and
+  SIGTERM, then SIGKILL two seconds later. SIGINT, SIGTERM and SIGHUP sent to
+  the client reach the command's process group. Processes that leave the group
+  (=setsid=, double forks) live until =sessions.kill_execs= or the goblin ends.
+- =--instance ID --session ID= pin the command to one session of one daemon,
+  as =attach --instance= does: if that session stopped, even when another
+  goblin now has its name, the command fails instead of reaching the namesake.
+- Exit status: the command's own, =128 + signal= when it was killed, =127= for
+  a missing command, =126= when it cannot start, =255= for Goblins' own
+  failures.
+- Execs are host-only. A session record counts live =shells= (=-t=) and other
+  =execs= (TRAMP, eshell, scripts); interactive shells also appear in the
+  session's =events.jsonl=. The agent is not told.
+
+** Opening sandbox files in Emacs
+
+With =editor.emacs.enable = true;= on =mkGoblins= (see the Nix API), every
+goblin gets the tools TRAMP needs (coreutils, sed, grep, findutils, gawk) and
+=EDITOR= and =VISUAL= set to =/run/goblins/bin/goblins-editor=; a goblin's own
+=env= still wins.
+
+#+begin_src sh
+# Inside a sandbox; like emacsclient, a position applies to the next file.
+goblins editor open +12:3 notes.md /tmp/diagram.svg
+goblins editor open --no-wait /tmp/plot.png
+git commit          # opens the message in your Emacs and waits for C-x #
+#+end_src
+
+The daemon runs =emacsclient -a false= (=editor.emacs.command=, by default from
+the daemon's =PATH=) without a shell, always with =/goblins:<tree path>:/abs/path=
+names it builds itself, so a goblin cannot open another goblin's files or host
+paths. Blocking edits end when you are done with every file (=C-x #=), with
+emacsclient's exit status; closing the waiting command kills the client.
+Without a running Emacs server the edit fails at once. =emacsclient= finds the
+server as usual, from the daemon's environment (=EMACS_SOCKET_NAME= or
+=XDG_RUNTIME_DIR=).
+
 * Nix API
 
 The root flake exports =lib.x86_64-linux.builders= with =mkGoblin=,
@@ -614,6 +676,20 @@ Use =lib.x86_64-linux.defaultGoblins.shell= for the predefined interactive Fish
 configuration in =nix/default-goblins/shell.nix=. The host and inner binary definitions
 live separately under =nix/packages/=. The preset uses commonTools and is the
 default =goblins run shell= configuration; custom entries still use =mkGoblin=.
+
+=editor.emacs.enable = true;= on =mkGoblins= applies to every goblin: it adds
+the TRAMP tools and =EDITOR=/=VISUAL= (=goblins-editor=) to each one, scope
+variants included, and records the host editor command,
+=editor.emacs.command= (default ="emacsclient"=), in the manifest. Without it,
+=/goblins:= TRAMP still connects where the tools are present, and =editor.open=
+is refused. See [[*Opening sandbox files in Emacs][Opening sandbox files in Emacs]].
+
+#+begin_src nix
+mkGoblins {
+  editor.emacs.enable = true;
+  goblins.shell = defaultGoblins.shell;
+}
+#+end_src
 
 =mkGoblins { goblins = { NAME = mkGoblin { ... }; }; }= returns a Nix derivation
 providing the host =bin/goblins= executable, with =config= and =goblins=
