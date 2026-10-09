@@ -49,6 +49,18 @@ pub enum FlakeCommand {
     },
 }
 #[derive(Subcommand)]
+pub enum EditorCommand {
+    /// Open files in the host's editor; waits until it is done with all of them
+    #[command(
+        override_usage = "goblins editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]..."
+    )]
+    Open {
+        /// [--no-wait] [+LINE[:COL]] FILE...; a position applies to the next file
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+#[derive(Subcommand)]
 pub enum RaidCommand {
     /// Create a raid and join it as its owner
     Create { raid: String },
@@ -113,6 +125,11 @@ pub enum Command {
     Devshell {
         #[command(subcommand)]
         command: DevshellCommand,
+    },
+    /// Files in the host's editor (also the goblins-editor command)
+    Editor {
+        #[command(subcommand)]
+        command: EditorCommand,
     },
     /// Collaborate with goblins in other branches: find and message members
     Raid {
@@ -368,6 +385,12 @@ mod tests {
         assert!(Cli::try_parse_from(["goblins", "raid", "invite"]).is_err());
         assert!(Cli::try_parse_from(["goblins", "raid", "set-role"]).is_err());
         assert!(Cli::try_parse_from(["goblins", "run", "shell", "--inherit-raid"]).is_ok());
+        assert!(matches!(
+            Cli::try_parse_from(["goblins", "editor", "open", "--no-wait", "+3:4", "a"])
+                .unwrap()
+                .command,
+            Command::Editor { command: EditorCommand::Open { args } } if args.len() == 3
+        ));
     }
 }
 

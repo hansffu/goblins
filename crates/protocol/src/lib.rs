@@ -84,6 +84,8 @@ pub fn plain_text(s: &str) -> String {
         .collect()
 }
 
+pub mod editor;
+pub mod init;
 pub mod messages;
 pub mod patch;
 pub mod rpc;

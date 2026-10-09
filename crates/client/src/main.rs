@@ -1,5 +1,6 @@
 //! Untrusted request client. No controller or helper dependency.
 mod cli;
+mod init;
 mod preview;
 use clap::Parser;
 use goblins_protocol::{REQUEST_SOCKET, rpc};
@@ -33,12 +34,19 @@ fn parse_args(legacy: bool, args: &[String]) -> Result<(String, String), String>
 }
 fn run() -> Result<i32, String> {
     let mut args = std::env::args();
-    let legacy = args.next().is_some_and(|a| {
-        std::path::Path::new(&a)
-            .file_name()
-            .is_some_and(|n| n == "goblins-request")
-    });
+    let name = args.next().unwrap_or_default();
+    let name = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let legacy = name == "goblins-request";
     let args: Vec<_> = args.collect();
+    match name.as_str() {
+        "goblins-init" => return init::run(&args),
+        "goblins-editor" => return editor_open(&args),
+        _ => (),
+    }
     if !legacy {
         let command =
             cli::Cli::try_parse_from(std::iter::once("goblins".to_string()).chain(args.clone()))
@@ -88,6 +96,9 @@ fn run() -> Result<i32, String> {
                 );
             }
             cli::Command::Devshell { command } => return devshell(command),
+            cli::Command::Editor {
+                command: cli::EditorCommand::Open { args },
+            } => return editor_open(&args),
             cli::Command::Flake {
                 command: cli::FlakeCommand::Run { installable, args },
             } => return flake_run(installable.as_deref(), args),
@@ -380,6 +391,29 @@ fn waiting_call(
             .to_string()));
     }
     Ok(Ok(reply["result"].clone()))
+}
+/// `goblins editor open`: ask the host editor to open sandbox files, by
+/// default waiting until it is done with all of them.
+fn editor_open(args: &[String]) -> Result<i32, String> {
+    use goblins_protocol::editor;
+    let (mut files, wait) = editor::parse(args)?;
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    for file in &mut files {
+        file.path = editor::absolute(&cwd, std::path::Path::new(&file.path))
+            .to_str()
+            .ok_or("file names must be UTF-8")?
+            .to_string();
+    }
+    let open = editor::Open { files, wait };
+    open.validate()?;
+    let params = serde_json::to_value(&open).map_err(|e| e.to_string())?;
+    match waiting_call(editor::FEATURE, "editor.open", params)? {
+        Ok(result) => Ok(result["code"].as_i64().map_or(1, |c| c as i32)),
+        Err(message) => {
+            eprintln!("goblins: {message}");
+            Ok(1)
+        }
+    }
 }
 fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
     let app = app_name(installable)?;
