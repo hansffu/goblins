@@ -899,11 +899,40 @@ Daemon refusals become `user-error's and leave the connection alone."
   (remhash goblins--session-key goblins--terminal-buffers)
   (goblins--render-status-buffers))
 
+(defun goblins--osc7-directory (report host)
+  "The /goblins: directory for an OSC 7 REPORT from inside goblin HOST."
+  (when (string-match "\\`\\(?:file\\|kitty-shell-cwd\\)://[^/]*\\(/.*\\)\\'" report)
+    (let* ((raw (match-string 1 report))
+           (path (if (string-prefix-p "file:" report)
+                     (progn
+                       (require 'url-util)
+                       (decode-coding-string
+                        (url-unhex-string (encode-coding-string raw 'utf-8) t) 'utf-8-unix))
+                   raw)))
+      (unless (string-match-p "[\0\n]" path)
+        (file-name-as-directory (format "/goblins:%s:%s" host path))))))
+
+(defun goblins--terminal-host ()
+  "The /goblins: host of this goblin terminal, from its identity or snapshot."
+  (or (alist-get 'host ghostel-identity)
+      (when-let* ((key goblins--session-key)
+                  (source (get-buffer (format "*Goblins: %s*" (car key))))
+                  (session (cl-find (nth 2 key)
+                                    (append (plist-get (buffer-local-value 'goblins--snapshot source)
+                                                       :sessions)
+                                            nil)
+                                    :key (lambda (s) (plist-get s :id)) :test #'equal)))
+        (string-replace "/" "." (plist-get session :path)))))
+
 (defun goblins--ghostel-directory (function directory)
-  "Keep namespace-local DIRECTORY reports out of host directory tracking."
-  ;; The sandbox's hostname is not an SSH destination, and /workspace need
-  ;; not correspond to a host path.  Leave ordinary Ghostel buffers alone.
-  (unless (eq (alist-get 'kind ghostel-identity) 'goblins)
+  "Track namespace-local DIRECTORY reports as /goblins: paths.
+The sandbox's hostname is not an SSH destination, and /workspace need not
+correspond to a host path, so a goblin terminal's directory is its TRAMP
+path.  Ordinary Ghostel buffers are left alone."
+  (if (memq (alist-get 'kind ghostel-identity) '(goblins goblins-shell))
+      (when-let* ((host (goblins--terminal-host))
+                  (path (goblins--osc7-directory directory host)))
+        (setq default-directory path))
     (funcall function directory)))
 
 (with-eval-after-load 'ghostel
@@ -1031,7 +1060,9 @@ Only launches made here are linked by the terminal command."
   (let ((default-directory (file-name-as-directory
                             (expand-file-name (or directory default-directory)))))
     (when (file-remote-p default-directory)
-      (user-error "Goblins requires a local working directory"))
+      (user-error (if (string-prefix-p "/goblins:" default-directory)
+                      "This buffer is inside a goblin; run goblins from a local directory"
+                    "Goblins requires a local working directory")))
     (goblins--require-ghostel)
     (let* ((state-directory (or goblins--directory goblins-state-directory
                                 (goblins--default-directory)))
@@ -1163,6 +1194,7 @@ Unlike `goblins-status' this never displays the buffer."
 ;; The workspace lives in its own file, which loads only when first used.  A
 ;; plain autoload form, not a cookie, so it works without generated autoloads.
 (autoload 'goblins-workspace "goblins-workspace" nil t)
+(autoload 'goblins-shell "goblins-tramp" nil t)
 
 ;;;###autoload
 (defun goblins-status (&optional directory)
@@ -1178,6 +1210,10 @@ With a prefix argument, prompt for the daemon state directory."
     (goblins-refresh)))
 
 (provide 'goblins)
+
+;; The /goblins: TRAMP method, registered whenever TRAMP loads.
+(with-eval-after-load 'tramp
+  (require 'goblins-tramp))
 
 ;; Terminals turn on `goblin-mode'; loaded last since it builds on this file.
 (require 'goblins-terminal)

@@ -16,6 +16,7 @@ import tempfile
 import unittest
 import uuid
 
+from support import command
 from daemon_support import Daemon, ROOT, RPC, app, receive
 
 
@@ -206,6 +207,62 @@ class EmacsTests(unittest.TestCase):
         self.assertIn(daemon.get(ids["delta"])["state"], ("stopping", "stopped"))
         self.assertIsNone(daemon.get(ids["alpha"])["raid"])
         self.assertIsNone(daemon.get(ids["beta"])["raid"])
+
+    def test_tramp_shell_and_editor_in_a_terminal_emacs(self):
+        """/goblins: TRAMP, goblins-shell and goblins-editor in a real
+        `emacs -nw`, against isolated daemons built with editor.emacs.enable."""
+        application = Path(command(["nix", "build", "--no-link", "--print-out-paths",
+                                    f"path:{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
+        temp = tempfile.TemporaryDirectory(prefix="ge-tramp-")
+        self.addCleanup(temp.cleanup)
+        server_dir = Path(temp.name) / "server"
+        server_dir.mkdir(mode=0o700)
+        # The daemon runs emacsclient against this test Emacs only.
+        daemon = Daemon(application, env={**os.environ,
+                                          "EMACS_SOCKET_NAME": str(server_dir / "goblins-test")})
+        self.addCleanup(daemon.close)
+        other = Daemon(application)
+        self.addCleanup(other.close)
+        other.start(name="plain", agent_name="gribble")
+        result = Path(temp.name) / "result"
+        argv = ["emacs", "-nw", "-Q", "--eval", "(setq load-prefer-newer t)",
+                "-L", str(ROOT / "emacs"), "-l", "goblins-tests",
+                "--eval", "(goblins-test-tramp-live)"]
+        env = {**os.environ, "TERM": "xterm-256color",
+               "GOBLINS_APP": str(application),
+               "GOBLINS_TEST_STATE": str(daemon.state),
+               "GOBLINS_TEST_OTHER_STATE": str(other.state),
+               "GOBLINS_TEST_MANIFEST": str(daemon.manifest),
+               "GOBLINS_TEST_SERVER_DIR": str(server_dir),
+               "GOBLINS_TEST_SERVER_NAME": "goblins-test",
+               "GOBLINS_TEST_RESULT": str(result)}
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.execvpe(argv[0], argv, env)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
+        screen, deadline, status = b"", time.monotonic() + 400, None
+        while status is None and time.monotonic() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                try:
+                    screen = (screen + os.read(fd, 65536))[-20000:]
+                except OSError:
+                    pass
+            done, code = os.waitpid(pid, os.WNOHANG)
+            if done:
+                status = code
+        if status is None:
+            os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
+        os.close(fd)
+        self.assertIsNotNone(status, "terminal Emacs timed out: " + screen.decode(errors="replace")[-2000:])
+        self.assertTrue(result.exists(), screen.decode(errors="replace")[-2000:])
+        ghostel = subprocess.run(
+            ["emacs", "--batch", "-Q", "--eval",
+             '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
+            capture_output=True, timeout=10).returncode == 0
+        self.maxDiff = None
+        self.assertEqual(result.read_text(), "ok ghostel" if ghostel else "ok")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

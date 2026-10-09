@@ -197,7 +197,7 @@ print(json.dumps(results))''')
         with self.assertRaisesRegex(RuntimeError, "partial"):
             partial.grant("jq", self.paths["jq"], fail_after=1)
         self.assertIsNotNone(partial.proc.poll())
-        self.assertFalse((partial.directory / "packages/current").exists())
+        self.assertEqual(os.readlink(partial.directory / "packages/current"), "generation-0")
         rooted = session.directory / "roots" / self.paths["jq"].name
         self.assertTrue(rooted.is_symlink())
         roots = command(["nix-store", "--query", "--roots", self.paths["jq"]])
@@ -242,7 +242,7 @@ for _ in range(20000):
         with self.assertRaisesRegex(RuntimeError, "helper exited"):
             victim.grant("jq", self.paths["jq"])
         self.assertIsNotNone(victim.proc.poll())
-        self.assertFalse((victim.directory / "packages/current").exists())
+        self.assertEqual(os.readlink(victim.directory / "packages/current"), "generation-0")
 
     def test_controller_death_kills_descendants(self):
         # A separate HOST driver simulates a crashing controller. Its shell still

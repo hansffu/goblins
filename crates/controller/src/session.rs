@@ -531,6 +531,11 @@ impl Session {
         }
         let initial = self.closure(&roots)?;
         self.placeholders(&initial)?;
+        // An empty first generation: the granted-package directory leads PATH
+        // from the start, so tools that list PATH once (TRAMP) see later grants.
+        let empty = self.directory.join("packages/generation-0");
+        fs::create_dir_all(empty.join("bin"))?;
+        symlink("generation-0", self.directory.join("packages/current"))?;
         let listener = UnixListener::bind(self.directory.join("request.sock"))?;
         fs::set_permissions(
             self.directory.join("request.sock"),

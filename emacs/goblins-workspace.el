@@ -155,6 +155,7 @@ Return non-nil unless KEY is in COLLAPSED."
             (if finished (propertize name 'face 'goblins-dim) name)
             (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
                         'face 'goblins-dim)
+            (goblins--exec-summary session)
             (goblins--sidebar-badge pending)
             "\n")
     (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
@@ -474,6 +475,24 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
                                   (and children (list :kill_children t))))
       (message "Stopping %s" (goblins--session-path session)))))
 
+(defun goblins-sidebar-shell ()
+  "Open a shell inside the goblin at point."
+  (interactive)
+  (let* ((goblin (goblins--sidebar-goblin-at-point))
+         (session (goblins--snapshot-session
+                   (buffer-local-value 'goblins--snapshot (car goblin)) (cdr goblin))))
+    (goblins-shell session #'goblins--display-main)))
+
+(defun goblins-sidebar-kill-execs ()
+  "Kill every shell and command running inside the goblin at point."
+  (interactive)
+  (let* ((goblin (goblins--sidebar-goblin-at-point))
+         (session (goblins--snapshot-session
+                   (buffer-local-value 'goblins--snapshot (car goblin)) (cdr goblin))))
+    (when (y-or-n-p (format "Kill all shells and commands in %s? "
+                            (goblins--session-path session)))
+      (goblins--host-call (car goblin) 'sessions.kill_execs (list :session (cdr goblin))))))
+
 (defun goblins-sidebar-destroy-raid ()
   "Dissolve the raid on this heading after confirming.  Its goblins keep running."
   (interactive)
@@ -492,7 +511,9 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
      ("Goblin" ("RET" . "show or attach its terminal")
                ("p" . "permission requests")
                ("I" . "info")
-               ("K" . "stop it (and its children)"))
+               ("K" . "stop it (and its children)")
+               ("S" . "a shell inside it")
+               ("X" . "kill its shells and commands"))
      ("Raids" ("r" . "create a raid around the goblin, or join one")
               ("i" . "invite the goblin to a raid; on a raid, invite into it")
               ("RET" . "on a raid: open its page")
@@ -534,6 +555,7 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
                        ("r" . goblins-raid) ("?" . goblins-sidebar-help)
                        ("n" . goblins-sidebar-next-pending) ("K" . goblins-sidebar-stop)
                        ("D" . goblins-sidebar-destroy-raid)
+                       ("S" . goblins-sidebar-shell) ("X" . goblins-sidebar-kill-execs)
                        ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
                        ("g" . goblins-sidebar-refresh)
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
@@ -556,6 +578,8 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
     (kbd "n") #'goblins-sidebar-next-pending
     (kbd "K") #'goblins-sidebar-stop
     (kbd "D") #'goblins-sidebar-destroy-raid
+    (kbd "S") #'goblins-sidebar-shell
+    (kbd "X") #'goblins-sidebar-kill-execs
     (kbd "TAB") #'goblins-sidebar-toggle
     (kbd "<tab>") #'goblins-sidebar-toggle
     (kbd "gr") #'goblins-sidebar-refresh

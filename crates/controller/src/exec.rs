@@ -133,6 +133,7 @@ fn exec(state: PathBuf, options: Options) -> Result<i32> {
     let mut params = json!({
         "session": options.goblin,
         "tty": tty,
+        "interactive": options.tty == "always",
         "env": env,
     });
     if !options.command.is_empty() {

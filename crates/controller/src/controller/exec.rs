@@ -18,7 +18,8 @@ pub(super) struct Exec {
     session: String,
     connection: u64,
     rpc: Value,
-    tty: bool,
+    /// An interactive shell rather than a TRAMP, eshell or script command.
+    interactive: bool,
     argv: Option<Vec<String>>,
     cwd: Option<String>,
     started: bool,
@@ -47,6 +48,10 @@ pub(super) struct ExecParams {
     env: Vec<(String, String)>,
     #[serde(default)]
     tty: bool,
+    /// Asked for a terminal explicitly (`-t`): an interactive shell, counted
+    /// and logged as one. TRAMP's terminals are not.
+    #[serde(default)]
+    interactive: bool,
 }
 
 #[derive(Deserialize)]
@@ -161,7 +166,7 @@ impl Controller {
                 session,
                 connection: c.id,
                 rpc: rpc_id.clone(),
-                tty: p.tty,
+                interactive: p.interactive && p.tty,
                 argv: p.argv,
                 cwd: p.cwd,
                 started: false,
@@ -225,7 +230,7 @@ impl Controller {
         };
         if exec.started {
             if let Some(a) = self.sessions.get_mut(&exec.session) {
-                if exec.tty {
+                if exec.interactive {
                     a.record.shells = a.record.shells.saturating_sub(1);
                 } else {
                     a.record.execs = a.record.execs.saturating_sub(1);
@@ -233,7 +238,7 @@ impl Controller {
             }
             self.dirty = true;
         }
-        if exec.tty
+        if exec.interactive
             && let Some(a) = self.sessions.get(&exec.session)
         {
             let outcome = match &reply {
@@ -282,9 +287,10 @@ impl Controller {
                     return;
                 };
                 exec.started = true;
-                let (tty, argv, cwd) = (exec.tty, exec.argv.clone(), exec.cwd.clone());
+                let (interactive, argv, cwd) =
+                    (exec.interactive, exec.argv.clone(), exec.cwd.clone());
                 let a = self.sessions.get_mut(session).unwrap();
-                if tty {
+                if interactive {
                     a.record.shells += 1;
                     // Interactive shells only: TRAMP and eshell would flood
                     // the size-capped log and crowd out lifecycle events.

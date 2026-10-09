@@ -97,6 +97,15 @@
     (select-window window)
     buffer))
 
+(defun goblins--exec-summary (session)
+  "SESSION's live shells and commands, like \" · 1 shell · tramp\", or \"\"."
+  (let ((shells (or (plist-get session :shells) 0))
+        (execs (or (plist-get session :execs) 0)))
+    (propertize
+     (concat (if (> shells 0) (format " · %d shell%s" shells (if (= shells 1) "" "s")) "")
+             (if (> execs 0) " · tramp" ""))
+     'face 'goblins-dim)))
+
 (defun goblins--display-main (buffer)
   "Show BUFFER in the workspace's main window, or pop it up outside a workspace."
   (if (get-buffer-window goblins--sidebar-buffer-name)

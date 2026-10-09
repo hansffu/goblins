@@ -1761,4 +1761,245 @@
       (should-not goblins--permissions-seen))))
 
 
+;;; TRAMP
+
+(require 'goblins-tramp)
+(defvar goblins-test--pwned nil)
+
+(ert-deftest goblins-tramp-hosts-and-osc7-directories ()
+  (should (equal (goblins-tramp-host "gribble/snaga") "gribble.snaga"))
+  (should (equal (goblins--osc7-directory "file://sandbox/tmp/a%20b" "gribble")
+                 "/goblins:gribble:/tmp/a b/"))
+  (should (equal (goblins--osc7-directory "kitty-shell-cwd://sandbox/w" "a.b")
+                 "/goblins:a.b:/w/"))
+  (should-not (goblins--osc7-directory "file://sandbox/x%0Ay" "gribble"))
+  (should-not (goblins--osc7-directory "/plain" "gribble")))
+
+(ert-deftest goblins-tramp-resolves-names-like-the-daemon ()
+  (let ((sessions (list (list :id "s1" :path "gribble" :agent_name "gribble" :state "stopped")
+                        (list :id "s2" :path "gribble" :agent_name "gribble" :state "running")
+                        (list :id "s3" :path "gribble/snaga" :agent_name "snaga" :state "running")
+                        (list :id "s4" :path "other/snaga" :agent_name "snaga" :state "running"))))
+    (should (equal (plist-get (goblins-tramp--match "gribble" sessions) :id) "s2"))
+    (should (equal (plist-get (goblins-tramp--match "gribble.snaga" sessions) :id) "s3"))
+    (should (equal (plist-get (goblins-tramp--match "s1" sessions) :id) "s1"))
+    (should-error (goblins-tramp--match "snaga" sessions))
+    (should-not (goblins-tramp--match "nobody" sessions))))
+
+(ert-deftest goblins-tramp-files-get-only-safe-local-variables ()
+  "The policy applies when local variables are processed, before any hook."
+  (setq goblins-test--pwned nil)
+  (dolist (name '("/goblins:gribble:/tmp/f.txt" "/tmp/goblins-local.txt"))
+    (with-temp-buffer
+      (insert "-*- eval: (setq goblins-test--pwned t); fill-column: 33; "
+              "goblins-test--unsafe: 7 -*-\n")
+      (setq buffer-file-name name)
+      (let ((enable-local-variables t)
+            (enable-local-eval t)
+            (remote (goblins-tramp-file-p name)))
+        (cl-letf (((symbol-function 'hack-local-variables-confirm) (lambda (&rest _) t)))
+          (hack-local-variables))
+        (should (= fill-column 33))
+        (should (eq (local-variable-p 'goblins-test--unsafe) (not remote)))
+        (should (eq goblins-test--pwned (not remote))))
+      (setq buffer-file-name nil)))
+  (setq goblins-test--pwned nil))
+
+(ert-deftest goblins-tramp-buffers-are-never-saved-in-desktops ()
+  (require 'desktop)
+  (should-not (desktop-save-buffer-p "/goblins:gribble:/tmp/f" "f" 'text-mode))
+  (should (desktop-save-buffer-p "/tmp/f" "f" 'text-mode)))
+
+(defun goblins-test--host-pids (marker)
+  "PIDs of host processes whose command line contains MARKER."
+  (cl-remove-if-not
+   (lambda (pid)
+     (ignore-errors
+       (with-temp-buffer
+         (insert-file-contents-literally (format "/proc/%s/cmdline" pid))
+         (search-forward marker nil t))))
+   (directory-files "/proc" nil "\\`[0-9]+\\'")))
+
+(defun goblins-test--in (directory goblin script)
+  "Run SCRIPT in GOBLIN of DIRECTORY's daemon with the CLI; return its output."
+  (with-temp-buffer
+    (let ((default-directory temporary-file-directory))
+      (call-process goblins-executable nil '(t nil) nil "--state-dir" directory
+                    "exec" goblin "--" "sh" "-c" script))
+    (buffer-string)))
+
+(defun goblins-test--start-goblin (source name)
+  "Start goblin NAME in SOURCE's daemon and return its session ID once running."
+  (let (id)
+    (goblins-test--wait
+     (lambda ()
+       (setq id (or id (ignore-errors
+                         (plist-get (goblins--host-call
+                                     source 'sessions.start
+                                     (list :key (format "%s-%s" name (random 100000000))
+                                           :name "plain" :agent_name name
+                                           :configuration (getenv "GOBLINS_TEST_MANIFEST")
+                                           :rows 24 :cols 80 :detached t))
+                                    :session))))
+       (and id (equal (plist-get (goblins--snapshot-session
+                                  (buffer-local-value 'goblins--snapshot source) id)
+                                 :state)
+                      "running")))
+     90)
+    id))
+
+(defun goblins-test--stop-goblin (source id)
+  (goblins--host-call source 'sessions.stop (list :session id))
+  (goblins-test--wait
+   (lambda () (equal (plist-get (goblins--snapshot-session
+                                 (buffer-local-value 'goblins--snapshot source) id)
+                                :state)
+                     "stopped"))))
+
+(defun goblins-test--pin (host)
+  (goblins-tramp-pin host))
+
+(defun goblins-test--tramp-scenario ()
+  (let* ((directory (getenv "GOBLINS_TEST_STATE"))
+         (other (getenv "GOBLINS_TEST_OTHER_STATE"))
+         (goblins-state-directory directory)
+         (goblins-executable (getenv "GOBLINS_APP"))
+         (ghostel-query-before-killing nil)
+         (source (goblins--connect))
+         (first (goblins-test--start-goblin source "gribble"))
+         (file "/goblins:gribble:/tmp/notes.txt")
+         (tmp "/goblins:gribble:/tmp/")
+         notes ghostel-used)
+    ;; Running goblins complete after /goblins:, like hosts after /ssh:.
+    (should (equal (let ((non-essential t))
+                     (tramp-completion-handle-file-name-all-completions "goblins:gr" "/"))
+                   '("goblins:gribble:")))
+    ;; Visit, save and list files; the connection is pinned to the session.
+    (setq notes (find-file file))
+    (insert "hello from emacs\n")
+    (save-buffer)
+    (should (equal (goblins-test--in directory "gribble" "cat /tmp/notes.txt")
+                   "hello from emacs\n"))
+    (should (equal (nth 2 (goblins-test--pin "gribble")) first))
+    (with-current-buffer (dired tmp)
+      (goto-char (point-min))
+      (should (search-forward "notes.txt" nil t)))
+    ;; Eshell runs external commands inside the sandbox.
+    (require 'eshell)
+    (let ((default-directory tmp))
+      (should (equal (string-trim (eshell-command-result "id -u")) "1000"))
+      (should (equal (string-trim (eshell-command-result "cat notes.txt")) "hello from emacs")))
+    ;; Killing a compilation, or deleting a process, leaves nothing behind.
+    (let ((default-directory tmp)
+          (compilation-ask-about-save nil))
+      (with-current-buffer (compile "sleep 4242421; echo finished")
+        (goblins-test--wait (lambda () (goblins-test--host-pids "sleep\0004242421")))
+        (kill-compilation)
+        (goblins-test--wait (lambda () (null (goblins-test--host-pids "sleep\0004242421")))))
+      (let ((process (start-file-process "sleeper" nil "sleep" "4242422")))
+        (goblins-test--wait (lambda () (goblins-test--host-pids "sleep\0004242422")))
+        (delete-process process)
+        (goblins-test--wait (lambda () (null (goblins-test--host-pids "sleep\0004242422")))))
+      ;; Closing stdin ends a pipe process, as eglot's shutdown does.
+      (with-temp-buffer
+        (let ((process (make-process :name "cat" :buffer (current-buffer) :command '("cat")
+                                     :connection-type 'pipe :file-handler t)))
+          (process-send-string process "line\n")
+          (process-send-eof process)
+          (goblins-test--wait (lambda () (not (process-live-p process))))
+          (should (eq (process-exit-status process) 0))
+          (should (equal (buffer-string) "line\n")))))
+    ;; The first visit to a goblin-written file ignores eval: and unsafe variables.
+    (goblins-test--in directory "gribble"
+                      (concat "printf '%s\\n' '-*- eval: (setq goblins-test--pwned t); "
+                              "fill-column: 33; goblins-test--unsafe: 7 -*-' > /tmp/unsafe.txt"))
+    (setq goblins-test--pwned nil)
+    (let ((enable-local-variables t))
+      (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/unsafe.txt")
+        (should (= fill-column 33))
+        (should-not (local-variable-p 'goblins-test--unsafe))))
+    (should-not goblins-test--pwned)
+    ;; goblins-editor blocks until every file is done with C-x #.
+    (let* ((editor (start-process "goblins-editor" (generate-new-buffer " *editor*")
+                                  goblins-executable "--state-dir" directory "exec" "gribble"
+                                  "--" "goblins-editor" "+2" "/tmp/m1" "/tmp/m2"))
+           (m1 "/goblins:gribble:/tmp/m1") (m2 "/goblins:gribble:/tmp/m2"))
+      (goblins-test--wait (lambda () (and (get-file-buffer m1) (get-file-buffer m2))))
+      (dolist (name (list m1 m2))
+        (with-current-buffer (get-file-buffer name)
+          (insert (file-name-nondirectory name))
+          (save-buffer)
+          (should (process-live-p editor))
+          (server-edit)))
+      (goblins-test--wait (lambda () (not (process-live-p editor))))
+      (should (eq (process-exit-status editor) 0))
+      (should (equal (goblins-test--in directory "gribble" "cat /tmp/m1 /tmp/m2") "m1m2")))
+    ;; A shell inside the goblin, alongside its agent terminal.
+    (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
+      (let ((shell (goblins-shell (goblins--snapshot-session
+                                   (buffer-local-value 'goblins--snapshot source) first))))
+        (with-current-buffer shell
+          (should (equal default-directory "/goblins:gribble:/"))
+          (goblins-test--wait (lambda () (process-live-p ghostel--process)))
+          (ghostel-send-string "echo SHELL-$((6*7))\n")
+          (goblins-test--wait (lambda () (string-match-p "SHELL-42" (buffer-string)))))
+        (goblins-test--wait (lambda () (eq (plist-get (goblins--snapshot-session
+                                                       (buffer-local-value 'goblins--snapshot source)
+                                                       first)
+                                                      :shells)
+                                           1)))
+        (setq ghostel-used t)))
+    ;; Stopping the goblin kills its buffers before the pin is released, so
+    ;; a later goblin with the same name is pinned afresh.
+    (goblins-test--stop-goblin source first)
+    (goblins-test--wait (lambda () (not (buffer-live-p notes))))
+    (should-not (goblins-test--pin "gribble"))
+    (should-not (cl-some (lambda (b) (goblins-tramp--buffer-vec b))
+                         (cl-remove-if #'goblins-tramp--terminal-p (buffer-list))))
+    (let ((second (goblins-test--start-goblin source "gribble")))
+      (setq notes (find-file-noselect "/goblins:gribble:/tmp/second.txt"))
+      (with-current-buffer notes (insert "x") (save-buffer))
+      (should (equal (nth 2 (goblins-test--pin "gribble")) second))
+      ;; With the stop notification missed, the pin fails hard instead of
+      ;; reaching the next namesake.
+      (remove-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
+      (goblins-test--stop-goblin source second)
+      (goblins-test--start-goblin source "gribble")
+      (with-current-buffer notes
+        (should-not (ignore-errors (eq 0 (process-file "sh" nil nil nil "-c"
+                                                       "echo leaked > /tmp/leak")))))
+      (should (equal (goblins-test--in directory "gribble" "cat /tmp/leak 2>/dev/null") ""))
+      (add-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
+      (with-current-buffer source (goblins--render))
+      (goblins-test--wait (lambda () (not (buffer-live-p notes)))))
+    ;; Pointing goblins.el at another daemon does not move existing connections.
+    (goblins-test--in directory "gribble" "echo first-daemon > /tmp/which")
+    (goblins-test--in other "gribble" "echo other-daemon > /tmp/which")
+    (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/which")
+      (let ((goblins-state-directory other))
+        (revert-buffer t t)
+        (should (equal (buffer-string) "first-daemon\n"))))
+    (if ghostel-used "ok ghostel" "ok")))
+
+(defvar goblins-test--backtrace nil)
+
+(defun goblins-test-tramp-live ()
+  "Run the TRAMP scenario, write ok or the failure to the result file, exit."
+  (let ((result (getenv "GOBLINS_TEST_RESULT")))
+    (condition-case err
+        (progn
+          (setq server-name (getenv "GOBLINS_TEST_SERVER_NAME")
+                server-socket-dir (getenv "GOBLINS_TEST_SERVER_DIR"))
+          (server-start)
+          (write-region (handler-bind ((error (lambda (_) (setq goblins-test--backtrace
+                                                                (backtrace-to-string)))))
+                          (goblins-test--tramp-scenario))
+                        nil result))
+      (error (write-region (format "%S\n%s\n%s" err goblins-test--backtrace
+                                   (with-current-buffer (messages-buffer)
+                                     (buffer-substring (max (point-min) (- (point-max) 3000))
+                                                       (point-max))))
+                           nil result)))
+    (kill-emacs 0)))
+
 ;;; goblins-tests.el ends here
