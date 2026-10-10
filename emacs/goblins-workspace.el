@@ -24,6 +24,11 @@
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function goblins-shell "goblins-tramp" (&optional session display source))
+(declare-function goblins-eshell "goblins-tramp" (&optional session display source))
+(declare-function goblins-dired "goblins-tramp" (&optional session display source))
+(defvar ghostel-identity)
+(defvar ghostel--process)
 
 (defcustom goblins-workspace-name "goblins"
   "Name passed to `goblins-workspace-switch-or-create-function'."
@@ -102,12 +107,30 @@ Directories and sessions keep snapshot order inside each group."
 
 ;;;; Rendering
 
+(defun goblins--sidebar-shells (source)
+  "Hash of session ID to the open shells of SOURCE's daemon, by number."
+  (let ((shells (make-hash-table :test #'equal))
+        (directory (buffer-local-value 'goblins--directory source)))
+    (dolist (buffer (buffer-list))
+      (with-current-buffer buffer
+        (when (and goblins--shell-number (equal goblins--directory directory))
+          (push buffer (gethash (alist-get 'session ghostel-identity) shells)))))
+    (maphash (lambda (id buffers)
+               (puthash id (sort buffers (lambda (a b)
+                                           (< (buffer-local-value 'goblins--shell-number a)
+                                              (buffer-local-value 'goblins--shell-number b))))
+                        shells))
+             shells)
+    shells))
+
 (defun goblins--sidebar-key-at (pos)
   "Return the identity of the line at POS, for restoring point."
   (save-excursion
     (goto-char pos)
     (let ((p (line-beginning-position)))
-      (or (and (get-text-property p 'goblins-id)
+      (or (and (get-text-property p 'goblins-terminal)
+               (cons 'terminal (get-text-property p 'goblins-terminal)))
+          (and (get-text-property p 'goblins-id)
                (cons 'id (get-text-property p 'goblins-id)))
           (and (get-text-property p 'goblins-group)
                (cons 'group (get-text-property p 'goblins-group)))))))
@@ -115,7 +138,8 @@ Directories and sessions keep snapshot order inside each group."
 (defun goblins--sidebar-find (key)
   "Return the start of the line identified by KEY, or nil."
   (when key
-    (let ((prop (if (eq (car key) 'id) 'goblins-id 'goblins-group))
+    (let ((prop (pcase (car key)
+                  ('id 'goblins-id) ('terminal 'goblins-terminal) (_ 'goblins-group)))
           (pos (point-min)) found)
       (while (and (not found) (setq pos (next-single-property-change pos prop)))
         (when (equal (get-text-property pos prop) (cdr key))
@@ -143,7 +167,21 @@ Return non-nil unless KEY is in COLLAPSED."
     (insert text)
     (not folded)))
 
-(defun goblins--sidebar-insert-tree (tree depth group-key permissions)
+(defun goblins--sidebar-insert-shell (shell depth id group-key)
+  "Insert the line of SHELL, a terminal inside goblin ID, at DEPTH."
+  (let ((start (point))
+        (number (buffer-local-value 'goblins--shell-number shell)))
+    (insert (make-string (* 2 depth) ?\s) "› "
+            (if (process-live-p (buffer-local-value 'ghostel--process shell))
+                (format "shell%s" (if (> number 1) (format " %d" number) ""))
+              (propertize (format "shell%s (exited)" (if (> number 1) (format " %d" number) ""))
+                          'face 'goblins-dim))
+            "\n")
+    (add-text-properties start (point) (list 'goblins-terminal shell 'goblins-parent id
+                                             'goblins-in-group group-key))))
+
+(defun goblins--sidebar-insert-tree (tree depth group-key permissions shells)
+  "Insert the line of TREE's goblin, its SHELLS' lines, then its children."
   (let* ((session (car tree))
          (id (plist-get session :id))
          (pending (goblins--sidebar-pending id permissions))
@@ -161,8 +199,10 @@ Return non-nil unless KEY is in COLLAPSED."
     (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
     (when (> pending 0)
       (put-text-property start (point) 'goblins-pending t))
+    (dolist (shell (gethash id shells))
+      (goblins--sidebar-insert-shell shell (1+ depth) id group-key))
     (dolist (child (cdr tree))
-      (goblins--sidebar-insert-tree child (1+ depth) group-key permissions))))
+      (goblins--sidebar-insert-tree child (1+ depth) group-key permissions shells))))
 
 (defun goblins--sidebar-finished-p (session)
   (member (plist-get session :state) '("stopped" "failed")))
@@ -197,6 +237,7 @@ The text is built apart from the sidebar so a failure cannot blank it."
                                      "No server; g to reconnect")))
                    'face 'goblins-dim))
         (let* ((sessions (goblins--sidebar-sessions snapshot))
+               (shells (goblins--sidebar-shells source))
                (permissions (append (plist-get snapshot :permissions) nil))
                (count (lambda (members)
                         (apply #'+ (mapcar (lambda (s) (goblins--sidebar-pending
@@ -222,7 +263,7 @@ The text is built apart from the sidebar so a failure cannot blank it."
                              collapsed nil (funcall count (cdr dir)))
                         (dolist (tree (goblins--agent-forest (cdr dir)))
                           (goblins--sidebar-insert-tree
-                           tree (1+ (/ indent 2)) gkey permissions)))))))))))
+                           tree (1+ (/ indent 2)) gkey permissions shells)))))))))))
       (buffer-string))))
 
 (defun goblins--sidebar-render ()
@@ -255,6 +296,14 @@ The text is built apart from the sidebar so a failure cannot blank it."
         (condition-case err (goblins--sidebar-render)
           (error (message "goblins sidebar: %s" (error-message-string err))))))))
 
+(defun goblins--sidebar-render-all ()
+  "Redraw every sidebar, after goblin shells opened, exited or closed."
+  (dolist (buffer (buffer-list))
+    (when (buffer-local-value 'goblins--sidebar-source buffer)
+      (with-current-buffer buffer
+        (condition-case err (goblins--sidebar-render)
+          (error (message "goblins sidebar: %s" (error-message-string err))))))))
+
 (defun goblins--sidebar-after-snapshot ()
   (goblins--sidebar-render-for (current-buffer)))
 (add-hook 'goblins-snapshot-hook #'goblins--sidebar-after-snapshot)
@@ -265,7 +314,7 @@ The text is built apart from the sidebar so a failure cannot blank it."
   (get-buffer-window goblins--sidebar-buffer-name))
 
 (defun goblins--sidebar-update-active ()
-  "Mark the goblin whose terminal is shown in the main window."
+  "Mark the goblin or shell whose terminal is shown in the main window."
   (when (buffer-live-p (get-buffer goblins--sidebar-buffer-name))
     (with-current-buffer goblins--sidebar-buffer-name
       (when goblins--sidebar-active-overlay
@@ -276,7 +325,9 @@ The text is built apart from the sidebar so a failure cannot blank it."
              (id (if key
                      (nth 2 key)
                    (and shown (buffer-local-value 'goblins--view-session shown))))
-             (pos (and id (goblins--sidebar-find (cons 'id id)))))
+             (pos (if (and shown (buffer-local-value 'goblins--shell-number shown))
+                      (goblins--sidebar-find (cons 'terminal shown))
+                    (and id (goblins--sidebar-find (cons 'id id))))))
         (when pos
           (setq goblins--sidebar-active-overlay
                 (make-overlay pos (save-excursion (goto-char pos)
@@ -291,10 +342,11 @@ The text is built apart from the sidebar so a failure cannot blank it."
 ;;;; Commands
 
 (defun goblins--sidebar-lines (direction)
-  "Move to the next line in DIRECTION (1 or -1) that is a group or a goblin."
+  "Move to the next line in DIRECTION (1 or -1): a group, a goblin or a shell."
   (let ((start (point)) found)
     (while (and (not found) (zerop (forward-line direction)))
       (when (or (get-text-property (point) 'goblins-id)
+                (get-text-property (point) 'goblins-terminal)
                 (get-text-property (point) 'goblins-group))
         (setq found t)))
     (if found
@@ -340,9 +392,12 @@ The text is built apart from the sidebar so a failure cannot blank it."
 
 (defun goblins-sidebar-open ()
   "Show the goblin at point in the main window, attaching if necessary.
-On a raid heading open its page; on a directory heading fold or unfold it."
+On a shell show it; on a raid heading open its page; on a directory heading
+fold or unfold it."
   (interactive)
   (cond
+   ((get-text-property (line-beginning-position) 'goblins-terminal)
+    (goblins--display-main (get-text-property (line-beginning-position) 'goblins-terminal)))
    ((get-text-property (line-beginning-position) 'goblins-id)
     (goblins-open-session (goblins--sidebar-ensure-source)
                           (get-text-property (line-beginning-position) 'goblins-id)))
@@ -353,8 +408,9 @@ On a raid heading open its page; on a directory heading fold or unfold it."
    (t (goblins-sidebar-toggle))))
 
 (defun goblins--sidebar-goblin-at-point ()
-  "Return (SOURCE . SESSION-ID) for the goblin on this line."
-  (let ((id (get-text-property (line-beginning-position) 'goblins-id)))
+  "Return (SOURCE . SESSION-ID) for the goblin on this line, or of its shell."
+  (let ((id (or (get-text-property (line-beginning-position) 'goblins-id)
+                (get-text-property (line-beginning-position) 'goblins-parent))))
     (unless id (user-error "Select a goblin"))
     (cons (goblins--sidebar-ensure-source) id)))
 
@@ -401,7 +457,8 @@ On a raid heading, invite a goblin you choose into that raid."
 
 (defun goblins--sidebar-directory-at-point ()
   "Return the project directory of the goblin or directory group on this line."
-  (let* ((props (list (get-text-property (line-beginning-position) 'goblins-id)
+  (let* ((props (list (or (get-text-property (line-beginning-position) 'goblins-id)
+                          (get-text-property (line-beginning-position) 'goblins-parent))
                       (get-text-property (line-beginning-position) 'goblins-group)))
          (id (car props))
          (group (or (cadr props)
@@ -475,13 +532,29 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
                                   (and children (list :kill_children t))))
       (message "Stopping %s" (goblins--session-path session)))))
 
-(defun goblins-sidebar-shell ()
-  "Open a shell inside the goblin at point."
-  (interactive)
+(defun goblins--sidebar-open-in (open)
+  "Call OPEN with the session record, display function and status buffer of
+the goblin at point (or of its shell)."
   (let* ((goblin (goblins--sidebar-goblin-at-point))
          (session (goblins--snapshot-session
                    (buffer-local-value 'goblins--snapshot (car goblin)) (cdr goblin))))
-    (goblins-shell session #'goblins--display-main)))
+    (unless session (user-error "The daemon no longer retains this goblin"))
+    (funcall open session #'goblins--display-main (car goblin))))
+
+(defun goblins-sidebar-terminal ()
+  "Open a new shell terminal inside the goblin at point; it is listed below it."
+  (interactive)
+  (goblins--sidebar-open-in #'goblins-shell))
+
+(defun goblins-sidebar-eshell ()
+  "Open Eshell inside the goblin at point."
+  (interactive)
+  (goblins--sidebar-open-in #'goblins-eshell))
+
+(defun goblins-sidebar-dired ()
+  "Open Dired inside the goblin at point, in its working directory."
+  (interactive)
+  (goblins--sidebar-open-in #'goblins-dired))
 
 (defun goblins-sidebar-kill-execs ()
   "Kill every shell and command running inside the goblin at point."
@@ -508,11 +581,13 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
    '(("Move" ("j / k" . "next / previous line")
              ("n" . "next goblin waiting for a decision")
              ("TAB" . "fold the group"))
-     ("Goblin" ("RET" . "show or attach its terminal")
+     ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it")
                ("p" . "permission requests")
                ("I" . "info")
                ("K" . "stop it (and its children)")
-               ("S" . "a shell inside it")
+               ("t" . "a shell terminal inside it, listed below it")
+               ("e" . "Eshell inside it")
+               ("d" . "Dired inside it")
                ("X" . "kill its shells and commands"))
      ("Raids" ("r" . "create a raid around the goblin, or join one")
               ("i" . "invite the goblin to a raid; on a raid, invite into it")
@@ -555,7 +630,8 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
                        ("r" . goblins-raid) ("?" . goblins-sidebar-help)
                        ("n" . goblins-sidebar-next-pending) ("K" . goblins-sidebar-stop)
                        ("D" . goblins-sidebar-destroy-raid)
-                       ("S" . goblins-sidebar-shell) ("X" . goblins-sidebar-kill-execs)
+                       ("t" . goblins-sidebar-terminal) ("e" . goblins-sidebar-eshell)
+                       ("d" . goblins-sidebar-dired) ("X" . goblins-sidebar-kill-execs)
                        ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
                        ("g" . goblins-sidebar-refresh)
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
@@ -578,7 +654,9 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
     (kbd "n") #'goblins-sidebar-next-pending
     (kbd "K") #'goblins-sidebar-stop
     (kbd "D") #'goblins-sidebar-destroy-raid
-    (kbd "S") #'goblins-sidebar-shell
+    (kbd "t") #'goblins-sidebar-terminal
+    (kbd "e") #'goblins-sidebar-eshell
+    (kbd "d") #'goblins-sidebar-dired
     (kbd "X") #'goblins-sidebar-kill-execs
     (kbd "TAB") #'goblins-sidebar-toggle
     (kbd "<tab>") #'goblins-sidebar-toggle

@@ -123,18 +123,24 @@ raid and then by project directory, each with its type, beside a main window.
 The main window shows the last used goblin terminal, or the status buffer when
 there is none.  Stopped and failed goblins are hidden (the status buffer still
 lists them; set =goblins-sidebar-show-finished= to show them).  =!N= marks
-pending permission requests, on goblins and on the headings above them.  Folds
-last for the Emacs session.
+pending permission requests, on goblins and on the headings above them.  Shell
+terminals opened with =t= are listed below their goblin (=› shell=, =› shell
+2=, marked =(exited)= once their shell ends) until you kill their buffer;
+Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 
 | Key (also Evil motion state) | Action                                                   |
 |------------------------------+----------------------------------------------------------|
-| =j= / =k=                    | next / previous goblin or group                          |
+| =j= / =k=                    | next / previous goblin, shell or group                   |
 | =n=                          | next goblin waiting for a decision (unfolds groups)      |
-| =RET=                        | goblin: show or attach; raid: open its page; directory: fold |
+| =RET=                        | goblin: show or attach; shell: show it; raid: open its page; directory: fold |
 | =TAB=                        | fold the group                                           |
 | =p=                          | permissions of the goblin: current request, history      |
 | =I=                          | info: everything the daemon knows about the goblin       |
 | =K=                          | stop the goblin (and its running descendants)            |
+| =t=                          | a new shell terminal inside the goblin, listed below it  |
+| =e=                          | Eshell inside the goblin, in its directory               |
+| =d=                          | Dired inside the goblin, in its directory                |
+| =X=                          | kill the goblin's shells and commands                    |
 | =r=                          | create a raid around the goblin at point or in the main window, or add it to one, and open the raid page |
 | =i=                          | invite the goblin into a raid you pick; on a raid, invite a goblin into it |
 | =D=                          | on a raid: dissolve it (its goblins keep running)        |
@@ -197,8 +203,8 @@ runs; a minor mode composes with Ghostel and with evil-ghostel (also a minor
 mode), and =C-c= is one of Ghostel's =ghostel-keymap-exceptions=, so =C-c= keys
 reach Emacs in every input mode.
 
-Also under =C-c g=: =S= opens a shell inside the goblin and =f= visits a file
-inside it.
+Also under =C-c g=: =t= opens a shell terminal inside the goblin, =e= Eshell,
+=d= Dired, and =f= visits a file inside it.
 
 Agent terminals draw no-break spaces without an underline, which fixes
 Claude's thinking indicator; set =goblins-remove-nobreak-underline= to nil to
@@ -240,9 +246,12 @@ the daemon of =goblins-state-directory=.
 - *Shells.* =M-x goblins-shell= opens the goblin's own =$SHELL=, with its dev
   shell, in a Ghostel buffer next to the agent's terminal (in a goblin terminal
   or =/goblins:= buffer it uses that goblin; with a prefix argument it asks). Shells
-  and goblin terminals track their directory (OSC 7) as =/goblins:= paths. In
-  the sidebar, =S= opens a shell in the goblin at point and =X= kills its shells
-  and commands; goblins show =· 1 shell · tramp= while they are in use.
+  and goblin terminals track their directory (OSC 7) as =/goblins:= paths.
+  =M-x goblins-eshell= and =M-x goblins-dired= open Eshell (one per goblin,
+  reused) and Dired in the goblin's working directory, the same way. All three
+  pin the goblin before any TRAMP use. In the sidebar, =t=, =e= and =d= open
+  them for the goblin at point and =X= kills its shells and commands; goblins
+  show =· 1 shell · tramp= while they are in use.
 - *The sandbox's =EDITOR=.* With =editor.emacs.enable= on =mkGoblins=,
   =goblins-editor= inside a sandbox opens files here through emacsclient,
   always as =/goblins:= paths; it needs a running Emacs server

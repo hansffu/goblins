@@ -9,7 +9,7 @@
 ;;
 ;;   C-x C-f /goblins:gribble:/tmp/diagram.svg
 ;;   C-x C-f /goblins:gribble.snaga:/workspace/      (a child's tree path)
-;;   M-x goblins-shell
+;;   M-x goblins-shell     (a Ghostel terminal; also goblins-eshell, goblins-dired)
 ;;
 ;; The method runs `goblins exec' as its login program, so dired, eshell,
 ;; compile, grep, magit and eglot run inside the sandbox.  The host part is an
@@ -32,6 +32,8 @@
 
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (declare-function goblin-mode "goblins-terminal" (&optional arg))
+(declare-function goblins--sidebar-render-all "goblins-workspace" ())
+(declare-function eshell-mode "esh-mode" ())
 (declare-function desktop-save-buffer-p "desktop" (filename bufname mode &rest rest))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
@@ -272,7 +274,7 @@ the user's own mode hooks still run."
     (apply function args)))
 (advice-add 'hack-local-variables :around #'goblins-tramp--hack-local-variables)
 
-;;; Shells
+;;; Shells, Eshell and Dired
 
 (defun goblins-tramp--choose-session (source prompt)
   "Choose a running session of SOURCE's snapshot with PROMPT."
@@ -285,47 +287,106 @@ the user's own mode hooks still run."
                      "No running goblins")))
 
 (defun goblins-tramp--current-session (source)
-  "The session of the current goblin terminal or /goblins: buffer, if any."
-  (let ((sessions (append (plist-get (buffer-local-value 'goblins--snapshot source)
-                                     :sessions)
-                          nil))
-        (id (alist-get 'session (bound-and-true-p ghostel-identity)))
-        (vec (goblins-tramp--vec default-directory)))
+  "The session of the current goblin terminal or /goblins: buffer, if any.
+A /goblins: buffer's goblin is its host's pin, when SOURCE's daemon has it."
+  (let* ((sessions (append (plist-get (buffer-local-value 'goblins--snapshot source)
+                                      :sessions)
+                           nil))
+         (find (lambda (id) (and id (cl-find id sessions :key (lambda (s) (plist-get s :id))
+                                             :test #'equal))))
+         (id (alist-get 'session (bound-and-true-p ghostel-identity)))
+         (vec (goblins-tramp--vec default-directory))
+         (pin (and vec (goblins-pin (tramp-file-name-host vec)))))
     (cl-find-if #'goblins-tramp--running-p
-                (list (and id (cl-find id sessions :key (lambda (s) (plist-get s :id))
-                                       :test #'equal))
-                      (and vec (ignore-errors
-                                 (goblins-tramp--match (tramp-file-name-host vec) sessions)))))))
+                (list (funcall find id)
+                      (and pin (equal (car pin) (buffer-local-value 'goblins--directory source))
+                           (funcall find (nth 2 pin)))
+                      (and vec (not pin)
+                           (ignore-errors
+                             (goblins-tramp--match (tramp-file-name-host vec) sessions)))))))
+
+(defun goblins-tramp--goblin (source session prompt)
+  "Return (SOURCE . SESSION), reading what is missing, for a running goblin.
+Interactively the goblin is that of the current goblin terminal or /goblins:
+buffer, else (or with a prefix argument) one chosen with PROMPT."
+  (let* ((source (or source
+                     (goblins--connect (and (local-variable-p 'goblins--directory)
+                                            goblins--directory))))
+         (session (or session
+                      (and (not current-prefix-arg) (goblins-tramp--current-session source))
+                      (goblins-tramp--choose-session source prompt))))
+    (unless (goblins-tramp--running-p session)
+      (user-error "%s is not running" (goblins--session-path session)))
+    (cons source session)))
+
+(defun goblins-tramp--session-host (source session)
+  "The /goblins: host of SOURCE's SESSION, pinned to it now.
+Its tree path, or its ID when that path is pinned to another goblin.  Pinned
+before any TRAMP use, so it never reaches a later goblin with the same name."
+  (goblins--pin-or-id (goblins-tramp-host (plist-get session :path))
+                      (buffer-local-value 'goblins--directory source)
+                      (buffer-local-value 'goblins--instance source)
+                      (plist-get session :id)))
+
+(defun goblins-tramp--session-directory (source session)
+  "SESSION's working directory as a pinned /goblins: directory name."
+  (let ((cwd (plist-get session :cwd)))
+    (format "/%s:%s:%s" goblins-tramp-method (goblins-tramp--session-host source session)
+            (file-name-as-directory
+             (if (and (stringp cwd) (not (string-empty-p cwd))) cwd "/workspace")))))
+
+(defun goblins-tramp--shell-number (directory id)
+  "The lowest number no open shell of goblin ID of DIRECTORY's daemon has."
+  (let ((taken (delq nil (mapcar (lambda (buffer)
+                                   (with-current-buffer buffer
+                                     (and goblins--shell-number
+                                          (equal goblins--directory directory)
+                                          (equal (alist-get 'session ghostel-identity) id)
+                                          goblins--shell-number)))
+                                 (buffer-list))))
+        (n 1))
+    (while (memq n taken) (setq n (1+ n)))
+    n))
+
+(defun goblins-tramp--shells-changed ()
+  "Redraw the sidebars, which list each goblin's shells."
+  (when (fboundp 'goblins--sidebar-render-all)
+    (goblins--sidebar-render-all)))
+
+(defun goblins-tramp--shell-closed ()
+  "Take this shell out of the sidebar as it is killed."
+  (setq goblins--shell-number nil)
+  (goblins-tramp--shells-changed))
+
+(defun goblins-tramp--shell-exited (&rest _)
+  (goblins-tramp--shells-changed))
 
 ;;;###autoload
-(defun goblins-shell (&optional session display)
+(defun goblins-shell (&optional session display source)
   "Open a shell inside a running goblin, in a new Ghostel buffer.
 It runs the sandbox's own $SHELL with its dev shell environment, alongside
-the agent's terminal.  SESSION is a session record; interactively, the
-goblin of the current terminal or /goblins: buffer, else (or with a prefix
-argument) one you choose.  DISPLAY, default `pop-to-buffer', shows the
-buffer."
+the agent's terminal, and the sidebar lists it under its goblin.  SESSION is
+a session record of SOURCE's daemon, by default that of
+`goblins-state-directory'; interactively, the goblin of the current terminal
+or /goblins: buffer, else (or with a prefix argument) one you choose.
+DISPLAY, default `goblins--display-main', shows the buffer."
   (interactive)
   (goblins--require-ghostel)
-  (let* ((source (goblins--connect))
-         (session (or session
-                      (and (not current-prefix-arg)
-                           (goblins-tramp--current-session source))
-                      (goblins-tramp--choose-session source "Shell in goblin: ")))
+  (let* ((goblin (goblins-tramp--goblin source session "Shell in goblin: "))
+         (source (car goblin))
+         (session (cdr goblin))
          (directory (buffer-local-value 'goblins--directory source))
          (instance (buffer-local-value 'goblins--instance source))
          (id (plist-get session :id))
-         ;; Pinned now, before any TRAMP use: the shell's directory must never
-         ;; reach a later goblin with the same name.
-         (host (goblins--pin-or-id (goblins-tramp-host (plist-get session :path))
-                                   directory instance id))
+         (host (goblins-tramp--session-host source session))
+         (number (goblins-tramp--shell-number directory id))
          (buffer (generate-new-buffer (format "*Goblin shell: %s*" (plist-get session :path)))))
     (condition-case err
         (progn
           ;; Spawn from a local directory: Ghostel would otherwise run the
           ;; client itself through TRAMP.
           (with-current-buffer buffer (setq default-directory (expand-file-name "~/")))
-          (funcall (or display #'pop-to-buffer) buffer)
+          (funcall (or display #'goblins--display-main) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
             (ghostel-exec buffer goblins-executable
                           (list "--state-dir" directory "exec" "-t" "--instance" instance
@@ -334,11 +395,56 @@ buffer."
                             (directory . ,directory) (host . ,host))))
           (with-current-buffer buffer
             (setq-local goblins--directory directory)
+            (setq-local goblins--shell-number number)
+            (add-hook 'kill-buffer-hook #'goblins-tramp--shell-closed nil t)
+            (add-hook 'ghostel-exit-functions #'goblins-tramp--shell-exited nil t)
             (setq default-directory (format "/%s:%s:/" goblins-tramp-method host)))
+          (goblins-tramp--shells-changed)
           buffer)
       (error
        (when (buffer-live-p buffer) (kill-buffer buffer))
        (signal (car err) (cdr err))))))
+
+(defvar-local goblins-tramp--eshell-goblin nil
+  "(DIRECTORY SESSION-ID) of the goblin this Eshell buffer was opened in.")
+
+;;;###autoload
+(defun goblins-eshell (&optional session display source)
+  "Open Eshell inside a running goblin, in its working directory.
+External commands run in the sandbox over /goblins: TRAMP.  The goblin's
+Eshell buffer is reused; it is killed when the goblin stops.  SESSION,
+DISPLAY and SOURCE are as for `goblins-shell'."
+  (interactive)
+  (require 'eshell)
+  (let* ((goblin (goblins-tramp--goblin source session "Eshell in goblin: "))
+         (source (car goblin))
+         (session (cdr goblin))
+         (key (list (buffer-local-value 'goblins--directory source) (plist-get session :id)))
+         (directory (goblins-tramp--session-directory source session))
+         (buffer (or (cl-find key (buffer-list) :test #'equal
+                              :key (lambda (b) (buffer-local-value 'goblins-tramp--eshell-goblin b)))
+                     (let ((buffer (generate-new-buffer
+                                    (format "*Goblin eshell: %s*" (plist-get session :path)))))
+                       (condition-case err
+                           (with-current-buffer buffer
+                             (setq default-directory directory)
+                             (eshell-mode)
+                             (setq goblins-tramp--eshell-goblin key)
+                             buffer)
+                         (error (kill-buffer buffer)
+                                (signal (car err) (cdr err))))))))
+    (funcall (or display #'goblins--display-main) buffer)
+    buffer))
+
+;;;###autoload
+(defun goblins-dired (&optional session display source)
+  "Open Dired inside a running goblin, in its working directory, over TRAMP.
+SESSION, DISPLAY and SOURCE are as for `goblins-shell'."
+  (interactive)
+  (let* ((goblin (goblins-tramp--goblin source session "Dired in goblin: "))
+         (buffer (dired-noselect (goblins-tramp--session-directory (car goblin) (cdr goblin)))))
+    (funcall (or display #'goblins--display-main) buffer)
+    buffer))
 
 (provide 'goblins-tramp)
 ;;; goblins-tramp.el ends here

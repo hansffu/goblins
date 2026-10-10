@@ -51,6 +51,8 @@ Set this to the directory passed to `goblins --state-dir'."
 (defvar goblins--terminal-buffers (make-hash-table :test #'equal)
   "Emacs-only mapping from (directory instance session) to Ghostel buffers.")
 (defvar-local goblins--session-key nil)
+(defvar-local goblins--shell-number nil
+  "This goblin shell's number among its goblin's open shells, from 1.")
 (defvar goblins-run-history nil)
 
 (defcustom goblins-reconnect-delays '(1 2 5 10 30)
@@ -1273,6 +1275,8 @@ Unlike `goblins-status' this never displays the buffer."
 ;; plain autoload form, not a cookie, so it works without generated autoloads.
 (autoload 'goblins-workspace "goblins-workspace" nil t)
 (autoload 'goblins-shell "goblins-tramp" nil t)
+(autoload 'goblins-eshell "goblins-tramp" nil t)
+(autoload 'goblins-dired "goblins-tramp" nil t)
 
 ;;;###autoload
 (defun goblins-status (&optional directory)

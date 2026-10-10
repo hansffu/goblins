@@ -1848,6 +1848,125 @@
           (should (desktop-save-buffer-p nil (buffer-name) 'dired-mode)))
       (kill-buffer))))
 
+;;; Shells, Eshell and Dired
+
+(defvar ghostel--process)
+
+(defun goblins-test--shell (id number &optional process)
+  "A buffer like goblin ID's open shell NUMBER of the test daemon, running PROCESS."
+  (let ((buffer (generate-new-buffer " *goblins test shell*")))
+    (with-current-buffer buffer
+      (setq-local ghostel-identity `((kind . goblins-shell) (session . ,id)
+                                     (instance . "daemon-a")))
+      (setq-local ghostel--process process)
+      (setq-local goblins--directory "/tmp/goblins-test")
+      (setq-local goblins--shell-number number)
+      (add-hook 'kill-buffer-hook #'goblins-tramp--shell-closed nil t))
+    buffer))
+
+(ert-deftest goblins-sidebar-lists-shells-below-their-goblin ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
+                               (goblins-test--session "session-b" :cwd "/p" :parent "session-a"))
+    (let* ((process (start-process "goblins-test-shell" nil "sleep" "60"))
+           (first (goblins-test--shell "session-a" 1 process))
+           (second (goblins-test--shell "session-a" 2))
+           (elsewhere (goblins-test--shell "session-a" 3 process))
+           shown)
+      (unwind-protect
+          (progn
+            ;; Another daemon's shell with the same session ID is not listed.
+            (with-current-buffer elsewhere (setq goblins--directory "/elsewhere"))
+            (goblins--sidebar-render-all)
+            (should (string-match-p
+                     (concat "▾ /p/ !1\n  . session-a (shell) !1\n    › shell\n"
+                             "    › shell 2 (exited)\n    . session-b (shell)\n\\'")
+                     (replace-regexp-in-string "[●○◌✗]" "." (buffer-string))))
+            (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
+            ;; Movement stops on shells; the goblin's commands apply there too.
+            (goto-char (point-min))
+            (goblins-sidebar-next 2)
+            (should (eq (get-text-property (point) 'goblins-terminal) first))
+            (should (equal (goblins--sidebar-goblin-at-point) (cons source "session-a")))
+            (should (equal (goblins--sidebar-directory-at-point) "/p"))
+            (cl-letf (((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+              (goblins-sidebar-open))
+            (should (eq shown first))
+            ;; Point stays on its shell; a killed shell leaves the sidebar.
+            (goblins--sidebar-render)
+            (should (eq (get-text-property (point) 'goblins-terminal) first))
+            (kill-buffer second)
+            (should-not (string-match-p "shell 2" (buffer-string)))
+            (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 2)))
+        (delete-process process)
+        (mapc #'kill-buffer (seq-filter #'buffer-live-p (list first second elsewhere)))))))
+
+(ert-deftest goblins-t-e-and-d-open-a-terminal-eshell-and-dired ()
+  (with-temp-buffer
+    (goblins-sidebar-mode)
+    (dolist (binding '(("t" . goblins-sidebar-terminal) ("e" . goblins-sidebar-eshell)
+                       ("d" . goblins-sidebar-dired)))
+      (should (eq (key-binding (kbd (car binding))) (cdr binding))))
+    (should (memq (key-binding (kbd "S")) '(nil undefined))))
+  (with-temp-buffer
+    (goblin-mode 1)
+    (dolist (binding '(("C-c g t" . goblins-shell) ("C-c g e" . goblins-eshell)
+                       ("C-c g d" . goblins-dired)))
+      (should (eq (key-binding (kbd (car binding))) (cdr binding)))))
+  ;; The sidebar passes the goblin at point and its own daemon's status buffer.
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p"))
+    (let (calls)
+      (cl-letf (((symbol-function 'goblins-shell) (lambda (&rest args) (push (cons 't args) calls)))
+                ((symbol-function 'goblins-eshell) (lambda (&rest args) (push (cons 'e args) calls)))
+                ((symbol-function 'goblins-dired) (lambda (&rest args) (push (cons 'd args) calls))))
+        (goto-char (point-min))
+        (should-error (goblins-sidebar-dired) :type 'user-error)
+        (goblins-sidebar-next)
+        (goblins-sidebar-terminal)
+        (goblins-sidebar-eshell)
+        (goblins-sidebar-dired))
+      (should (equal (mapcar #'car calls) '(d e t)))
+      (dolist (call calls)
+        (should (equal (plist-get (nth 1 call) :id) "session-a"))
+        (should (eq (nth 2 call) #'goblins--display-main))
+        (should (eq (nth 3 call) source))))))
+
+(ert-deftest goblins-eshell-and-dired-open-in-the-goblins-pinned-directory ()
+  (require 'eshell)
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :path "gribble")
+                               (goblins-test--session "session-b" :path "snaga")
+                               (goblins-test--session "session-c" :path "gone" :state "stopped"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (snapshot (buffer-local-value 'goblins--snapshot source))
+          eshell listed shown)
+      (cl-letf (((symbol-function 'eshell-mode) #'ignore)
+                ((symbol-function 'dired-noselect)
+                 (lambda (directory) (push directory listed) (current-buffer)))
+                ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+        (unwind-protect
+            (progn
+              ;; Eshell starts in the goblin's directory, pinned to it, and is reused.
+              (setq eshell (goblins-eshell (goblins--snapshot-session snapshot "session-a")
+                                           nil source))
+              (should (eq shown eshell))
+              (should (equal (buffer-local-value 'default-directory eshell)
+                             "/goblins:gribble:/p/one/"))
+              (should (equal (goblins-pin "gribble") '("/tmp/goblins-test" "daemon-a" "session-a")))
+              (should (eq (goblins-eshell (goblins--snapshot-session snapshot "session-a") nil source)
+                          eshell))
+              ;; Dired uses /workspace without a known directory, and the
+              ;; session ID when the name is pinned to another goblin.
+              (puthash "snaga" '("/tmp/goblins-test" "daemon-a" "old") goblins--pins)
+              (goblins-dired (goblins--snapshot-session snapshot "session-b") nil source)
+              (should (equal (car listed) "/goblins:session-b:/workspace/"))
+              ;; From a /goblins: buffer, its pinned goblin.
+              (with-temp-buffer
+                (setq default-directory "/goblins:gribble:/tmp/")
+                (goblins-dired nil nil source))
+              (should (equal (car listed) "/goblins:gribble:/p/one/"))
+              (should-error (goblins-dired (goblins--snapshot-session snapshot "session-c") nil source)
+                            :type 'user-error))
+          (when (buffer-live-p eshell) (kill-buffer eshell)))))))
+
 (ert-deftest goblins-pins-belong-to-one-goblin ()
   (let ((goblins--pins (make-hash-table :test #'equal)))
     (should (equal (goblins-pin-host "g" "/s" "i" "i-s1") "g"))
@@ -1945,6 +2064,17 @@
     (let ((default-directory tmp))
       (should (equal (string-trim (eshell-command-result "id -u")) "1000"))
       (should (equal (string-trim (eshell-command-result "cat notes.txt")) "hello from emacs")))
+    ;; goblins-eshell and goblins-dired open in the goblin's directory.
+    (let ((session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) first)))
+      (with-current-buffer (goblins-eshell session #'ignore source)
+        (should (equal default-directory "/goblins:gribble:/workspace/"))
+        (goto-char (point-max))
+        (insert "cat /tmp/notes.txt")
+        (eshell-send-input)
+        (goblins-test--wait (lambda () (string-match-p "^hello from emacs$" (buffer-string)))))
+      (with-current-buffer (goblins-dired session #'ignore source)
+        (should (derived-mode-p 'dired-mode))
+        (should (equal default-directory "/goblins:gribble:/workspace/"))))
     ;; Killing a compilation, or deleting a process, leaves nothing behind.
     (let ((default-directory tmp)
           (compilation-ask-about-save nil))
@@ -1999,6 +2129,9 @@
           (goblins-test--wait (lambda () (process-live-p ghostel--process)))
           (ghostel-send-string "echo SHELL-$((6*7))\n")
           (goblins-test--wait (lambda () (string-match-p "SHELL-42" (buffer-string)))))
+        ;; The sidebar lists it under its goblin.
+        (require 'goblins-workspace)
+        (should (equal (gethash first (goblins--sidebar-shells source)) (list shell)))
         (goblins-test--wait (lambda () (eq (plist-get (goblins--snapshot-session
                                                        (buffer-local-value 'goblins--snapshot source)
                                                        first)
