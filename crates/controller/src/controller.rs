@@ -1818,6 +1818,19 @@ impl Controller {
             })
             .collect()
     }
+    /// Read and handle at most one complete frame from `c`.
+    fn service(&mut self, c: &mut Connection) {
+        if let Some(call) = c.read() {
+            match c.exec {
+                Some(exec) => self.exec_input(c, exec, call),
+                None => self.dispatch(c, call),
+            }
+            // Descriptors arrive with their frame's first bytes, possibly
+            // several reads before it completes: they wait until it does,
+            // and those the completed frame did not take are closed.
+            c.fds.clear();
+        }
+    }
     pub fn tick(&mut self) -> Result<()> {
         // Drain human input and native output before checking wake revisions.
         for a in self.sessions.values_mut() {
@@ -2226,16 +2239,7 @@ impl Controller {
                 continue;
             };
             let mut c = self.connections.remove(index);
-            if let Some(call) = c.read() {
-                match c.exec {
-                    Some(exec) => self.exec_input(&mut c, exec, call),
-                    None => self.dispatch(&mut c, call),
-                }
-            }
-            // Descriptors not taken by the frame they came with are closed.
-            if c.waiting.is_none() {
-                c.fds.clear();
-            }
+            self.service(&mut c);
             c.flush();
             if c.dead {
                 self.withdraw(c.id);
@@ -2427,6 +2431,49 @@ mod tests {
     fn launch(key: &str, agent_name: Option<&str>) -> Value {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
+    }
+    #[test]
+    fn exec_descriptors_wait_for_their_whole_request() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results_id(&mut d, "target", vec![]);
+        let (init_daemon, init_sandbox) = goblins_protocol::init::pair().unwrap();
+        d.sessions.get_mut(&id).unwrap().init = Some(init_daemon);
+        let (mut c, mut peer) = connection(Role::Host);
+        peer.write_all(
+            &rpc::encode(&rpc::request(json!(1), "initialize", json!({"api":1}))).unwrap(),
+        )
+        .unwrap();
+        d.service(&mut c);
+        assert!(c.initialized);
+        // A request near the frame limit, split across reads, with the
+        // descriptors attached to its first part only.
+        let argv = vec!["x".repeat(15000)];
+        let frame = rpc::encode(&rpc::request(
+            json!(2),
+            "sessions.exec",
+            json!({"session":"target","argv":argv}),
+        ))
+        .unwrap();
+        let (a, b) = unix::pipe().unwrap();
+        let (cut, rest) = frame.split_at(100);
+        let fds = [a.as_raw_fd(), b.as_raw_fd(), b.as_raw_fd()];
+        goblins_protocol::init::send(peer.as_raw_fd(), cut, &fds).unwrap();
+        d.service(&mut c);
+        assert_eq!(c.fds.len(), 3);
+        assert!(c.exec.is_none());
+        peer.write_all(rest).unwrap();
+        for _ in 0..4 {
+            d.service(&mut c);
+        }
+        assert!(c.exec.is_some(), "{:?}", c.output);
+        let mut buffer = vec![0; goblins_protocol::init::MAX_MESSAGE];
+        let (n, received) =
+            goblins_protocol::init::receive(init_sandbox.as_raw_fd(), &mut buffer, 0).unwrap();
+        assert_eq!(received.len(), 3);
+        assert!(String::from_utf8_lossy(&buffer[..n]).contains(&argv[0]));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn child_configurations_follow_the_selected_parents_list() {
