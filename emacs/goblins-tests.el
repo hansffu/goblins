@@ -2570,6 +2570,17 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (with-current-buffer (dired tmp)
       (goto-char (point-min))
       (should (search-forward "notes.txt" nil t)))
+    ;; Large files travel uncompressed, without a warning about gzip.
+    (goblins-test--in directory "gribble" "seq 1 5000 > /tmp/big.txt")
+    (with-current-buffer (find-file-noselect "/goblins:gribble:/tmp/big.txt")
+      (should (= (count-lines (point-min) (point-max)) 5000))
+      (goto-char (point-max))
+      (insert "end\n")
+      (save-buffer)
+      (kill-buffer))
+    (should (equal (goblins-test--in directory "gribble" "tail -n 1 /tmp/big.txt") "end\n"))
+    (should-not (and (get-buffer "*Warnings*")
+                     (string-match-p "compress" (with-current-buffer "*Warnings*" (buffer-string)))))
     ;; Eshell runs external commands inside the sandbox.
     (require 'eshell)
     (let ((default-directory tmp))

@@ -297,6 +297,15 @@ At once: a deferred close could hit a connection TRAMP is opening again."
   (setq vc-ignore-dir-regexp
         (concat vc-ignore-dir-regexp "\\|" goblins-tramp-vc-ignore-regexp)))
 
+;; Transfers to and from a goblin are local pipes: compressing them only
+;; costs time, and would need gzip or the like inside the sandbox (TRAMP
+;; warns when it finds none).
+(defun goblins-tramp--inline-compress (function vec &rest args)
+  "Around `tramp-get-inline-compress': never compress /goblins: transfers."
+  (unless (equal (tramp-file-name-method vec) goblins-tramp-method)
+    (apply function vec args)))
+(advice-add 'tramp-get-inline-compress :around #'goblins-tramp--inline-compress)
+
 ;; Never persist connection data: a name may mean another goblin next time.
 (defun goblins-tramp--forget-persistent (&rest _)
   (when (hash-table-p tramp-cache-data)
