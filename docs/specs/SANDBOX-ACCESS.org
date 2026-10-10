@@ -1,0 +1,408 @@
+#+title: Sandbox access: shell, TRAMP and editor
+#+date: 2026-10-09
+
+* Status
+
+Implemented on branch =sandbox-access-spec= (2026-10-10). The user agreed the requirements and
+decisions below on 2026-10-09, after inspecting master at =acf476d=. How the open details were settled,
+and where the implementation differs from the first draft, is under [[*Implementation notes][Implementation notes]]; the
+alternatives that were considered are under [[*Decision log][Decision log]].
+
+Review (2026-10-10): five findings were applied:
+- TRAMP connections are pinned to a session identity;
+- cancellation of non-interactive execs is defined;
+- the file-safety policy runs before local variables are processed;
+- the sandbox shell is expanded inside the sandbox;
+- the editor request carries several files with positions.
+
+* Goals
+
+- Open an interactive shell inside a *running* goblin sandbox, from the host CLI and from Emacs.
+- Full TRAMP access from Emacs: =/goblins:<name>:/path= works for find-file, dired, saving, eshell,
+  =shell-command=, compile, grep, magit and eglot.
+- Goblin names complete after =/goblins:=, the way =/ssh:= completes hosts.
+- =EDITOR= and =VISUAL= inside the sandbox open files in the user's Emacs over TRAMP. This covers files that
+  exist only inside the sandbox, such as diagrams in =/tmp=, Claude transcripts and commit messages.
+- A root process inside the sandbox starts the agent and other processes. The same mechanism should later
+  run arbitrary and long-lived processes.
+
+* Non-goals (for now)
+
+- An sshd or any inbound networking. Pasta forwards nothing inbound (=-t/-u/-T/-U none=, =--no-map-gw=), and
+  port grants are rejected (=crates/controller/src/config.rs:320-324=).
+- Detachable shells owned by the daemon, or multiple observers on a terminal ([[file:DAEMON.org][DAEMON.org]] still defers
+  multiplexing).
+- Agents running commands inside their child goblins (=exec= over =request.sock=). The protocol is designed
+  so this is a small follow-up.
+- Managing long-lived processes: naming, logs, restart, port forwarding.
+- Editors other than Emacs.
+
+* Current architecture (relevant facts)
+
+- *Process chain:* daemon worker → =goblins-mount-helper= (=src/main.rs:218-495=) → bwrap → payload.
+  - PID 1 is bwrap's reaper.
+  - In a scope with a shared PID namespace, PID 1 is the scope keeper instead (=src/scope.rs:65-88=).
+- *Payload:* =launch.shell= plus its args. With a dev shell it is wrapped as
+  =sh -c '. /run/goblins/devshell/env.sh; exec "$@"'= (=crates/controller/src/session.rs:766-812=).
+- *Agent terminal:*
+  - The daemon opens a PTY on the host (=worker.rs:131=), and the slave becomes the payload's stdio.
+  - The helper's =pre_exec= calls =setsid= and =TIOCSCTTY= (=src/main.rs:349-356=).
+  - The daemon keeps the master and relays it over =<state>/<id>/terminal.sock= (=terminal.rs=), one attacher at
+    a time.
+  - Emacs runs =goblins attach= inside Ghostel (=emacs/goblins.el:987-1060=).
+- *File descriptors* are whitelisted twice: by the daemon (=session.rs=, =keep=) and by the helper
+  (=src/main.rs=, =keep= plus =close_range(CLOEXEC)=).
+- =unix::send_terminal= and =unix::receive_terminal= (SCM_RIGHTS, =crates/controller/src/unix.rs:145-212=)
+  exist but are unused.
+- *Seccomp* returns EPERM inside the sandbox for =setns=, =unshare=, the =mount= family and =ptrace=
+  (=seccomp.rs:25-44=).
+- *Lifecycle:*
+  - When the agent process exits, the daemon calls =stop_tree=, which stops the session and its child goblins
+    (=controller.rs:2105-2127=).
+  - Session records live only in daemon memory, and everything dies with the daemon (PDEATHSIG).
+- *Names:*
+  - Agent names are unique among siblings only. Tree paths look like =gribble/snaga=.
+  - The resolver accepts a tree path, an unambiguous bare name or a session id (=controller.rs:595-690=).
+- *Event log:* =events.jsonl= (=session.rs:386-406=) is a write-only diagnostic log capped at 1 MiB. It is
+  separate from the communications journal (=messaging.rs=), which goblins subscribe to.
+- *Emacs:*
+  - =goblins-run= refuses a remote =default-directory= (=goblins.el:1033=).
+  - Ghostel directory tracking is turned off for sandboxes (=goblins.el:902-910=).
+- *Packages:* the default =allowedPackages= is agent-sandbox's =commonTools=: coreutils, curl, which, git,
+  ripgrep, fd, sed, grep, findutils, diffutils, less, gawk and jq.
+
+* Design
+
+** Overview
+
+#+begin_example
+Emacs/CLI ─host.sock─▶ daemon ─socketpair─▶ goblins-init ─▶ agent, shells, TRAMP sh
+                         │                                        │
+   emacsclient ◀─spawn───┴──────── request.sock ◀── goblins-editor┘
+#+end_example
+
+** =goblins-init=: the root of the goblin's process tree
+
+- Init becomes the payload. It starts the agent as its child, on the agent's terminal, and starts more
+  processes on request.
+- Those processes inherit init's namespaces, seccomp filter, uid and launch environment, including the dev
+  shell. Init runs inside the dev-shell wrapper. It keeps the launch environment and applies per-exec
+  overrides.
+- Init is a *subreaper* (=PR_SET_CHILD_SUBREAPER=) in both modes:
+  - With the goblin's own PID namespace, it is PID 2 under bwrap's reaper.
+  - In a shared-PID scope, it is an ordinary member PID.
+
+  There is one code path. Init adopts orphans, reaps them, and kills its whole subtree on shutdown. With its
+  own PID namespace, the kernel tears down everything once init and the reaper exit. In scopes, the daemon's
+  =kill_member= (=scope.rs:245-293=) remains the backstop.
+- *Controlling terminal:* the helper currently makes the payload the session leader of the agent PTY. With
+  init as the payload, the helper stops calling =TIOCSCTTY=, and init forks the agent with =setsid= plus
+  =TIOCSCTTY= on the PTY instead. The alternative is to hand init the agent PTY as a separate descriptor.
+- *Exit status:* init reports the agent's exit code to the daemon, because the process the daemon watches is
+  now init.
+- *Lifetime:* agent exit ends the sandbox, as today. Init sends SIGHUP to exec'd processes, kills what
+  remains, reports, and exits. The daemon's =stop_tree= and child-goblin rules are unchanged.
+
+** Control channel
+
+- The daemon creates a =socketpair=. One end reaches init through a new explicit helper argument, which is
+  added to both descriptor whitelists, and then through bwrap. Init receives the descriptor number in its
+  argv.
+- No socket file is visible inside the sandbox. A socket in a bind-mounted directory could be replaced or
+  impersonated by the agent, which has the same uid.
+- Init marks the descriptor close-on-exec and sets =PR_SET_DUMPABLE 0=. Without that, the agent could open
+  =/proc/<init>/fd/N= as the same uid. Yama blocks this on this host, but the design must not rely on it.
+- The protocol is framed JSON-RPC as in =crates/protocol=. Stdio and PTY descriptors travel as SCM_RIGHTS,
+  extending =unix::send_terminal=.
+- Messages:
+  - daemon → init: =spawn {argv, cwd, env, tty}= with descriptors, plus =signal= and =kill-all=;
+  - init → daemon: =spawned {pid}=, =exited {pid, status}= and =agent-exited {status}=.
+- Init must never act as a confused deputy. The agent can already spawn anything itself; what matters is
+  that it cannot reach or impersonate this channel.
+
+** =goblins exec=
+
+#+begin_example
+goblins [--state-dir DIR] exec [-t] [-e K=V]... [-w DIR] [--instance I] [--session S] <goblin> [-- cmd [args...]]
+#+end_example
+
+- This is the single primitive behind shells, TRAMP and eshell, and later process management. The path is
+  host CLI → =host.sock= =sessions.exec= → daemon → init.
+- =<goblin>= is a name, a tree path written with =.= or =/=, or a session id, resolved by the existing
+  resolver.
+- *Pinning:* =--instance= and =--session= pin the target, as =goblins attach --instance= already does. If the
+  daemon instance differs, or the session has stopped or doesn't match, the exec fails hard and never
+  falls back to name resolution. TRAMP relies on this (see the TRAMP method section).
+- *No command:* init runs the sandbox's =SHELL=, expanded from its own launch environment. The host's
+  =$SHELL= never crosses into the sandbox, where that path may not exist.
+- Each exec runs in its own session and process group (=setsid= in init).
+- *Without =-t=:* the client creates pipes, or a socketpair per stream, and passes the sandbox ends with
+  SCM_RIGHTS. It relays its own stdio and passes stdout, stderr and the exit code through byte-exactly. This
+  mode is used by TRAMP's direct-async processes, eshell commands and scripts.
+- *With =-t=:*
+  - The client opens a PTY on the host and keeps the master. The slave goes to init, which runs the command
+    with =setsid= plus =TIOCSCTTY= on it.
+  - The client handles SIGWINCH locally with =TIOCSWINSZ=.
+  - The daemon is not in the data path.
+  - When the client exits, the master closes and the process gets SIGHUP, like =docker exec -t= or =ssh -t=.
+- *Cancellation and disconnect,* in both modes:
+  - The client keeps its =host.sock= connection open for the whole life of the exec. When that connection
+    closes for any reason, including the client being killed with SIGKILL (Emacs' =delete-process=), the
+    daemon tells init to cancel the exec.
+  - Cancel means: SIGHUP and SIGTERM to the exec's process group, then SIGKILL to the group after a short
+    grace period.
+  - The client forwards the catchable signals SIGINT, SIGTERM and SIGHUP to the remote process group. For
+    example, =C-c C-c= in a compilation buffer interrupts the remote command.
+  - Closing stdin (as eglot does on shutdown) is passed through as end-of-file. The exec ends when the
+    command exits or the client disconnects.
+  - *Descendants:* cancellation covers the exec's process group. Descendants that leave it via =setsid= or
+    a double fork are adopted by init, but there are no cgroups to attribute them to an exec. They live until
+    "kill all execs" or the sandbox ends. This best-effort limit is intentional.
+- Execs must start fast. Eshell and TRAMP open one exec per external command, and magit can produce hundreds
+  a minute.
+
+** Shell
+
+- =goblins exec -t <goblin>=, with no command, runs the sandbox's =SHELL= with the dev-shell environment.
+  Init expands =SHELL= inside the sandbox.
+- Emacs gets a =goblins-shell= command that opens it in a Ghostel buffer, alongside the agent's terminal. It
+  passes no command. A goblin can have any number of shells.
+
+** TRAMP method =/goblins:=
+
+- *How TRAMP connects:* an inline method runs a host "login program" whose stdin and stdout are a shell
+  inside the target, then drives that shell with shell commands. Nothing extra runs on the remote side.
+- *Method entry:* modelled on tramp-container's docker method (Emacs 31 =tramp-container.el:548=), which
+  runs =docker exec -it ... %h /bin/sh -i=. Ours uses login program =goblins exec= plus =tramp-direct-async=
+  (=/bin/sh -c=).
+  - Whether the connection uses a pipe or a pty is settled by testing.
+- *Host part:* the agent name or tree path, with =.= replacing =/= because TRAMP hosts cannot contain =/=.
+  Examples: =/goblins:gribble:/tmp=, =/goblins:gribble.snaga:/workspace=. Session ids are also accepted.
+  =/goblins:= always means the daemon goblins.el is configured for.
+- *Completion:*
+  - =tramp-set-completion-function= returns the running goblins, like
+    =tramp-container--completion-function=.
+  - The list comes from goblins.el's live subscription state, or from the CLI when goblins.el is not
+    connected.
+  - It must be fast. Completion caching is off.
+- *Remote path:* =tramp-own-remote-path=, so live package grants appear. The method is registered
+  =with-eval-after-load 'tramp=.
+- *Caching:* no persistent cache for the method.
+- *Identity pinning:*
+  - Names are reusable, and =/goblins:= depends on the configured daemon. A file name alone therefore does
+    not identify a sandbox. Every retained path and every operation binds to
+    =(daemon state directory, instance, session ID)=.
+  - On first connect, the method resolves the host name once and stores that triple as a TRAMP connection
+    property.
+  - The method's login arguments carry the pin through =tramp-extra-expand-args=, as the kubernetes method
+    in =tramp-container.el= does. Every connection, including TRAMP's re-connects, async processes,
+    =revert-buffer=, and =compile= run from a buffer's directory, becomes
+    =goblins --state-dir D exec --instance I --session S ...=.
+  - If the session has stopped, or the daemon or instance has changed, the exec fails with an error naming
+    the stopped goblin. It never re-resolves the name. This holds even when Emacs missed the stop
+    notification, or goblins.el was pointed at another daemon.
+- *On session stop:*
+  1. Emacs kills that goblin's =/goblins:= buffers and processes, matched by connection.
+  2. Only then does it flush the connection and release the pin.
+
+  A later visit to =/goblins:gribble:= pins to whichever goblin then has the name, and no surviving buffer
+  can have been bound to the old one. Kill rather than mark read-only, because read-only buffers can still
+  be reverted and still run commands from their directory.
+- */goblins:/ buffers are excluded from desktop restore* (=desktop-files-not-to-save=). A restored buffer
+  would otherwise pin to a new goblin that happens to have the same name.
+- *Emacs integration:*
+  - Ghostel directory tracking in goblin terminals maps OSC 7 reports to =/goblins:<name>:= paths.
+  - =goblins-run='s refusal of remote directories is revisited.
+- *Files visible on both sides* (the host cwd and =rwDirs=/=roDirs=, bound at the same path) are still
+  opened as =/goblins:= paths. Duplicate buffers and TRAMP overhead are accepted costs. In return the agent's
+  view stays consistent, and there is no host-path mapping, so no symlink-escape risk.
+- *Tools:* TRAMP needs =/bin/sh=, which every sandbox has, plus the following. A goblin without them gets a
+  clear "missing tools" error rather than TRAMP's own messages.
+  - coreutils: =ls=, =stat=, =id=, =stty=, =mkdir=, =mv=, =rm=, =cat=, =base64=
+  - sed, grep, findutils and gawk
+- *Copies:* inline only, with no scp. A =goblins cp= out-of-band method (like =dockercp=) is a possible
+  later addition for large files.
+
+** Editor: =goblins editor open= and =goblins-editor=
+
+- *Commands:*
+  - =goblins editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]...= is the in-sandbox client.
+    As with emacsclient, a position applies to the file that follows it.
+  - =/run/goblins/bin/goblins-editor= is an argv[0] alias for =goblins editor open=, a symlink to the client
+    like =goblins-request= (=nix/packages/internal-goblins.nix=). =EDITOR= and =VISUAL= point at the alias,
+    because some programs run =$EDITOR= as a single path without splitting it on spaces.
+  - Relative paths resolve against the caller's cwd.
+- *Blocking:* it blocks by default, because Claude's Ctrl-G prompt editor and =git commit= depend on that.
+  - It completes when *all* files are finished, which is emacsclient's own rule. It exits 0 on success and
+    non-zero when an edit is aborted.
+  - =--no-wait= just shows the files.
+- *Routing:*
+  - =editor.open {files: [{path, line?, column?}, ...], wait}= goes over =request.sock= to the daemon.
+  - The daemon spawns the configured host editor command, without a shell:
+    =emacsclient [-n] -a false [+L[:C]] /goblins:<goblin>:/abs/f1 [+L[:C]] /goblins:<goblin>:/abs/f2 ...=.
+    Lines and columns are validated as positive integers. The file list is bounded, like other request
+    fields.
+  - The =<goblin>= part is the pinned identity the TRAMP method uses, so the opened buffers bind to this
+    session (see the TRAMP method section).
+  - The daemon builds the file name itself and never accepts a prefix from the sandbox. Paths must be
+    absolute and normalized, and are never passed with a leading =-=.
+  - =-a false= makes a missing Emacs server fail fast instead of starting anything.
+  - Emacs's own =server-edit= (=C-x #=, abort) provides the waiting semantics.
+  - The emacsclient exit status is returned to the caller.
+- *Pending requests:* the sandbox request stays open until emacsclient exits, much as =permissions.request=
+  waits today. The spawn is asynchronous, one child per pending edit, and is killed if the request
+  connection closes or the session stops.
+- The daemon accepts =editor.open= only when an editor is configured, via =editor.emacs.enable=.
+
+** Configuration: =editor.emacs.enable= on =mkGoblins=
+
+- This is a global opt-in for every goblin. It lives on =mkGoblins= (=nix/builders/mk-goblins.nix=), next
+  to its daemon-wide =docker= argument. When enabled:
+  - *Sandbox side, every goblin:*
+    - the TRAMP tool set (coreutils, gnused, gnugrep, findutils, gawk) is added to the closure;
+    - =EDITOR=/=VISUAL== =/run/goblins/bin/goblins-editor= is set, and a goblin's own =env= still wins.
+  - *Host side:* the runtime manifest records the host editor command, =emacsclient=.
+- The =editor.<name>= shape leaves room for other editors later. They have not been investigated.
+- When disabled, =/goblins:= TRAMP still connects but reports missing tools clearly, =EDITOR= is unset, and
+  =editor.open= is refused.
+
+** Observability
+
+- Init reports exec start and exit. The daemon keeps the live set in the session record, split into
+  interactive shells (=-t=) and background TRAMP/eshell processes.
+- The workspace sidebar and =goblins status= show it, for example =gribble ● 1 shell · tramp=, with a
+  "kill all execs" action.
+- =events.jsonl= gets =exec-started= and =exec-exited= (argv, cwd, exit code) for =-t= execs only. The flood
+  of non-interactive execs would otherwise hit the 1 MiB cap and crowd out lifecycle events.
+- The agent is not notified, and nothing is posted to the communications journal.
+
+* Security considerations
+
+- *Control channel isolation:* an inherited descriptor, close-on-exec, and init not dumpable.
+- *Shared uid:* exec'd shells run as the same uid as the agent, so the agent can see them and reach their
+  terminals through =/proc=. Protecting the user's shell from the agent is not a goal inside the agent's own
+  sandbox. What matters is that no host descriptor or terminal is exposed. The PTY master stays with the
+  host client.
+- *TRAMP names:* the daemon builds every TRAMP name, so a goblin cannot make Emacs open another goblin's
+  =/goblins:= path or a host path.
+- *Opening agent-written files* is an attack surface:
+  - file-local variables and =eval:=;
+  - mode hooks.
+  - Remote dir-locals are off by default (=enable-remote-dir-locals=).
+  - *The policy must apply before file processing.* =find-file-hook= is too late: =after-find-file= has
+    already run =normal-mode=, which processes local variables and selects the major mode.
+    - goblins.el wraps =hack-local-variables= in =:around= advice. For buffers whose =buffer-file-name= uses
+      the =goblins= method, it binds =enable-local-variables= to =:safe= and =enable-local-eval= to =nil=.
+    - This covers every visit, including those made by emacsclient, which has no per-call hook.
+  - *Residual risk:* the major mode is still chosen from the file name (=auto-mode-alist=), and the user's own
+    mode hooks still run on agent-written content.
+- *Stale names:* every operation is pinned to =(state dir, instance, session ID)= and fails hard on a
+  mismatch. Buffers are killed before the pin is released (see the TRAMP method section).
+
+* Implementation notes
+
+Where the code lives:
+- =crates/client/src/init.rs= :: =goblins-init= (an argv[0] alias of the in-sandbox client).
+- =crates/protocol/src/init.rs=, =editor.rs= :: the init channel's messages and descriptor passing;
+  =editor.open= parameters, argument parsing and path rules.
+- =crates/controller/src/controller/exec.rs=, =editor.rs= :: =sessions.exec=, =sessions.kill_execs= and
+  =editor.open= in the daemon.
+- =crates/controller/src/exec.rs= :: the host =goblins exec= client.
+- =src/main.rs= :: the helper's =--init-control= argument; =session.rs= creates the channel.
+- =nix/builders/mk-goblins.nix= :: =editor.emacs.enable=.
+- =emacs/goblins-tramp.el= :: the method, pinning, release on stop, file safety and =goblins-shell=.
+- Tests: =tests/test_exec.py=, =tests/test_editor.py=, the shared-PID case in =tests/test_scopes.py=,
+  the live =emacs -nw= scenario in =tests/test_emacs.py= (=goblins-test-tramp-live=) and ERT tests.
+
+Differences from the draft:
+- *Control channel framing:* a =SOCK_SEQPACKET= pair with one JSON message per datagram
+  (={"method": ..., "params": ...}=) instead of Content-Length framing. The kernel keeps message
+  boundaries and ties SCM_RIGHTS descriptors to exactly one message.
+- *No =agent-exited= message:* init exits with the agent's status (=128 + signal= when killed), which
+  reaches the daemon through Bubblewrap and the helper as before. Init reports =spawned=, =failed=
+  (=127= for a missing command, =126= otherwise) and =exited=.
+- *Terminals for TRAMP:* =--tty=auto= allocates a terminal only when the client's stdin is one: TRAMP's
+  shell connection gets a PTY, pipe processes (eglot) keep separate, byte-exact streams. Only an explicit
+  =-t= counts and logs as an interactive shell; TRAMP and eshell count as =execs=.
+- *Pins live in goblins.el* (=goblins-tramp--pins=), not in TRAMP's connection properties: TRAMP flushes
+  those when a connection fails, and the next use would then resolve the name anew. Only a release
+  removes a pin.
+- *Goblin terminals are not killed on stop:* the agent's terminal and =goblins-shell= buffers keep
+  their output and move back to the home directory; every other =/goblins:= buffer is killed.
+- *An empty first package generation:* =/run/goblins/packages/current/bin= exists from the start, so
+  TRAMP (which drops missing =PATH= entries) sees later grants.
+
+Open details, settled:
+- Bubblewrap passes the inherited descriptor to the payload, and its PID 1 reaper closes its own copy.
+  The helper and both =keep= lists name it explicitly.
+- Controlling terminal: the helper still calls =setsid= but no longer =TIOCSCTTY=; init starts the agent
+  with =setsid= and =TIOCSCTTY=.
+- =emacsclient= is =editor.emacs.command= (default ="emacsclient"=, found on the daemon's =PATH=) and
+  finds the server from the daemon's environment (=EMACS_SOCKET_NAME=, =XDG_RUNTIME_DIR=).
+- uid 1000 has no =/etc/passwd= entry; TRAMP works with numeric ids.
+- Completion lists running goblins only.
+- =goblins exec <goblin>= with no command does not imply =-t=; =--tty=auto= is the opt-in.
+- The grace period between SIGTERM and SIGKILL is 2 seconds (500 ms when the agent exits).
+- Exec start takes about 20 ms on this host.
+- When a goblin stops, a blocking edit fails with "the goblin has stopped" and its emacsclient is
+  killed. Its buffers, like =--no-wait= views, are killed with the goblin's other =/goblins:= buffers, so
+  none is left on a dead connection. Emacs does not copy the files out.
+- Eglot itself is out of scope for testing. The live test covers what its shutdown relies on: closing a
+  pipe process's stdin ends it.
+
+* Deferred
+
+- Agents running commands inside descendants via =request.sock=. This would use the same rule as
+  =sessions.attach= (=resolve_scoped=) and needs no extra approval, because it grants nothing that attach
+  doesn't.
+- Daemon-owned, detachable terminals and long-lived processes (logs, listing, restart). These would reach
+  services listening inside the sandbox through some port-forward-over-init feature, since inbound
+  forwarding is forbidden.
+- An explicit "keep the sandbox after the agent exits" or "restart the agent in place".
+- =goblins cp= for large file transfers.
+- Editors other than Emacs.
+
+* Testing
+
+- Python integration tests (=tests/=) for:
+  - exec with and without =-t=, exit codes, SIGHUP on client exit;
+  - =goblins exec -t <goblin>= with no command starting the sandbox's =SHELL=, not the host's;
+  - *cancellation:*
+    - SIGKILL of the client leaves no process from the exec's process group;
+    - a forwarded SIGINT reaches the remote command;
+    - closing stdin ends a stdin-driven command;
+  - *pinning:*
+    - =--session= for a stopped session fails, even when a new goblin has the same name;
+    - =--instance= mismatch after a daemon restart fails;
+  - teardown of the init subtree in both PID modes;
+  - control-channel isolation (the agent cannot find or open it);
+  - =editor.open= refused when no editor is configured;
+  - several files with positions passed through in order.
+- A live Emacs test using the existing recipe: an isolated daemon plus =emacs -nw= in a pty. It covers:
+  - =/goblins:= find-file, dired and save;
+  - eshell commands;
+  - completion of goblin names;
+  - =goblins-editor= blocking until =C-x #= on all files;
+  - *cancellation:* killing a compilation and deleting a TRAMP process each leave no remote process
+    behind, and closing a pipe process's stdin (as eglot's shutdown does) ends it;
+  - *pinning:*
+    - after a goblin stops and its name is reused, =revert-buffer= or =compile= from a surviving buffer can't
+      reach the new goblin (buffers are killed);
+    - with the stop notification suppressed, operations fail rather than reach the new goblin;
+    - switching goblins.el to another daemon doesn't redirect existing connections;
+  - *file safety:* the first visit to a =/goblins:= file with an unsafe local variable and an =eval:= line
+    ignores both.
+
+* Decision log
+
+| # | Question | Decision | Rejected alternatives |
+|---+----------+----------+-----------------------|
+| 1 | Who owns an exec'd terminal | The client, with the PTY created on the host | Daemon-owned and detachable (needs multiplexing); a PTY created in the sandbox (init in the data path) |
+| 2 | Sandbox lifetime | Agent exit ends it | Stay up while shells are open (TRAMP would pin sandboxes); an explicit keep (deferred) |
+| 3 | TRAMP host | Name or tree path (=.= separator), ids also accepted; each connection pinned to (state dir, instance, session ID); buffers killed on stop | Ids only (unreadable); names plus ids (two spellings); marking buffers read-only (reverts and commands could reach a namesake) |
+| 4 | Init position | Subreaper everywhere | =bwrap --as-pid-1= where possible (two modes) |
+| 5 | TRAMP tools and =EDITOR= | =editor.emacs.enable= on =mkGoblins=, global | Always mounting tools (weakens =allowedPackages=); busybox |
+| 6 | Agent exec into descendants | Host only for now | Allowed without approval (later); per-exec approval |
+| 7 | Observability | Live tracking plus an =events.jsonl= trail for =-t= execs | Live tracking only; also notifying the agent |
+| 8 | Editor routing | The daemon spawns =emacsclient= | Requests over goblins.el's =state.subscribe= with a custom finish mode |
+| 9 | Local path or =/goblins:= path | Always =/goblins:= | Local paths for the editor and =/goblins:= for terminals; local for both |
