@@ -12,6 +12,7 @@
 (require 'project)
 (defvar ghostel-identity)
 (defvar ghostel-query-before-killing)
+(defvar ghostel--process)
 
 (defun goblins-test--request (id &optional state)
   (list :id id :session "session-a" :approval (concat "approval-" id)
@@ -1777,11 +1778,20 @@
 
 (ert-deftest goblins-terminals-track-directories-as-goblins-paths ()
   (with-temp-buffer
-    (setq-local ghostel-identity '((kind . goblins-shell) (host . "gribble.snaga")))
-    (let ((called nil))
+    (setq-local ghostel-identity '((kind . goblins-shell) (host . "gribble.snaga")
+                                   (session . "i-s3") (instance . "i")))
+    (setq-local goblins--directory "/state")
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (called nil))
       (goblins--ghostel-directory (lambda (_) (setq called t)) "file://sandbox/tmp/x")
       (should-not called)
-      (should (equal default-directory "/goblins:gribble.snaga:/tmp/x/")))
+      (should (equal default-directory "/goblins:gribble.snaga:/tmp/x/"))
+      ;; Pinned from the terminal's identity, before any TRAMP use.
+      (should (equal (goblins-pin "gribble.snaga") '("/state" "i" "i-s3")))
+      ;; A host pinned to another goblin falls back to the session ID.
+      (puthash "gribble.snaga" '("/state" "i" "i-s1") goblins--pins)
+      (goblins--ghostel-directory #'ignore "file://sandbox/w")
+      (should (equal default-directory "/goblins:i-s3:/w/")))
     (setq-local ghostel-identity '((kind . exec)))
     (let ((called nil))
       (goblins--ghostel-directory (lambda (_) (setq called t)) "file://host/tmp/y")
@@ -1827,7 +1837,34 @@
 (ert-deftest goblins-tramp-buffers-are-never-saved-in-desktops ()
   (require 'desktop)
   (should-not (desktop-save-buffer-p "/goblins:gribble:/tmp/f" "f" 'text-mode))
-  (should (desktop-save-buffer-p "/tmp/f" "f" 'text-mode)))
+  (should (desktop-save-buffer-p "/tmp/f" "f" 'text-mode))
+  ;; Dired and vc-dir buffers visit no file: their directory decides.
+  (with-current-buffer (get-buffer-create "goblins-test-dired")
+    (unwind-protect
+        (progn
+          (setq default-directory "/goblins:gribble:/tmp/")
+          (should-not (desktop-save-buffer-p nil (buffer-name) 'dired-mode))
+          (setq default-directory "/tmp/")
+          (should (desktop-save-buffer-p nil (buffer-name) 'dired-mode)))
+      (kill-buffer))))
+
+(ert-deftest goblins-pins-belong-to-one-goblin ()
+  (let ((goblins--pins (make-hash-table :test #'equal)))
+    (should (equal (goblins-pin-host "g" "/s" "i" "i-s1") "g"))
+    (should (equal (goblins-pin-host "g" "/s" "i" "i-s1") "g"))
+    (should-error (goblins-pin-host "g" "/other" "j" "j-s1"))
+    (should-error (goblins-pin-host "g" "/s" "i" nil))
+    (should (equal (goblins--pin-or-id "g" "/s" "i" "i-s2") "i-s2"))
+    ;; A stopped goblin's pins are released from its daemon's snapshot.
+    (with-temp-buffer
+      (setq goblins--directory "/s" goblins--instance "i"
+            goblins--snapshot (list :sessions (vector (list :id "i-s1" :state "stopped")
+                                                      (list :id "i-s2" :state "running"))))
+      (cl-letf (((symbol-function 'goblins-tramp-release)
+                 (lambda (host _) (remhash host goblins--pins))))
+        (goblins--release-stopped-pins)))
+    (should-not (goblins-pin "g"))
+    (should (goblins-pin "i-s2"))))
 
 (defun goblins-test--host-pids (marker)
   "PIDs of host processes whose command line contains MARKER."
@@ -1876,7 +1913,7 @@
                      "stopped"))))
 
 (defun goblins-test--pin (host)
-  (goblins-tramp-pin host))
+  (goblins-pin host))
 
 (defun goblins-test--tramp-scenario ()
   (let* ((directory (getenv "GOBLINS_TEST_STATE"))
@@ -1981,6 +2018,7 @@
       (should (equal (nth 2 (goblins-test--pin "gribble")) second))
       ;; With the stop notification missed, the pin fails hard instead of
       ;; reaching the next namesake.
+      (remove-hook 'goblins-snapshot-hook #'goblins--after-snapshot)
       (remove-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
       (goblins-test--stop-goblin source second)
       (goblins-test--start-goblin source "gribble")
@@ -1988,6 +2026,7 @@
         (should-not (ignore-errors (eq 0 (process-file "sh" nil nil nil "-c"
                                                        "echo leaked > /tmp/leak")))))
       (should (equal (goblins-test--in directory "gribble" "cat /tmp/leak 2>/dev/null") ""))
+      (add-hook 'goblins-snapshot-hook #'goblins--after-snapshot)
       (add-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
       (with-current-buffer source (goblins--render))
       (goblins-test--wait (lambda () (not (buffer-live-p notes)))))
@@ -1998,6 +2037,35 @@
       (let ((goblins-state-directory other))
         (revert-buffer t t)
         (should (equal (buffer-string) "first-daemon\n"))))
+    ;; An edit from the other daemon's namesake never opens this daemon's
+    ;; file: refused while the name is pinned here, its own once released.
+    (let ((edit (lambda ()
+                  (let ((process (start-process "other-editor" (generate-new-buffer " *other*")
+                                                goblins-executable "--state-dir" other "exec"
+                                                "gribble" "--" "goblins-editor" "--no-wait"
+                                                "/tmp/which")))
+                    (goblins-test--wait (lambda () (not (process-live-p process))))
+                    (process-exit-status process)))))
+      (should-not (eq (funcall edit) 0))
+      (goblins-tramp-release "gribble")
+      (should-not (get-file-buffer "/goblins:gribble:/tmp/which"))
+      (should (eq (funcall edit) 0))
+      (should (equal (car (goblins-test--pin "gribble")) other))
+      (with-current-buffer (get-file-buffer "/goblins:gribble:/tmp/which")
+        (should (equal (buffer-string) "other-daemon\n")))
+      (goblins-tramp-release "gribble"))
+    ;; A fresh shell is pinned from its identity, and leaves the sandbox
+    ;; when its goblin stops, before any TRAMP use.
+    (when ghostel-used
+      (let* ((id (goblins-test--start-goblin source "snaga"))
+             (shell (goblins-shell (goblins--snapshot-session
+                                    (buffer-local-value 'goblins--snapshot source) id))))
+        (should (equal (nth 2 (goblins-test--pin "snaga")) id))
+        (should (equal (buffer-local-value 'default-directory shell) "/goblins:snaga:/"))
+        (goblins-test--stop-goblin source id)
+        (goblins-test--wait (lambda () (not (string-prefix-p "/goblins:" (buffer-local-value
+                                                                         'default-directory shell)))))
+        (should-not (goblins-test--pin "snaga"))))
     (if ghostel-used "ok ghostel" "ok")))
 
 (defvar goblins-test--backtrace nil)

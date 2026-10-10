@@ -226,7 +226,10 @@ the daemon of =goblins-state-directory=.
   command of the connection passes the pin to =goblins exec=. A command for a
   stopped goblin fails rather than reach a new goblin with the same name, even
   if Emacs missed the stop, and changing =goblins-state-directory= does not move
-  existing connections.
+  existing connections. Shells and goblin terminals pin their goblin when they
+  open; editor requests pin the requesting goblin first and are refused when
+  the name is pinned to another one. =M-x goblins-tramp-release= releases a pin
+  by hand, for a goblin of a daemon this Emacs does not follow.
 - *When a goblin stops*, its =/goblins:= buffers and processes are killed
   (unsaved changes are discarded), then the pin is released. Goblin terminals
   are kept and return to your home directory. =/goblins:= buffers are never
@@ -243,7 +246,7 @@ the daemon of =goblins-state-directory=.
 - *The sandbox's =EDITOR=.* With =editor.emacs.enable= on =mkGoblins=,
   =goblins-editor= inside a sandbox opens files here through emacsclient,
   always as =/goblins:= paths; it needs a running Emacs server
-  (=M-x server-start=). Finish each file with =C-x #=.
+  (=M-x server-start=) with goblins.el loaded. Finish each file with =C-x #=.
 
 * Checks
 

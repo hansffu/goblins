@@ -212,7 +212,7 @@ class EmacsTests(unittest.TestCase):
         """/goblins: TRAMP, goblins-shell and goblins-editor in a real
         `emacs -nw`, against isolated daemons built with editor.emacs.enable."""
         application = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                    f"path:{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
+                                    f"git+file://{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
         temp = tempfile.TemporaryDirectory(prefix="ge-tramp-")
         self.addCleanup(temp.cleanup)
         server_dir = Path(temp.name) / "server"
@@ -221,7 +221,8 @@ class EmacsTests(unittest.TestCase):
         daemon = Daemon(application, env={**os.environ,
                                           "EMACS_SOCKET_NAME": str(server_dir / "goblins-test")})
         self.addCleanup(daemon.close)
-        other = Daemon(application)
+        other = Daemon(application, env={**os.environ,
+                                          "EMACS_SOCKET_NAME": str(server_dir / "goblins-test")})
         self.addCleanup(other.close)
         other.start(name="plain", agent_name="gribble")
         result = Path(temp.name) / "result"

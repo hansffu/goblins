@@ -899,6 +899,80 @@ Daemon refusals become `user-error's and leave the connection alone."
   (remhash goblins--session-key goblins--terminal-buffers)
   (goblins--render-status-buffers))
 
+(defvar goblins--pins (make-hash-table :test #'equal)
+  "/goblins: host to its pin (DIRECTORY INSTANCE SESSION).
+A host is resolved to one goblin session once; every later use passes that
+identity to `goblins exec', which fails rather than reach another goblin.
+Only releasing the stopped goblin's host removes its pin.")
+
+(defun goblins-pin (host)
+  "HOST's pin (DIRECTORY INSTANCE SESSION), or nil."
+  (gethash host goblins--pins))
+
+(defun goblins-pin-host (host directory instance session)
+  "Pin /goblins:HOST: to SESSION of the daemon at DIRECTORY, INSTANCE.
+Return HOST, or signal an error when HOST is pinned to another goblin.  The
+daemon calls this through emacsclient before opening a goblin's files."
+  (unless (and (stringp host) (stringp directory) (stringp instance) (stringp session))
+    (error "Goblins: invalid pin"))
+  (let ((pin (list directory instance session))
+        (old (gethash host goblins--pins)))
+    (cond ((null old) (puthash host pin goblins--pins) host)
+          ((equal old pin) host)
+          (t (error "Goblins: /goblins:%s: is pinned to another goblin" host)))))
+
+(defun goblins--pin-or-id (host directory instance session)
+  "HOST pinned to SESSION, or SESSION itself when HOST is pinned elsewhere."
+  (condition-case nil
+      (goblins-pin-host host directory instance session)
+    (error (goblins-pin-host session directory instance session))))
+
+(defun goblins--release-stopped-pins ()
+  "Release the pins of this status buffer's goblins that stopped.
+Also those of another instance of this daemon, which restarted."
+  (when (and goblins--snapshot goblins--instance)
+    (let ((sessions (append (plist-get goblins--snapshot :sessions) nil)))
+      (maphash
+       (lambda (host pin)
+         (when (and (equal (car pin) goblins--directory)
+                    (or (not (equal (nth 1 pin) goblins--instance))
+                        (not (equal (plist-get (cl-find (nth 2 pin) sessions
+                                                        :key (lambda (s) (plist-get s :id))
+                                                        :test #'equal)
+                                               :state)
+                                    "running"))))
+           (if (fboundp 'goblins-tramp-release)
+               (goblins-tramp-release host (nth 2 pin))
+             (remhash host goblins--pins))))
+       (copy-hash-table goblins--pins)))))
+
+(defun goblins--reset-stopped-terminals ()
+  "Move goblin terminals whose goblin stopped out of its sandbox.
+Uses each terminal's immutable session identity, pinned or not."
+  (when (and goblins--snapshot goblins--instance)
+    (let ((directory goblins--directory)
+          (instance goblins--instance)
+          (sessions (append (plist-get goblins--snapshot :sessions) nil)))
+      (dolist (buffer (buffer-list))
+        (with-current-buffer buffer
+          (let ((identity (bound-and-true-p ghostel-identity)))
+            (when (and (memq (alist-get 'kind identity) '(goblins goblins-shell))
+                       (stringp default-directory)
+                       (string-prefix-p "/goblins:" default-directory)
+                       (equal goblins--directory directory)
+                       (or (not (equal (alist-get 'instance identity) instance))
+                           (not (equal (plist-get (cl-find (alist-get 'session identity) sessions
+                                                           :key (lambda (s) (plist-get s :id))
+                                                           :test #'equal)
+                                                  :state)
+                                       "running"))))
+              (setq default-directory (expand-file-name "~/")))))))))
+
+(defun goblins--after-snapshot ()
+  (goblins--reset-stopped-terminals)
+  (goblins--release-stopped-pins))
+(add-hook 'goblins-snapshot-hook #'goblins--after-snapshot)
+
 (defun goblins--osc7-directory (report host)
   "The /goblins: directory for an OSC 7 REPORT from inside goblin HOST."
   (when (string-match "\\`\\(?:file\\|kitty-shell-cwd\\)://[^/]*\\(/.*\\)\\'" report)
@@ -931,6 +1005,10 @@ correspond to a host path, so a goblin terminal's directory is its TRAMP
 path.  Ordinary Ghostel buffers are left alone."
   (if (memq (alist-get 'kind ghostel-identity) '(goblins goblins-shell))
       (when-let* ((host (goblins--terminal-host))
+                  ;; Pinned before any TRAMP use, from the terminal's identity.
+                  (host (goblins--pin-or-id host goblins--directory
+                                            (alist-get 'instance ghostel-identity)
+                                            (alist-get 'session ghostel-identity)))
                   (path (goblins--osc7-directory directory host)))
         (setq default-directory path))
     (funcall function directory)))

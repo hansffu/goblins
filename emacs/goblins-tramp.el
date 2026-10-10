@@ -105,21 +105,14 @@ Always runs locally, whatever `default-directory' is."
       (error "Goblins: no running goblin %s" host))
     (list directory (car state) (plist-get session :id))))
 
-(defvar goblins-tramp--pins (make-hash-table :test #'equal)
-  "Host to its pin (DIRECTORY INSTANCE SESSION).
-Kept apart from TRAMP's connection properties, which TRAMP flushes when a
-connection fails: the next use must fail again, not resolve the name anew.
-Only `goblins-tramp-release' removes a pin.")
-
-(defun goblins-tramp-pin (host)
-  "HOST's pin, or nil before its first connection."
-  (gethash host goblins-tramp--pins))
-
 (defun goblins-tramp--pin (vec)
-  "The pin of VEC's connection, resolving its host on first use."
+  "The pin of VEC's connection, resolving its host on first use.
+Pins live in `goblins--pins', apart from TRAMP's connection properties,
+which TRAMP flushes when a connection fails: the next use must fail again,
+not resolve the name anew."
   (let ((host (tramp-file-name-host vec)))
-    (or (gethash host goblins-tramp--pins)
-        (puthash host (goblins-tramp--resolve host) goblins-tramp--pins))))
+    (or (goblins-pin host)
+        (puthash host (goblins-tramp--resolve host) goblins--pins))))
 
 (defun goblins-tramp--pin-field (n)
   "Field N of the current connection's pin, for `tramp-extra-expand-args'."
@@ -192,9 +185,13 @@ Only `goblins-tramp-release' removes a pin.")
 
 (defun goblins-tramp-release (host &optional session)
   "Kill HOST's /goblins: buffers and processes, then release its pin.
-With SESSION, only when the pin, if any, belongs to SESSION."
+With SESSION, only when the pin, if any, belongs to SESSION.  Pins of
+goblins.el's daemon are released when their goblin stops; use this command
+for a pin of another daemon whose goblin is gone."
+  (interactive (list (completing-read "Release /goblins: host: "
+                                      (hash-table-keys goblins--pins) nil t)))
   (let* ((vec (make-tramp-file-name :method goblins-tramp-method :host host))
-         (pin (goblins-tramp-pin host)))
+         (pin (goblins-pin host)))
     (when (or (null session) (null pin) (equal (nth 2 pin) session))
       (dolist (process (process-list))
         (when-let* ((v (process-get process 'tramp-vector)))
@@ -213,37 +210,31 @@ With SESSION, only when the pin, if any, belongs to SESSION."
               (let ((kill-buffer-query-functions nil))
                 (kill-buffer buffer))))))
       ;; Only now can a later visit pin to whichever goblin has the name.
-      (remhash host goblins-tramp--pins)
+      (remhash host goblins--pins)
       (tramp-cleanup-connection vec t))))
 
 (defun goblins-tramp--after-snapshot ()
-  "Release the connections of goblins that stopped, from a status buffer.
-Also those pinned to another instance of this daemon, which restarted."
-  (when (and goblins--snapshot goblins--instance)
-    (let ((directory goblins--directory)
-          (sessions (append (plist-get goblins--snapshot :sessions) nil)))
+  "Release unpinned /goblins: buffers that name a stopped goblin.
+Pinned hosts are released by `goblins--release-stopped-pins'.  A buffer that
+never connected has no pin, but its host still names a stopped goblin by tree
+path, name or ID: release it unless a running goblin now has that name."
+  (when goblins--snapshot
+    (let ((sessions (append (plist-get goblins--snapshot :sessions) nil))
+          (hosts (make-hash-table :test #'equal)))
+      (dolist (buffer (buffer-list))
+        (when-let* ((v (goblins-tramp--buffer-vec buffer)))
+          (puthash (tramp-file-name-host v) t hosts)))
       (maphash
-       (lambda (host pin)
-         (when (and (equal (car pin) directory)
-                    (or (not (equal (nth 1 pin) goblins--instance))
-                        (not (goblins-tramp--running-p
-                              (cl-find (nth 2 pin) sessions
-                                       :key (lambda (s) (plist-get s :id))
-                                       :test #'equal)))))
-           (goblins-tramp-release host (nth 2 pin))))
-       (copy-hash-table goblins-tramp--pins))
-      ;; Buffers that never connected still name a stopped goblin.
-      (let ((hosts (make-hash-table :test #'equal)))
-        (dolist (buffer (buffer-list))
-          (when-let* ((v (goblins-tramp--buffer-vec buffer)))
-            (puthash (tramp-file-name-host v) t hosts)))
-        (maphash
-         (lambda (host _)
-           (let ((session (ignore-errors (goblins-tramp--match host sessions))))
-             (when (and session (not (goblins-tramp--running-p session))
-                        (not (goblins-tramp-pin host)))
-               (goblins-tramp-release host))))
-         hosts)))))
+       (lambda (host _)
+         (let* ((path (string-replace "." "/" host))
+                (named (cl-remove-if-not
+                        (lambda (s) (member host (list (plist-get s :id) (plist-get s :agent_name)
+                                                       (and (equal (plist-get s :path) path) host))))
+                        sessions)))
+           (when (and named (not (goblins-pin host))
+                      (not (cl-some #'goblins-tramp--running-p named)))
+             (goblins-tramp-release host))))
+       hosts))))
 
 (add-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
 
@@ -258,8 +249,11 @@ Also those pinned to another instance of this daemon, which restarted."
 (advice-add 'tramp-dump-connection-properties :before #'goblins-tramp--forget-persistent)
 
 ;; A restored buffer would pin to whichever goblin has the name by then.
-(defun goblins-tramp--desktop-save-p (filename &rest _)
-  (not (goblins-tramp-file-p filename)))
+(defun goblins-tramp--desktop-save-p (filename bufname &rest _)
+  "Refuse /goblins: buffers, also Dired and vc-dir ones that visit no file."
+  (not (or (goblins-tramp-file-p filename)
+           (when-let* ((buffer (get-buffer bufname)))
+             (goblins-tramp-file-p (buffer-local-value 'default-directory buffer))))))
 (with-eval-after-load 'desktop
   (advice-add 'desktop-save-buffer-p :before-while #'goblins-tramp--desktop-save-p))
 
@@ -321,7 +315,10 @@ buffer."
          (directory (buffer-local-value 'goblins--directory source))
          (instance (buffer-local-value 'goblins--instance source))
          (id (plist-get session :id))
-         (host (goblins-tramp-host (plist-get session :path)))
+         ;; Pinned now, before any TRAMP use: the shell's directory must never
+         ;; reach a later goblin with the same name.
+         (host (goblins--pin-or-id (goblins-tramp-host (plist-get session :path))
+                                   directory instance id))
          (buffer (generate-new-buffer (format "*Goblin shell: %s*" (plist-get session :path)))))
     (condition-case err
         (progn
@@ -334,7 +331,7 @@ buffer."
                           (list "--state-dir" directory "exec" "-t" "--instance" instance
                                 "--session" id host)
                           `((kind . goblins-shell) (session . ,id) (instance . ,instance)
-                            (host . ,host))))
+                            (directory . ,directory) (host . ,host))))
           (with-current-buffer buffer
             (setq-local goblins--directory directory)
             (setq default-directory (format "/%s:%s:/" goblins-tramp-method host)))
