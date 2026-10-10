@@ -103,6 +103,16 @@ if [ -e {self.dir}/fail ]; then echo "emacsclient: edit aborted" >&2; exit 3; fi
         waiting.kill()
         waiting.wait()
         self.d.wait(lambda: not Path(f"/proc/{pid}").exists())
+        # A goblin that stops ends its pending edits too.
+        (self.dir / "pid").unlink()
+        waiting = subprocess.Popen([str(self.app), "--state-dir", str(self.d.state), "exec",
+                                    "gribble/snaga", "--", "goblins-editor", "/tmp/z"],
+                                   stderr=subprocess.DEVNULL)
+        self.d.wait(lambda: (self.dir / "pid").exists())
+        pid = int((self.dir / "pid").read_text())
+        self.d.rpc.call("sessions.stop", {"session": "gribble/snaga"})
+        self.d.wait(lambda: not Path(f"/proc/{pid}").exists())
+        self.assertNotEqual(waiting.wait(timeout=10), 0)
 
     def test_requests_are_validated_by_the_daemon(self):
         launch = self.start("gribble")
