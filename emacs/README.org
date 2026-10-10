@@ -20,6 +20,9 @@ buffer and leave the calling buffer's text and mode unchanged.
 Startup runs asynchronously and connects the buffer automatically when ready.
 Use =M-x goblins-stop-server= to stop the server and all its agents asynchronously;
 the buffer reports when it has finished. These server commands have no default keybindings.
+=M-x goblins-ensure-server= starts the server only if it is not already running
+and connects, without displaying the status buffer; it reports in the echo
+area, so it suits an init file: =(goblins-ensure-server)=.
 The server uses this buffer's state directory and starts from its
 =default-directory=, just like running the CLI from that directory.
 Set =goblins-executable= to the packaged binary's absolute path if =goblins=

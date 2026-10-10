@@ -641,6 +641,11 @@ disconnect; the status buffer's notice already reports it."
     ;; Settled requests never become pending again, so only pending IDs matter.
     (setq goblins--seen-requests (mapcar (lambda (r) (plist-get r :id)) pending))))
 
+(defun goblins--echo-unless-shown (buffer text)
+  "Show TEXT in the echo area when no window shows status BUFFER."
+  (unless (get-buffer-window buffer t)
+    (message "Goblins: %s" text)))
+
 (defun goblins--server-command (action)
   "Run server ACTION asynchronously for this buffer's state directory."
   (goblins--ensure-status-buffer)
@@ -668,28 +673,46 @@ disconnect; the status buffer's notice already reports it."
                          (with-current-buffer buffer
                            (when (eq process goblins--server-process)
                              (setq goblins--server-process nil)
-                             (if (= (process-exit-status process) 0)
-                                 (if (equal action "start")
-                                     (goblins-refresh)
-                                   (setq goblins--snapshot nil goblins--instance nil
-                                         goblins--sequence nil goblins--decisions nil
-                                         goblins--notice "Server stopped")
-                                   (goblins--render))
-                               (goblins--fail
-                                (format "Server %s failed: %s" action
-                                        (with-current-buffer output
-                                          (string-trim (buffer-string)))))))))
+                             (let ((result (with-current-buffer output
+                                             (string-trim (buffer-string)))))
+                               (if (= (process-exit-status process) 0)
+                                   (progn
+                                     (goblins--echo-unless-shown buffer result)
+                                     (if (equal action "start")
+                                         (goblins-refresh)
+                                       (setq goblins--snapshot nil goblins--instance nil
+                                             goblins--sequence nil goblins--decisions nil
+                                             goblins--notice "Server stopped")
+                                       (goblins--render)))
+                                 (goblins--fail
+                                  (format "Server %s failed: %s" action result))
+                                 (goblins--echo-unless-shown buffer goblins--notice))))))
                      (when (buffer-live-p output) (kill-buffer output)))))))
       (error
        (kill-buffer output)
        (setq goblins--server-process nil)
        (goblins--fail (format "Cannot %s server: %s" action
-                              (error-message-string err)))))))
+                              (error-message-string err)))
+       (goblins--echo-unless-shown buffer goblins--notice)))))
 
 (defun goblins-start-server ()
   "Start the server and connect, opening its status buffer if needed."
   (interactive)
   (goblins--server-command "start"))
+
+;;;###autoload
+(defun goblins-ensure-server (&optional directory)
+  "Start the server for DIRECTORY unless it is already running, then connect.
+Unlike `goblins-start-server' this never displays the status buffer: it
+reports in the echo area, so it suits init files and hooks."
+  (interactive)
+  (with-current-buffer (goblins--status-buffer directory)
+    (cond (goblins--subscription (message "Goblins: Server already running"))
+          ((process-live-p goblins--server-process)
+           (message "Goblins: A server command is already in progress"))
+          ;; `server start' leaves a running server alone, so this also
+          ;; covers one that is up but not yet connected.
+          (t (goblins--server-command "start")))))
 
 (defun goblins-stop-server ()
   "Stop the server and all its agents, opening its status buffer if needed."

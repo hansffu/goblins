@@ -628,6 +628,26 @@
         (should-not (eq (current-buffer) source))
         (should-not (string-match-p "stringp, nil" (buffer-string)))))))
 
+(ert-deftest goblins-ensure-server-never-displays-status ()
+  (goblins-test--outside-status
+    (let ((goblins-executable "/nonexistent/goblins-test-executable")
+          (windows (window-list))
+          echoed)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) echoed))))
+        (call-interactively #'goblins-ensure-server))
+      (should (eq (current-buffer) source))
+      (should (equal (window-list) windows))
+      (should (string-match-p "Cannot start server" (car echoed)))
+      (with-current-buffer (goblins--status-buffer)
+        (should-not goblins--server-process)
+        (goblins--cancel-reconnect)
+        ;; Connected: nothing to start.
+        (setq goblins--subscription "s")
+        (cl-letf (((symbol-function 'goblins--server-command)
+                   (lambda (&rest _) (error "Started a running server"))))
+          (goblins-ensure-server))))))
+
 (ert-deftest goblins-quit-outside-status-only-closes-status ()
   (goblins-test--outside-status
     (let ((status (goblins--status-buffer)))
@@ -722,7 +742,26 @@
             (should-not goblins--snapshot)
             (goblins-start-server)
             (goblins-test--wait (lambda () goblins--subscription))
-            (should-not (equal goblins--instance instance))))
+            (should-not (equal goblins--instance instance))
+            ;; Ensuring leaves the running server and its connection alone,
+            (let ((status (current-buffer))
+                  (connection goblins--connection))
+              (pop-to-buffer source)
+              (goblins-ensure-server)
+              (should (eq (current-buffer) source))
+              (with-current-buffer status
+                (should-not goblins--server-process)
+                (should (eq goblins--connection connection))
+                ;; and starts a stopped one without showing its status.
+                (goblins-stop-server)
+                (goblins-test--wait (lambda () (not goblins--server-process))))
+              (quit-windows-on status)
+              (goblins-ensure-server)
+              (should (eq (current-buffer) source))
+              (should-not (get-buffer-window status t))
+              (with-current-buffer status
+                (goblins-test--wait (lambda () goblins--subscription))
+                (should (equal goblins--notice "Connected"))))))
       (when (derived-mode-p 'goblins-status-mode) (kill-buffer (current-buffer)))
       (kill-buffer source))))
 
