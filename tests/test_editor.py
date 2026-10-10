@@ -18,7 +18,7 @@ class EditorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                f"path:{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
+                                f"git+file://{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
 
     def setUp(self):
         self.d = Daemon(self.app)
@@ -29,6 +29,13 @@ class EditorTests(unittest.TestCase):
         # Stands in for emacsclient: records its arguments, can block or fail.
         self.client = self.dir / "emacsclient"
         self.client.write_text(f"""#!/bin/sh
+if [ "$3" = --eval ]; then
+  printf '%s\\n' "$4" >> {self.dir}/eval
+  if [ -e {self.dir}/conflict ]; then
+    echo "*ERROR*: Goblins: /goblins:gribble: is pinned to another goblin" >&2; exit 1
+  fi
+  exit 0
+fi
 printf '%s\\n' "$@" > {self.dir}/args
 echo $$ > {self.dir}/pid
 while [ -e {self.dir}/block ]; do sleep 0.05; done
@@ -65,9 +72,13 @@ if [ -e {self.dir}/fail ]; then echo "emacsclient: edit aborted" >&2; exit 3; fi
             self.assertEqual(r.stdout, "/run/goblins/bin/goblins-editor custom-visual\n", r.stderr)
 
     def test_files_positions_blocking_and_failure(self):
-        self.start("gribble")
+        launch = self.start("gribble")
         r = self.exec("gribble", "cd /tmp && $EDITOR --no-wait +3:4 a.txt /etc/x +9 ../tmp/./c")
         self.assertEqual(r.returncode, 0, r.stderr)
+        # First the host is pinned in Emacs to this session of this daemon.
+        self.assertEqual((self.dir / "eval").read_text(),
+                         f'(goblins-pin-host "gribble" "{self.d.state}" '
+                         f'"{self.d.rpc.init["instance"]}" "{launch["session"]}")\n')
         self.assertEqual(self.args(), ["-n", "-a", "false", "+3:4", "/goblins:gribble:/tmp/a.txt",
                                        "/goblins:gribble:/etc/x", "+9", "/goblins:gribble:/tmp/c"])
         # Blocking by default: the edit ends when the editor is done.
@@ -80,6 +91,14 @@ if [ -e {self.dir}/fail ]; then echo "emacsclient: edit aborted" >&2; exit 3; fi
         self.assertEqual(self.args(), ["-a", "false", "/goblins:gribble:/tmp/msg"])
         (self.dir / "block").unlink()
         self.assertEqual(editor.wait(timeout=10), 0)
+        # When Emacs has the name pinned to another goblin, nothing is opened.
+        (self.dir / "args").unlink()
+        (self.dir / "conflict").touch()
+        r = self.exec("gribble", "goblins-editor /tmp/msg")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("/goblins:gribble: is pinned to another goblin", r.stderr)
+        self.assertFalse((self.dir / "args").exists())
+        (self.dir / "conflict").unlink()
         # An aborted edit fails, with the editor's explanation.
         (self.dir / "fail").touch()
         r = self.exec("gribble", "goblins-editor /tmp/msg")

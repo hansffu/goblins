@@ -1,7 +1,10 @@
 //! `editor.open`: a sandbox asks the host editor to open its files. The
 //! daemon builds every file name itself, always as the goblin's TRAMP path,
-//! and runs the configured emacsclient without a shell. The sandbox's request
-//! stays open until the editor is done; closing it kills the client.
+//! and runs the configured emacsclient without a shell. It first pins that
+//! TRAMP host in Emacs to the requesting session, so the files can only come
+//! from this goblin of this daemon, whatever daemon Emacs is configured for.
+//! The sandbox's request stays open until the editor is done; closing it
+//! kills the client.
 use super::{Connection, Controller, Fault, capacity, params};
 use goblins_protocol::{editor, rpc};
 use serde_json::{Value, json};
@@ -20,6 +23,50 @@ pub(super) struct Edit {
     rpc: Value,
     child: Child,
     diagnostic: Vec<u8>,
+    command: String,
+    /// The editor arguments to run once the pin succeeds.
+    open: Option<Vec<String>>,
+}
+
+/// An Emacs Lisp string literal.
+fn elisp_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// emacsclient arguments that pin /goblins:HOST: to one session of one daemon
+/// in Emacs, failing when Emacs has it pinned to another goblin.
+pub(super) fn pin_arguments(
+    host: &str,
+    directory: &str,
+    instance: &str,
+    session: &str,
+) -> Vec<String> {
+    vec![
+        "-a".into(),
+        "false".into(),
+        "--eval".into(),
+        format!(
+            "(goblins-pin-host {} {} {} {})",
+            elisp_string(host),
+            elisp_string(directory),
+            elisp_string(instance),
+            elisp_string(session)
+        ),
+    ]
+}
+
+fn spawn(command: &str, args: &[String]) -> Result<Child, Fault> {
+    let child = Command::new(command)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| (-32009, format!("cannot run the editor {command}: {e}")))?;
+    if let Some(stderr) = &child.stderr {
+        let _ = crate::unix::nonblocking(stderr.as_raw_fd());
+    }
+    Ok(child)
 }
 
 /// emacsclient arguments for `open` in the goblin with TRAMP host `host`.
@@ -67,23 +114,22 @@ impl Controller {
             return Err(capacity());
         }
         let host = editor::tramp_host(&a.record.path);
-        let mut child = Command::new(&command)
-            .args(arguments(&host, &open))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| (-32009, format!("cannot run the editor {command}: {e}")))?;
-        if let Some(stderr) = &child.stderr {
-            let _ = crate::unix::nonblocking(stderr.as_raw_fd());
-        }
-        let _ = child.stdin.take();
+        let directory = self.state.to_str().ok_or((
+            -32009,
+            "the daemon's state directory is not UTF-8".to_string(),
+        ))?;
+        let child = spawn(
+            &command,
+            &pin_arguments(&host, directory, &self.instance, session),
+        )?;
         self.edits.push(Edit {
             session: session.to_string(),
             connection: c.id,
             rpc: rpc_id.clone(),
             child,
             diagnostic: Vec::new(),
+            command,
+            open: Some(arguments(&host, &open)),
         });
         c.waiting = Some(("editor".into(), rpc_id));
         Ok(())
@@ -104,8 +150,25 @@ impl Controller {
             match edit.child.try_wait() {
                 Ok(None) => index += 1,
                 status => {
-                    let edit = self.edits.remove(index);
                     let code = status.ok().flatten().and_then(|s| s.code()).unwrap_or(1);
+                    // Pinned: now open the files.
+                    if code == 0
+                        && let Some(open) = edit.open.take()
+                    {
+                        match spawn(&edit.command, &open) {
+                            Ok(child) => {
+                                edit.child = child;
+                                edit.diagnostic.clear();
+                                index += 1;
+                            }
+                            Err((_, message)) => {
+                                let edit = self.edits.remove(index);
+                                self.reply_edit(edit, Err(message));
+                            }
+                        }
+                        continue;
+                    }
+                    let edit = self.edits.remove(index);
                     let mut result = json!({"code":code});
                     if code != 0 {
                         // emacsclient explains a missing server or an abort.
@@ -113,6 +176,7 @@ impl Controller {
                         let message = text
                             .lines()
                             .filter(|l| !l.trim().is_empty() && !l.starts_with("Waiting for Emacs"))
+                            .map(|l| l.trim_start_matches("*ERROR*: "))
                             .collect::<Vec<_>>()
                             .join("; ");
                         result["message"] = json!(super::bounded(&message));
@@ -157,6 +221,18 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pins_are_quoted_elisp_strings() {
+        assert_eq!(
+            pin_arguments("gribble.snaga", "/run/a \"b\\", "i", "i-s2"),
+            [
+                "-a",
+                "false",
+                "--eval",
+                r#"(goblins-pin-host "gribble.snaga" "/run/a \"b\\" "i" "i-s2")"#
+            ]
+        );
+    }
     #[test]
     fn editor_names_are_built_by_the_daemon() {
         let open = editor::Open {
