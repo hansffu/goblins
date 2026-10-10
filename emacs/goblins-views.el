@@ -223,6 +223,30 @@ popped up."
          default-directory)
        display))))
 
+(defun goblins--restore-layout ()
+  "Rebuild the selected goblin's workspace layout, without attaching.
+Without a selected goblin, keep the agent window alone."
+  (let ((source (and goblins--last-goblin
+                     (cl-find-if (lambda (buffer)
+                                   (and (eq (buffer-local-value 'major-mode buffer)
+                                            'goblins-status-mode)
+                                        (equal (buffer-local-value 'goblins--directory buffer)
+                                               (car goblins--last-goblin))))
+                                 (buffer-list)))))
+    (if source
+        (goblins-select-goblin source (cdr goblins--last-goblin))
+      (select-window (goblins--only-agent-window)))))
+
+(defun goblins-quit-view ()
+  "Close this view.  In the workspace, restore the selected goblin's layout:
+its agent, and the buffer Goblins last opened for it on the right, if any."
+  (interactive)
+  (if (not (goblins--in-workspace-p))
+      (quit-window)
+    (let ((buffer (current-buffer)))
+      (goblins--restore-layout)
+      (bury-buffer buffer))))
+
 (defun goblins-open-session (source id)
   "Show the terminal of session ID of SOURCE's server, attaching if needed.
 In the workspace the goblin's remembered buffer comes back on the right."
@@ -409,10 +433,12 @@ end of the buffer.  Add your own to show more.")
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "g") #'goblins-info-refresh)
+    (define-key map (kbd "q") #'goblins-quit-view)
     map))
 
 (with-eval-after-load 'evil
-  (evil-set-initial-state 'goblins-info-mode 'motion))
+  (evil-set-initial-state 'goblins-info-mode 'motion)
+  (evil-define-key* 'motion goblins-info-mode-map (kbd "q") #'goblins-quit-view))
 
 (define-derived-mode goblins-info-mode special-mode "Goblins-Info"
   "Everything the daemon knows about one goblin."
@@ -570,7 +596,7 @@ Accept it when APPROVED is non-nil, otherwise deny it."
     (define-key map (kbd "d") #'goblins-permissions-deny)
     (define-key map (kbd "RET") #'goblins-permissions-toggle)
     (define-key map (kbd "g") #'goblins-permissions-refresh)
-    (define-key map (kbd "q") #'quit-window)
+    (define-key map (kbd "q") #'goblins-quit-view)
     map))
 
 (with-eval-after-load 'evil
@@ -584,13 +610,13 @@ Accept it when APPROVED is non-nil, otherwise deny it."
     (kbd "TAB") #'goblins-permissions-toggle
     (kbd "<tab>") #'goblins-permissions-toggle
     (kbd "gr") #'goblins-permissions-refresh
-    (kbd "q") #'quit-window))
+    (kbd "q") #'goblins-quit-view))
 
 (define-derived-mode goblins-permissions-mode magit-section-mode "Goblins-Permissions"
   "Requests of one goblin: the current one focused, then the history.
 \\<goblins-permissions-mode-map>
 \\[goblins-permissions-accept] accepts and \\[goblins-permissions-deny] denies the request at point.
-\\[goblins-permissions-toggle] folds a request, \\[quit-window] goes back."
+\\[goblins-permissions-toggle] folds a request, \\[goblins-quit-view] goes back."
   (setq-local header-line-format " Permissions   a accept   d deny   RET fold   q back")
   (setq-local revert-buffer-function (lambda (&rest _) (goblins-permissions-refresh))))
 

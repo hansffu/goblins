@@ -264,7 +264,7 @@ Roles can be changed but not cleared."
                        ("RET" . goblins-raid-open) ("i" . goblins-raid-invite)
                        ("x" . goblins-raid-kick) ("R" . goblins-raid-set-role)
                        ("D" . goblins-raid-destroy) ("?" . goblins-raid-help)
-                       ("g" . goblins-raid-refresh) ("q" . quit-window)))
+                       ("g" . goblins-raid-refresh) ("q" . goblins-quit-view)))
       (define-key map (kbd (car binding)) (cdr binding)))
     map))
 
@@ -280,7 +280,7 @@ Roles can be changed but not cleared."
     (kbd "D") #'goblins-raid-destroy
     (kbd "?") #'goblins-raid-help
     (kbd "gr") #'goblins-raid-refresh
-    (kbd "q") #'quit-window))
+    (kbd "q") #'goblins-quit-view))
 
 (define-derived-mode goblins-raid-mode special-mode "Goblins-Raid"
   "Members of a raid, and the goblins that could join it.

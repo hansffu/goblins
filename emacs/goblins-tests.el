@@ -1012,9 +1012,20 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (goblins-select-goblin source "session-a")
             (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
             (should (eq (window-buffer) (terminal "session-a")))
-            ;; Views and your own windows aren't remembered.
+            ;; Views and your own windows aren't remembered; q in a view
+            ;; restores the goblin's layout.
             (goblins--display-main view)
             (should (equal (goblins-test--layout) (list (terminal "session-a") view)))
+            (goblins-quit-view)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            (goblins-select-goblin source "session-b")
+            (goblins--display-main view)
+            (should (equal (goblins-test--layout) (list (terminal "session-b") view)))
+            (goblins-quit-view)
+            (should (equal (goblins-test--layout) (list (terminal "session-b"))))
+            (should (eq (window-buffer) (terminal "session-b")))
+            (goblins-select-goblin source "session-a")
+            (goblins--display-main view)
             (set-window-buffer (goblins--right-window) (get-buffer-create "*scratch*"))
             (split-window (goblins--agent-window) nil 'below)
             (goblins-select-goblin source "session-b")
@@ -1075,6 +1086,12 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (let ((goblins-request-popups nil))
         (goblins-select-goblin source "session-a")
         (should-not (funcall popup))))))
+
+(ert-deftest goblins-views-quit-with-q-to-the-goblins-layout ()
+  (dolist (mode '(goblins-info-mode goblins-permissions-mode goblins-raid-mode))
+    (with-temp-buffer
+      (funcall mode)
+      (should (eq (key-binding "q") #'goblins-quit-view)))))
 
 (ert-deftest goblins-workspace-without-a-last-goblin-shows-the-latest-terminal ()
   (goblins-test--workspace (list (goblins-test--session "session-a")
@@ -1800,6 +1817,10 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (with-current-buffer (window-buffer (goblins--right-window))
       (should (string-match-p (concat "Directory +" (regexp-quote (directory-file-name project-one)))
                               (buffer-string))))
+    ;; q in the view brings back the layout: the status buffer alone.
+    (select-window (goblins--right-window))
+    (call-interactively (key-binding "q"))
+    (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list source)))
     ;; r creates a raid around alpha and opens its page.
     (goblins-test--in-sidebar "  ● alpha")
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
