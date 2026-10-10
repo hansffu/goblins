@@ -84,21 +84,21 @@
 
 ;;;; Workspace windows
 ;;
-;; Beside the sidebar the workspace has an agent window on the left, showing a
-;; goblin's agent terminal (or the status buffer while there is none), and at
-;; most one window on its right (below it, in a narrow frame; see
-;; `split-width-threshold') for everything else Goblins opens: shells,
-;; Eshell, Dired, files and the views.  Each goblin remembers the last buffer
-;; Goblins opened for it there (views excepted).  Selecting a goblin, or
-;; `goblins-workspace', rebuilds that layout; windows you arrange yourself
-;; in between are not remembered.
+;; Beside the sidebar the workspace has an agent window on the left, dedicated
+;; to the selected goblin's agent terminal (the status buffer stands in until
+;; the first agent opens).  Everything else goes right of it (or below it, in
+;; a narrow frame; see `split-width-threshold'): what Goblins opens, and
+;; whatever you show, split and arrange there yourself.  Each goblin keeps
+;; those windows: leaving it saves them, selecting it again brings them back.
+;; The info, permissions and raid views are never saved; they are shared
+;; between goblins.
 
-(defvar goblins--right-buffers (make-hash-table :test #'equal)
-  "(DIRECTORY . SESSION-ID) to the buffer Goblins last opened on that goblin's right.")
+(defvar goblins--layouts (make-hash-table :test #'equal)
+  "(DIRECTORY . SESSION-ID) to that goblin's saved windows, see
+`goblins--layout-tree'.")
 
 (defvar goblins--last-goblin nil
-  "(DIRECTORY . SESSION-ID) of the goblin selected last, which
-`goblins-workspace' shows again.")
+  "(DIRECTORY . SESSION-ID) of the selected goblin, whose windows show.")
 
 (defun goblins--in-workspace-p ()
   "Whether this frame shows the workspace sidebar."
@@ -110,14 +110,16 @@
                 (window-list)))
 
 (defun goblins--agent-window ()
-  "The workspace's left window, where agent terminals go."
-  (car (sort (goblins--main-windows)
-             (lambda (a b) (or (< (window-left-column a) (window-left-column b))
-                               (and (= (window-left-column a) (window-left-column b))
-                                    (< (window-top-line a) (window-top-line b))))))))
+  "The workspace's agent window: the one claimed for it, else the leftmost."
+  (let ((windows (goblins--main-windows)))
+    (or (cl-find-if (lambda (w) (window-parameter w 'goblins-agent)) windows)
+        (car (sort windows
+                   (lambda (a b) (or (< (window-left-column a) (window-left-column b))
+                                     (and (= (window-left-column a) (window-left-column b))
+                                          (< (window-top-line a) (window-top-line b))))))))))
 
 (defun goblins--right-window ()
-  "The workspace window right of the agent window most recently used, or nil."
+  "The most recently used workspace window other than the agent's, or nil."
   (let ((agent (goblins--agent-window)))
     (car (sort (remq agent (goblins--main-windows))
                (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
@@ -128,6 +130,42 @@
       (goblins--agent-window)
     (car (sort (goblins--main-windows)
                (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+
+(defun goblins--refuse-agent-window-delete (_window)
+  "The `delete-window' parameter of the agent window."
+  (user-error "The agent window stays; select another goblin to change it"))
+
+(defun goblins--release-agent-window (window)
+  "Make WINDOW an ordinary window again."
+  (set-window-dedicated-p window nil)
+  (dolist (parameter '(goblins-agent no-delete-other-windows delete-window))
+    (set-window-parameter window parameter nil)))
+
+(defun goblins--set-agent-buffer (window buffer)
+  "Show BUFFER in WINDOW and dedicate WINDOW to the agent.
+Deleting the other windows keeps it, and deleting it is refused."
+  (goblins--release-agent-window window)
+  (set-window-buffer window buffer)
+  (set-window-dedicated-p window t)
+  (set-window-parameter window 'goblins-agent t)
+  (set-window-parameter window 'no-delete-other-windows t)
+  (set-window-parameter window 'delete-window #'goblins--refuse-agent-window-delete))
+
+(defun goblins--agent-buffer-killed ()
+  "Keep an agent window whose buffer dies, showing the status buffer instead.
+Emacs would delete the dedicated window otherwise."
+  (let ((dying (current-buffer)))
+    (dolist (window (get-buffer-window-list dying nil t))
+      (when (window-parameter window 'goblins-agent)
+        (goblins--set-agent-buffer
+         window
+         (let ((source (and (get-buffer goblins--sidebar-buffer-name)
+                            (buffer-local-value 'goblins--sidebar-source
+                                                (get-buffer goblins--sidebar-buffer-name)))))
+           (if (and (buffer-live-p source) (not (eq source dying)))
+               source
+             (get-scratch-buffer-create))))))))
+(add-hook 'kill-buffer-hook #'goblins--agent-buffer-killed)
 
 (defun goblins--only-agent-window ()
   "Delete the workspace windows other than the agent window, and return it."
@@ -146,22 +184,142 @@ fits at all.  In a frame too small for two windows, nil."
         ((let ((split-height-threshold 0)) (window-splittable-p agent))
          (split-window agent nil 'below))))
 
+;;;;; Saving and restoring a goblin's windows
+
+(defun goblins--view-buffer-p (buffer)
+  "Whether BUFFER is one of the views shared between goblins."
+  (with-current-buffer buffer
+    (derived-mode-p 'goblins-info-mode 'goblins-permissions-mode 'goblins-raid-mode)))
+
+(defun goblins--layout-leaf (window)
+  "WINDOW's saved state, as a leaf of `goblins--layout-tree', or nil.
+A view is saved as the buffer it replaced there, if any."
+  (let ((buffer (window-buffer window)))
+    (if (not (goblins--view-buffer-p buffer))
+        (list :buffer buffer :start (window-start window) :point (window-point window))
+      (let ((quit (window-parameter window 'quit-restore)))
+        (when-let* (((eq (car quit) 'other))
+                    (previous (nth 1 quit))
+                    ((buffer-live-p (car previous))))
+          (list :buffer (car previous) :start (nth 1 previous) :point (nth 2 previous)))))))
+
+(defun goblins--layout-tree (window agent)
+  "The saved form of WINDOW, a window tree with the agent window AGENT.
+A leaf is (:agent t) or (:buffer B :start S :point P); a combination is
+\(:horizontal H :children ((SHARE . TREE)...)), SHARE its children's sizes."
+  (if (window-live-p window)
+      (if (eq window agent) (list :agent t) (goblins--layout-leaf window))
+    (let* ((horizontal (window-combined-p (window-child window) t))
+           (children (cl-loop for child = (window-child window) then (window-next-sibling child)
+                              while child
+                              for tree = (goblins--layout-tree child agent)
+                              when tree
+                              collect (cons (window-total-size child horizontal) tree))))
+      (if (cdr children)
+          (list :horizontal horizontal :children children)
+        (cdar children)))))
+
+(defun goblins--layout-live (tree)
+  "TREE without the windows whose buffer was killed."
+  (cond ((plist-get tree :agent) tree)
+        ((plist-get tree :buffer) (and (buffer-live-p (plist-get tree :buffer)) tree))
+        (t (let ((children (cl-loop for (share . child) in (plist-get tree :children)
+                                    for live = (goblins--layout-live child)
+                                    when live collect (cons share live))))
+             (if (cdr children)
+                 (list :horizontal (plist-get tree :horizontal) :children children)
+               (cdar children))))))
+
+(defun goblins--layout-put (window tree)
+  "Rebuild TREE in the live WINDOW.  Return the window for the agent, if placed."
+  (cond
+   ((plist-get tree :agent) window)
+   ((plist-get tree :buffer)
+    (set-window-buffer window (plist-get tree :buffer))
+    (set-window-start window (plist-get tree :start) t)
+    (set-window-point window (plist-get tree :point))
+    nil)
+   (t
+    (let* ((horizontal (plist-get tree :horizontal))
+           (children (plist-get tree :children))
+           (total (float (apply #'+ (mapcar #'car children))))
+           (size (window-total-size window horizontal))
+           (current window)
+           placed)
+      ;; Split off each child's share in turn; one that doesn't fit is left out.
+      (while (and children current)
+        (let* ((child (pop children))
+               (next (and children
+                          (ignore-errors
+                            (split-window current (max 1 (round (* size (/ (car child) total))))
+                                          (if horizontal 'right 'below))))))
+          (push (cons current (cdr child)) placed)
+          (setq current next)))
+      (let (agent)
+        (dolist (entry (nreverse placed) agent)
+          (setq agent (or (goblins--layout-put (car entry) (cdr entry)) agent))))))))
+
+(defun goblins--save-layout ()
+  "Save the selected goblin's windows, if the workspace shows them."
+  (when (and goblins--last-goblin (goblins--in-workspace-p))
+    (puthash goblins--last-goblin
+             (goblins--layout-tree (window-main-window) (goblins--agent-window))
+             goblins--layouts)))
+
+(defun goblins--restore-layout (key buffer)
+  "Rebuild goblin KEY's saved windows, with BUFFER in the agent window.
+Return the agent window."
+  (let* ((window (goblins--only-agent-window))
+         (tree (goblins--layout-live (gethash key goblins--layouts))))
+    (goblins--release-agent-window window)
+    (let ((agent (or (and tree (goblins--layout-put window tree))
+                     (goblins--only-agent-window))))
+      (goblins--set-agent-buffer agent buffer)
+      agent)))
+
+(defun goblins--forget-stopped-layouts ()
+  "Forget the saved windows of this status buffer's goblins that stopped."
+  (let ((directory goblins--directory)
+        (sessions (append (plist-get goblins--snapshot :sessions) nil)))
+    (maphash (lambda (key _)
+               (when (and (equal (car key) directory)
+                          (member (plist-get (cl-find (cdr key) sessions
+                                                      :key (lambda (s) (plist-get s :id))
+                                                      :test #'equal)
+                                             :state)
+                                  '(nil "stopped" "failed")))
+                 (remhash key goblins--layouts)))
+             goblins--layouts)))
+(add-hook 'goblins-snapshot-hook #'goblins--forget-stopped-layouts)
+
+;;;;; Showing buffers
+
+(defun goblins--display-buffer-right (buffer alist)
+  "A `display-buffer' action: BUFFER in the right window used last, else in
+one split off the agent window."
+  (if-let* ((window (goblins--right-window)))
+      (window--display-buffer buffer window 'reuse alist)
+    (when-let* ((window (goblins--split-agent-window (goblins--agent-window))))
+      (window--display-buffer buffer window 'window alist))))
+
 (defun goblins--display-right (buffer)
   "Show BUFFER beside the agent window and select it, splitting if needed.
 In a frame too small for two windows it replaces the agent for now.
 Outside the workspace, pop it up."
   (if (not (goblins--in-workspace-p))
       (pop-to-buffer buffer)
-    (let ((window (or (goblins--right-window)
-                      (goblins--split-agent-window (goblins--agent-window))
-                      (goblins--agent-window))))
-      (set-window-buffer window buffer)
-      (select-window window)))
+    (select-window
+     (or (goblins--display-buffer-right buffer nil)
+         (let ((agent (goblins--agent-window)))
+           (goblins--release-agent-window agent)
+           (set-window-buffer agent buffer)
+           agent))))
   buffer)
 
 (defun goblins--display-main (buffer)
-  "Show BUFFER, a view such as info or permissions, on the right.
-It is not remembered for any goblin.  Outside the workspace, pop it up."
+  "Show BUFFER, a view such as info or permissions, beside the agent.
+\\[quit-window] there puts back what the window showed before.  Outside the
+workspace, pop it up."
   (goblins--display-right buffer))
 
 (defun goblins--show-in-main (buffer)
@@ -174,7 +332,8 @@ That also hides the status buffer the workspace showed before any agent.
 Outside the workspace, pop it up."
   (if (goblins--in-workspace-p)
       (let ((window (goblins--only-agent-window)))
-        (set-window-buffer window buffer)
+        (goblins--save-layout)
+        (goblins--set-agent-buffer window buffer)
         (select-window window))
     (pop-to-buffer buffer))
   buffer)
@@ -188,41 +347,44 @@ Outside the workspace, pop it up."
              (if (> execs 0) " · tramp" ""))
      'face 'goblins-dim)))
 
-(defun goblins--remembered-right (key)
-  "The live buffer Goblins last opened on the right of goblin KEY, or nil."
-  (let ((buffer (gethash key goblins--right-buffers)))
-    (and (buffer-live-p buffer) buffer)))
+(defun goblins--enter-goblin (source id &optional attach)
+  "Show goblin ID of SOURCE's server in the workspace: its agent terminal,
+attached if ATTACH and needed, and its saved windows.  Without a terminal
+the status buffer holds the agent's place."
+  (let* ((key (cons (buffer-local-value 'goblins--directory source) id))
+         (terminal (with-current-buffer source (goblins--terminal-buffer id))))
+    (setq goblins--last-goblin key)
+    (let ((agent (goblins--restore-layout key (or terminal source))))
+      (when (and attach (not terminal))
+        (goblins--attach source id (lambda (b) (goblins--set-agent-buffer agent b))))
+      (select-window agent))))
 
 (defun goblins-select-goblin (source id &optional right attach)
   "Show goblin ID of SOURCE's daemon, and return the buffer shown for it.
-In the workspace its agent terminal goes left and RIGHT, else the buffer
-Goblins last opened for it, right; RIGHT is remembered for the goblin.
-Without an Emacs terminal for the goblin, ATTACH attaches one, and otherwise
-the left window is kept.  Outside the workspace RIGHT, or the terminal, is
-popped up."
+In the workspace the windows of the goblin shown so far are saved, and this
+goblin's agent terminal and saved windows come back; RIGHT then shows beside
+the agent.  Without an Emacs terminal for the goblin, ATTACH attaches one.
+Outside the workspace RIGHT, or the terminal, is popped up."
   (let* ((key (cons (buffer-local-value 'goblins--directory source) id))
          (terminal (with-current-buffer source (goblins--terminal-buffer id))))
-    (when right (puthash key right goblins--right-buffers))
     (cond
      ((not (goblins--in-workspace-p))
       (cond (right (pop-to-buffer right))
             (terminal (pop-to-buffer terminal))
             (attach (goblins--attach source id #'pop-to-buffer))))
      (t
-      (setq goblins--last-goblin key)
-      (let ((agent (goblins--only-agent-window))
-            (shown (or right (goblins--remembered-right key))))
-        (cond (terminal (set-window-buffer agent terminal))
-              (attach (goblins--attach source id (lambda (b) (set-window-buffer agent b)))))
-        (if (not shown)
-            (select-window agent)
-          (let ((window (or (goblins--split-agent-window agent)
-                            ;; Too small for two: what was asked for wins.
-                            (and right agent))))
-            (when window (set-window-buffer window shown))
-            (select-window (if right (or window agent) agent))))
-        (goblins--popup-follow source id)
-        (or right (window-buffer agent)))))))
+      (if (equal key goblins--last-goblin)
+          (let ((agent (goblins--agent-window)))
+            (cond ((and terminal (not (eq (window-buffer agent) terminal)))
+                   (goblins--set-agent-buffer agent terminal))
+                  ((and attach (not terminal))
+                   (goblins--attach source id (lambda (b) (goblins--set-agent-buffer agent b)))))
+            (select-window agent))
+        (goblins--save-layout)
+        (goblins--enter-goblin source id attach))
+      (when right (goblins--display-right right))
+      (goblins--popup-follow source id)
+      (or right (window-buffer (goblins--agent-window)))))))
 
 (defun goblins--attach (source id display)
   "Attach a new terminal to running goblin ID of SOURCE's server, shown by DISPLAY."
@@ -238,33 +400,9 @@ popped up."
          default-directory)
        display))))
 
-(defun goblins--restore-layout ()
-  "Rebuild the selected goblin's workspace layout, without attaching.
-Without a selected goblin, keep the agent window alone."
-  (let ((source (and goblins--last-goblin
-                     (cl-find-if (lambda (buffer)
-                                   (and (eq (buffer-local-value 'major-mode buffer)
-                                            'goblins-status-mode)
-                                        (equal (buffer-local-value 'goblins--directory buffer)
-                                               (car goblins--last-goblin))))
-                                 (buffer-list)))))
-    (if source
-        (goblins-select-goblin source (cdr goblins--last-goblin))
-      (select-window (goblins--only-agent-window)))))
-
-(defun goblins-quit-view ()
-  "Close this view.  In the workspace, restore the selected goblin's layout:
-its agent, and the buffer Goblins last opened for it on the right, if any."
-  (interactive)
-  (if (not (goblins--in-workspace-p))
-      (quit-window)
-    (let ((buffer (current-buffer)))
-      (goblins--restore-layout)
-      (bury-buffer buffer))))
-
 (defun goblins-open-session (source id)
   "Show the terminal of session ID of SOURCE's server, attaching if needed.
-In the workspace the goblin's remembered buffer comes back on the right."
+In the workspace the goblin's saved windows come back beside it."
   (goblins-select-goblin source id nil t))
 
 (defun goblins--describe-keys (title groups)
@@ -448,12 +586,12 @@ end of the buffer.  Add your own to show more.")
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "g") #'goblins-info-refresh)
-    (define-key map (kbd "q") #'goblins-quit-view)
+    (define-key map (kbd "q") #'quit-window)
     map))
 
 (with-eval-after-load 'evil
   (evil-set-initial-state 'goblins-info-mode 'motion)
-  (evil-define-key* 'motion goblins-info-mode-map (kbd "q") #'goblins-quit-view))
+  (evil-define-key* 'motion goblins-info-mode-map (kbd "q") #'quit-window))
 
 (define-derived-mode goblins-info-mode special-mode "Goblins-Info"
   "Everything the daemon knows about one goblin."
@@ -611,7 +749,7 @@ Accept it when APPROVED is non-nil, otherwise deny it."
     (define-key map (kbd "d") #'goblins-permissions-deny)
     (define-key map (kbd "RET") #'goblins-permissions-toggle)
     (define-key map (kbd "g") #'goblins-permissions-refresh)
-    (define-key map (kbd "q") #'goblins-quit-view)
+    (define-key map (kbd "q") #'quit-window)
     map))
 
 (with-eval-after-load 'evil
@@ -625,13 +763,13 @@ Accept it when APPROVED is non-nil, otherwise deny it."
     (kbd "TAB") #'goblins-permissions-toggle
     (kbd "<tab>") #'goblins-permissions-toggle
     (kbd "gr") #'goblins-permissions-refresh
-    (kbd "q") #'goblins-quit-view))
+    (kbd "q") #'quit-window))
 
 (define-derived-mode goblins-permissions-mode magit-section-mode "Goblins-Permissions"
   "Requests of one goblin: the current one focused, then the history.
 \\<goblins-permissions-mode-map>
 \\[goblins-permissions-accept] accepts and \\[goblins-permissions-deny] denies the request at point.
-\\[goblins-permissions-toggle] folds a request, \\[goblins-quit-view] goes back."
+\\[goblins-permissions-toggle] folds a request, \\[quit-window] goes back."
   (setq-local header-line-format " Permissions   a accept   d deny   RET fold   q back")
   (setq-local revert-buffer-function (lambda (&rest _) (goblins-permissions-refresh))))
 

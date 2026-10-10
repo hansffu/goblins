@@ -167,25 +167,32 @@ In the permissions view the current request is focused: =a= accepts, =d= denies,
 
 ** Windows
 
-Beside the sidebar there are one or two windows:
+Beside the sidebar:
 
-- *Left: the agent.* The selected goblin's agent terminal.  Before any agent
-  terminal exists the status buffer stands in, until the first agent opens.
-- *Right (or below): everything else Goblins opens* for that goblin: shells (=t=), Eshell
-  (=e=), Dired (=d=), =C-c g f= files, and files its =goblins-editor= opens.  The
-  info, permissions and raid views open there too.
+- *Left: the agent window.* It belongs to the selected goblin's agent
+  terminal; before any agent exists the status buffer stands in.  It is
+  dedicated: other buffers are shown elsewhere, deleting the other windows
+  keeps it, and deleting it is refused.
+- *Right: everything else.* What Goblins opens for the goblin (shells =t=,
+  Eshell =e=, Dired =d=, =C-c g f= files, files its =goblins-editor= opens) goes
+  into the right window used last, and you show, split and arrange anything
+  you like there.
 
-The second window goes right of the agent when the agent window is at least
-=split-width-threshold= wide, else below it (=split-height-threshold=, or
-below anyway when it fits).  In a frame too small for two windows, the agent
-shows alone, and a buffer you open replaces it until you select the goblin
-again.
+Each goblin keeps its windows.  Leaving it (selecting another goblin with =RET=,
+=goblins-switch=, =t=/=e=/=d=, an approved edit or a new agent, or quitting the
+workspace) saves them: splits, sizes, buffers and positions.  Selecting it
+again, or =M-x goblins-workspace=, brings them back beside its agent.  Windows
+whose buffer was killed are dropped; a goblin's windows are forgotten when it
+stops, and never kept across Emacs sessions.
 
-Each goblin remembers the last buffer Goblins opened for it on the right (not
-the views).  Selecting a goblin (=RET= in the sidebar, =goblins-switch=, a new
-agent) or =M-x goblins-workspace= rebuilds the layout: its agent on the left,
-its remembered buffer, if any, on the right.  Between those you can arrange
-windows and switch buffers as you like; Goblins doesn't remember them.
+The info, permissions and raid views open on the right too, but are never
+saved, as they are shared between goblins: =q= puts back what their window
+showed before, and leaving the goblin saves that instead.
+
+The first window on the right goes beside the agent when the agent window is
+at least =split-width-threshold= wide, else below it (=split-height-threshold=,
+or below anyway when it fits).  In a frame too small for two windows a buffer
+you open takes the agent's place until you select a goblin again.
 
 A pending permission request of the selected goblin pops up in a small
 window at the bottom: what it asks for, the reason and a one-line preview.  It

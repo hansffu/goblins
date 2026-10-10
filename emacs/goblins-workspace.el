@@ -624,8 +624,9 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
     (set-window-configuration config)))
 
 (defun goblins-workspace-quit ()
-  "Leave the Goblins workspace."
+  "Leave the Goblins workspace, saving the selected goblin's windows."
   (interactive)
+  (goblins--save-layout)
   (funcall goblins-workspace-quit-function))
 
 ;;;; Mode
@@ -717,7 +718,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
     buffer))
 
 (defun goblins--workspace-restore (source)
-  "Show the goblin of SOURCE's server selected last, with its remembered buffer.
+  "Show the goblin of SOURCE's server selected last, with its saved windows.
 Else the most recently used goblin terminal, else the status buffer alone."
   (let* ((directory (buffer-local-value 'goblins--directory source))
          (last (and (equal (car goblins--last-goblin) directory)
@@ -727,19 +728,22 @@ Else the most recently used goblin terminal, else the status buffer alone."
          (recent (cl-find-if (lambda (buffer)
                                (let ((key (buffer-local-value 'goblins--session-key buffer)))
                                  (and key (equal (car key) directory) (buffer-live-p buffer))))
-                             (buffer-list))))
-    (cond (last (goblins-select-goblin source last))
-          (recent (goblins-select-goblin
-                   source (nth 2 (buffer-local-value 'goblins--session-key recent))))
-          (t (set-window-buffer (goblins--only-agent-window) source)
-             (select-window (goblins--agent-window))))))
+                             (buffer-list)))
+         (id (or last (and recent (nth 2 (buffer-local-value 'goblins--session-key recent))))))
+    (if id
+        (progn (goblins--enter-goblin source id)
+               (goblins--popup-follow source id))
+      (setq goblins--last-goblin nil)
+      (let ((window (goblins--only-agent-window)))
+        (goblins--set-agent-buffer window source)
+        (select-window window)))))
 
 ;;;###autoload
 (defun goblins-workspace (&optional directory)
   "Open the Goblins workspace: a sidebar of goblins beside the main view.
-Beside it the goblin selected last: its agent terminal on the left and the
-buffer Goblins last opened for it on the right.  Without any goblin terminal
-the status buffer shows until the first agent opens.
+Beside it the goblin selected last: its agent terminal on the left and its
+saved windows on the right.  Without any goblin terminal the status buffer
+shows until the first agent opens.
 With a prefix argument, prompt for the daemon state directory.
 Switching or creating the workspace is delegated to
 `goblins-workspace-switch-or-create-function'."
@@ -749,7 +753,9 @@ Switching or creating the workspace is delegated to
                                                 goblins-state-directory
                                                 (goblins--default-directory))))))
   (let ((source (goblins--status-buffer directory)))
-    (unless (goblins--sidebar-window)
+    (if (goblins--sidebar-window)
+        ;; Already shown: these windows are the selected goblin's.
+        (goblins--save-layout)
       (funcall goblins-workspace-switch-or-create-function goblins-workspace-name))
     (with-current-buffer source
       (unless (or goblins--connection (process-live-p goblins--server-process))

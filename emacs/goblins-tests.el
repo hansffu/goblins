@@ -960,14 +960,16 @@
 In BODY, (terminal ID) is a fake agent terminal for session ID."
   (declare (indent 1))
   `(goblins-test--sidebar ,sessions
-     (let ((goblins--right-buffers (make-hash-table :test #'equal))
+     (let ((goblins--layouts (make-hash-table :test #'equal))
            (goblins--terminal-buffers (make-hash-table :test #'equal))
            (goblins--last-goblin nil)
            (terminals nil))
        (save-window-excursion
          (delete-other-windows)
          (rename-buffer goblins--sidebar-buffer-name)
-         (display-buffer-in-side-window sidebar '((side . left) (window-width . 20)))
+         (display-buffer-in-side-window sidebar '((side . left) (window-width . 20)
+                                                  (window-parameters
+                                                   (no-delete-other-windows . t))))
          (cl-flet ((terminal (id)
                      (or (alist-get id terminals nil nil #'equal)
                          (let ((buffer (generate-new-buffer (format " *agent %s*" id))))
@@ -989,11 +991,15 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
                                   (and (= (window-left-column a) (window-left-column b))
                                        (< (window-top-line a) (window-top-line b))))))))
 
-(ert-deftest goblins-workspace-keeps-agents-left-and-goblin-buffers-right ()
+(ert-deftest goblins-workspace-saves-each-goblins-windows ()
   (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
                                  (goblins-test--session "session-b" :cwd "/p"))
     (let ((dired-a (generate-new-buffer " *dired a*"))
-          (view (generate-new-buffer " *view*")))
+          (notes (generate-new-buffer " *notes*"))
+          (scratch (generate-new-buffer " *scratch test*"))
+          (view (generate-new-buffer " *view*"))
+          (split-width-threshold 20))
+      (with-current-buffer view (goblins-info-mode))
       (unwind-protect
           (progn
             ;; Without an agent terminal, the status buffer, alone.
@@ -1001,48 +1007,96 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (should (equal (goblins-test--layout) (list source)))
             ;; The first agent replaces it.
             (goblins--display-new-agent (terminal "session-a"))
+            (setq goblins--last-goblin '("/tmp/goblins-test" . "session-a"))
             (should (equal (goblins-test--layout) (list (terminal "session-a"))))
-            ;; A goblin's buffer opens right of its agent, and is remembered.
+            ;; What Goblins opens goes right of the agent.
             (goblins-select-goblin source "session-a" dired-a)
             (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
             (should (eq (window-buffer) dired-a))
-            ;; Another goblin with nothing remembered: its agent alone.
+            ;; So does what you show and split there yourself.
+            (switch-to-buffer scratch)
+            (set-window-buffer (split-window nil nil 'below) notes)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") scratch notes)))
+            ;; Another goblin with nothing saved: its agent alone.
             (terminal "session-b")
             (goblins-select-goblin source "session-b")
             (should (equal (goblins-test--layout) (list (terminal "session-b"))))
-            ;; Back again: the remembered buffer returns, the agent selected.
+            ;; Back again: everything you left, the agent selected.
             (goblins-select-goblin source "session-a")
-            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") scratch notes)))
+            (let ((right (mapcar (lambda (b) (get-buffer-window b)) (list scratch notes))))
+              (should (> (window-left-column (car right))
+                         (window-left-column (goblins--agent-window))))
+              (should (= (window-left-column (car right)) (window-left-column (cadr right)))))
             (should (eq (window-buffer) (terminal "session-a")))
-            ;; Views and your own windows aren't remembered; q in a view
-            ;; restores the goblin's layout.
+            ;; The agent window is the agent's.
+            (should-error (switch-to-buffer scratch nil t))
+            (should-error (delete-window (goblins--agent-window)) :type 'user-error)
+            (select-window (get-buffer-window notes))
+            (delete-other-windows)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") notes)))
+            ;; A view is never saved: leaving the goblin keeps what it replaced,
+            ;; and q puts that back too.
             (goblins--display-main view)
             (should (equal (goblins-test--layout) (list (terminal "session-a") view)))
-            (goblins-quit-view)
-            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
-            (goblins-select-goblin source "session-b")
-            (goblins--display-main view)
-            (should (equal (goblins-test--layout) (list (terminal "session-b") view)))
-            (goblins-quit-view)
-            (should (equal (goblins-test--layout) (list (terminal "session-b"))))
-            (should (eq (window-buffer) (terminal "session-b")))
-            (goblins-select-goblin source "session-a")
-            (goblins--display-main view)
-            (set-window-buffer (goblins--right-window) (get-buffer-create "*scratch*"))
-            (split-window (goblins--agent-window) nil 'below)
             (goblins-select-goblin source "session-b")
             (goblins-select-goblin source "session-a")
-            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
-            ;; goblins-workspace restores the goblin selected last.
+            (should (equal (goblins-test--layout) (list (terminal "session-a") notes)))
+            (goblins--display-main view)
+            (quit-window)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") notes)))
+            ;; A saved window whose buffer was killed is dropped.
             (goblins-select-goblin source "session-b")
-            (set-window-buffer (goblins--agent-window) view)
+            (kill-buffer notes)
+            (goblins-select-goblin source "session-a")
+            (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+            ;; Re-entering the workspace shows the goblin selected last, as
+            ;; left: `goblins-workspace' saves, then restores.
+            (goblins-select-goblin source "session-b" dired-a)
+            (goblins--save-layout)
+            (delete-other-windows (goblins--agent-window))
             (goblins--workspace-restore source)
-            (should (equal (goblins-test--layout) (list (terminal "session-b"))))
-            ;; A killed buffer is forgotten.
-            (kill-buffer dired-a)
-            (goblins-select-goblin source "session-a")
-            (should (equal (goblins-test--layout) (list (terminal "session-a")))))
-        (mapc (lambda (b) (when (buffer-live-p b) (kill-buffer b))) (list dired-a view))))))
+            (should (equal (goblins-test--layout) (list (terminal "session-b") dired-a))))
+        (mapc (lambda (b) (when (buffer-live-p b) (kill-buffer b)))
+              (list dired-a notes scratch view))))))
+
+(ert-deftest goblins-workspace-splits-by-the-split-thresholds ()
+  (goblins-test--workspace (list (goblins-test--session "session-a")
+                                 (goblins-test--session "session-b")
+                                 (goblins-test--session "session-c"))
+    (let ((dired (generate-new-buffer " *dired*"))
+          (side-by-side (lambda ()
+                          (let ((windows (goblins--main-windows)))
+                            (/= (window-left-column (car windows))
+                                (window-left-column (cadr windows)))))))
+      (unwind-protect
+          (progn
+            (mapc #'terminal '("session-a" "session-b" "session-c"))
+            ;; Wide enough: right of the agent.
+            (let ((split-width-threshold 20))
+              (goblins-select-goblin source "session-a" dired))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired)))
+            (should (funcall side-by-side))
+            ;; Too narrow: below it.
+            (let ((split-width-threshold 1000) (split-height-threshold 10))
+              (goblins-select-goblin source "session-b" dired))
+            (should (equal (goblins-test--layout) (list (terminal "session-b") dired)))
+            (should-not (funcall side-by-side))
+            ;; Too small for two windows: the buffer asked for wins.
+            (let ((split-width-threshold 1000) (window-min-height 100))
+              (goblins-select-goblin source "session-c" dired))
+            (should (equal (goblins-test--layout) (list dired)))
+            ;; Restoring keeps the arrangement saved, whatever the thresholds.
+            (let ((split-width-threshold 1000))
+              (goblins-select-goblin source "session-a"))
+            (should (funcall side-by-side)))
+        (kill-buffer dired)))))
+
+(ert-deftest goblins-views-quit-with-q ()
+  (dolist (mode '(goblins-info-mode goblins-permissions-mode goblins-raid-mode))
+    (with-temp-buffer
+      (funcall mode)
+      (should (eq (key-binding "q") #'quit-window)))))
 
 (ert-deftest goblins-request-popup-follows-the-selected-goblin ()
   (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
@@ -1088,41 +1142,6 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (let ((goblins-request-popups nil))
         (goblins-select-goblin source "session-a")
         (should-not (funcall popup))))))
-
-(ert-deftest goblins-workspace-splits-by-the-split-thresholds ()
-  (goblins-test--workspace (list (goblins-test--session "session-a"))
-    (let ((dired-a (generate-new-buffer " *dired a*"))
-          (side-by-side (lambda ()
-                          (let ((windows (goblins--main-windows)))
-                            (/= (window-left-column (car windows))
-                                (window-left-column (cadr windows)))))))
-      (unwind-protect
-          (progn
-            (terminal "session-a")
-            ;; Wide enough: right of the agent.
-            (let ((split-width-threshold 20))
-              (goblins-select-goblin source "session-a" dired-a))
-            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
-            (should (funcall side-by-side))
-            ;; Too narrow: below it.
-            (let ((split-width-threshold 1000) (split-height-threshold 10))
-              (goblins-select-goblin source "session-a"))
-            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
-            (should-not (funcall side-by-side))
-            ;; Too small for two windows: the agent alone, unless the
-            ;; buffer itself was asked for.
-            (let ((split-width-threshold 1000) (window-min-height 100))
-              (goblins-select-goblin source "session-a")
-              (should (equal (goblins-test--layout) (list (terminal "session-a"))))
-              (goblins-select-goblin source "session-a" dired-a)
-              (should (equal (goblins-test--layout) (list dired-a)))))
-        (kill-buffer dired-a)))))
-
-(ert-deftest goblins-views-quit-with-q-to-the-goblins-layout ()
-  (dolist (mode '(goblins-info-mode goblins-permissions-mode goblins-raid-mode))
-    (with-temp-buffer
-      (funcall mode)
-      (should (eq (key-binding "q") #'goblins-quit-view)))))
 
 (ert-deftest goblins-editor-files-wait-for-approval-before-requests ()
   (require 'server)
@@ -1201,8 +1220,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (terminal "session-a")
             (goblins-tramp--server-switch-buffer
              (lambda (next &rest _) (funcall server-window next)) file)
-            (should (equal (goblins-test--layout) (list (terminal "session-a") file)))
-            (should (eq (goblins--remembered-right '("/tmp/goblins-test" . "session-a")) file)))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") file))))
         (with-current-buffer source (rename-buffer name))
         (kill-buffer file)))))
 
@@ -1902,7 +1920,12 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (with-current-buffer (window-buffer (goblins--right-window))
       (should (string-match-p (concat "Directory +" (regexp-quote (directory-file-name project-one)))
                               (buffer-string))))
-    ;; q in the view brings back the layout: the status buffer alone.
+    ;; q in a view puts back what its window showed before: the
+    ;; permissions view, then (that window was opened for it) nothing.
+    (select-window (goblins--right-window))
+    (call-interactively (key-binding "q"))
+    (should (equal (mapcar #'window-buffer (goblins--main-windows))
+                   (list source (get-buffer goblins--permissions-buffer-name))))
     (select-window (goblins--right-window))
     (call-interactively (key-binding "q"))
     (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list source)))
