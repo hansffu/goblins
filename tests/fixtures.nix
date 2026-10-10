@@ -41,6 +41,20 @@ in
     printf '%s\n' "$message"
   '';
   collision = pkgs.writeScriptBin "jq" "#!${pkgs.dash}/bin/dash\nexit 0\n";
+  # Its closure holds an output that is itself a symlink to a directory,
+  # as Chromium's sandbox output is in mermaid-cli's closure.
+  symlink-tool =
+    let
+      target = pkgs.writeScriptBin "symlink-target" ''
+        #!${pkgs.dash}/bin/dash
+        printf '%s\n' symlink-output-ok
+      '';
+      linked = pkgs.runCommand "goblins-symlink-output" { } "ln -s ${target} $out";
+    in
+    pkgs.writeScriptBin "symlink-tool" ''
+      #!${pkgs.dash}/bin/dash
+      exec ${linked}/bin/symlink-target
+    '';
 
   fish-shell = sandbox.mkSandbox {
     pkg = pkgs.fish;

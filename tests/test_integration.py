@@ -42,7 +42,7 @@ class LiveTests(unittest.TestCase):
     def setUpClass(cls):
         cls.fixture = tempfile.TemporaryDirectory(prefix="goblins-test-")
         cls.paths = {}
-        for name in ("runtime", "jq", "script-tool", "data-tool", "collision", "cowsay"):
+        for name in ("runtime", "jq", "script-tool", "data-tool", "collision", "cowsay", "symlink-tool"):
             installable = {"jq": "jq^bin", "cowsay": "cowsay^out"}.get(name, name)
             cls.paths[name] = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
                 "--out-link", str(Path(cls.fixture.name) / name), "path:" + str(Path(__file__).resolve().parents[1]) + "#" + installable]))
@@ -82,6 +82,17 @@ print(json.dumps({p[4]:p[5].split(',') for l in open('/proc/self/mountinfo') if 
             self.assertIn("nodev", flags[str(path)])
         self.assertTrue(probe(one, f'import os,json; print(json.dumps(all(os.path.exists(p) for p in {list(map(str,one.mounted))!r})))'))
         print("EVIDENCE same-shell", before, identity(one), "new-jq-paths", len(missing), "namespaces", one.identity, flush=True)
+
+    def test_live_grant_of_symlink_shaped_output(self):
+        session = self.session()
+        tool = self.paths["symlink-tool"]
+        links = [p for p in session.closure([tool]) - session.mounted if p.is_symlink()]
+        self.assertEqual(len(links), 1, "fixture must newly expose one symlink-shaped output")
+        session.grant("symlink-tool", tool)
+        self.assertIsNone(session.proc.poll())
+        session.input.write("symlink-tool\n")
+        self.assertEqual(line(session), "symlink-output-ok")
+        self.assertTrue(probe(session, f'import os,json; print(json.dumps(os.path.isdir("{links[0]}/bin")))'))
 
     def test_authority_files_fds_and_sockets(self):
         one, two = self.session(), self.session()

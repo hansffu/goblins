@@ -74,8 +74,15 @@ struct OpenHow {
     resolve: u64,
 }
 fn beneath(root: RawFd, path: &str) -> io::Result<OwnedFd> {
+    open_beneath(root, path, 0)
+}
+/// Like `beneath`, but a trailing symlink yields a handle to the link itself.
+fn link_beneath(root: RawFd, path: &str) -> io::Result<OwnedFd> {
+    open_beneath(root, path, libc::O_NOFOLLOW)
+}
+fn open_beneath(root: RawFd, path: &str, flags: i32) -> io::Result<OwnedFd> {
     let how = OpenHow {
-        flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
+        flags: (libc::O_PATH | libc::O_CLOEXEC | flags) as u64,
         mode: 0,
         resolve: RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS,
     }; // BENEATH | NO_SYMLINKS | NO_MAGICLINKS
@@ -103,6 +110,70 @@ fn valid_name(name: &str) -> bool {
             }
         })
 }
+/// Most symlinks a store object may pass through, as the kernel's own limit.
+const MAX_STORE_LINKS: usize = 40;
+/// Open store object NAME. A Nix output may itself be a symlink, and
+/// Bubblewrap follows one when a sandbox starts; follow it here too, but
+/// only within the store: an absolute link must name `/nix/store/<object>`,
+/// a relative one must not climb above the store, and every link is read by
+/// hand so the kernel never resolves one.
+fn store_object(store: RawFd, name: &str) -> io::Result<OwnedFd> {
+    let outside = || io::Error::other("store symlink leaves the Nix store");
+    // Components still to walk, last first, and those walked so far.
+    let mut rest = vec![name.to_owned()];
+    let mut walked: Vec<String> = Vec::new();
+    let mut links = 0;
+    while let Some(part) = rest.pop() {
+        if part == ".." {
+            walked.pop().ok_or_else(outside)?;
+            continue;
+        }
+        walked.push(part);
+        let object = link_beneath(store, &walked.join("/"))?;
+        if !File::from(object.try_clone()?)
+            .metadata()?
+            .file_type()
+            .is_symlink()
+        {
+            continue;
+        }
+        links += 1;
+        if links > MAX_STORE_LINKS {
+            return Err(io::Error::from_raw_os_error(libc::ELOOP));
+        }
+        let mut target = vec![0u8; libc::PATH_MAX as usize];
+        let length = unsafe {
+            libc::readlinkat(
+                object.as_raw_fd(),
+                c("").as_ptr(),
+                target.as_mut_ptr().cast(),
+                target.len(),
+            )
+        };
+        target.truncate(cvt(length as i32)? as usize);
+        let target = String::from_utf8(target).map_err(io::Error::other)?;
+        walked.pop();
+        let relative = match target.strip_prefix('/') {
+            Some(absolute) => {
+                walked.clear();
+                absolute.strip_prefix("nix/store/").ok_or_else(outside)?
+            }
+            None => &target,
+        };
+        rest.extend(
+            relative
+                .split('/')
+                .filter(|p| !p.is_empty() && *p != ".")
+                .rev()
+                .map(String::from),
+        );
+    }
+    if !walked.first().is_some_and(|object| valid_name(object)) {
+        return Err(outside());
+    }
+    // Every component was checked above; resolve the result strictly again.
+    beneath(store, &walked.join("/"))
+}
 #[repr(C)]
 struct MountAttr {
     attr_set: u64,
@@ -121,7 +192,7 @@ fn grant(
         return Err(io::Error::other("invalid canonical store basename"));
     }
     cvt(unsafe { libc::setns(source_ns, libc::CLONE_NEWNS) })?;
-    let src = beneath(store, name)?;
+    let src = store_object(store, name)?;
     let meta = File::from(src.try_clone()?).metadata()?;
     if !meta.is_dir() && !meta.is_file() {
         return Err(io::Error::other("unsupported store object"));
@@ -538,5 +609,45 @@ mod tests {
         ] {
             assert!(!valid_name(name));
         }
+    }
+    #[test]
+    fn store_symlinks_resolve_only_within_the_store() {
+        use std::os::unix::fs::symlink;
+        let object = |n: char| format!("{}-object", n.to_string().repeat(32));
+        let store = env::temp_dir().join(format!("goblins-store-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&store);
+        fs::create_dir_all(store.join(object('a')).join("bin")).unwrap();
+        fs::write(store.join(object('a')).join("bin/tool"), "").unwrap();
+        let link = |n, target: &str| symlink(target, store.join(object(n))).unwrap();
+        // Nix's own shape: an output that is an absolute link to another.
+        link('b', &format!("/nix/store/{}", object('a')));
+        link('c', &format!("/nix/store/{}/bin/tool", object('a')));
+        link('d', &format!("/nix/store/{}", object('b')));
+        link('f', &format!("{}/bin/../bin/tool", object('a')));
+        link('g', "/etc");
+        link('h', "../../etc");
+        link('i', &format!("/nix/store/{}", object('i')));
+        link('j', "/nix/store/not-a-store-object");
+        let root = open(store.to_str().unwrap(), libc::O_PATH | libc::O_DIRECTORY).unwrap();
+        let resolved = |n| {
+            store_object(root.as_raw_fd(), &object(n))
+                .map(|f| File::from(f).metadata().unwrap().ino())
+        };
+        let ino = |path: &str| fs::metadata(store.join(path)).unwrap().ino();
+        assert_eq!(resolved('a').unwrap(), ino(&object('a')));
+        assert_eq!(resolved('b').unwrap(), ino(&object('a')));
+        assert_eq!(
+            resolved('c').unwrap(),
+            ino(&format!("{}/bin/tool", object('a')))
+        );
+        assert_eq!(resolved('d').unwrap(), ino(&object('a')));
+        assert_eq!(
+            resolved('f').unwrap(),
+            ino(&format!("{}/bin/tool", object('a')))
+        );
+        for n in ['g', 'h', 'i', 'j'] {
+            assert!(resolved(n).is_err(), "{}", object(n));
+        }
+        fs::remove_dir_all(&store).unwrap();
     }
 }
