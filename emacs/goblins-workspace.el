@@ -21,6 +21,7 @@
 (require 'goblins-views)
 (require 'goblins-raids)
 (require 'project)
+(require 'hl-line)
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
@@ -53,8 +54,12 @@ The default closes the sidebar and restores the configuration saved by
 
 (defface goblins-sidebar-header '((t :inherit goblins-heading))
   "Raid and directory headings in the sidebar." :group 'goblins)
-(defface goblins-sidebar-active '((t :inherit highlight :extend t))
-  "The goblin whose terminal is shown in the main window." :group 'goblins)
+(defface goblins-sidebar-selected '((t :inherit highlight :extend t))
+  "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
+(defface goblins-sidebar-active '((t :weight bold))
+  "The goblin or shell whose terminal is shown in the main window." :group 'goblins)
+(defface goblins-sidebar-active-marker '((t :inherit font-lock-keyword-face :weight bold))
+  "The bar before the goblin or shell shown in the main window." :group 'goblins)
 
 (defvar-local goblins--sidebar-source nil
   "The status buffer whose snapshot this sidebar shows.")
@@ -72,7 +77,7 @@ The status buffer always lists them."
 
 (defun goblins--sidebar-set-collapsed (keys)
   (puthash goblins--directory keys goblins--sidebar-folds))
-(defvar-local goblins--sidebar-active-overlay nil)
+(defvar-local goblins--sidebar-active-overlays nil)
 
 ;;;; Data
 
@@ -318,8 +323,8 @@ The text is built apart from the sidebar so a failure cannot blank it."
   "Mark the goblin or shell whose terminal is shown in the main window."
   (when (buffer-live-p (get-buffer goblins--sidebar-buffer-name))
     (with-current-buffer goblins--sidebar-buffer-name
-      (when goblins--sidebar-active-overlay
-        (delete-overlay goblins--sidebar-active-overlay))
+      (mapc #'delete-overlay goblins--sidebar-active-overlays)
+      (setq goblins--sidebar-active-overlays nil)
       (let* ((window (goblins--main-window))
              (shown (and window (window-buffer window)))
              (key (and shown (buffer-local-value 'goblins--session-key shown)))
@@ -330,10 +335,14 @@ The text is built apart from the sidebar so a failure cannot blank it."
                       (goblins--sidebar-find (cons 'terminal shown))
                     (and id (goblins--sidebar-find (cons 'id id))))))
         (when pos
-          (setq goblins--sidebar-active-overlay
-                (make-overlay pos (save-excursion (goto-char pos)
-                                                  (1+ (line-end-position)))))
-          (overlay-put goblins--sidebar-active-overlay 'face 'goblins-sidebar-active))))))
+          ;; Bold, with a bar over the line's first (indentation) column;
+          ;; the line at point keeps its own highlight.
+          (let ((line (make-overlay pos (save-excursion (goto-char pos)
+                                                        (1+ (line-end-position)))))
+                (bar (make-overlay pos (1+ pos))))
+            (overlay-put line 'face 'goblins-sidebar-active)
+            (overlay-put bar 'display (propertize "▌" 'face 'goblins-sidebar-active-marker))
+            (setq goblins--sidebar-active-overlays (list line bar))))))))
 
 (defun goblins--sidebar-window-changed (_frame-or-window)
   (goblins--sidebar-update-active))
@@ -680,7 +689,13 @@ the goblin at point (or of its shell)."
               window-size-fixed 'width
               mode-line-format nil
               header-line-format " Goblins   ? keys"
-              revert-buffer-function (lambda (&rest _) (goblins-sidebar-refresh)))
+              revert-buffer-function (lambda (&rest _) (goblins-sidebar-refresh))
+              hl-line-face 'goblins-sidebar-selected)
+  ;; Point shows as the highlighted line, never as a cursor, Evil's included.
+  (dolist (cursor '(evil-default-cursor evil-normal-state-cursor evil-motion-state-cursor
+                    evil-emacs-state-cursor evil-visual-state-cursor
+                    evil-operator-state-cursor))
+    (set (make-local-variable cursor) (list nil)))
   (hl-line-mode 1))
 
 ;;;; Entry points

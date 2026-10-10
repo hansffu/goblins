@@ -903,6 +903,33 @@
             (should (eq shown terminal)))
         (kill-buffer terminal)))))
 
+(ert-deftest goblins-sidebar-marks-selected-and-active-lines-apart ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
+                               (goblins-test--session "session-b" :cwd "/p"))
+    (let ((terminal (generate-new-buffer " *goblins test terminal*")))
+      (unwind-protect
+          (save-window-excursion
+            (rename-buffer goblins--sidebar-buffer-name)
+            (with-current-buffer terminal
+              (setq-local goblins--session-key '("/tmp/goblins-test" "daemon-a" "session-b")))
+            (set-window-buffer (selected-window) terminal)
+            (cl-letf (((symbol-function 'goblins--main-window) #'selected-window))
+              (goblins--sidebar-update-active))
+            ;; No cursor, Evil's included: the line at point is highlighted.
+            (should-not cursor-type)
+            (should (equal (buffer-local-value 'evil-motion-state-cursor (current-buffer)) '(nil)))
+            (should (eq hl-line-face 'goblins-sidebar-selected))
+            ;; The goblin in the main window is bold, behind a bar.
+            (let* ((pos (goblins--sidebar-find '(id . "session-b")))
+                   (overlays (overlays-at pos)))
+              (should (memq 'goblins-sidebar-active (mapcar (lambda (o) (overlay-get o 'face))
+                                                            overlays)))
+              (should (equal (substring-no-properties
+                              (cl-some (lambda (o) (overlay-get o 'display)) overlays))
+                             "▌")))
+            (should-not (overlays-at (goblins--sidebar-find '(id . "session-a")))))
+        (kill-buffer terminal)))))
+
 (ert-deftest goblins-workspace-switch-function-is-pluggable ()
   (let (calls)
     (cl-letf (((symbol-function 'goblins--status-buffer)
