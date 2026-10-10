@@ -171,9 +171,15 @@ Beside the sidebar there are one or two windows:
 
 - *Left: the agent.* The selected goblin's agent terminal.  Before any agent
   terminal exists the status buffer stands in, until the first agent opens.
-- *Right: everything else Goblins opens* for that goblin: shells (=t=), Eshell
+- *Right (or below): everything else Goblins opens* for that goblin: shells (=t=), Eshell
   (=e=), Dired (=d=), =C-c g f= files, and files its =goblins-editor= opens.  The
   info, permissions and raid views open there too.
+
+The second window goes right of the agent when the agent window is at least
+=split-width-threshold= wide, else below it (=split-height-threshold=, or
+below anyway when it fits).  In a frame too small for two windows, the agent
+shows alone, and a buffer you open replaces it until you select the goblin
+again.
 
 Each goblin remembers the last buffer Goblins opened for it on the right (not
 the views).  Selecting a goblin (=RET= in the sidebar, =goblins-switch=, a new

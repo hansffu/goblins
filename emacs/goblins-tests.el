@@ -982,10 +982,12 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
              (mapc (lambda (e) (kill-buffer (cdr e))) terminals)))))))
 
 (defun goblins-test--layout ()
-  "The buffers beside the sidebar, left to right."
+  "The buffers beside the sidebar, left to right, then top to bottom."
   (mapcar #'window-buffer
           (sort (goblins--main-windows)
-                (lambda (a b) (< (window-left-column a) (window-left-column b))))))
+                (lambda (a b) (or (< (window-left-column a) (window-left-column b))
+                                  (and (= (window-left-column a) (window-left-column b))
+                                       (< (window-top-line a) (window-top-line b))))))))
 
 (ert-deftest goblins-workspace-keeps-agents-left-and-goblin-buffers-right ()
   (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
@@ -1086,6 +1088,35 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (let ((goblins-request-popups nil))
         (goblins-select-goblin source "session-a")
         (should-not (funcall popup))))))
+
+(ert-deftest goblins-workspace-splits-by-the-split-thresholds ()
+  (goblins-test--workspace (list (goblins-test--session "session-a"))
+    (let ((dired-a (generate-new-buffer " *dired a*"))
+          (side-by-side (lambda ()
+                          (let ((windows (goblins--main-windows)))
+                            (/= (window-left-column (car windows))
+                                (window-left-column (cadr windows)))))))
+      (unwind-protect
+          (progn
+            (terminal "session-a")
+            ;; Wide enough: right of the agent.
+            (let ((split-width-threshold 20))
+              (goblins-select-goblin source "session-a" dired-a))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            (should (funcall side-by-side))
+            ;; Too narrow: below it.
+            (let ((split-width-threshold 1000) (split-height-threshold 10))
+              (goblins-select-goblin source "session-a"))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            (should-not (funcall side-by-side))
+            ;; Too small for two windows: the agent alone, unless the
+            ;; buffer itself was asked for.
+            (let ((split-width-threshold 1000) (window-min-height 100))
+              (goblins-select-goblin source "session-a")
+              (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+              (goblins-select-goblin source "session-a" dired-a)
+              (should (equal (goblins-test--layout) (list dired-a)))))
+        (kill-buffer dired-a)))))
 
 (ert-deftest goblins-views-quit-with-q-to-the-goblins-layout ()
   (dolist (mode '(goblins-info-mode goblins-permissions-mode goblins-raid-mode))

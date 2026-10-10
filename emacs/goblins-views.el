@@ -86,7 +86,8 @@
 ;;
 ;; Beside the sidebar the workspace has an agent window on the left, showing a
 ;; goblin's agent terminal (or the status buffer while there is none), and at
-;; most one window on its right for everything else Goblins opens: shells,
+;; most one window on its right (below it, in a narrow frame; see
+;; `split-width-threshold') for everything else Goblins opens: shells,
 ;; Eshell, Dired, files and the views.  Each goblin remembers the last buffer
 ;; Goblins opened for it there (views excepted).  Selecting a goblin, or
 ;; `goblins-workspace', rebuilds that layout; windows you arrange yourself
@@ -135,13 +136,25 @@
       (unless (eq window agent) (delete-window window)))
     agent))
 
+(defun goblins--split-agent-window (agent)
+  "Split a window off AGENT for the other buffers and return it, or nil.
+Right of the agent when AGENT is at least `split-width-threshold' wide, else
+below it when at least `split-height-threshold' high, else below it if it
+fits at all.  In a frame too small for two windows, nil."
+  (cond ((window-splittable-p agent t) (split-window agent nil 'right))
+        ((window-splittable-p agent) (split-window agent nil 'below))
+        ((let ((split-height-threshold 0)) (window-splittable-p agent))
+         (split-window agent nil 'below))))
+
 (defun goblins--display-right (buffer)
-  "Show BUFFER right of the agent window and select it, splitting if needed.
+  "Show BUFFER beside the agent window and select it, splitting if needed.
+In a frame too small for two windows it replaces the agent for now.
 Outside the workspace, pop it up."
   (if (not (goblins--in-workspace-p))
       (pop-to-buffer buffer)
     (let ((window (or (goblins--right-window)
-                      (split-window (goblins--agent-window) nil 'right))))
+                      (goblins--split-agent-window (goblins--agent-window))
+                      (goblins--agent-window))))
       (set-window-buffer window buffer)
       (select-window window)))
   buffer)
@@ -203,9 +216,11 @@ popped up."
               (attach (goblins--attach source id (lambda (b) (set-window-buffer agent b)))))
         (if (not shown)
             (select-window agent)
-          (let ((window (split-window agent nil 'right)))
-            (set-window-buffer window shown)
-            (select-window (if right window agent))))
+          (let ((window (or (goblins--split-agent-window agent)
+                            ;; Too small for two: what was asked for wins.
+                            (and right agent))))
+            (when window (set-window-buffer window shown))
+            (select-window (if right (or window agent) agent))))
         (goblins--popup-follow source id)
         (or right (window-buffer agent)))))))
 
