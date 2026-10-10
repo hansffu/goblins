@@ -1337,6 +1337,18 @@ With a prefix argument, prompt for the daemon state directory."
 (with-eval-after-load 'tramp
   (require 'goblins-tramp))
 
+;; Files a goblin's editor sends wait for approval: the server must check
+;; them before visiting, which is what would load TRAMP and goblins-tramp.
+(declare-function goblins-tramp--server-execute "goblins-tramp" (function proc files &rest args))
+(defun goblins--server-execute (function proc files &rest args)
+  "Around `server-execute': hand /goblins: files to `goblins-editor-approval'."
+  (if (cl-some (lambda (file) (string-prefix-p "/goblins:" (car file))) files)
+      (progn (require 'goblins-tramp)
+             (apply #'goblins-tramp--server-execute function proc files args))
+    (apply function proc files args)))
+(with-eval-after-load 'server
+  (advice-add 'server-execute :around #'goblins--server-execute))
+
 ;; Terminals turn on `goblin-mode'; loaded last since it builds on this file.
 (require 'goblins-terminal)
 ;;; goblins.el ends here

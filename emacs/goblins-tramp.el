@@ -495,8 +495,6 @@ refusal fails it with an explanation."
                             (goblins--popup-edits-changed))))
         (setq goblins--pending-edits (append goblins--pending-edits (list edit)))
         (goblins--popup-edits-changed)))))
-(with-eval-after-load 'server
-  (advice-add 'server-execute :around #'goblins-tramp--server-execute))
 
 ;;; Files a goblin wrote
 

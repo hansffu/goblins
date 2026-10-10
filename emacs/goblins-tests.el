@@ -2064,6 +2064,19 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
                                   " (not (featurep 'goblins-workspace))) 0 1))"))))
       (should (eq code 0)))))
 
+(ert-deftest goblins-editor-approval-applies-before-tramp-loads ()
+  "The first edit in a fresh Emacs waits too: visiting it is what loads TRAMP."
+  (with-temp-buffer
+    (let ((code (call-process
+                 (expand-file-name invocation-name invocation-directory) nil t nil
+                 "--batch" "-Q" "-L" (file-name-directory (locate-library "goblins"))
+                 "--eval" "(progn (require 'goblins) (require 'server))"
+                 "--eval" (concat "(let ((client (start-process \"client\" nil \"sleep\" \"10\")))"
+                                  " (server-execute client '((\"/goblins:g:/x\")) nil nil nil nil nil nil)"
+                                  " (kill-emacs (if (and goblins--pending-edits"
+                                  " (not (get-file-buffer \"/goblins:g:/x\"))) 0 1)))"))))
+      (should (eq code 0)))))
+
 (ert-deftest goblins-sidebar-next-pending-reaches-goblins-in-folded-groups ()
   "Two visible waiting goblins must not hide a third one in a folded group."
   (goblins-test--sidebar goblins-test--raid-sessions
