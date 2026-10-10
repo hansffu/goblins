@@ -181,6 +181,15 @@ agent) or =M-x goblins-workspace= rebuilds the layout: its agent on the left,
 its remembered buffer, if any, on the right.  Between those you can arrange
 windows and switch buffers as you like; Goblins doesn't remember them.
 
+A pending permission request of the selected goblin pops up in a small
+window at the bottom: what it asks for, the reason and a one-line preview.  It
+opens when you select a goblin that is waiting and when the goblin on the left
+asks for something, never takes the focus, isn't remembered, and closes once
+nothing is waiting.  In it =a= accepts, =d= denies, =p= (or =RET=) shows all of
+the goblin's requests and =q= closes it.  =M-x goblins-request-popup= opens it
+for the goblin at hand; set =goblins-request-popups= to nil to turn it off.  The
+=p= permissions view is unchanged.
+
 Bring your own workspace package by setting
 =goblins-workspace-switch-or-create-function= (called with the name
 =goblins-workspace-name=).  The default saves the window configuration and uses

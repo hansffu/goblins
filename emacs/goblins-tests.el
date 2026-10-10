@@ -1031,6 +1031,51 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (should (equal (goblins-test--layout) (list (terminal "session-a")))))
         (mapc (lambda (b) (when (buffer-live-p b) (kill-buffer b))) (list dired-a view))))))
 
+(ert-deftest goblins-request-popup-follows-the-selected-goblin ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p"))
+    (let ((popup (lambda () (get-buffer-window goblins--popup-buffer-name)))
+          decided)
+      (terminal "session-a")
+      (terminal "session-b")
+      ;; Selecting a waiting goblin pops up its request, without the focus.
+      (goblins-select-goblin source "session-a")
+      (should (funcall popup))
+      (should (eq (window-buffer) (terminal "session-a")))
+      (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+      (with-current-buffer goblins--popup-buffer-name
+        (should (string-match-p "session-a asks for hello" (buffer-string)))
+        (should (string-match-p "Reason: +Try a live grant" (buffer-string)))
+        ;; a decides the request shown.
+        (cl-letf (((symbol-function 'goblins--decide-record)
+                   (lambda (record approved) (setq decided (list (plist-get record :id) approved)))))
+          (goblins-request-popup-accept))
+        (should (equal decided '("a" t))))
+      ;; A goblin with nothing waiting closes it.
+      (goblins-select-goblin source "session-b")
+      (should-not (funcall popup))
+      ;; A request of the selected goblin pops up; another goblin's doesn't.
+      (with-current-buffer source
+        (goblins--popup-on-request (list :session "session-a")))
+      (should-not (funcall popup))
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :permissions
+                         (vector (goblins-test--request "a")
+                                 (plist-put (goblins-test--request "b") :session "session-b"))))
+        (goblins--popup-on-request (list :session "session-b")))
+      (should (funcall popup))
+      ;; Once nothing is waiting, it closes by itself.
+      (with-current-buffer source
+        (setq goblins--snapshot (plist-put goblins--snapshot :permissions
+                                           (vector (goblins-test--request "a"))))
+        (goblins--views-after-snapshot))
+      (should-not (funcall popup))
+      ;; Off: never.
+      (let ((goblins-request-popups nil))
+        (goblins-select-goblin source "session-a")
+        (should-not (funcall popup))))))
+
 (ert-deftest goblins-workspace-without-a-last-goblin-shows-the-latest-terminal ()
   (goblins-test--workspace (list (goblins-test--session "session-a")
                                  (goblins-test--session "session-b"))
@@ -1725,6 +1770,11 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
                               text))
       ;; The directory of the waiting goblin carries its count too.
       (should (string-match-p "/ !1\n  ● delta (shell)\n  ● gamma (shell) !1" text)))
+    ;; Selecting the waiting goblin pops up its request at the bottom.
+    (goblins-select-goblin source (plist-get (goblins-test--live-session source "gamma") :id))
+    (should (window-parameter (get-buffer-window goblins--popup-buffer-name) 'window-side))
+    (should (string-match-p "gamma asks for hello"
+                            (with-current-buffer goblins--popup-buffer-name (buffer-string))))
     ;; Attention: the mode line counts the request.
     (goblins-attention-mode 1)
     (should (string-match-p "Goblins!1" goblins--mode-line-string))
@@ -1742,6 +1792,8 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (goblins-test--wait (lambda () (string-match-p "History (1)" (buffer-string))))
       (should (string-match-p "hello  denied" (buffer-string))))
     (goblins-test--wait (lambda () (equal goblins--mode-line-string "")))
+    ;; Decided: the popup is gone.
+    (should-not (get-buffer-window goblins--popup-buffer-name))
     ;; I shows the goblin's info.
     (goblins-test--in-sidebar "  ● alpha")
     (goblins-sidebar-info)

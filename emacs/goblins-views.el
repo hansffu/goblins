@@ -21,6 +21,7 @@
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
 
 (defface goblins-heading '((t :inherit font-lock-keyword-face :weight bold))
   "Headings in the Goblins views." :group 'goblins)
@@ -205,6 +206,7 @@ popped up."
           (let ((window (split-window agent nil 'right)))
             (set-window-buffer window shown)
             (select-window (if right window agent))))
+        (goblins--popup-follow source id)
         (or right (window-buffer agent)))))))
 
 (defun goblins--attach (source id display)
@@ -254,6 +256,8 @@ In the workspace the goblin's remembered buffer comes back on the right."
         (setq-local goblins--view-fresh t))
       (setq goblins--view-render render)
       (setq goblins--directory (buffer-local-value 'goblins--directory source))
+      ;; Never a /goblins: directory inherited from where it was opened.
+      (setq default-directory (expand-file-name "~/"))
       (funcall render))
     buffer))
 
@@ -599,6 +603,159 @@ Accept it when APPROVED is non-nil, otherwise deny it."
   "Return the permissions buffer for SESSION, an ID in SOURCE's snapshot."
   (goblins--view-buffer goblins--permissions-buffer-name #'goblins-permissions-mode
                         #'goblins--permissions-render source session))
+
+;;;; Request popup
+;;
+;; A small window at the bottom with the selected goblin's pending permission
+;; request: what it asks for and why.  It opens when you select a goblin that
+;; is waiting, and when the goblin on the left asks for something.  It never
+;; takes the focus, isn't remembered, and closes once nothing is waiting.
+
+(defcustom goblins-request-popups t
+  "Whether the workspace pops up the selected goblin's pending request."
+  :type 'boolean :group 'goblins)
+
+(defconst goblins--popup-buffer-name "*Goblins Request*")
+
+(defun goblins--pending-requests (snapshot id)
+  "The pending permission requests of session ID in SNAPSHOT, oldest first."
+  (cl-remove-if-not (lambda (r) (and (equal (plist-get r :session) id)
+                                     (equal (plist-get r :state) "pending")))
+                    (append (plist-get snapshot :permissions) nil)))
+
+(defun goblins--popup-preview (record)
+  "One line about RECORD's preview, or nil."
+  (cond
+   ((goblins--awaiting-preview-p record) "evaluating the refresh; its preview follows")
+   ((when-let* ((preview (plist-get record :preview))
+                (text (or (plist-get preview :description) (plist-get preview :error))))
+      (car (split-string text "\n"))))))
+
+(defun goblins--popup-render ()
+  "Redraw the popup from the snapshot; close it once nothing is waiting."
+  (let* ((inhibit-read-only t)
+         (session (goblins--view-session-record))
+         (pending (goblins--pending-requests (goblins--view-snapshot) goblins--view-session))
+         (record (car pending)))
+    (erase-buffer)
+    (when record
+      (insert (propertize (goblins--safe (or (plist-get session :agent_name)
+                                             (plist-get record :agent_name)))
+                          'face 'bold)
+              " asks for "
+              (propertize (goblins--safe (plist-get record :package)) 'face 'goblins-key)
+              (let ((kind (plist-get record :kind)))
+                (if (member kind '(nil "package")) ""
+                  (propertize (format " (%s)" (goblins--safe kind)) 'face 'goblins-dim)))
+              (if (cdr pending)
+                  (propertize (format "   1 of %d waiting" (length pending)) 'face 'goblins-attention)
+                "")
+              "\n")
+      (goblins--field "Reason:" (plist-get record :reason))
+      (when-let* ((preview (goblins--popup-preview record)))
+        (goblins--field "Preview:" preview))
+      (when-let* ((message (plist-get record :message)))
+        (goblins--field "Message:" message))
+      (insert (propertize "a accept   d deny   p all requests   q close" 'face 'goblins-dim)))
+    (goto-char (point-min))
+    (when-let* ((window (get-buffer-window (current-buffer) t)))
+      (if record
+          (fit-window-to-buffer window 12 2)
+        (delete-window window)))))
+
+(defun goblins--popup-show (source id)
+  "Pop up goblin ID's pending request at the bottom, without selecting it."
+  (let ((buffer (goblins--view-buffer goblins--popup-buffer-name #'goblins-request-popup-mode
+                                      #'goblins--popup-render source id)))
+    (if (not (goblins--pending-requests (buffer-local-value 'goblins--snapshot source) id))
+        (goblins--popup-close)
+      (display-buffer buffer
+                      '((display-buffer-in-side-window)
+                        (side . bottom) (slot . 0)
+                        (window-height . (lambda (w) (fit-window-to-buffer w 12 2)))
+                        (window-parameters (no-delete-other-windows . t))))
+      buffer)))
+
+(defun goblins--popup-close ()
+  "Close the request popup if it is shown."
+  (when-let* ((window (get-buffer-window goblins--popup-buffer-name t)))
+    (delete-window window)))
+
+(defun goblins--popup-follow (source id)
+  "Show goblin ID's pending request after it was selected, or close the popup."
+  (if goblins-request-popups
+      (goblins--popup-show source id)
+    (goblins--popup-close)))
+
+(defun goblins--popup-on-request (record)
+  "Pop up RECORD, a request that became pending, if the selected goblin asks."
+  (when (and goblins-request-popups (goblins--in-workspace-p)
+             (equal goblins--last-goblin (cons goblins--directory (plist-get record :session))))
+    (goblins--popup-show (current-buffer) (plist-get record :session))))
+(add-hook 'goblins-request-hook #'goblins--popup-on-request)
+
+(defun goblins-request-popup ()
+  "Pop up the pending request of this goblin terminal's goblin, or of the
+goblin selected in the workspace."
+  (interactive)
+  (let ((goblin (cond (goblins--session-key
+                       (cons (goblins--status-buffer (car goblins--session-key))
+                             (nth 2 goblins--session-key)))
+                      (goblins--last-goblin
+                       (cons (goblins--status-buffer (car goblins--last-goblin))
+                             (cdr goblins--last-goblin))))))
+    (unless goblin (user-error "Select a goblin first"))
+    (unless (goblins--popup-show (car goblin) (cdr goblin))
+      (message "Nothing waiting for a decision"))))
+
+(defun goblins--popup-decide (approved)
+  (let ((record (car (goblins--pending-requests (goblins--view-snapshot) goblins--view-session))))
+    (unless record (user-error "Nothing waiting for a decision"))
+    (with-current-buffer goblins--view-source
+      (goblins--decide-record record approved))))
+
+(defun goblins-request-popup-accept ()
+  "Accept the request in the popup."
+  (interactive)
+  (goblins--popup-decide t))
+
+(defun goblins-request-popup-deny ()
+  "Deny the request in the popup."
+  (interactive)
+  (goblins--popup-decide nil))
+
+(defun goblins-request-popup-all ()
+  "Show all of this goblin's requests, then close the popup."
+  (interactive)
+  (let ((source goblins--view-source) (id goblins--view-session))
+    (goblins--popup-close)
+    (goblins--display-main (goblins-permissions-buffer source id))))
+
+(defvar goblins-request-popup-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map "a" #'goblins-request-popup-accept)
+    (define-key map "d" #'goblins-request-popup-deny)
+    (define-key map "p" #'goblins-request-popup-all)
+    (define-key map (kbd "RET") #'goblins-request-popup-all)
+    (define-key map "q" #'goblins--popup-close)
+    map))
+
+(with-eval-after-load 'evil
+  (evil-set-initial-state 'goblins-request-popup-mode 'motion)
+  (evil-define-key* 'motion goblins-request-popup-mode-map
+    "a" #'goblins-request-popup-accept
+    "d" #'goblins-request-popup-deny
+    "p" #'goblins-request-popup-all
+    (kbd "RET") #'goblins-request-popup-all
+    "q" #'goblins--popup-close)
+  (evil-make-intercept-map goblins-request-popup-mode-map 'motion t))
+
+(define-derived-mode goblins-request-popup-mode special-mode "Goblins-Request"
+  "The selected goblin's pending permission request.
+\\<goblins-request-popup-mode-map>\\[goblins-request-popup-accept] accepts, \\[goblins-request-popup-deny] denies, \\[goblins-request-popup-all] shows all requests, \\[goblins--popup-close] closes."
+  (setq-local mode-line-format nil
+              truncate-lines nil))
 
 ;;;; Switching
 
