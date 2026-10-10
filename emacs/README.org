@@ -242,6 +242,15 @@ the daemon of =goblins-state-directory=.
   open; editor requests pin the requesting goblin first and are refused when
   the name is pinned to another one. =M-x goblins-tramp-release= releases a pin
   by hand, for a goblin of a daemon this Emacs does not follow.
+- *VC stays out of goblins.* =/goblins:= is added to =vc-ignore-dir-regexp=, so
+  VC (and with it diff-hl and dirvish's git status, and VC's branch in the
+  mode line) never looks inside a goblin; magit, which doesn't use VC, works.
+  VC ran git from process sentinels while TRAMP was waiting on its shell
+  connection, which TRAMP refuses and answers by dropping the connection.
+- *Commands while TRAMP is busy.* A =process-file= command that arrives while
+  TRAMP is waiting for a reply (from a timer or a process sentinel) runs as
+  its own =goblins exec= instead of failing as a reentrant call. Otherwise
+  commands use TRAMP's connection, which is several times faster.
 - *Connections close when unused.* TRAMP keeps a shell open in the goblin for
   each connection (=· tramp= in the sidebar). It is closed when you kill the
   last buffer that works in that goblin; terminals don't count, as they have

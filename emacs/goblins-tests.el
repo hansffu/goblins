@@ -2052,6 +2052,41 @@
         (delete-process process)
         (mapc #'kill-buffer (seq-filter #'buffer-live-p buffers))))))
 
+(ert-deftest goblins-process-file-passes-what-differs-from-emacss-environment ()
+  (let ((process-environment (append '("GIT_LITERAL_PATHSPECS=1" "TERM=xterm" "PATH=/host/bin"
+                                       "UNSET_ME" "GIT_LITERAL_PATHSPECS=0")
+                                     process-environment))
+        (tramp-propagate-emacsclient-tramp nil))
+    (let ((env (goblins-tramp--process-environment (tramp-dissect-file-name "/goblins:g:/"))))
+      (should (member "GIT_LITERAL_PATHSPECS=1" env))
+      (should-not (member "GIT_LITERAL_PATHSPECS=0" env))
+      (should (member "TERM=xterm" env))
+      (should (member "PAGER=cat" env))
+      (should (cl-find-if (lambda (e) (string-prefix-p "INSIDE_EMACS=" e)) env))
+      (should-not (cl-find-if (lambda (e) (string-prefix-p "PATH=" e)) env))
+      (should-not (cl-find-if (lambda (e) (string-prefix-p "UNSET_ME" e)) env))
+      ;; Emacs's own environment stays on the host.
+      (should-not (cl-intersection (seq-remove (lambda (e) (string-match-p "\\`\\(TERM\\|PAGER\\)=" e))
+                                               env)
+                                   (default-toplevel-value 'process-environment)
+                                   :test #'equal)))))
+
+(ert-deftest goblins-process-file-uses-an-exec-only-while-tramp-is-busy ()
+  (let ((default-directory "/goblins:gribble:/tmp/")
+        (busy nil) used)
+    (cl-letf (((symbol-function 'goblins-tramp--busy-p) (lambda (_) busy))
+              ((symbol-function 'goblins-tramp--process-file)
+               (lambda (&rest _) (push 'exec used) 0)))
+      (goblins-tramp--sh-process-file (lambda (&rest _) (push 'tramp used) 0) "true")
+      (setq busy t)
+      (goblins-tramp--sh-process-file (lambda (&rest _) (push 'tramp used) 0) "true"))
+    (should (equal used '(exec tramp)))))
+
+(ert-deftest goblins-vc-never-looks-inside-goblins ()
+  (should (string-match-p vc-ignore-dir-regexp "/goblins:gribble:/home/x/"))
+  (should-not (string-match-p vc-ignore-dir-regexp "/home/x/"))
+  (should-not (vc-find-root "/goblins:gribble:/home/x/" ".git")))
+
 (ert-deftest goblins-shell-runs-goblins-shell-program ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :path "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
@@ -2201,6 +2236,29 @@
       (with-current-buffer (goblins-dired session #'ignore source)
         (should (derived-mode-p 'dired-mode))
         (should (equal default-directory "/goblins:gribble:/workspace/"))))
+    ;; While TRAMP's connection is busy, process-file runs as its own exec,
+    ;; with the environment, stdin and stderr redirections it asks for.
+    (let ((default-directory tmp)
+          (process-environment (cons "GOBLINS_TEST_VAR=from-emacs" process-environment)))
+      (tramp-set-connection-property (tramp-get-connection-process (goblins-tramp--vec tmp))
+                                     "locked" t)
+      (unwind-protect
+          (with-temp-buffer
+            (should (eq (process-file "sh" nil t nil "-c"
+                                      "echo $GOBLINS_TEST_VAR; pwd; echo err >&2; exit 3")
+                        3))
+            (should (equal (buffer-string) "from-emacs\n/tmp\nerr\n"))
+            (erase-buffer)
+            (should (eq (process-file "cat" (concat tmp "notes.txt") t) 0))
+            (should (equal (buffer-string) "hello from emacs\n"))
+            (erase-buffer)
+            (should (eq (process-file "sh" nil (list t (concat tmp "stderr.txt")) nil "-c"
+                                      "echo out; echo bad >&2")
+                        0))
+            (should (equal (buffer-string) "out\n")))
+        (tramp-flush-connection-property
+         (tramp-get-connection-process (goblins-tramp--vec tmp)) "locked"))
+      (should (equal (goblins-test--in directory "gribble" "cat /tmp/stderr.txt") "bad\n")))
     ;; Killing a compilation, or deleting a process, leaves nothing behind.
     (let ((default-directory tmp)
           (compilation-ask-about-save nil))

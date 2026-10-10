@@ -282,6 +282,17 @@ At once: a deferred close could hit a connection TRAMP is opening again."
         (goblins-tramp--close-unused (tramp-file-name-host vec) (current-buffer))))))
 (add-hook 'kill-buffer-hook #'goblins-tramp--buffer-killed)
 
+;; Keep VC out of goblins.  VC runs git asynchronously (diff-hl and dirvish
+;; ask for it in Dired), and the process sentinel then runs git synchronously
+;; while TRAMP waits for another reply on the same shell connection: TRAMP
+;; refuses the reentrant call and drops the connection.  Magit doesn't use VC.
+(defconst goblins-tramp-vc-ignore-regexp (concat "\\`/" goblins-tramp-method ":")
+  "Added to `vc-ignore-dir-regexp' so that VC never looks inside a goblin.")
+
+(unless (string-search goblins-tramp-vc-ignore-regexp vc-ignore-dir-regexp)
+  (setq vc-ignore-dir-regexp
+        (concat vc-ignore-dir-regexp "\\|" goblins-tramp-vc-ignore-regexp)))
+
 ;; Never persist connection data: a name may mean another goblin next time.
 (defun goblins-tramp--forget-persistent (&rest _)
   (when (hash-table-p tramp-cache-data)
@@ -300,6 +311,95 @@ At once: a deferred close could hit a connection TRAMP is opening again."
              (goblins-tramp-file-p (buffer-local-value 'default-directory buffer))))))
 (with-eval-after-load 'desktop
   (advice-add 'desktop-save-buffer-p :before-while #'goblins-tramp--desktop-save-p))
+
+;;; Commands Emacs waits for
+
+;; A process sentinel or timer that runs `process-file' (vc, magit,
+;; `shell-command'...) while TRAMP waits for a reply on its shell connection
+;; would be refused as a reentrant call, and the connection dropped.  Such a
+;; command runs as its own `goblins exec' instead, like asynchronous
+;; processes.  Otherwise TRAMP's connection stays: an exec costs about 15 ms
+;; per command, the connection about 2 ms, and magit runs dozens.
+
+(defun goblins-tramp--same-host-p (vec name)
+  "Whether NAME is a /goblins: file name on VEC's host."
+  (when-let* ((v (goblins-tramp--vec name)))
+    (equal (tramp-file-name-host v) (tramp-file-name-host vec))))
+
+(defun goblins-tramp--process-environment (vec)
+  "The environment `process-file' passes into the goblin, as TRAMP does:
+what differs from Emacs's own environment, without PATH, plus TERM and PAGER."
+  (let ((ours (seq-remove #'tramp-local-environment-variable-p process-environment))
+        env)
+    (dolist (elt (append ours
+                         (list (concat "INSIDE_EMACS=" (tramp-inside-emacs))
+                               "TERM=dumb" "PAGER=cat")
+                         (and tramp-propagate-emacsclient-tramp
+                              (list (concat "EMACSCLIENT_TRAMP="
+                                            (tramp-make-tramp-file-name vec 'noloc))))))
+      ;; The first setting of a variable wins, as in `process-environment'.
+      (when-let* ((name (and (string-search "=" elt)
+                             (substring elt 0 (string-search "=" elt)))))
+        (unless (or (equal name "PATH") (length> elt 256) (assoc name env))
+          (push (cons name elt) env))))
+    (nreverse (mapcar #'cdr env))))
+
+(defun goblins-tramp--process-file (function program &optional infile destination display
+                                             &rest args)
+  "Run `process-file' in a /goblins: directory as its own `goblins exec'.
+FUNCTION is TRAMP's own handler, used for an INFILE or standard error file
+on another host."
+  (let* ((vec (goblins-tramp--vec default-directory))
+         (stderr (and (consp destination) (stringp (cadr destination)) (cadr destination)))
+         (remote-in (and infile (file-remote-p infile)))
+         (remote-err (and stderr (file-remote-p stderr))))
+    (if (or (null vec)
+            (and remote-in (not (goblins-tramp--same-host-p vec infile)))
+            (and remote-err (not (goblins-tramp--same-host-p vec stderr))))
+        (apply function program infile destination display args)
+      (let* ((pin (goblins-tramp--pin vec))
+             (command
+              (if (or remote-in remote-err)
+                  ;; Files inside the goblin are opened there.
+                  (append (list "/bin/sh" "-c"
+                                (concat "in=$1 err=$2; shift 2; "
+                                        "if [ -n \"$in\" ]; then exec <\"$in\"; fi; "
+                                        "if [ -n \"$err\" ]; then exec 2>\"$err\"; fi; "
+                                        "exec \"$@\"")
+                                "sh"
+                                (if remote-in (tramp-file-local-name (expand-file-name infile)) "")
+                                (if remote-err (tramp-file-local-name (expand-file-name stderr)) "")
+                                program)
+                          args)
+                (cons program args)))
+             (arguments
+              (append (list "--state-dir" (nth 0 pin) "exec" "--instance" (nth 1 pin)
+                            "--session" (nth 2 pin)
+                            "--workdir" (tramp-file-local-name
+                                         (expand-file-name default-directory)))
+                      (mapcan (lambda (elt) (list "--env" elt))
+                              (goblins-tramp--process-environment vec))
+                      (list (tramp-file-name-host vec) "--")
+                      command))
+             (destination (if remote-err (list (car destination) nil) destination))
+             (infile (and infile (not remote-in) (expand-file-name infile))))
+        (let ((default-directory temporary-file-directory))
+          (apply #'call-process (goblins-tramp--program) infile destination display
+                 arguments))))))
+
+(defun goblins-tramp--busy-p (vec)
+  "Whether TRAMP is waiting for a reply on VEC's connection right now."
+  (when-let* ((process (tramp-get-connection-process vec)))
+    (tramp-get-connection-property process "locked")))
+
+(defun goblins-tramp--sh-process-file (function program &rest rest)
+  "Around `tramp-sh-handle-process-file': run /goblins: commands as an exec
+while TRAMP's connection is busy, instead of failing as a reentrant call."
+  (let ((vec (goblins-tramp--vec default-directory)))
+    (if (and vec (goblins-tramp--busy-p vec))
+        (apply #'goblins-tramp--process-file function program rest)
+      (apply function program rest))))
+(advice-add 'tramp-sh-handle-process-file :around #'goblins-tramp--sh-process-file)
 
 ;;; Files a goblin wrote
 
