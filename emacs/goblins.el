@@ -581,6 +581,13 @@ Diff sections also fold in the details view."
       (delete-process (jsonrpc--process connection))
       (jsonrpc-shutdown connection t))))
 
+(defun goblins--quiet-sentinel (sentinel process change)
+  "Run jsonrpc's SENTINEL for PROCESS and CHANGE without its exit message.
+jsonrpc announces every closed connection, twice for each deliberate
+disconnect; the status buffer's notice already reports it."
+  (let ((inhibit-message t) (message-log-max nil))
+    (funcall sentinel process change)))
+
 (defun goblins--cancel-reconnect ()
   (when goblins--reconnect-timer
     (cancel-timer goblins--reconnect-timer)
@@ -774,6 +781,8 @@ Diff sections also fold in the details view."
                        (when (eq connection goblins--connection)
                          (setq goblins--connection nil)
                          (goblins--fail "Disconnected")))))))
+          (add-function :around (process-sentinel (jsonrpc--process goblins--connection))
+                        #'goblins--quiet-sentinel)
           (goblins--request
            'initialize '(:api 1)
            (lambda (result)
