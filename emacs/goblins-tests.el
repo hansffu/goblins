@@ -2115,6 +2115,48 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (goblins--ghostel-directory (lambda (_) (setq called t)) "file://host/tmp/y")
       (should called))))
 
+(ert-deftest goblins-agent-terminals-stay-in-their-project ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :path "gribble")
+                               (goblins-test--session "session-b" :path "snaga"))
+    (let ((goblins--pins (make-hash-table :test #'equal)))
+      (with-temp-buffer
+        (setq-local goblins--directory "/tmp/goblins-test")
+        ;; The agent's reports don't move it: it stays in the project.
+        (setq-local ghostel-identity '((kind . goblins) (session . "session-a")
+                                       (instance . "daemon-a") (host . "gribble")))
+        (goblins--ghostel-directory #'ignore "file://sandbox/tmp/x")
+        (should (equal default-directory "/p/one/"))
+        ;; Without a project, its own /workspace, inside the goblin.
+        (setq-local ghostel-identity '((kind . goblins) (session . "session-b")
+                                       (instance . "daemon-a") (host . "snaga")))
+        (goblins--ghostel-directory #'ignore "file://sandbox/tmp/x")
+        (should (equal default-directory "/goblins:snaga:/workspace/"))
+        (should (equal (goblins-pin "snaga") '("/tmp/goblins-test" "daemon-a" "session-b")))))))
+
+(ert-deftest goblins-find-file-visits-any-path-inside-the-goblin ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :path "gribble"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (file (generate-new-buffer " *goblin file*"))
+          read shown)
+      (unwind-protect
+          (cl-letf (((symbol-function 'read-file-name)
+                     (lambda (&rest _) (setq read default-directory) "/goblins:gribble:/etc/hosts"))
+                    ((symbol-function 'find-file-noselect)
+                     (lambda (name &rest _) (should (equal name "/goblins:gribble:/etc/hosts")) file))
+                    ((symbol-function 'goblins-select-goblin)
+                     (lambda (src id right &rest _) (setq shown (list src id right)))))
+            (goblins-find-file (goblins--snapshot-session
+                                (buffer-local-value 'goblins--snapshot source) "session-a")
+                               source)
+            ;; Reading starts in its working directory, inside the goblin.
+            (should (equal read "/goblins:gribble:/p/one/"))
+            (should (equal shown (list source "session-a" file))))
+        (kill-buffer file))
+      (should (eq (key-binding "f") #'goblins-sidebar-find-file)))
+    (with-temp-buffer
+      (goblin-mode 1)
+      (should (eq (key-binding (kbd "C-c g f")) #'goblins-find-file)))))
+
 (ert-deftest goblins-exec-summary-counts-shells-and-tramp ()
   (should (equal (goblins--exec-summary (list :shells 0 :execs 0)) ""))
   (should (equal (substring-no-properties (goblins--exec-summary (list :shells 1 :execs 3)))

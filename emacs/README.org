@@ -145,6 +145,7 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =t=                          | a new shell terminal inside the goblin, listed below it  |
 | =e=                          | Eshell inside the goblin, in its directory               |
 | =d=                          | Dired inside the goblin, in its directory                |
+| =f=                          | visit a file inside the goblin (=goblins-find-file=)     |
 | =X=                          | kill the goblin's shells and commands                    |
 | =r=                          | create a raid around the goblin at point or on the left, or add it to one, and open the raid page |
 | =i=                          | invite the goblin into a raid you pick; on a raid, invite a goblin into it |
@@ -247,7 +248,13 @@ mode), and =C-c= is one of Ghostel's =ghostel-keymap-exceptions=, so =C-c= keys
 reach Emacs in every input mode.
 
 Also under =C-c g=: =t= opens a shell terminal inside the goblin, =e= Eshell,
-=d= Dired, and =f= visits a file inside it.
+=d= Dired, and =f= visits a file inside it (=goblins-find-file=).
+
+An agent terminal's =default-directory= is its goblin's working directory on
+the host, the project bound at the same path inside the sandbox, so
+=project-find-file=, magit and the like work from it on the host; it doesn't
+follow the agent's =cd=.  A goblin without a project (its own =/workspace=) gets
+=/goblins:HOST:/workspace/= instead.
 
 Agent terminals draw no-break spaces without an underline, which fixes
 Claude's thinking indicator; set =goblins-remove-nobreak-underline= to nil to
@@ -303,10 +310,11 @@ the daemon of =goblins-state-directory=.
   =goblins-shell-program= (a program name such as ="fish"=, or a list with
   arguments, found on the sandbox's =PATH=), with its dev shell, in a Ghostel buffer next to the agent's terminal (in a goblin terminal
   or =/goblins:= buffer it uses that goblin; with a prefix argument it asks). Shells
-  and goblin terminals track their directory (OSC 7) as =/goblins:= paths.
+  track their directory (OSC 7) as =/goblins:= paths.
   =M-x goblins-eshell= and =M-x goblins-dired= open Eshell (one per goblin,
   reused) and Dired in the goblin's working directory, the same way. All three
-  pin the goblin before any TRAMP use. In the sidebar, =t=, =e= and =d= open
+  pin the goblin before any TRAMP use. =M-x goblins-find-file= visits any file
+  inside a goblin, starting in its working directory. In the sidebar, =t=, =e=, =d= and =f= open
   them for the goblin at point and =X= kills its shells and commands; goblins
   show =· 1 shell · tramp= while they are in use.
 - *The sandbox's =EDITOR=.* With =editor.emacs.enable= on =mkGoblins=,

@@ -691,6 +691,23 @@ SESSION, DISPLAY and SOURCE are as for `goblins-shell'."
              buffer)
     buffer))
 
+;;;###autoload
+(defun goblins-find-file (&optional session source)
+  "Visit a file inside a running goblin, over /goblins: TRAMP.
+Any path in its sandbox: reading starts in its working directory, and \"/\"
+is the sandbox's root.  The goblin is that of the current terminal or
+/goblins: buffer, else (or with a prefix argument) one you choose; SESSION
+and SOURCE are as for `goblins-shell'.  In the workspace the file opens
+right of the goblin's agent."
+  (interactive)
+  (let* ((goblin (goblins-tramp--goblin source session "Find file in goblin: "))
+         (file (let ((default-directory
+                      (goblins-tramp--session-directory (car goblin) (cdr goblin))))
+                 (read-file-name (format "Find file in %s: "
+                                         (goblins--session-path (cdr goblin)))))))
+    (goblins-select-goblin (car goblin) (plist-get (cdr goblin) :id)
+                           (find-file-noselect file))))
+
 (defun goblins-tramp--show-for (source id)
   "A function that shows a buffer for goblin ID of SOURCE's daemon.
 It goes right of the goblin's agent, and is remembered for the goblin."

@@ -1004,20 +1004,53 @@ Uses each terminal's immutable session identity, pinned or not."
                                     :key (lambda (s) (plist-get s :id)) :test #'equal)))
         (string-replace "/" "." (plist-get session :path)))))
 
+(defun goblins--terminal-session ()
+  "The session record of this goblin terminal, from its daemon's snapshot."
+  (when-let* ((id (alist-get 'session ghostel-identity))
+              (source (cl-find-if (lambda (buffer)
+                                    (and (eq (buffer-local-value 'major-mode buffer)
+                                             'goblins-status-mode)
+                                         (equal (buffer-local-value 'goblins--directory buffer)
+                                                goblins--directory)))
+                                  (buffer-list))))
+    (cl-find id (append (plist-get (buffer-local-value 'goblins--snapshot source) :sessions) nil)
+             :key (lambda (s) (plist-get s :id)) :test #'equal)))
+
+(defun goblins--pinned-terminal-host ()
+  "This goblin terminal's /goblins: host, pinned to its goblin.
+Pinned before any TRAMP use, from the terminal's identity."
+  (when-let* ((host (goblins--terminal-host)))
+    (goblins--pin-or-id host goblins--directory
+                        (alist-get 'instance ghostel-identity)
+                        (alist-get 'session ghostel-identity))))
+
+(defun goblins--agent-directory ()
+  "The directory of this agent terminal: its goblin's working directory.
+That is the project, bound at the same path inside the sandbox, so
+`project-find-file' and friends work on the host.  A goblin without one
+works in its own /workspace, which only exists inside it."
+  (let ((cwd (plist-get (goblins--terminal-session) :cwd)))
+    (if (and (stringp cwd) (not (string-empty-p cwd)))
+        (file-name-as-directory cwd)
+      (when-let* ((host (goblins--pinned-terminal-host)))
+        (format "/goblins:%s:/workspace/" host)))))
+
 (defun goblins--ghostel-directory (function directory)
-  "Track namespace-local DIRECTORY reports as /goblins: paths.
-The sandbox's hostname is not an SSH destination, and /workspace need not
-correspond to a host path, so a goblin terminal's directory is its TRAMP
-path.  Ordinary Ghostel buffers are left alone."
-  (if (memq (alist-get 'kind ghostel-identity) '(goblins goblins-shell))
-      (when-let* ((host (goblins--terminal-host))
-                  ;; Pinned before any TRAMP use, from the terminal's identity.
-                  (host (goblins--pin-or-id host goblins--directory
-                                            (alist-get 'instance ghostel-identity)
-                                            (alist-get 'session ghostel-identity)))
-                  (path (goblins--osc7-directory directory host)))
-        (setq default-directory path))
-    (funcall function directory)))
+  "Track DIRECTORY reports of goblin terminals.
+An agent terminal stays in its goblin's working directory, see
+`goblins--agent-directory'.  A goblin shell follows the report as a
+/goblins: path: the sandbox's hostname is not an SSH destination, and its
+directories need not exist on the host.  Ordinary Ghostel buffers are left
+alone."
+  (pcase (alist-get 'kind ghostel-identity)
+    ('goblins
+     (when-let* ((path (goblins--agent-directory)))
+       (setq default-directory path)))
+    ('goblins-shell
+     (when-let* ((host (goblins--pinned-terminal-host))
+                 (path (goblins--osc7-directory directory host)))
+       (setq default-directory path)))
+    (_ (funcall function directory))))
 
 (with-eval-after-load 'ghostel
   (advice-add 'ghostel--update-directory :around #'goblins--ghostel-directory))
@@ -1283,6 +1316,7 @@ Unlike `goblins-status' this never displays the buffer."
 (autoload 'goblins-shell "goblins-tramp" nil t)
 (autoload 'goblins-eshell "goblins-tramp" nil t)
 (autoload 'goblins-dired "goblins-tramp" nil t)
+(autoload 'goblins-find-file "goblins-tramp" nil t)
 
 ;;;###autoload
 (defun goblins-status (&optional directory)

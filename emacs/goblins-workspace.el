@@ -29,6 +29,7 @@
 (declare-function goblins-shell "goblins-tramp" (&optional session display source))
 (declare-function goblins-eshell "goblins-tramp" (&optional session display source))
 (declare-function goblins-dired "goblins-tramp" (&optional session display source))
+(declare-function goblins-find-file "goblins-tramp" (&optional session source))
 (defvar ghostel-identity)
 (defvar ghostel--process)
 
@@ -561,6 +562,12 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
   (interactive)
   (goblins--sidebar-open-in #'goblins-eshell))
 
+(defun goblins-sidebar-find-file ()
+  "Visit a file inside the goblin at point."
+  (interactive)
+  (goblins--sidebar-open-in (lambda (session _display source)
+                              (goblins-find-file session source))))
+
 (defun goblins-sidebar-dired ()
   "Open Dired inside the goblin at point, in its working directory."
   (interactive)
@@ -598,6 +605,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
                ("t" . "a shell terminal inside it, listed below it")
                ("e" . "Eshell inside it")
                ("d" . "Dired inside it")
+               ("f" . "visit a file inside it")
                ("X" . "kill its shells and commands"))
      ("Raids" ("r" . "create a raid around the goblin, or join one")
               ("i" . "invite the goblin to a raid; on a raid, invite into it")
@@ -642,7 +650,8 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
                        ("n" . goblins-sidebar-next-pending) ("K" . goblins-sidebar-stop)
                        ("D" . goblins-sidebar-destroy-raid)
                        ("t" . goblins-sidebar-terminal) ("e" . goblins-sidebar-eshell)
-                       ("d" . goblins-sidebar-dired) ("X" . goblins-sidebar-kill-execs)
+                       ("d" . goblins-sidebar-dired) ("f" . goblins-sidebar-find-file)
+                       ("X" . goblins-sidebar-kill-execs)
                        ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
                        ("g" . goblins-sidebar-refresh)
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
@@ -671,6 +680,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
     (kbd "t") #'goblins-sidebar-terminal
     (kbd "e") #'goblins-sidebar-eshell
     (kbd "d") #'goblins-sidebar-dired
+    (kbd "f") #'goblins-sidebar-find-file
     (kbd "X") #'goblins-sidebar-kill-execs
     (kbd "TAB") #'goblins-sidebar-toggle
     (kbd "<tab>") #'goblins-sidebar-toggle
