@@ -502,12 +502,13 @@ In the workspace the goblin's saved windows come back beside it."
 
 ;;;; Info
 
-(defvar goblins-info-section-functions
+(defcustom goblins-info-section-functions
   '(goblins--info-packages goblins--info-permissions goblins--info-raid
     goblins--info-children)
   "Functions that insert sections of the info view.
 Each is called with the session record and the snapshot, with point at the
-end of the buffer.  Add your own to show more.")
+end of the buffer.  Add your own to show more."
+  :type '(repeat function) :group 'goblins)
 
 (defun goblins--info-heading (text)
   (insert "\n" (propertize text 'face 'goblins-heading) "\n"))

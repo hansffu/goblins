@@ -41,17 +41,19 @@
   "Width of the Goblins sidebar in columns."
   :type 'integer :group 'goblins)
 
-(defvar goblins-workspace-switch-or-create-function #'goblins-workspace-default-switch
+(defcustom goblins-workspace-switch-or-create-function #'goblins-workspace-default-switch
   "Function called with the workspace name to switch to or create a workspace.
 `goblins-workspace' then builds the sidebar layout if it is not yet there.
 The default saves the window configuration and clears the frame.  Point it at
 your workspace package instead, for example
-`tabspaces-switch-or-create-workspace'.")
+`tabspaces-switch-or-create-workspace'."
+  :type 'function :group 'goblins)
 
-(defvar goblins-workspace-quit-function #'goblins-workspace-default-quit
+(defcustom goblins-workspace-quit-function #'goblins-workspace-default-quit
   "Function called with no arguments to leave the workspace.
 The default closes the sidebar and restores the configuration saved by
-`goblins-workspace-default-switch'.  Set this to close your workspace instead.")
+`goblins-workspace-default-switch'.  Set this to close your workspace instead."
+  :type 'function :group 'goblins)
 
 (defface goblins-sidebar-header '((t :inherit goblins-heading))
   "Raid and directory headings in the sidebar." :group 'goblins)
