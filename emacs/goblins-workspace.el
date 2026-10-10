@@ -114,7 +114,7 @@ Directories and sessions keep snapshot order inside each group."
     (dolist (buffer (buffer-list))
       (with-current-buffer buffer
         (when (and goblins--shell-number (equal goblins--directory directory))
-          (push buffer (gethash (alist-get 'session ghostel-identity) shells)))))
+          (push buffer (gethash (alist-get 'session (bound-and-true-p ghostel-identity)) shells)))))
     (maphash (lambda (id buffers)
                (puthash id (sort buffers (lambda (a b)
                                            (< (buffer-local-value 'goblins--shell-number a)
@@ -664,6 +664,11 @@ the goblin at point (or of its shell)."
     (kbd "c") #'goblins-sidebar-run
     (kbd "C") #'goblins-sidebar-run-in-project
     (kbd "q") #'goblins-workspace-quit))
+
+;; evil-snipe's motion-state t/T/f/F and s/S would shadow the sidebar's keys.
+(defvar evil-snipe-disabled-modes)
+(with-eval-after-load 'evil-snipe
+  (add-to-list 'evil-snipe-disabled-modes 'goblins-sidebar-mode))
 
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"
   "Sidebar listing goblins grouped by raid and directory.

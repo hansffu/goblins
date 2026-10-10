@@ -185,6 +185,9 @@ not resolve the name anew."
   (with-current-buffer buffer
     (memq (alist-get 'kind (bound-and-true-p ghostel-identity)) '(goblins goblins-shell))))
 
+(defvar goblins-tramp--releasing nil
+  "Non-nil while `goblins-tramp-release' kills a host's buffers.")
+
 (defun goblins-tramp-release (host &optional session)
   "Kill HOST's /goblins: buffers and processes, then release its pin.
 With SESSION, only when the pin, if any, belongs to SESSION.  Pins of
@@ -193,7 +196,8 @@ for a pin of another daemon whose goblin is gone."
   (interactive (list (completing-read "Release /goblins: host: "
                                       (hash-table-keys goblins--pins) nil t)))
   (let* ((vec (make-tramp-file-name :method goblins-tramp-method :host host))
-         (pin (goblins-pin host)))
+         (pin (goblins-pin host))
+         (goblins-tramp--releasing t))
     (when (or (null session) (null pin) (equal (nth 2 pin) session))
       (dolist (process (process-list))
         (when-let* ((v (process-get process 'tramp-vector)))
@@ -239,6 +243,44 @@ path, name or ID: release it unless a running goblin now has that name."
        hosts))))
 
 (add-hook 'goblins-snapshot-hook #'goblins-tramp--after-snapshot)
+
+;; TRAMP keeps a shell open in the goblin for each connection: close it with
+;; the last buffer that works there, so the goblin shows no idle exec.
+(defun goblins-tramp--host-in-use-p (host &optional except)
+  "Whether a buffer other than EXCEPT still works in /goblins:HOST: through TRAMP.
+Hidden buffers, TRAMP's own connection and debug buffers, and goblin
+terminals, which reach the goblin through their own exec, do not count."
+  (cl-some (lambda (buffer)
+             (unless (eq buffer except)
+               (when-let* ((v (goblins-tramp--buffer-vec buffer)))
+                 (and (equal (tramp-file-name-host v) host)
+                      (not (string-prefix-p " " (buffer-name buffer)))
+                      (not (member (buffer-name buffer)
+                                   (list (tramp-buffer-name v) (tramp-debug-buffer-name v))))
+                      (not (goblins-tramp--terminal-p buffer))))))
+           (buffer-list)))
+
+(defun goblins-tramp--close-unused (host &optional except)
+  "Close the TRAMP connection to HOST unless a buffer other than EXCEPT
+still works there, or TRAMP is using it right now.  The pin stays: the
+goblin still runs, and the next use reconnects to it."
+  (let* ((vec (make-tramp-file-name :method goblins-tramp-method :host host))
+         (process (tramp-get-connection-process vec)))
+    (when (and (process-live-p process)
+               (not (tramp-get-connection-property process "locked"))
+               (not (goblins-tramp--host-in-use-p host except)))
+      (tramp-cleanup-connection vec 'keep-debug nil 'keep-processes))))
+
+(defun goblins-tramp--buffer-killed ()
+  "Close this buffer's /goblins: connection if no other buffer uses it.
+At once: a deferred close could hit a connection TRAMP is opening again."
+  (unless (or goblins-tramp--releasing
+              (string-prefix-p " " (buffer-name))
+              (goblins-tramp--terminal-p (current-buffer)))
+    (when-let* ((vec (goblins-tramp--buffer-vec (current-buffer))))
+      (with-demoted-errors "Goblins: closing a connection: %S"
+        (goblins-tramp--close-unused (tramp-file-name-host vec) (current-buffer))))))
+(add-hook 'kill-buffer-hook #'goblins-tramp--buffer-killed)
 
 ;; Never persist connection data: a name may mean another goblin next time.
 (defun goblins-tramp--forget-persistent (&rest _)
@@ -335,13 +377,23 @@ before any TRAMP use, so it never reaches a later goblin with the same name."
             (file-name-as-directory
              (if (and (stringp cwd) (not (string-empty-p cwd))) cwd "/workspace")))))
 
+(defcustom goblins-shell-program nil
+  "The program `goblins-shell' runs inside the goblin.
+nil runs the sandbox's own $SHELL.  A string names a program, such as
+\"fish\", looked up on the sandbox's PATH; a list is a program and its
+arguments.  The program must be available inside the sandbox."
+  :type '(choice (const :tag "The sandbox's $SHELL" nil)
+                 (string :tag "Program")
+                 (repeat :tag "Program and arguments" string))
+  :group 'goblins)
+
 (defun goblins-tramp--shell-number (directory id)
   "The lowest number no open shell of goblin ID of DIRECTORY's daemon has."
   (let ((taken (delq nil (mapcar (lambda (buffer)
                                    (with-current-buffer buffer
                                      (and goblins--shell-number
                                           (equal goblins--directory directory)
-                                          (equal (alist-get 'session ghostel-identity) id)
+                                          (equal (alist-get 'session (bound-and-true-p ghostel-identity)) id)
                                           goblins--shell-number)))
                                  (buffer-list))))
         (n 1))
@@ -364,8 +416,9 @@ before any TRAMP use, so it never reaches a later goblin with the same name."
 ;;;###autoload
 (defun goblins-shell (&optional session display source)
   "Open a shell inside a running goblin, in a new Ghostel buffer.
-It runs the sandbox's own $SHELL with its dev shell environment, alongside
-the agent's terminal, and the sidebar lists it under its goblin.  SESSION is
+It runs `goblins-shell-program', by default the sandbox's own $SHELL, with
+its dev shell environment, alongside the agent's terminal, and the sidebar
+lists it under its goblin.  SESSION is
 a session record of SOURCE's daemon, by default that of
 `goblins-state-directory'; interactively, the goblin of the current terminal
 or /goblins: buffer, else (or with a prefix argument) one you choose.
@@ -389,8 +442,10 @@ DISPLAY, default `goblins--display-main', shows the buffer."
           (funcall (or display #'goblins--display-main) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
             (ghostel-exec buffer goblins-executable
-                          (list "--state-dir" directory "exec" "-t" "--instance" instance
-                                "--session" id host)
+                          (append (list "--state-dir" directory "exec" "-t" "--instance" instance
+                                        "--session" id host)
+                                  (and goblins-shell-program
+                                       (cons "--" (ensure-list goblins-shell-program))))
                           `((kind . goblins-shell) (session . ,id) (instance . ,instance)
                             (directory . ,directory) (host . ,host))))
           (with-current-buffer buffer

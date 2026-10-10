@@ -575,6 +575,8 @@ Diff sections also fold in the details view."
     (setq goblins--connection nil
           goblins--subscription nil)
     (when connection
+      ;; `jsonrpc-shutdown' only waits for the process to end: close it first.
+      (delete-process (jsonrpc--process connection))
       (jsonrpc-shutdown connection t))))
 
 (defun goblins--cancel-reconnect ()

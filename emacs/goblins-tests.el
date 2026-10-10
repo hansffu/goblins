@@ -1967,6 +1967,83 @@
                             :type 'user-error))
           (when (buffer-live-p eshell) (kill-buffer eshell)))))))
 
+(ert-deftest goblins-tramp-closes-connections-nothing-uses ()
+  (let ((process (start-process "goblins-test-connection" nil "sleep" "60"))
+        (buffers nil) closed)
+    (cl-letf (((symbol-function 'tramp-get-connection-process) (lambda (_) process))
+              ((symbol-function 'tramp-cleanup-connection)
+               (lambda (vec &rest _) (push (tramp-file-name-host vec) closed))))
+      (unwind-protect
+          (let ((use (lambda (name directory)
+                       (let ((buffer (get-buffer-create name)))
+                         (with-current-buffer buffer (setq default-directory directory))
+                         (push buffer buffers)
+                         buffer))))
+            ;; Hidden, connection and terminal buffers do not keep it open.
+            (funcall use " *goblins hidden*" "/goblins:gribble:/tmp/")
+            (funcall use "*tramp/goblins gribble*" "/goblins:gribble:/")
+            (with-current-buffer (funcall use "goblins-test-term" "/goblins:gribble:/")
+              (setq-local ghostel-identity '((kind . goblins-shell))))
+            (let ((one (funcall use "goblins-test-one" "/goblins:gribble:/tmp/"))
+                  (two (funcall use "goblins-test-two" "/goblins:gribble:/w/")))
+              (funcall use "goblins-test-other" "/goblins:snaga:/")
+              (should (goblins-tramp--host-in-use-p "gribble"))
+              ;; Killing the last buffer that uses the host closes it at once.
+              (kill-buffer one)
+              (should-not closed)
+              (should-not (goblins-tramp--host-in-use-p "gribble" two))
+              (kill-buffer two)
+              (should (equal closed '("gribble")))
+              ;; Never while TRAMP is using the connection.
+              (setq closed nil)
+              (cl-letf (((symbol-function 'tramp-get-connection-property)
+                         (lambda (_ property &rest _) (equal property "locked"))))
+                (goblins-tramp--close-unused "gribble"))
+              (should-not closed)))
+        (delete-process process)
+        (mapc #'kill-buffer (seq-filter #'buffer-live-p buffers))))))
+
+(ert-deftest goblins-shell-runs-goblins-shell-program ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :path "gribble"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                              "session-a"))
+          argvs shells)
+      (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+                ((symbol-function 'ghostel-exec)
+                 (lambda (_buffer _program args &rest _) (push args argvs))))
+        (unwind-protect
+            (dolist (program '(nil "fish" ("bash" "--norc")))
+              (let ((goblins-shell-program program))
+                (push (goblins-shell session #'ignore source) shells)))
+          (mapc #'kill-buffer shells)))
+      (should (equal (mapcar (lambda (args) (cdr (member "gribble" args))) (reverse argvs))
+                     '(nil ("--" "fish") ("--" "bash" "--norc")))))))
+
+(ert-deftest goblins-disconnect-closes-the-connection-without-waiting ()
+  (let* ((socket (make-temp-name (expand-file-name "goblins-test-" temporary-file-directory)))
+         (server (make-network-process :name "goblins-test-server" :server t
+                                       :family 'local :service socket :noquery t))
+         warnings)
+    (unwind-protect
+        (with-temp-buffer
+          (setq goblins--connection
+                (make-instance 'jsonrpc-process-connection
+                               :name "goblins-test"
+                               :process (make-network-process :name "goblins" :family 'local
+                                                              :service socket :noquery t)))
+          (let ((process (jsonrpc--process goblins--connection))
+                (start (float-time)))
+            (cl-letf (((symbol-function 'jsonrpc--warn)
+                       (lambda (&rest args) (push args warnings))))
+              (goblins--disconnect))
+            (should-not warnings)
+            (should-not (process-live-p process))
+            (should (< (- (float-time) start) 0.3))
+            (should-not goblins--connection)))
+      (delete-process server)
+      (when (file-exists-p socket) (delete-file socket)))))
+
 (ert-deftest goblins-pins-belong-to-one-goblin ()
   (let ((goblins--pins (make-hash-table :test #'equal)))
     (should (equal (goblins-pin-host "g" "/s" "i" "i-s1") "g"))
@@ -2187,18 +2264,30 @@
       (with-current-buffer (get-file-buffer "/goblins:gribble:/tmp/which")
         (should (equal (buffer-string) "other-daemon\n")))
       (goblins-tramp-release "gribble"))
-    ;; A fresh shell is pinned from its identity, and leaves the sandbox
-    ;; when its goblin stops, before any TRAMP use.
-    (when ghostel-used
-      (let* ((id (goblins-test--start-goblin source "snaga"))
-             (shell (goblins-shell (goblins--snapshot-session
-                                    (buffer-local-value 'goblins--snapshot source) id))))
-        (should (equal (nth 2 (goblins-test--pin "snaga")) id))
-        (should (equal (buffer-local-value 'default-directory shell) "/goblins:snaga:/"))
-        (goblins-test--stop-goblin source id)
-        (goblins-test--wait (lambda () (not (string-prefix-p "/goblins:" (buffer-local-value
-                                                                         'default-directory shell)))))
-        (should-not (goblins-test--pin "snaga"))))
+    ;; TRAMP's connection shell closes with the last buffer that uses it.
+    (let* ((id (goblins-test--start-goblin source "snaga"))
+           (execs (lambda () (or (plist-get (goblins--snapshot-session
+                                             (buffer-local-value 'goblins--snapshot source) id)
+                                            :execs)
+                                 0)))
+           (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) id))
+           (listing (goblins-dired session #'ignore source)))
+      (goblins-test--wait (lambda () (> (funcall execs) 0)))
+      (kill-buffer listing)
+      (goblins-test--wait (lambda () (= (funcall execs) 0)))
+      (should (equal (nth 2 (goblins-test--pin "snaga")) id))
+      ;; A fresh shell runs goblins-shell-program from the sandbox's PATH,
+      ;; and leaves the sandbox when its goblin stops.
+      (when ghostel-used
+        (let ((shell (let ((goblins-shell-program '("sh" "-c" "echo PROGRAM-$((6*7)); sleep 600")))
+                       (goblins-shell session))))
+          (should (equal (buffer-local-value 'default-directory shell) "/goblins:snaga:/"))
+          (with-current-buffer shell
+            (goblins-test--wait (lambda () (string-match-p "PROGRAM-42" (buffer-string)))))
+          (goblins-test--stop-goblin source id)
+          (goblins-test--wait (lambda () (not (string-prefix-p "/goblins:" (buffer-local-value
+                                                                           'default-directory shell)))))
+          (should-not (goblins-test--pin "snaga")))))
     (if ghostel-used "ok ghostel" "ok")))
 
 (defvar goblins-test--backtrace nil)

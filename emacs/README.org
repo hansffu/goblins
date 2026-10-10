@@ -123,7 +123,8 @@ raid and then by project directory, each with its type, beside a main window.
 The main window shows the last used goblin terminal, or the status buffer when
 there is none.  Stopped and failed goblins are hidden (the status buffer still
 lists them; set =goblins-sidebar-show-finished= to show them).  =!N= marks
-pending permission requests, on goblins and on the headings above them.  Shell
+pending permission requests, on goblins and on the headings above them.
+evil-snipe is turned off in the sidebar, whose =t= it would shadow.  Shell
 terminals opened with =t= are listed below their goblin (=› shell=, =› shell
 2=, marked =(exited)= once their shell ends) until you kill their buffer;
 Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
@@ -236,6 +237,10 @@ the daemon of =goblins-state-directory=.
   open; editor requests pin the requesting goblin first and are refused when
   the name is pinned to another one. =M-x goblins-tramp-release= releases a pin
   by hand, for a goblin of a daemon this Emacs does not follow.
+- *Connections close when unused.* TRAMP keeps a shell open in the goblin for
+  each connection (=· tramp= in the sidebar). It is closed when you kill the
+  last buffer that works in that goblin; terminals don't count, as they have
+  their own exec. The pin stays, so the next use reconnects to the same goblin.
 - *When a goblin stops*, its =/goblins:= buffers and processes are killed
   (unsaved changes are discarded), then the pin is released. Goblin terminals
   are kept and return to your home directory. =/goblins:= buffers are never
@@ -243,8 +248,9 @@ the daemon of =goblins-state-directory=.
 - *Files a goblin wrote* get only safe file-local variables and no =eval:=,
   also when emacsclient visits them. Their major mode still comes from the
   file name, and your own mode hooks still run on their contents.
-- *Shells.* =M-x goblins-shell= opens the goblin's own =$SHELL=, with its dev
-  shell, in a Ghostel buffer next to the agent's terminal (in a goblin terminal
+- *Shells.* =M-x goblins-shell= opens the goblin's own =$SHELL=, or
+  =goblins-shell-program= (a program name such as ="fish"=, or a list with
+  arguments, found on the sandbox's =PATH=), with its dev shell, in a Ghostel buffer next to the agent's terminal (in a goblin terminal
   or =/goblins:= buffer it uses that goblin; with a prefix argument it asks). Shells
   and goblin terminals track their directory (OSC 7) as =/goblins:= paths.
   =M-x goblins-eshell= and =M-x goblins-dired= open Eshell (one per goblin,
