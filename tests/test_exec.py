@@ -14,15 +14,19 @@ from terminal_support import Terminal
 
 
 def host_processes(marker):
-    """PIDs of host-visible processes whose command line contains MARKER."""
+    """PIDs of host-visible `sleep ARG` processes whose "sleep ARG" starts
+    with MARKER: the sleeps themselves, never a shell or client whose
+    command line merely mentions them."""
     found = []
     for entry in Path("/proc").iterdir():
         if entry.name.isdigit():
             try:
-                if marker.encode() in (entry / "cmdline").read_bytes():
-                    found.append(int(entry.name))
+                argv = (entry / "cmdline").read_bytes().split(b"\0")[:-1]
             except OSError:
-                pass
+                continue
+            if (len(argv) == 2 and os.path.basename(argv[0]) == b"sleep"
+                    and f"sleep {argv[1].decode(errors='replace')}".startswith(marker)):
+                found.append(int(entry.name))
     return found
 
 
@@ -59,6 +63,9 @@ class ExecTests(unittest.TestCase):
                           'pwd; echo "$GOBLIN_X"; test -t 0 || echo no-tty')
         self.assertEqual(r.stdout, "/tmp\n1 2\nno-tty\n", r.stderr)
         self.assertEqual(self.run_exec(self.agent["session"], "--", "true").returncode, 0)
+        # A request near the frame limit arrives in several reads.
+        r = self.run_exec("gribble", "--", "sh", "-c", 'echo "${#1}"', "sh", "y" * 15000)
+        self.assertEqual((r.returncode, r.stdout), (0, "15000\n"), r.stderr)
         r = self.run_exec("gribble", "--", "no-such-command")
         self.assertEqual(r.returncode, 127)
         self.assertIn("no-such-command: command not found", r.stderr)
@@ -142,13 +149,30 @@ class ExecTests(unittest.TestCase):
         self.assertEqual(client.wait(timeout=10), 0)
         self.assertEqual(client.stdout.read(), "<a>\n<b>\neof\n")
         client.stdout.close()
-        # Kill all execs: every client ends, the agent keeps running.
-        clients = [subprocess.Popen(self.command("gribble", "--", "sleep", f"{marker}{i}"))
+        # Kill all execs: every client ends, and so does everything the execs
+        # started, even processes that left their group (`set -m` puts
+        # background jobs in groups of their own) or outlived their command. The agent and what it started keep running.
+        agent = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", "gribble"])
+        self.addCleanup(agent.close)
+        # The terminal answers fish's queries only while it is read.
+        agent.send(f"sleep {marker}5 &\n")
+        agent.send("echo AGENT_STARTED\n")
+        agent.expect(r"\nAGENT_STARTED\n")
+        self.d.wait(lambda: host_processes(f"sleep {marker}5"))
+        self.assertEqual(self.run_exec("gribble", "--", "sh", "-c",
+                                       f"set -m; sleep {marker}6 & sleep 0.2").returncode, 0)
+        clients = [subprocess.Popen(self.command("gribble", "--", "sh", "-c",
+                                                 f"set -m; sleep {marker}{i} & set +m; sleep {marker}{i}"))
                    for i in (3, 4)]
         self.d.wait(lambda: self.d.get(self.agent["session"])["execs"] == 2)
+        self.d.wait(lambda: all(len(host_processes(f"sleep {marker}{i}")) == 2 for i in (3, 4)))
+        self.assertTrue(host_processes(f"sleep {marker}6"))
         self.d.rpc.call("sessions.kill_execs", {"session": "gribble"})
         for client in clients:
             self.assertEqual(client.wait(timeout=10), 128 + signal.SIGHUP)
+        for i in (3, 4, 6):
+            self.wait_gone(f"sleep {marker}{i}")
+        self.assertTrue(host_processes(f"sleep {marker}5"))
         self.assertEqual(self.d.get(self.agent["session"])["state"], "running")
 
     def test_pinning_never_reaches_a_namesake(self):
@@ -187,7 +211,7 @@ class ExecTests(unittest.TestCase):
         self.addCleanup(agent.close)
         background = subprocess.Popen(self.command(
             "gribble", "--", "sh", "-c",
-            f"trap '' HUP TERM; setsid sleep {marker}1 & sleep {marker}2; wait"),
+            f"trap '' HUP TERM; set -m; sleep {marker}1 & set +m; sleep {marker}2; wait"),
             stderr=subprocess.PIPE, text=True)
         self.d.wait(lambda: len(host_processes(f"sleep {marker}")) == 2)
         agent.send("exit 5\n")
@@ -195,7 +219,7 @@ class ExecTests(unittest.TestCase):
         record = self.d.wait(lambda: (r if (r := self.d.get(self.agent["session"]))["state"] == "stopped"
                                       else None))
         self.assertEqual(record["exit_code"], 5)
-        # Even the process that left the exec's group with setsid is gone.
+        # Even the process that left the exec's group (job control) is gone.
         self.wait_gone(f"sleep {marker}")
         self.assertNotEqual(background.wait(timeout=10), 0)
         background.stderr.close()
@@ -214,7 +238,9 @@ done
 ls /run/goblins
 """
         r = self.run_exec("gribble", "--", "sh", "-c", script)
-        self.assertEqual(r.stdout.count("init-fds-hidden"), 1, r.stdout)
+        # Init and the keepers of execs (this one's too) are forks of init:
+        # none is dumpable.
+        self.assertGreaterEqual(r.stdout.count("init-fds-hidden"), 2, r.stdout)
         self.assertNotIn("INIT_FD_READABLE", r.stdout)
         self.assertNotIn("SOCKET", r.stdout)
         # Only the request socket is a file; init's channel has no name.

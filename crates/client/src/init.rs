@@ -37,15 +37,20 @@ fn exit_code(status: i32) -> i32 {
 }
 
 struct Exec {
+    /// The exec's keeper: a subreaper child of init that holds everything the
+    /// exec starts, even processes that leave its session and process group.
+    keeper: i32,
+    /// The command, which leads its own session and process group.
     pid: i32,
-    /// The leader has not been reaped, so its PID still names the group.
-    leader: bool,
+    /// The keeper reports the command's wait status here, once.
+    status: Option<OwnedFd>,
     kill_at: Option<Instant>,
+    /// Cancelled with everything the exec started, not only its group.
+    everything: bool,
 }
 
-/// Processes below init as (pid, process group), from /proc.
-fn descendants() -> Vec<(i32, i32)> {
-    let me = unsafe { libc::getpid() };
+/// Processes below `root` as (pid, process group), from /proc.
+fn descendants(root: i32) -> Vec<(i32, i32)> {
     let mut parents: BTreeMap<i32, Vec<(i32, i32)>> = BTreeMap::new();
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
@@ -73,16 +78,30 @@ fn descendants() -> Vec<(i32, i32)> {
         }
     }
     let mut found = Vec::new();
-    let mut queue = vec![me];
+    let mut queue = vec![root];
     while let Some(parent) = queue.pop() {
         for &(pid, pgrp) in parents.get(&parent).into_iter().flatten() {
-            if pid != me && !found.iter().any(|(p, _)| *p == pid) {
+            if pid != root && !found.iter().any(|(p, _)| *p == pid) {
                 found.push((pid, pgrp));
                 queue.push(pid);
             }
         }
     }
     found
+}
+
+/// Read exactly `bytes.len()` bytes, or fewer at end of file.
+fn read_full(fd: RawFd, bytes: &mut [u8]) -> usize {
+    let mut done = 0;
+    while done < bytes.len() {
+        let n = unsafe { libc::read(fd, bytes[done..].as_mut_ptr().cast(), bytes.len() - done) };
+        if n > 0 {
+            done += n as usize;
+        } else if n == 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            break;
+        }
+    }
+    done
 }
 
 struct Init {
@@ -118,37 +137,32 @@ impl Init {
             }
         }
     }
-    /// Signal an exec's process group. While the leader is unreaped its PID
-    /// cannot be reused, so the group signal is exact; afterwards only the
-    /// group's remaining descendants of init are signalled one by one.
-    fn signal_group(exec: &Exec, signal: i32) -> bool {
-        if exec.leader {
-            return unsafe { libc::kill(-exec.pid, signal) } == 0;
-        }
+    /// Signal the exec's process group, or with `everything` every process
+    /// below its keeper. Only the keeper's own subtree is ever signalled,
+    /// so a reused PID or process group elsewhere is never hit.
+    fn signal(exec: &Exec, signal: i32, everything: bool) -> bool {
         let mut any = false;
-        for (pid, pgrp) in descendants() {
-            if pgrp == exec.pid {
+        for (pid, pgrp) in descendants(exec.keeper) {
+            if everything || pgrp == exec.pid {
                 unsafe { libc::kill(pid, signal) };
                 any = true;
             }
         }
         any
     }
-    fn hang_up(exec: &Exec) -> bool {
-        let live = Self::signal_group(exec, libc::SIGHUP);
-        Self::signal_group(exec, libc::SIGTERM);
-        Self::signal_group(exec, libc::SIGCONT);
+    fn hang_up(exec: &Exec, everything: bool) -> bool {
+        let live = Self::signal(exec, libc::SIGHUP, everything);
+        Self::signal(exec, libc::SIGTERM, everything);
+        Self::signal(exec, libc::SIGCONT, everything);
         live
     }
-    fn cancel(&mut self, id: u64) {
+    fn cancel(&mut self, id: u64, everything: bool) {
         let Some(exec) = self.execs.get_mut(&id) else {
             return;
         };
-        let live = Self::hang_up(exec);
-        if live && exec.kill_at.is_none() {
+        exec.everything |= everything;
+        if Self::hang_up(exec, exec.everything) && exec.kill_at.is_none() {
             exec.kill_at = Some(Instant::now() + GRACE);
-        } else if !live && !exec.leader {
-            self.execs.remove(&id);
         }
     }
     fn command(&mut self, command: Command, fds: Vec<OwnedFd>) {
@@ -161,13 +175,15 @@ impl Init {
                 tty,
             } => {
                 let event = match self.spawn(argv, cwd, env, tty, &fds) {
-                    Ok(pid) => {
+                    Ok((keeper, pid, status)) => {
                         self.execs.insert(
                             id,
                             Exec {
+                                keeper,
                                 pid,
-                                leader: true,
+                                status: Some(status),
                                 kill_at: None,
+                                everything: false,
                             },
                         );
                         Event::Spawned { id, pid }
@@ -178,18 +194,22 @@ impl Init {
             }
             Command::Signal { id, signal } if init::forwardable(signal) => {
                 if let Some(exec) = self.execs.get(&id) {
-                    Self::signal_group(exec, signal);
+                    Self::signal(exec, signal, false);
                 }
             }
             Command::Signal { .. } => (),
-            Command::Cancel { id } => self.cancel(id),
+            Command::Cancel { id } => self.cancel(id, false),
+            // Everything any exec started, including processes that left its
+            // group, and execs whose command already exited. Never the agent.
             Command::KillAll {} => {
                 for id in self.execs.keys().copied().collect::<Vec<_>>() {
-                    self.cancel(id);
+                    self.cancel(id, true);
                 }
             }
         }
     }
+    /// Start a keeper that runs the command. Returns the keeper, the command
+    /// and the pipe the keeper reports the command's wait status on.
     fn spawn(
         &self,
         argv: Option<Vec<String>>,
@@ -197,7 +217,7 @@ impl Init {
         env: Vec<(String, String)>,
         tty: bool,
         fds: &[OwnedFd],
-    ) -> Result<i32, (i32, String)> {
+    ) -> Result<(i32, i32, OwnedFd), (i32, String)> {
         let invalid = |m: &str| (126, m.to_string());
         if fds.len() != if tty { 1 } else { 3 } {
             return Err(invalid("wrong number of descriptors"));
@@ -258,76 +278,104 @@ impl Init {
         arg_ptrs.push(std::ptr::null());
         let mut env_ptrs: Vec<*const libc::c_char> = envp.iter().map(|e| e.as_ptr()).collect();
         env_ptrs.push(std::ptr::null());
-        let mut report = [0; 2];
-        cvt(unsafe { libc::pipe2(report.as_mut_ptr(), libc::O_CLOEXEC) })
-            .map_err(|e| (126, e.to_string()))?;
-        let (report_r, report_w) = unsafe {
-            (
-                OwnedFd::from_raw_fd(report[0]),
-                OwnedFd::from_raw_fd(report[1]),
-            )
+        let pipe = || -> Result<(OwnedFd, OwnedFd), (i32, String)> {
+            let mut fds = [0; 2];
+            cvt(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) })
+                .map_err(|e| (126, e.to_string()))?;
+            Ok(unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) })
         };
+        let (report_r, report_w) = pipe()?;
+        let (status_r, status_w) = pipe()?;
         let raw: Vec<RawFd> = fds.iter().map(AsRawFd::as_raw_fd).collect();
-        let pid = unsafe { libc::fork() };
-        if pid < 0 {
+        let keeper = unsafe { libc::fork() };
+        if keeper < 0 {
             return Err((126, io::Error::last_os_error().to_string()));
         }
-        if pid == 0 {
-            // The child of a single-threaded process: allocation is safe, but
-            // keep to plain system calls until exec.
+        if keeper == 0 {
+            // The keeper: a fork of single-threaded init that never execs.
             unsafe {
                 let report = report_w.as_raw_fd();
+                let status = status_w.as_raw_fd();
                 let fail = |stage: u8| child_failed(report, stage);
-                reset_signals();
-                if libc::setsid() < 0 {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                // Orphans of the exec come here rather than to init.
+                if libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) < 0 {
                     fail(0);
                 }
-                if tty {
-                    if libc::ioctl(raw[0], libc::TIOCSCTTY, 0) < 0 {
+                let pid = libc::fork();
+                if pid < 0 {
+                    fail(0);
+                }
+                if pid == 0 {
+                    reset_signals();
+                    if libc::setsid() < 0 {
                         fail(0);
                     }
-                    for target in 0..3 {
-                        if libc::dup2(raw[0], target) < 0 {
+                    if tty {
+                        if libc::ioctl(raw[0], libc::TIOCSCTTY, 0) < 0 {
                             fail(0);
                         }
-                    }
-                } else {
-                    for (target, &source) in raw.iter().enumerate() {
-                        if libc::dup2(source, target as i32) < 0 {
-                            fail(0);
+                        for target in 0..3 {
+                            if libc::dup2(raw[0], target) < 0 {
+                                fail(0);
+                            }
+                        }
+                    } else {
+                        for (target, &source) in raw.iter().enumerate() {
+                            if libc::dup2(source, target as i32) < 0 {
+                                fail(0);
+                            }
                         }
                     }
+                    if let Some(cwd) = &cwd
+                        && libc::chdir(cwd.as_ptr()) < 0
+                    {
+                        fail(1);
+                    }
+                    let mut denied = false;
+                    for candidate in &candidates {
+                        libc::execve(candidate.as_ptr(), arg_ptrs.as_ptr(), env_ptrs.as_ptr());
+                        let errno = *libc::__errno_location();
+                        denied |= errno == libc::EACCES;
+                    }
+                    if denied {
+                        *libc::__errno_location() = libc::EACCES;
+                    }
+                    fail(2);
                 }
-                if let Some(cwd) = &cwd
-                    && libc::chdir(cwd.as_ptr()) < 0
-                {
-                    fail(1);
+                libc::write(status, (&pid as *const i32).cast(), 4);
+                // Hold nothing but the status pipe: not the control socket,
+                // the goblin's terminal or the command's stdio.
+                if status > 0 {
+                    libc::syscall(libc::SYS_close_range, 0u32, (status - 1) as u32, 0u32);
                 }
-                let mut denied = false;
-                for candidate in &candidates {
-                    libc::execve(candidate.as_ptr(), arg_ptrs.as_ptr(), env_ptrs.as_ptr());
-                    let errno = *libc::__errno_location();
-                    denied |= errno == libc::EACCES;
+                libc::syscall(libc::SYS_close_range, (status + 1) as u32, u32::MAX, 0u32);
+                loop {
+                    let mut wait = 0;
+                    let child = libc::waitpid(-1, &mut wait, 0);
+                    if child == pid {
+                        libc::write(status, (&wait as *const i32).cast(), 4);
+                        libc::close(status);
+                    } else if child < 0 && *libc::__errno_location() != libc::EINTR {
+                        libc::_exit(0);
+                    }
                 }
-                if denied {
-                    *libc::__errno_location() = libc::EACCES;
-                }
-                fail(2);
             }
         }
         drop(report_w);
+        drop(status_w);
         let mut bytes = [0u8; 5];
-        let n = loop {
-            let n = unsafe { libc::read(report_r.as_raw_fd(), bytes.as_mut_ptr().cast(), 5) };
-            if n >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                break n;
+        if read_full(report_r.as_raw_fd(), &mut bytes) == 0 {
+            let mut pid = [0u8; 4];
+            if read_full(status_r.as_raw_fd(), &mut pid) == 4 {
+                let _ = unix_nonblocking(status_r.as_raw_fd());
+                return Ok((keeper, i32::from_ne_bytes(pid), status_r));
             }
-        };
-        if n <= 0 {
-            return Ok(pid);
+            bytes = [0, 0, 0, 0, 0];
+            bytes[1..].copy_from_slice(&libc::EIO.to_ne_bytes());
         }
-        // The child never ran the command: reap it here, not as an exec.
-        unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+        // The command never ran: the keeper exits once it has reaped it.
+        unsafe { libc::waitpid(keeper, std::ptr::null_mut(), 0) };
         let errno = i32::from_ne_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
         let error = io::Error::from_raw_os_error(errno);
         let name = String::from_utf8_lossy(program.as_bytes()).into_owned();
@@ -337,6 +385,46 @@ impl Init {
             _ if errno == libc::ENOENT => (127, format!("{name}: command not found")),
             _ => (126, format!("{name}: {error}")),
         })
+    }
+    /// The command of exec `id` exited (or its keeper vanished): report it,
+    /// and hang up the rest of its group as when a terminal's session ends.
+    fn exited(&mut self, id: u64) {
+        let Some(exec) = self.execs.get_mut(&id) else {
+            return;
+        };
+        let Some(status) = exec.status.take() else {
+            return;
+        };
+        let mut wait = [0u8; 4];
+        let (code, signal) = if read_full(status.as_raw_fd(), &mut wait) == 4 {
+            let wait = i32::from_ne_bytes(wait);
+            if libc::WIFSIGNALED(wait) {
+                (None, Some(libc::WTERMSIG(wait)))
+            } else {
+                (Some(libc::WEXITSTATUS(wait)), None)
+            }
+        } else {
+            (None, Some(libc::SIGKILL))
+        };
+        Self::signal(exec, libc::SIGHUP, false);
+        Self::signal(exec, libc::SIGCONT, false);
+        self.emit(Event::Exited { id, code, signal });
+    }
+    /// Read the statuses keepers reported.
+    fn statuses(&mut self) {
+        let ready: Vec<u64> = self
+            .execs
+            .iter()
+            .filter(|(_, e)| {
+                e.status
+                    .as_ref()
+                    .is_some_and(|s| unix_readable(s.as_raw_fd()))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            self.exited(id);
+        }
     }
     /// Reap exited children. Returns the agent's wait status once it exits.
     fn reap(&mut self) -> Option<i32> {
@@ -351,28 +439,15 @@ impl Init {
                 agent = Some(status);
                 continue;
             }
-            let Some((&id, _)) = self.execs.iter().find(|(_, e)| e.leader && e.pid == pid) else {
-                continue;
-            };
-            let (code, signal) = if libc::WIFSIGNALED(status) {
-                (None, Some(libc::WTERMSIG(status)))
-            } else {
-                (Some(libc::WEXITSTATUS(status)), None)
-            };
-            self.emit(Event::Exited { id, code, signal });
-            let exec = self.execs.get_mut(&id).unwrap();
-            exec.leader = false;
-            // As when a terminal's session ends, the rest of the group hangs up.
-            let live = Self::signal_group(exec, libc::SIGHUP);
-            Self::signal_group(exec, libc::SIGCONT);
-            if !live || exec.kill_at.is_none() {
+            // A keeper exits once nothing the exec started is left.
+            if let Some((&id, _)) = self.execs.iter().find(|(_, e)| e.keeper == pid) {
+                self.exited(id);
                 self.execs.remove(&id);
             }
         }
     }
     fn signals(&mut self) -> Option<i32> {
         let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
-        let mut agent = None;
         while unsafe {
             libc::read(
                 self.signals.as_raw_fd(),
@@ -389,24 +464,17 @@ impl Init {
                 },
             }
         }
-        if let Some(status) = self.reap() {
-            agent = Some(status);
-        }
-        agent
+        // Statuses first: a keeper may report and exit in the same moment.
+        self.statuses();
+        self.reap()
     }
     fn deadlines(&mut self, now: Instant) {
-        let due: Vec<u64> = self
-            .execs
-            .iter()
-            .filter(|(_, e)| e.kill_at.is_some_and(|t| t <= now))
-            .map(|(id, _)| *id)
-            .collect();
-        for id in due {
-            let exec = self.execs.get_mut(&id).unwrap();
-            exec.kill_at = None;
-            Self::signal_group(exec, libc::SIGKILL);
-            if !exec.leader {
-                self.execs.remove(&id);
+        for exec in self.execs.values_mut() {
+            if exec.kill_at.is_some_and(|t| t <= now) {
+                // Repeat shortly while anything is left: a process may fork
+                // between the scan and the signal.
+                exec.kill_at = Self::signal(exec, libc::SIGKILL, exec.everything)
+                    .then(|| now + Duration::from_millis(100));
             }
         }
     }
@@ -440,16 +508,17 @@ impl Init {
     fn shutdown(&mut self) {
         let mut live = false;
         for exec in self.execs.values() {
-            live |= Self::hang_up(exec);
+            live |= Self::hang_up(exec, true);
         }
         let end = Instant::now() + SHUTDOWN_GRACE;
         while live && Instant::now() < end && !self.execs.is_empty() {
             self.wait(Some(end));
-            self.reap();
+            self.signals();
             self.flush();
         }
+        let me = unsafe { libc::getpid() };
         for _ in 0..100 {
-            let left = descendants();
+            let left = descendants(me);
             if left.is_empty() {
                 break;
             }
@@ -457,9 +526,9 @@ impl Init {
                 unsafe { libc::kill(pid, libc::SIGKILL) };
             }
             std::thread::sleep(Duration::from_millis(10));
-            self.reap();
+            self.signals();
         }
-        self.reap();
+        self.signals();
         self.flush();
     }
     fn wait(&self, deadline: Option<Instant>) {
@@ -480,6 +549,13 @@ impl Init {
                 revents: 0,
             });
         }
+        for status in self.execs.values().filter_map(|e| e.status.as_ref()) {
+            fds.push(libc::pollfd {
+                fd: status.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+        }
         let timeout = deadline.map_or(-1, |d| {
             d.saturating_duration_since(Instant::now())
                 .as_millis()
@@ -487,6 +563,21 @@ impl Init {
         });
         unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) };
     }
+}
+
+fn unix_nonblocking(fd: RawFd) -> io::Result<()> {
+    let flags = cvt(unsafe { libc::fcntl(fd, libc::F_GETFL) })?;
+    cvt(unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) })?;
+    Ok(())
+}
+
+fn unix_readable(fd: RawFd) -> bool {
+    let mut p = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut p, 1, 0) > 0 }
 }
 
 fn handled_signals() -> libc::sigset_t {
@@ -620,6 +711,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(status) = state.signals() {
             break status;
         }
+        state.statuses();
         state.control();
         state.deadlines(Instant::now());
         state.flush();

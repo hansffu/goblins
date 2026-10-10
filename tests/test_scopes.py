@@ -131,7 +131,9 @@ class ScopeTests(unittest.TestCase):
                   r'done')
         output = subprocess.run([*exec_, b, "--", "sh", "-c", script], capture_output=True,
                                 text=True, timeout=30).stdout
-        self.assertEqual(output.split(), ["hidden", "hidden"], output)
+        # Both inits and the keepers of their execs: none is dumpable.
+        self.assertGreaterEqual(len(output.split()), 3, output)
+        self.assertEqual(set(output.split()), {"hidden"}, output)
         ta.send("exit 6\n")
         self.assertEqual(ta.wait(), 6)
         self.d.wait(lambda: subprocess.run(find, capture_output=True, text=True).stdout.split() == [])
