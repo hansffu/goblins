@@ -34,6 +34,9 @@
 (declare-function goblin-mode "goblins-terminal" (&optional arg))
 (declare-function goblins--sidebar-render-all "goblins-workspace" ())
 (defvar server-window)
+(declare-function server-send-string "server" (proc string))
+(declare-function server-quote-arg "server" (arg))
+(declare-function server-delete-client "server" (proc &optional noframe))
 (declare-function eshell-mode "esh-mode" ())
 (declare-function desktop-save-buffer-p "desktop" (filename bufname mode &rest rest))
 (defvar ghostel-kill-buffer-on-exit)
@@ -424,6 +427,67 @@ editor (emacsclient) open right of its agent and are remembered for it."
         (apply function next-buffer args)))))
 (with-eval-after-load 'server
   (advice-add 'server-switch-buffer :around #'goblins-tramp--server-switch-buffer))
+
+(defcustom goblins-editor-approval 'ask
+  "What happens when a goblin's editor asks to open files in this Emacs.
+`ask' pops the request up at the bottom for you to open or refuse, `approve'
+opens the files, and `deny' refuses them.  The goblin's editor waits, and a
+refusal fails it with an explanation."
+  :type '(choice (const :tag "Ask" ask)
+                 (const :tag "Always open" approve)
+                 (const :tag "Always refuse" deny))
+  :group 'goblins)
+
+(defun goblins-tramp--goblin-label (name)
+  "The goblin of /goblins: file NAME, as its tree path when Emacs knows it."
+  (let* ((host (tramp-file-name-host (goblins-tramp--vec name)))
+         (pin (goblins-pin host))
+         (source (and pin (get-buffer (format "*Goblins: %s*" (car pin)))))
+         (session (and source (goblins--snapshot-session
+                               (buffer-local-value 'goblins--snapshot source) (nth 2 pin)))))
+    (if session (goblins--session-path session) host)))
+
+(defun goblins-tramp--refuse-edit (proc)
+  "Fail the emacsclient PROC: opening its files was refused."
+  (when (process-live-p proc)
+    (server-send-string
+     proc (concat "-error "
+                  (server-quote-arg "Goblins: opening the files in Emacs was refused")
+                  "\n"))
+    (server-delete-client proc)))
+
+(defun goblins-tramp--server-execute (function proc files &rest args)
+  "Around `server-execute': files a goblin's editor asks to open wait for
+`goblins-editor-approval'.  Until then the emacsclient waits; refused, it fails."
+  (if (or (eq goblins-editor-approval 'approve)
+          (not (cl-some (lambda (file) (goblins-tramp-file-p (car file))) files)))
+      (apply function proc files args)
+    (if (eq goblins-editor-approval 'deny)
+        (goblins-tramp--refuse-edit proc)
+      (let (edit)
+        (setq edit
+              ;; The server keeps FILES last first.
+              (list :goblin (goblins-tramp--goblin-label (caar files))
+                    :files (mapcar (lambda (file)
+                                     (concat (tramp-file-local-name (car file))
+                                             (if-let* ((line (car-safe (cdr file))))
+                                                 (format ":%s" line)
+                                               "")))
+                                   (reverse files))
+                    :live (lambda () (process-live-p proc))
+                    :approve (lambda ()
+                               (setq goblins--pending-edits (delq edit goblins--pending-edits))
+                               (when (process-live-p proc)
+                                 (apply function proc files args))
+                               (goblins--popup-edits-changed))
+                    :deny (lambda ()
+                            (setq goblins--pending-edits (delq edit goblins--pending-edits))
+                            (goblins-tramp--refuse-edit proc)
+                            (goblins--popup-edits-changed))))
+        (setq goblins--pending-edits (append goblins--pending-edits (list edit)))
+        (goblins--popup-edits-changed)))))
+(with-eval-after-load 'server
+  (advice-add 'server-execute :around #'goblins-tramp--server-execute))
 
 ;;; Files a goblin wrote
 

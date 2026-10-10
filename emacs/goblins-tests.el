@@ -1124,6 +1124,60 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (funcall mode)
       (should (eq (key-binding "q") #'goblins-quit-view)))))
 
+(ert-deftest goblins-editor-files-wait-for-approval-before-requests ()
+  (require 'server)
+  (goblins-test--workspace (list (goblins-test--session "session-a" :path "gribble"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (goblins--pending-edits nil)
+          (client (start-process "goblins-test-client" nil "sleep" "60"))
+          ;; As the server passes them: the last file first.
+          (files '(("/goblins:gribble:/x" . nil) ("/goblins:gribble:/tmp/msg" . (3 . nil))))
+          (popup (lambda () (and (get-buffer-window goblins--popup-buffer-name)
+                                 (with-current-buffer goblins--popup-buffer-name
+                                   (buffer-string)))))
+          executed refused)
+      (cl-letf (((symbol-function 'server-send-string)
+                 (lambda (_proc string) (push string refused)))
+                ((symbol-function 'server-delete-client) #'ignore))
+        (unwind-protect
+            (let ((execute (lambda (&rest args) (push args executed))))
+              (terminal "session-a")
+              ;; The selected goblin's request shows until an edit arrives.
+              (goblins-select-goblin source "session-a")
+              (should (string-match-p "asks for hello" (funcall popup)))
+              ;; Asked: nothing opens; the edit takes over the popup.
+              (goblins-tramp--server-execute execute client files nil)
+              (should-not executed)
+              (should (string-match-p "gribble wants to open in Emacs\n +/tmp/msg:3\n +/x"
+                                      (funcall popup)))
+              (with-current-buffer goblins--popup-buffer-name
+                (goblins-request-popup-accept))
+              (should (equal executed (list (list client files nil))))
+              ;; Settled: back to the goblin's request.
+              (should (string-match-p "asks for hello" (funcall popup)))
+              ;; Refused: emacsclient fails with an explanation.
+              (goblins-tramp--server-execute execute client files nil)
+              (with-current-buffer goblins--popup-buffer-name
+                (goblins-request-popup-deny))
+              (should (string-match-p "\\`-error .*refused" (car refused)))
+              (should (= (length executed) 1))
+              ;; A requester that went away is dropped.
+              (let ((gone (start-process "goblins-test-gone" nil "true")))
+                (goblins-tramp--server-execute execute gone files nil)
+                (goblins-test--wait (lambda () (not (process-live-p gone))))
+                (should-not (goblins--live-edits)))
+              ;; Policies, and other emacsclient files, don't ask.
+              (setq refused nil)
+              (let ((goblins-editor-approval 'deny))
+                (goblins-tramp--server-execute execute client files nil))
+              (should refused)
+              (let ((goblins-editor-approval 'approve))
+                (goblins-tramp--server-execute execute client files nil))
+              (goblins-tramp--server-execute execute client '(("/tmp/local" . nil)) nil)
+              (should (= (length executed) 3))
+              (should-not goblins--pending-edits))
+          (delete-process client))))))
+
 (ert-deftest goblins-workspace-without-a-last-goblin-shows-the-latest-terminal ()
   (goblins-test--workspace (list (goblins-test--session "session-a")
                                  (goblins-test--session "session-b"))
@@ -2482,11 +2536,31 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
         (should (= fill-column 33))
         (should-not (local-variable-p 'goblins-test--unsafe))))
     (should-not goblins-test--pwned)
+    ;; goblins-editor asks first: the popup names the goblin and its files,
+    ;; and nothing opens until you approve.  A refusal fails the editor.
+    (let ((editor (start-process "refused-editor" (generate-new-buffer " *refused*")
+                                 goblins-executable "--state-dir" directory "exec" "gribble"
+                                 "--" "goblins-editor" "/tmp/r1")))
+      (goblins-test--wait (lambda () goblins--pending-edits))
+      (should (get-buffer-window goblins--popup-buffer-name))
+      (with-current-buffer goblins--popup-buffer-name
+        (should (string-match-p "gribble wants to open in Emacs\n +/tmp/r1" (buffer-string)))
+        (goblins-request-popup-deny))
+      (goblins-test--wait (lambda () (not (process-live-p editor))))
+      (should-not (eq (process-exit-status editor) 0))
+      (should (string-match-p "refused" (with-current-buffer (process-buffer editor) (buffer-string))))
+      (should-not (get-file-buffer "/goblins:gribble:/tmp/r1"))
+      (should-not (get-buffer-window goblins--popup-buffer-name)))
     ;; goblins-editor blocks until every file is done with C-x #.
     (let* ((editor (start-process "goblins-editor" (generate-new-buffer " *editor*")
                                   goblins-executable "--state-dir" directory "exec" "gribble"
                                   "--" "goblins-editor" "+2" "/tmp/m1" "/tmp/m2"))
            (m1 "/goblins:gribble:/tmp/m1") (m2 "/goblins:gribble:/tmp/m2"))
+      (goblins-test--wait (lambda () goblins--pending-edits))
+      (should-not (get-file-buffer m1))
+      (with-current-buffer goblins--popup-buffer-name
+        (should (string-match-p "/tmp/m1:2\n +/tmp/m2" (buffer-string)))
+        (goblins-request-popup-accept))
       (goblins-test--wait (lambda () (and (get-file-buffer m1) (get-file-buffer m2))))
       (dolist (name (list m1 m2))
         (with-current-buffer (get-file-buffer name)
@@ -2549,7 +2623,8 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
         (should (equal (buffer-string) "first-daemon\n"))))
     ;; An edit from the other daemon's namesake never opens this daemon's
     ;; file: refused while the name is pinned here, its own once released.
-    (let ((edit (lambda ()
+    (let* ((goblins-editor-approval 'approve)
+           (edit (lambda ()
                   (let ((process (start-process "other-editor" (generate-new-buffer " *other*")
                                                 goblins-executable "--state-dir" other "exec"
                                                 "gribble" "--" "goblins-editor" "--no-wait"

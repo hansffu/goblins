@@ -306,6 +306,13 @@ the daemon of =goblins-state-directory=.
   =goblins-editor= inside a sandbox opens files here through emacsclient,
   always as =/goblins:= paths; it needs a running Emacs server
   (=M-x server-start=) with goblins.el loaded. Finish each file with =C-x #=.
+  Emacs asks first: the request pops up at the bottom, ahead of any
+  permission request, naming the goblin and its files; =a= opens them, =d=
+  refuses (the goblin's editor then fails with an explanation) and =q= leaves
+  it waiting (=M-x goblins-request-popup= brings it back).  Set
+  =goblins-editor-approval= to =approve= or =deny= to decide every time
+  without asking; the default is =ask=.  In the workspace the files open
+  right of the goblin's agent.
 
 * Checks
 

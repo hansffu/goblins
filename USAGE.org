@@ -634,7 +634,10 @@ names it builds itself, so a goblin cannot open another goblin's files or host
 paths. It first pins that name in Emacs to the requesting goblin of this
 daemon (=goblins-pin-host=, so goblins.el must be loaded in the Emacs that runs
 the server), whatever daemon Emacs is configured for. When Emacs has the name
-pinned to another goblin the edit fails and nothing is opened. Blocking edits end when you are done with every file (=C-x #=), with
+pinned to another goblin the edit fails and nothing is opened. goblins.el then
+asks you before it opens the files (=goblins-editor-approval=, default =ask=);
+until you decide the edit waits, and refused it fails. Blocking edits end when
+you are done with every file (=C-x #=), with
 emacsclient's exit status; closing the waiting command kills the client.
 Without a running Emacs server the edit fails at once. =emacsclient= finds the
 server as usual, from the daemon's environment (=EMACS_SOCKET_NAME= or

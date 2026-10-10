@@ -647,16 +647,30 @@ Accept it when APPROVED is non-nil, otherwise deny it."
 
 ;;;; Request popup
 ;;
-;; A small window at the bottom with the selected goblin's pending permission
-;; request: what it asks for and why.  It opens when you select a goblin that
-;; is waiting, and when the goblin on the left asks for something.  It never
-;; takes the focus, isn't remembered, and closes once nothing is waiting.
+;; A small window at the bottom with what waits for your decision.  First
+;; files a goblin's editor asks to open here (see `goblins-editor-approval'),
+;; from any goblin, wherever you are.  Then the selected goblin's pending
+;; permission request: what it asks for and why, which opens when you select a
+;; goblin that is waiting and when the goblin on the left asks for something.
+;; It never takes the focus, isn't remembered, and closes once nothing waits.
 
 (defcustom goblins-request-popups t
   "Whether the workspace pops up the selected goblin's pending request."
   :type 'boolean :group 'goblins)
 
 (defconst goblins--popup-buffer-name "*Goblins Request*")
+
+(defvar goblins--pending-edits nil
+  "Files goblins' editors asked to open, waiting for approval, oldest first.
+Each is a plist: :goblin (a label), :files (file names), :approve and :deny
+\(functions that settle it) and :live (a function, nil once the requester
+has gone).")
+
+(defun goblins--live-edits ()
+  "`goblins--pending-edits' without those whose requester has gone."
+  (setq goblins--pending-edits
+        (cl-remove-if-not (lambda (edit) (funcall (plist-get edit :live)))
+                          goblins--pending-edits)))
 
 (defun goblins--pending-requests (snapshot id)
   "The pending permission requests of session ID in SNAPSHOT, oldest first."
@@ -672,50 +686,89 @@ Accept it when APPROVED is non-nil, otherwise deny it."
                 (text (or (plist-get preview :description) (plist-get preview :error))))
       (car (split-string text "\n"))))))
 
+(defun goblins--waiting (count)
+  (if (> count 1)
+      (propertize (format "   1 of %d waiting" count) 'face 'goblins-attention)
+    ""))
+
+(defun goblins--popup-insert-edit (edit count)
+  (insert (propertize (goblins--safe (plist-get edit :goblin)) 'face 'bold)
+          " wants to open in Emacs" (goblins--waiting count) "\n")
+  (dolist (file (plist-get edit :files))
+    (insert "    " (propertize (goblins--safe file) 'face 'goblins-key) "\n"))
+  (insert (propertize "a open   d refuse   q later" 'face 'goblins-dim)))
+
+(defun goblins--popup-insert-request (session pending)
+  (let ((record (car pending)))
+    (insert (propertize (goblins--safe (or (plist-get session :agent_name)
+                                           (plist-get record :agent_name)))
+                        'face 'bold)
+            " asks for "
+            (propertize (goblins--safe (plist-get record :package)) 'face 'goblins-key)
+            (let ((kind (plist-get record :kind)))
+              (if (member kind '(nil "package")) ""
+                (propertize (format " (%s)" (goblins--safe kind)) 'face 'goblins-dim)))
+            (goblins--waiting (length pending))
+            "\n")
+    (goblins--field "Reason:" (plist-get record :reason))
+    (when-let* ((preview (goblins--popup-preview record)))
+      (goblins--field "Preview:" preview))
+    (when-let* ((message (plist-get record :message)))
+      (goblins--field "Message:" message))
+    (insert (propertize "a accept   d deny   p all requests   q close" 'face 'goblins-dim))))
+
+(defun goblins--popup-requests ()
+  "The selected goblin's pending requests the popup shows, or nil."
+  (and goblins-request-popups
+       (goblins--pending-requests (goblins--view-snapshot) goblins--view-session)))
+
 (defun goblins--popup-render ()
-  "Redraw the popup from the snapshot; close it once nothing is waiting."
-  (let* ((inhibit-read-only t)
-         (session (goblins--view-session-record))
-         (pending (goblins--pending-requests (goblins--view-snapshot) goblins--view-session))
-         (record (car pending)))
+  "Redraw the popup: an edit waiting for approval first, else the goblin's
+request.  Close it once nothing waits."
+  (let ((inhibit-read-only t)
+        (edits (goblins--live-edits))
+        (pending (goblins--popup-requests)))
     (erase-buffer)
-    (when record
-      (insert (propertize (goblins--safe (or (plist-get session :agent_name)
-                                             (plist-get record :agent_name)))
-                          'face 'bold)
-              " asks for "
-              (propertize (goblins--safe (plist-get record :package)) 'face 'goblins-key)
-              (let ((kind (plist-get record :kind)))
-                (if (member kind '(nil "package")) ""
-                  (propertize (format " (%s)" (goblins--safe kind)) 'face 'goblins-dim)))
-              (if (cdr pending)
-                  (propertize (format "   1 of %d waiting" (length pending)) 'face 'goblins-attention)
-                "")
-              "\n")
-      (goblins--field "Reason:" (plist-get record :reason))
-      (when-let* ((preview (goblins--popup-preview record)))
-        (goblins--field "Preview:" preview))
-      (when-let* ((message (plist-get record :message)))
-        (goblins--field "Message:" message))
-      (insert (propertize "a accept   d deny   p all requests   q close" 'face 'goblins-dim)))
+    (cond (edits (goblins--popup-insert-edit (car edits) (length edits)))
+          (pending (goblins--popup-insert-request (goblins--view-session-record) pending)))
     (goto-char (point-min))
     (when-let* ((window (get-buffer-window (current-buffer) t)))
-      (if record
+      (if (or edits pending)
           (fit-window-to-buffer window 12 2)
         (delete-window window)))))
 
+(defun goblins--popup-buffer ()
+  "The popup buffer, created if needed."
+  (let ((buffer (get-buffer-create goblins--popup-buffer-name)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'goblins-request-popup-mode)
+        (goblins-request-popup-mode)
+        (setq default-directory (expand-file-name "~/")))
+      (setq goblins--view-render #'goblins--popup-render))
+    buffer))
+
+(defun goblins--popup-display (buffer)
+  "Render BUFFER and pop it up at the bottom, without selecting it.
+Return BUFFER, or nil and close the popup when nothing waits."
+  (with-current-buffer buffer (goblins--popup-render))
+  (if (zerop (buffer-size buffer))
+      (progn (goblins--popup-close) nil)
+    (display-buffer buffer
+                    '((display-buffer-in-side-window)
+                      (side . bottom) (slot . 0)
+                      (window-height . (lambda (w) (fit-window-to-buffer w 12 2)))
+                      (window-parameters (no-delete-other-windows . t))))
+    buffer))
+
 (defun goblins--popup-show (source id)
-  "Pop up goblin ID's pending request at the bottom, without selecting it."
-  (let ((buffer (goblins--view-buffer goblins--popup-buffer-name #'goblins-request-popup-mode
-                                      #'goblins--popup-render source id)))
-    (if (not (goblins--pending-requests (buffer-local-value 'goblins--snapshot source) id))
-        (goblins--popup-close)
-      (display-buffer buffer
-                      '((display-buffer-in-side-window)
-                        (side . bottom) (slot . 0)
-                        (window-height . (lambda (w) (fit-window-to-buffer w 12 2)))
-                        (window-parameters (no-delete-other-windows . t))))
-      buffer)))
+  "Pop up what waits, with goblin ID of SOURCE's daemon as the selected goblin."
+  (goblins--view-buffer goblins--popup-buffer-name #'goblins-request-popup-mode
+                        #'goblins--popup-render source id)
+  (goblins--popup-display (goblins--popup-buffer)))
+
+(defun goblins--popup-edits-changed ()
+  "Pop up an edit that arrived, or move on after one was settled."
+  (goblins--popup-display (goblins--popup-buffer)))
 
 (defun goblins--popup-close ()
   "Close the request popup if it is shown."
@@ -723,10 +776,8 @@ Accept it when APPROVED is non-nil, otherwise deny it."
     (delete-window window)))
 
 (defun goblins--popup-follow (source id)
-  "Show goblin ID's pending request after it was selected, or close the popup."
-  (if goblins-request-popups
-      (goblins--popup-show source id)
-    (goblins--popup-close)))
+  "Show what waits after goblin ID was selected, or close the popup."
+  (goblins--popup-show source id))
 
 (defun goblins--popup-on-request (record)
   "Pop up RECORD, a request that became pending, if the selected goblin asks."
@@ -736,8 +787,9 @@ Accept it when APPROVED is non-nil, otherwise deny it."
 (add-hook 'goblins-request-hook #'goblins--popup-on-request)
 
 (defun goblins-request-popup ()
-  "Pop up the pending request of this goblin terminal's goblin, or of the
-goblin selected in the workspace."
+  "Pop up what waits for your decision: files a goblin's editor wants to open,
+else the pending request of this goblin terminal's goblin, or of the goblin
+selected in the workspace."
   (interactive)
   (let ((goblin (cond (goblins--session-key
                        (cons (goblins--status-buffer (car goblins--session-key))
@@ -745,30 +797,34 @@ goblin selected in the workspace."
                       (goblins--last-goblin
                        (cons (goblins--status-buffer (car goblins--last-goblin))
                              (cdr goblins--last-goblin))))))
-    (unless goblin (user-error "Select a goblin first"))
-    (unless (goblins--popup-show (car goblin) (cdr goblin))
+    (unless (if goblin
+                (goblins--popup-show (car goblin) (cdr goblin))
+              (goblins--popup-edits-changed))
       (message "Nothing waiting for a decision"))))
 
 (defun goblins--popup-decide (approved)
-  (let ((record (car (goblins--pending-requests (goblins--view-snapshot) goblins--view-session))))
-    (unless record (user-error "Nothing waiting for a decision"))
-    (with-current-buffer goblins--view-source
-      (goblins--decide-record record approved))))
+  (if-let* ((edit (car (goblins--live-edits))))
+      (funcall (plist-get edit (if approved :approve :deny)))
+    (let ((record (car (goblins--popup-requests))))
+      (unless record (user-error "Nothing waiting for a decision"))
+      (with-current-buffer goblins--view-source
+        (goblins--decide-record record approved)))))
 
 (defun goblins-request-popup-accept ()
-  "Accept the request in the popup."
+  "Open the files in the popup, or accept its request."
   (interactive)
   (goblins--popup-decide t))
 
 (defun goblins-request-popup-deny ()
-  "Deny the request in the popup."
+  "Refuse the files in the popup, or deny its request."
   (interactive)
   (goblins--popup-decide nil))
 
 (defun goblins-request-popup-all ()
-  "Show all of this goblin's requests, then close the popup."
+  "Show all of the selected goblin's requests, then close the popup."
   (interactive)
   (let ((source goblins--view-source) (id goblins--view-session))
+    (unless (and (buffer-live-p source) id) (user-error "No goblin selected"))
     (goblins--popup-close)
     (goblins--display-main (goblins-permissions-buffer source id))))
 
@@ -793,8 +849,8 @@ goblin selected in the workspace."
   (evil-make-intercept-map goblins-request-popup-mode-map 'motion t))
 
 (define-derived-mode goblins-request-popup-mode special-mode "Goblins-Request"
-  "The selected goblin's pending permission request.
-\\<goblins-request-popup-mode-map>\\[goblins-request-popup-accept] accepts, \\[goblins-request-popup-deny] denies, \\[goblins-request-popup-all] shows all requests, \\[goblins--popup-close] closes."
+  "What waits for your decision: files to open, or the goblin's request.
+\\<goblins-request-popup-mode-map>\\[goblins-request-popup-accept] opens or accepts, \\[goblins-request-popup-deny] refuses or denies, \\[goblins-request-popup-all] shows all requests, \\[goblins--popup-close] closes."
   (setq-local mode-line-format nil
               truncate-lines nil))
 
