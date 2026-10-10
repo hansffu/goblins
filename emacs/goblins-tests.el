@@ -1060,6 +1060,44 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
         (mapc (lambda (b) (when (buffer-live-p b) (kill-buffer b)))
               (list dired-a notes scratch view))))))
 
+(ert-deftest goblins-workspace-leaves-other-packages-windows-alone ()
+  "A window split off below everything (as shackle or popper do for
+*Messages*) is neither used, saved nor deleted for a goblin."
+  (goblins-test--workspace (list (goblins-test--session "session-a")
+                                 (goblins-test--session "session-b"))
+    (let ((dired (generate-new-buffer " *dired*"))
+          (file (generate-new-buffer " *file*"))
+          (messages (generate-new-buffer " *messages*"))
+          (split-width-threshold 20)
+          popup)
+      (unwind-protect
+          (progn
+            (mapc #'terminal '("session-a" "session-b"))
+            (goblins-select-goblin source "session-a")
+            ;; Below everything while the agent is alone...
+            (setq popup (split-window (window-main-window) -4 'below))
+            (set-window-buffer popup messages)
+            (goblins-select-goblin source "session-a" dired)
+            (should (eq (window-buffer popup) messages))
+            (should (eq (window-buffer (goblins--right-window)) dired))
+            ;; ...and while the goblin has windows of its own.
+            (delete-window popup)
+            (setq popup (split-window (window-main-window) -4 'below))
+            (set-window-buffer popup messages)
+            (select-window popup)
+            (goblins--display-right file)
+            (should (eq (window-buffer popup) messages))
+            ;; (The layout lists the popup second: it starts at the agent's column.)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") messages file)))
+            ;; Switching goblins keeps it, and doesn't save it.
+            (goblins-select-goblin source "session-b")
+            (should (window-live-p popup))
+            (should (equal (goblins-test--layout) (list (terminal "session-b") messages)))
+            (delete-window popup)
+            (goblins-select-goblin source "session-a")
+            (should (equal (goblins-test--layout) (list (terminal "session-a") file))))
+        (mapc #'kill-buffer (list dired file messages))))))
+
 (ert-deftest goblins-workspace-splits-by-the-split-thresholds ()
   (goblins-test--workspace (list (goblins-test--session "session-a")
                                  (goblins-test--session "session-b")

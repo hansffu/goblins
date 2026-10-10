@@ -179,6 +179,11 @@ Beside the sidebar:
   into the right window used last, and you show, split and arrange anything
   you like there.
 
+Only windows Goblins split off the agent belong to the goblin: a window
+another package splits below everything (shackle or popper showing
+=*Messages*=, say) is never used for a goblin's buffers, saved, or closed on a
+switch.
+
 Each goblin keeps its windows.  Leaving it (selecting another goblin with =RET=,
 =goblins-switch=, =t=/=e=/=d=, an approved edit or a new agent, or quitting the
 workspace) saves them: splits, sizes, buffers and positions.  Selecting it

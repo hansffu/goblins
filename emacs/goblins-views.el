@@ -118,10 +118,44 @@
                                      (and (= (window-left-column a) (window-left-column b))
                                           (< (window-top-line a) (window-top-line b))))))))))
 
+(defun goblins--window-children (window)
+  (cl-loop for child = (window-child window) then (window-next-sibling child)
+           while child collect child))
+
+(defun goblins--area (agent)
+  "The goblin's windows: the outermost combination around AGENT made for them,
+or AGENT alone.  Windows outside it, such as popups another package split
+off below everything, are never used, saved or deleted for a goblin."
+  (let ((window agent) area)
+    (while (setq window (window-parent window))
+      (when (window-parameter window 'goblins-area) (setq area window)))
+    (or area
+        ;; Deleting other windows rebuilds the combination without its tag;
+        ;; the agent's side by side partner is still its own.
+        (let ((parent (window-parent agent)))
+          (when (and parent (window-combined-p agent t)
+                     (not (cl-some (lambda (w) (window-parameter w 'window-side))
+                                   (goblins--window-children parent))))
+            (set-window-parameter parent 'goblins-area t)
+            parent))
+        agent)))
+
+(defun goblins--area-windows (agent)
+  "The live windows of AGENT's area, AGENT included."
+  (let (windows)
+    (walk-window-subtree (lambda (w) (push w windows)) (goblins--area agent))
+    windows))
+
+(defun goblins--claim-area (agent)
+  "Tag the combination holding AGENT that was just made for the goblin's windows."
+  (let ((parent (window-parent agent)))
+    (when (and parent (not (window-parameter parent 'goblins-area)))
+      (set-window-parameter parent 'goblins-area t))))
+
 (defun goblins--right-window ()
-  "The most recently used workspace window other than the agent's, or nil."
+  "The most recently used window of the goblin's area other than the agent's."
   (let ((agent (goblins--agent-window)))
-    (car (sort (remq agent (goblins--main-windows))
+    (car (sort (remq agent (goblins--area-windows agent))
                (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
 
 (defun goblins--main-window ()
@@ -168,9 +202,10 @@ Emacs would delete the dedicated window otherwise."
 (add-hook 'kill-buffer-hook #'goblins--agent-buffer-killed)
 
 (defun goblins--only-agent-window ()
-  "Delete the workspace windows other than the agent window, and return it."
+  "Delete the windows of the goblin's area other than the agent window.
+Return the agent window."
   (let ((agent (goblins--agent-window)))
-    (dolist (window (goblins--main-windows))
+    (dolist (window (goblins--area-windows agent))
       (unless (eq window agent) (delete-window window)))
     agent))
 
@@ -179,10 +214,14 @@ Emacs would delete the dedicated window otherwise."
 Right of the agent when AGENT is at least `split-width-threshold' wide, else
 below it when at least `split-height-threshold' high, else below it if it
 fits at all.  In a frame too small for two windows, nil."
-  (cond ((window-splittable-p agent t) (split-window agent nil 'right))
-        ((window-splittable-p agent) (split-window agent nil 'below))
-        ((let ((split-height-threshold 0)) (window-splittable-p agent))
-         (split-window agent nil 'below))))
+  ;; Always a new combination, never a sibling in one with other windows.
+  (let* ((window-combination-limit t)
+         (window (cond ((window-splittable-p agent t) (split-window agent nil 'right))
+                       ((window-splittable-p agent) (split-window agent nil 'below))
+                       ((let ((split-height-threshold 0)) (window-splittable-p agent))
+                        (split-window agent nil 'below)))))
+    (when window (goblins--claim-area agent))
+    window))
 
 ;;;;; Saving and restoring a goblin's windows
 
@@ -251,8 +290,9 @@ A leaf is (:agent t) or (:buffer B :start S :point P); a combination is
         (let* ((child (pop children))
                (next (and children
                           (ignore-errors
-                            (split-window current (max 1 (round (* size (/ (car child) total))))
-                                          (if horizontal 'right 'below))))))
+                            (let ((window-combination-limit t))
+                              (split-window current (max 1 (round (* size (/ (car child) total))))
+                                            (if horizontal 'right 'below)))))))
           (push (cons current (cdr child)) placed)
           (setq current next)))
       (let (agent)
@@ -262,18 +302,26 @@ A leaf is (:agent t) or (:buffer B :start S :point P); a combination is
 (defun goblins--save-layout ()
   "Save the selected goblin's windows, if the workspace shows them."
   (when (and goblins--last-goblin (goblins--in-workspace-p))
-    (puthash goblins--last-goblin
-             (goblins--layout-tree (window-main-window) (goblins--agent-window))
-             goblins--layouts)))
+    (let ((agent (goblins--agent-window)))
+      (puthash goblins--last-goblin
+               (goblins--layout-tree (goblins--area agent) agent)
+               goblins--layouts))))
 
 (defun goblins--restore-layout (key buffer)
   "Rebuild goblin KEY's saved windows, with BUFFER in the agent window.
 Return the agent window."
   (let* ((window (goblins--only-agent-window))
+         (outer (window-parent window))
          (tree (goblins--layout-live (gethash key goblins--layouts))))
     (goblins--release-agent-window window)
     (let ((agent (or (and tree (goblins--layout-put window tree))
-                     (goblins--only-agent-window))))
+                     window)))
+      ;; Tag the combination built in WINDOW's place as the goblin's.
+      (let ((root agent))
+        (while (and (window-parent root) (not (eq (window-parent root) outer)))
+          (setq root (window-parent root)))
+        (unless (window-live-p root)
+          (set-window-parameter root 'goblins-area t)))
       (goblins--set-agent-buffer agent buffer)
       agent)))
 
