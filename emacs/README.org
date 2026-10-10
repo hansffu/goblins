@@ -119,12 +119,11 @@ directly; there is no need to download another copy of Magit.
 * Workspace
 
 =M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by
-raid and then by project directory, each with its type, beside a main window.
-The main window shows the last used goblin terminal, or the status buffer when
-there is none.  Stopped and failed goblins are hidden (the status buffer still
-lists them; set =goblins-sidebar-show-finished= to show them).  The sidebar has
-no cursor: the line at point is highlighted (=goblins-sidebar-selected=), and the
-goblin or shell shown in the main window is bold behind a =▌= bar
+raid and then by project directory, each with its type.  Stopped and failed
+goblins are hidden (the status buffer still lists them; set
+=goblins-sidebar-show-finished= to show them).  The sidebar has no cursor: the
+line at point is highlighted (=goblins-sidebar-selected=), and the goblins and
+shells shown beside it are bold behind a =▌= bar
 (=goblins-sidebar-active=, =goblins-sidebar-active-marker=).  =!N= marks
 pending permission requests, on goblins and on the headings above them.
 In Evil's motion state the sidebar's own keys take precedence over every minor
@@ -147,7 +146,7 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =e=                          | Eshell inside the goblin, in its directory               |
 | =d=                          | Dired inside the goblin, in its directory                |
 | =X=                          | kill the goblin's shells and commands                    |
-| =r=                          | create a raid around the goblin at point or in the main window, or add it to one, and open the raid page |
+| =r=                          | create a raid around the goblin at point or on the left, or add it to one, and open the raid page |
 | =i=                          | invite the goblin into a raid you pick; on a raid, invite a goblin into it |
 | =D=                          | on a raid: dissolve it (its goblins keep running)        |
 | =c= / =C=                    | run a goblin in the project at point / a project you choose |
@@ -165,6 +164,22 @@ is no acceptance step.
 In the permissions view the current request is focused: =a= accepts, =d= denies,
 =RET= folds a request, =q= goes back.  Add sections to the info view with
 =goblins-info-section-functions=.
+
+** Windows
+
+Beside the sidebar there are one or two windows:
+
+- *Left: the agent.* The selected goblin's agent terminal.  Before any agent
+  terminal exists the status buffer stands in, until the first agent opens.
+- *Right: everything else Goblins opens* for that goblin: shells (=t=), Eshell
+  (=e=), Dired (=d=), =C-c g f= files, and files its =goblins-editor= opens.  The
+  info, permissions and raid views open there too.
+
+Each goblin remembers the last buffer Goblins opened for it on the right (not
+the views).  Selecting a goblin (=RET= in the sidebar, =goblins-switch=, a new
+agent) or =M-x goblins-workspace= rebuilds the layout: its agent on the left,
+its remembered buffer, if any, on the right.  Between those you can arrange
+windows and switch buffers as you like; Goblins doesn't remember them.
 
 Bring your own workspace package by setting
 =goblins-workspace-switch-or-create-function= (called with the name

@@ -320,29 +320,27 @@ The text is built apart from the sidebar so a failure cannot blank it."
   (get-buffer-window goblins--sidebar-buffer-name))
 
 (defun goblins--sidebar-update-active ()
-  "Mark the goblin or shell whose terminal is shown in the main window."
+  "Mark the goblins and shells whose terminals are shown beside the sidebar."
   (when (buffer-live-p (get-buffer goblins--sidebar-buffer-name))
     (with-current-buffer goblins--sidebar-buffer-name
       (mapc #'delete-overlay goblins--sidebar-active-overlays)
       (setq goblins--sidebar-active-overlays nil)
-      (let* ((window (goblins--main-window))
-             (shown (and window (window-buffer window)))
-             (key (and shown (buffer-local-value 'goblins--session-key shown)))
-             (id (if key
-                     (nth 2 key)
-                   (and shown (buffer-local-value 'goblins--view-session shown))))
-             (pos (if (and shown (buffer-local-value 'goblins--shell-number shown))
-                      (goblins--sidebar-find (cons 'terminal shown))
-                    (and id (goblins--sidebar-find (cons 'id id))))))
-        (when pos
-          ;; Bold, with a bar over the line's first (indentation) column;
-          ;; the line at point keeps its own highlight.
-          (let ((line (make-overlay pos (save-excursion (goto-char pos)
-                                                        (1+ (line-end-position)))))
-                (bar (make-overlay pos (1+ pos))))
-            (overlay-put line 'face 'goblins-sidebar-active)
-            (overlay-put bar 'display (propertize "▌" 'face 'goblins-sidebar-active-marker))
-            (setq goblins--sidebar-active-overlays (list line bar))))))))
+      (dolist (shown (mapcar #'window-buffer (goblins--main-windows)))
+        (let* ((key (buffer-local-value 'goblins--session-key shown))
+               (id (if key (nth 2 key) (buffer-local-value 'goblins--view-session shown)))
+               (pos (if (buffer-local-value 'goblins--shell-number shown)
+                        (goblins--sidebar-find (cons 'terminal shown))
+                      (and id (goblins--sidebar-find (cons 'id id))))))
+          (when pos
+            ;; Bold, with a bar over the line's first (indentation) column;
+            ;; the line at point keeps its own highlight.
+            (let ((line (make-overlay pos (save-excursion (goto-char pos)
+                                                          (1+ (line-end-position)))))
+                  (bar (make-overlay pos (1+ pos))))
+              (overlay-put line 'face 'goblins-sidebar-active)
+              (overlay-put bar 'display (propertize "▌" 'face 'goblins-sidebar-active-marker))
+              (push line goblins--sidebar-active-overlays)
+              (push bar goblins--sidebar-active-overlays))))))))
 
 (defun goblins--sidebar-window-changed (_frame-or-window)
   (goblins--sidebar-update-active))
@@ -407,7 +405,9 @@ fold or unfold it."
   (interactive)
   (cond
    ((get-text-property (line-beginning-position) 'goblins-terminal)
-    (goblins--display-main (get-text-property (line-beginning-position) 'goblins-terminal)))
+    (goblins-select-goblin (goblins--sidebar-ensure-source)
+                           (get-text-property (line-beginning-position) 'goblins-parent)
+                           (get-text-property (line-beginning-position) 'goblins-terminal)))
    ((get-text-property (line-beginning-position) 'goblins-id)
     (goblins-open-session (goblins--sidebar-ensure-source)
                           (get-text-property (line-beginning-position) 'goblins-id)))
@@ -482,7 +482,7 @@ On a raid heading, invite a goblin you choose into that raid."
 
 (defun goblins--sidebar-run-in (directory)
   (with-current-buffer (goblins--sidebar-ensure-source)
-    (goblins-run directory #'goblins--show-in-main)))
+    (goblins-run directory)))
 
 (defun goblins-sidebar-run ()
   "Run a new goblin in the project of the goblin or directory at point."
@@ -543,13 +543,13 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
       (message "Stopping %s" (goblins--session-path session)))))
 
 (defun goblins--sidebar-open-in (open)
-  "Call OPEN with the session record, display function and status buffer of
-the goblin at point (or of its shell)."
+  "Call OPEN with the session record and status buffer of the goblin at
+point (or of its shell); it shows the buffer right of the goblin's agent."
   (let* ((goblin (goblins--sidebar-goblin-at-point))
          (session (goblins--snapshot-session
                    (buffer-local-value 'goblins--snapshot (car goblin)) (cdr goblin))))
     (unless session (user-error "The daemon no longer retains this goblin"))
-    (funcall open session #'goblins--display-main (car goblin))))
+    (funcall open session nil (car goblin))))
 
 (defun goblins-sidebar-terminal ()
   "Open a new shell terminal inside the goblin at point; it is listed below it."
@@ -716,19 +716,30 @@ the goblin at point (or of its shell)."
       (goblins--sidebar-render))
     buffer))
 
-(defun goblins--initial-main-buffer (source)
-  "The most recently used goblin terminal of SOURCE's server, else SOURCE."
-  (or (cl-find-if (lambda (buffer)
-                    (let ((key (buffer-local-value 'goblins--session-key buffer)))
-                      (and key (equal (car key)
-                                      (buffer-local-value 'goblins--directory source)))))
-                  (buffer-list))
-      source))
+(defun goblins--workspace-restore (source)
+  "Show the goblin of SOURCE's server selected last, with its remembered buffer.
+Else the most recently used goblin terminal, else the status buffer alone."
+  (let* ((directory (buffer-local-value 'goblins--directory source))
+         (last (and (equal (car goblins--last-goblin) directory)
+                    (with-current-buffer source
+                      (goblins--terminal-buffer (cdr goblins--last-goblin)))
+                    (cdr goblins--last-goblin)))
+         (recent (cl-find-if (lambda (buffer)
+                               (let ((key (buffer-local-value 'goblins--session-key buffer)))
+                                 (and key (equal (car key) directory) (buffer-live-p buffer))))
+                             (buffer-list))))
+    (cond (last (goblins-select-goblin source last))
+          (recent (goblins-select-goblin
+                   source (nth 2 (buffer-local-value 'goblins--session-key recent))))
+          (t (set-window-buffer (goblins--only-agent-window) source)
+             (select-window (goblins--agent-window))))))
 
 ;;;###autoload
 (defun goblins-workspace (&optional directory)
   "Open the Goblins workspace: a sidebar of goblins beside the main view.
-The main view is the last used goblin terminal, or the status buffer.
+Beside it the goblin selected last: its agent terminal on the left and the
+buffer Goblins last opened for it on the right.  Without any goblin terminal
+the status buffer shows until the first agent opens.
 With a prefix argument, prompt for the daemon state directory.
 Switching or creating the workspace is delegated to
 `goblins-workspace-switch-or-create-function'."
@@ -744,14 +755,13 @@ Switching or creating the workspace is delegated to
       (unless (or goblins--connection (process-live-p goblins--server-process))
         (goblins-refresh)))
     (let ((sidebar (goblins--sidebar-buffer source)))
-      (if (goblins--sidebar-window)
-          (when-let* ((window (goblins--main-window))) (select-window window))
-        (set-window-buffer (selected-window) (goblins--initial-main-buffer source))
+      (unless (goblins--sidebar-window)
         (let ((window (display-buffer-in-side-window
                        sidebar `((side . left) (slot . 0)
                                  (window-width . ,goblins-sidebar-width)
                                  (window-parameters (no-delete-other-windows . t))))))
           (set-window-dedicated-p window t))))
+    (goblins--workspace-restore source)
     (goblins--sidebar-update-active)))
 
 (provide 'goblins-workspace)

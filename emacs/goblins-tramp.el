@@ -33,6 +33,7 @@
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (declare-function goblin-mode "goblins-terminal" (&optional arg))
 (declare-function goblins--sidebar-render-all "goblins-workspace" ())
+(defvar server-window)
 (declare-function eshell-mode "esh-mode" ())
 (declare-function desktop-save-buffer-p "desktop" (filename bufname mode &rest rest))
 (defvar ghostel-kill-buffer-on-exit)
@@ -401,6 +402,29 @@ while TRAMP's connection is busy, instead of failing as a reentrant call."
       (apply function program rest))))
 (advice-add 'tramp-sh-handle-process-file :around #'goblins-tramp--sh-process-file)
 
+;;; Files the goblin's editor opens
+
+(defun goblins-tramp--editor-goblin (buffer)
+  "(SOURCE . SESSION-ID) of the goblin whose /goblins: file BUFFER visits.
+From its host's pin, when Emacs has a status buffer for the pin's daemon."
+  (when-let* ((vec (goblins-tramp--buffer-vec buffer))
+              (pin (goblins-pin (tramp-file-name-host vec)))
+              (source (get-buffer (format "*Goblins: %s*" (car pin)))))
+    (cons source (nth 2 pin))))
+
+(defun goblins-tramp--server-switch-buffer (function &optional next-buffer &rest args)
+  "Around `server-switch-buffer': in the workspace, files from a goblin's
+editor (emacsclient) open right of its agent and are remembered for it."
+  (let ((goblin (and (goblins--in-workspace-p) (buffer-live-p next-buffer)
+                     (goblins-tramp--editor-goblin next-buffer))))
+    (if (not goblin)
+        (apply function next-buffer args)
+      (let ((server-window (lambda (buffer)
+                             (goblins-select-goblin (car goblin) (cdr goblin) buffer))))
+        (apply function next-buffer args)))))
+(with-eval-after-load 'server
+  (advice-add 'server-switch-buffer :around #'goblins-tramp--server-switch-buffer))
+
 ;;; Files a goblin wrote
 
 (defun goblins-tramp--hack-local-variables (function &rest args)
@@ -522,7 +546,8 @@ lists it under its goblin.  SESSION is
 a session record of SOURCE's daemon, by default that of
 `goblins-state-directory'; interactively, the goblin of the current terminal
 or /goblins: buffer, else (or with a prefix argument) one you choose.
-DISPLAY, default `goblins--display-main', shows the buffer."
+DISPLAY shows the buffer; by default `goblins-select-goblin' shows it
+right of the goblin's agent and remembers it for the goblin."
   (interactive)
   (goblins--require-ghostel)
   (let* ((goblin (goblins-tramp--goblin source session "Shell in goblin: "))
@@ -539,7 +564,7 @@ DISPLAY, default `goblins--display-main', shows the buffer."
           ;; Spawn from a local directory: Ghostel would otherwise run the
           ;; client itself through TRAMP.
           (with-current-buffer buffer (setq default-directory (expand-file-name "~/")))
-          (funcall (or display #'goblins--display-main) buffer)
+          (funcall (or display (goblins-tramp--show-for source id)) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
             (ghostel-exec buffer goblins-executable
                           (append (list "--state-dir" directory "exec" "-t" "--instance" instance
@@ -588,7 +613,7 @@ DISPLAY and SOURCE are as for `goblins-shell'."
                              buffer)
                          (error (kill-buffer buffer)
                                 (signal (car err) (cdr err))))))))
-    (funcall (or display #'goblins--display-main) buffer)
+    (funcall (or display (goblins-tramp--show-for source (plist-get session :id))) buffer)
     buffer))
 
 ;;;###autoload
@@ -598,8 +623,14 @@ SESSION, DISPLAY and SOURCE are as for `goblins-shell'."
   (interactive)
   (let* ((goblin (goblins-tramp--goblin source session "Dired in goblin: "))
          (buffer (dired-noselect (goblins-tramp--session-directory (car goblin) (cdr goblin)))))
-    (funcall (or display #'goblins--display-main) buffer)
+    (funcall (or display (goblins-tramp--show-for (car goblin) (plist-get (cdr goblin) :id)))
+             buffer)
     buffer))
+
+(defun goblins-tramp--show-for (source id)
+  "A function that shows a buffer for goblin ID of SOURCE's daemon.
+It goes right of the goblin's agent, and is remembered for the goblin."
+  (lambda (buffer) (goblins-select-goblin source id buffer)))
 
 (provide 'goblins-tramp)
 ;;; goblins-tramp.el ends here

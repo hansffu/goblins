@@ -19,6 +19,8 @@
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
 (declare-function project-root "project" (project))
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
+(declare-function goblins--display-new-agent "goblins-views" (buffer))
+(defvar goblins--last-goblin)
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
 (declare-function goblin-mode "goblins-terminal" (&optional arg))
@@ -1098,7 +1100,8 @@ paints those with the underlined `nobreak-space' face."
 (defun goblins--open-terminal (session agent-name cwd &optional display)
   "Attach a new Ghostel buffer to SESSION and return it.
 Call in a connected status buffer.  AGENT-NAME names the buffer and CWD is its
-`default-directory'.  DISPLAY, default `pop-to-buffer', shows the new buffer.
+`default-directory'.  DISPLAY, default `goblins--display-new-agent', shows
+the new buffer.
 On failure the buffer is killed and the error re-signalled."
   (goblins--require-ghostel)
   (let* ((instance goblins--instance)
@@ -1108,7 +1111,7 @@ On failure the buffer is killed and the error re-signalled."
     (condition-case err
         (progn
           (with-current-buffer buffer (setq default-directory cwd))
-          (funcall (or display #'pop-to-buffer) buffer)
+          (funcall (or display #'goblins--display-new-agent) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
             (ghostel-exec buffer executable
                           (list "--state-dir" (car key) "attach" session
@@ -1123,6 +1126,7 @@ On failure the buffer is killed and the error re-signalled."
             (goblin-mode 1)
             (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
           (puthash key buffer goblins--terminal-buffers)
+          (setq goblins--last-goblin (cons (car key) session))
           (goblins--render-status-buffers)
           buffer)
       (error
@@ -1135,8 +1139,8 @@ Launch from the current project's root, or the current directory outside a
 project; see `goblins--launch-location' for the dev shell choice.  Use this
 status buffer's server, or the default server outside a status buffer.
 DIRECTORY, if given, replaces the current directory as the launch location,
-and DISPLAY, default `pop-to-buffer', shows the new terminal.  The status
-buffer is never displayed.
+and DISPLAY, default `goblins--display-new-agent', shows the new terminal.
+The status buffer is never displayed.
 Only launches made here are linked by the terminal command."
   (interactive)
   (let ((default-directory (file-name-as-directory

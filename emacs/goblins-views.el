@@ -81,21 +81,89 @@
 
 (defconst goblins--sidebar-buffer-name "*Goblins Sidebar*")
 
+;;;; Workspace windows
+;;
+;; Beside the sidebar the workspace has an agent window on the left, showing a
+;; goblin's agent terminal (or the status buffer while there is none), and at
+;; most one window on its right for everything else Goblins opens: shells,
+;; Eshell, Dired, files and the views.  Each goblin remembers the last buffer
+;; Goblins opened for it there (views excepted).  Selecting a goblin, or
+;; `goblins-workspace', rebuilds that layout; windows you arrange yourself
+;; in between are not remembered.
+
+(defvar goblins--right-buffers (make-hash-table :test #'equal)
+  "(DIRECTORY . SESSION-ID) to the buffer Goblins last opened on that goblin's right.")
+
+(defvar goblins--last-goblin nil
+  "(DIRECTORY . SESSION-ID) of the goblin selected last, which
+`goblins-workspace' shows again.")
+
+(defun goblins--in-workspace-p ()
+  "Whether this frame shows the workspace sidebar."
+  (and (get-buffer-window goblins--sidebar-buffer-name) t))
+
+(defun goblins--main-windows ()
+  "This frame's windows other than side windows and the minibuffer."
+  (cl-remove-if (lambda (w) (or (window-parameter w 'window-side) (window-minibuffer-p w)))
+                (window-list)))
+
+(defun goblins--agent-window ()
+  "The workspace's left window, where agent terminals go."
+  (car (sort (goblins--main-windows)
+             (lambda (a b) (or (< (window-left-column a) (window-left-column b))
+                               (and (= (window-left-column a) (window-left-column b))
+                                    (< (window-top-line a) (window-top-line b))))))))
+
+(defun goblins--right-window ()
+  "The workspace window right of the agent window most recently used, or nil."
+  (let ((agent (goblins--agent-window)))
+    (car (sort (remq agent (goblins--main-windows))
+               (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+
 (defun goblins--main-window ()
-  "Return the most recently used window that is not the sidebar."
-  (let ((windows (cl-remove-if (lambda (w)
-                                 (or (window-parameter w 'window-side)
-                                     (window-minibuffer-p w)))
-                               (window-list))))
-    (car (sort windows (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+  "The agent window in the workspace, else the most recently used window."
+  (if (goblins--in-workspace-p)
+      (goblins--agent-window)
+    (car (sort (goblins--main-windows)
+               (lambda (a b) (> (window-use-time a) (window-use-time b)))))))
+
+(defun goblins--only-agent-window ()
+  "Delete the workspace windows other than the agent window, and return it."
+  (let ((agent (goblins--agent-window)))
+    (dolist (window (goblins--main-windows))
+      (unless (eq window agent) (delete-window window)))
+    agent))
+
+(defun goblins--display-right (buffer)
+  "Show BUFFER right of the agent window and select it, splitting if needed.
+Outside the workspace, pop it up."
+  (if (not (goblins--in-workspace-p))
+      (pop-to-buffer buffer)
+    (let ((window (or (goblins--right-window)
+                      (split-window (goblins--agent-window) nil 'right))))
+      (set-window-buffer window buffer)
+      (select-window window)))
+  buffer)
+
+(defun goblins--display-main (buffer)
+  "Show BUFFER, a view such as info or permissions, on the right.
+It is not remembered for any goblin.  Outside the workspace, pop it up."
+  (goblins--display-right buffer))
 
 (defun goblins--show-in-main (buffer)
-  "Display BUFFER in the main window and select it."
-  (let ((window (or (goblins--main-window)
-                    (user-error "No window for the main view"))))
-    (set-window-buffer window buffer)
-    (select-window window)
-    buffer))
+  "Like `goblins--display-main'."
+  (goblins--display-right buffer))
+
+(defun goblins--display-new-agent (buffer)
+  "Show BUFFER, a new agent terminal, alone beside the sidebar and select it.
+That also hides the status buffer the workspace showed before any agent.
+Outside the workspace, pop it up."
+  (if (goblins--in-workspace-p)
+      (let ((window (goblins--only-agent-window)))
+        (set-window-buffer window buffer)
+        (select-window window))
+    (pop-to-buffer buffer))
+  buffer)
 
 (defun goblins--exec-summary (session)
   "SESSION's live shells and commands, like \" · 1 shell · tramp\", or \"\"."
@@ -106,27 +174,57 @@
              (if (> execs 0) " · tramp" ""))
      'face 'goblins-dim)))
 
-(defun goblins--display-main (buffer)
-  "Show BUFFER in the workspace's main window, or pop it up outside a workspace."
-  (if (get-buffer-window goblins--sidebar-buffer-name)
-      (goblins--show-in-main buffer)
-    (pop-to-buffer buffer)))
+(defun goblins--remembered-right (key)
+  "The live buffer Goblins last opened on the right of goblin KEY, or nil."
+  (let ((buffer (gethash key goblins--right-buffers)))
+    (and (buffer-live-p buffer) buffer)))
 
-(defun goblins-open-session (source id)
-  "Show the terminal of session ID of SOURCE's server, attaching if needed."
+(defun goblins-select-goblin (source id &optional right attach)
+  "Show goblin ID of SOURCE's daemon, and return the buffer shown for it.
+In the workspace its agent terminal goes left and RIGHT, else the buffer
+Goblins last opened for it, right; RIGHT is remembered for the goblin.
+Without an Emacs terminal for the goblin, ATTACH attaches one, and otherwise
+the left window is kept.  Outside the workspace RIGHT, or the terminal, is
+popped up."
+  (let* ((key (cons (buffer-local-value 'goblins--directory source) id))
+         (terminal (with-current-buffer source (goblins--terminal-buffer id))))
+    (when right (puthash key right goblins--right-buffers))
+    (cond
+     ((not (goblins--in-workspace-p))
+      (cond (right (pop-to-buffer right))
+            (terminal (pop-to-buffer terminal))
+            (attach (goblins--attach source id #'pop-to-buffer))))
+     (t
+      (setq goblins--last-goblin key)
+      (let ((agent (goblins--only-agent-window))
+            (shown (or right (goblins--remembered-right key))))
+        (cond (terminal (set-window-buffer agent terminal))
+              (attach (goblins--attach source id (lambda (b) (set-window-buffer agent b)))))
+        (if (not shown)
+            (select-window agent)
+          (let ((window (split-window agent nil 'right)))
+            (set-window-buffer window shown)
+            (select-window (if right window agent))))
+        (or right (window-buffer agent)))))))
+
+(defun goblins--attach (source id display)
+  "Attach a new terminal to running goblin ID of SOURCE's server, shown by DISPLAY."
   (with-current-buffer source
     (let ((session (goblins--snapshot-session goblins--snapshot id)))
-      (if-let* ((buffer (goblins--terminal-buffer id)))
-          (goblins--display-main buffer)
-        (unless session (user-error "The daemon no longer retains this goblin"))
-        (when (member (plist-get session :state) '("stopped" "failed"))
-          (user-error "This goblin has finished"))
-        (goblins--open-terminal
-         id (plist-get session :agent_name)
-         (if (stringp (plist-get session :cwd))
-             (file-name-as-directory (plist-get session :cwd))
-           default-directory)
-         #'goblins--display-main)))))
+      (unless session (user-error "The daemon no longer retains this goblin"))
+      (when (member (plist-get session :state) '("stopped" "failed"))
+        (user-error "This goblin has finished"))
+      (goblins--open-terminal
+       id (plist-get session :agent_name)
+       (if (stringp (plist-get session :cwd))
+           (file-name-as-directory (plist-get session :cwd))
+         default-directory)
+       display))))
+
+(defun goblins-open-session (source id)
+  "Show the terminal of session ID of SOURCE's server, attaching if needed.
+In the workspace the goblin's remembered buffer comes back on the right."
+  (goblins-select-goblin source id nil t))
 
 (defun goblins--describe-keys (title groups)
   "Show TITLE and GROUPS of (HEADING (KEY . DESCRIPTION)...) in a help window."

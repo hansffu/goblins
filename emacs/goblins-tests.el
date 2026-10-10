@@ -895,8 +895,8 @@
             (puthash (list "/tmp/goblins-test" "daemon-a" "session-a") terminal
                      goblins--terminal-buffers)
             (goblins-sidebar-next)
-            (cl-letf (((symbol-function 'goblins--display-main)
-                       (lambda (buffer) (setq shown buffer))))
+            (cl-letf (((symbol-function 'pop-to-buffer)
+                       (lambda (buffer &rest _) (setq shown buffer))))
               (goblins-sidebar-next)
               (should (equal (get-text-property (point) 'goblins-id) "session-a"))
               (goblins-sidebar-open))
@@ -955,25 +955,109 @@
     (should (= (length (window-list)) 2))
     (should-not (frame-parameter nil 'goblins-workspace-saved-config))))
 
-(ert-deftest goblins-workspace-opens-the-most-recent-goblin-terminal ()
-  (goblins-test--sidebar nil
-    (let ((older (generate-new-buffer " *older*"))
-          (newer (generate-new-buffer " *newer*")))
+(defmacro goblins-test--workspace (sessions &rest body)
+  "Run BODY in a workspace: the test sidebar in a left side window over SESSIONS.
+In BODY, (terminal ID) is a fake agent terminal for session ID."
+  (declare (indent 1))
+  `(goblins-test--sidebar ,sessions
+     (let ((goblins--right-buffers (make-hash-table :test #'equal))
+           (goblins--terminal-buffers (make-hash-table :test #'equal))
+           (goblins--last-goblin nil)
+           (terminals nil))
+       (save-window-excursion
+         (delete-other-windows)
+         (rename-buffer goblins--sidebar-buffer-name)
+         (display-buffer-in-side-window sidebar '((side . left) (window-width . 20)))
+         (cl-flet ((terminal (id)
+                     (or (alist-get id terminals nil nil #'equal)
+                         (let ((buffer (generate-new-buffer (format " *agent %s*" id))))
+                           (with-current-buffer buffer
+                             (setq-local goblins--session-key
+                                         (list "/tmp/goblins-test" "daemon-a" id)))
+                           (puthash (list "/tmp/goblins-test" "daemon-a" id) buffer
+                                    goblins--terminal-buffers)
+                           (push (cons id buffer) terminals)
+                           buffer))))
+           (unwind-protect (progn ,@body)
+             (mapc (lambda (e) (kill-buffer (cdr e))) terminals)))))))
+
+(defun goblins-test--layout ()
+  "The buffers beside the sidebar, left to right."
+  (mapcar #'window-buffer
+          (sort (goblins--main-windows)
+                (lambda (a b) (< (window-left-column a) (window-left-column b))))))
+
+(ert-deftest goblins-workspace-keeps-agents-left-and-goblin-buffers-right ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p"))
+    (let ((dired-a (generate-new-buffer " *dired a*"))
+          (view (generate-new-buffer " *view*")))
       (unwind-protect
           (progn
-            (dolist (b (list older newer))
-              (with-current-buffer b
-                (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "x"))))
-            ;; `buffer-list' is most recently used first.
-            (bury-buffer older)
-            (switch-to-buffer newer)
-            (should (eq (goblins--initial-main-buffer source) newer))
-            (with-current-buffer newer (setq-local goblins--session-key nil))
-            (with-current-buffer older
-              (setq-local goblins--session-key (list "/other/server" "daemon-a" "x")))
-            (should (eq (goblins--initial-main-buffer source) source)))
-        (kill-buffer older)
-        (kill-buffer newer)))))
+            ;; Without an agent terminal, the status buffer, alone.
+            (goblins--workspace-restore source)
+            (should (equal (goblins-test--layout) (list source)))
+            ;; The first agent replaces it.
+            (goblins--display-new-agent (terminal "session-a"))
+            (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+            ;; A goblin's buffer opens right of its agent, and is remembered.
+            (goblins-select-goblin source "session-a" dired-a)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            (should (eq (window-buffer) dired-a))
+            ;; Another goblin with nothing remembered: its agent alone.
+            (terminal "session-b")
+            (goblins-select-goblin source "session-b")
+            (should (equal (goblins-test--layout) (list (terminal "session-b"))))
+            ;; Back again: the remembered buffer returns, the agent selected.
+            (goblins-select-goblin source "session-a")
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            (should (eq (window-buffer) (terminal "session-a")))
+            ;; Views and your own windows aren't remembered.
+            (goblins--display-main view)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") view)))
+            (set-window-buffer (goblins--right-window) (get-buffer-create "*scratch*"))
+            (split-window (goblins--agent-window) nil 'below)
+            (goblins-select-goblin source "session-b")
+            (goblins-select-goblin source "session-a")
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired-a)))
+            ;; goblins-workspace restores the goblin selected last.
+            (goblins-select-goblin source "session-b")
+            (set-window-buffer (goblins--agent-window) view)
+            (goblins--workspace-restore source)
+            (should (equal (goblins-test--layout) (list (terminal "session-b"))))
+            ;; A killed buffer is forgotten.
+            (kill-buffer dired-a)
+            (goblins-select-goblin source "session-a")
+            (should (equal (goblins-test--layout) (list (terminal "session-a")))))
+        (mapc (lambda (b) (when (buffer-live-p b) (kill-buffer b))) (list dired-a view))))))
+
+(ert-deftest goblins-workspace-without-a-last-goblin-shows-the-latest-terminal ()
+  (goblins-test--workspace (list (goblins-test--session "session-a")
+                                 (goblins-test--session "session-b"))
+    (let ((older (terminal "session-a"))
+          (newer (terminal "session-b")))
+      (bury-buffer older)
+      (switch-to-buffer newer)
+      (goblins--workspace-restore source)
+      (should (equal (goblins-test--layout) (list newer))))))
+
+(ert-deftest goblins-editor-files-open-right-of-their-goblin ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :path "gribble"))
+    (let ((goblins--pins (make-hash-table :test #'equal))
+          (file (generate-new-buffer " *goblin file*"))
+          (name (buffer-name source)))
+      (unwind-protect
+          (progn
+            (with-current-buffer source (rename-buffer "*Goblins: /tmp/goblins-test*"))
+            (with-current-buffer file (setq default-directory "/goblins:gribble:/tmp/"))
+            (goblins-pin-host "gribble" "/tmp/goblins-test" "daemon-a" "session-a")
+            (terminal "session-a")
+            (goblins-tramp--server-switch-buffer
+             (lambda (next &rest _) (funcall server-window next)) file)
+            (should (equal (goblins-test--layout) (list (terminal "session-a") file)))
+            (should (eq (goblins--remembered-right '("/tmp/goblins-test" . "session-a")) file)))
+        (with-current-buffer source (rename-buffer name))
+        (kill-buffer file)))))
 
 ;;; Views
 
@@ -1079,13 +1163,13 @@
         (goto-char (point-min))
         ;; The directory group heading, then the goblin under it.
         (goblins-sidebar-run)
-        (should (equal call '("/p/one" goblins--show-in-main)))
+        (should (equal call '("/p/one" nil)))
         (goblins-sidebar-next)
         (setq call nil)
         (goblins-sidebar-run)
         (should (equal (car call) "/p/one"))
         (goblins-sidebar-run-in-project)
-        (should (equal call '("/chosen/" goblins--show-in-main)))
+        (should (equal call '("/chosen/" nil)))
         ;; A goblin without a directory, and a raid-less unknown group, cannot run.
         (goto-char (point-min))
         (goblins-sidebar-next 3)
@@ -1649,7 +1733,9 @@
     (goblins-sidebar-next-pending)
     (should (looking-at-p "  ● gamma"))
     (goblins-sidebar-permissions)
-    (with-current-buffer (window-buffer (goblins--main-window))
+    ;; Views open right of the status buffer, which holds the agent's place.
+    (should (eq (window-buffer (goblins--main-window)) source))
+    (with-current-buffer (window-buffer (goblins--right-window))
       (should (eq major-mode 'goblins-permissions-mode))
       (should (equal (plist-get (oref (magit-current-section) record) :package) "hello"))
       (goblins-permissions-deny)
@@ -1659,7 +1745,7 @@
     ;; I shows the goblin's info.
     (goblins-test--in-sidebar "  ● alpha")
     (goblins-sidebar-info)
-    (with-current-buffer (window-buffer (goblins--main-window))
+    (with-current-buffer (window-buffer (goblins--right-window))
       (should (string-match-p (concat "Directory +" (regexp-quote (directory-file-name project-one)))
                               (buffer-string))))
     ;; r creates a raid around alpha and opens its page.
@@ -1667,7 +1753,7 @@
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
       (goblins-raid))
     (setq page (get-buffer goblins--raid-buffer-name))
-    (should (eq (window-buffer (goblins--main-window)) page))
+    (should (eq (window-buffer (goblins--right-window)) page))
     (with-current-buffer page
       (goblins-test--wait (lambda () (string-match-p "Members (1)\n  ● alpha (shell)  owner"
                                                      (buffer-string))))
@@ -1717,6 +1803,8 @@
       (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "alpha")))
         (goblins-switch))
       (let ((terminal (window-buffer (goblins--main-window))))
+        ;; The agent replaces the status buffer, alone beside the sidebar.
+        (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list terminal)))
         (with-current-buffer terminal
           (should (derived-mode-p 'ghostel-mode))
           (should goblin-mode)
@@ -1937,9 +2025,10 @@
             (should (eq (get-text-property (point) 'goblins-terminal) first))
             (should (equal (goblins--sidebar-goblin-at-point) (cons source "session-a")))
             (should (equal (goblins--sidebar-directory-at-point) "/p"))
-            (cl-letf (((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+            (cl-letf (((symbol-function 'goblins-select-goblin)
+                       (lambda (src id right &rest _) (setq shown (list src id right)))))
               (goblins-sidebar-open))
-            (should (eq shown first))
+            (should (equal shown (list source "session-a" first)))
             ;; Point stays on its shell; a killed shell leaves the sidebar.
             (goblins--sidebar-render)
             (should (eq (get-text-property (point) 'goblins-terminal) first))
@@ -1976,7 +2065,7 @@
       (should (equal (mapcar #'car calls) '(d e t)))
       (dolist (call calls)
         (should (equal (plist-get (nth 1 call) :id) "session-a"))
-        (should (eq (nth 2 call) #'goblins--display-main))
+        (should-not (nth 2 call))
         (should (eq (nth 3 call) source))))))
 
 (ert-deftest goblins-eshell-and-dired-open-in-the-goblins-pinned-directory ()
@@ -1990,7 +2079,7 @@
       (cl-letf (((symbol-function 'eshell-mode) #'ignore)
                 ((symbol-function 'dired-noselect)
                  (lambda (directory) (push directory listed) (current-buffer)))
-                ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+                ((symbol-function 'goblins-select-goblin) (lambda (_src _id b) (setq shown b))))
         (unwind-protect
             (progn
               ;; Eshell starts in the goblin's directory, pinned to it, and is reused.

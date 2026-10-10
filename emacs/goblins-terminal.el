@@ -65,7 +65,8 @@
                                   (and children (list :kill_children t)))))))
 
 (defun goblin-find-file ()
-  "Visit a file inside this goblin's sandbox, over /goblins: TRAMP."
+  "Visit a file inside this goblin's sandbox, over /goblins: TRAMP.
+In the workspace it opens right of the agent and is remembered for the goblin."
   (interactive)
   (let* ((goblin (goblins--terminal-goblin))
          (session (goblins--snapshot-session
@@ -74,8 +75,9 @@
           (if (string-prefix-p "/goblins:" default-directory)
               default-directory
             (format "/goblins:%s:%s" (string-replace "/" "." (goblins--session-path session))
-                    (file-name-as-directory (or (plist-get session :cwd) "/workspace"))))))
-    (call-interactively #'find-file)))
+                    (file-name-as-directory (or (plist-get session :cwd) "/workspace")))))
+         (file (read-file-name "Find file in goblin: ")))
+    (goblins-select-goblin (car goblin) (cdr goblin) (find-file-noselect file))))
 
 (defvar goblin-mode-command-map
   (let ((map (make-sparse-keymap)))
