@@ -124,7 +124,9 @@ The main window shows the last used goblin terminal, or the status buffer when
 there is none.  Stopped and failed goblins are hidden (the status buffer still
 lists them; set =goblins-sidebar-show-finished= to show them).  =!N= marks
 pending permission requests, on goblins and on the headings above them.
-evil-snipe is turned off in the sidebar, whose =t= it would shadow.  Shell
+In Evil's motion state the sidebar's own keys take precedence over every minor
+mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
+work as usual.  Shell
 terminals opened with =t= are listed below their goblin (=› shell=, =› shell
 2=, marked =(exited)= once their shell ends) until you kill their buffer;
 Eshell and Dired buffers are not listed.  Folds last for the Emacs session.

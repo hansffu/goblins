@@ -1264,6 +1264,28 @@
         (goblins-sidebar-invite))
       (should (equal (pop calls) '(raids.invite :raid "crew" :sessions ["session-c"]))))))
 
+(defvar goblins-test-shadow-mode-map (make-sparse-keymap))
+(define-minor-mode goblins-test-shadow-mode
+  "A minor mode binding motion-state keys, as evil-snipe or a leader does.")
+
+(ert-deftest goblins-sidebar-keys-win-over-evil-minor-modes ()
+  (skip-unless (require 'evil nil t))
+  (evil-define-key* 'motion goblins-test-shadow-mode-map
+    "t" #'ignore "j" #'ignore (kbd "SPC") #'ignore)
+  (with-temp-buffer
+    (goblins-sidebar-mode)
+    (evil-local-mode 1)
+    (goblins-test-shadow-mode 1)
+    (evil-normalize-keymaps)
+    (should (eq evil-state 'motion))
+    ;; The sidebar's own keys win; others still reach Evil and minor modes.
+    (should (eq (key-binding "t") #'goblins-sidebar-terminal))
+    (should (eq (key-binding "j") #'goblins-sidebar-next))
+    (should (eq (key-binding (kbd "SPC")) #'ignore))
+    (should (eq (key-binding "gg") #'evil-goto-first-line))
+    (should (eq (key-binding "gr") #'goblins-sidebar-refresh))
+    (evil-local-mode -1)))
+
 (ert-deftest goblins-sidebar-keys-follow-the-raid-bindings ()
   (with-temp-buffer
     (goblins-sidebar-mode)

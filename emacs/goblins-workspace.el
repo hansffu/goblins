@@ -24,6 +24,7 @@
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
 (declare-function goblins-shell "goblins-tramp" (&optional session display source))
 (declare-function goblins-eshell "goblins-tramp" (&optional session display source))
 (declare-function goblins-dired "goblins-tramp" (&optional session display source))
@@ -640,6 +641,9 @@ the goblin at point (or of its shell)."
     map))
 
 ;; Keep Evil optional; its motion state would otherwise shadow j/k/p/RET.
+;; The sidebar's own motion-state keys intercept: no minor mode, such as
+;; evil-snipe with its t, can shadow them.  Other keys (a leader on SPC,
+;; C-w, gg, /) still go through Evil.
 (with-eval-after-load 'evil
   (evil-set-initial-state 'goblins-sidebar-mode 'motion)
   (evil-define-key* 'motion goblins-sidebar-mode-map
@@ -663,12 +667,8 @@ the goblin at point (or of its shell)."
     (kbd "gr") #'goblins-sidebar-refresh
     (kbd "c") #'goblins-sidebar-run
     (kbd "C") #'goblins-sidebar-run-in-project
-    (kbd "q") #'goblins-workspace-quit))
-
-;; evil-snipe's motion-state t/T/f/F and s/S would shadow the sidebar's keys.
-(defvar evil-snipe-disabled-modes)
-(with-eval-after-load 'evil-snipe
-  (add-to-list 'evil-snipe-disabled-modes 'goblins-sidebar-mode))
+    (kbd "q") #'goblins-workspace-quit)
+  (evil-make-intercept-map goblins-sidebar-mode-map 'motion t))
 
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"
   "Sidebar listing goblins grouped by raid and directory.
