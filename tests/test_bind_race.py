@@ -78,13 +78,33 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
                     self.assertEqual((mounted.stat().st_dev, mounted.stat().st_ino), original_inode)
                     self.assertEqual((mounted / "original" if directory else mounted).read_text(), "ORIGINAL-GRANT")
                     self.assertNotEqual(exposed.read_text() if exposed.is_file() else "", "PRIVATE-CONTROL-DATA")
-                    # Inspect both the namespace-init and actual shell descriptor
-                    # tables. No O_PATH source handle may survive into either.
-                    payload_pids = [record["identity"]["pid"]]
-                    children = Path(f"/proc/{payload_pids[0]}/task/{payload_pids[0]}/children").read_text().split()
-                    payload_pids.extend(map(int, children))
+                    # Inspect the namespace-init, goblins-init and actual shell
+                    # descriptor tables. No O_PATH source handle may survive.
+                    payload_pids, queue = [], [record["identity"]["pid"]]
+                    while queue:
+                        pid = queue.pop()
+                        payload_pids.append(pid)
+                        try:
+                            queue.extend(map(int, Path(f"/proc/{pid}/task/{pid}/children").read_text().split()))
+                        except FileNotFoundError:  # a short-lived helper of the shell
+                            pass
+                    self.assertGreaterEqual(len(payload_pids), 3)
                     for pid in payload_pids:
-                        for fd in Path(f"/proc/{pid}/fd").iterdir():
+                        try:
+                            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                        except FileNotFoundError:
+                            continue
+                        if command.startswith(b"/run/goblins/bin/goblins-init\0"):
+                            # Not dumpable, so its table is hidden from this
+                            # uid; it inherits only what the shell inherits.
+                            with self.assertRaises(PermissionError):
+                                next(Path(f"/proc/{pid}/fd").iterdir())
+                            continue
+                        try:
+                            fds = list(Path(f"/proc/{pid}/fd").iterdir())
+                        except FileNotFoundError:
+                            continue
+                        for fd in fds:
                             try: meta = fd.stat()
                             except FileNotFoundError: continue
                             self.assertNotEqual((meta.st_dev, meta.st_ino), original_inode, f"source FD leaked to {pid}: {fd}")
