@@ -601,7 +601,9 @@ goblins rpc sessions.kill_execs '{"session":"snikk"}'
   client dies, even with SIGKILL, the command's process group gets SIGHUP and
   SIGTERM, then SIGKILL two seconds later. SIGINT, SIGTERM and SIGHUP sent to
   the client reach the command's process group. Processes that leave the group
-  (=setsid=, double forks) live until =sessions.kill_execs= or the goblin ends.
+  (=setsid=, job control, double forks) live until =sessions.kill_execs= or the
+  goblin ends. Each exec runs under a small keeper process, so these are still
+  found; =sessions.kill_execs= never touches the agent or what it started.
 - =--instance ID --session ID= pin the command to one session of one daemon,
   as =attach --instance= does: if that session stopped, even when another
   goblin now has its name, the command fails instead of reaching the namesake.
@@ -629,7 +631,10 @@ git commit          # opens the message in your Emacs and waits for C-x #
 The daemon runs =emacsclient -a false= (=editor.emacs.command=, by default from
 the daemon's =PATH=) without a shell, always with =/goblins:<tree path>:/abs/path=
 names it builds itself, so a goblin cannot open another goblin's files or host
-paths. Blocking edits end when you are done with every file (=C-x #=), with
+paths. It first pins that name in Emacs to the requesting goblin of this
+daemon (=goblins-pin-host=, so goblins.el must be loaded in the Emacs that runs
+the server), whatever daemon Emacs is configured for. When Emacs has the name
+pinned to another goblin the edit fails and nothing is opened. Blocking edits end when you are done with every file (=C-x #=), with
 emacsclient's exit status; closing the waiting command kills the client.
 Without a running Emacs server the edit fails at once. =emacsclient= finds the
 server as usual, from the daemon's environment (=EMACS_SOCKET_NAME= or

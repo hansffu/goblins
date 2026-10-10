@@ -15,6 +15,13 @@ Review (2026-10-10): five findings were applied:
 - the sandbox shell is expanded inside the sandbox;
 - the editor request carries several files with positions.
 
+Implementation review (2026-10-10): five findings were fixed, see Implementation notes:
+- editor requests pin their host to the requesting session first;
+- goblin terminals are pinned from their identity and reset on stop even without a pin;
+- exec descriptors wait for their whole request frame;
+- "kill all execs" reaches everything an exec started (keepers);
+- desktops skip Dired and vc-dir buffers inside goblins.
+
 * Goals
 
 - Open an interactive shell inside a *running* goblin sandbox, from the host CLI and from Emacs.
@@ -155,9 +162,10 @@ goblins [--state-dir DIR] exec [-t] [-e K=V]... [-w DIR] [--instance I] [--sessi
     example, =C-c C-c= in a compilation buffer interrupts the remote command.
   - Closing stdin (as eglot does on shutdown) is passed through as end-of-file. The exec ends when the
     command exits or the client disconnects.
-  - *Descendants:* cancellation covers the exec's process group. Descendants that leave it via =setsid= or
-    a double fork are adopted by init, but there are no cgroups to attribute them to an exec. They live until
-    "kill all execs" or the sandbox ends. This best-effort limit is intentional.
+  - *Descendants:* cancellation covers the exec's process group. Descendants that leave it via =setsid=, job
+    control or a double fork live until "kill all execs" or the sandbox ends. Without cgroups, each exec runs
+    under its own /keeper/, a subreaper fork of init, so everything an exec starts stays attributable to it
+    (see Implementation notes).
 - Execs must start fast. Eshell and TRAMP open one exec per external command, and magit can produce hundreds
   a minute.
 
@@ -315,6 +323,26 @@ Where the code lives:
   the live =emacs -nw= scenario in =tests/test_emacs.py= (=goblins-test-tramp-live=) and ERT tests.
 
 Differences from the draft:
+- *A keeper per exec:* init forks a keeper, a subreaper that never execs and only reaps, and the keeper
+  starts the command and reports its wait status to init on a pipe. Everything the exec starts stays below
+  its keeper, even processes that left its session or group, and after the command itself exited.
+  Cancellation signals the command's group within the keeper's subtree; "kill all execs" signals the whole
+  subtree of every keeper; the agent and processes it orphaned to init are never touched. A keeper exits
+  once its subtree is empty. Init and keepers are not dumpable.
+- *Editor requests pin the host first:* the daemon runs =emacsclient --eval '(goblins-pin-host HOST
+  STATE-DIR INSTANCE SESSION)'= before opening the files. The pin binds =/goblins:HOST:= to the requesting
+  session of the requesting daemon, whatever daemon Emacs is configured for. If Emacs has the host pinned
+  to another goblin, the request fails ("is pinned to another goblin") and nothing is opened;
+  =M-x goblins-tramp-release= releases a pin by hand.
+- *Terminals are pinned from their identity:* =goblins-shell= pins its host when it opens, and agent
+  terminals when they report a directory (OSC 7), before any TRAMP use; when the host is pinned to another
+  goblin they use the session ID as the host. On every snapshot, goblin terminals whose session is no
+  longer running leave the sandbox, pinned or not.
+- *Unpinned buffers* (that never connected) are released when every session their host names (tree path,
+  name or ID) has stopped.
+- *Desktops* skip Dired and vc-dir buffers by their =/goblins:= directory, as well as visited files.
+- *Descriptors* passed with =sessions.exec= wait until their request frame is complete, however many reads
+  it takes; those the completed frame does not use are closed.
 - *Control channel framing:* a =SOCK_SEQPACKET= pair with one JSON message per datagram
   (={"method": ..., "params": ...}=) instead of Content-Length framing. The kernel keeps message
   boundaries and ties SCM_RIGHTS descriptors to exactly one message.
