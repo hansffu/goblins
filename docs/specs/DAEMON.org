@@ -287,9 +287,10 @@ outcome is also recorded in the communications log and, for sessions with an
 agent integration, queued as an inbox notice to the requester (see
 [[file:AGENT-INTEGRATION.org::*Operation completion notices][AGENT-INTEGRATION.org]]).
 
-Retain the current failure boundary: realization/profile preparation failure before
-mounting leaves the sandbox usable; failure during mount preparation,
-mounting or publication ends the affected session. Direct store paths may
+Failure boundary: realization, profile preparation, a refused mount and
+publication failures leave the sandbox usable, and a retry skips paths already
+mounted. Only an uncertain outcome (the helper not answering, or an attached
+Docker engine missing paths) ends the affected session. Direct store paths may
 already be visible before the profile switches. No rollback guarantee is made.
 
 ** Snapshots and events

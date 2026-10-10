@@ -1253,8 +1253,9 @@ probes; production API/terminal tests use the Nix-built executables.
 
 Linux x86_64, unprivileged user namespaces, Nix, and support for openat2,
 open_tree, mount_setattr, move_mount, close_range and namespace ownership ioctls
-are required. Grants are additive; mount/publication failure kills the affected
-session without claiming rollback. Stopping owned Nix clients does not cancel
+are required. Grants are additive; a failed grant leaves the session running
+(paths it already mounted stay, without a rollback claim), unless the mount
+helper stops answering, which kills the affected session. Stopping owned Nix clients does not cancel
 shared host Nix daemon work. Unresponsive filesystem/kernel calls may delay
 cleanup. Emacs status, approvals and Ghostel launches are described in
 [[file:emacs/README.org][the Emacs guide]]. The =configurations= command prints the current manifest

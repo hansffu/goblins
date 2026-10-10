@@ -204,11 +204,14 @@ print(json.dumps(results))''')
         self.assertEqual(session.decide(request(package="data-tool"), True)["status"], "error")
         self.assertIsNone(session.proc.poll())
         # Fresh session: fail after one actual mount, before publishing profile.
+        # The session keeps its known mounts, and a retry completes the grant.
         partial = self.session()
         with self.assertRaisesRegex(RuntimeError, "partial"):
             partial.grant("jq", self.paths["jq"], fail_after=1)
-        self.assertIsNotNone(partial.proc.poll())
+        self.assertIsNone(partial.proc.poll())
         self.assertEqual(os.readlink(partial.directory / "packages/current"), "generation-0")
+        partial.grant("jq", self.paths["jq"])
+        self.assertEqual(probe(partial, 'import subprocess,json; print(json.dumps(subprocess.check_output(["jq", "-nc", "{retried:true}"],text=True).strip()))'), '{"retried":true}')
         rooted = session.directory / "roots" / self.paths["jq"].name
         self.assertTrue(rooted.is_symlink())
         roots = command(["nix-store", "--query", "--roots", self.paths["jq"]])
@@ -248,12 +251,14 @@ for _ in range(20000):
         self.assertFalse(probe(session, "import os,json; print(json.dumps(os.path.lexists('/nix/store/evil')))"))
         # Fault injection on the TRUSTED side proves openat2 rejects symlinks
         # even if destination immutability were broken. No arbitrary mount RPC.
+        # The helper refuses that mount and keeps serving: the session lives.
         victim = self.session()
         victim.fault = "symlink"
-        with self.assertRaisesRegex(RuntimeError, "helper exited"):
+        with self.assertRaisesRegex(RuntimeError, "could not mount .*symbolic links"):
             victim.grant("jq", self.paths["jq"])
-        self.assertIsNotNone(victim.proc.poll())
+        self.assertIsNone(victim.proc.poll())
         self.assertEqual(os.readlink(victim.directory / "packages/current"), "generation-0")
+        self.assertEqual(probe(victim, "import json; print(json.dumps('alive'))"), "alive")
 
     def test_controller_death_kills_descendants(self):
         # A separate HOST driver simulates a crashing controller. Its shell still

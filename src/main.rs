@@ -542,7 +542,8 @@ fn run() -> io::Result<i32> {
         inode(&ns)?
     );
     io::stdout().flush()?;
-    // Bound the PRIVATE protocol too; errors terminate the disposable session.
+    // Bound the PRIVATE protocol too; its errors terminate the disposable
+    // session. A refused grant is an answer, not a protocol error.
     let mut input = io::stdin().lock();
     loop {
         if let Some(status) = session.0.try_wait()? {
@@ -574,17 +575,32 @@ fn run() -> io::Result<i32> {
         if name == "STOP" {
             break;
         }
-        grant(
+        // Each grant either moves its one mount into place as its last step
+        // or changes nothing, so a refusal is reported and the session lives.
+        match grant(
             store.as_raw_fd(),
             root.as_raw_fd(),
             source_ns.as_raw_fd(),
             ns.as_raw_fd(),
             name,
-        )?;
-        println!("OK");
+        ) {
+            Ok(()) => println!("OK"),
+            Err(error) => println!("ERR {}", reply_text(&error.to_string())),
+        }
         io::stdout().flush()?;
     }
     Ok(0)
+}
+/// One reply line the controller accepts: printable, within its 256 bytes.
+fn reply_text(message: &str) -> String {
+    message
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .scan(0, |length, c| {
+            *length += c.len_utf8();
+            (*length <= 200).then_some(c)
+        })
+        .collect()
 }
 fn main() {
     std::process::exit(match run() {
@@ -609,6 +625,15 @@ mod tests {
         ] {
             assert!(!valid_name(name));
         }
+    }
+    #[test]
+    fn refusals_fit_one_reply_line() {
+        assert_eq!(
+            reply_text("open_tree: denied\nSTOP"),
+            "open_tree: denied STOP"
+        );
+        let long = reply_text(&"é".repeat(300));
+        assert!(long.len() <= 200 && long.chars().all(|c| c == 'é'));
     }
     #[test]
     fn store_symlinks_resolve_only_within_the_store() {

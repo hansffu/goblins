@@ -253,10 +253,14 @@ capture without imposing a file-size limit on Nix's own caches or store work.
 The stable profile path is inherited at startup. Successful additive grants
 become usable in the same payload process/mount namespace. Overlapping command
 names preserve startup PATH precedence followed by grant publication order;
-both store closures remain available. Realization and profile preparation
-failures preserve the running session. Failure from mount preparation
-through publication terminates that session; direct store paths may already be
-visible, so there is no rollback or revocation claim.
+both store closures remain available. Realization, profile preparation, a
+mount the helper refuses and publication failures preserve the running
+session: the helper mounts each path as its last step or not at all, and paths
+already mounted stay (they belong to the approved closure, and a retry skips
+them). Only an uncertain outcome terminates the session: the helper not
+answering, or an attached Docker engine that may lack paths the sandbox has.
+Direct store paths may be visible before publication, so there is no rollback
+or revocation claim.
 
 Cancellation kills and reaps owned Nix client process groups, never the host Nix
 daemon or its shared builds. Parent-death handling and PID namespace teardown

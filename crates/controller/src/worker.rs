@@ -381,6 +381,9 @@ impl Worker {
                                             "could not build package '{}'; see request details in host TUI",
                                             req.package
                                         )
+                                    } else if detail.starts_with("could not mount") {
+                                        // The sandbox keeps running; say why.
+                                        detail.chars().take(400).collect()
                                     } else {
                                         "grant failed; see request details in host TUI".into()
                                     };

@@ -48,6 +48,19 @@ fn canonical_store_output(path: &Path) -> bool {
         })
 }
 
+/// A mount failure that leaves the sandbox's mounts unknown: the helper
+/// stopped answering, or an attached Docker engine may lack paths the sandbox
+/// now has. Only these stop the session. A mount the helper refused, or one
+/// never attempted, leaves every earlier mount recorded in `mounted`.
+#[derive(Debug)]
+struct Uncertain(Box<dyn std::error::Error + Send + Sync>);
+impl std::fmt::Display for Uncertain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::error::Error for Uncertain {}
+
 pub(crate) fn containing_store_output(path: &Path) -> Option<PathBuf> {
     let name = path.strip_prefix("/nix/store").ok()?.components().next()?;
     let root = Path::new("/nix/store").join(name);
@@ -969,6 +982,10 @@ impl Session {
             .directory
             .join("packages")
             .join(format!("generation-{}", self.packages.len() + 1));
+        // Never published: a failed grant may have left it for this retry.
+        if generation.exists() {
+            fs::remove_dir_all(&generation)?;
+        }
         fs::create_dir(&generation)?;
         fs::create_dir(generation.join("bin"))?;
         for (name, entry) in entries {
@@ -1014,22 +1031,22 @@ impl Session {
             .difference(&self.mounted)
             .cloned()
             .collect::<BTreeSet<_>>();
-        // From placeholder preparation through publication, any uncertainty
-        // terminates this session. Direct store paths appear before publication.
+        // Direct store paths appear before publication, and stay mounted if
+        // a later one fails: they belong to the approved closure, and a retry
+        // skips them. Only an uncertain failure terminates this session.
         let mount = (|| -> Result<()> {
             progress("mounting")?;
             self.mount_paths(&missing, &mut before_mount)?;
             self.cancel.check()?;
             progress("publishing")?;
             let staged = self.directory.join("packages/next");
+            let _ = fs::remove_file(&staged);
             symlink(generation.file_name().unwrap(), &staged)?;
             fs::rename(staged, self.directory.join("packages/current"))?;
             Ok(())
         })();
         if let Err(error) = mount {
-            self.event("mount-failure", serde_json::json!({"package":name}));
-            self.stop();
-            return Err(error);
+            return Err(self.mount_failed(error, serde_json::json!({"package":name})));
         }
         self.packages = packages;
         self.event(
@@ -1051,22 +1068,48 @@ impl Session {
                 count,
                 &self.directory.join("store").join(item.file_name().unwrap()),
             )?;
-            writeln!(
-                self.helper_input.as_mut().ok_or("helper not started")?,
-                "{}",
-                item.file_name().unwrap().to_str().unwrap()
-            )?;
-            if self.helper_reply(Duration::from_secs(30))? != "OK" {
-                return Err("mount not acknowledged".into());
+            let name = item.file_name().unwrap().to_str().unwrap();
+            let reply = (|| -> Result<String> {
+                writeln!(
+                    self.helper_input.as_mut().ok_or("helper not started")?,
+                    "{name}"
+                )?;
+                self.helper_reply(Duration::from_secs(30))
+            })()
+            .map_err(Uncertain)?;
+            if let Some(reason) = reply.strip_prefix("ERR ") {
+                return Err(format!("could not mount {name}: {reason}").into());
+            }
+            if reply != "OK" {
+                return Err(Uncertain("mount not acknowledged".into()).into());
             }
             self.mounted.insert(item.clone());
         }
         // An attached engine got the paths mounted when it attached; give it
-        // these too, so containers can bind-mount them.
+        // these too, so containers can bind-mount them. A retry would not
+        // offer it these paths again, so a failure here is uncertain.
         if let Some(lease) = &self.docker {
-            lease.extend(&self.launch, missing, &self.cancel)?;
+            lease
+                .extend(&self.launch, missing, &self.cancel)
+                .map_err(Uncertain)?;
         }
         Ok(())
+    }
+    /// Record a failed mount, and stop the session only when its mounts are
+    /// no longer known (see `Uncertain`).
+    fn mount_failed(
+        &mut self,
+        error: Box<dyn std::error::Error + Send + Sync>,
+        mut event: serde_json::Value,
+    ) -> Box<dyn std::error::Error + Send + Sync> {
+        let uncertain = error.is::<Uncertain>();
+        event["stopped"] = uncertain.into();
+        event["detail"] = error.to_string().into();
+        self.event("mount-failure", event);
+        if uncertain {
+            self.stop();
+        }
+        error
     }
     /// Evaluation-time network for a refresh: the goblin's own.
     fn evaluation_network(&self) -> crate::evaluator::Network {
@@ -1186,12 +1229,7 @@ impl Session {
             .cloned()
             .collect::<BTreeSet<_>>();
         if let Err(error) = self.mount_paths(&missing, &mut |_, _| Ok(())) {
-            self.event(
-                "mount-failure",
-                serde_json::json!({"devshell":next.generation}),
-            );
-            self.stop();
-            return Err(error);
+            return Err(self.mount_failed(error, serde_json::json!({"devshell":next.generation})));
         }
         let directory = self.directory.join("devshell");
         fs::write(directory.join("env.sh.next"), &next.script)?;
@@ -1236,9 +1274,7 @@ impl Session {
             .cloned()
             .collect::<BTreeSet<_>>();
         if let Err(error) = self.mount_paths(&missing, &mut |_, _| Ok(())) {
-            self.event("mount-failure", serde_json::json!({"app":name}));
-            self.stop();
-            return Err(error);
+            return Err(self.mount_failed(error, serde_json::json!({"app":name})));
         }
         self.event(
             "flake-run",
