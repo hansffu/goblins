@@ -1,0 +1,36 @@
+#+title: Goblins architecture
+#+startup: showall inlineimages hideblocks
+
+* Purpose and reading order
+
+This directory describes the implemented architecture, based on the source as of 2026-10-11. It complements the design specifications and ADRs: those record intended contracts and decisions; these documents explain how the current runtime fits together. Update these documents when the corresponding code changes.
+
+- [[file:components.org][Components and communication]]: build products, runtime processes, transport, authority boundaries, scopes and storage.
+- [[file:daemon.org][Daemon internals]]: the controller event loop, workers, state ownership, approvals, terminal handling and shutdown.
+- [[file:workflows.org][Workflow sequences]]: server startup, root and child launches, package permissions, Docker activation, dev shell refresh, inbox messaging, terminal attachment and stopping a subtree.
+
+* Diagrams
+
+Diagrams appear inline as SVG image links from [[file:diagrams/][diagrams/]]. Org opens these documents with images displayed and source blocks folded. Use =TAB= on a Mermaid block to reveal its source; =org-toggle-inline-images= toggles image display. Mermaid source is omitted from exports, which include the rendered images. Each source block has a =:file= target matching its =#+RESULTS:= image link. The documents set the shared =header-args:mermaid= property to =:results file graphics replace= and select =:theme dark=. Individual blocks set only =:file= and =:background-color=, following the working blocks in =daemon.org=. Export settings use =ob-mermaid='s defaults. Evaluating a block replaces its image result without adding a link description. =:file-desc= is deliberately omitted: the value =nil= is parsed as the literal description "nil", which prevents inline image display. The block's =:background-color "'#282c34'"= keeps Babel renders dark; the inner quotes protect the hex color from being interpreted as a shell comment by =ob-mermaid=. Evaluating a block with =ob-mermaid= writes that SVG. Labels use native SVG text rather than HTML so Emacs can display them. Flowchart and state-diagram labels use nonbreaking spaces and explicit line breaks to preserve word spacing in Emacs's SVG renderer. The shared [[file:mermaid-config.json][Mermaid configuration]] uses Doom One's dark palette. Set =ob-mermaid-default-config-file= in your Emacs configuration to this file, or copy it to your Emacs configuration directory and use that path. The batch renderer uses this file by default; =--config PATH= selects your personal copy. Source blocks contain only the diagram definition. Sequence diagrams show logical ordering; they do not imply a synchronous call between every participant.
+
+For example, after copying =mermaid-config.json= into =user-emacs-directory=:
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'ob-mermaid
+  (setq ob-mermaid-default-config-file
+        (expand-file-name "mermaid-config.json" user-emacs-directory)))
+#+end_src
+
+Regenerate all SVGs after editing the Mermaid source:
+
+#+begin_src sh
+python3 docs/architecture/render.py
+#+end_src
+
+The script requires =mmdc= from =mermaid-cli= and its Chromium runtime. It runs Chromium with =--no-sandbox= for compatibility with the outer Goblins sandbox. If system fonts are unavailable, pass =--font-dir /path/to/fonts= with an installed font directory. The script rejects invalid SVG coordinates which can result from missing fonts. An Org Mermaid integration such as =ob-mermaid= can also render individual blocks.
+
+* Source and decision references
+
+The principal implementation entry points are [[file:../../crates/controller/src/controller.rs][Controller]], [[file:../../crates/controller/src/worker.rs][session Worker]], [[file:../../crates/controller/src/session.rs][Session]], [[file:../../crates/controller/src/messaging.rs][messaging Service]], [[file:../../crates/client/src/main.rs][sandbox client]] and [[file:../../src/main.rs][mount helper]]. [[file:../../USAGE.org][USAGE.org]] documents commands and configuration.
+
+Relevant decisions are [[file:../adr/0001-daemon-inboxes-for-agent-communication.md][daemon inboxes]], [[file:../adr/0003-on-demand-docker.md][on-demand Docker]], [[file:../adr/0004-shared-docker-scopes.md][shared Docker scopes]], [[file:../adr/0006-shared-scopes.md][shared scopes]], [[file:../adr/0007-flake-dev-shells.md][flake dev shells]] and [[file:../adr/0008-raids.md][communication raids]]. Earlier per-session Docker decisions describe the evolution; scopes are the current resource model.

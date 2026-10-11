@@ -15,6 +15,8 @@ A Rust sandbox runtime for approved live Nix package grants. A fullscreen termin
 and an Emacs status buffer provide agent status and approvals.
 
 See [[file:docs/specs/PLAN.org][the project plan]] for goals, architecture, and milestones.
+The [[file:docs/architecture/README.org][architecture documentation]] describes the implemented components,
+daemon internals and main workflows with Mermaid diagrams.
 The daemon contract is recorded in [[file:docs/specs/DAEMON.org][the daemon and communication decisions]];
 current usage and verified evidence are in USAGE.org and RESULTS.org.
 The next agent milestone is described in
