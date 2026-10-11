@@ -7,7 +7,7 @@
 Goblins runs native shells and agents in Linux sandboxes. Nix produces the configuration and executable closures. A host daemon owns live sessions and permission decisions; frontends present that state and the sandbox client requests operations. A session is a live instance of a named configuration, with an authoritative session ID and a human-readable name/tree path.
 
 #+begin_src mermaid :file diagrams/components-system-overview.svg :background-color "'#282c34'"
-flowchart LR
+flowchart TD
     Builders["Nix builders"] -->|build| Manifest["Store manifest and sandbox<br/>specifications"]
     subgraph Host["Host user environment"]
         CLI["Host goblins CLI"]
@@ -57,32 +57,32 @@ The diagram groups by responsibility. The daemon's session and messaging workers
 
 Both host and sandbox expose a command named =goblins=, but they execute different binaries with different authority.
 
-| Product or module | Responsibility | Source |
-|-------------------+----------------+--------|
-| Nix builders | Compose scopes, sandbox settings, agent presets and host package | [[file:../../nix/builders/][nix/builders/]] |
-| Host wrapper | Select store manifest with =--runtime= and execute controller binary | [[file:../../nix/packages/goblins.nix][goblins.nix]] |
-| =goblins-controller= | Daemon library, host CLI, TUI, terminal and exec frontends | [[file:../../crates/controller/src/][crates/controller/src/]] |
-| =goblins-client= | Sandbox CLI, init, editor client, hooks and notification monitor | [[file:../../crates/client/src/][crates/client/src/]] |
-| Sandbox aliases | Install =goblins=, =goblins-request=, =goblins-init= and =goblins-editor= | [[file:../../nix/packages/internal-goblins.nix][internal-goblins.nix]] |
-| =goblins-protocol= | Framing, typed requests, mailbox operations, init/terminal protocol | [[file:../../crates/protocol/src/][crates/protocol/src/]] |
-| =goblins-mount-helper= | Namespace setup and live mount operations | [[file:../../src/main.rs][src/main.rs]] |
-| Emacs frontend | Status/approval buffer, terminal integration and TRAMP access | [[file:../../emacs/][emacs/]] |
-| Agent launchers/hooks | Sandbox-only Codex and Claude configuration and integration | [[file:../../nix/goblins/][nix/goblins/]] |
+| Product or module     | Responsibility                                                      | Source                 |
+|-----------------------+---------------------------------------------------------------------+------------------------|
+| Nix builders          | Compose scopes, sandbox settings, agent presets and host package    | [[file:../../nix/builders/][nix/builders/]]          |
+| Host wrapper          | Select store manifest with =--runtime= and execute controller binary  | [[file:../../nix/packages/goblins.nix][goblins.nix]]            |
+| =goblins-controller=    | Daemon library, host CLI, TUI, terminal and exec frontends          | [[file:../../crates/controller/src/][crates/controller/src/]] |
+| =goblins-client=        | Sandbox CLI, init, editor client, hooks and notification monitor    | [[file:../../crates/client/src/][crates/client/src/]]     |
+| Sandbox aliases       | Install =goblins=, =goblins-request=, =goblins-init= and =goblins-editor=   | [[file:../../nix/packages/internal-goblins.nix][internal-goblins.nix]]   |
+| =goblins-protocol=      | Framing, typed requests, mailbox operations, init/terminal protocol | [[file:../../crates/protocol/src/][crates/protocol/src/]]   |
+| =goblins-mount-helper=  | Namespace setup and live mount operations                           | [[file:../../src/main.rs][src/main.rs]]            |
+| Emacs frontend        | Status/approval buffer, terminal integration and TRAMP access       | [[file:../../emacs/][emacs/]]                 |
+| Agent launchers/hooks | Sandbox-only Codex and Claude configuration and integration         | [[file:../../nix/goblins/][nix/goblins/]]           |
 
 The protocol crate has no Nix, launch or approval authority. The sandbox client depends on that protocol rather than the controller/helper. Nix builders adapt =agent-sandbox.nix= specifications for the Rust runtime; the runtime uses Bubblewrap and pasta rather than its static Python launcher.
 
 * Communication channels and authority
 
-| Channel | Participants | Contents and authority |
-|---------+--------------+------------------------|
-| =STATE/host.sock= | Host CLI, TUI, Emacs to controller | JSON-RPC launch, inspect, decide, subscribe, stop, exec and messaging calls; host authority |
-| =/run/goblins/request.sock= | Sandbox client to controller | JSON-RPC requests associated with that session; permissions, subtree operations, inbox, raids and integration |
-| Session =terminal.sock= / =sessions.attach= | Attachment client to terminal broker | Framed terminal input/output after attachment handshake; raw bytes are not approval RPC |
-| Worker channels | Controller to session worker | Bounded Rust =sync_channel= commands and completions |
-| Messaging channels | Controller to messaging worker | Calls, directory/raid/operation events, notification delivery reports and responses |
-| Helper pipes | Session worker to mount helper | Private bounded commands and acknowledgements; no public helper listener |
-| Init control socket | Controller to sandbox =goblins-init= | Private execution/control protocol and passed file descriptors |
-| Docker socket | Attached members to scope engine | Docker API for the shared engine |
+| Channel                                 | Participants                         | Contents and authority                                                                                        |
+|-----------------------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------|
+| =STATE/host.sock=                         | Host CLI, TUI, Emacs to controller   | JSON-RPC launch, inspect, decide, subscribe, stop, exec and messaging calls; host authority                   |
+| =/run/goblins/request.sock=               | Sandbox client to controller         | JSON-RPC requests associated with that session; permissions, subtree operations, inbox, raids and integration |
+| Session =terminal.sock= / =sessions.attach= | Attachment client to terminal broker | Framed terminal input/output after attachment handshake; raw bytes are not approval RPC                       |
+| Worker channels                         | Controller to session worker         | Bounded Rust =sync_channel= commands and completions                                                            |
+| Messaging channels                      | Controller to messaging worker       | Calls, directory/raid/operation events, notification delivery reports and responses                           |
+| Helper pipes                            | Session worker to mount helper       | Private bounded commands and acknowledgements; no public helper listener                                      |
+| Init control socket                     | Controller to sandbox =goblins-init=   | Private execution/control protocol and passed file descriptors                                                |
+| Docker socket                           | Attached members to scope engine     | Docker API for the shared engine                                                                              |
 
 The host state directory is private, and =host.sock= has mode =0600=. The sandbox receives only its own request endpoint, bind-mounted from a listener created for that session. The controller derives the actor from the listener role, not a caller-supplied session ID. =initialize= negotiates API version and capabilities; it does not let a sandbox choose host authority.
 
@@ -100,11 +100,11 @@ Namespace/mount failures have different consequences. A refused mount can leave 
 
 These are separate relationships, with separate authorization rules.
 
-| Relationship | What it controls | Lifetime and restrictions |
-|--------------+------------------+---------------------------|
+| Relationship   | What it controls                                                                                     | Lifetime and restrictions                                                                                   |
+|----------------+------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------|
 | Ownership tree | Child launches, descendant lifecycle/terminal access, inherited workspace and selected trusted state | Child belongs to a parent; parent exit stops descendants; selected parent's =allowedChildren= limits launches |
-| Scope | Shared network, optional PID namespace, managed storage and optional Docker engine | Starts with first member, releases live resources with last member; persistent data can outlive members |
-| Raid | Discovery and direct messaging across ownership branches | At most one raid per goblin; owner departure dissolves it; no resource or lifecycle grants |
+| Scope          | Shared network, optional PID namespace, managed storage and optional Docker engine                   | Starts with first member, releases live resources with last member; persistent data can outlive members     |
+| Raid           | Discovery and direct messaging across ownership branches                                             | At most one raid per goblin; owner departure dissolves it; no resource or lifecycle grants                  |
 
 Children share their parent's workspace, scope and current dev shell generation, but use their selected configuration's packages, environment and file grants. Package approval inheritance is downward and on request; a child can reuse an ancestor's exact granted output without a new decision. Children retain the branch's configuration snapshot rather than reopening a rebuilt host manifest. New host root launches can use a newer manifest while existing sessions retain their configuration.
 
@@ -112,15 +112,15 @@ Scopes are trust groups. Shared PID namespaces expose processes to peers; manage
 
 * State and persistence
 
-| State | Owner and location | Persistence |
-|-------+--------------------+-------------|
-| Live sessions, decisions, subscriptions and raids | Controller memory | No restart restoration of live sessions or raids |
-| Session resources, roots, profile and helper diagnostics | Per-session resource directory under daemon state | Released with session cleanup; shared leases may retain resources longer |
-| Mailboxes, claim generations, operation receipts and integration state | Messaging worker memory | Scoped to one daemon instance; journal is not a restart recovery database |
-| Communications audit | =communications-INSTANCE.jsonl= | Retained for online/offline inspection; append writes are not a per-event fsync guarantee |
-| Server output | =server.log= | Retained host diagnostics |
-| Scope storage and Docker data | Host-user cache, managed by scope leases | Persistent scopes retain data while idle; temporary scopes delete it after last member |
-| Configuration/source snapshots | Nix store with runtime GC roots | Roots protect running branches, packages and trusted generations |
-| Workspace | Host cwd mount, or disposable snapshot selected by server =--workspace= | Cwd writes affect the host; snapshot branches are disposable and children share the copy |
+| State                                                                  | Owner and location                                                    | Persistence                                                                               |
+|------------------------------------------------------------------------+-----------------------------------------------------------------------+-------------------------------------------------------------------------------------------|
+| Live sessions, decisions, subscriptions and raids                      | Controller memory                                                     | No restart restoration of live sessions or raids                                          |
+| Session resources, roots, profile and helper diagnostics               | Per-session resource directory under daemon state                     | Released with session cleanup; shared leases may retain resources longer                  |
+| Mailboxes, claim generations, operation receipts and integration state | Messaging worker memory                                               | Scoped to one daemon instance; journal is not a restart recovery database                 |
+| Communications audit                                                   | =communications-INSTANCE.jsonl=                                         | Retained for online/offline inspection; append writes are not a per-event fsync guarantee |
+| Server output                                                          | =server.log=                                                            | Retained host diagnostics                                                                 |
+| Scope storage and Docker data                                          | Host-user cache, managed by scope leases                              | Persistent scopes retain data while idle; temporary scopes delete it after last member    |
+| Configuration/source snapshots                                         | Nix store with runtime GC roots                                       | Roots protect running branches, packages and trusted generations                          |
+| Workspace                                                              | Host cwd mount, or disposable snapshot selected by server =--workspace= | Cwd writes affect the host; snapshot branches are disposable and children share the copy  |
 
 The default daemon state directory is =$XDG_RUNTIME_DIR/goblins= (or =/run/user/UID/goblins=), falling back to =/tmp/goblins-control-UID= when the runtime directory is absent. =--state-dir= overrides it. Persistent scope stores use an exclusive lock to prevent two controllers from opening the same persistent scope. Scope sharing is within a controller.
