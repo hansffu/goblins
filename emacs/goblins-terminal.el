@@ -10,6 +10,7 @@
 ;; own:
 ;;
 ;;   (define-key goblin-mode-map (kbd "C-c C-g") #'goblins-workspace)
+;;   (define-key goblin-mode-map (kbd "C-v") #'goblin-paste-image)
 ;;   (with-eval-after-load 'evil
 ;;     (evil-define-key 'normal goblin-mode-map (kbd "SPC g") #'goblin-info))
 ;;
@@ -28,6 +29,9 @@
 
 (declare-function evil-normalize-keymaps "evil-core" (&optional state))
 (declare-function goblins-workspace "goblins-workspace" (&optional directory))
+(declare-function ghostel-paste-string "ghostel" (string))
+(declare-function yank-media-handler "yank-media" (types handler))
+(declare-function yank-media "yank-media" (&optional noselect))
 
 (defun goblins--terminal-goblin ()
   "Return (SOURCE . SESSION-ID) for this goblin terminal."
@@ -64,6 +68,44 @@
                           (append (list :session (cdr goblin))
                                   (and children (list :kill_children t)))))))
 
+(defconst goblins--clipboard-directory "/tmp/goblins-clipboard/"
+  "Where pasted clipboard images go inside a goblin.
+The sandbox's own /tmp: the host never sees them, and they go with the goblin.")
+
+(defun goblins--image-extension (type)
+  "The file name extension for image MIME TYPE, a symbol like `image/png'."
+  (pcase (cadr (split-string (symbol-name type) "/"))
+    ("jpeg" "jpg")
+    ("svg+xml" "svg")
+    (subtype subtype)))
+
+(defun goblins--yank-media-image (type data)
+  "Paste image DATA of MIME TYPE into this goblin terminal.
+Write it under `goblins--clipboard-directory' inside the goblin and paste
+its path: Claude Code and Codex attach an image whose path arrives as a
+paste.  Their own clipboard paste cannot work, as the sandbox has no
+display, and this way the goblin only sees the images you paste."
+  (let* ((host (or (goblins--pinned-terminal-host) (user-error "Not a goblin terminal")))
+         (path (format "%s%s.%s" goblins--clipboard-directory
+                       (format-time-string "%Y%m%d-%H%M%S-%3N")
+                       (goblins--image-extension type)))
+         (file (format "/goblins:%s:%s" host path)))
+    (make-directory (file-name-directory file) t)
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert data)
+      (let ((coding-system-for-write 'no-conversion))
+        (write-region nil nil file nil 'silent)))
+    (ghostel-paste-string path)))
+
+(defun goblin-paste-image ()
+  "Paste the clipboard's image into this goblin's agent.
+The image is written inside the goblin and its path pasted, see
+`goblins--yank-media-image'.  \[yank-media] does the same."
+  (interactive)
+  (goblins--terminal-goblin)
+  (yank-media))
+
 (defvar goblin-mode-command-map
   (let ((map (make-sparse-keymap)))
     (define-key map "w" #'goblins-workspace)
@@ -76,6 +118,7 @@
     (define-key map "e" #'goblins-eshell)
     (define-key map "d" #'goblins-dired)
     (define-key map "f" #'goblins-find-file)
+    (define-key map "v" #'goblin-paste-image)
     map)
   "Goblin commands, on \\`C-c g' in `goblin-mode-map'.")
 
@@ -94,6 +137,8 @@ Goblins turns it on in every terminal it opens; bind your own keys in
 \\{goblin-mode-map}"
   :lighter " Goblin"
   :keymap goblin-mode-map
+  (when (and goblin-mode (fboundp 'yank-media-handler))
+    (yank-media-handler "image/.*" #'goblins--yank-media-image))
   ;; Evil's state maps for minor modes need refreshing when one turns on.
   (when (fboundp 'evil-normalize-keymaps)
     (evil-normalize-keymaps)))

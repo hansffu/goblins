@@ -1929,6 +1929,47 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
   (with-temp-buffer
     (should-error (goblin-info) :type 'user-error)))
 
+;; The sandbox has no display, so the agents' own Ctrl+V cannot reach the
+;; clipboard; Emacs writes the image into the goblin and pastes its path.
+(ert-deftest goblin-paste-image-writes-into-the-goblin-and-pastes-its-path ()
+  (let ((terminal (generate-new-buffer " *goblins test terminal*"))
+        (png (unibyte-string #x89 ?P ?N ?G #x0d #x0a #x1a #x0a #x00 #xff))
+        directories written pasted)
+    (unwind-protect
+        (with-current-buffer terminal
+          (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
+          (goblin-mode 1)
+          (should (eq (key-binding (kbd "C-c g v")) #'goblin-paste-image))
+          (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) terminal))
+                    ((symbol-function 'goblins--pinned-terminal-host) (lambda () "gribble"))
+                    ((symbol-function 'gui-get-selection)
+                     (lambda (_selection type)
+                       (pcase type
+                         ('TARGETS [TARGETS UTF8_STRING image/png])
+                         ('image/png png))))
+                    ((symbol-function 'make-directory)
+                     (lambda (dir &optional _parents) (push dir directories)))
+                    ((symbol-function 'write-region)
+                     (lambda (_start _end file &rest _)
+                       (push (list file (buffer-string) enable-multibyte-characters
+                                   coding-system-for-write)
+                             written)))
+                    ((symbol-function 'ghostel-paste-string) (lambda (s) (push s pasted))))
+            (goblin-paste-image))
+          (should (equal directories '("/goblins:gribble:/tmp/goblins-clipboard/")))
+          (pcase-let ((`((,file ,bytes ,multibyte ,coding)) written))
+            (should (string-match-p "\\`/goblins:gribble:/tmp/goblins-clipboard/[0-9-]+\\.png\\'" file))
+            (should (equal bytes png))
+            (should-not multibyte)
+            (should (eq coding 'no-conversion))
+            (should (equal pasted (list (string-remove-prefix "/goblins:gribble:" file))))))
+      (kill-buffer terminal)))
+  (should (equal (goblins--image-extension 'image/jpeg) "jpg"))
+  (should (equal (goblins--image-extension 'image/svg+xml) "svg"))
+  (should (equal (goblins--image-extension 'image/webp) "webp"))
+  (with-temp-buffer
+    (should-error (goblin-paste-image) :type 'user-error)))
+
 ;;; Live workspace, from tests/test_emacs.py in a terminal Emacs (emacs -nw)
 
 (defun goblins-test--in-sidebar (&optional text)
@@ -2745,7 +2786,20 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
           (should (equal default-directory "/goblins:gribble:/"))
           (goblins-test--wait (lambda () (process-live-p ghostel--process)))
           (ghostel-send-string "echo SHELL-$((6*7))\n")
-          (goblins-test--wait (lambda () (string-match-p "SHELL-42" (buffer-string)))))
+          (goblins-test--wait (lambda () (string-match-p "SHELL-42" (buffer-string))))
+          ;; A pasted image lands byte for byte in the goblin's /tmp, its
+          ;; path pasted after the command.
+          (let ((image (apply #'concat (make-list 256 (apply #'unibyte-string
+                                                             (number-sequence 0 255))))))
+            (ghostel-send-string "echo PASTED:")
+            (goblins--yank-media-image 'image/png image)
+            (ghostel-send-string "\n")
+            (goblins-test--wait
+             (lambda () (string-match-p "^PASTED:/tmp/goblins-clipboard/[0-9-]+\\.png$"
+                                        (buffer-string))))
+            (should (equal (goblins-test--in directory "gribble"
+                                             "cat /tmp/goblins-clipboard/*.png | sha256sum")
+                           (format "%s  -\n" (secure-hash 'sha256 image))))))
         ;; The sidebar lists it under its goblin.
         (require 'goblins-workspace)
         (should (equal (gethash first (goblins--sidebar-shells source)) (list shell)))
