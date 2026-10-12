@@ -396,6 +396,8 @@ Main commands:
 
 =goblins-run= starts goblins in the current project's root and offers the project's =flake.nix= as dev shell.
 
+Agents can't reach the clipboard from inside a goblin, so their own =Ctrl+V= image paste fails. In a goblin terminal, =C-c g v= pastes the clipboard's image instead: Emacs copies it into the goblin and pastes its path.
+
 ** Files inside goblins
 
 Files and processes inside a goblin are reachable over TRAMP:

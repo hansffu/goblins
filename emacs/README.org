@@ -248,7 +248,7 @@ so you can give those buffers keys of your own:
 #+end_src
 
 Its own keys are under =C-c g=: =w= workspace, =s= switch, =i= info, =p=
-permissions, =r= raid, =K= stop.  It is a minor mode rather than a mode derived
+permissions, =r= raid, =K= stop, =v= paste image.  It is a minor mode rather than a mode derived
 from =ghostel-mode= because =ghostel-exec= always puts the buffer in
 =ghostel-mode= itself and Ghostel refuses major-mode changes while the terminal
 runs; a minor mode composes with Ghostel and with evil-ghostel (also a minor
@@ -257,6 +257,8 @@ reach Emacs in every input mode.
 
 Also under =C-c g=: =t= opens a shell terminal inside the goblin, =e= Eshell,
 =d= Dired, and =f= visits a file inside it (=goblins-find-file=).
+
+=C-c g v= (=goblin-paste-image=, or =M-x yank-media=) pastes the image on the clipboard into the agent. The agents' own =Ctrl+V= can't work in a goblin: Claude Code and Codex read the clipboard themselves, through X11 or Wayland, and the sandbox has no display. Instead Emacs writes the image to =/tmp/goblins-clipboard/= inside the goblin and pastes its path, which both agents attach as an image. The goblin only ever sees the images you paste, never the clipboard, and they go away with it. Bind it to =C-v= in =goblin-mode-map= if you want the agents' usual key.
 
 An agent terminal's =default-directory= is its goblin's working directory on
 the host, the project bound at the same path inside the sandbox, so
