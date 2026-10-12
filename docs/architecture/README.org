@@ -31,6 +31,6 @@ The script requires =mmdc= from =mermaid-cli= and its Chromium runtime. It runs 
 
 * Source and decision references
 
-The principal implementation entry points are [[file:../../crates/controller/src/controller.rs][Controller]], [[file:../../crates/controller/src/worker.rs][session Worker]], [[file:../../crates/controller/src/session.rs][Session]], [[file:../../crates/controller/src/messaging.rs][messaging Service]], [[file:../../crates/client/src/main.rs][sandbox client]] and [[file:../../src/main.rs][mount helper]]. [[file:../../USAGE.org][USAGE.org]] documents commands and configuration.
+The principal implementation entry points are [[file:../../crates/controller/src/controller.rs][Controller]], [[file:../../crates/controller/src/worker.rs][session Worker]], [[file:../../crates/controller/src/session.rs][Session]], [[file:../../crates/controller/src/messaging.rs][messaging Service]], [[file:../../crates/client/src/main.rs][sandbox client]] and [[file:../../src/main.rs][mount helper]]. [[file:../USAGE.org][USAGE.org]] documents commands and configuration.
 
 Relevant decisions are [[file:../adr/0001-daemon-inboxes-for-agent-communication.md][daemon inboxes]], [[file:../adr/0003-on-demand-docker.md][on-demand Docker]], [[file:../adr/0004-shared-docker-scopes.md][shared Docker scopes]], [[file:../adr/0006-shared-scopes.md][shared scopes]], [[file:../adr/0007-flake-dev-shells.md][flake dev shells]] and [[file:../adr/0008-raids.md][communication raids]]. Earlier per-session Docker decisions describe the evolution; scopes are the current resource model.

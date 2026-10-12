@@ -1,0 +1,122 @@
+#+title: Goblins developer documentation
+
+The [[file:../README.org][top-level README]] is for users. This directory holds everything about
+how Goblins is built, why it works the way it does, and how it was verified.
+
+* Where to look
+
+| Document | Contents |
+|----------+----------|
+| [[file:USAGE.org][USAGE.org]] | Detailed command, configuration and runtime reference, including limits |
+| [[file:RESULTS.org][RESULTS.org]] | Implementation and verification results, newest first |
+| [[file:architecture/README.org][architecture/]] | Components, daemon internals and main workflows, with diagrams |
+| [[file:specs/PLAN.org][specs/PLAN.org]] | Project goals and milestones |
+| [[file:specs/DESIGN.org][specs/DESIGN.org]] | Runtime design and ownership/failure boundaries |
+| [[file:specs/DAEMON.org][specs/DAEMON.org]] | Daemon and communication decisions; the host API 1 contract |
+| [[file:specs/AGENT-INTEGRATION.org][specs/AGENT-INTEGRATION.org]] | Inboxes, hooks, skills and Codex/Claude Code drivers |
+| [[file:specs/SANDBOX-ACCESS.org][specs/SANDBOX-ACCESS.org]] | =goblins exec=, TRAMP and the sandbox editor |
+| [[file:specs/CHILDREN-AND-RAIDS.org][specs/CHILDREN-AND-RAIDS.org]] | Child configurations and raids |
+| [[file:specs/TODO.org][specs/TODO.org]] | Open work |
+| [[file:adr/][adr/]] | Architecture decision records |
+| [[file:../emacs/README.org][emacs/README.org]] | Emacs frontend reference and its checks |
+
+Accepted decisions:
+
+- [[file:adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]]: daemon inboxes with notify-then-fetch
+- [[file:adr/0002-per-session-rootless-docker.md][ADR 0002]]: per-session rootless Docker
+- [[file:adr/0003-on-demand-docker.md][ADR 0003]]: private scopes and on-demand activation
+- [[file:adr/0004-shared-docker-scopes.md][ADR 0004]]: shared Docker trust groups
+- [[file:adr/0006-shared-scopes.md][ADR 0006]]: scopes share namespaces and storage
+- [[file:adr/0007-flake-dev-shells.md][ADR 0007]]: host-trusted flake dev shells with approved refreshes
+- [[file:adr/0008-raids.md][ADR 0008]]: raids are a communication-only grouping
+
+* Build and run from a checkout
+
+The root flake provides the =goblins= package, default app and development
+shell for x86_64-linux, with nixpkgs and agent-sandbox.nix pinned in =flake.lock=.
+
+#+begin_src sh
+nix build path:.#goblins
+./result/bin/goblins server start
+./result/bin/goblins tui
+# In another terminal:
+./result/bin/goblins run shell
+#+end_src
+
+=nix run path:. -- tui= and =nix run path:. -- run shell= run the default app.
+=nix develop path:.= puts a =goblins= built from the checkout and the build tools
+on =PATH=; its =shell= configuration has Docker enabled in a temporary =dev=
+scope and =editor.emacs.enable= set. The explicit =path:.= also includes
+uncommitted source files. Restart a server started from an older build before
+using a new one: an already-running daemon keeps its old executable.
+
+=just emacs= opens Emacs from the dev shell with this checkout's =emacs/= on the
+load path, so it uses the dev shell's =goblins=.
+
+* Test
+
+#+begin_src sh
+nix develop path:.
+cargo test --workspace --locked
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+nix build path:.#goblins
+nix flake check path:.
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+#+end_src
+
+The development shell includes pyte for fullscreen terminal regression tests.
+Tests need host Nix, Unix sockets and ordinary-user namespace access. Run one
+Python suite at a time; concurrent runs interfere. The Codex tests run the real
+Codex and are skipped unless =GOBLINS_TEST_CODEX=1= is set. The Emacs checks are
+described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in
+[[file:USAGE.org::*Docker in a scope][USAGE.org]].
+
+* Repository layout
+
+=flake.nix= declares inputs, configures the default goblins, and wires package,
+app, check and development-shell outputs.
+
+| Location                            | Purpose                                                                   |
+|-------------------------------------+---------------------------------------------------------------------------|
+| =nix/lib.nix=                       | Public constructors and presets                                           |
+| =nix/builders/=                     | =mkGoblin=, =mkCodexGoblin=, =mkClaudeGoblin=, =mkScope= and =mkGoblins=  |
+| =nix/default-goblins/=              | Default shell, Codex and Claude Code presets                              |
+| =nix/goblins/codex/=                | Codex launcher, hooks and managed config                                  |
+| =nix/goblins/claude/=               | Claude Code launcher, hooks and managed config                            |
+| =skills/=                           | Goblins agent skills mounted into Codex and Claude Code sandboxes         |
+| =nix/internal/=                     | Shared Nix argument validation                                            |
+| =nix/packages/goblins.nix=          | Host binary, including its Rust helper, controller, and pinned catalog    |
+| =nix/packages/internal-goblins.nix= | Restricted in-sandbox =goblins= binary                                    |
+| =tests/fixtures.nix=                | Runtime dependency fixtures and agent-sandbox baselines                   |
+| =tests/checks.nix=                  | Nix API validation and named configuration test build                     |
+| =src/=                              | Namespace mount helper, scope keeper and Docker launcher                  |
+| =crates/protocol/=                  | Bounded request/reply types, validation and deadline                      |
+| =crates/client/=                    | Restricted Rust sandbox request executable                                |
+| =crates/controller/=                | Rust session library, event pump, worker and tui/run frontend             |
+| =nix/packages/rust.nix=             | Shared Rust build derivation with separate package selection              |
+| =tests/=                            | Python black-box payload and terminal tests; Nix checks                   |
+| =emacs/=                            | Emacs status, workspace, terminal and TRAMP frontend                      |
+| =prototypes/=                       | Earlier experiments                                                       |
+
+* Implementation notes
+
+The controller accepts explicit frontend decisions; its library never opens
+=/dev/tty=. Each session has a cancellable worker for startup and sequential
+grants while the daemon continues serving other sessions and frontends. The
+internal client depends only on shared protocol code, with no host policy or
+mount API. There is no production Python executable or mandatory Python
+interpreter; Python is a test driver only.
+
+The Rust rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It
+does not implement terminal multiplexing, live file/network grants or daemon
+restart recovery. Closing frontends leaves sessions alive; daemon death stops
+every helper and sandbox; abrupt death may leave host session directories and
+GC roots for manual cleanup.
+
+* Conventions
+
+- Use Org mode (=.org=) for repository documentation, including plans, design
+  notes and experiment reports. ADRs are Markdown.
+- Record verified results in [[file:RESULTS.org][RESULTS.org]] only after verification, and
+  update [[file:USAGE.org][USAGE.org]] and the user README when behavior changes.

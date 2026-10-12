@@ -185,7 +185,7 @@ demonstrate the tested workflows, not universal Docker compatibility.
 
 The initial implementation is commit `366ec01`; disk storage, networking and
 compatibility follow-ups are committed in `190ef55`. See
-[usage](../../USAGE.org), [verification results](../../RESULTS.org),
+[usage](../USAGE.org), [verification results](../RESULTS.org),
 [engine lifecycle](../../crates/controller/src/docker.rs),
 [native bootstrap](../../src/docker.rs),
 [engine filter](../../crates/controller/src/seccomp.rs) and

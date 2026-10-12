@@ -73,7 +73,7 @@ goblins run shell --dev-shell ~/src/app#rust
 A relative path resolves against the directory where you run the command. The
 flake must be a local directory with a complete =flake.lock=; for a Git flake,
 the lock must be tracked. Because you start it, launch needs no approval (see
-[[file:docs/adr/0007-flake-dev-shells.md][ADR 0007]]).
+[[file:adr/0007-flake-dev-shells.md][ADR 0007]]).
 
 The host copies the flake source into the store and evaluates that copy with
 =--no-update-lock-file= and =accept-flake-config = false=. The resulting
@@ -180,7 +180,7 @@ not applied).
 A scope is a named trust group. Its members share a network namespace, by
 default a PID namespace, managed storage directories and optionally one rootless
 Docker engine. Tools still run in each member goblin, with that goblin's own
-packages, environment and files. See [[file:docs/adr/0006-shared-scopes.md][ADR 0006]].
+packages, environment and files. See [[file:adr/0006-shared-scopes.md][ADR 0006]].
 
 #+begin_src nix
 mkGoblins {
@@ -376,7 +376,7 @@ Current limits:
 same Docker API, containers and data, and can access the combined filesystem
 grants of attached members. Read-only grants remain read-only but are readable
 by peers. Grants remain until the daemon stops, even if their original member
-exits. Persistent data can retain secrets. See the full [[file:README.org::*Scopes][README risks]].
+exits. Persistent data can retain secrets. See the full [[file:../README.org::*Scopes][README risks]].
 Conflicting sources/access modes at the same path and overlapping grants are
 rejected. Use explicit compatible working directories; unrelated private
 =/workspace= snapshots cannot occupy one daemon's =/workspace=. A per-user
@@ -484,7 +484,7 @@ reused, even while the previous session's terminal output is still draining.
 There is no renaming operation.
 
 The daemon randomly chooses among the available names in
-[[file:crates/controller/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
+[[file:../crates/controller/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
 16 live sessions; the larger pool adds variety without changing that limit. If
 none is available, launch fails immediately with a resource-limit error;
 allocation never spins or silently collides. Custom names do not consume list
@@ -650,7 +650,7 @@ The root flake exports =lib.x86_64-linux.builders= with =mkGoblin=,
 the =shell= and =codex= presets. =commonTools= remains at
 =lib.x86_64-linux.commonTools=. The
 =packages.x86_64-linux.goblins= and default package are built with these helpers.
-See [[file:README.org::*Configure named goblins with Nix][the configuration example]].
+See [[file:../README.org::*Configure named goblins with Nix][the configuration example]].
 
 Share ordinary options as an attribute set and compose agent-specific settings:
 
@@ -1208,11 +1208,11 @@ conversation data. Queued and claimed items fail when their recipient stops.
 
 The Codex and Claude Code helpers add turn-boundary hooks, skills and idle wakeups.
 Existing terminal attachment remains available independently of inbox commands.
-See [[file:docs/specs/AGENT-INTEGRATION.org][the integration specification]] for the protocol and verification contract.
+See [[file:specs/AGENT-INTEGRATION.org][the integration specification]] for the protocol and verification contract.
 
 * Protocol and limits
 
-[[file:docs/specs/DAEMON.org::*Implementation contract (2026-09-13)][DAEMON.org's API 1 contract]] specifies complete framing, method parameters,
+[[file:specs/DAEMON.org::*Implementation contract (2026-09-13)][DAEMON.org's API 1 contract]] specifies complete framing, method parameters,
 error codes, snapshots, sequence numbers and duplicate-launch rules. An
 uncertain =sessions.start= can be inspected/repeated with the same caller key
 and identical parameters; the CLI never automatically repeats a launch.
@@ -1258,7 +1258,7 @@ are required. Grants are additive; a failed grant leaves the session running
 helper stops answering, which kills the affected session. Stopping owned Nix clients does not cancel
 shared host Nix daemon work. Unresponsive filesystem/kernel calls may delay
 cleanup. Emacs status, approvals and Ghostel launches are described in
-[[file:emacs/README.org][the Emacs guide]]. The =configurations= command prints the current manifest
+[[file:../emacs/README.org][the Emacs guide]]. The =configurations= command prints the current manifest
 path, configured names and their descriptions as JSON without contacting a server. Editor launches
 use =attach SESSION --instance INSTANCE= to consume a newly created session's
 terminal stream; supplying =--instance= still requires exact IDs. Without that

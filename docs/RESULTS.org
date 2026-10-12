@@ -8,8 +8,8 @@
 daemon, socket inode and persistent overlay2 store. The daemon stops after the
 last attached sandbox leaves. Anonymous data is deleted on last-user teardown.
 Children inherit the live selection and activation, including anonymous scopes
-and non-default selections. See [[file:docs/adr/0004-shared-docker-scopes.md][ADR 0004]] and the
-[[file:README.org::*Risks: named scopes are trust groups, not isolation boundaries][README trust-group risks]].
+and non-default selections. See [[file:adr/0004-shared-docker-scopes.md][ADR 0004]] and the
+[[file:../README.org::*Risks: named scopes are trust groups, not isolation boundaries][README trust-group risks]].
 
 Focused host tests verified lazy startup, shared images/volumes/socket, original
 member exit, idle/full-scope reuse, exclusive storage locking between controllers,
@@ -43,7 +43,7 @@ The namespace/network keeper now has a session lifetime independent of the
 optional Docker engine. =goblins enable-docker= requests explicit host approval,
 adds the configured client live, and waits for engine readiness. Startup
 =docker.enable = true= still works. There is no shared-daemon/cache configuration.
-See [[file:docs/adr/0003-on-demand-docker.md][ADR 0003]] for the decision and tradeoffs.
+See [[file:adr/0003-on-demand-docker.md][ADR 0003]] for the decision and tradeoffs.
 
 All 19 host-run =test_docker= and =test_network= checks passed, including:
 
@@ -306,7 +306,7 @@ worked. Review of 76 tool calls found no alternate communication paths. The
 child repaired an initial unavailable-python/empty-commitment setup failure
 through daemon messaging before the first guess.
 
-[[file:docs/results/codex-number-game-2026-09-20/README.md][The trial report]] links the exact audit log, verification result and tool-call
+[[file:results/codex-number-game-2026-09-20/README.md][The trial report]] links the exact audit log, verification result and tool-call
 evidence. No reusable live-game automation was added to the repository or suite.
 
 Validation: 55 Rust tests passed (one existing host driver ignored), Clippy
@@ -507,7 +507,7 @@ The live trial will remain opt-in. Audit retry events, log subscriptions and
 offline CLI log selection are not implemented; identical retries currently
 reuse the original receipt without another audit event. Inboxes do not recover
 across daemon restarts. Codex App Server, Claude Channels and A2A are outside
-this task, as recorded in [[file:docs/adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]].
+this task, as recorded in [[file:adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]].
 
 * Approval command renamed to tui
 
@@ -596,7 +596,7 @@ host-only API and waits for the daemon lock through agent cleanup. There is no
 PID file, service installation, automatic restart or session recovery. Logs
 print captured output once, appending across server starts. Exact timeout and
 concurrency behavior is documented in [[file:USAGE.org::*Server commands, help and completion][USAGE.org]] and
-[[file:docs/specs/DAEMON.org::*Server management and CLI revision][DAEMON.org]].
+[[file:specs/DAEMON.org::*Server management and CLI revision][DAEMON.org]].
 
 Clap now supplies parsing and help for every command. =goblins=, =--help= and
 =help COMMAND= expose that command tree. Bash, Fish and Zsh scripts are generated
@@ -669,7 +669,7 @@ accept live names as well as IDs; approvals, permission filters, resize and
 sandbox endpoint authority continue to use immutable identities. Session/list,
 plain status, fullscreen overview/request details, permission records and
 subscription snapshots/events expose agent names. See
-[[file:docs/specs/DAEMON.org::*Agent naming extension (API 1)][the exact contract]] and [[file:USAGE.org::*Agent names][usage]].
+[[file:specs/DAEMON.org::*Agent naming extension (API 1)][the exact contract]] and [[file:USAGE.org::*Agent names][usage]].
 
 Validation used the rebuilt production package
 =/nix/store/2wlmb2jydvpp0scrxrb84616c52b8hv0-goblins=, linked at
@@ -798,7 +798,7 @@ reran the affected frontend gates rather than claiming a new complete-suite run.
 * Daemon milestone (API 1, initial frontend at 52feceb)
 
 Implemented on =feature/daemon-protocol= from =eb3276f=, following
-[[file:docs/specs/DAEMON.org][DAEMON.org]]. The ordinary-user Rust daemon owns simultaneous sessions,
+[[file:specs/DAEMON.org][DAEMON.org]]. The ordinary-user Rust daemon owns simultaneous sessions,
 requests, approvals, package grants and PTYs. Both approval frontends now use
 the private host API; sandbox requests go directly to their endpoint-scoped
 permission API. Structured communication uses JSON-RPC 2.0 with bounded
@@ -808,7 +808,7 @@ keeps its private pipes and namespace authority.
 The exact API, limits, retention, duplicate handling, terminal lifetime and
 manifest/helper compatibility choices are recorded in DAEMON.org's
 implementation contract. Current operational instructions are in
-[[file:USAGE.org][USAGE.org]], and ownership/failure boundaries are in [[file:docs/specs/DESIGN.org][DESIGN.org]].
+[[file:USAGE.org][USAGE.org]], and ownership/failure boundaries are in [[file:specs/DESIGN.org][DESIGN.org]].
 
 ** Required review reproductions
 

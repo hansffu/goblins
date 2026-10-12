@@ -3,7 +3,7 @@
 Follow-ups from branch =feat/flake-dev-shells= ([[file:../adr/0007-flake-dev-shells.md][ADR 0007]]). Read the ADR first; it
 records the trust model (only host-launched or host-approved locks are
 trusted), the evaluator sandbox and the approval preview. Usage is in the
-"Flake dev shells" section of [[file:../../USAGE.org][USAGE.org]].
+"Flake dev shells" section of [[file:../USAGE.org][USAGE.org]].
 
 Where the code lives:
 
