@@ -1934,7 +1934,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
 (ert-deftest goblin-paste-image-writes-into-the-goblin-and-pastes-its-path ()
   (let ((terminal (generate-new-buffer " *goblins test terminal*"))
         (png (unibyte-string #x89 ?P ?N ?G #x0d #x0a #x1a #x0a #x00 #xff))
-        directories written pasted)
+        directories written pasted redraws)
     (unwind-protect
         (with-current-buffer terminal
           (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
@@ -1954,8 +1954,11 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
                        (push (list file (buffer-string) enable-multibyte-characters
                                    coding-system-for-write)
                              written)))
-                    ((symbol-function 'ghostel-paste-string) (lambda (s) (push s pasted))))
+                    ((symbol-function 'ghostel-paste-string) (lambda (s) (push s pasted)))
+                    ((symbol-function 'run-with-timer)
+                     (lambda (delay &rest _) (push delay redraws))))
             (goblin-paste-image))
+          (should (equal (sort redraws #'<) '(0.2 1)))
           (should (equal directories '("/goblins:gribble:/tmp/goblins-clipboard/")))
           (pcase-let ((`((,file ,bytes ,multibyte ,coding)) written))
             (should (string-match-p "\\`/goblins:gribble:/tmp/goblins-clipboard/[0-9-]+\\.png\\'" file))

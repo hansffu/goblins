@@ -30,6 +30,7 @@
 (declare-function evil-normalize-keymaps "evil-core" (&optional state))
 (declare-function goblins-workspace "goblins-workspace" (&optional directory))
 (declare-function ghostel-paste-string "ghostel" (string))
+(declare-function ghostel-force-redraw "ghostel" ())
 (declare-function yank-media-handler "yank-media" (types handler))
 (declare-function yank-media "yank-media" (&optional noselect))
 
@@ -89,14 +90,28 @@ display, and this way the goblin only sees the images you paste."
          (path (format "%s%s.%s" goblins--clipboard-directory
                        (format-time-string "%Y%m%d-%H%M%S-%3N")
                        (goblins--image-extension type)))
-         (file (format "/goblins:%s:%s" host path)))
+         (file (format "/goblins:%s:%s" host path))
+         ;; TRAMP's progress messages would hide the paste in the echo area.
+         (inhibit-message t))
     (make-directory (file-name-directory file) t)
     (with-temp-buffer
       (set-buffer-multibyte nil)
       (insert data)
       (let ((coding-system-for-write 'no-conversion))
         (write-region nil nil file nil 'silent)))
-    (ghostel-paste-string path)))
+    (ghostel-paste-string path)
+    (goblins--redraw-after-paste (current-buffer))))
+
+(defun goblins--redraw-after-paste (buffer)
+  "Redraw terminal BUFFER shortly after a paste, once the agent has answered.
+In a graphical frame Ghostel can leave Codex's answer to a pasted image
+path unrendered until the next key, though `ghostel-force-redraw' shows it."
+  (dolist (delay '(0.2 1))
+    (run-with-timer delay nil
+                    (lambda ()
+                      (when (and (buffer-live-p buffer) (get-buffer-window buffer t))
+                        (with-current-buffer buffer
+                          (ghostel-force-redraw)))))))
 
 (defun goblin-paste-image ()
   "Paste the clipboard's image into this goblin's agent.
