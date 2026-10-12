@@ -9,7 +9,7 @@ daemon, socket inode and persistent overlay2 store. The daemon stops after the
 last attached sandbox leaves. Anonymous data is deleted on last-user teardown.
 Children inherit the live selection and activation, including anonymous scopes
 and non-default selections. See [[file:adr/0004-shared-docker-scopes.md][ADR 0004]] and the
-[[file:../README.org::*Risks: named scopes are trust groups, not isolation boundaries][README trust-group risks]].
+[[file:../README.org::*Risks: scopes are trust groups, not isolation boundaries][README trust-group risks]].
 
 Focused host tests verified lazy startup, shared images/volumes/socket, original
 member exit, idle/full-scope reuse, exclusive storage locking between controllers,

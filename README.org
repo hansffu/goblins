@@ -2,218 +2,120 @@
 
 * EXPERIMENTAL · AI-GENERATED SOFTWARE
 
-*Created for me, by me (and Codex).*
+*Created for me, by me (and my agent).*
 
-This is a personal experiment, built with substantial AI-generated code. It is
-made for my own workflow, not a polished or supported product. Expect bugs,
-breaking changes, and rough edges. The sandbox is experimental too: it has not
-had an independent security audit. Use it at your own risk.
+This is a personal experiment, built with substantial AI-generated code. It is made for my own workflow, not a polished or supported product. Expect bugs, breaking changes, and rough edges. The sandbox is experimental too: it has not had an independent security audit. Use it at your own risk.
 
 * What is Goblins?
 
-A Rust sandbox runtime for approved live Nix package grants. A fullscreen terminal app
-and an Emacs status buffer provide agent status and approvals.
+Goblins runs shells and coding agents (Codex, Claude Code) in Linux sandboxes, called /goblins/. A goblin starts with a small, fixed set of packages. When it needs another tool, it asks for it:
 
-See [[file:docs/specs/PLAN.org][the project plan]] for goals, architecture, and milestones.
-The [[file:docs/architecture/README.org][architecture documentation]] describes the implemented components,
-daemon internals and main workflows with Mermaid diagrams.
-The daemon contract is recorded in [[file:docs/specs/DAEMON.org][the daemon and communication decisions]];
-current usage and verified evidence are in USAGE.org and RESULTS.org.
-The next agent milestone is described in
-[[file:docs/specs/AGENT-INTEGRATION.org][the agent integration specification]]: daemon inboxes, sandbox-local hooks and skills,
-native agent interfaces, and Codex/Claude Code communication drivers. Manual
-inbox messaging, turn-boundary hooks and idle notification are implemented.
-Network access is open by default, matching agent-sandbox.
-Goblins can join *scopes*: trust groups that share a network namespace, a PID
-namespace, managed storage (such as a Gradle cache) and optionally a rootless
-Docker engine, while each goblin keeps its own packages, environment and files.
-Enable Docker on demand with =goblins enable-docker= inside a sandbox whose
-scope enables it (host approval required), or at startup with
-=mkGoblin { docker.enable = true; ... }=.
-The =nix develop= environment enables it for =goblins run shell=.
-See [[file:USAGE.org::*Scopes (Linux, no VM)][scope and Docker usage and current limitations]].
-The accepted architecture is recorded in
-[[file:docs/adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001: daemon inboxes with notify-then-fetch]] and
-[[file:docs/adr/0002-per-session-rootless-docker.md][ADR 0002: per-session rootless Docker]], with
-[[file:docs/adr/0003-on-demand-docker.md][ADR 0003: private scopes and on-demand activation]],
-[[file:docs/adr/0004-shared-docker-scopes.md][ADR 0004: shared Docker trust groups]],
-[[file:docs/adr/0006-shared-scopes.md][ADR 0006: scopes share namespaces and storage]] and
-[[file:docs/adr/0007-flake-dev-shells.md][ADR 0007: host-trusted flake dev shells with approved refreshes]].
-=goblins run CONFIG --dev-shell .= starts a sandbox in a project flake's dev
-shell; =goblins devshell refresh= inside it asks the host for the next generation,
-and =goblins flake run= runs the flake's apps (see
-[[file:USAGE.org::*Flake dev shells][dev shell usage]]).
-=goblins exec= runs shells and commands inside a running goblin; Emacs reaches
-its files and processes as =/goblins:NAME:/path= over TRAMP, and with
-=editor.emacs.enable= the sandbox's =EDITOR= opens files in your Emacs (see
-[[file:USAGE.org::*Shells, commands and editors inside a running goblin][shells, commands and editors]]
-and [[file:docs/specs/SANDBOX-ACCESS.org][the sandbox access spec]]).
+#+begin_src sh
+goblins request-package jq --reason "Parse the API response"
+#+end_src
 
-* Scopes
+You approve or deny the request in a terminal UI or in Emacs, and an approved package appears inside the running sandbox at once, without restarting it.
 
-Declare scopes on =mkGoblins= and select a default and alternatives on =mkGoblin=
-(also supported by =mkCodexGoblin= and =mkClaudeGoblin=):
+Around that, Goblins provides:
+
+- *Named configurations* you declare in Nix (=shell=, =claude=, =codex=, ...), each with its own packages, files, environment and network policy.
+- *Agent integration*: Codex and Claude Code run with sandbox-only hooks and skills, so they know how to request packages, start helpers and message each other.
+- *Scopes*: trust groups of goblins sharing a network, caches and optionally a rootless Docker engine.
+- *Flake dev shells*: start a goblin inside a project's =nix develop= environment, and approve changes to it.
+- *Children and raids*: goblins can start other goblins and message each other.
+- *Emacs integration*: approvals, a workspace with each goblin's terminals, and TRAMP access to files inside sandboxes.
+
+A few terms used below:
+
+| Term          | Meaning                                                                      |
+|---------------+------------------------------------------------------------------------------|
+| configuration | A named, reusable Nix definition, such as =shell= or =claude=                    |
+| goblin        | One running sandbox, started from a configuration                            |
+| agent name    | The goblin's name, such as =snikk=; chosen with =--name= or picked at random     |
+| server        | The background daemon that owns every goblin; run by your normal user        |
+| scope         | A named group of goblins that share a network, storage and optionally Docker |
+
+* Requirements
+
+- x86_64 Linux. Goblins has only been tested on NixOS.
+- Nix with flakes enabled.
+- Unprivileged user namespaces and a recent kernel (it uses =openat2=, =open_tree=, =mount_setattr= and =move_mount=).
+- For scopes and Docker: =newuidmap=/=newgidmap= and at least 65536 subordinate IDs for your user in =/etc/subuid= and =/etc/subgid=. NixOS provides these for normal users.
+
+Run Goblins as your normal user, never as root.
+
+* Install
+
+Goblins is configured in Nix: =mkGoblins= builds a =goblins= command that knows your configurations. Add the flake input to your NixOS configuration:
 
 #+begin_src nix
-mkGoblins {
-  scopes = {
-    work = mkScope {
-      storage.gradle.path = "$HOME/.gradle"; # mounted there in every member
-      docker.enable = true;
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    goblins.url = "github:hansffu/goblins";
+  };
+
+  outputs = inputs@{ nixpkgs, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      specialArgs = { inherit inputs; };
+      modules = [ ./configuration.nix ./goblins.nix ];
     };
-    ci = mkScope { persistent = false; docker.enable = true; };
-  };
-  goblins.work = mkGoblin {
-    pkg = pkgs.fish;
-    binName = "fish";
-    scope = "work";
-    allowedScopes = [ "ci" ];
-    # docker.enable = true; # Optional: attach to the scope's engine at startup.
   };
 }
 #+end_src
 
-=goblins run work --scope ci= starts a root sandbox in a permitted alternative
-scope. Children inherit their parent's scope and Docker activation. Inside a
-sandbox, =goblins enable-docker= attaches to the scope's engine; =goblins status=
-shows the scope. Scope =defaults= supply packages, environment, file grants and
-storage mounts to members; each goblin can add to them or override values.
-
-Members of a scope share one network namespace, one PID namespace (unless
-=namespaces.pid.enable = false=), its managed storage and at most one Docker
-daemon, data store and socket. The scope starts with its first member and stops
-after its last member leaves; merely configuring it starts nothing. Persistent
-scopes keep storage and Docker data (images, build cache, containers and
-volumes) while idle. Temporary scopes delete them after the last member leaves.
-When a member exits, its remaining processes are killed, including detached
-daemons.
-
-** Risks: scopes are trust groups, not isolation boundaries
-
-- Members can read and modify the scope's managed storage. With the shared PID
-  namespace they can see each other's processes, read their command lines and
-  environment through =/proc=, and signal them.
-- Every member can inspect, stop, modify or delete the group's containers,
-  images and volumes, including resources created by another member. Container
-  names, Compose project names, ports and cleanup operations can collide.
-- Docker-visible filesystem grants are combined. A member can access another
-  member's granted files through Docker, and modify its writable grants. Approved
-  grants can remain available until the shared daemon stops, even after the
-  granting sandbox exits. Read-only grants remain read-only, but secrets in them
-  are readable by the group. Only group mutually trusted workloads together.
-- Persistent images, layers, build cache and volumes can retain source code,
-  credentials and other sensitive data. Leaving a persistent scope does *not* erase
-  that data. Containers with restart policies may start again when the scope is
-  reactivated. There is no automatic retention limit or disk quota.
-- Members can affect the scope network. Every goblin that may join a scope must
-  have the same online/offline policy. Docker =--network host= means the scope network, never the
-  real host network.
-- A shared socket cannot interpret a bind path differently for each caller.
-  Conflicting source/access-mode mappings and overlapping new grants are rejected.
-  Use the normal =goblins run= working directory or an inherited workspace;
-  independent disposable snapshots at the same =/workspace= path cannot be merged.
-
-Scopes are shared within one Goblins controller. Persistent stores are keyed by
-name under the host user's cache; an exclusive lock prevents two controllers
-from using the same persistent scope. Keep scope names distinct between
-unrelated trust groups, even across configurations. This remains native,
-shared-kernel confinement, not VM isolation.
-
-* Child configurations
-
-By default a sandbox starts children only with its own configuration.
-=allowedChildren= (also on =mkCodexGoblin= and =mkClaudeGoblin=) lists the
-configurations it may start instead:
+Then declare your goblins in a module, here =goblins.nix=:
 
 #+begin_src nix
-mkGoblins {
-  goblins = {
-    coordinator = mkCodexGoblin { allowedChildren = [ "coordinator" "reviewer" ]; };
-    reviewer = mkClaudeGoblin { allowedChildren = [ ]; };  # no children
-  };
+{ inputs, pkgs, ... }:
+let
+  inherit (inputs.goblins.lib.x86_64-linux) builders commonTools;
+  inherit (builders) mkGoblins mkGoblin mkClaudeGoblin mkCodexGoblin;
+in
+{
+  environment.systemPackages = [
+    (mkGoblins {
+      goblins = {
+        # An interactive Fish shell.
+        shell = mkGoblin {
+          pkg = pkgs.fish;
+          binName = "fish";
+          args = [ "--interactive" ];
+          allowedPackages = commonTools;
+        };
+
+        # Claude Code, using your existing ~/.claude for login and settings.
+        claude = mkClaudeGoblin {
+          claudeConfigDir = "$HOME/.claude";
+          allowedPackages = commonTools ++ [ pkgs.ripgrep ];
+        };
+
+        # Codex, using your existing ~/.codex.
+        codex = mkCodexGoblin {
+          codexConfigDir = "$HOME/.codex";
+          allowedPackages = commonTools;
+        };
+      };
+    })
+  ];
 }
 #+end_src
 
-Inside the coordinator, =goblins run reviewer --name review --detached= starts a
-Claude child. It shares the parent's workspace, scope and dev shell but runs
-with its own configuration's settings and access. See
-[[file:USAGE.org::*Sandbox ownership][sandbox ownership]].
+Rebuild with =sudo nixos-rebuild switch --flake .#your-host=. This installs the =goblins= command and its Fish, Bash and Zsh completions. It installs no service; you start the server yourself.
 
-* Raids
+To change a configuration later, edit it and rebuild. New and changed configurations are used by the next =goblins run=, without restarting the server; running goblins keep the configuration they started with.
 
-A raid lets goblins in different branches message each other directly. It
-shares nothing else. The host can group any goblins; inside a goblin, a member
-invites its own children or launches them into the raid:
-
-#+begin_src sh
-goblins raid invite review chief critic   # on the host; chief owns the raid
-goblins raid members                      # inside a member: names, roles, paths
-goblins send critic --message "Please review the build."
-#+end_src
-
-See [[file:USAGE.org::*Raids][raids]].
-
-* Install on NixOS
-
-Currently supported: *x86_64 Linux*, with Nix and unprivileged user namespaces.
-The runtime requires modern Linux mount APIs; see [[file:USAGE.org::*Scope and requirements][runtime requirements]].
-Run Goblins as your normal user, not as root.
-
-For a NixOS configuration managed with flakes, add this input to your existing
-=flake.nix=:
-
-#+begin_src nix
-inputs.goblins.url = "github:hansffu/goblins";
-#+end_src
-
-Keep your existing =nixpkgs= input and system modules. Add =goblins= to the
-=outputs= arguments and install its package through =environment.systemPackages=.
-For example, adapting =your-host= and the modules to your configuration:
-
-#+begin_src nix
-outputs = { nixpkgs, goblins, ... }: {
-  nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
-    system = "x86_64-linux";
-    modules = [
-      ./configuration.nix
-      {
-        nix.settings.experimental-features = [ "nix-command" "flakes" ];
-        environment.systemPackages = [
-          goblins.packages.x86_64-linux.default
-        ];
-      }
-    ];
-  };
-};
-#+end_src
-
-From your NixOS configuration directory, lock the new input and rebuild:
-
-#+begin_src sh
-nix flake lock
-sudo nixos-rebuild switch --flake .#your-host
-#+end_src
-
-If flakes are not enabled yet, first add
-=nix.settings.experimental-features = [ "nix-command" "flakes" ];= to your
-existing NixOS configuration and rebuild it with =sudo nixos-rebuild switch=.
-See [[https://nix.dev/concepts/flakes.html][the Nix flakes documentation]] and
-[[https://wiki.nixos.org/wiki/NixOS_system_configuration][NixOS system configuration]] for the general setup.
-
-This installs the command and shell completions. It does not install a NixOS
-service or start a server automatically. The flake keeps its own pinned
-=nixpkgs= and =agent-sandbox.nix= inputs; your system's package set can stay as it is.
-
-** Quick start
+** First run
 
 From the project directory you want to work in:
 
 #+begin_src sh
-goblins server start
-goblins tui
+goblins server start   # background server; survives closing the terminal
+goblins tui            # approval interface
 #+end_src
 
-In another terminal, from that project directory:
+In another terminal, from the same directory:
 
 #+begin_src sh
 goblins run shell --name snikk
@@ -226,245 +128,317 @@ goblins request-package cowsay --reason "Try a live package grant"
 cowsay hello
 #+end_src
 
-Packages with overlapping command names can coexist. The first command on the
-startup PATH keeps precedence; later grants add commands without replacing
-existing ones. Each package still uses its own Nix store dependencies.
+The directory you start a goblin in is shared with it read-write, at the same path, so the goblin's edits are your files. In the TUI, Tab switches between sandboxes and requests, =y= / =n= approve or deny the selected request, and =q= closes the TUI while goblins keep running.
 
-Omit =--name= to get a randomly selected fantasy goblin name. The current directory is shared with the sandbox. Use
-=server start --workspace DIR= for a disposable snapshot instead. Children share
-their parent’s workspace. Explicit writable binds modify host files.
-Closing the TUI leaves agents running. Inside a sandbox, =goblins detach=
-returns to the enclosing terminal while leaving it running. Use
-=goblins detach snikk= from another host terminal to detach it from outside,
-=goblins attach snikk= to reconnect, =goblins kill snikk= to stop one agent,
-or =goblins server stop= to stop the server and all its agents. A sandbox with
-live descendants requires =kill --kill-children=. Normal sandbox exit stops its
-entire subtree. See [[file:USAGE.org::*Sandbox ownership][sandbox ownership]] for nested launches,
-=--parent=, =--detatched=, and inherited package approvals.
-
-For Emacs, load [[file:emacs/goblins.el][goblins.el]] and run =M-x goblins-status= for a Magit-style
-buffer with live agent/request sections and =a=/=d= accept/deny actions.
-Use =M-x goblins-run= to choose a configuration and launch it in Ghostel;
-=RET= on its status entry opens details; =t= opens its terminal buffer.
-See [[file:emacs/README.org][Emacs setup and keys]]; it uses your existing =magit-section= package.
-
-** Try without installing
-
-With flakes enabled, the same commands can be run directly from GitHub:
+To try Goblins without configuring anything, the flake's default package contains ready-made =shell=, =codex= and =claude= configurations:
 
 #+begin_src sh
 nix run github:hansffu/goblins -- server start
 nix run github:hansffu/goblins -- tui
-# In another terminal:
-nix run github:hansffu/goblins -- run shell
+nix run github:hansffu/goblins -- run shell   # in another terminal
 #+end_src
 
-* Rust runtime
+* Configuring goblins
 
-The root flake provides the =goblins= package, default app, and development
-shell for x86_64-linux, with nixpkgs and agent-sandbox.nix pinned in =flake.lock=.
-From this worktree:
+=mkGoblin= takes the entry program and what the sandbox may access:
 
-#+begin_src sh
-nix build path:.#goblins
-./result/bin/goblins server start
-#+end_src
+| Option                           | Meaning                                                                          |
+|----------------------------------+----------------------------------------------------------------------------------|
+| =pkg=, =binName=                     | Package and executable to run (required)                                         |
+| =args=, =env=                        | Arguments and environment variables; values are literal, not shell-expanded      |
+| =description=                      | One line shown to users and agents                                               |
+| =allowedPackages=                  | Packages available at startup; defaults to =commonTools=                           |
+| =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Host paths bound into the sandbox, read-write or read-only; =$HOME= and =~/= work    |
+| =allowedDomains=                   | =null= (default): open internet; =[]=: no network. Domain filtering is not supported |
+| =injectedFiles=                    | Files placed read-only under =/etc= inside the sandbox                             |
+| =scope=, =allowedScopes=, =docker=     | See [[*Scopes][Scopes]] and [[*Docker][Docker]]                                                            |
+| =allowedChildren=                  | See [[*Children and raids][Children and raids]]                                                           |
 
-Run =./result/bin/goblins tui= for approvals. In further
-terminals run =./result/bin/goblins run shell=. Inside Fish, request
-=goblins request-package cowsay=, approve the request in the tui terminal,
-then run =cowsay hello=. Arbitrary package attributes resolve from the pinned nixpkgs
-revision; package grants do not restart the shell.
+The rest of the home directory inside a sandbox is private and temporary. See the [[file:docs/USAGE.org::*Nix API][Nix API reference]] for all options and limits.
 
-Alternatively, =nix run path:. -- tui= and =nix run path:. -- run shell= run the
-default app, and =nix develop path:.= puts =goblins= and build tools on PATH.
-The explicit =path:.= also includes uncommitted source files.
+** Codex and Claude Code
 
-=server start= runs in the background. Use =goblins server status=,
-=goblins server logs= and =goblins server stop= to inspect its state/output or
-stop it and its agents. =goblins --help= and =goblins help COMMAND= describe the
-CLI. Nix packages install Fish, Bash and Zsh completions, including configured
-=run= names; =goblins completions SHELL= prints a script for manual setup.
+=mkCodexGoblin= and =mkClaudeGoblin= accept the =mkGoblin= options and add:
 
-See [[file:USAGE.org][the runnable demo]] and
-[[file:RESULTS.org][the experiment results]].
+- A writable mount of your agent config directory (=codexConfigDir=, default =$HOME/.codex=; =claudeConfigDir=, default =$HOME/.claude=), so the agent uses your existing login. The directory must exist. Use a string, not a Nix path, or your credentials would be copied into the Nix store.
+- Hooks and skills mounted only inside the sandbox, under =/etc=. They teach the agent to request packages, enable Docker, start child goblins and exchange messages. Your own agent configuration is not modified.
+- =codexSettings= / =claudeSettings= for extra sandbox-only agent settings, for example =codexSettings.model_reasoning_effort = "high";= or =claudeSettings.model = "sonnet";=.
 
-* Configure named goblins with Nix
+The agents run without their own permission prompts (Codex with =--sandbox danger-full-access --ask-for-approval never=, Claude Code with =--dangerously-skip-permissions=); Goblins is the sandbox and approves packages. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
 
-Add the Goblins input to your NixOS flake, then construct a package with
-=mkGoblins= and install it through =environment.systemPackages=. This replaces
-the default package from the installation example above. Keep your existing
-=nixpkgs= pin and system modules when adapting this example:
+** Ready-made configurations
 
-#+begin_src nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    goblins.url = "github:hansffu/goblins";
-  };
+=inputs.goblins.lib.x86_64-linux.defaultGoblins= has the =shell=, =codex= and =claude= configurations used by the default package; for example =goblins.shell = defaultGoblins.shell;=.
 
-  outputs = inputs@{ nixpkgs, ... }: {
-    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        ./configuration.nix
-        ({ pkgs, ... }:
-          let
-            inherit (inputs.goblins.lib.x86_64-linux)
-              builders defaultGoblins commonTools;
-            inherit (builders) mkClaudeGoblin mkCodexGoblin mkGoblins;
+* Scopes
 
-            goblins = mkGoblins {
-              # EDITOR inside sandboxes opens files in your Emacs over TRAMP.
-              editor.emacs.enable = true;
-              goblins = {
-                # Reuse the premade interactive Fish sandbox.
-                shell = defaultGoblins.shell;
+A scope is a named trust group. Its members share:
 
-                # Native Codex with shared auth and sandbox-only hooks/skill.
-                codex = mkCodexGoblin {
-                  # description = "Codex running in a Goblins sandbox"; # default
-                  # Defaults to the Codex package from Goblins' pinned Nixpkgs.
-                  # pkg = pkgs.codex;
-                  codexConfigDir = "$HOME/.codex"; # default; runtime path string
-                  allowedPackages = commonTools;
-                  codexSettings.model_reasoning_effort = "high";
-                };
+- one network namespace, so services on =localhost= are reachable across them;
+- by default one PID namespace;
+- managed storage directories, such as a Gradle or Maven cache;
+- optionally one rootless Docker engine (see [[*Docker][Docker]]).
 
-                # Native Claude Code with the same hooks and skills.
-                claude = mkClaudeGoblin {
-                  # description = "Claude Code running in a Goblins sandbox"; # default
-                  claudeConfigDir = "$HOME/.claude"; # default
-                  allowedPackages = commonTools;
-                  claudeSettings.model = "sonnet";
-                };
-              };
-            };
-          in {
-            environment.systemPackages = [ goblins ];
-          })
-      ];
-    };
-  };
-}
-#+end_src
+Each goblin keeps its own packages, environment and files. Use a scope when several goblins work on the same project and should share caches or services.
 
-Here =inputs.goblins= is the flake, while the local =goblins= value is your
-configured package. =mkGoblin= wraps agent-sandbox =mkSandbox= and includes the
-restricted inner =goblins request-package= command; =mkGoblins= supplies the
-host =bin/goblins= command with all your configurations.
-
-Rebuild your NixOS configuration with =sudo nixos-rebuild switch --flake .#your-host=.
-Start =goblins server start= and =goblins tui=, then use =goblins run shell=,
-=goblins run codex --name snikk= or =goblins run claude --name snikk= in another terminal.
-The default package includes all three. =mkCodexGoblin= accepts the =mkGoblin= options,
-adds the Codex directory as a writable startup mount, and installs managed
-hooks plus spawning, messaging, package-request and Docker skills under sandbox-only
-=/etc/codex=. It never installs
-those files into your host Codex configuration. The selected directory must
-already exist; use a string such as ="$HOME/.codex"= or ="/path/to/codex"=,
-not a Nix path that would copy credentials into the store.
-
-=codexSettings= supplies additional sandbox system configuration, including
-extra native hooks; the built-in SessionStart, UserPromptSubmit and Stop handlers are retained.
-Codex uses the outer Goblins sandbox, with its nested sandbox disabled and
-approvals handled by Goblins. See [[file:USAGE.org::*Codex configuration][Codex setup and current limitations]].
-=mkClaudeGoblin= provides the equivalent Claude Code state mount, managed hooks,
-shared skills and a native background notification monitor; see
-[[file:USAGE.org::*Claude Code configuration][Claude Code configuration]].
-The helper uses open internet access through a private network namespace.
-No domain allowlist or HTTP proxy is required. Set =allowedDomains = []= for
-an explicitly offline sandbox.
-
-The configured name selects a reusable sandbox configuration; =binName= selects
-its executable, while =description= tells users and agents what that named
-configuration runs. Give each launch its own agent name with
-=goblins run shell --name snikk=.
-Without =--name=, the daemon randomly chooses an available name from the
-checked-in list of 128 fantasy goblin names. =goblins list= shows both identities;
-=goblins stop snikk= stops the live agent. Session IDs remain authoritative, including for history and
-approvals. See [[file:USAGE.org::*Agent names][agent naming and reuse rules]].
-The daemon supports simultaneous goblins with independent requests and grants.
-
-After changing a definition, rebuild your NixOS configuration and invoke
-=goblins run= from the newly installed package.
-Its host client sends the new manifest path to the running server, which loads
-it for that session. Changed definitions and new names do not require restarting
-the server; existing sessions retain their selected configuration.
-
-See [[file:USAGE.org::*Nix API][the Nix API options and limits]].
-
-Builder functions live under =inputs.goblins.lib.x86_64-linux.builders=.
-Premade sandboxes live under =nix/default-goblins/= and are exposed through
-=inputs.goblins.lib.x86_64-linux.defaultGoblins=. The presets are =shell= (interactive Fish with =commonTools=), =codex= and =claude=.
-The example above customizes the Codex preset. To install just the preset, use this =mkGoblins=
-definition in the same =let= binding:
+Declare scopes on =mkGoblins= and choose them on each goblin:
 
 #+begin_src nix
 mkGoblins {
-  goblins.shell = defaultGoblins.shell;
+  scopes = {
+    work = mkScope {
+      persistent = true;                     # keep storage while no member runs (default)
+      storage.gradle.path = "$HOME/.gradle"; # mounted there in every member
+      storage.m2.path = "$HOME/.m2";
+      docker.enable = true;
+      # Defaults for every member; each goblin can add to or override them.
+      defaults.allowedPackages = [ pkgs.gradle pkgs.jdk21 ];
+    };
+    scratch = mkScope { persistent = false; docker.enable = true; };
+  };
+  goblins.shell = mkGoblin {
+    pkg = pkgs.fish;
+    binName = "fish";
+    scope = "work";                 # default scope
+    allowedScopes = [ "scratch" ];  # goblins run shell --scope scratch
+  };
 }
 #+end_src
 
-* Credits
+=mkScope= is in =inputs.goblins.lib.x86_64-linux.builders=, like =mkGoblin=.
 
-Goblins builds on [[https://github.com/archie-judd/agent-sandbox.nix][agent-sandbox.nix]] by [[https://github.com/archie-judd][archie-judd]]. Its
-=mkSandbox= API, declarative sandbox configuration, and =commonTools= package
-set provide the foundation for Goblins' Nix integration. Thank you for making
-that work available. Goblins adds its own runtime, live package grants, daemon,
-and approval UI; see the agent-sandbox library for its sandbox tooling.
+- A goblin joins at most one scope, chosen when it starts: its =scope=, or =goblins run CONFIG --scope NAME= for a scope in its =allowedScopes=. Without either, it runs unscoped. Children always join their parent's scope.
+- A scope starts with its first member and stops after its last member exits. Persistent scopes keep their storage and Docker data under =~/.cache/goblins=; temporary ones (=persistent = false=) delete it.
+- Storage is a fresh directory managed by Goblins, mounted at =path=; it does not reuse what is already at that path on the host. Remove =rwDirs= entries for the same path when moving a cache into a scope.
+- Every goblin that may join a scope must have the same online/offline network policy.
+- =namespaces.pid.enable = false= stops members seeing each other's processes.
+- =goblins status= inside a goblin shows its scope.
 
-* Repository layout
+** Risks: scopes are trust groups, not isolation boundaries
 
-The branch contains the implementation directly; there is no separate spike
-flake. =flake.nix= declares inputs, configures the default goblins, and wires
-package, app, check, and development-shell outputs.
+Only put goblins you trust equally in one scope.
 
-| Location | Purpose |
-|----------+---------|
-| =nix/lib.nix= | Public constructors and presets |
-| =nix/builders/= | =mkGoblin=, =mkCodexGoblin=, =mkClaudeGoblin= and =mkGoblins= constructors |
-| =nix/default-goblins/= | Default shell, Codex and Claude Code presets |
-| =nix/goblins/codex/= | Codex launcher, hooks and managed config |
-| =nix/goblins/claude/= | Claude Code launcher, hooks and managed config |
-| =skills/= | Reusable Goblins agent skills |
-| =nix/internal/= | Shared Nix argument validation |
-| =nix/packages/goblins.nix= | Host binary, including its Rust helper, controller, and pinned catalog |
-| =nix/packages/internal-goblins.nix= | Restricted =goblins request-package= binary for the sandbox |
-| =tests/fixtures.nix= | Runtime dependency fixtures and agent-sandbox baselines |
-| =tests/checks.nix= | Nix API validation and named configuration test build |
-| =src/main.rs= | Retained single-threaded namespace mount helper |
-| =crates/protocol/= | Bounded request/reply types, validation and deadline |
-| =crates/client/= | Restricted Rust sandbox request executable |
-| =crates/controller/= | Rust session library, event pump, worker and tui/run frontend |
-| =nix/packages/rust.nix= | Shared Rust build derivation with separate package selection |
-| =tests/= | Python black-box payload and terminal tests; Nix checks |
-| =emacs/= | Magit-style agent status and approval frontend |
+- Members can read and modify the scope's storage. With the shared PID namespace they can see each other's processes, read their command lines and environment through =/proc=, and signal them.
+- Members share the scope's network, including published ports.
+- With Docker, every member controls the same containers, images and volumes, and can reach other members' file grants through Docker. Read-only grants stay read-only but are readable by the whole group, and grants remain available until the engine stops, even after the granting goblin exits.
+- Persistent images, build cache and volumes can keep source code and secrets. Leaving a persistent scope does not erase them, and there is no disk quota.
+- Scopes are shared within one Goblins server; persistent scopes are locked so two servers cannot use one at once. Keep scope names distinct between unrelated trust groups.
 
-Build and test from the repository root:
+Scopes are shared-kernel confinement, not VM isolation. See [[file:docs/USAGE.org::*Scopes (Linux, no VM)][the scope reference]] for the full rules.
 
-#+begin_src sh
-nix develop path:.
-cargo test --workspace --locked
-cargo fmt --all --check
-nix build path:.#goblins
-nix flake check path:.
-python3 -m unittest discover -s tests -p 'test_*.py'
+* Docker
+
+Goblins can give a scope its own rootless Docker engine. It does not use or need a Docker service on the host.
+
+Enable Docker on the scope, then attach goblins to it either on request or at startup:
+
+#+begin_src nix
+mkGoblins {
+  scopes.work = mkScope { docker.enable = true; };
+  goblins = {
+    # Attaches only when the goblin asks and you approve.
+    claude = mkClaudeGoblin { scope = "work"; };
+    # Attaches at startup, without a request.
+    shell = mkGoblin { pkg = pkgs.fish; binName = "fish"; scope = "work"; docker.enable = true; };
+  };
+}
 #+end_src
 
-The development shell includes pyte for fullscreen terminal regression tests.
+Inside a goblin of that scope:
 
-The controller accepts explicit frontend decisions; its library never opens
-=/dev/tty=. Each session has a cancellable worker for startup and sequential grants while
-the daemon continues serving other sessions and frontends. The internal
-client depends only on shared protocol code, with no host policy or mount API.
-There is no production Python executable or mandatory Python interpreter.
+#+begin_src sh
+goblins enable-docker --reason "Run the integration test services"
+docker compose up
+#+end_src
 
-Use Org mode (=.org=) for repository documentation, including plans, design
-notes, and experiment reports.
+The request appears in the TUI or Emacs like a package request. After approval the =docker= CLI is available and =DOCKER_HOST= points at the scope's engine. Codex and Claude Code goblins have a skill that tells them to do this.
 
-This rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It does
-not implement multiplexing, file/network live grants, or
-daemon restart recovery. Closing frontends leaves sessions alive; daemon death
-stops every helper and sandbox;
-abrupt death may leave host session directories and GC roots for manual cleanup.
+What to expect:
+
+- The engine starts when the first member attaches and stops after the last one leaves. All members of the scope share it.
+- Builds, Compose and Testcontainers (including Ryuk) work.
+- Ports published with =-p= are reachable from scope members on =localhost=, not from the host. =--network host= means the scope's network.
+- Bind mounts work for the goblin's working directory and its granted directories, not for its private home or =/tmp=.
+- Images, build cache and volumes live on disk under =~/.cache/goblins= (=$XDG_CACHE_HOME/goblins=), not on tmpfs. A temporary scope's Docker data is deleted when its engine stops; a persistent scope keeps it.
+- Containers may write files owned by subordinate user IDs into writable directories.
+
+See [[file:docs/USAGE.org::*Docker in a scope][Docker in a scope]] for all limits.
+
+* Flake dev shells
+
+Start a goblin inside a project flake's dev shell, like =nix develop=:
+
+#+begin_src sh
+goblins run shell --dev-shell .           # devShells.<system>.default
+goblins run claude --dev-shell .#rust
+#+end_src
+
+The flake must be in the goblin's working directory and fully locked. Goblins evaluates it on the host in a restricted evaluator and mounts the result; the =shellHook= runs inside the sandbox only. Children start in the same dev shell.
+
+When the flake changes, the goblin asks for the new version:
+
+#+begin_src sh
+goblins devshell diff                       # preview, no request
+goblins devshell refresh --reason "added a formatter"
+goblins devshell refresh --update nixpkgs   # update a lock input
+goblins flake run '#fmt' -- --check         # run the flake's apps
+#+end_src
+
+The approval shows what changed: inputs, Nix files, packages, environment and what will be built. A goblin cannot change =flake.lock= behind your back; only locks you launched with or approved are trusted. See [[file:docs/USAGE.org::*Flake dev shells][the dev shell reference]].
+
+* Children and raids
+
+A goblin can start child goblins; children share their parent's working directory, scope and dev shell, and stop when the parent stops. By default a goblin may only start children with its own configuration; =allowedChildren= lists others:
+
+#+begin_src nix
+goblins = {
+  coordinator = mkCodexGoblin { allowedChildren = [ "coordinator" "reviewer" ]; };
+  reviewer = mkClaudeGoblin { allowedChildren = [ ]; };  # no children
+};
+#+end_src
+
+A child can have access its parent lacks, if its configuration grants it. A package you approve for a goblin is approved for its descendants too.
+
+Goblins can message their parent and children. A /raid/ also lets goblins in different branches message each other directly; it shares nothing else:
+
+#+begin_src sh
+goblins raid invite review chief critic   # host: create raid 'review', owned by chief
+goblins raid members                      # inside a member
+goblins send critic --message "Please review the build."
+#+end_src
+
+Codex and Claude Code goblins are woken when a message arrives. See [[file:docs/USAGE.org::*Sandbox ownership][sandbox ownership]], [[file:docs/USAGE.org::*Raids][raids]] and [[file:docs/USAGE.org::*Manual inbox messaging][messaging]].
+
+* Command line
+
+=goblins --help= and =goblins help COMMAND= describe every command.
+
+** On the host
+
+#+begin_src sh
+goblins server start                 # start the background server
+goblins server status | logs | stop  # stop also stops every goblin
+goblins tui                          # approvals; add --plain for a line-based UI
+
+goblins configurations               # configured names, as JSON
+goblins run CONFIG [--name NAME] [--detached] [--scope S] [--dev-shell FLAKE] [--raid R]
+goblins run CONFIG --parent NAME     # start a child of a running goblin
+goblins list                         # running goblins and recent history
+
+goblins attach NAME                  # reconnect a terminal
+goblins detach NAME                  # detach it, leave the goblin running
+goblins exec -t NAME                 # an extra shell inside the goblin
+goblins exec NAME -- git status      # run a command inside it
+goblins kill NAME [--kill-children]  # stop a goblin
+
+goblins send NAME --message TEXT     # message a goblin
+goblins raid invite|members|set-role|destroy ...
+goblins communications-log [--session NAME] [--follow]
+#+end_src
+
+A goblin is addressed by its name, its tree path (=snikk/scout= for a child) or its session ID. Names are lowercase letters, digits and hyphens. Without =--name=, the server picks a free fantasy goblin name.
+
+** Inside a goblin
+
+#+begin_src sh
+goblins status                         # name, configuration, scope, raid
+goblins request-package NAME --reason TEXT
+goblins enable-docker --reason TEXT
+goblins devshell refresh | diff | restore-lock
+goblins flake run [#APP] [-- ARGS]
+goblins run CONFIG --name NAME         # start a child
+goblins list | attach | kill           # manage descendants
+goblins detach                         # return to the enclosing terminal
+goblins send parent --message TEXT     # message the parent, children or raid
+goblins inbox status | next            # read messages
+goblins editor open FILE               # open a file in your Emacs
+#+end_src
+
+=request-package= takes a nixpkgs attribute name, such as =cowsay= or =python3Packages.black=, from Goblins' pinned nixpkgs.
+
+** Lifecycle
+
+- Closing the TUI or a terminal leaves goblins running; =goblins attach= reconnects.
+- A goblin stops when its program exits (=exit= or Ctrl-D in a shell), and its children stop with it.
+- =goblins server stop= stops everything. Goblins do not survive a server restart or reboot.
+- =--state-dir DIR= runs a separate, isolated server; pass it to every command that should talk to that server.
+
+** Shell completion
+
+The Nix package installs completions for Fish, Bash and Zsh, including your configuration names and live goblin names. For a manual setup, use =goblins completions fish | source= or =source <(goblins completions bash)=.
+
+* Emacs
+
+The Emacs frontend is in [[file:emacs/][emacs/]]. It needs Emacs 28.1 or newer (29.1 for TRAMP), =magit-section= (part of Magit) and, for terminals, [[https://github.com/dakra/ghostel][Ghostel]] with its native module. Goblins installs no Emacs packages for you.
+
+Add the directory to your load path, for example from the flake input in a Nix-managed Emacs configuration, or from a checkout:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/goblins/emacs")
+(require 'goblins)
+(goblins-ensure-server)    ; optional: start the server if it isn't running
+(goblins-attention-mode)   ; optional: show pending requests in the mode line
+#+end_src
+
+If =goblins= is not on Emacs' =exec-path=, set =goblins-executable= to its absolute path.
+
+Main commands:
+
+| Command                                      | Purpose                                                              |
+|----------------------------------------------+----------------------------------------------------------------------|
+| =goblins-workspace=                            | Sidebar of running goblins, with each goblin's terminals and windows |
+| =goblins-status=                               | Magit-style tree of goblins and requests; =a= / =d= accept or deny       |
+| =goblins-run=                                  | Pick a configuration and start it in a Ghostel buffer                |
+| =goblins-switch=                               | Jump to a running goblin                                             |
+| =goblins-accept=, =goblins-deny=                 | Decide a pending request from anywhere                               |
+| =goblins-shell=, =goblins-eshell=, =goblins-dired= | A shell, Eshell or Dired inside a goblin                             |
+| =goblins-find-file=                            | Visit a file inside a goblin                                         |
+
+=goblins-run= starts goblins in the current project's root and offers the project's =flake.nix= as dev shell.
+
+** Files inside goblins
+
+Files and processes inside a goblin are reachable over TRAMP:
+
+#+begin_example
+C-x C-f /goblins:snikk:/tmp/diagram.svg
+#+end_example
+
+Dired, Eshell, compile, grep, Magit and Eglot work there, using the goblin's own packages.
+
+To let goblins open files in your Emacs (for example =git commit= or an agent's "open in editor"), enable the editor on =mkGoblins=, and run an Emacs server with goblins.el loaded:
+
+#+begin_src nix
+mkGoblins {
+  editor.emacs.enable = true;  # sets EDITOR and VISUAL in every goblin
+  goblins = { ... };
+}
+#+end_src
+
+#+begin_src emacs-lisp
+(server-start)
+#+end_src
+
+Emacs asks before opening a goblin's files (=goblins-editor-approval=). Finish editing with =C-x #=.
+
+See [[file:emacs/README.org][the Emacs guide]] for all keys, the workspace layout, Evil bindings and options.
+
+* Security model and limitations
+
+- Goblins is shared-kernel confinement built on Linux namespaces and seccomp, not a virtual machine. It has not been audited.
+- Network access is open by default. Set =allowedDomains = []= for an offline goblin.
+- The working directory and every =rw*= path you grant are your real files: the goblin can change or delete them. Use =goblins server start --workspace DIR= to give each top-level goblin a disposable copy at =/workspace= instead.
+- Agent config directories are mounted writable, so agents can read your credentials there.
+- Package grants can only add packages from Goblins' pinned nixpkgs. They do not activate development setup hooks; use a dev shell for that.
+- Goblins do not survive a server restart. There are no live file or network grants yet, and no domain allowlist.
+- At most 16 goblins run at once.
+
+* Documentation
+
+- [[file:docs/USAGE.org][docs/USAGE.org]]: the detailed command and configuration reference.
+- [[file:emacs/README.org][emacs/README.org]]: the Emacs guide.
+- [[file:docs/README.org][docs/]]: developer documentation: architecture, design, decisions, building and testing.
+
+* Credits
+
+Goblins builds on [[https://github.com/archie-judd/agent-sandbox.nix][agent-sandbox.nix]] by [[https://github.com/archie-judd][archie-judd]]. Its =mkSandbox= API, declarative sandbox configuration, and =commonTools= package set provide the foundation for Goblins' Nix integration. Thank you for making that work available. Goblins adds its own runtime, live package grants, daemon, and approval UI; see the agent-sandbox library for its sandbox tooling.

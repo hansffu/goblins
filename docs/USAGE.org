@@ -376,7 +376,7 @@ Current limits:
 same Docker API, containers and data, and can access the combined filesystem
 grants of attached members. Read-only grants remain read-only but are readable
 by peers. Grants remain until the daemon stops, even if their original member
-exits. Persistent data can retain secrets. See the full [[file:../README.org::*Scopes][README risks]].
+exits. Persistent data can retain secrets. See the full [[file:../README.org::*Risks: scopes are trust groups, not isolation boundaries][README risks]].
 Conflicting sources/access modes at the same path and overlapping grants are
 rejected. Use explicit compatible working directories; unrelated private
 =/workspace= snapshots cannot occupy one daemon's =/workspace=. A per-user
@@ -650,7 +650,7 @@ The root flake exports =lib.x86_64-linux.builders= with =mkGoblin=,
 the =shell= and =codex= presets. =commonTools= remains at
 =lib.x86_64-linux.commonTools=. The
 =packages.x86_64-linux.goblins= and default package are built with these helpers.
-See [[file:../README.org::*Configure named goblins with Nix][the configuration example]].
+See [[file:../README.org::*Install][the configuration example]].
 
 Share ordinary options as an attribute set and compose agent-specific settings:
 
