@@ -55,6 +55,8 @@ monotonic freshness expires activity after 30 seconds and clears it on stop.
 Publish only visible changes. Codex reports each transition and ten-second
 heartbeats, giving waiting-input precedence. No last-turn outcome is exposed.
 
+Claude has no App Server, so its activity is the deliberate exception: the daemon derives it from the integration hooks Claude already sends, beside the unchanged wakeup lifecycle, and treats the plugin monitor's ticks as the heartbeat. Interrupted turns fire no hook and settle idle only at Claude's idle reminder, about 60 seconds later.
+
 ## Consequences
 
 Mailbox authority and audit semantics are unchanged. Delivery bookkeeping is

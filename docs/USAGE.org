@@ -1089,6 +1089,8 @@ expire after 30 seconds. Codex reports native transitions and ten-second
 heartbeats automatically. Activity is separate from sandbox lifecycle and
 Goblins-owned permission requests.
 
+Claude goblins report activity automatically through their Goblins hooks: working during a turn, waiting-input on AskUserQuestion, plan approval or MCP elicitation, and idle after the turn. Claude fires no hook when you interrupt it with Esc, so an interrupted Claude shows working until its idle reminder about a minute later.
+
 The subscription-backed counting game is a manual acceptance exercise, never a
 default test or a reusable automated live-game script.
 

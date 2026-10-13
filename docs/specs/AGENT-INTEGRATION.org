@@ -210,6 +210,8 @@ independently of provider RPC delays. App Server idle maps to idle; active work
 to working; native waiting flags map to waiting states, with user input taking
 precedence over approval. Unbound/unavailable/error states map to unknown.
 
+Claude has no App Server to observe, so the daemon derives its activity from the integration hooks it already receives, kept beside (never inside) the wakeup lifecycle. SessionStart reports idle and UserPromptSubmit working; Stop reports working when it continues into the inbox and idle otherwise; StopFailure (an API error) reports idle. PreToolUse for AskUserQuestion or ExitPlanMode, Elicitation, and elicitation notifications report waiting-input; PermissionRequest and the permission_prompt notification report waiting-approval. PostToolUse, PostToolUseFailure and ElicitationResult return to working only from a waiting state, so a late tool end never revives a settled turn. Claude fires no hook when a person interrupts a turn; its idle_prompt notification, about 60 seconds later, settles it to idle. Activity-only hooks change no wakeup state and write no communications-log event. Each =integration.check= and the plugin monitor's =integration.tick= return =agent_state= for Claude, and the controller applies it as a report: the 500 ms monitor ticks are its freshness heartbeat, so activity expires once Claude and its monitor exit.
+
 =goblins status= and Emacs overview, sidebar and details show this activity.
 Older snapshots display unknown. Goblins permission badges remain separate from
 Codex native waiting flags; informational activity never authorizes a grant.
@@ -307,13 +309,16 @@ profile and the caller's own sandbox. Host controls resolve explicit sessions.
 | =inbox.requeue= | ={key,message,claim_generation,reason}= -> new generation |
 | =sessions.set-state= | sandbox-only ={state}= -> accepted; endpoint identity, running sessions only |
 | Claude =integration.register= | ={driver,key}= -> epoch; same registration key is retryable |
-| Claude =integration.check= | ={epoch,key,event,active?}= -> continue decision and integration status |
-| Claude =integration.tick= | ={epoch}= -> notify decision, optional terminal revision/delivery result, integration status |
+| Claude =integration.check= | ={epoch,key,event,active?,tool?,notification?}= -> continue decision, agent_state and integration status |
+| Claude =integration.tick= | ={epoch}= -> notify decision, optional terminal revision/delivery result, agent_state, integration status |
 | Claude =integration.status= | own ={}=, host ={session}= -> epoch, activity, health, attempts |
 | Claude =integration.pause/resume= | host-only ={session}= -> updated integration status |
 | =communications.list= | host-only ={after?,limit?,session?}= -> events, cursor, latest, resolved session |
 
-Claude hook events are SessionStart, UserPromptSubmit and Stop. Codex uses only
+Claude's turn-boundary hook events are SessionStart, UserPromptSubmit and Stop;
+StopFailure, PreToolUse (AskUserQuestion/ExitPlanMode), PostToolUse,
+PostToolUseFailure, Elicitation, ElicitationResult, PermissionRequest and
+Notification only report activity. Codex uses only
 SessionStart for exact thread binding. No message body or
 arbitrary PTY input is accepted by integration methods. Terminal evidence is
 supplied privately by the controller, not trusted from the sandbox. Epochs
