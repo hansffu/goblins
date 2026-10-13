@@ -8,5 +8,5 @@ publish = false
 libc = "=0.2.186"
 
 [workspace]
-members = ["crates/protocol", "crates/client", "crates/controller"]
+members = ["crates/protocol", "crates/client", "crates/controller", "crates/codex"]
 resolver = "3"

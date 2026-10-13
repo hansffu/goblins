@@ -73,8 +73,8 @@ in
       devShellInjectedFiles,
     }:
     assert lib.assertMsg (
-      !(pkg ? version) || lib.versionAtLeast pkg.version "0.146.0"
-    ) "mkCodexGoblin: Codex 0.146.0 or later is required for the managed hook setup";
+      !(pkg ? version) || lib.versionAtLeast pkg.version "0.162.1"
+    ) "mkCodexGoblin: Codex 0.162.1 or later is required for the App Server adapter";
     assert lib.assertMsg (
       !(env ? CODEX_HOME)
     ) "mkCodexGoblin: use codexConfigDir instead of env.CODEX_HOME";

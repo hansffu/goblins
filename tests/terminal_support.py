@@ -105,10 +105,14 @@ def screen_wait(ui, predicate, timeout=30):
     if not hasattr(ui, "screen"):
         ui.screen = pyte.Screen(100, 24)
         ui.parser = pyte.ByteStream(ui.screen)
+        ui.parser.feed(ui.buffer)
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         if select.select([ui.fd], [], [], .02)[0]:
-            ui.parser.feed(os.read(ui.fd, 65536))
+            offset = len(ui.buffer)
+            if not ui.read_output():
+                raise AssertionError("terminal exited before screen condition:\n" + "\n".join(ui.screen.display))
+            ui.parser.feed(ui.buffer[offset:])
         text = "\n".join(ui.screen.display)
         if predicate(text):
             return text

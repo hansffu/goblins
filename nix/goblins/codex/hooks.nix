@@ -2,7 +2,7 @@
 let
   hook = pkgs.writeShellApplication {
     name = "goblins-codex-hook";
-    runtimeInputs = [ pkgs.jq ];
+    runtimeInputs = [ ];
     text = builtins.readFile ./hook.sh;
   };
   handler = {
@@ -19,8 +19,5 @@ in
   package = hook;
   mkHooks =
     hooks:
-    hooks
-    // pkgs.lib.genAttrs [ "SessionStart" "UserPromptSubmit" "Stop" ] (
-      event: [ handler ] ++ (hooks.${event} or [ ])
-    );
+    hooks // pkgs.lib.genAttrs [ "SessionStart" ] (event: [ handler ] ++ (hooks.${event} or [ ]));
 }

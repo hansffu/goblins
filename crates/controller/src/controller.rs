@@ -58,6 +58,8 @@ pub struct SessionRecord {
     #[serde(default)]
     pub description: String,
     pub configuration: String,
+    #[serde(default)]
+    pub agent_state: goblins_protocol::AgentState,
     pub state: String,
     pub identity: Option<Identity>,
     pub initial_packages: Vec<String>,
@@ -130,6 +132,7 @@ fn call_key(serial: u64) -> String {
     format!("call-{serial}")
 }
 struct Active {
+    activity_at: Option<Instant>,
     created: u64,
     record: SessionRecord,
     worker: Option<Worker>,
@@ -724,7 +727,7 @@ impl Controller {
         json!({"id":record.id,"agent_name":record.agent_name,
             "parent":record.parent.as_deref().filter(|p| *p != scope),
             "path":self.relative_path(record, Some(scope)),"name":record.name,
-            "description":record.description,"state":record.state,
+            "description":record.description,"state":record.state,"agent_state":record.agent_state,
             "initial_packages":record.initial_packages,
             "packages":record.packages,"scope":record.scope,"docker_enabled":record.docker_enabled,
             "exit_code":record.exit_code,
@@ -805,6 +808,8 @@ impl Controller {
             a.record.state = "stopping".into();
         }
         a.listener.take();
+        a.activity_at = None;
+        a.record.agent_state = Default::default();
         if let Some(p) = a.pending.take() {
             p.cancel.cancel();
             if let Some(r) = self.permission_mut(&p.id) {
@@ -1001,6 +1006,7 @@ impl Controller {
         };
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
+            agent_state: Default::default(),
             docker_enabled: false,
             scope: None,
             dev_shell: None,
@@ -1036,6 +1042,7 @@ impl Controller {
         self.sessions.insert(
             id.clone(),
             Active {
+                activity_at: None,
                 inheritance: None,
                 exit_watch: None,
                 init: None,
@@ -1065,12 +1072,25 @@ impl Controller {
         value: Value,
     ) -> std::result::Result<Value, Fault> {
         match method {
+            "sessions.set-state" => {
+                let p: goblins_protocol::SetState = params(value)?;
+                let a = self.sessions.get_mut(scope).ok_or_else(missing)?;
+                if a.record.state != "running" || a.worker.is_none() {
+                    return Err(conflict());
+                }
+                a.activity_at = Some(Instant::now());
+                if a.record.agent_state != p.state {
+                    a.record.agent_state = p.state;
+                    self.dirty = true;
+                }
+                Ok(json!({"accepted":true}))
+            }
             "sessions.status" => {
                 let _: Empty = params(value)?;
                 let record = &self.sessions[scope].record;
                 Ok(json!({"id":record.id,"agent_name":record.agent_name,
                     "name":record.name,"description":record.description,
-                    "state":record.state,"scope":record.scope,"docker_enabled":record.docker_enabled,
+                    "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
                     "allowed_children":self.sessions[scope].inheritance.as_ref()
                         .map_or(&[][..], |i| i.allowed_children()),
@@ -1450,7 +1470,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -1831,7 +1851,23 @@ impl Controller {
             c.fds.clear();
         }
     }
+    fn expire_activity(&mut self, now: Instant) {
+        for a in self.sessions.values_mut() {
+            if a.record.state != "running"
+                || a.activity_at.is_none_or(|at| {
+                    now.saturating_duration_since(at) >= std::time::Duration::from_secs(30)
+                })
+            {
+                a.activity_at = None;
+                if a.record.agent_state != goblins_protocol::AgentState::Unknown {
+                    a.record.agent_state = goblins_protocol::AgentState::Unknown;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
     pub fn tick(&mut self) -> Result<()> {
+        self.expire_activity(Instant::now());
         // Drain human input and native output before checking wake revisions.
         for a in self.sessions.values_mut() {
             if let Err(e) = a.terminal.tick() {
@@ -2178,6 +2214,10 @@ impl Controller {
                     .as_ref()
                     .is_some_and(|fd| unix::readable(fd.as_raw_fd(), 0).unwrap_or(true));
             let stopped = ["stopped", "failed"].contains(&a.record.state.as_str());
+            if a.record.state != "running" {
+                a.activity_at = None;
+                a.record.agent_state = Default::default();
+            }
             self.sessions.insert(id.clone(), a);
             if exited {
                 let _ = self.stop_tree(&id, true, None);
@@ -2362,6 +2402,7 @@ mod tests {
         d.sessions.insert(
             id.clone(),
             Active {
+                activity_at: None,
                 inheritance: None,
                 exit_watch: None,
                 init: None,
@@ -2370,6 +2411,7 @@ mod tests {
                 call: None,
                 created: 0,
                 record: SessionRecord {
+                    agent_state: Default::default(),
                     docker_enabled: false,
                     scope: None,
                     dev_shell: None,
@@ -2764,6 +2806,62 @@ mod tests {
         // A later session diagnostic must not erase this request's explanation.
         d.sessions.get_mut(&id).unwrap().record.detail = None;
         assert_eq!(d.snapshot().permissions[0].message.as_deref(), Some(detail));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn activity_is_endpoint_owned_fresh_and_separate_from_lifecycle() {
+        use goblins_protocol::AgentState;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        d.dirty = false;
+        let (mut host, _) = connection(Role::Host);
+        assert!(
+            d.host(&mut host, "sessions.set-state", json!({"state":"working"}))
+                .is_err()
+        );
+        for value in [
+            json!({"state":"busy"}),
+            json!({"state":"idle","session":id}),
+            json!({"state":"idle","target":"other"}),
+        ] {
+            assert!(d.sandbox_control(&id, "sessions.set-state", value).is_err());
+        }
+        d.sandbox_control(&id, "sessions.set-state", json!({"state":"working"}))
+            .unwrap();
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.state, "running");
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Working);
+        let at = d.sessions[&id].activity_at.unwrap();
+        d.dirty = false;
+        d.sandbox_control(&id, "sessions.set-state", json!({"state":"working"}))
+            .unwrap();
+        assert!(!d.dirty); // heartbeats refresh freshness without publishing
+        assert!(d.sessions[&id].activity_at.unwrap() >= at);
+        d.expire_activity(at + std::time::Duration::from_secs(31));
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
+        d.sandbox_control(&id, "sessions.set-state", json!({"state":"waiting-input"}))
+            .unwrap();
+        d.stop(&id, None).unwrap();
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
+        assert!(
+            d.sandbox_control(&id, "sessions.set-state", json!({"state":"idle"}))
+                .is_err()
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn old_session_snapshots_default_activity_to_unknown() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        let mut value = serde_json::to_value(&d.sessions[&id].record).unwrap();
+        value.as_object_mut().unwrap().remove("agent_state");
+        let record: SessionRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(record.agent_state, goblins_protocol::AgentState::Unknown);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

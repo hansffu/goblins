@@ -53,6 +53,10 @@ fn run() -> Result<i32, String> {
                 .unwrap_or_else(|e| e.exit())
                 .command;
         match command {
+            cli::Command::SetState { state } => {
+                println!("{}", call("sessions.set-state", json!({"state":state}))?);
+                return Ok(0);
+            }
             cli::Command::Integration { command } => return integration(command),
             cli::Command::Send {
                 recipient,
@@ -112,7 +116,7 @@ fn run() -> Result<i32, String> {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nScope: {}\nDocker: {}\nDev shell: {}\nRaid: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -126,6 +130,7 @@ fn run() -> Result<i32, String> {
                         None => "unknown".into(),
                     },
                     record["state"].as_str().unwrap_or("unknown"),
+                    record["agent_state"].as_str().unwrap_or("unknown"),
                     record["scope"].as_str().unwrap_or("none"),
                     if record["docker_enabled"] == true {
                         "enabled"

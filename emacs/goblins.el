@@ -406,6 +406,7 @@ HIDE starts it folded and HEADING replaces the default heading text."
 (defun goblins--insert-agent-fields (agent)
   (goblins--field "Session:" (plist-get agent :id))
   (goblins--field "State:" (plist-get agent :state))
+  (goblins--field "Activity:" (or (plist-get agent :agent_state) "unknown"))
   (goblins--field "Config:" (plist-get agent :name))
   (goblins--field "Parent:" (or (plist-get agent :parent) "host"))
   (goblins--field "Startup:" (string-join (append (plist-get agent :initial_packages) nil) ", "))
@@ -420,10 +421,11 @@ HIDE starts it folded and HEADING replaces the default heading text."
          (continuation (concat prefix (if last "   " "│  "))))
     (magit-insert-section (goblins-agent-section (plist-get agent :id))
       (magit-insert-heading
-        (format "%s%s%-20s %-12s %s%s"
+        (format "%s%s%-20s %-12s %-16s %s%s"
                 prefix (if last "└─ " "├─ ")
                 (goblins--safe (plist-get agent :agent_name))
                 (goblins--safe (plist-get agent :state))
+                (goblins--safe (or (plist-get agent :agent_state) "unknown"))
                 (goblins--safe (plist-get agent :name))
                 (if (goblins--terminal-buffer (plist-get agent :id))
                     "  [t: terminal]" "")))

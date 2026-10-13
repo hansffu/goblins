@@ -604,6 +604,7 @@ end of the buffer.  Add your own to show more."
                   ((not (equal description ""))))
         (insert (propertize (goblins--safe description) 'face 'goblins-dim) "\n"))
       (insert "\n")
+      (goblins--info-row "Activity" (or (plist-get session :agent_state) "unknown"))
       (goblins--info-row "Session" (plist-get session :id))
       (goblins--info-row "Path" (plist-get session :path))
       (goblins--info-row "Directory" (let ((cwd (plist-get session :cwd)))

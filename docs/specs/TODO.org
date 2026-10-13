@@ -51,6 +51,42 @@ Development notes:
   =--no-update-lock-file=; any new flake command must keep the completeness
   check in =snapshot= (=metadata.locks= must equal the file).
 
+* TODO Intermittently blank Codex terminal after launch or attachment
+
+Observed during manual testing on 2026-10-14 with Codex 0.162.1, the
+sandbox-local App Server adapter ([[file:../adr/0009-sandbox-owned-codex-delivery.md][ADR 0009]]) and Emacs/Ghostel.
+
+- A Codex terminal appeared blank. Starting another Codex session worked.
+  The user later reported that the interface appeared and suspected a delay.
+  The cause and a deterministic reproduction remain unconfirmed.
+- The apparently blank session was still =running= and =terminal_attached=true=.
+  Its adapter reported =idle= with =diagnostic=null=; the adapter and native
+  terminal processes were alive and the local error logs were empty.
+- A second attachment was rejected with =terminal is already attached=.
+  This is the single-consumer ownership check, not evidence that Codex exited.
+  Reattachment requires releasing the existing terminal consumer first.
+- Devenv was not enabled: the checkout uses =pkgs.mkShell= and the live
+  session had =dev_shell=null=. =just emacs= runs =nix develop=, which can
+  evaluate/build before Emacs starts, but that has not been established as
+  the cause of the blank terminal.
+
+On recurrence, capture launch/attachment timing, native first-output timing,
+terminal dimensions and Ghostel rendering state before switching focus or
+resizing. Check whether those events cause a redraw. Add a native Codex
+detach/reattach regression that requires the existing full-screen interface
+to appear without sending a prompt or resizing. Inspect the daemon's terminal
+replay path (=crates/controller/src/terminal.rs=) as well as native startup:
+it currently forwards buffered output rather than replaying the retained
+screen when a new consumer attaches. This is an investigation lead, not a
+confirmed root cause or a fixed bug.
+
+Separate, fixed issue: hidden Codex title/recap threads could replace the
+foreground binding and leave activity =unknown= once unloaded. Foreground
+request filtering and the native
+=test_hidden_native_threads_do_not_replace_visible_binding= regression in
+=tests/test_codex_native.py= cover that failure. Do not conflate it with the
+unresolved blank display.
+
 * DONE =goblins flake run= (the =nix run= equivalent)
 CLOSED: [2026-09-28 Mon 23:15]
 

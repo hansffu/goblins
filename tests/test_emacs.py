@@ -31,6 +31,15 @@ class EmacsTests(unittest.TestCase):
         if available.returncode:
             self.skipTest("magit-section is not on Emacs load-path")
 
+    def test_live_activity_updates_overview_sidebar_and_details(self):
+        daemon = Daemon(); self.addCleanup(daemon.close)
+        agent = daemon.start(agent_name='activity')['session']
+        result = subprocess.run(['emacs', '--batch', '-Q', '--eval', '(setq load-prefer-newer t)',
+            '-L', str(ROOT/'emacs'), '-l', 'goblins-tests', '-f', 'goblins-test-activity-live'],
+            env={**os.environ, 'GOBLINS_APP':str(daemon.app), 'GOBLINS_TEST_STATE':str(daemon.state),
+                 'GOBLINS_TEST_AGENT':agent}, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_live_ownership_tree_and_stopped_branches(self):
         daemon = Daemon()
         self.addCleanup(daemon.close)

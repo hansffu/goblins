@@ -9,11 +9,11 @@
 let
   inherit (goblinsLib.builders)
     mkGoblin
-    mkCodexGoblin
     mkClaudeGoblin
     mkGoblins
     mkScope
     ;
+  mkCodexGoblin = options: goblinsLib.builders.mkCodexGoblin ({ pkg = agents.codex; } // options);
   base = {
     pkg = pkgs.bashInteractive;
     binName = "bash";
@@ -226,6 +226,9 @@ let
     { allowedChildren = [ 1 ]; }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
+    if [[ "$1" == --version || "$1" == app-server ]]; then
+      exec ${agents.codex}/bin/codex "$@"
+    fi
     printf 'CODEX_DIR=%s\n' "$CODEX_HOME"
     printf 'CODEX_ARG=%s\n' "$@"
     export PS1='codex-probe> '
@@ -389,10 +392,29 @@ in
       };
       notifier = mkCodexGoblin {
         pkg = pkgs.writeScriptBin "codex" (
-          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_codex.py
+          "#!${pkgs.python3}/bin/python3\n"
+          + builtins.readFile ./codex_wire.py
+          + builtins.readFile ./fake_codex.py
         );
         allowedDomains = [ ];
-        allowedPackages = [ ];
+        allowedPackages = [ pkgs.python3 ];
+      };
+      profile = mkCodexGoblin {
+        pkg = pkgs.writeScriptBin "codex" (
+          "#!${pkgs.python3}/bin/python3\n"
+          + builtins.readFile ./codex_wire.py
+          + builtins.readFile ./fake_codex.py
+        );
+        allowedDomains = [ ];
+        allowedPackages = [ pkgs.python3 ];
+        args = [
+          "--profile"
+          "fixture"
+          "--config"
+          ''model_provider="literal $(false) provider"''
+          "--enable"
+          "plugins"
+        ];
       };
       custom = mkCodexGoblin {
         pkg = codexProbe;
@@ -452,7 +474,7 @@ in
       };
       notifier = mkClaudeGoblin {
         pkg = pkgs.writeScriptBin "claude" (
-          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_codex.py
+          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_claude.py
         );
         allowedDomains = [ ];
         allowedPackages = [ ];

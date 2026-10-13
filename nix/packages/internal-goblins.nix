@@ -4,9 +4,14 @@ let
     inherit pkgs;
     package = "goblins-client";
   };
+  adapter = import ./rust.nix {
+    inherit pkgs;
+    package = "goblins-codex";
+  };
 in
 pkgs.runCommand "goblins-request-client" { nativeBuildInputs = [ pkgs.installShellFiles ]; } ''
   mkdir -p $out/bin
+  ln -s ${adapter}/bin/goblins-codex $out/bin/goblins-codex
   ln -s ${client}/bin/goblins-client $out/bin/goblins
   ln -s ${client}/bin/goblins-client $out/bin/goblins-request
   # argv[0] aliases: the sandbox root process and the EDITOR/VISUAL command.

@@ -24,7 +24,7 @@ class Notices:
     def setUpClass(cls):
         cls.app = Path(command([
             "nix", "build", "--no-link", "--print-out-paths",
-            "path:" + str(ROOT) + "#checks.x86_64-linux." + cls.check,
+            "git+" + ROOT.as_uri() + "#checks.x86_64-linux." + cls.check,
         ])) / "bin/goblins"
 
     def setUp(self):
@@ -36,9 +36,12 @@ class Notices:
         self.d = Daemon(self.app, env={**os.environ, "HOME": str(home)})
         self.addCleanup(self.d.close)
         self.receiver = self.d.start("notifier", agent_name="receiver")["session"]
-        self.d.wait(lambda: self.integration().get("state") in ("starting", "ready"))
+        self.d.wait(lambda: self.integration().get("state") in (("ready",) if self.check == "codex-goblins" else ("starting", "ready")))
 
     def integration(self):
+        if self.check == "codex-goblins":
+            state = self.d.get(self.receiver)["agent_state"]
+            return {"state": {"idle":"ready", "unknown":"starting"}.get(state,state)}
         return self.d.rpc.call("integration.status", {"session": self.receiver})
 
     def events(self):
@@ -82,8 +85,9 @@ class Notices:
             self.assertEqual(notice["operation"]["status"], outcome)
             self.assertEqual(notice["sender"], "goblins")
             kinds = self.kinds(events, record["id"], notice)
+            wake = [] if self.check == "codex-goblins" else ["integration.wake_attempt"]
             expected = ["operation.requested"] + (["operation.decided"] if outcome == "denied" else []) + [
-                "operation.completed", "integration.wake_attempt", "message.claimed", "message.completed"]
+                "operation.completed", *wake, "message.claimed", "message.completed"]
             self.assertEqual([k for k in kinds if k != "integration.wake_result"][-len(expected):], expected)
             self.assertEqual(self.sandbox_status()["operations"], [])
         self.assertEqual(self.sandbox_status()["queued"], 0)
@@ -108,7 +112,7 @@ class Notices:
         self.assertEqual(self.sandbox_status()["queued"], 0)
 
     def test_paused_integration_holds_the_notice(self):
-        self.d.rpc.call("integration.pause", {"session": self.receiver})
+        self.control("pause")
         peer, record = self.d.pending(self.receiver)
         self.d.decide(record, False)
         peer.close()
@@ -116,8 +120,15 @@ class Notices:
         time.sleep(1.5)
         self.assertEqual(self.sandbox_status()["queued"], 1)
         self.assertFalse(any(e["kind"] == "integration.wake_attempt" for e in self.events()))
-        self.d.rpc.call("integration.resume", {"session": self.receiver})
+        self.control("resume")
         self.handled(record["id"])
+
+    def control(self, command):
+        if self.check == "codex-goblins":
+            __import__("subprocess").run([str(self.app), "--state-dir", str(self.d.state),
+                "exec", self.receiver, "--", "/run/goblins/bin/goblins-codex", command], check=True, capture_output=True)
+        else:
+            self.d.rpc.call("integration." + command, {"session": self.receiver})
 
     def sandbox_status(self):
         peer = RPC(self.d.state / self.receiver / "resources/request.sock")

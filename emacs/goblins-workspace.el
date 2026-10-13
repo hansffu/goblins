@@ -202,6 +202,8 @@ Return non-nil unless KEY is in COLLAPSED."
             (if finished (propertize name 'face 'goblins-dim) name)
             (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
                         'face 'goblins-dim)
+            (propertize (format " [%s]" (goblins--safe (or (plist-get session :agent_state) "unknown")))
+                        'face 'goblins-dim)
             (goblins--exec-summary session)
             (goblins--sidebar-badge pending)
             "\n")

@@ -1062,14 +1062,32 @@ mkCodexGoblin {
 }
 #+end_src
 
-A sandbox notifier watches inbox metadata and requests a fixed check-inbox
-prompt. It works attached or detached and never fetches message bodies. For
-Codex, user typing defers terminal delivery; interrupted turns pause notification
-until another submitted turn or explicit host resume.
-Terminal focus changes and cursor/device reports do not count as user typing.
-Inspect or control it with =goblins integration status/pause/resume NAME=.
-Three unanswered wake attempts become stalled; notifier failure becomes degraded.
-The native agent remains available for manual inbox commands.
+Codex requires version 0.162.1 or newer. Its sandbox-local adapter watches inbox
+metadata and queues the fixed reminder through App Server after the current
+turn. It works attached or detached and never fetches message bodies. Native
+drafts and images remain in the native terminal. Failed or interrupted turns
+can still be followed by inbox work; the previous human task is not retried.
+
+Inspect or pause new reminders locally, including from the host:
+
+#+begin_src sh
+goblins exec chief -- /run/goblins/bin/goblins-codex status
+goblins exec chief -- /run/goblins/bin/goblins-codex pause
+goblins exec chief -- /run/goblins/bin/goblins-codex resume
+#+end_src
+
+Three reminders without inbox progress exhaust the retry limit; resume resets
+it. Already accepted queued work keeps its native ownership. Uncertain
+submission ownership suspends new submissions until reconciliation finds proof;
+resume never discards that record. Status and logs live in the sandbox's private
+=/tmp/goblins-codex= directory. Manual inbox commands remain available.
+
+Activity appears in =goblins status= and the Emacs overview, sidebar and details.
+Any provider may report it inside its own sandbox using =goblins set-state
+working= (also =unknown=, =idle=, =waiting-input=, =waiting-approval=). Reports
+expire after 30 seconds. Codex reports native transitions and ten-second
+heartbeats automatically. Activity is separate from sandbox lifecycle and
+Goblins-owned permission requests.
 
 The subscription-backed counting game is a manual acceptance exercise, never a
 default test or a reusable automated live-game script.
@@ -1200,7 +1218,8 @@ all exchanges. Follow currently polls the daemon. Audit files are private
 Use =goblins communications-log --log FILE --json= after daemon shutdown. Records contain message text, so handle them as
 conversation data. Queued and claimed items fail when their recipient stops.
 
-The Codex and Claude Code helpers add turn-boundary hooks, skills and idle wakeups.
+The Codex adapter queues inbox reminders at idle boundaries; Claude uses its
+existing hooks and notification monitor. Both retain the messaging skill.
 Existing terminal attachment remains available independently of inbox commands.
 See [[file:specs/AGENT-INTEGRATION.org][the integration specification]] for the protocol and verification contract.
 

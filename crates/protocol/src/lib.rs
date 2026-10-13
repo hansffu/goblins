@@ -5,6 +5,23 @@ pub const MAX_FRAME: usize = 4096;
 pub const REQUEST_SOCKET: &str = "/run/goblins/request.sock";
 pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the next item.";
 
+/// Provider-neutral live activity, independent of sandbox lifecycle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentState {
+    #[default]
+    Unknown,
+    Idle,
+    Working,
+    WaitingInput,
+    WaitingApproval,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetState {
+    pub state: AgentState,
+}
+
 pub fn scope_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     (1..=64).contains(&name.len())

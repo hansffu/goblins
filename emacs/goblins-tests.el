@@ -848,6 +848,42 @@
       (accept-process-output nil 0.02))
     (should (funcall predicate))))
 
+(defun goblins-test-activity-live ()
+  "Report sandbox activity through the CLI and observe subscribed GUI updates."
+  (let ((id (getenv "GOBLINS_TEST_AGENT")) source info
+        (sidebar (generate-new-buffer " *goblins activity sidebar*")))
+    (unwind-protect
+        (progn
+          (goblins-status (getenv "GOBLINS_TEST_STATE"))
+          (setq source (current-buffer))
+          (goblins-test--wait (lambda () goblins--subscription))
+          (setq info (goblins-info-buffer source id))
+          (with-current-buffer sidebar
+            (goblins-sidebar-mode)
+            (setq goblins--sidebar-source source
+                  goblins--directory (getenv "GOBLINS_TEST_STATE"))
+            (goblins--sidebar-render))
+          (dolist (state '("working" "waiting-input" "idle"))
+            (should (= 0 (call-process (getenv "GOBLINS_APP") nil nil nil
+                                      "--state-dir" (getenv "GOBLINS_TEST_STATE")
+                                      "exec" id "--" "/run/goblins/bin/goblins"
+                                      "set-state" state)))
+            (with-current-buffer source
+              (goblins-test--wait
+               (lambda ()
+                 (equal state (plist-get
+                               (cl-find id (plist-get goblins--snapshot :sessions)
+                                        :key (lambda (s) (plist-get s :id)) :test #'equal)
+                               :agent_state))))
+              (should (string-match-p state (buffer-string))))
+            (with-current-buffer info
+              (should (string-match-p (concat "Activity +" state) (buffer-string))))
+            (with-current-buffer sidebar
+              (should (string-match-p (regexp-quote (concat "[" state "]"))
+                                      (buffer-string))))))
+      (dolist (buffer (list sidebar info source))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 ;;; Workspace sidebar
 
 (defun goblins-test--session (id &rest props)
@@ -895,7 +931,7 @@
     (let ((text (buffer-string)))
       (should (< (string-match "raid alpha" text) (string-match "raid zeta" text)))
       (should (< (string-match "raid zeta" text) (string-match "session-b" text)))
-      (should (string-match-p "▾ raid zeta !1\n  ▾ /p/one/ !1\n    . session-a (shell) !1\n      . session-c (shell)"
+      (should (string-match-p "▾ raid zeta !1\n  ▾ /p/one/ !1\n    . session-a (shell) \\[unknown\\] !1\n      . session-c (shell)"
                               (replace-regexp-in-string "[●○◌✗]" "." text)))
       (should (string-match-p "▾ /p/two/\n  . session-b" text))
       (should (string-match-p "▾ unknown\n  . session-e"
@@ -2005,12 +2041,12 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (should (window-parameter (get-buffer-window sidebar) 'window-side))
     ;; The main window shows the status buffer: no goblin terminal yet.
     (should (eq (window-buffer (goblins--main-window)) source))
-    (goblins-test--wait (lambda () (string-match-p "gamma (shell) !1" (goblins-test--sidebar-text))))
+    (goblins-test--wait (lambda () (string-match-p "gamma (shell) \\[unknown\\] !1" (goblins-test--sidebar-text))))
     (let ((text (goblins-test--sidebar-text)))
-      (should (string-match-p (concat (regexp-quote project-one) "\n  ● alpha (shell)\n  ● beta (shell)")
+      (should (string-match-p (concat (regexp-quote project-one) "\n  ● alpha (shell) \\[unknown\\]\n  ● beta (shell)")
                               text))
       ;; The directory of the waiting goblin carries its count too.
-      (should (string-match-p "/ !1\n  ● delta (shell)\n  ● gamma (shell) !1" text)))
+      (should (string-match-p "/ !1\n  ● delta (shell) \\[unknown\\]\n  ● gamma (shell) \\[unknown\\] !1" text)))
     ;; Selecting the waiting goblin pops up its request at the bottom.
     (goblins-select-goblin source (plist-get (goblins-test--live-session source "gamma") :id))
     (should (window-parameter (get-buffer-window goblins--popup-buffer-name) 'window-side))
@@ -2372,8 +2408,8 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (with-current-buffer elsewhere (setq goblins--directory "/elsewhere"))
             (goblins--sidebar-render-all)
             (should (string-match-p
-                     (concat "▾ /p/ !1\n  . session-a (shell) !1\n    › shell\n"
-                             "    › shell 2 (exited)\n    . session-b (shell)\n\\'")
+                     (concat "▾ /p/ !1\n  . session-a (shell) \\[unknown\\] !1\n    › shell\n"
+                             "    › shell 2 (exited)\n    . session-b (shell) \\[unknown\\]\n\\'")
                      (replace-regexp-in-string "[●○◌✗]" "." (buffer-string))))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
@@ -2910,3 +2946,12 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (kill-emacs 0)))
 
 ;;; goblins-tests.el ends here
+
+(ert-deftest goblins-activity-is-visible-with-old-snapshot-fallback ()
+  (with-temp-buffer
+    (goblins--insert-agent-fields (list :id "a" :state "running" :name "shell"))
+    (should (string-match-p "Activity:.*unknown" (buffer-string))))
+  (with-temp-buffer
+    (goblins--insert-agent-fields (list :id "a" :state "running" :name "shell"
+                                       :agent_state "waiting-input"))
+    (should (string-match-p "Activity:.*waiting-input" (buffer-string)))))

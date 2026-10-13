@@ -81,6 +81,11 @@ pub enum RaidCommand {
 }
 #[derive(Subcommand)]
 pub enum Command {
+    /// Report this sandbox's current agent activity
+    SetState {
+        #[arg(value_parser = ["unknown", "idle", "working", "waiting-input", "waiting-approval"])]
+        state: String,
+    },
     /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
     Integration {
         #[command(subcommand)]
