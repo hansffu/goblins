@@ -1,5 +1,6 @@
 //! Baseline notify-then-fetch lifecycle, independent of message contents.
 use crate::mailbox::{self, Audit, Mailbox};
+use goblins_protocol::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -32,6 +33,8 @@ struct Agent {
     claim: Value,
     last_hook: String,
     head: Value,
+    /// Claude's informational activity, separate from the wakeup `state`.
+    activity: AgentState,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,11 +47,42 @@ struct Params {
     #[serde(default)]
     active: bool,
     session: Option<String>,
+    tool: Option<String>,
+    notification: Option<String>,
+}
+/// Activity after a hook that only reports activity; `None` rejects the event.
+/// Ending a wait never revives activity that a turn end already settled.
+fn hook_activity(
+    event: &str,
+    tool: Option<&str>,
+    notification: Option<&str>,
+    current: AgentState,
+) -> Option<AgentState> {
+    use AgentState::*;
+    let waiting = matches!(current, WaitingInput | WaitingApproval);
+    Some(match (event, tool, notification) {
+        ("StopFailure", ..) => Idle,
+        ("PreToolUse", Some("AskUserQuestion" | "ExitPlanMode"), _) | ("Elicitation", ..) => {
+            WaitingInput
+        }
+        ("PermissionRequest", ..) => WaitingApproval,
+        ("PostToolUse" | "PostToolUseFailure" | "ElicitationResult", ..) if waiting => Working,
+        // Claude reports an interrupted turn only through its idle reminder.
+        ("Notification", _, Some("idle_prompt")) => Idle,
+        ("Notification", _, Some("permission_prompt")) => WaitingApproval,
+        ("Notification", _, Some("elicitation_dialog" | "elicitation_url_dialog")) => WaitingInput,
+        (
+            "PreToolUse" | "PostToolUse" | "PostToolUseFailure" | "ElicitationResult"
+            | "Notification",
+            ..,
+        ) => current,
+        _ => return None,
+    })
 }
 impl Integrations {
     pub fn status(&self, actor: &str, now: u64) -> Value {
         self.states.get(actor).map_or(json!({"health":"unregistered"}), |a| {
-            json!({"driver":a.driver,"epoch":a.epoch,"state":a.state,"health":if a.paused {"paused"} else if now.saturating_sub(a.last_seen)>5000 {"degraded"} else if a.attempts>=3 {"stalled"} else {"healthy"},"attempts":a.attempts})
+            json!({"driver":a.driver,"epoch":a.epoch,"state":a.state,"activity":a.activity,"health":if a.paused {"paused"} else if now.saturating_sub(a.last_seen)>5000 {"degraded"} else if a.attempts>=3 {"stalled"} else {"healthy"},"attempts":a.attempts})
         })
     }
     pub fn call(
@@ -115,6 +149,7 @@ impl Integrations {
                     claim: Value::Null,
                     last_hook: String::new(),
                     head: Value::Null,
+                    activity: AgentState::Unknown,
                 },
             );
             return Ok(json!({"epoch":self.next_epoch,"driver":driver}));
@@ -166,6 +201,7 @@ impl Integrations {
                     match p.event.as_deref() {
                         Some("SessionStart") => {
                             next.state = "starting".into();
+                            next.activity = AgentState::Idle;
                             if next.input != view.input {
                                 next.attempts = 0;
                                 next.last_attempt = 0;
@@ -174,6 +210,7 @@ impl Integrations {
                         }
                         Some("UserPromptSubmit") => {
                             next.state = "working".into();
+                            next.activity = AgentState::Working;
                             next.paused = false;
                             if next.input != view.input {
                                 next.attempts = 0;
@@ -193,12 +230,32 @@ impl Integrations {
                                 && !view.input_pending
                                 && remind;
                             next.state = if continuation { "working" } else { "ready" }.into();
+                            next.activity = if continuation {
+                                AgentState::Working
+                            } else {
+                                AgentState::Idle
+                            };
                             next.claim = status["claim"].clone();
                             result["continue"] = json!(continuation);
                         }
-                        _ => return Err((-32602, "unsupported hook event".into())),
+                        // Activity-only hooks leave the wakeup lifecycle and log alone.
+                        Some(other) => {
+                            next.activity = hook_activity(
+                                other,
+                                p.tool.as_deref(),
+                                p.notification.as_deref(),
+                                a.activity,
+                            )
+                            .ok_or((-32602, "unsupported hook event".into()))?;
+                        }
+                        None => return Err((-32602, "unsupported hook event".into())),
                     }
-                    event = Some("integration.hook");
+                    if matches!(
+                        p.event.as_deref(),
+                        Some("SessionStart" | "UserPromptSubmit" | "Stop")
+                    ) {
+                        event = Some("integration.hook");
+                    }
                 }
                 "integration.tick" => {
                     let notification = match p.delivery.as_deref() {
@@ -246,6 +303,10 @@ impl Integrations {
         }
         if let Some(event) = event {
             mailbox.record(target,event,json!({"driver":next.driver,"epoch":next.epoch,"state":next.state,"attempt":next.attempts,"hook":p.event,"continue":result["continue"],"delivery":result["delivery"],"terminal_revision":view.revision}),now,audit)?;
+        }
+        // Claude's hooks and monitor ticks are its activity reports and heartbeat.
+        if actor != "host" && next.driver == "claude" {
+            result["agent_state"] = json!(next.activity);
         }
         *a = next;
         result["integration"] = self.status(target, now);
@@ -576,6 +637,133 @@ mod tests {
         f.view.input_pending = false;
         f.view.ready = true;
         assert_eq!(f.tick()["notify"], true);
+    }
+    impl Fixture {
+        fn claude() -> Self {
+            let mut f = Self::new();
+            f.state.states.get_mut("child").unwrap().driver = "claude".into();
+            f
+        }
+        fn report(&mut self, event: &str, detail: Value) -> Value {
+            self.now += 1;
+            let mut params = json!({"epoch":1,"key":format!("hook-{}",self.now),"event":event});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(detail.as_object().unwrap().clone());
+            self.call("integration.check", params).unwrap()["agent_state"].clone()
+        }
+    }
+    #[test]
+    fn claude_hooks_report_activity_without_touching_the_wakeup_lifecycle() {
+        let mut f = Fixture::claude();
+        assert_eq!(f.hook("SessionStart", false)["agent_state"], "idle");
+        assert_eq!(f.hook("UserPromptSubmit", false)["agent_state"], "working");
+        let logged = f.log.events.len();
+        let before = (
+            f.state.states["child"].state.clone(),
+            f.state.states["child"].input,
+        );
+        // Ordinary tool calls and their ends keep working.
+        assert_eq!(f.report("PreToolUse", json!({"tool":"Bash"})), "working");
+        assert_eq!(f.report("PostToolUse", json!({"tool":"Bash"})), "working");
+        assert_eq!(
+            f.report("PreToolUse", json!({"tool":"AskUserQuestion"})),
+            "waiting-input"
+        );
+        assert_eq!(
+            f.report("PostToolUse", json!({"tool":"AskUserQuestion"})),
+            "working"
+        );
+        assert_eq!(
+            f.report("PreToolUse", json!({"tool":"ExitPlanMode"})),
+            "waiting-input"
+        );
+        assert_eq!(
+            f.report("PostToolUseFailure", json!({"tool":"ExitPlanMode"})),
+            "working"
+        );
+        assert_eq!(f.report("Elicitation", json!({})), "waiting-input");
+        assert_eq!(f.report("ElicitationResult", json!({})), "working");
+        assert_eq!(
+            f.report("PermissionRequest", json!({"tool":"Bash"})),
+            "waiting-approval"
+        );
+        assert_eq!(f.report("PostToolUse", json!({"tool":"Bash"})), "working");
+        assert_eq!(
+            f.report("Notification", json!({"notification":"permission_prompt"})),
+            "waiting-approval"
+        );
+        assert_eq!(
+            f.report(
+                "Notification",
+                json!({"notification":"elicitation_url_dialog"})
+            ),
+            "waiting-input"
+        );
+        assert_eq!(
+            f.report("Notification", json!({"notification":"auth_success"})),
+            "waiting-input"
+        );
+        assert_eq!(f.report("StopFailure", json!({})), "idle");
+        assert_eq!(f.log.events.len(), logged);
+        assert_eq!(
+            (
+                f.state.states["child"].state.clone(),
+                f.state.states["child"].input
+            ),
+            before
+        );
+        assert!(
+            f.call(
+                "integration.check",
+                json!({"epoch":1,"key":"x","event":"Bogus"})
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn claude_activity_settles_at_turn_ends_and_rides_on_ticks() {
+        let mut f = Fixture::claude();
+        f.hook("UserPromptSubmit", false);
+        // A late end of a tool never revives a settled turn.
+        assert_eq!(f.report("StopFailure", json!({})), "idle");
+        assert_eq!(f.report("PostToolUse", json!({"tool":"Bash"})), "idle");
+        f.hook("UserPromptSubmit", false);
+        // Interrupted turns have no Stop; the idle reminder settles them.
+        assert_eq!(
+            f.report("Notification", json!({"notification":"idle_prompt"})),
+            "idle"
+        );
+        f.send();
+        f.hook("UserPromptSubmit", false);
+        assert_eq!(f.hook("Stop", false)["agent_state"], "working");
+        assert_eq!(f.hook("Stop", true)["agent_state"], "idle");
+        let tick = f
+            .call(
+                "integration.tick",
+                json!({"epoch":1,"delivery":"notification"}),
+            )
+            .unwrap();
+        assert_eq!(tick["agent_state"], "idle");
+        assert_eq!(f.state.status("child", f.now)["activity"], "idle");
+        // Status reads and host controls are not activity reports.
+        assert!(
+            f.call("integration.status", json!({}))
+                .unwrap()
+                .get("agent_state")
+                .is_none()
+        );
+    }
+    #[test]
+    fn codex_integration_reports_no_activity() {
+        let mut f = Fixture::new();
+        assert!(
+            f.hook("UserPromptSubmit", false)
+                .get("agent_state")
+                .is_none()
+        );
+        assert!(f.tick().get("agent_state").is_none());
     }
     #[test]
     fn audit_failure_prevents_a_wakeup() {

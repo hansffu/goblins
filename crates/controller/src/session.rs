@@ -203,6 +203,18 @@ impl Inheritance {
             _owner: owner,
         }
     }
+    /// The same capability for a session launched with an agent integration.
+    pub(crate) fn fixture_with_integration(
+        configuration: &str,
+        branch: Arc<crate::branch::Branch>,
+        integration: &str,
+    ) -> Self {
+        let mut fixture = Self::fixture(configuration, branch);
+        let mut launch = (*fixture.launch).clone();
+        launch.integration = Some(integration.into());
+        fixture.launch = Arc::new(launch);
+        fixture
+    }
 }
 /// Append to a session directory's diagnostic `events.jsonl`.
 pub(crate) fn log_event(directory: &Path, event: &str, fields: serde_json::Value) {

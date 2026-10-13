@@ -477,6 +477,12 @@ pub enum IntegrationCommand {
         event: String,
         #[arg(long)]
         active: bool,
+        /// Tool name of a tool hook event
+        #[arg(long)]
+        tool: Option<String>,
+        /// Notification type of a Notification hook event
+        #[arg(long)]
+        notification: Option<String>,
     },
     Status,
 }

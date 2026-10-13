@@ -149,6 +149,15 @@ struct Active {
     dev_identity: Option<String>,
     call: Option<Call>,
 }
+impl Active {
+    /// Refresh activity freshness; true when the visible activity changed.
+    fn report_activity(&mut self, state: goblins_protocol::AgentState) -> bool {
+        self.activity_at = Some(Instant::now());
+        let changed = self.record.agent_state != state;
+        self.record.agent_state = state;
+        changed
+    }
+}
 #[derive(Clone)]
 enum Role {
     Host,
@@ -1078,11 +1087,7 @@ impl Controller {
                 if a.record.state != "running" || a.worker.is_none() {
                     return Err(conflict());
                 }
-                a.activity_at = Some(Instant::now());
-                if a.record.agent_state != p.state {
-                    a.record.agent_state = p.state;
-                    self.dirty = true;
-                }
+                self.dirty |= a.report_activity(p.state);
                 Ok(json!({"accepted":true}))
             }
             "sessions.status" => {
@@ -1851,6 +1856,18 @@ impl Controller {
             c.fds.clear();
         }
     }
+    /// Claude's integration hooks and monitor ticks are its activity reports.
+    fn claude_activity(&mut self, response: &crate::messaging::Completed) {
+        if let Ok(result) = &response.result
+            && let Ok(state) = serde_json::from_value(result["agent_state"].clone())
+            && let Some(a) = self.sessions.get_mut(&response.actor)
+            && a.record.state == "running"
+            && a.worker.is_some()
+            && a.inheritance.as_ref().and_then(|i| i.integration()) == Some("claude")
+        {
+            self.dirty |= a.report_activity(state);
+        }
+    }
     fn expire_activity(&mut self, now: Instant) {
         for a in self.sessions.values_mut() {
             if a.record.state != "running"
@@ -1875,7 +1892,9 @@ impl Controller {
                 a.terminal.interrupted = true;
             }
         }
-        for mut response in self.messaging.results.try_iter() {
+        let responses: Vec<_> = self.messaging.results.try_iter().collect();
+        for mut response in responses {
+            self.claude_activity(&response);
             if let Ok(result) = &mut response.result
                 && result["notify"] == true
                 && result["delivery"] != "notification"
@@ -2850,6 +2869,54 @@ mod tests {
             d.sandbox_control(&id, "sessions.set-state", json!({"state":"idle"}))
                 .is_err()
         );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn claude_integration_results_report_and_refresh_activity() {
+        use goblins_protocol::AgentState;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let manifest: crate::config::Manifest = serde_json::from_value(json!({
+            "api": 2, "helper_api": 5,
+            "goblins": {"shell": {"build_spec": "/unused", "args": [], "env": {},
+                "client_package": "/unused", "helper": "/unused", "flake": "unused"}},
+            "scopes": {},
+        }))
+        .unwrap();
+        let branch = std::sync::Arc::new(manifest.branch("shell", None).unwrap().1);
+        let id = session_with_results(&mut d, vec![]);
+        let response = |result: Value| crate::messaging::Completed {
+            connection: 0,
+            id: json!(1),
+            result: Ok(result),
+            actor: id.clone(),
+        };
+        let a = d.sessions.get_mut(&id).unwrap();
+        a.inheritance = Some(Inheritance::fixture("shell", branch.clone()));
+        d.dirty = false;
+        // Only a Claude-integrated session takes activity from its integration.
+        d.claude_activity(&response(json!({"agent_state":"working"})));
+        assert!(!d.dirty);
+        assert!(d.sessions[&id].activity_at.is_none());
+        let a = d.sessions.get_mut(&id).unwrap();
+        a.inheritance = Some(Inheritance::fixture_with_integration(
+            "shell", branch, "claude",
+        ));
+        d.claude_activity(&response(json!({"notify":false})));
+        assert!(d.sessions[&id].activity_at.is_none());
+        d.claude_activity(&response(json!({"agent_state":"working"})));
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Working);
+        let at = d.sessions[&id].activity_at.unwrap();
+        d.dirty = false;
+        // Monitor ticks repeat the activity: fresher, but not republished.
+        d.claude_activity(&response(json!({"agent_state":"working"})));
+        assert!(!d.dirty);
+        assert!(d.sessions[&id].activity_at.unwrap() >= at);
+        // Once the monitor stops ticking, activity expires as for any endpoint.
+        d.expire_activity(at + std::time::Duration::from_secs(31));
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

@@ -595,15 +595,24 @@ fn integration(command: cli::IntegrationCommand) -> Result<i32, String> {
             "integration.register",
             json!({"driver":driver,"key":key()?}),
         )?,
-        Hook { event, active } => {
+        Hook {
+            event,
+            active,
+            tool,
+            notification,
+        } => {
             let epoch = std::env::var("GOBLINS_INTEGRATION_EPOCH")
                 .map_err(|_| "missing integration epoch")?
                 .parse::<u64>()
                 .map_err(|_| "invalid integration epoch")?;
-            call(
-                "integration.check",
-                json!({"epoch":epoch,"event":event,"active":active,"key":key()?}),
-            )?
+            let mut params = json!({"epoch":epoch,"event":event,"active":active,"key":key()?});
+            if let Some(tool) = tool {
+                params["tool"] = json!(tool);
+            }
+            if let Some(notification) = notification {
+                params["notification"] = json!(notification);
+            }
+            call("integration.check", params)?
         }
         Status => call("integration.status", json!({}))?,
         Watch { epoch, delivery } => {
