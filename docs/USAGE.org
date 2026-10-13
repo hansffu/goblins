@@ -647,7 +647,7 @@ server as usual, from the daemon's environment (=EMACS_SOCKET_NAME= or
 
 The root flake exports =lib.x86_64-linux.builders= with =mkGoblin=,
 =mkCodexGoblin= and =mkGoblins=, and =lib.x86_64-linux.defaultGoblins= with
-the =shell= and =codex= presets. =commonTools= remains at
+the =shell=, =codex= and =claude= presets, whose agents come from the flake's =llm-agents= input ([[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]]). Importing =nix/lib.nix= directly takes those packages as =agents= (default: =pkgs=). =commonTools= remains at
 =lib.x86_64-linux.commonTools=. The
 =packages.x86_64-linux.goblins= and default package are built with these helpers.
 See [[file:../README.org::*Install][the configuration example]].

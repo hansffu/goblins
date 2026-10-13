@@ -170,6 +170,8 @@ The agents run without their own permission prompts (Codex with =--sandbox dange
 
 =inputs.goblins.lib.x86_64-linux.defaultGoblins= has the =shell=, =codex= and =claude= configurations used by the default package; for example =goblins.shell = defaultGoblins.shell;=.
 
+The agents in these configurations (Claude Code and Codex) come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]], which packages new releases daily; update them with =nix flake update llm-agents=. Its prebuilt packages are on =https://cache.numtide.com= (public key =niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g==); add that substituter to your Nix settings, or the agents build locally. =mkClaudeGoblin= and =mkCodexGoblin= still default to the nixpkgs packages; pass =pkg= to choose another.
+
 * Scopes
 
 A scope is a named trust group. Its members share:

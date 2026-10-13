@@ -2,6 +2,7 @@
   pkgs,
   goblinsLib,
   sandbox,
+  agents,
 }:
 let
   inherit (goblinsLib.builders)
@@ -250,7 +251,7 @@ in
           ../crates
         ];
       };
-      api = import "${source}/nix/lib.nix" { inherit pkgs sandbox; };
+      api = import "${source}/nix/lib.nix" { inherit pkgs sandbox agents; };
     in
     api.builders.mkGoblins {
       goblins = api.defaultGoblins;
