@@ -3,6 +3,8 @@
   goblinsLib,
   sandbox,
   agents,
+  # The demo goblins the dev shell and the Python tests use.
+  demo,
 }:
 let
   inherit (goblinsLib.builders)
@@ -251,11 +253,15 @@ in
           ../crates
         ];
       };
-      api = import "${source}/nix/lib.nix" { inherit pkgs sandbox agents; };
+      api = import "${source}/nix/lib.nix" { inherit pkgs sandbox; };
     in
     api.builders.mkGoblins {
-      goblins = api.defaultGoblins;
+      goblins = import "${source}/nix/demo-goblins" {
+        inherit pkgs agents;
+        inherit (api) builders;
+      };
     };
+  demo-goblins = demo;
   runtime-no-python =
     let
       minimal = mkGoblins { goblins.shell = mkGoblin (base // { allowedPackages = [ ]; }); };

@@ -3,8 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/21a67dc470149f337cecafbe965d8d252a390518";
-    # Agent packages, updated daily. Not following nixpkgs: this is the
-    # combination numtide builds and caches.
+    # Agent packages for the demo goblins, updated daily. Not following
+    # nixpkgs: this is the combination numtide builds and caches.
     llm-agents.url = "github:numtide/llm-agents.nix/493c34b1bed086861b0e968a40d00bd06522f003";
     agent-sandbox = {
       url = "github:archie-judd/agent-sandbox.nix/566defa1560051c4e48049389f942a6c1a53aee9";
@@ -26,12 +26,16 @@
         config.allowUnfreePredicate = pkg: nixpkgs.lib.getName pkg == "claude-code";
       };
       sandbox = agent-sandbox.lib.${system};
-      agents = llm-agents.packages.${system};
-      goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox agents; };
-      goblins = goblinsLib.builders.mkGoblins {
-        goblins = goblinsLib.defaultGoblins;
+      goblinsLib = import ./nix/lib.nix { inherit pkgs sandbox; };
+      # Development-only configurations: the dev shell's goblins and the
+      # test suite's daemon. Users declare their own with the builders.
+      demoGoblins = import ./nix/demo-goblins {
+        inherit pkgs;
+        inherit (goblinsLib) builders;
+        agents = llm-agents.packages.${system};
       };
-      dockerShell = import ./nix/default-goblins/shell.nix {
+      demo = goblinsLib.builders.mkGoblins { goblins = demoGoblins; };
+      dockerShell = import ./nix/demo-goblins/shell.nix {
         inherit pkgs;
         inherit (goblinsLib.builders) mkGoblin;
         options = {
@@ -47,7 +51,7 @@
       devGoblins = goblinsLib.builders.mkGoblins {
         scopes = devScopes;
         editor.emacs.enable = true;
-        goblins = goblinsLib.defaultGoblins // {
+        goblins = demoGoblins // {
           shell = dockerShell;
         };
       };
@@ -55,26 +59,20 @@
     {
       lib.${system} = goblinsLib;
       packages.${system} = {
-        inherit goblins;
-        inherit (goblins) helper;
-        default = goblins;
-        shell-runtime = goblins.config;
-        docker-shell = goblinsLib.builders.mkGoblins {
-          scopes = devScopes;
-          goblins.shell = dockerShell;
-        };
+        inherit (demo) helper;
       }
       // import ./tests/fixtures.nix {
         inherit pkgs sandbox;
-        inherit (goblins) helper;
+        inherit (demo) helper;
       };
       checks.${system} = import ./tests/checks.nix {
         inherit
           pkgs
           goblinsLib
           sandbox
-          agents
+          demo
           ;
+        agents = llm-agents.packages.${system};
       };
       formatter.${system} = pkgs.nixfmt;
       devShells.${system}.default = pkgs.mkShell {
@@ -95,10 +93,5 @@
       };
       # Only validated attributes from this pinned package set are requestable.
       legacyPackages.${system} = pkgs;
-      apps.${system}.default = {
-        type = "app";
-        program = "${goblins}/bin/goblins";
-        meta.description = "Sandboxed goblins with approved live Nix package grants";
-      };
     };
 }

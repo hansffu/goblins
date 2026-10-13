@@ -130,13 +130,7 @@ cowsay hello
 
 The directory you start a goblin in is shared with it read-write, at the same path, so the goblin's edits are your files. In the TUI, Tab switches between sandboxes and requests, =y= / =n= approve or deny the selected request, and =q= closes the TUI while goblins keep running.
 
-To try Goblins without configuring anything, the flake's default package contains ready-made =shell=, =codex= and =claude= configurations:
-
-#+begin_src sh
-nix run github:hansffu/goblins -- server start
-nix run github:hansffu/goblins -- tui
-nix run github:hansffu/goblins -- run shell   # in another terminal
-#+end_src
+To try Goblins from a checkout without configuring anything, =nix develop= puts a =goblins= with demo configurations on =PATH= (see [[file:docs/README.org][the developer docs]]).
 
 * Configuring goblins
 
@@ -165,12 +159,6 @@ The rest of the home directory inside a sandbox is private and temporary. See th
 - =codexSettings= / =claudeSettings= for extra sandbox-only agent settings, for example =codexSettings.model_reasoning_effort = "high";= or =claudeSettings.model = "sonnet";=.
 
 The agents run without their own permission prompts (Codex with =--sandbox danger-full-access --ask-for-approval never=, Claude Code with =--dangerously-skip-permissions=); Goblins is the sandbox and approves packages. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
-
-** Ready-made configurations
-
-=inputs.goblins.lib.x86_64-linux.defaultGoblins= has the =shell=, =codex= and =claude= configurations used by the default package; for example =goblins.shell = defaultGoblins.shell;=.
-
-The agents in these configurations (Claude Code and Codex) come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]], which packages new releases daily; update them with =nix flake update llm-agents=. Its prebuilt packages are on =https://cache.numtide.com= (public key =niks3.numtide.com-1:DTx8wZduET09hRmMtKdQDxNNthLQETkc/yaX7M4qK0g==); add that substituter to your Nix settings, or the agents build locally. =mkClaudeGoblin= and =mkCodexGoblin= still default to the nixpkgs packages; pass =pkg= to choose another.
 
 * Scopes
 

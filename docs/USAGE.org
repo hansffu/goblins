@@ -2,11 +2,10 @@
 
 * Start the daemon and frontends
 
-Build from the repository root:
+Install a =goblins= built with =mkGoblins= (see [[file:../README.org::*Install][Install]]), or, from a checkout, enter the development shell, whose =goblins= has the demo configurations:
 
 #+begin_src sh
-nix build --out-link result-goblins path:.#goblins
-export PATH="$PWD/result-goblins/bin:$PATH"
+nix develop path:.
 goblins server start
 #+end_src
 
@@ -278,18 +277,18 @@ goblins run shell
 #+end_src
 
 Restart any Goblins server started from an older build before using this
-development environment. The =docker-shell= package also provides a standalone
-Docker-enabled Fish configuration:
+development environment. To keep the Docker experiment apart from your own
+server, give it a private state directory:
 
 #+begin_src sh
-nix build .#docker-shell --out-link result-docker-shell
-./result-docker-shell/bin/goblins --state-dir /tmp/my-docker-goblins server start
-./result-docker-shell/bin/goblins --state-dir /tmp/my-docker-goblins run shell
+nix develop
+goblins --state-dir /tmp/my-docker-goblins server start
+goblins --state-dir /tmp/my-docker-goblins run shell
 # Inside the shell:
 docker info
 docker run --rm --network host -v /workspace:/work alpine ls /work
 # Back on the host, after finishing:
-./result-docker-shell/bin/goblins --state-dir /tmp/my-docker-goblins server stop
+goblins --state-dir /tmp/my-docker-goblins server stop
 #+end_src
 
 Use a private, previously unused state directory. No host Docker service or
@@ -646,10 +645,9 @@ server as usual, from the daemon's environment (=EMACS_SOCKET_NAME= or
 * Nix API
 
 The root flake exports =lib.x86_64-linux.builders= with =mkGoblin=,
-=mkCodexGoblin= and =mkGoblins=, and =lib.x86_64-linux.defaultGoblins= with
-the =shell=, =codex= and =claude= presets, whose agents come from the flake's =llm-agents= input ([[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]]). Importing =nix/lib.nix= directly takes those packages as =agents= (default: =pkgs=). =commonTools= remains at
-=lib.x86_64-linux.commonTools=. The
-=packages.x86_64-linux.goblins= and default package are built with these helpers.
+=mkCodexGoblin=, =mkClaudeGoblin= and =mkGoblins=. =commonTools= remains at
+=lib.x86_64-linux.commonTools=. The flake ships no configurations of its own; the
+development shell's demo goblins (=nix/demo-goblins/=) are built with these helpers.
 See [[file:../README.org::*Install][the configuration example]].
 
 Share ordinary options as an attribute set and compose agent-specific settings:
@@ -680,10 +678,7 @@ mkGoblins {
 =injectedFiles= entries to the supplied options. Attribute-set =//= merges are shallow;
 merge nested =env= or =codexSettings= sets explicitly when extending them.
 
-Use =lib.x86_64-linux.defaultGoblins.shell= for the predefined interactive Fish
-configuration in =nix/default-goblins/shell.nix=. The host and inner binary definitions
-live separately under =nix/packages/=. The preset uses commonTools and is the
-default =goblins run shell= configuration; custom entries still use =mkGoblin=.
+The host and inner binary definitions live under =nix/packages/=.
 
 =editor.emacs.enable = true;= on =mkGoblins= applies to every goblin: it adds
 the TRAMP tools and =EDITOR=/=VISUAL= (=goblins-editor=) to each one, scope
@@ -695,7 +690,7 @@ is refused. See [[*Opening sandbox files in Emacs][Opening sandbox files in Emac
 #+begin_src nix
 mkGoblins {
   editor.emacs.enable = true;
-  goblins.shell = defaultGoblins.shell;
+  goblins.shell = mkGoblin { pkg = pkgs.fish; binName = "fish"; };
 }
 #+end_src
 
@@ -981,7 +976,7 @@ pipes; daemon threads never enter mount namespaces.
 
 * Codex configuration
 
-The default package provides =goblins run codex=. The reusable Nix helper is:
+The Nix helper is:
 
 #+begin_src nix
 mkCodexGoblin {
@@ -1097,8 +1092,7 @@ the same file.
 
 * Claude Code configuration
 
-The default package provides =goblins run claude=. The reusable helper mirrors
-the Codex integration:
+The helper mirrors the Codex integration:
 
 #+begin_src nix
 mkClaudeGoblin {
@@ -1236,7 +1230,6 @@ nix develop path:.
 cargo test --workspace --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-nix build path:.#goblins
 nix flake check path:.
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 #+end_src

@@ -31,17 +31,17 @@ Accepted decisions:
 
 * Build and run from a checkout
 
-The root flake provides the =goblins= package, default app and development shell for x86_64-linux, with nixpkgs and agent-sandbox.nix pinned in =flake.lock=.
+The root flake provides the builders (=lib=) and a development shell for x86_64-linux, with nixpkgs, agent-sandbox.nix and llm-agents.nix pinned in =flake.lock=. It has no =goblins= package: users build theirs with =mkGoblins= and their own configurations.
 
 #+begin_src sh
-nix build path:.#goblins
-./result/bin/goblins server start
-./result/bin/goblins tui
-# In another terminal:
-./result/bin/goblins run shell
+nix develop path:.
+goblins server start
+goblins tui
+# In another terminal, also in the dev shell:
+goblins run shell
 #+end_src
 
-=nix run path:. -- tui= and =nix run path:. -- run shell= run the default app. =nix develop path:.= puts a =goblins= built from the checkout and the build tools on =PATH=; its =shell= configuration has Docker enabled in a temporary =dev= scope and =editor.emacs.enable= set. The explicit =path:.= also includes uncommitted source files. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
+=nix develop path:.= puts a =goblins= built from the checkout and the build tools on =PATH=. Its configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex=; =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. The Python tests' daemon uses the same demo goblins without Docker or the editor, built as =checks.x86_64-linux.demo-goblins=. The explicit =path:.= also includes uncommitted source files. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
 
 =just emacs= opens Emacs from the dev shell with this checkout's =emacs/= on the load path, so it uses the dev shell's =goblins=.
 
@@ -52,7 +52,6 @@ nix develop path:.
 cargo test --workspace --locked
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-nix build path:.#goblins
 nix flake check path:.
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 #+end_src
@@ -65,9 +64,9 @@ The development shell includes pyte for fullscreen terminal regression tests. Te
 
 | Location                            | Purpose                                                                  |
 |-------------------------------------+--------------------------------------------------------------------------|
-| =nix/lib.nix=                       | Public constructors and presets                                          |
+| =nix/lib.nix=                       | Public constructors                                                      |
 | =nix/builders/=                     | =mkGoblin=, =mkCodexGoblin=, =mkClaudeGoblin=, =mkScope= and =mkGoblins= |
-| =nix/default-goblins/=              | Default shell, Codex and Claude Code presets                             |
+| =nix/demo-goblins/=                 | Development-only shell, Codex and Claude Code configurations             |
 | =nix/goblins/codex/=                | Codex launcher, hooks and managed config                                 |
 | =nix/goblins/claude/=               | Claude Code launcher, hooks and managed config                           |
 | =skills/=                           | Goblins agent skills mounted into Codex and Claude Code sandboxes        |
