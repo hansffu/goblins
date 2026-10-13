@@ -5,7 +5,8 @@ let
     runtimeInputs = [ pkgs.jq ];
     text = builtins.readFile ./hook.sh;
   };
-  handler = {
+  handler = matcher: {
+    inherit matcher;
     hooks = [
       {
         type = "command";
@@ -14,13 +15,26 @@ let
       }
     ];
   };
+  # Turn boundaries drive inbox wakeups; the rest only report activity.
+  events = {
+    SessionStart = "";
+    UserPromptSubmit = "";
+    Stop = "";
+    StopFailure = "";
+    PreToolUse = "AskUserQuestion|ExitPlanMode";
+    # Every tool end, so waiting for an approval ends with its tool.
+    PostToolUse = "";
+    PostToolUseFailure = "";
+    Elicitation = "";
+    ElicitationResult = "";
+    PermissionRequest = "";
+    Notification = "idle_prompt|permission_prompt|elicitation_dialog|elicitation_url_dialog";
+  };
 in
 {
   package = hook;
   mkHooks =
     hooks:
     hooks
-    // pkgs.lib.genAttrs [ "SessionStart" "UserPromptSubmit" "Stop" ] (
-      event: [ handler ] ++ (hooks.${event} or [ ])
-    );
+    // builtins.mapAttrs (event: matcher: [ (handler matcher) ] ++ (hooks.${event} or [ ])) events;
 }

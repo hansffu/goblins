@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shlex
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -105,12 +106,37 @@ class ClaudeConfigTests(unittest.TestCase):
         integration = self.d.rpc.call("integration.status", {"session": parent})
         self.assertEqual(integration["driver"], "claude")
         self.assertEqual(integration["state"], "starting")
+        activity = lambda: self.d.get(parent)["agent_state"]
         self.assertEqual(self.hook(terminal, "SessionStart"), {})
+        self.assertEqual(activity(), "idle")
         self.assertEqual(
             self.hook(terminal, "UserPromptSubmit", prompt="private task"),
             {},
         )
+        self.assertEqual(activity(), "working")
+        # Activity-only hooks never answer the model or decide for a tool.
+        self.assertEqual(
+            self.settings["hooks"]["PreToolUse"][0]["matcher"],
+            "AskUserQuestion|ExitPlanMode",
+        )
+        self.assertEqual(
+            self.hook(terminal, "PreToolUse", tool_name="AskUserQuestion", tool_input={}),
+            {},
+        )
+        self.assertEqual(activity(), "waiting-input")
+        self.assertEqual(self.hook(terminal, "PostToolUse", tool_name="AskUserQuestion"), {})
+        self.assertEqual(activity(), "working")
+        self.assertEqual(
+            self.hook(terminal, "Notification", notification_type="idle_prompt", message="idle"),
+            {},
+        )
+        self.assertEqual(activity(), "idle")
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="again"), {})
         self.assertEqual(self.hook(terminal, "Stop"), {})
+        self.assertEqual(activity(), "idle")
+        self.assertEqual(
+            self.d.rpc.call("integration.status", {"session": parent})["activity"], "idle"
+        )
         self.d.rpc.call("messages.send", {"key": "task", "to": parent, "body": "private body"})
         continuation = self.hook(terminal, "Stop")
         self.assertEqual(continuation["decision"], "block")
@@ -165,6 +191,10 @@ class ClaudeConfigTests(unittest.TestCase):
                 for event in events
             )
         )
+        # The fake's Stop settles idle; monitor ticks keep it fresh past expiry.
+        self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
+        time.sleep(32)
+        self.assertEqual(self.d.get(receiver)["agent_state"], "idle")
 
 
 if __name__ == "__main__":
