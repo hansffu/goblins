@@ -57,12 +57,15 @@ The default closes the sidebar and restores the configuration saved by
 
 (defface goblins-sidebar-header '((t :inherit goblins-heading))
   "Raid and directory headings in the sidebar." :group 'goblins)
-(defface goblins-sidebar-selected '((t :inherit highlight :extend t))
+(defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
-(defface goblins-sidebar-active '((t :inherit secondary-selection :extend t))
-  "The goblin block or shell whose terminal is shown in the main window." :group 'goblins)
+(defface goblins-sidebar-active '((t))
+  "The goblin block or shell whose terminal is shown in the main window.
+Plain by default, so the bar alone marks it; give it a background to tint it."
+  :group 'goblins)
 (defface goblins-sidebar-active-marker '((t :inherit font-lock-keyword-face :weight bold))
-  "The bar before the goblin block or shell shown in the main window." :group 'goblins)
+  "The bar before the goblin block or shell shown in the main window.
+Its foreground is the bar's colour." :group 'goblins)
 (defface goblins-sidebar-name '((t :inherit font-lock-function-name-face :weight bold))
   "Every goblin's name, whatever its agent." :group 'goblins)
 (defface goblins-activity-working '((t :inherit success))
@@ -489,9 +492,9 @@ The text is built apart from the sidebar so a failure cannot blank it."
                         (goblins--sidebar-find (cons 'terminal shown))
                       (and id (goblins--sidebar-find (cons 'id id))))))
           (when pos
-            ;; A goblin's whole block, or a shell's line, gets a background
-            ;; and a bar over each line's first (indentation) column.  The
-            ;; selection's highlight stays on top.
+            ;; A goblin's whole block, or a shell's line, gets the active face
+            ;; under the selection's highlight, and a bar in the column before
+            ;; its text.
             (let* ((end (if (get-text-property pos 'goblins-terminal)
                             (save-excursion (goto-char pos) (line-beginning-position 2))
                           (goblins--sidebar-block-end pos)))
@@ -502,11 +505,24 @@ The text is built apart from the sidebar so a failure cannot blank it."
               (save-excursion
                 (goto-char pos)
                 (while (< (point) end)
-                  (let ((bar (make-overlay (point) (1+ (point)))))
-                    (overlay-put bar 'display
-                                 (propertize "▌" 'face 'goblins-sidebar-active-marker))
-                    (push bar goblins--sidebar-active-overlays))
+                  (push (goblins--sidebar-bar (+ (point) (current-indentation) -1))
+                        goblins--sidebar-active-overlays)
                   (forward-line 1))))))))))
+
+(defun goblins--sidebar-bar (pos)
+  "Draw the active goblin's bar over the indentation space at POS.
+In a GUI the bar is a narrow strip of the marker's colour that fills the
+line's height, so the bars of a block join; a terminal shows a ▌."
+  (let ((bar (make-overlay pos (1+ pos))))
+    (if (display-graphic-p)
+        (let ((column (save-excursion (goto-char (1+ pos)) (current-column))))
+          (overlay-put bar 'before-string
+                       (propertize " " 'display '(space :width 0.25)
+                                   'face '(:inherit goblins-sidebar-active-marker
+                                           :inverse-video t)))
+          (overlay-put bar 'display `(space :align-to ,column)))
+      (overlay-put bar 'display (propertize "▌" 'face 'goblins-sidebar-active-marker)))
+    bar))
 
 (defun goblins--sidebar-block-end (pos)
   "The end of the block of the goblin whose name is on the line at POS: its

@@ -1089,16 +1089,33 @@
                    (overlays (overlays-at pos))
                    (block (cl-find 'goblins-sidebar-active overlays
                                    :key (lambda (o) (overlay-get o 'face)))))
-              ;; The goblin's whole block, behind a bar on each of its lines,
-              ;; and under the selection's highlight.
+              ;; The goblin's whole block, with a bar on each of its lines in
+              ;; the column before the text, under the selection's highlight.
               (should block)
               (should (equal (buffer-substring-no-properties (overlay-start block)
                                                              (overlay-end block))
                              "  session-b (shell)\n  ○ idle\n"))
               (should (< (overlay-get block 'priority) hl-line-overlay-priority))
-              (should (equal (cl-count-if (lambda (o) (equal (overlay-get o 'display) "▌"))
-                                          (overlays-in (overlay-start block) (overlay-end block)))
-                             2)))
+              (let ((bars (cl-remove-if-not (lambda (o) (equal (overlay-get o 'display) "▌"))
+                                            (overlays-in (overlay-start block)
+                                                         (overlay-end block)))))
+                (should (= (length bars) 2))
+                (should (equal (mapcar (lambda (o) (- (overlay-start o)
+                                                      (save-excursion
+                                                        (goto-char (overlay-start o))
+                                                        (line-beginning-position))))
+                                       bars)
+                               '(1 1))))
+              ;; A GUI draws a narrow strip instead, keeping the text's column.
+              (cl-letf (((symbol-function 'display-graphic-p) #'always))
+                (let ((bar (goblins--sidebar-bar (1+ pos))))
+                  (unwind-protect
+                      (progn
+                        (should (equal (overlay-get bar 'display) '(space :align-to 2)))
+                        (should (equal (get-text-property 0 'display
+                                                          (overlay-get bar 'before-string))
+                                       '(space :width 0.25))))
+                    (delete-overlay bar)))))
             (should-not (overlays-at (goblins--sidebar-find '(id . "session-a")))))
         (kill-buffer terminal)))))
 
