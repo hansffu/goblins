@@ -121,19 +121,17 @@ directly; there is no need to download another copy of Magit.
 
 * Workspace
 
-=M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by
-raid and then by project directory, each with its type.  Stopped and failed
-goblins are hidden (the status buffer still lists them; set
-=goblins-sidebar-show-finished= to show them).  The sidebar has no cursor: the
-line at point is highlighted (=goblins-sidebar-selected=), and the goblins and
-shells shown beside it are bold behind a =▌= bar
-(=goblins-sidebar-active=, =goblins-sidebar-active-marker=).  =!N= marks
-pending permission requests, on goblins and on the headings above them.
+=M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory.  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
+
+Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), its shell terminals, and the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · tramp=).  A rule parts the goblins of a directory, starting at each goblin's indent and fainter before a child; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
+
+The sidebar has no cursor: the goblin or line at point is highlighted (=goblins-sidebar-selected=).  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  The goblin or shell shown beside the sidebar has its block marked by a background and a =▌= bar (=goblins-sidebar-active=, =goblins-sidebar-active-marker=).  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox=, =goblins-sidebar-separator= and =goblins-sidebar-child-separator=.
+
 In Evil's motion state the sidebar's own keys take precedence over every minor
 mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
 work as usual.  Shell
-terminals opened with =t= are listed below their goblin (=› shell=, =› shell
-2=, marked =(exited)= once their shell ends) until you kill their buffer;
+terminals opened with =t= are listed in their goblin's block (=› shell=, =› shell
+2=, marked =· exited= once their shell ends) until you kill their buffer;
 Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 
 | Key (also Evil motion state) | Action                                                   |
@@ -306,7 +304,7 @@ the daemon of =goblins-state-directory=.
   its own =goblins exec= instead of failing as a reentrant call. Otherwise
   commands use TRAMP's connection, which is several times faster.
 - *Connections close when unused.* TRAMP keeps a shell open in the goblin for
-  each connection (=· tramp= in the sidebar). It is closed when you kill the
+  each connection (=⇄ tramp= in the sidebar). It is closed when you kill the
   last buffer that works in that goblin; terminals don't count, as they have
   their own exec. The pin stays, so the next use reconnects to the same goblin.
 - *When a goblin stops*, its =/goblins:= buffers and processes are killed
@@ -326,7 +324,7 @@ the daemon of =goblins-state-directory=.
   pin the goblin before any TRAMP use. =M-x goblins-find-file= visits any file
   inside a goblin, starting in its working directory. In the sidebar, =t=, =e=, =d= and =f= open
   them for the goblin at point and =X= kills its shells and commands; goblins
-  show =· 1 shell · tramp= while they are in use.
+  show =· 1 shell · tramp= in the status buffer, and =⇄ tramp= in the sidebar, while they are in use.
 - *The sandbox's =EDITOR=.* With =editor.emacs.enable= on =mkGoblins=,
   =goblins-editor= inside a sandbox opens files here through emacsclient,
   always as =/goblins:= paths; it needs a running Emacs server

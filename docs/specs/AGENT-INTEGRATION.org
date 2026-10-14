@@ -202,6 +202,8 @@ invalid states, host reports and reports after running ends are rejected.
 Session snapshots add =agent_state=, default =unknown=, independently of the
 existing lifecycle =state=. No last-turn outcome field is added.
 
+Snapshots also carry =agent_state_since=, the Unix time in milliseconds when =agent_state= last changed (absent until it first does), and =inbox=, the number of messages queued for the goblin. The messaging worker reports the queued counts to the controller whenever they change, so a send, claim or failed delivery republishes the snapshot. The workspace sidebar shows both.
+
 Accepted reports refresh a daemon-owned monotonic timer. After 30 seconds
 without a report activity becomes unknown; stopping clears it. State subscribers
 receive updates only when visible activity changes, not on equal heartbeats.

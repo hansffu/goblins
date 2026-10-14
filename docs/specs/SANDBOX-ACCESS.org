@@ -278,8 +278,7 @@ goblins [--state-dir DIR] exec [-t] [-e K=V]... [-w DIR] [--instance I] [--sessi
 
 - Init reports exec start and exit. The daemon keeps the live set in the session record, split into
   interactive shells (=-t=) and background TRAMP/eshell processes.
-- The workspace sidebar and =goblins status= show it, for example =gribble ● 1 shell · tramp=, with a
-  "kill all execs" action.
+- =goblins status= shows it, for example =gribble ● 1 shell · tramp=. The workspace sidebar lists Emacs's own shells in the goblin's block and the rest as =⇄ 1 shell · tramp=, with a "kill all execs" action.
 - =events.jsonl= gets =exec-started= and =exec-exited= (argv, cwd, exit code) for =-t= execs only. The flood
   of non-interactive execs would otherwise hit the 1 MiB cap and crowd out lifecycle events.
 - The agent is not notified, and nothing is posted to the communications journal.
