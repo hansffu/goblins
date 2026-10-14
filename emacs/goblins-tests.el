@@ -935,10 +935,10 @@
     (dotimes (i (- (point-max) (point-min)))
       (let* ((pos (+ (point-min) i))
              (display (get-text-property pos 'display)))
-        (push (pcase display
-                (`(space :align-to right) "──")
-                (`(space :align-to ,(and (pred integerp) column)) (make-string column ?\s))
-                (_ (string (char-after pos))))
+        (push (cond ((get-text-property pos 'goblins-rule) "──")
+                    ((integerp (plist-get (cdr-safe display) :align-to))
+                     (make-string (plist-get (cdr display) :align-to) ?\s))
+                    (t (string (char-after pos))))
               out)))
     (apply #'concat (nreverse out))))
 
@@ -988,8 +988,7 @@
                                "  ──\n  ✗ old (claude) · exited 1\n")))
         ;; Rules before children are fainter.
         (should (equal (cl-loop for pos from (point-min) below (point-max)
-                                when (equal (get-text-property pos 'display)
-                                            '(space :align-to right))
+                                when (get-text-property pos 'goblins-rule)
                                 collect (get-text-property pos 'face))
                        '(goblins-sidebar-child-separator goblins-sidebar-child-separator
                          goblins-sidebar-separator goblins-sidebar-separator)))
