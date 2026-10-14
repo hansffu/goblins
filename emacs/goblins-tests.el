@@ -980,7 +980,7 @@
         ;; One rule before every goblin but the first, never two in a row.
         (should (equal (goblins-test--sidebar-plain)
                        (concat "▾ /p/ !2\n  chief (claude)\n  ◐ working · 4m\n"
-                               "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · tramp\n"
+                               "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · Tramp connected\n"
                                "  ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
                                "    ! docker\n"
                                "  ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
@@ -1113,16 +1113,22 @@
                                                         (line-beginning-position))))
                                        bars)
                                '(0 0))))
-              ;; A GUI draws a narrow strip instead, keeping the text's column.
+              ;; A GUI draws strips half a column wide instead, the goblin's
+              ;; outside a shown shell's with a gap between, and the text keeps
+              ;; its column.
               (cl-letf (((symbol-function 'display-graphic-p) #'always))
-                (let ((bar (goblins--sidebar-bar (1+ pos))))
+                (let ((bars (goblins--sidebar-bar pos t t)))
                   (unwind-protect
-                      (progn
-                        (should (equal (overlay-get bar 'display) '(space :align-to 2)))
-                        (should (equal (get-text-property 0 'display
-                                                          (overlay-get bar 'before-string))
-                                       '(space :width 0.25))))
-                    (delete-overlay bar)))))
+                      (let ((strips (overlay-get (car bars) 'before-string)))
+                        (should (equal (mapcar (lambda (i) (get-text-property i 'display strips))
+                                               '(0 1 2))
+                                       '((space :width 0.5) (space :width 0.25)
+                                         (space :width 0.5))))
+                        (should (get-text-property 0 'face strips))
+                        (should (eq (get-text-property 1 'face strips) 'default))
+                        (should (equal (mapcar (lambda (o) (overlay-get o 'display)) bars)
+                                       '((space :align-to 1)))))
+                    (mapc #'delete-overlay bars)))))
             ;; Neither highlight reaches the bar's column or left of it.
             (let ((pos (goblins--sidebar-find '(id . "session-b"))))
               (let ((masks (cl-remove-if-not (lambda (o) (overlay-get o 'goblins-margin))
@@ -2542,7 +2548,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (goblins--sidebar-render-all)
             (should (equal (goblins-test--sidebar-plain)
                            (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
-                                   "  ⇄ tramp\n  › shell\n  › shell 2 · exited\n"
+                                   "  ⇄ Tramp connected\n  › shell\n  › shell 2 · exited\n"
                                    "  ──\n    session-b (shell)\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.

@@ -123,9 +123,9 @@ directly; there is no need to download another copy of Magit.
 
 =M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory.  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
 
-Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · tramp=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text, and fainter before a child; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
+Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text, and fainter before a child; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
 
-The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  The goblin or shell shown beside the sidebar has a bar down its block, two columns before its text (=goblins-sidebar-active-marker=, whose foreground is the bar's colour); give =goblins-sidebar-active= a background to tint the block as well.  Neither highlight reaches the bar's column, so a column parts the bar from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox=, =goblins-sidebar-separator= and =goblins-sidebar-child-separator=.
+The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  The goblin or shell shown beside the sidebar has a bar down its block, two columns before its text (=goblins-sidebar-active-marker=, whose foreground is the bar's colour); give =goblins-sidebar-active= a background to tint the block as well.  A shell shown beside the sidebar has its own bar inside its goblin's, with a gap between them.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox=, =goblins-sidebar-separator= and =goblins-sidebar-child-separator=.
 
 In Evil's motion state the sidebar's own keys take precedence over every minor
 mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
@@ -304,7 +304,7 @@ the daemon of =goblins-state-directory=.
   its own =goblins exec= instead of failing as a reentrant call. Otherwise
   commands use TRAMP's connection, which is several times faster.
 - *Connections close when unused.* TRAMP keeps a shell open in the goblin for
-  each connection (=⇄ tramp= in the sidebar). It is closed when you kill the
+  each connection (=⇄ Tramp connected= in the sidebar). It is closed when you kill the
   last buffer that works in that goblin; terminals don't count, as they have
   their own exec. The pin stays, so the next use reconnects to the same goblin.
 - *When a goblin stops*, its =/goblins:= buffers and processes are killed
@@ -324,7 +324,7 @@ the daemon of =goblins-state-directory=.
   pin the goblin before any TRAMP use. =M-x goblins-find-file= visits any file
   inside a goblin, starting in its working directory. In the sidebar, =t=, =e=, =d= and =f= open
   them for the goblin at point and =X= kills its shells and commands; goblins
-  show =· 1 shell · tramp= in the status buffer, and =⇄ tramp= in the sidebar, while they are in use.
+  show =· 1 shell · tramp= in the status buffer, and =⇄ Tramp connected= in the sidebar, while they are in use.
 - *The sandbox's =EDITOR=.* With =editor.emacs.enable= on =mkGoblins=,
   =goblins-editor= inside a sandbox opens files here through emacsclient,
   always as =/goblins:= paths; it needs a running Emacs server
