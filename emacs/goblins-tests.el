@@ -879,7 +879,10 @@
             (with-current-buffer info
               (should (string-match-p (concat "Activity +" state) (buffer-string))))
             (with-current-buffer sidebar
-              (should (string-match-p (regexp-quote (concat "[" state "]"))
+              (should (string-match-p (pcase state
+                                        ("working" "◐ working · <1m")
+                                        ("waiting-input" "◆ needs input · <1m")
+                                        ("idle" "○ idle · <1m"))
                                       (buffer-string))))))
       (dolist (buffer (list sidebar info source))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
@@ -926,16 +929,104 @@
                                :raid '(:id "r0" :name "alpha"))
         (goblins-test--session "session-e")))
 
+(defun goblins-test--sidebar-plain ()
+  "The sidebar's text, with each rule drawn as \"──\" after its indentation."
+  (let ((out nil))
+    (dotimes (i (- (point-max) (point-min)))
+      (let* ((pos (+ (point-min) i))
+             (display (get-text-property pos 'display)))
+        (push (pcase display
+                (`(space :align-to right) "──")
+                (`(space :align-to ,(and (pred integerp) column)) (make-string column ?\s))
+                (_ (string (char-after pos))))
+              out)))
+    (apply #'concat (nreverse out))))
+
 (ert-deftest goblins-sidebar-groups-by-raid-then-directory ()
   (goblins-test--sidebar goblins-test--raid-sessions
-    (let ((text (buffer-string)))
-      (should (< (string-match "raid alpha" text) (string-match "raid zeta" text)))
-      (should (< (string-match "raid zeta" text) (string-match "session-b" text)))
-      (should (string-match-p "▾ raid zeta !1\n  ▾ /p/one/ !1\n    . session-a (shell) \\[unknown\\] !1\n      . session-c (shell)"
-                              (replace-regexp-in-string "[●○◌✗]" "." text)))
-      (should (string-match-p "▾ /p/two/\n  . session-b" text))
-      (should (string-match-p "▾ unknown\n  . session-e"
-                              (replace-regexp-in-string "[●○◌✗]" "." text))))))
+    ;; Raids first, then directories; a blank line before each group, and a
+    ;; rule before each child goblin at its indent.
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ raid alpha\n  ▾ /p/two/\n    session-d (shell)\n"
+                           "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    session-a (shell)\n"
+                           "    ! hello (package)\n      ──\n      session-c (shell)\n"
+                           "\n▾ /p/two/\n  session-b (shell)\n"
+                           "\n▾ unknown\n  session-e (shell)\n")))))
+
+(ert-deftest goblins-sidebar-shows-each-goblin-as-a-block ()
+  (let* ((since (- (* 1000 (float-time)) (* 4 60 1000)))
+         (sessions
+          (list (goblins-test--session "chief" :cwd "/p" :name "claude"
+                                       :agent_state "working" :agent_state_since since
+                                       :inbox 2 :shells 2 :execs 1)
+                (goblins-test--session "scout" :cwd "/p" :parent "chief" :name "codex"
+                                       :agent_state "waiting-approval" :agent_state_since since)
+                (goblins-test--session "helper" :cwd "/p" :parent "chief"
+                                       :agent_state "idle" :inbox 1)
+                (goblins-test--session "beta" :cwd "/p" :state "starting")
+                (goblins-test--session "old" :cwd "/p" :name "claude"
+                                       :state "stopped" :exit_code 1))))
+    (goblins-test--sidebar sessions
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :permissions
+                         (vector (goblins-test--request-in "x" "chief" "pending" "jq")
+                                 (goblins-test--request-in "y" "chief" "denied")
+                                 (append '(:kind "docker")
+                                         (goblins-test--request-in "z" "scout" "pending"
+                                                                   "docker"))))))
+      (let ((goblins-sidebar-show-finished t))
+        (goblins--sidebar-render)
+        ;; One rule before every goblin but the first, never two in a row.
+        (should (equal (goblins-test--sidebar-plain)
+                       (concat "▾ /p/ !2\n  chief (claude)\n  ◐ working · 4m\n"
+                               "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · tramp\n"
+                               "    ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
+                               "    ! docker\n"
+                               "    ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
+                               "  ──\n  beta (shell)\n  ◌ starting\n"
+                               "  ──\n  ✗ old (claude) · exited 1\n")))
+        ;; Rules before children are fainter.
+        (should (equal (cl-loop for pos from (point-min) below (point-max)
+                                when (equal (get-text-property pos 'display)
+                                            '(space :align-to right))
+                                collect (get-text-property pos 'face))
+                       '(goblins-sidebar-child-separator goblins-sidebar-child-separator
+                         goblins-sidebar-separator goblins-sidebar-separator)))
+        (goto-char (point-min))
+        (re-search-forward "working")
+        (should (eq (get-text-property (point) 'face) 'goblins-activity-working))
+        (should (equal (goblins--sidebar-duration (- (* 1000 (float-time)) 5000)) "<1m"))
+        (should (equal (goblins--sidebar-duration (- (* 1000 (float-time)) (* 3 3600 1000)))
+                       "3h"))))))
+
+(ert-deftest goblins-sidebar-moves-past-a-goblins-details-in-one-step ()
+  (goblins-test--sidebar
+      (list (goblins-test--session "chief" :cwd "/p" :agent_state "working" :inbox 1)
+            (goblins-test--session "scout" :cwd "/p" :parent "chief" :agent_state "idle")
+            (goblins-test--session "beta" :cwd "/p"))
+    (goto-char (point-min))
+    (let ((stops nil))
+      (while (progn (push (goblins--sidebar-key-at (point)) stops)
+                    (let ((here (point))) (goblins-sidebar-next) (/= here (point)))))
+      (should (equal (nreverse stops)
+                     '((group dir nil "/p") (id . "chief") (id . "scout") (id . "beta")))))
+    (goblins-sidebar-previous)
+    (should (equal (get-text-property (point) 'goblins-id) "scout"))
+    ;; The selection covers the name with its details, as one line.
+    (goblins-sidebar-previous)
+    (let ((range (goblins--sidebar-selection)))
+      (should (equal (buffer-substring-no-properties (car range) (cdr range))
+                     "  chief (shell)\n  ◐ working\n  ✉ 1 message\n")))
+    ;; On a detail line, the goblin's commands still apply, and point
+    ;; stays with its goblin across renders.
+    (forward-line 1)
+    (should (equal (goblins--sidebar-goblin-at-point) (cons source "chief")))
+    (should (equal (goblins--sidebar-selection) (progn (forward-line -1)
+                                                       (prog1 (goblins--sidebar-selection)
+                                                         (forward-line 1)))))
+    (goblins--sidebar-render)
+    (should (equal (get-text-property (point) 'goblins-id) "chief"))))
 
 (ert-deftest goblins-sidebar-navigates-and-folds ()
   (goblins-test--sidebar goblins-test--raid-sessions
@@ -980,7 +1071,8 @@
 
 (ert-deftest goblins-sidebar-marks-selected-and-active-lines-apart ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
-                               (goblins-test--session "session-b" :cwd "/p"))
+                               (goblins-test--session "session-b" :cwd "/p"
+                                                      :agent_state "idle"))
     (let ((terminal (generate-new-buffer " *goblins test terminal*")))
       (unwind-protect
           (save-window-excursion
@@ -994,14 +1086,20 @@
             (should-not cursor-type)
             (should (equal (buffer-local-value 'evil-motion-state-cursor (current-buffer)) '(nil)))
             (should (eq hl-line-face 'goblins-sidebar-selected))
-            ;; The goblin in the main window is bold, behind a bar.
             (let* ((pos (goblins--sidebar-find '(id . "session-b")))
-                   (overlays (overlays-at pos)))
-              (should (memq 'goblins-sidebar-active (mapcar (lambda (o) (overlay-get o 'face))
-                                                            overlays)))
-              (should (equal (substring-no-properties
-                              (cl-some (lambda (o) (overlay-get o 'display)) overlays))
-                             "▌")))
+                   (overlays (overlays-at pos))
+                   (block (cl-find 'goblins-sidebar-active overlays
+                                   :key (lambda (o) (overlay-get o 'face)))))
+              ;; The goblin's whole block, behind a bar on each of its lines,
+              ;; and under the selection's highlight.
+              (should block)
+              (should (equal (buffer-substring-no-properties (overlay-start block)
+                                                             (overlay-end block))
+                             "  session-b (shell)\n  ○ idle\n"))
+              (should (< (overlay-get block 'priority) hl-line-overlay-priority))
+              (should (equal (cl-count-if (lambda (o) (equal (overlay-get o 'display) "▌"))
+                                          (overlays-in (overlay-start block) (overlay-end block)))
+                             2)))
             (should-not (overlays-at (goblins--sidebar-find '(id . "session-a")))))
         (kill-buffer terminal)))))
 
@@ -2041,12 +2139,15 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (should (window-parameter (get-buffer-window sidebar) 'window-side))
     ;; The main window shows the status buffer: no goblin terminal yet.
     (should (eq (window-buffer (goblins--main-window)) source))
-    (goblins-test--wait (lambda () (string-match-p "gamma (shell) \\[unknown\\] !1" (goblins-test--sidebar-text))))
+    (goblins-test--wait (lambda () (string-match-p "gamma (shell)\n  ! hello (package)"
+                                                   (goblins-test--sidebar-text))))
     (let ((text (goblins-test--sidebar-text)))
-      (should (string-match-p (concat (regexp-quote project-one) "\n  ● alpha (shell) \\[unknown\\]\n  ● beta (shell)")
+      ;; A rule (blank in plain text) parts the goblins of a directory.
+      (should (string-match-p (concat (regexp-quote project-one) "\n  alpha (shell)\n +\n  beta (shell)")
                               text))
       ;; The directory of the waiting goblin carries its count too.
-      (should (string-match-p "/ !1\n  ● delta (shell) \\[unknown\\]\n  ● gamma (shell) \\[unknown\\] !1" text)))
+      (should (string-match-p "/ !1\n  delta (shell)\n +\n  gamma (shell)\n  ! hello (package)\n"
+                              text)))
     ;; Selecting the waiting goblin pops up its request at the bottom.
     (goblins-select-goblin source (plist-get (goblins-test--live-session source "gamma") :id))
     (should (window-parameter (get-buffer-window goblins--popup-buffer-name) 'window-side))
@@ -2058,7 +2159,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     ;; n finds the waiting goblin, p shows its request focused, d denies it.
     (goblins-test--in-sidebar)
     (goblins-sidebar-next-pending)
-    (should (looking-at-p "  ● gamma"))
+    (should (looking-at-p "  gamma"))
     (goblins-sidebar-permissions)
     ;; Views open right of the status buffer, which holds the agent's place.
     (should (eq (window-buffer (goblins--main-window)) source))
@@ -2072,7 +2173,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     ;; Decided: the popup is gone.
     (should-not (get-buffer-window goblins--popup-buffer-name))
     ;; I shows the goblin's info.
-    (goblins-test--in-sidebar "  ● alpha")
+    (goblins-test--in-sidebar "^  alpha")
     (goblins-sidebar-info)
     (with-current-buffer (window-buffer (goblins--right-window))
       (should (string-match-p (concat "Directory +" (regexp-quote (directory-file-name project-one)))
@@ -2087,7 +2188,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (call-interactively (key-binding "q"))
     (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list source)))
     ;; r creates a raid around alpha and opens its page.
-    (goblins-test--in-sidebar "  ● alpha")
+    (goblins-test--in-sidebar "^  alpha")
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
       (goblins-raid))
     (setq page (get-buffer goblins--raid-buffer-name))
@@ -2113,14 +2214,14 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (goblins-test--wait (lambda () (string-match-p "Members (1)" (buffer-string)))))
     ;; i in the sidebar invites beta again, choosing the raid.
     (goblins-test--wait (lambda () (string-match-p "raid crew" (goblins-test--sidebar-text))))
-    (goblins-test--in-sidebar "  ● beta")
+    (goblins-test--in-sidebar "^  beta")
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
       (goblins-sidebar-invite))
     (goblins-test--wait
      (lambda () (equal (plist-get (plist-get (goblins-test--live-session source "beta") :raid) :name)
                        "crew")))
     ;; K stops delta, which then leaves the sidebar.
-    (goblins-test--in-sidebar "  ● delta")
+    (goblins-test--in-sidebar "^  delta")
     (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
       (goblins-sidebar-stop))
     (goblins-test--wait (lambda () (not (string-match-p "delta" (goblins-test--sidebar-text)))))
@@ -2147,7 +2248,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
           (should (derived-mode-p 'ghostel-mode))
           (should goblin-mode)
           (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions)))
-        (goblins-test--in-sidebar "  ● alpha")
+        (goblins-test--in-sidebar "^  alpha")
         (should (overlays-at (point)))
         (kill-buffer terminal)
         (setq ghostel-used t)))
@@ -2407,10 +2508,10 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             ;; Another daemon's shell with the same session ID is not listed.
             (with-current-buffer elsewhere (setq goblins--directory "/elsewhere"))
             (goblins--sidebar-render-all)
-            (should (string-match-p
-                     (concat "▾ /p/ !1\n  . session-a (shell) \\[unknown\\] !1\n    › shell\n"
-                             "    › shell 2 (exited)\n    . session-b (shell) \\[unknown\\]\n\\'")
-                     (replace-regexp-in-string "[●○◌✗]" "." (buffer-string))))
+            (should (equal (goblins-test--sidebar-plain)
+                           (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
+                                   "  › shell\n  › shell 2 · exited\n"
+                                   "    ──\n    session-b (shell)\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
             (goto-char (point-min))

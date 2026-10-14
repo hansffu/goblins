@@ -59,10 +59,32 @@ The default closes the sidebar and restores the configuration saved by
   "Raid and directory headings in the sidebar." :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit highlight :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
-(defface goblins-sidebar-active '((t :weight bold))
-  "The goblin or shell whose terminal is shown in the main window." :group 'goblins)
+(defface goblins-sidebar-active '((t :inherit secondary-selection :extend t))
+  "The goblin block or shell whose terminal is shown in the main window." :group 'goblins)
 (defface goblins-sidebar-active-marker '((t :inherit font-lock-keyword-face :weight bold))
-  "The bar before the goblin or shell shown in the main window." :group 'goblins)
+  "The bar before the goblin block or shell shown in the main window." :group 'goblins)
+(defface goblins-sidebar-name '((t :inherit font-lock-function-name-face :weight bold))
+  "Every goblin's name, whatever its agent." :group 'goblins)
+(defface goblins-activity-working '((t :inherit success))
+  "A goblin's agent at work." :group 'goblins)
+(defface goblins-activity-waiting '((t :inherit warning :weight bold))
+  "A goblin's agent waiting for input or approval." :group 'goblins)
+(defface goblins-activity-idle '((t :inherit shadow))
+  "A goblin's idle agent." :group 'goblins)
+(defface goblins-sidebar-permission '((t :inherit error :weight bold))
+  "A goblin's pending permission requests, and the counts of them." :group 'goblins)
+(defface goblins-inbox '((t :inherit font-lock-constant-face))
+  "Messages queued in a goblin's inbox." :group 'goblins)
+(defface goblins-sidebar-separator
+  '((((type tty)) :inherit shadow :underline t)
+    (t :inherit shadow :strike-through t :height 0.6))
+  "The rule between top-level goblins." :group 'goblins)
+(defface goblins-sidebar-child-separator
+  '((((type tty) (background dark)) :foreground "gray30" :underline t)
+    (((type tty)) :foreground "gray80" :underline t)
+    (((background dark)) :foreground "gray30" :strike-through t :height 0.6)
+    (t :foreground "gray80" :strike-through t :height 0.6))
+  "The fainter rule before a child goblin." :group 'goblins)
 
 (defvar-local goblins--sidebar-source nil
   "The status buffer whose snapshot this sidebar shows.")
@@ -141,6 +163,8 @@ Directories and sessions keep snapshot order inside each group."
                (cons 'terminal (get-text-property p 'goblins-terminal)))
           (and (get-text-property p 'goblins-id)
                (cons 'id (get-text-property p 'goblins-id)))
+          (and (get-text-property p 'goblins-detail)
+               (cons 'id (get-text-property p 'goblins-detail)))
           (and (get-text-property p 'goblins-group)
                (cons 'group (get-text-property p 'goblins-group)))))))
 
@@ -158,11 +182,12 @@ Directories and sessions keep snapshot order inside each group."
                (point-min))))))
 
 (defun goblins--sidebar-badge (pending)
-  (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-attention) ""))
+  (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-sidebar-permission) ""))
 
 (defun goblins--sidebar-insert-group (key indent label collapsed &optional properties pending)
   "Insert the heading of group KEY, with text PROPERTIES and a PENDING badge.
-Return non-nil unless KEY is in COLLAPSED."
+A blank line parts it from the goblins above.  Return non-nil unless KEY is
+in COLLAPSED."
   (let* ((folded (member key collapsed))
          (text (concat
                 (propertize
@@ -173,47 +198,150 @@ Return non-nil unless KEY is in COLLAPSED."
                 "\n")))
     (add-text-properties 0 (length text) (list 'goblins-group key) text)
     (add-text-properties 0 (length text) properties text)
+    (unless (or (bobp) (get-text-property (line-beginning-position 0) 'goblins-group))
+      (insert "\n"))
     (insert text)
     (not folded)))
+
+(defun goblins--sidebar-insert-separator (depth face)
+  "Insert a rule in FACE from the column of a goblin at DEPTH to the right edge."
+  ;; Aligned, not spaced: the face's height must not narrow the indentation.
+  (let ((height (face-attribute face :height nil t)))
+    (insert (propertize " " 'display `(space :align-to ,(* 2 depth)))
+            (propertize " " 'display '(space :align-to right) 'face face)
+            (propertize "\n" 'face (and (floatp height) (list :height height))))))
+
+(defun goblins--sidebar-insert-detail (depth id group-key text)
+  "Insert TEXT as a line of goblin ID's block at DEPTH.  Movement passes it by."
+  (let ((start (point)))
+    (insert (make-string (* 2 depth) ?\s) text "\n")
+    (add-text-properties start (point) (list 'goblins-detail id 'goblins-parent id
+                                             'goblins-in-group group-key))))
 
 (defun goblins--sidebar-insert-shell (shell depth id group-key)
   "Insert the line of SHELL, a terminal inside goblin ID, at DEPTH."
   (let ((start (point))
-        (number (buffer-local-value 'goblins--shell-number shell)))
-    (insert (make-string (* 2 depth) ?\s) "› "
+        (name (let ((number (buffer-local-value 'goblins--shell-number shell)))
+                (format "shell%s" (if (> number 1) (format " %d" number) "")))))
+    (insert (make-string (* 2 depth) ?\s)
             (if (process-live-p (buffer-local-value 'ghostel--process shell))
-                (format "shell%s" (if (> number 1) (format " %d" number) ""))
-              (propertize (format "shell%s (exited)" (if (> number 1) (format " %d" number) ""))
-                          'face 'goblins-dim))
+                (concat "› " name)
+              (propertize (concat "› " name " · exited") 'face 'goblins-dim))
             "\n")
     (add-text-properties start (point) (list 'goblins-terminal shell 'goblins-parent id
                                              'goblins-in-group group-key))))
 
-(defun goblins--sidebar-insert-tree (tree depth group-key permissions shells)
-  "Insert the line of TREE's goblin, its SHELLS' lines, then its children."
+(defun goblins--sidebar-duration (since)
+  "How long ago SINCE, in Unix milliseconds, was: \"<1m\", \"4m\", \"2h\" or \"3d\"."
+  (when (numberp since)
+    (let ((seconds (max 0 (floor (- (float-time) (/ since 1000.0))))))
+      (cond ((< seconds 60) "<1m")
+            ((< seconds 3600) (format "%dm" (/ seconds 60)))
+            ((< seconds 86400) (format "%dh" (/ seconds 3600)))
+            (t (format "%dd" (/ seconds 86400)))))))
+
+(defun goblins--sidebar-status (session)
+  "SESSION's activity line, or its lifecycle state while not running, or nil."
+  (let ((state (plist-get session :state)))
+    (if (not (equal state "running"))
+        (propertize (format "◌ %s" (goblins--safe state)) 'face 'goblins-dim)
+      (when-let* ((activity (pcase (plist-get session :agent_state)
+                              ("working" '("◐ working" goblins-activity-working))
+                              ("waiting-input" '("◆ needs input" goblins-activity-waiting))
+                              ("waiting-approval" '("◆ needs approval" goblins-activity-waiting))
+                              ("idle" '("○ idle" goblins-activity-idle)))))
+        (propertize (concat (car activity)
+                            (when-let* ((age (goblins--sidebar-duration
+                                              (plist-get session :agent_state_since))))
+                              (concat " · " age)))
+                    'face (cadr activity))))))
+
+(defun goblins--sidebar-permission-line (request)
+  "REQUEST as \"! jq (package)\", or \"! docker\" when its package names its kind."
+  (let ((package (goblins--safe (plist-get request :package)))
+        (kind (goblins--safe (or (plist-get request :kind) "package"))))
+    (propertize (concat "! " package (if (equal package kind) "" (format " (%s)" kind)))
+                'face 'goblins-sidebar-permission)))
+
+(defun goblins--sidebar-inbox-line (session)
+  "SESSION's queued messages, like \"✉ 2 messages\", or nil."
+  (let ((count (or (plist-get session :inbox) 0)))
+    (when (> count 0)
+      (propertize (format "✉ %d message%s" count (if (= count 1) "" "s"))
+                  'face 'goblins-inbox))))
+
+(defun goblins--sidebar-finished-line (session)
+  "SESSION's whole block once it has stopped, like \"✗ old (claude) · exited 1\"."
+  (let* ((code (plist-get session :exit_code))
+         (failed (or (equal (plist-get session :state) "failed")
+                     (and (integerp code) (/= code 0)))))
+    (concat (if failed (propertize "✗" 'face 'goblins-state-failed)
+              (propertize "○" 'face 'goblins-dim))
+            " "
+            (propertize (format "%s (%s) · %s"
+                                (goblins--safe (plist-get session :agent_name))
+                                (goblins--safe (plist-get session :name))
+                                (cond ((and (integerp code) (/= code 0)) (format "exited %d" code))
+                                      ((integerp code) "exited")
+                                      (t (goblins--safe (plist-get session :state)))))
+                        'face 'goblins-dim))))
+
+(defun goblins--sidebar-elsewhere (session shells)
+  "SESSION's shells and commands not open here, like \"⇄ 1 shell · tramp\", or nil.
+SHELLS are its shell buffers the sidebar lists."
+  (let ((others (max 0 (- (or (plist-get session :shells) 0)
+                          (cl-count-if (lambda (shell)
+                                         (process-live-p
+                                          (buffer-local-value 'ghostel--process shell)))
+                                       shells))))
+        (execs (or (plist-get session :execs) 0)))
+    (when (or (> others 0) (> execs 0))
+      (propertize
+       (concat "⇄ " (string-join
+                     (delq nil (list (and (> others 0)
+                                          (format "%d shell%s" others (if (= others 1) "" "s")))
+                                     (and (> execs 0) "tramp")))
+                     " · "))
+       'face 'goblins-dim))))
+
+(defun goblins--sidebar-insert-tree (tree depth group-key permissions shells &optional rule)
+  "Insert the block of TREE's goblin at DEPTH, then its children's blocks.
+A RULE face draws a separator above it.  The block is the goblin's name, its
+activity, pending requests and queued messages, then its SHELLS; only the name
+and the shells are stops for movement."
   (let* ((session (car tree))
          (id (plist-get session :id))
-         (pending (goblins--sidebar-pending id permissions))
-         (name (goblins--safe (plist-get session :agent_name)))
-         (finished (member (plist-get session :state) '("stopped" "failed")))
-         (start (point)))
-    (insert (make-string (* 2 depth) ?\s)
-            (goblins--state-glyph (plist-get session :state)) " "
-            (if finished (propertize name 'face 'goblins-dim) name)
-            (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
-                        'face 'goblins-dim)
-            (propertize (format " [%s]" (goblins--safe (or (plist-get session :agent_state) "unknown")))
-                        'face 'goblins-dim)
-            (goblins--exec-summary session)
-            (goblins--sidebar-badge pending)
-            "\n")
-    (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
-    (when (> pending 0)
-      (put-text-property start (point) 'goblins-pending t))
-    (dolist (shell (gethash id shells))
-      (goblins--sidebar-insert-shell shell (1+ depth) id group-key))
+         (finished (goblins--sidebar-finished-p session))
+         (requests (cl-remove-if-not
+                    (lambda (r) (and (equal (plist-get r :session) id)
+                                     (equal (plist-get r :state) "pending")))
+                    permissions))
+         (own (gethash id shells)))
+    (when rule (goblins--sidebar-insert-separator depth rule))
+    (let ((start (point)))
+      (insert (make-string (* 2 depth) ?\s)
+              (if finished
+                  (goblins--sidebar-finished-line session)
+                (concat (propertize (goblins--safe (plist-get session :agent_name))
+                                    'face 'goblins-sidebar-name)
+                        (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
+                                    'face 'goblins-dim)))
+              "\n")
+      (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
+      (when requests
+        (put-text-property start (point) 'goblins-pending t)))
+    (unless finished
+      (dolist (line `(,(goblins--sidebar-status session)
+                      ,@(mapcar #'goblins--sidebar-permission-line requests)
+                      ,(goblins--sidebar-inbox-line session)))
+        (when line (goblins--sidebar-insert-detail depth id group-key line))))
+    (dolist (shell own)
+      (goblins--sidebar-insert-shell shell depth id group-key))
+    (when-let* ((elsewhere (goblins--sidebar-elsewhere session own)))
+      (goblins--sidebar-insert-detail depth id group-key elsewhere))
     (dolist (child (cdr tree))
-      (goblins--sidebar-insert-tree child (1+ depth) group-key permissions shells))))
+      (goblins--sidebar-insert-tree child (1+ depth) group-key permissions shells
+                                    'goblins-sidebar-child-separator))))
 
 (defun goblins--sidebar-finished-p (session)
   (member (plist-get session :state) '("stopped" "failed")))
@@ -272,9 +400,11 @@ The text is built apart from the sidebar so a failure cannot blank it."
                              (if (string-empty-p (car dir)) "unknown"
                                (abbreviate-file-name (file-name-as-directory (car dir))))
                              collapsed nil (funcall count (cdr dir)))
-                        (dolist (tree (goblins--agent-forest (cdr dir)))
-                          (goblins--sidebar-insert-tree
-                           tree (1+ (/ indent 2)) gkey permissions shells)))))))))))
+                        (let ((rule nil))
+                          (dolist (tree (goblins--agent-forest (cdr dir)))
+                            (goblins--sidebar-insert-tree
+                             tree (1+ (/ indent 2)) gkey permissions shells rule)
+                            (setq rule 'goblins-sidebar-separator))))))))))))
       (buffer-string))))
 
 (defun goblins--sidebar-render ()
@@ -297,6 +427,7 @@ The text is built apart from the sidebar so a failure cannot blank it."
                                               (point))))))
     (goto-char (or (goblins--sidebar-find point-key)
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
+    (when hl-line-mode (hl-line-highlight))
     (goblins--sidebar-update-active)))
 
 (defun goblins--sidebar-render-for (source)
@@ -314,6 +445,23 @@ The text is built apart from the sidebar so a failure cannot blank it."
       (with-current-buffer buffer
         (condition-case err (goblins--sidebar-render)
           (error (message "goblins sidebar: %s" (error-message-string err))))))))
+
+(defvar goblins--sidebar-timer nil
+  "Redraws shown sidebars now and then, so activity durations stay current.")
+
+(defun goblins--sidebar-tick ()
+  "Redraw every shown sidebar; stop the timer once no sidebar is left."
+  (let ((live nil))
+    (dolist (buffer (buffer-list))
+      (when (buffer-local-value 'goblins--sidebar-source buffer)
+        (setq live t)
+        (when (get-buffer-window buffer t)
+          (with-current-buffer buffer
+            (condition-case err (goblins--sidebar-render)
+              (error (message "goblins sidebar: %s" (error-message-string err))))))))
+    (unless live
+      (cancel-timer goblins--sidebar-timer)
+      (setq goblins--sidebar-timer nil))))
 
 (defun goblins--sidebar-after-snapshot ()
   (goblins--sidebar-render-for (current-buffer)))
@@ -337,15 +485,48 @@ The text is built apart from the sidebar so a failure cannot blank it."
                         (goblins--sidebar-find (cons 'terminal shown))
                       (and id (goblins--sidebar-find (cons 'id id))))))
           (when pos
-            ;; Bold, with a bar over the line's first (indentation) column;
-            ;; the line at point keeps its own highlight.
-            (let ((line (make-overlay pos (save-excursion (goto-char pos)
-                                                          (1+ (line-end-position)))))
-                  (bar (make-overlay pos (1+ pos))))
-              (overlay-put line 'face 'goblins-sidebar-active)
-              (overlay-put bar 'display (propertize "▌" 'face 'goblins-sidebar-active-marker))
-              (push line goblins--sidebar-active-overlays)
-              (push bar goblins--sidebar-active-overlays))))))))
+            ;; A goblin's whole block, or a shell's line, gets a background
+            ;; and a bar over each line's first (indentation) column.  The
+            ;; selection's highlight stays on top.
+            (let* ((end (if (get-text-property pos 'goblins-terminal)
+                            (save-excursion (goto-char pos) (line-beginning-position 2))
+                          (goblins--sidebar-block-end pos)))
+                   (block (make-overlay pos end)))
+              (overlay-put block 'face 'goblins-sidebar-active)
+              (overlay-put block 'priority (1- hl-line-overlay-priority))
+              (push block goblins--sidebar-active-overlays)
+              (save-excursion
+                (goto-char pos)
+                (while (< (point) end)
+                  (let ((bar (make-overlay (point) (1+ (point)))))
+                    (overlay-put bar 'display
+                                 (propertize "▌" 'face 'goblins-sidebar-active-marker))
+                    (push bar goblins--sidebar-active-overlays))
+                  (forward-line 1))))))))))
+
+(defun goblins--sidebar-block-end (pos)
+  "The end of the block of the goblin whose name is on the line at POS: its
+detail and shell lines, without its children."
+  (let ((id (get-text-property pos 'goblins-id)))
+    (save-excursion
+      (goto-char pos)
+      (forward-line 1)
+      (while (and (not (eobp)) (equal (get-text-property (point) 'goblins-parent) id))
+        (forward-line 1))
+      (point))))
+
+(defun goblins--sidebar-selection ()
+  "The selection's extent for `hl-line-range-function': the line at point, or
+a goblin's name with its detail lines, which movement treats as one line."
+  (let* ((id (or (get-text-property (line-beginning-position) 'goblins-id)
+                 (get-text-property (line-beginning-position) 'goblins-detail)))
+         (start (or (and id (goblins--sidebar-find (cons 'id id))) (line-beginning-position))))
+    (save-excursion
+      (goto-char start)
+      (forward-line 1)
+      (while (and id (not (eobp)) (equal (get-text-property (point) 'goblins-detail) id))
+        (forward-line 1))
+      (cons start (point)))))
 
 (defun goblins--sidebar-window-changed (_frame-or-window)
   (goblins--sidebar-update-active))
@@ -355,7 +536,8 @@ The text is built apart from the sidebar so a failure cannot blank it."
 ;;;; Commands
 
 (defun goblins--sidebar-lines (direction)
-  "Move to the next line in DIRECTION (1 or -1): a group, a goblin or a shell."
+  "Move to the next line in DIRECTION (1 or -1): a group, a goblin or a shell.
+A goblin's detail lines, rules and blank lines are passed by."
   (let ((start (point)) found)
     (while (and (not found) (zerop (forward-line direction)))
       (when (or (get-text-property (point) 'goblins-id)
@@ -413,9 +595,11 @@ fold or unfold it."
     (goblins-select-goblin (goblins--sidebar-ensure-source)
                            (get-text-property (line-beginning-position) 'goblins-parent)
                            (get-text-property (line-beginning-position) 'goblins-terminal)))
-   ((get-text-property (line-beginning-position) 'goblins-id)
+   ((or (get-text-property (line-beginning-position) 'goblins-id)
+        (get-text-property (line-beginning-position) 'goblins-detail))
     (goblins-open-session (goblins--sidebar-ensure-source)
-                          (get-text-property (line-beginning-position) 'goblins-id)))
+                          (or (get-text-property (line-beginning-position) 'goblins-id)
+                              (get-text-property (line-beginning-position) 'goblins-detail))))
    ((get-text-property (line-beginning-position) 'goblins-raid)
     (goblins--display-main
      (goblins-raid-buffer (goblins--sidebar-ensure-source)
@@ -599,7 +783,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
   (interactive)
   (goblins--describe-keys
    "Goblins sidebar"
-   '(("Move" ("j / k" . "next / previous line")
+   '(("Move" ("j / k" . "next / previous goblin, shell or group")
              ("n" . "next goblin waiting for a decision")
              ("TAB" . "fold the group"))
      ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it")
@@ -705,7 +889,10 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
               mode-line-format nil
               header-line-format " Goblins   ? keys"
               revert-buffer-function (lambda (&rest _) (goblins-sidebar-refresh))
-              hl-line-face 'goblins-sidebar-selected)
+              hl-line-face 'goblins-sidebar-selected
+              hl-line-range-function #'goblins--sidebar-selection)
+  (unless goblins--sidebar-timer
+    (setq goblins--sidebar-timer (run-with-timer 30 30 #'goblins--sidebar-tick)))
   ;; Point shows as the highlighted line, never as a cursor, Evil's included.
   (dolist (cursor '(evil-default-cursor evil-normal-state-cursor evil-motion-state-cursor
                     evil-emacs-state-cursor evil-visual-state-cursor
