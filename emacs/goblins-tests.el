@@ -1116,7 +1116,16 @@
                                                           (overlay-get bar 'before-string))
                                        '(space :width 0.25))))
                     (delete-overlay bar)))))
-            (should-not (overlays-at (goblins--sidebar-find '(id . "session-a")))))
+            ;; Neither highlight reaches left of the bar's column.
+            (let ((pos (goblins--sidebar-find '(id . "session-b"))))
+              (let ((masks (cl-remove-if-not (lambda (o) (overlay-get o 'goblins-margin))
+                                             (overlays-at pos))))
+                (should (equal (mapcar (lambda (o) (overlay-get o 'face)) masks) '(default)))
+                (should (> (overlay-get (car masks) 'priority) hl-line-overlay-priority)))
+              (should-not (cl-some (lambda (o) (overlay-get o 'goblins-margin))
+                                   (overlays-at (1+ pos)))))
+            (should-not (cl-remove-if (lambda (o) (overlay-get o 'goblins-margin))
+                                      (overlays-at (goblins--sidebar-find '(id . "session-a"))))))
         (kill-buffer terminal)))))
 
 (ert-deftest goblins-workspace-switch-function-is-pluggable ()

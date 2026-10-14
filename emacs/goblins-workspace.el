@@ -434,8 +434,27 @@ The text is built apart from the sidebar so a failure cannot blank it."
                                               (point))))))
     (goto-char (or (goblins--sidebar-find point-key)
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
+    (goblins--sidebar-mask-margins)
     (when hl-line-mode (hl-line-highlight))
     (goblins--sidebar-update-active)))
+
+(defun goblins--sidebar-mask-margins ()
+  "Keep highlights off each line's indentation, up to the active bar's column.
+The selection and the active block are overlays over whole lines; an overlay
+above them gives the indentation the buffer's own background."
+  (remove-overlays (point-min) (point-max) 'goblins-margin t)
+  (save-excursion
+    (goto-char (point-min))
+    (while (not (eobp))
+      (let ((margin (1- (current-indentation))))
+        (when (and (> margin 0)
+                   (cl-some (lambda (p) (get-text-property (point) p))
+                            '(goblins-id goblins-detail goblins-terminal goblins-group)))
+          (let ((mask (make-overlay (point) (+ (point) margin))))
+            (overlay-put mask 'goblins-margin t)
+            (overlay-put mask 'face 'default)
+            (overlay-put mask 'priority (1+ hl-line-overlay-priority)))))
+      (forward-line 1))))
 
 (defun goblins--sidebar-render-for (source)
   "Redraw every sidebar showing SOURCE."
