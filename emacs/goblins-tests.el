@@ -949,7 +949,7 @@
     (should (equal (goblins-test--sidebar-plain)
                    (concat "▾ raid alpha\n  ▾ /p/two/\n    session-d (shell)\n"
                            "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    session-a (shell)\n"
-                           "    ! hello (package)\n     ──\n      session-c (shell)\n"
+                           "    ! hello (package)\n    ──\n      session-c (shell)\n"
                            "\n▾ /p/two/\n  session-b (shell)\n"
                            "\n▾ unknown\n  session-e (shell)\n")))))
 
@@ -981,11 +981,11 @@
         (should (equal (goblins-test--sidebar-plain)
                        (concat "▾ /p/ !2\n  chief (claude)\n  ◐ working · 4m\n"
                                "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · tramp\n"
-                               "   ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
+                               "  ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
                                "    ! docker\n"
-                               "   ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
-                               " ──\n  beta (shell)\n  ◌ starting\n"
-                               " ──\n  ✗ old (claude) · exited 1\n")))
+                               "  ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
+                               "──\n  beta (shell)\n  ◌ starting\n"
+                               "──\n  ✗ old (claude) · exited 1\n")))
         ;; Rules before children are fainter.
         (should (equal (cl-loop for pos from (point-min) below (point-max)
                                 when (get-text-property pos 'goblins-rule)
@@ -1085,12 +1085,19 @@
             (should-not cursor-type)
             (should (equal (buffer-local-value 'evil-motion-state-cursor (current-buffer)) '(nil)))
             (should (eq hl-line-face 'goblins-sidebar-selected))
+            ;; Only while the sidebar's window is selected.
+            (goblins--sidebar-highlight-selection)
+            (should-not (overlayp hl-line-overlay))
+            (set-window-buffer (selected-window) (current-buffer))
+            (goblins--sidebar-highlight-selection)
+            (should (overlayp hl-line-overlay))
+            (set-window-buffer (selected-window) terminal)
             (let* ((pos (goblins--sidebar-find '(id . "session-b")))
                    (overlays (overlays-at pos))
                    (block (cl-find 'goblins-sidebar-active overlays
                                    :key (lambda (o) (overlay-get o 'face)))))
-              ;; The goblin's whole block, with a bar on each of its lines in
-              ;; the column before the text, under the selection's highlight.
+              ;; The goblin's whole block, with a bar on each of its lines two
+              ;; columns before the text, under the selection's highlight.
               (should block)
               (should (equal (buffer-substring-no-properties (overlay-start block)
                                                              (overlay-end block))
@@ -1105,7 +1112,7 @@
                                                         (goto-char (overlay-start o))
                                                         (line-beginning-position))))
                                        bars)
-                               '(1 1))))
+                               '(0 0))))
               ;; A GUI draws a narrow strip instead, keeping the text's column.
               (cl-letf (((symbol-function 'display-graphic-p) #'always))
                 (let ((bar (goblins--sidebar-bar (1+ pos))))
@@ -1116,7 +1123,7 @@
                                                           (overlay-get bar 'before-string))
                                        '(space :width 0.25))))
                     (delete-overlay bar)))))
-            ;; Neither highlight reaches left of the bar's column.
+            ;; Neither highlight reaches the bar's column or left of it.
             (let ((pos (goblins--sidebar-find '(id . "session-b"))))
               (let ((masks (cl-remove-if-not (lambda (o) (overlay-get o 'goblins-margin))
                                              (overlays-at pos))))
@@ -2521,7 +2528,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     buffer))
 
 (ert-deftest goblins-sidebar-lists-shells-below-their-goblin ()
-  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p" :execs 1)
                                (goblins-test--session "session-b" :cwd "/p" :parent "session-a"))
     (let* ((process (start-process "goblins-test-shell" nil "sleep" "60"))
            (first (goblins-test--shell "session-a" 1 process))
@@ -2535,8 +2542,8 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (goblins--sidebar-render-all)
             (should (equal (goblins-test--sidebar-plain)
                            (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
-                                   "  › shell\n  › shell 2 · exited\n"
-                                   "   ──\n    session-b (shell)\n")))
+                                   "  ⇄ tramp\n  › shell\n  › shell 2 · exited\n"
+                                   "  ──\n    session-b (shell)\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
             (goto-char (point-min))

@@ -208,12 +208,12 @@ in COLLAPSED."
 
 (defun goblins--sidebar-insert-separator (depth face)
   "Insert a rule in FACE from the bar column of a goblin at DEPTH to the edge.
-It starts a column before the goblin's text, where the active bar is drawn."
+It starts two columns before the goblin's text, where the active bar is drawn."
   ;; Aligned, not spaced: the face's height must not narrow the indentation.
   ;; A terminal keeps the columns before the window border for the
   ;; truncation glyph, which a full-width rule would show.
   (let ((height (face-attribute face :height nil t)))
-    (insert (propertize " " 'display `(space :align-to ,(1- (* 2 depth))))
+    (insert (propertize " " 'display `(space :align-to ,(- (* 2 depth) 2)))
             (propertize " " 'display `(space :align-to ,(if (display-graphic-p) 'right
                                                            '(- right 2)))
                         'face face 'goblins-rule t)
@@ -343,10 +343,11 @@ and the shells are stops for movement."
                       ,@(mapcar #'goblins--sidebar-permission-line requests)
                       ,(goblins--sidebar-inbox-line session)))
         (when line (goblins--sidebar-insert-detail depth id group-key line))))
-    (dolist (shell own)
-      (goblins--sidebar-insert-shell shell depth id group-key))
+    ;; Above the shells, so the lines that point can stop on come last.
     (when-let* ((elsewhere (goblins--sidebar-elsewhere session own)))
       (goblins--sidebar-insert-detail depth id group-key elsewhere))
+    (dolist (shell own)
+      (goblins--sidebar-insert-shell shell depth id group-key))
     (dolist (child (cdr tree))
       (goblins--sidebar-insert-tree child (1+ depth) group-key permissions shells
                                     'goblins-sidebar-child-separator))))
@@ -436,13 +437,24 @@ The text is built apart from the sidebar so a failure cannot blank it."
     (goto-char (or (goblins--sidebar-find point-key)
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
     (goblins--sidebar-mask-margins)
-    (when hl-line-mode (hl-line-highlight))
+    (goblins--sidebar-highlight-selection)
     (goblins--sidebar-update-active)))
 
+(defun goblins--sidebar-highlight-selection (&optional window)
+  "Highlight the selection only while a window of the sidebar is selected.
+Elsewhere it would mark a goblin that the active bar may contradict.  WINDOW,
+from `window-selection-change-functions', shows the sidebar."
+  (with-current-buffer (if window (window-buffer window) (current-buffer))
+    (when hl-line-mode
+      (if (eq (window-buffer) (current-buffer))
+          (hl-line-highlight)
+        (hl-line-unhighlight)))))
+
 (defun goblins--sidebar-mask-margins ()
-  "Keep highlights off each line's indentation, up to the active bar's column.
+  "Keep highlights off each line's indentation and the active bar's column.
 The selection and the active block are overlays over whole lines; an overlay
-above them gives the indentation the buffer's own background."
+above them gives the indentation the buffer's own background, so they start
+a column before the text and a column clear of the bar."
   (remove-overlays (point-min) (point-max) 'goblins-margin t)
   (save-excursion
     (goto-char (point-min))
@@ -513,7 +525,7 @@ above them gives the indentation the buffer's own background."
                       (and id (goblins--sidebar-find (cons 'id id))))))
           (when pos
             ;; A goblin's whole block, or a shell's line, gets the active face
-            ;; under the selection's highlight, and a bar in the column before
+            ;; under the selection's highlight, and a bar two columns before
             ;; its text.
             (let* ((end (if (get-text-property pos 'goblins-terminal)
                             (save-excursion (goto-char pos) (line-beginning-position 2))
@@ -525,7 +537,7 @@ above them gives the indentation the buffer's own background."
               (save-excursion
                 (goto-char pos)
                 (while (< (point) end)
-                  (push (goblins--sidebar-bar (+ (point) (current-indentation) -1))
+                  (push (goblins--sidebar-bar (+ (point) (current-indentation) -2))
                         goblins--sidebar-active-overlays)
                   (forward-line 1))))))))))
 
@@ -938,7 +950,9 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
                     evil-emacs-state-cursor evil-visual-state-cursor
                     evil-operator-state-cursor))
     (set (make-local-variable cursor) (list nil)))
-  (hl-line-mode 1))
+  (hl-line-mode 1)
+  (add-hook 'window-selection-change-functions #'goblins--sidebar-highlight-selection nil t)
+  (goblins--sidebar-highlight-selection))
 
 ;;;; Entry points
 
