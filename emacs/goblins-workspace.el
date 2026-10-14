@@ -207,12 +207,13 @@ in COLLAPSED."
     (not folded)))
 
 (defun goblins--sidebar-insert-separator (depth face)
-  "Insert a rule in FACE from the column of a goblin at DEPTH to the right edge."
+  "Insert a rule in FACE from the bar column of a goblin at DEPTH to the edge.
+It starts a column before the goblin's text, where the active bar is drawn."
   ;; Aligned, not spaced: the face's height must not narrow the indentation.
   ;; A terminal keeps the columns before the window border for the
   ;; truncation glyph, which a full-width rule would show.
   (let ((height (face-attribute face :height nil t)))
-    (insert (propertize " " 'display `(space :align-to ,(* 2 depth)))
+    (insert (propertize " " 'display `(space :align-to ,(1- (* 2 depth))))
             (propertize " " 'display `(space :align-to ,(if (display-graphic-p) 'right
                                                            '(- right 2)))
                         'face face 'goblins-rule t)

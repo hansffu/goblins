@@ -949,7 +949,7 @@
     (should (equal (goblins-test--sidebar-plain)
                    (concat "▾ raid alpha\n  ▾ /p/two/\n    session-d (shell)\n"
                            "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    session-a (shell)\n"
-                           "    ! hello (package)\n      ──\n      session-c (shell)\n"
+                           "    ! hello (package)\n     ──\n      session-c (shell)\n"
                            "\n▾ /p/two/\n  session-b (shell)\n"
                            "\n▾ unknown\n  session-e (shell)\n")))))
 
@@ -981,11 +981,11 @@
         (should (equal (goblins-test--sidebar-plain)
                        (concat "▾ /p/ !2\n  chief (claude)\n  ◐ working · 4m\n"
                                "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · tramp\n"
-                               "    ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
+                               "   ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
                                "    ! docker\n"
-                               "    ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
-                               "  ──\n  beta (shell)\n  ◌ starting\n"
-                               "  ──\n  ✗ old (claude) · exited 1\n")))
+                               "   ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
+                               " ──\n  beta (shell)\n  ◌ starting\n"
+                               " ──\n  ✗ old (claude) · exited 1\n")))
         ;; Rules before children are fainter.
         (should (equal (cl-loop for pos from (point-min) below (point-max)
                                 when (get-text-property pos 'goblins-rule)
@@ -2536,7 +2536,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (should (equal (goblins-test--sidebar-plain)
                            (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
                                    "  › shell\n  › shell 2 · exited\n"
-                                   "    ──\n    session-b (shell)\n")))
+                                   "   ──\n    session-b (shell)\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
             (goto-char (point-min))
