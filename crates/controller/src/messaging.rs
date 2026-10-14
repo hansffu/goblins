@@ -75,6 +75,8 @@ pub struct Completed {
 pub struct Service {
     pub commands: SyncSender<Work>,
     pub results: Receiver<Completed>,
+    /// Queued inbox counts per recipient, sent whenever they change.
+    pub inbox: Receiver<BTreeMap<String, u64>>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -101,7 +103,7 @@ fn page_size() -> usize {
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> mailbox::Result<T> {
     serde_json::from_value(value).map_err(|e| (-32602, e.to_string()))
 }
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -119,6 +121,8 @@ impl Service {
         let mailbox = Mailbox::new(instance.into(), Limits::default()).map_err(|(_, e)| e)?;
         let (commands, input) = mpsc::sync_channel(64);
         let (output, results) = mpsc::sync_channel(64);
+        // Unbounded but sent only on change, and drained every tick.
+        let (counts, inbox) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("goblins-mailbox".into())
             .spawn(move || {
@@ -131,7 +135,11 @@ impl Service {
                     },
                 );
                 while let Ok(work) = input.recv() {
-                    if let Some(completed) = worker.handle(work)
+                    let completed = worker.handle(work);
+                    if let Some(queued) = worker.changed_counts() {
+                        let _ = counts.send(queued);
+                    }
+                    if let Some(completed) = completed
                         && output.send(completed).is_err()
                     {
                         break;
@@ -142,6 +150,7 @@ impl Service {
         Ok(Self {
             commands,
             results,
+            inbox,
             worker: Some(worker),
         })
     }
@@ -151,10 +160,12 @@ impl Service {
     pub fn detached(capacity: usize) -> (Self, Receiver<Work>) {
         let (commands, input) = mpsc::sync_channel(capacity);
         let (_, results) = mpsc::sync_channel(1);
+        let (_, inbox) = mpsc::channel();
         (
             Self {
                 commands,
                 results,
+                inbox,
                 worker: None,
             },
             input,
@@ -179,6 +190,8 @@ struct State<L> {
     journal: L,
     integrations: crate::integration::Integrations,
     known: Directory,
+    /// Queued inbox counts as last reported to the controller.
+    counts: BTreeMap<String, u64>,
 }
 impl<L: Log> State<L> {
     fn new(mailbox: Mailbox, journal: L) -> Self {
@@ -187,7 +200,17 @@ impl<L: Log> State<L> {
             journal,
             integrations: crate::integration::Integrations::default(),
             known: BTreeMap::new(),
+            counts: BTreeMap::new(),
         }
+    }
+
+    /// The queued inbox counts, when they differ from those last reported.
+    fn changed_counts(&mut self) -> Option<BTreeMap<String, u64>> {
+        let counts = self.mailbox.queued();
+        (counts != self.counts).then(|| {
+            self.counts = counts.clone();
+            counts
+        })
     }
 
     fn handle(&mut self, work: Work) -> Option<Completed> {
@@ -574,6 +597,25 @@ mod tests {
         assert_eq!(w.journal.events.last().unwrap().kind, "raid.left");
         let refused = w.handle(send("x", "chief/scout", "late", vec![])).unwrap();
         assert_eq!(refused.result.unwrap_err().0, -32004);
+    }
+
+    #[test]
+    fn queued_counts_are_reported_only_when_they_change() {
+        let mut w = state();
+        assert_eq!(w.changed_counts(), None);
+        w.handle(send("a", "scout", "one", vec![])).unwrap();
+        w.handle(send("a", "scout", "two", vec![])).unwrap();
+        assert_eq!(w.changed_counts(), Some([("b".into(), 2)].into()));
+        assert_eq!(w.changed_counts(), None);
+        // A stopped recipient's queued messages fail, emptying its inbox.
+        let mut running = directory();
+        running.remove("b");
+        w.handle(Work::Sync {
+            directory: running,
+            raids: vec![],
+            operations: vec![],
+        });
+        assert_eq!(w.changed_counts(), Some(BTreeMap::new()));
     }
 
     #[test]

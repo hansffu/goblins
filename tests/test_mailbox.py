@@ -46,7 +46,10 @@ class MailboxTests(unittest.TestCase):
         self.assertIn(message["key"], sent.stderr)
         retry = self.cli("send", "chief", "--message", text, "--key", message["key"])
         self.assertEqual(json.loads(retry.stdout), message)
+        # Snapshots count each goblin's queued messages for the sidebar.
+        self.d.wait(lambda: self.d.get(session)["inbox"] == 1)
         claim = self.sandbox(session, "inbox.next", {"key": "fetch"})
+        self.d.wait(lambda: self.d.get(session)["inbox"] == 0)
         self.assertEqual(claim["message"]["body"], text)
         reply = self.sandbox(session, "messages.reply", {
             "key": "reply", "message": message["id"],

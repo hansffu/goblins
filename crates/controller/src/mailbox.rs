@@ -448,6 +448,15 @@ impl Mailbox {
         Ok(())
     }
 
+    /// Queued messages per recipient; recipients with none are absent.
+    pub fn queued(&self) -> BTreeMap<String, u64> {
+        let mut counts = BTreeMap::new();
+        for m in self.messages.iter().filter(|m| m.state == State::Queued) {
+            *counts.entry(m.recipient.clone()).or_default() += 1;
+        }
+        counts
+    }
+
     pub fn status(&self, actor: &str) -> Value {
         let inbox = || self.messages.iter().filter(|m| m.recipient == actor);
         json!({

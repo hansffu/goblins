@@ -60,6 +60,13 @@ pub struct SessionRecord {
     pub configuration: String,
     #[serde(default)]
     pub agent_state: goblins_protocol::AgentState,
+    /// When `agent_state` last changed, in Unix milliseconds.
+    #[serde(default)]
+    pub agent_state_since: Option<u64>,
+    /// Messages queued in the goblin's inbox, as the messaging worker last
+    /// counted them.
+    #[serde(default)]
+    pub inbox: u64,
     pub state: String,
     pub identity: Option<Identity>,
     pub initial_packages: Vec<String>,
@@ -85,6 +92,17 @@ pub struct SessionRecord {
     /// Live non-interactive execs: TRAMP, eshell and scripts.
     #[serde(default)]
     pub execs: u32,
+}
+impl SessionRecord {
+    /// True when the visible activity changed; the change is timestamped.
+    fn set_agent_state(&mut self, state: goblins_protocol::AgentState) -> bool {
+        let changed = self.agent_state != state;
+        if changed {
+            self.agent_state = state;
+            self.agent_state_since = Some(crate::messaging::now());
+        }
+        changed
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRecord {
@@ -153,9 +171,7 @@ impl Active {
     /// Refresh activity freshness; true when the visible activity changed.
     fn report_activity(&mut self, state: goblins_protocol::AgentState) -> bool {
         self.activity_at = Some(Instant::now());
-        let changed = self.record.agent_state != state;
-        self.record.agent_state = state;
-        changed
+        self.record.set_agent_state(state)
     }
 }
 #[derive(Clone)]
@@ -818,7 +834,9 @@ impl Controller {
         }
         a.listener.take();
         a.activity_at = None;
-        a.record.agent_state = Default::default();
+        if a.record.set_agent_state(Default::default()) {
+            self.dirty = true;
+        }
         if let Some(p) = a.pending.take() {
             p.cancel.cancel();
             if let Some(r) = self.permission_mut(&p.id) {
@@ -1016,6 +1034,8 @@ impl Controller {
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
             agent_state: Default::default(),
+            agent_state_since: None,
+            inbox: 0,
             docker_enabled: false,
             scope: None,
             dev_shell: None,
@@ -1868,6 +1888,16 @@ impl Controller {
             self.dirty |= a.report_activity(state);
         }
     }
+    /// Each goblin's queued inbox count, as the messaging worker reported it.
+    fn inbox_counts(&mut self, counts: &BTreeMap<String, u64>) {
+        for (id, a) in &mut self.sessions {
+            let queued = counts.get(id).copied().unwrap_or(0);
+            if a.record.inbox != queued {
+                a.record.inbox = queued;
+                self.dirty = true;
+            }
+        }
+    }
     fn expire_activity(&mut self, now: Instant) {
         for a in self.sessions.values_mut() {
             if a.record.state != "running"
@@ -1876,10 +1906,7 @@ impl Controller {
                 })
             {
                 a.activity_at = None;
-                if a.record.agent_state != goblins_protocol::AgentState::Unknown {
-                    a.record.agent_state = goblins_protocol::AgentState::Unknown;
-                    self.dirty = true;
-                }
+                self.dirty |= a.record.set_agent_state(Default::default());
             }
         }
     }
@@ -1891,6 +1918,9 @@ impl Controller {
                 a.record.detail = Some(bounded(&e.to_string()));
                 a.terminal.interrupted = true;
             }
+        }
+        if let Some(counts) = self.messaging.inbox.try_iter().last() {
+            self.inbox_counts(&counts);
         }
         let responses: Vec<_> = self.messaging.results.try_iter().collect();
         for mut response in responses {
@@ -2235,7 +2265,7 @@ impl Controller {
             let stopped = ["stopped", "failed"].contains(&a.record.state.as_str());
             if a.record.state != "running" {
                 a.activity_at = None;
-                a.record.agent_state = Default::default();
+                self.dirty |= a.record.set_agent_state(Default::default());
             }
             self.sessions.insert(id.clone(), a);
             if exited {
@@ -2431,6 +2461,8 @@ mod tests {
                 created: 0,
                 record: SessionRecord {
                     agent_state: Default::default(),
+                    agent_state_since: None,
+                    inbox: 0,
                     docker_enabled: false,
                     scope: None,
                     dev_shell: None,
@@ -2921,14 +2953,57 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn activity_changes_are_timestamped() {
+        use goblins_protocol::AgentState;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        let a = d.sessions.get_mut(&id).unwrap();
+        assert!(a.report_activity(AgentState::Working));
+        let since = a.record.agent_state_since.unwrap();
+        // A repeated report is a heartbeat, not a new state.
+        a.record.agent_state_since = Some(since - 5000);
+        assert!(!a.report_activity(AgentState::Working));
+        assert_eq!(a.record.agent_state_since, Some(since - 5000));
+        assert!(a.report_activity(AgentState::Idle));
+        assert!(a.record.agent_state_since.unwrap() >= since);
+        d.stop(&id, None).unwrap();
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
+        assert!(d.sessions[&id].record.agent_state_since.unwrap() >= since);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn inbox_counts_follow_the_worker_report() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        d.dirty = false;
+        d.inbox_counts(&[(id.clone(), 2), ("gone".into(), 1)].into());
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.inbox, 2);
+        d.dirty = false;
+        d.inbox_counts(&[(id.clone(), 2)].into());
+        assert!(!d.dirty);
+        d.inbox_counts(&BTreeMap::new());
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.inbox, 0);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn old_session_snapshots_default_activity_to_unknown() {
         let mut d = daemon();
         let path = d.state.clone();
         let id = session_with_results(&mut d, vec![]);
         let mut value = serde_json::to_value(&d.sessions[&id].record).unwrap();
-        value.as_object_mut().unwrap().remove("agent_state");
+        for field in ["agent_state", "agent_state_since", "inbox"] {
+            value.as_object_mut().unwrap().remove(field);
+        }
         let record: SessionRecord = serde_json::from_value(value).unwrap();
         assert_eq!(record.agent_state, goblins_protocol::AgentState::Unknown);
+        assert_eq!(record.agent_state_since, None);
+        assert_eq!(record.inbox, 0);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
