@@ -101,8 +101,13 @@
   "(DIRECTORY . SESSION-ID) of the selected goblin, whose windows show.")
 
 (defun goblins--in-workspace-p ()
-  "Whether this frame shows the workspace sidebar."
-  (and (get-buffer-window goblins--sidebar-buffer-name) t))
+  "Whether this frame shows the workspace: its sidebar, or with the sidebar
+hidden, the agent window.  Window parameters belong to the window
+configuration, so another tab of the frame is not in the workspace."
+  (and (or (get-buffer-window goblins--sidebar-buffer-name)
+           (cl-some (lambda (w) (window-parameter w 'goblins-workspace))
+                    (window-list nil 'no-minibuf)))
+       t))
 
 (defun goblins--main-windows ()
   "This frame's windows other than side windows and the minibuffer."
@@ -177,10 +182,12 @@ off below everything, are never used, saved or deleted for a goblin."
 
 (defun goblins--set-agent-buffer (window buffer)
   "Show BUFFER in WINDOW and dedicate WINDOW to the agent.
-Deleting the other windows keeps it, and deleting it is refused."
+Deleting the other windows keeps it, and deleting it is refused.  WINDOW also
+marks the frame as the workspace, while the sidebar is hidden too."
   (goblins--release-agent-window window)
   (set-window-buffer window buffer)
   (set-window-dedicated-p window t)
+  (set-window-parameter window 'goblins-workspace t)
   (set-window-parameter window 'goblins-agent t)
   (set-window-parameter window 'no-delete-other-windows t)
   (set-window-parameter window 'delete-window #'goblins--refuse-agent-window-delete))

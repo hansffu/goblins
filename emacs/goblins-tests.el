@@ -1183,7 +1183,9 @@
               ((symbol-function 'set-window-dedicated-p) #'ignore))
       (let ((goblins-workspace-switch-or-create-function
              (lambda (name) (push name calls))))
-        (save-window-excursion (goblins-workspace))
+        (save-window-excursion
+          (goblins-workspace)
+          (goblins-test--leave-workspace-windows))
         (should (equal calls '("goblins")))))))
 
 (ert-deftest goblins-workspace-default-switch-saves-and-restores-windows ()
@@ -1223,7 +1225,15 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
                            (push (cons id buffer) terminals)
                            buffer))))
            (unwind-protect (progn ,@body)
+             (goblins-test--leave-workspace-windows)
              (mapc (lambda (e) (kill-buffer (cdr e))) terminals)))))))
+
+(defun goblins-test--leave-workspace-windows ()
+  "Make every window ordinary again; restoring the window configuration
+keeps the parameters of windows that live on."
+  (dolist (window (window-list nil 'no-minibuf))
+    (goblins--release-agent-window window)
+    (set-window-parameter window 'goblins-workspace nil)))
 
 (defun goblins-test--layout ()
   "The buffers beside the sidebar, left to right, then top to bottom."
@@ -1486,6 +1496,55 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (switch-to-buffer newer)
       (goblins--workspace-restore source)
       (should (equal (goblins-test--layout) (list newer))))))
+
+(ert-deftest goblins-sidebar-toggle-hides-it-and-keeps-the-workspace ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p"))
+    (let ((dired (generate-new-buffer " *dired*"))
+          (split-width-threshold 20)
+          (sidebar-window (lambda () (get-buffer-window goblins--sidebar-buffer-name))))
+      (unwind-protect
+          (progn
+            (terminal "session-a")
+            (terminal "session-b")
+            (goblins-select-goblin source "session-a" dired)
+            ;; Shown but not selected: hide it.
+            (goblins-sidebar-toggle)
+            (should-not (funcall sidebar-window))
+            (should (eq (window-buffer) dired))
+            ;; Still the workspace: buffers go beside the agent, and each
+            ;; goblin keeps its windows.
+            (should (goblins--in-workspace-p))
+            (goblins-select-goblin source "session-b")
+            (should (equal (goblins-test--layout) (list (terminal "session-b"))))
+            (goblins-select-goblin source "session-a")
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired)))
+            ;; Hidden: show it, selected.
+            (goblins-sidebar-toggle)
+            (should (eq (selected-window) (funcall sidebar-window)))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired)))
+            ;; Selected: hide it, and select the agent.
+            (goblins-sidebar-toggle)
+            (should-not (funcall sidebar-window))
+            (should (eq (window-buffer) (terminal "session-a")))
+            ;; Another tab's windows are not the workspace.
+            (goblins--release-agent-window (goblins--agent-window))
+            (dolist (window (window-list nil 'no-minibuf))
+              (set-window-parameter window 'goblins-workspace nil))
+            (should-not (goblins--in-workspace-p)))
+        (kill-buffer dired)))))
+
+(ert-deftest goblins-workspace-quit-leaves-no-agent-window ()
+  (goblins-test--workspace (list (goblins-test--session "session-a"))
+    (terminal "session-a")
+    (goblins-select-goblin source "session-a")
+    (should (window-parameter (goblins--agent-window) 'goblins-agent))
+    (let ((goblins-workspace-quit-function #'ignore))
+      (goblins-workspace-quit))
+    (should-not (cl-some (lambda (w) (or (window-parameter w 'goblins-workspace)
+                                         (window-parameter w 'goblins-agent)
+                                         (window-dedicated-p w)))
+                         (goblins--main-windows)))))
 
 (ert-deftest goblins-editor-files-open-right-of-their-goblin ()
   (goblins-test--workspace (list (goblins-test--session "session-a" :path "gribble"))

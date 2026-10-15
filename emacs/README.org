@@ -180,6 +180,8 @@ Beside the sidebar:
   into the right window used last, and you show, split and arrange anything
   you like there.
 
+=M-x goblins-sidebar-toggle= hides the sidebar, or shows it and selects it (opening the workspace if needed).  Hiding it keeps the workspace: each goblin keeps its windows and what Goblins opens still goes beside the agent.  =q= in the sidebar, or =M-x goblins-workspace-quit=, leaves the workspace.
+
 Only windows Goblins split off the agent belong to the goblin: a window
 another package splits below everything (shackle or popper showing
 =*Messages*=, say) is never used for a goblin's buffers, saved, or closed on a

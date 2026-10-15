@@ -923,7 +923,46 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
   "Leave the Goblins workspace, saving the selected goblin's windows."
   (interactive)
   (goblins--save-layout)
+  (dolist (window (window-list nil 'no-minibuf))
+    (when (window-parameter window 'goblins-workspace)
+      (goblins--release-agent-window window)
+      (set-window-parameter window 'goblins-workspace nil)))
   (funcall goblins-workspace-quit-function))
+
+(defun goblins--workspace-source ()
+  "The status buffer of the workspace's server: the sidebar's, else that of
+the goblin selected last, else the default server's."
+  (let ((sidebar (get-buffer goblins--sidebar-buffer-name)))
+    (if (and sidebar (buffer-live-p (buffer-local-value 'goblins--sidebar-source sidebar)))
+        (buffer-local-value 'goblins--sidebar-source sidebar)
+      (goblins--status-buffer (car goblins--last-goblin)))))
+
+(defun goblins--sidebar-show (source)
+  "Show the sidebar of SOURCE's server on the left, and return its window."
+  (let ((sidebar (goblins--sidebar-buffer source)))
+    (or (goblins--sidebar-window)
+        (let ((window (display-buffer-in-side-window
+                       sidebar `((side . left) (slot . 0)
+                                 (window-width . ,goblins-sidebar-width)
+                                 (window-parameters (no-delete-other-windows . t))))))
+          (set-window-dedicated-p window t)
+          (goblins--sidebar-update-active)
+          window))))
+
+(defun goblins-sidebar-toggle ()
+  "Hide the sidebar, or show it and select it.
+Hiding it keeps the workspace: goblins keep their windows, and what Goblins
+opens still goes beside the agent.  Without a workspace, open it."
+  (interactive)
+  (cond
+   ((goblins--sidebar-window)
+    (let ((selected (eq (selected-window) (goblins--sidebar-window))))
+      (delete-window (goblins--sidebar-window))
+      (when selected (select-window (goblins--agent-window)))))
+   ((goblins--in-workspace-p)
+    (select-window (goblins--sidebar-show (goblins--workspace-source))))
+   (t (call-interactively #'goblins-workspace)
+      (select-window (goblins--sidebar-window)))))
 
 ;;;; Mode
 
@@ -1056,20 +1095,14 @@ Switching or creating the workspace is delegated to
                                                 goblins-state-directory
                                                 (goblins--default-directory))))))
   (let ((source (goblins--status-buffer directory)))
-    (if (goblins--sidebar-window)
+    (if (goblins--in-workspace-p)
         ;; Already shown: these windows are the selected goblin's.
         (goblins--save-layout)
       (funcall goblins-workspace-switch-or-create-function goblins-workspace-name))
     (with-current-buffer source
       (unless (or goblins--connection (process-live-p goblins--server-process))
         (goblins-refresh)))
-    (let ((sidebar (goblins--sidebar-buffer source)))
-      (unless (goblins--sidebar-window)
-        (let ((window (display-buffer-in-side-window
-                       sidebar `((side . left) (slot . 0)
-                                 (window-width . ,goblins-sidebar-width)
-                                 (window-parameters (no-delete-other-windows . t))))))
-          (set-window-dedicated-p window t))))
+    (goblins--sidebar-show source)
     (goblins--workspace-restore source)
     (goblins--sidebar-update-active)))
 
