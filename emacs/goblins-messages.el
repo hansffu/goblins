@@ -30,6 +30,8 @@
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
 (declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
+(declare-function org-read-date "org" (&optional with-time to-time from-string prompt
+                                                 default-time default-input inactive))
 (defvar embark-general-map)
 (defvar embark-keymap-alist)
 (defvar embark-target-finders)
@@ -225,6 +227,45 @@ The server's every new snapshot calls it."
     (setq goblins--view-fresh nil)
     (goblins--messages-render)))
 
+(defcustom goblins-messages-poll-interval 2
+  "Seconds between reads of the log while a window shows the message list.
+The server's snapshots announce only some log events: not a goblin's reply
+to you, say, nor a claimed message being completed.  nil reads the log only
+on snapshots."
+  :type '(choice number (const :tag "Only on snapshots" nil)) :group 'goblins)
+
+(defvar goblins--messages-timer nil
+  "Timer that reads the log for the message list while the list exists.")
+
+(defun goblins--messages-stop-timer ()
+  (when goblins--messages-timer
+    (cancel-timer goblins--messages-timer)
+    (setq goblins--messages-timer nil)))
+
+(defun goblins--messages-start-timer ()
+  (when (and (numberp goblins-messages-poll-interval) (> goblins-messages-poll-interval 0)
+             (not goblins--messages-timer))
+    (setq goblins--messages-timer
+          (run-with-timer goblins-messages-poll-interval goblins-messages-poll-interval
+                          #'goblins--messages-tick))))
+
+(defun goblins--messages-tick ()
+  "Read the log while a window shows the list.  Redraw it when time took
+messages out of the last-minutes filter."
+  (let ((list (get-buffer goblins--messages-buffer-name)))
+    (if (not list)
+        (goblins--messages-stop-timer)
+      (when (get-buffer-window list t)
+        (with-current-buffer list
+          (condition-case err
+              (progn
+                (goblins--messages-fetch)
+                (when (and (plist-get goblins--messages-filters :last) goblins--messages
+                           (/= (cl-count-if #'goblins--messages-match-p (goblins--messages-records))
+                               (or goblins--messages-matching 0)))
+                  (goblins--messages-render)))
+            (error (message "goblins messages: %s" (error-message-string err)))))))))
+
 ;;;; Names
 
 (defun goblins--messages-goblin-path (id)
@@ -287,8 +328,8 @@ formatting characters escaped."
 
 (defvar-local goblins--messages-filters nil
   "The list's filters, a plist: :goblin, :from and :to (session IDs), :raid
-\(a raid ID), :thread (a conversation ID), :awaiting and :failed (t), :since
-and :until (Unix seconds) and :last (minutes).")
+\(a raid ID), :thread (a conversation ID), :awaiting and :failed (t), :after
+and :before (Unix seconds) and :last (minutes).")
 
 (defun goblins--messages-match-p (record)
   "Whether RECORD passes the list's filters."
@@ -308,27 +349,27 @@ and :until (Unix seconds) and :last (minutes).")
              (member (plist-get record :state) '("queued" "claimed")))
          (or (not (plist-get filters :failed))
              (equal (plist-get record :state) "failed"))
-         (or (null (plist-get filters :since)) (>= sent (plist-get filters :since)))
-         (or (null (plist-get filters :until)) (<= sent (plist-get filters :until)))
+         (or (null (plist-get filters :after)) (>= sent (plist-get filters :after)))
+         (or (null (plist-get filters :before)) (<= sent (plist-get filters :before)))
          (or (null (plist-get filters :last))
              (>= sent (- (float-time) (* 60 (plist-get filters :last))))))))
 
 (defun goblins--messages-filter-label (key value)
   "Describe the filter KEY set to VALUE, like \"from drakka\"."
   (pcase key
-    (:goblin (format "goblin %s" (goblins--safe (goblins--messages-goblin-path value))))
-    (:from (format "from %s" (goblins--safe (goblins--messages-goblin-path value))))
-    (:to (format "to %s" (goblins--safe (goblins--messages-goblin-path value))))
+    (:goblin (format "goblin %s" (goblins--messages-goblin-label value)))
+    (:from (format "from %s" (goblins--messages-goblin-label value)))
+    (:to (format "to %s" (goblins--messages-goblin-label value)))
     (:raid (format "raid %s" (goblins--safe (goblins--messages-raid-name value))))
     (:thread (format "thread %s" (goblins--messages-short value)))
     (:awaiting "awaiting reply")
     (:failed "failed")
-    (:since (format "since %s" (goblins--messages-time (* 1000 value) t)))
-    (:until (format "until %s" (goblins--messages-time (* 1000 value) t)))
+    (:after (format "after %s" (goblins--messages-time (* 1000 value) t)))
+    (:before (format "before %s" (goblins--messages-time (* 1000 value) t)))
     (:last (format "last %dm" value))))
 
 (defconst goblins--messages-filter-keys
-  '(:goblin :from :to :raid :thread :awaiting :failed :since :until :last))
+  '(:goblin :from :to :raid :thread :awaiting :failed :after :before :last))
 
 (defun goblins--messages-chips ()
   "The active filters for the header line."
@@ -347,6 +388,8 @@ and :until (Unix seconds) and :last (minutes).")
   "Conversation IDs of the threads shown unfolded.")
 (defvar-local goblins--messages-shown nil
   "ID of the message the reader shows.")
+(defvar-local goblins--messages-matching nil
+  "How many messages passed the filters when the list was drawn.")
 
 (defun goblins--messages-threads (records)
   "RECORDS, oldest first, as threads ((CONVERSATION RECORD...)...) in the
@@ -378,9 +421,11 @@ order of their first message."
   (let ((window (get-buffer-window (current-buffer) t)))
     (if window (window-body-width window) 120)))
 
-(defun goblins--messages-insert-row (record conversation route-width arrow glyph hidden)
+(defun goblins--messages-insert-row (record conversation route-width arrow glyph hidden
+                                            &optional foldable)
   "Insert RECORD's row in thread CONVERSATION: its ARROW, time, route padded to
-ROUTE-WIDTH, tree GLYPH and first line, and HIDDEN, the replies folded away."
+ROUTE-WIDTH, tree GLYPH and first line, and HIDDEN, the replies folded away.
+FOLDABLE marks the first row of a thread with replies."
   (let* ((start (point))
          (route (goblins--messages-route record))
          (prefix (concat (propertize arrow 'face 'goblins-dim)
@@ -399,7 +444,8 @@ ROUTE-WIDTH, tree GLYPH and first line, and HIDDEN, the replies folded away."
             (truncate-string-to-width (goblins--messages-summary record) room nil nil "…")
             suffix "\n")
     (add-text-properties start (point) (list 'goblins-message (plist-get record :id)
-                                             'goblins-thread conversation))))
+                                             'goblins-thread conversation
+                                             'goblins-foldable foldable))))
 
 (defun goblins--messages-insert-thread (thread route-width)
   "Insert THREAD, (CONVERSATION RECORD...): its first message, then its
@@ -410,7 +456,8 @@ replies when unfolded."
          (open (and replies (goblins--messages-open-p conversation))))
     (goblins--messages-insert-row head conversation route-width
                                   (cond ((null replies) "  ") (open "▾ ") (t "▸ "))
-                                  nil (and replies (not open) (length replies)))
+                                  nil (and replies (not open) (length replies))
+                                  (and replies t))
     (when open
       (let ((left (length replies)))
         (dolist (record replies)
@@ -435,9 +482,25 @@ replies when unfolded."
                   (propertize " " 'display `(space :align-to (- right ,(string-width right))))
                   right))))
 
+(defun goblins--messages-position (property value)
+  "Where the first text whose PROPERTY is `equal' to VALUE starts, or nil."
+  (let ((pos (point-min)) found)
+    (while (and pos (< pos (point-max)) (not found))
+      (if (equal (get-text-property pos property) value)
+          (setq found pos)
+        (setq pos (next-single-property-change pos property))))
+    found))
+
 (defun goblins--messages-render ()
-  "Redraw the list from the cache and the filters, keeping the message at point."
+  "Redraw the list from the cache and the filters, keeping the message at point
+and each window's scroll position."
   (let* ((inhibit-read-only t)
+         ;; Each window's first line, by its message, else its line number.
+         (starts (mapcar (lambda (window)
+                           (save-excursion
+                             (goto-char (window-start window))
+                             (list window (goblins--messages-id-at) (line-number-at-pos))))
+                         (get-buffer-window-list nil nil t)))
          (records (and goblins--messages (goblins--messages-records)))
          (shown (cl-remove-if-not #'goblins--messages-match-p records))
          (route-width (goblins--messages-route-width shown))
@@ -462,14 +525,20 @@ replies when unfolded."
       (goblins--messages-insert-thread thread route-width))
     (goblins--messages-header (length shown) (length records) route-width)
     (goto-char (point-min))
-    (let ((pos (or (and message (text-property-any (point-min) (point-max)
-                                                   'goblins-message message))
-                   (and thread (text-property-any (point-min) (point-max)
-                                                  'goblins-thread thread))
+    (let ((pos (or (and message (goblins--messages-position 'goblins-message message))
+                   (and thread (goblins--messages-position 'goblins-thread thread))
                    (progn (forward-line (1- line))
                           (when (and (eobp) (not (bobp))) (forward-line -1))
                           (point)))))
       (goblins--view-goto (save-excursion (goto-char pos) (line-beginning-position))))
+    (pcase-dolist (`(,window ,id ,start-line) starts)
+      (set-window-start window
+                        (or (and id (goblins--messages-position 'goblins-message id))
+                            (save-excursion (goto-char (point-min))
+                                            (forward-line (1- start-line))
+                                            (point)))
+                        t))
+    (setq goblins--messages-matching (length shown))
     (goblins--messages-follow t)))
 
 (defun goblins--messages-list ()
@@ -654,19 +723,23 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
                      (goblins--message-text record width)
                    (propertize "No message at point\n" 'face 'goblins-dim)))))
     (with-current-buffer reader
-      (let ((inhibit-read-only t)
-            (same (and (eq list goblins--message-list) (equal id goblins--message-id)))
-            (position (point)))
+      (let ((same (and (eq list goblins--message-list) (equal id goblins--message-id))))
         (setq goblins--message-list list
               goblins--message-id id
               goblins--directory (buffer-local-value 'goblins--directory list)
               goblins--view-source (buffer-local-value 'goblins--view-source list))
-        (erase-buffer)
-        (insert text)
-        (goto-char (if same (min position (point-max)) (point-min)))
-        (dolist (window (get-buffer-window-list reader nil t))
-          (set-window-point window (point))
-          (unless same (set-window-start window (point-min))))))))
+        ;; Redrawing the same message keeps each window's place in it.
+        (unless (and same (equal text (buffer-string)))
+          (let ((inhibit-read-only t)
+                (position (point))
+                (windows (mapcar (lambda (w) (list w (window-start w) (window-point w)))
+                                 (get-buffer-window-list reader nil t))))
+            (erase-buffer)
+            (insert text)
+            (goto-char (if same (min position (point-max)) (point-min)))
+            (pcase-dolist (`(,window ,start ,point) windows)
+              (set-window-start window (if same (min start (point-max)) (point-min)) t)
+              (set-window-point window (if same (min point (point-max)) (point-min))))))))))
 
 (defun goblins--message-target-at (&optional pos)
   "The reader's target at POS or just before it, (KIND . ID), and its
@@ -706,24 +779,25 @@ bounds (BEG . END)."
             (cons conversation goblins--messages-unfolded)))
     ;; Point stays on the thread, at its first message when folding.
     (unless (member conversation goblins--messages-unfolded)
-      (goto-char (text-property-any (point-min) (point-max) 'goblins-thread conversation)))
+      (goto-char (goblins--messages-position 'goblins-thread conversation)))
     (goblins--messages-render)))
 
 (defun goblins-messages-fold-all ()
-  "Unfold every thread shown, or fold them all when none is folded."
+  "Unfold every thread shown, or fold them all when none is folded.
+Only threads with replies fold."
   (interactive)
   (let ((shown (delete-dups
                 (cl-loop for pos = (point-min) then (next-single-property-change pos 'goblins-thread)
                          while pos
-                         for conversation = (get-text-property pos 'goblins-thread)
-                         when conversation collect conversation))))
+                         when (get-text-property pos 'goblins-foldable)
+                         collect (get-text-property pos 'goblins-thread)))))
     (setq goblins--messages-unfolded
           (if (cl-some (lambda (c) (not (goblins--messages-open-p c))) shown)
               (delete-dups (append shown goblins--messages-unfolded))
             nil))
     (let ((conversation (get-text-property (line-beginning-position) 'goblins-thread)))
       (when (and conversation (not (member conversation goblins--messages-unfolded)))
-        (goto-char (text-property-any (point-min) (point-max) 'goblins-thread conversation))))
+        (goto-char (goblins--messages-position 'goblins-thread conversation))))
     (goblins--messages-render)))
 
 (defun goblins-messages-read ()
@@ -832,13 +906,10 @@ bounds (BEG . END)."
                  :conversation))))
 
 (defun goblins--read-message-goblin (prompt)
-  "Choose a goblin of the server at hand with PROMPT, stopped ones too.
-Return (SOURCE SESSION-ID), for an `interactive' form."
-  (let* ((source (goblins--messages-source))
-         (goblin (goblins--read-goblin
-                  prompt source
-                  (append (plist-get (buffer-local-value 'goblins--snapshot source) :sessions)
-                          nil))))
+  "Choose a running goblin of the server at hand with PROMPT.
+Return (SOURCE SESSION-ID), for an `interactive' form.  Running goblins'
+paths are unique; a stopped goblin's messages are its participant's."
+  (let ((goblin (goblins--read-goblin prompt (goblins--messages-source))))
     (list (car goblin) (cdr goblin))))
 
 (defun goblins--messages-participants ()
@@ -854,6 +925,37 @@ alist of (LABEL . SESSION-ID)."
                        (count (puthash label (1+ (gethash label seen 0)) seen)))
                   (cons (if (> count 1) (format "%s <%d>" label count) label) id)))
               (nreverse ids)))))
+
+(defun goblins--messages-goblin-label (id)
+  "Session ID's name among the participants, numbered when names repeat."
+  (or (car (rassoc id (goblins--messages-participants)))
+      (goblins--safe (goblins--messages-goblin-path id))))
+
+(defun goblins--messages-participant-annotation (choices)
+  "An annotation function for participants of CHOICES, an alist of (LABEL . ID):
+whether each still runs, and its session."
+  (let ((snapshot (goblins--view-snapshot)))
+    (lambda (candidate)
+      (let* ((id (cdr (assoc candidate choices)))
+             (session (goblins--snapshot-session snapshot id)))
+        (concat (propertize " " 'display '(space :align-to 24))
+                (propertize (cond ((member id '("host" "goblins")) "")
+                                  ((null session) "gone")
+                                  ((member (plist-get session :state) '("stopped" "failed"))
+                                   (plist-get session :state))
+                                  (t (format "%s, running" (goblins--safe (plist-get session :name)))))
+                            'face 'goblins-dim)
+                (propertize (format "  %s" (goblins--safe id)) 'face 'goblins-dim))))))
+
+(defun goblins--messages-read-participant (prompt)
+  "Choose a goblin that sent or received a message with PROMPT, stopped ones
+too; return its session ID.  Repeated names are numbered <2> and on."
+  (with-current-buffer (goblins--messages-list)
+    (let ((choices (goblins--messages-participants)))
+      (unless choices (user-error "No messages yet"))
+      (cdr (assoc (goblins--messages-complete prompt 'goblins-participant (mapcar #'car choices)
+                                              (goblins--messages-participant-annotation choices))
+                  choices)))))
 
 ;;;; Filtering from anywhere
 
@@ -871,7 +973,7 @@ alist of (LABEL . SESSION-ID)."
           (message "Cleared the filters to show %s" (goblins--messages-short id)))
         (cl-pushnew (plist-get record :conversation) goblins--messages-unfolded :test #'equal)
         (goblins--messages-render)
-        (goblins--view-goto (text-property-any (point-min) (point-max) 'goblins-message id))
+        (goblins--view-goto (goblins--messages-position 'goblins-message id))
         (goblins--messages-follow)))
     (goblins--messages-display list)
     (goblins--messages-show-reader list)))
@@ -930,6 +1032,25 @@ alist of (LABEL . SESSION-ID)."
   (interactive (goblins--read-message-goblin "Messages to goblin: "))
   (goblins--messages-open source (list :to id) (goblins--messages-keep-p)))
 
+(defun goblins-participant-messages (id)
+  "List the messages session ID sent or received, a goblin that may have
+stopped since."
+  (interactive (list (goblins--messages-read-participant "Messages with: ")))
+  (goblins--messages-open (buffer-local-value 'goblins--view-source (goblins--messages-list))
+                          (list :goblin id) (goblins--messages-keep-p)))
+
+(defun goblins-participant-messages-from (id)
+  "List the messages session ID sent."
+  (interactive (list (goblins--messages-read-participant "Messages from: ")))
+  (goblins--messages-open (buffer-local-value 'goblins--view-source (goblins--messages-list))
+                          (list :from id) (goblins--messages-keep-p)))
+
+(defun goblins-participant-messages-to (id)
+  "List the messages session ID received."
+  (interactive (list (goblins--messages-read-participant "Messages to: ")))
+  (goblins--messages-open (buffer-local-value 'goblins--view-source (goblins--messages-list))
+                          (list :to id) (goblins--messages-keep-p)))
+
 (defun goblins-raid-messages (source raid)
   "List the messages sent within RAID, a raid ID, of SOURCE's server."
   (goblins--messages-open source (list :raid raid)))
@@ -944,16 +1065,17 @@ alist of (LABEL . SESSION-ID)."
                 (if value
                     (propertize (pcase key
                                   ((or :goblin :from :to)
-                                   (goblins--safe (goblins--messages-goblin-path value)))
+                                   (goblins--messages-goblin-label value))
                                   (:raid (goblins--safe (goblins--messages-raid-name value)))
                                   (:thread (goblins--messages-short value))
-                                  ((or :since :until) (goblins--messages-time (* 1000 value) t))
+                                  ((or :after :before) (goblins--messages-time (* 1000 value) t))
                                   (:last (format "%d minutes" value))
                                   (_ "on"))
                                 'face 'transient-value)
                   (propertize (pcase key
-                                ((or :since :awaiting :failed :last) "off")
-                                (:until "now")
+                                ((or :after :before)
+                                 (format "off  %s" goblins--messages-time-examples))
+                                ((or :awaiting :failed :last) "off")
                                 (_ "any"))
                               'face 'goblins-dim))))))
 
@@ -967,11 +1089,6 @@ alist of (LABEL . SESSION-ID)."
   "Clear filter KEY when set, else set it to what READ returns."
   (with-current-buffer (goblins--messages-list)
     (goblins--messages-set key (if (plist-get goblins--messages-filters key) nil (funcall read)))))
-
-(defun goblins--messages-read-participant (prompt)
-  (let ((choices (with-current-buffer (goblins--messages-list) (goblins--messages-participants))))
-    (unless choices (user-error "No messages yet"))
-    (cdr (assoc (completing-read prompt choices nil t) choices))))
 
 (defun goblins--messages-read-raid (prompt)
   (let ((choices (with-current-buffer (goblins--messages-list)
@@ -987,20 +1104,14 @@ alist of (LABEL . SESSION-ID)."
     (unless choices (user-error "No message was sent within a raid"))
     (cdr (assoc (completing-read prompt choices nil t) choices))))
 
+(defconst goblins--messages-time-examples "15:30, -1h, -2d 9:00"
+  "What the time filters' prompt accepts, for their hints.")
+
 (defun goblins--messages-read-time (prompt)
-  "Read a time with PROMPT, like 15:30 today or 2026-10-15 15:30.
+  "Read a time with Org's date prompt and calendar, with PROMPT and examples.
 Return it in Unix seconds."
-  (let ((text (string-trim (read-string prompt))))
-    (if (string-match "\\`\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)\\(?::\\([0-9]\\{2\\}\\)\\)?\\'" text)
-        (let ((now (decode-time)))
-          (float-time (encode-time (list (string-to-number (or (match-string 3 text) "0"))
-                                         (string-to-number (match-string 2 text))
-                                         (string-to-number (match-string 1 text))
-                                         (decoded-time-day now) (decoded-time-month now)
-                                         (decoded-time-year now) nil -1 nil))))
-      (condition-case nil
-          (float-time (date-to-time text))
-        (error (user-error "Write a time like 15:30 or 2026-10-15 15:30"))))))
+  (require 'org)
+  (float-time (org-read-date t t nil (format "%s (%s): " prompt goblins--messages-time-examples))))
 
 (defun goblins-messages-filter-goblin ()
   "Filter by a goblin that sent or received the messages, or clear that filter."
@@ -1037,15 +1148,15 @@ Return it in Unix seconds."
   (interactive)
   (goblins--messages-toggle :failed #'always))
 
-(defun goblins-messages-filter-since ()
-  "Show only the messages sent since a time, or clear that filter."
+(defun goblins-messages-filter-after ()
+  "Show only the messages sent after a time, or clear that filter."
   (interactive)
-  (goblins--messages-toggle :since (lambda () (goblins--messages-read-time "Since: "))))
+  (goblins--messages-toggle :after (lambda () (goblins--messages-read-time "Sent after"))))
 
-(defun goblins-messages-filter-until ()
-  "Show only the messages sent until a time, or clear that filter."
+(defun goblins-messages-filter-before ()
+  "Show only the messages sent before a time, or clear that filter."
   (interactive)
-  (goblins--messages-toggle :until (lambda () (goblins--messages-read-time "Until: "))))
+  (goblins--messages-toggle :before (lambda () (goblins--messages-read-time "Sent before"))))
 
 (defun goblins-messages-filter-last ()
   "Show only the messages sent in the last minutes, or clear that filter."
@@ -1071,10 +1182,10 @@ Return it in Unix seconds."
     ("x" goblins-messages-filter-failed :transient t
      :description (lambda () (goblins--messages-filter-description "failed only" :failed)))]
    ["Time"
-    ("<" goblins-messages-filter-since :transient t
-     :description (lambda () (goblins--messages-filter-description "since" :since)))
-    (">" goblins-messages-filter-until :transient t
-     :description (lambda () (goblins--messages-filter-description "until" :until)))
+    ("<" goblins-messages-filter-after :transient t
+     :description (lambda () (goblins--messages-filter-description "sent after" :after)))
+    (">" goblins-messages-filter-before :transient t
+     :description (lambda () (goblins--messages-filter-description "sent before" :before)))
     ("m" goblins-messages-filter-last :transient t
      :description (lambda () (goblins--messages-filter-description "last N minutes" :last)))]]
   [("w" "widen (clear all)" goblins-messages-widen :transient t)
@@ -1131,6 +1242,8 @@ Return it in Unix seconds."
   (setq-local truncate-lines t
               revert-buffer-function (lambda (&rest _) (goblins-messages-reload)))
   (hl-line-mode 1)
+  (goblins--messages-start-timer)
+  (add-hook 'kill-buffer-hook #'goblins--messages-stop-timer nil t)
   (add-hook 'post-command-hook #'goblins--messages-follow nil t)
   (add-hook 'window-size-change-functions
             (lambda (_window) (goblins--messages-render)) nil t))
@@ -1148,6 +1261,20 @@ Return it in Unix seconds."
     (list (if (plist-get record :raid) 'goblins-raid-message 'goblins-message)
           (goblins--messages-short id))))
 
+(defun goblins--messages-embark-goblin (id)
+  "Session ID as an Embark target type and string.
+A running goblin, its path naming it alone, gets every goblin action; any
+other one, such as a stopped goblin whose name a new one took, only its
+messages, by its session ID."
+  (with-current-buffer (goblins--messages-list)
+    (let* ((running (goblins--running-sessions (goblins--view-snapshot)))
+           (session (cl-find id running :key (lambda (s) (plist-get s :id)) :test #'equal))
+           (path (and session (goblins--session-path session))))
+      (if (and session
+               (= 1 (cl-count path running :key #'goblins--session-path :test #'equal)))
+          (list 'goblin path)
+        (list 'goblins-participant (goblins--messages-goblin-label id))))))
+
 (defun goblins--messages-embark-target ()
   "Embark's target in the message list or reader.
 In the list, the message at point; in the reader, the goblin, thread or
@@ -1161,9 +1288,7 @@ message ID at point, else the message shown."
         (let ((target (car found)) (bounds (cdr found)))
           (pcase (car target)
             ('goblin
-             (let* ((list (goblins--messages-list))
-                    (path (with-current-buffer list (goblins--messages-goblin-path (cdr target)))))
-               `(goblin ,path ,(car bounds) . ,(cdr bounds))))
+             `(,@(goblins--messages-embark-goblin (cdr target)) ,(car bounds) . ,(cdr bounds)))
             ('thread `(goblins-thread ,(goblins--messages-short (cdr target))
                                       ,(car bounds) . ,(cdr bounds)))
             ('message `(,@(goblins--messages-embark-message (cdr target))
@@ -1195,6 +1320,18 @@ message ID at point, else the message shown."
     map)
   "Embark actions for `goblins-thread' targets: a thread of the list.")
 
+(defvar goblins-embark-participant-map
+  (let ((map (make-sparse-keymap))
+        (messages (make-sparse-keymap)))
+    (define-key messages "m" #'goblins-participant-messages)
+    (define-key messages "f" #'goblins-participant-messages-from)
+    (define-key messages "t" #'goblins-participant-messages-to)
+    (define-key map (kbd "RET") #'goblins-participant-messages)
+    (define-key map "m" messages)
+    map)
+  "Embark actions for `goblins-participant' targets: a goblin in the reader
+that no longer runs under its name.  Only its messages, under m as on a goblin.")
+
 (defvar goblins-embark-goblin-messages-map
   (let ((map (make-sparse-keymap)))
     (define-key map "m" #'goblins-goblin-messages)
@@ -1206,6 +1343,8 @@ message ID at point, else the message shown."
 (with-eval-after-load 'embark
   (set-keymap-parent goblins-embark-message-map embark-general-map)
   (set-keymap-parent goblins-embark-thread-map embark-general-map)
+  (set-keymap-parent goblins-embark-participant-map embark-general-map)
+  (add-to-list 'embark-keymap-alist '(goblins-participant goblins-embark-participant-map))
   (add-to-list 'embark-keymap-alist '(goblins-message goblins-embark-message-map))
   (add-to-list 'embark-keymap-alist '(goblins-raid-message goblins-embark-raid-message-map))
   (add-to-list 'embark-keymap-alist '(goblins-thread goblins-embark-thread-map))

@@ -3625,6 +3625,12 @@ m2, and m3, which failed when beta stopped."
     (should (= (length (goblins-test--lines)) 3))
     (goblins-messages-fold-all)
     (should (= (length (goblins-test--lines)) 2))
+    ;; With every thread that has replies unfolded, S-TAB folds at once:
+    ;; a thread of one message has nothing to fold.
+    (goto-char (point-min))
+    (goblins-messages-fold)
+    (goblins-messages-fold-all)
+    (should (= (length (goblins-test--lines)) 2))
     (should (string-match-p "Time.*From → To.*Message.*3 messages" (format "%s" header-line-format)))))
 
 (ert-deftest goblins-messages-filters-narrow-the-list ()
@@ -3654,7 +3660,7 @@ m2, and m3, which failed when beta stopped."
     (setq goblins--messages-filters (list :awaiting t :from "a"))
     (goblins--messages-render)
     (should (string-match-p "No message passes the filters" (buffer-string)))
-    (setq goblins--messages-filters (list :goblin "a" :until 3.0))
+    (setq goblins--messages-filters (list :goblin "a" :before 3.0))
     (goblins--messages-render)
     (should (= (length (goblins-test--lines)) 1))
     (goblins-messages-widen)
@@ -3756,12 +3762,23 @@ m2, and m3, which failed when beta stopped."
     (goblins-messages-filter-awaiting)
     (should (string-match-p "awaiting reply +on"
                             (goblins--messages-filter-description "awaiting reply" :awaiting)))
-    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "15:30")))
-      (let ((time (goblins--messages-read-time "Since: ")))
-        (should (equal (format-time-string "%H:%M:%S" time) "15:30:00"))))
-    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "2026-10-15 15:30")))
-      (should (equal (format-time-string "%F %H:%M" (goblins--messages-read-time "Since: "))
-                     "2026-10-15 15:30")))))
+    ;; The time filters say what they accept, and read it with Org's prompt.
+    (require 'org)
+    (should (string-match-p "sent after +off  15:30, -1h, -2d 9:00"
+                            (goblins--messages-filter-description "sent after" :after)))
+    (cl-letf (((symbol-function 'org-read-date)
+               (lambda (with-time to-time _from prompt &rest _)
+                 (should (and with-time to-time))
+                 (should (equal prompt "Sent after (15:30, -1h, -2d 9:00): "))
+                 (encode-time (list 0 30 15 15 10 2026 nil -1 nil)))))
+      (goblins-messages-filter-after))
+    (should (equal (format-time-string "%F %H:%M" (plist-get goblins--messages-filters :after))
+                   "2026-10-15 15:30"))
+    (should (string-match-p "after 2026-10-15 15:30:00\\|after 15:30:00"
+                            (format "%s" header-line-format)))
+    ;; Again clears it.
+    (goblins-messages-filter-after)
+    (should-not (plist-get goblins--messages-filters :after))))
 
 (ert-deftest goblins-messages-from-the-sidebar ()
   (goblins-test--messages
@@ -3790,7 +3807,7 @@ m2, and m3, which failed when beta stopped."
         (should-error (goblins-sidebar-messages-to) :type 'user-error)))))
 
 (defun goblins-test-messages-live ()
-  "Read a real daemon's messages, then see one sent meanwhile arrive."
+  "Read a real daemon's messages, then see a message and an answer to you arrive."
   (let (source list)
     (unwind-protect
         (progn
@@ -3817,7 +3834,14 @@ m2, and m3, which failed when beta stopped."
           (with-current-buffer list
             (goblins-test--wait
              (lambda () (string-match-p "host → chief +Second question" (buffer-string))))
-            (should (string-match-p "3 messages" (format "%s" header-line-format)))))
+            (should (string-match-p "3 messages" (format "%s" header-line-format))))
+          ;; The goblin's answer to you changes no snapshot: the list reads
+          ;; the log by itself.
+          (write-region "" nil (getenv "GOBLINS_TEST_READY"))
+          (with-current-buffer list
+            (goblins-test--wait
+             (lambda () (string-match-p "host → chief +Second question +\\+1" (buffer-string))))
+            (should (string-match-p "4 messages" (format "%s" header-line-format)))))
       (dolist (buffer (list list (get-buffer goblins--message-buffer-name) source))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
 
@@ -3834,3 +3858,71 @@ m2, and m3, which failed when beta stopped."
       (should (equal (buffer-name) goblins--message-buffer-name))
       (should (string-match-p "^Hello beta$" (buffer-string)))
       (should (= (length (window-list)) 2)))))
+
+(ert-deftest goblins-messages-reader-goblins-keep-their-identity ()
+  (goblins-test--messages
+    (goto-char (point-min))
+    (goblins--messages-follow)
+    (with-current-buffer goblins--message-buffer-name
+      (goto-char (point-min))
+      (search-forward "alpha")
+      (should (equal (car (goblins--messages-embark-target)) 'goblin))
+      ;; alpha stopped, and a new goblin took its name: alpha's own target
+      ;; offers only its messages, by its session.
+      (with-current-buffer goblins--view-source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         [(:id "a" :path "alpha" :agent_name "alpha" :name "claude" :state "stopped")
+                          (:id "b" :path "beta" :agent_name "beta" :name "codex" :state "running")
+                          (:id "c" :path "alpha" :agent_name "alpha" :name "claude"
+                           :state "running")])))
+      (should (equal (butlast (goblins--messages-embark-target) 0)
+                     `(goblins-participant "alpha" ,(- (point) 5) . ,(point))))
+      (should-not (lookup-key goblins-embark-participant-map "K"))
+      (should (eq (lookup-key goblins-embark-participant-map "mt")
+                  #'goblins-participant-messages-to))
+      (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "alpha")))
+        (call-interactively #'goblins-participant-messages-to)))
+    (with-current-buffer goblins--messages-buffer-name
+      (should (equal (plist-get goblins--messages-filters :to) "a")))))
+
+(ert-deftest goblins-messages-redraws-keep-the-scroll-position ()
+  (save-window-excursion
+    (delete-other-windows)
+    (goblins-test--messages
+      ;; Enough threads to scroll.
+      (dotimes (i 60)
+        (goblins--messages-ingest
+         (list :kind "message.accepted" :actor "a" :timestamp 7000
+               :data (list :change (list :message (goblins-test--message
+                                                   (format "i-x%d" i) "a" "b" (format "Note %d" i)
+                                                   (format "i-cx%d" i) (+ 7000 i)))))))
+      (goblins--messages-render)
+      (goto-char (goblins--messages-position 'goblins-message "i-x40"))
+      (set-window-start (selected-window)
+                        (goblins--messages-position 'goblins-message "i-x30"))
+      (goblins--messages-ingest
+       (list :kind "message.claimed" :actor "b" :timestamp 9000
+             :data (list :change (list :message "i-x5" :claim_generation 1))))
+      (goblins--messages-render)
+      (should (equal (goblins--messages-id-at) "i-x40"))
+      (should (= (window-start) (goblins--messages-position 'goblins-message "i-x30")))
+      ;; An ID made anew, not the one the list stored, still shows its message.
+      (goblins-message-show (copy-sequence "i-x2"))
+      (should (equal (goblins--messages-id-at) "i-x2")))))
+
+(ert-deftest goblins-messages-tick-reads-the-log-and-expires-the-last-minutes ()
+  (goblins-test--messages
+    (let ((fetched 0))
+      (cl-letf (((symbol-function 'goblins--messages-fetch) (lambda () (cl-incf fetched))))
+        (setq goblins--messages-filters (list :last 10))
+        (goblins--messages-render)
+        (should (string-match-p "No message passes" (buffer-string)))
+        ;; m2 was just sent: the next tick shows it without any log event.
+        (goblins--messages-update "i-m2" :created (* 1000 (float-time)))
+        (goblins--messages-tick)
+        (should (= fetched 1))
+        (should (string-match-p "Hi alpha" (buffer-string)))
+        (goblins--messages-update "i-m2" :created 4000)
+        (goblins--messages-tick)
+        (should (string-match-p "No message passes" (buffer-string)))))))

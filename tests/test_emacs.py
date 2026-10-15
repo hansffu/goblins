@@ -59,11 +59,24 @@ class EmacsTests(unittest.TestCase):
         sandbox("messages.reply", {"key": "reply", "message": message["id"],
                                    "claim_generation": claim["claim_generation"],
                                    "body": "First answer"})
-        result = subprocess.run(['emacs', '--batch', '-Q', '--eval', '(setq load-prefer-newer t)',
+        ready = Path(daemon.temp.name) / "ready"
+        emacs = subprocess.Popen(['emacs', '--batch', '-Q', '--eval', '(setq load-prefer-newer t)',
             '-L', str(ROOT/'emacs'), '-l', 'goblins-tests', '-f', 'goblins-test-messages-live'],
-            env={**os.environ, 'GOBLINS_TEST_STATE': str(daemon.state)},
-            capture_output=True, text=True, timeout=60)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            env={**os.environ, 'GOBLINS_TEST_STATE': str(daemon.state),
+                 'GOBLINS_TEST_READY': str(ready)},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(lambda: emacs.poll() is None and emacs.kill())
+        daemon.wait(lambda: ready.exists() or emacs.poll() is not None, timeout=60)
+        if ready.exists():
+            # Emacs sent the second question; claiming it changes a snapshot,
+            # the answer later on doesn't.
+            claim = sandbox("inbox.next", {"key": "fetch-second"})
+            time.sleep(3)
+            sandbox("messages.reply", {"key": "reply-second", "message": claim["message"]["id"],
+                                       "claim_generation": claim["claim_generation"],
+                                       "body": "Second answer"})
+        output, _ = emacs.communicate(timeout=60)
+        self.assertEqual(emacs.returncode, 0, output)
 
     def test_live_ownership_tree_and_stopped_branches(self):
         daemon = Daemon()
