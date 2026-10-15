@@ -889,6 +889,10 @@
 
 ;;; Workspace sidebar
 
+(defun goblins-test--choices (collection)
+  "The candidates of COLLECTION, a completion table, in order."
+  (all-completions "" collection))
+
 (defun goblins-test--session (id &rest props)
   (append props
           (list :id id :agent_name id :name "shell" :state "running"
@@ -1935,7 +1939,7 @@ keeps the parameters of windows that live on."
               ;; Elsewhere it asks which goblin.
               (goto-char (point-min))
               (cl-letf (((symbol-function 'completing-read)
-                         (lambda (_prompt choices &rest _) (caar choices))))
+                         (lambda (_prompt choices &rest _) (car (goblins-test--choices choices)))))
                 (goblins-raid-invite))
               (should (equal (car (pop calls)) 'raids.invite))
               ;; x kicks the member at point after confirming; candidates cannot be kicked.
@@ -1983,7 +1987,7 @@ keeps the parameters of windows that live on."
         (cl-letf (((symbol-function 'completing-read)
                    (lambda (prompt choices &rest _)
                      (if (string-match-p "around" prompt)
-                         (progn (setq asked (mapcar #'car choices)) (caar choices))
+                         (progn (setq asked (goblins-test--choices choices)) (car asked))
                        "crew")))
                   ((symbol-function 'goblins-raid-buffer)
                    (lambda (_source name) (setq page name) (current-buffer))))
@@ -2025,7 +2029,8 @@ keeps the parameters of windows that live on."
       (should-error (goblins-sidebar-invite) :type 'user-error)
       ;; On a raid heading, pick the goblin instead.
       (goto-char (point-min))
-      (cl-letf (((symbol-function 'completing-read) (lambda (_p choices &rest _) (caar choices))))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_p choices &rest _) (car (goblins-test--choices choices)))))
         (goblins-sidebar-invite))
       (should (equal (pop calls) '(raids.invite :raid "crew" :sessions ["session-c"]))))))
 
@@ -2279,21 +2284,56 @@ keeps the parameters of windows that live on."
 
 (ert-deftest goblins-switch-chooses-among-running-goblins ()
   (goblins-test--raid-sidebar
-    (let (offered annotation opened)
+    (let (offered category annotation opened)
       (cl-letf (((symbol-function 'goblins--connect) (lambda (&optional _) source))
                 ((symbol-function 'goblins-open-session)
                  (lambda (src id) (setq opened (list src id))))
                 ((symbol-function 'completing-read)
                  (lambda (_prompt table &rest _)
-                   (setq offered (mapcar #'car table)
-                         annotation (funcall (plist-get completion-extra-properties
-                                                        :annotation-function)
-                                             "session-a"))
+                   (let ((choices (goblins-test--choices table)))
+                     (setq offered choices
+                           category (completion-metadata-get
+                                     (completion-metadata "" table nil) 'category)
+                           annotation (funcall (completion-metadata-get
+                                                (completion-metadata "" table nil)
+                                                'annotation-function)
+                                               (car (member "session-a" choices)))))
                    "session-a")))
         (goblins-switch))
       (should (equal (sort offered #'string<) '("session-a" "session-b" "session-c")))
+      (should (eq category 'goblin))
       (should (string-match-p "shell.*raid crew.*/p/one !1" annotation))
       (should (equal opened (list source "session-a"))))))
+
+(ert-deftest goblins-goblin-candidates-describe-each-goblin ()
+  (goblins-test--sidebar
+      (list (goblins-test--session "session-a" :cwd "/p" :name "claude" :agent_state "waiting-input"
+                                   :inbox 2 :raid '(:id "r1" :name "crew"))
+            (goblins-test--session "session-b" :cwd "/q" :agent_state "idle")
+            (goblins-test--session "session-c" :state "stopped"))
+    (let ((goblins--terminal-buffers (make-hash-table :test #'equal))
+          (terminal (generate-new-buffer " *agent a*")))
+      (unwind-protect
+          (progn
+            (puthash (list "/tmp/goblins-test" "daemon-a" "session-a") terminal
+                     goblins--terminal-buffers)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt table &rest _)
+                         (let* ((metadata (completion-metadata "" table nil))
+                                (annotate (completion-metadata-get metadata 'annotation-function)))
+                           (should (eq (completion-metadata-get metadata 'category) 'goblin))
+                           (should (equal (goblins-test--choices table) '("session-a" "session-b")))
+                           (should (string-match-p
+                                    "claude +◆ needs input +raid crew +/p !1 ✉2 \\[term\\]"
+                                    (substring-no-properties
+                                     (funcall annotate (car (goblins-test--choices table))))))
+                           (should (string-match-p
+                                    "shell +○ idle +/q$"
+                                    (substring-no-properties
+                                     (funcall annotate (cadr (goblins-test--choices table))))))
+                           "session-b"))))
+              (should (equal (goblins--read-goblin "Goblin: " source) (cons source "session-b")))))
+        (kill-buffer terminal)))))
 
 (ert-deftest goblins-attention-mode-counts-and-announces-requests ()
   (goblins-test--buffer

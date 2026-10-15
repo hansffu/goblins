@@ -244,8 +244,7 @@ the whole frame; =goblins-workspace-quit-function= restores it.
 
 ** Anywhere
 
-- =M-x goblins-switch= completes over the running goblins, annotated with type,
-  raid, directory and pending requests, and shows (or attaches) the chosen one.
+- =M-x goblins-switch= completes over the running goblins, annotated with type, activity, raid, directory, pending requests, queued messages and =[term]= when a terminal is open here, and shows (or attaches) the chosen one.  Every prompt for a goblin uses the =goblin= completion category.
 - =M-x goblins-raid= is the sidebar's =r= from any goblin terminal.
 - =goblins-attention-mode= shows =Goblins!N= in the mode line while requests are
   pending (click it to open the workspace) and announces new ones through

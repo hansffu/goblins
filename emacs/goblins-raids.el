@@ -45,20 +45,11 @@
                     (not (goblins--session-raid-id s))))
    (append (plist-get snapshot :sessions) nil)))
 
-(defun goblins--session-choice (session)
-  "A completion label for SESSION."
-  (let ((cwd (plist-get session :cwd)))
-    (format "%s (%s)%s" (goblins--safe (goblins--session-path session))
-            (goblins--safe (plist-get session :name))
-            (if (stringp cwd) (concat "  " (abbreviate-file-name cwd)) ""))))
-
-(defun goblins--read-session (sessions prompt)
-  "Choose one of SESSIONS, with PROMPT, and return its record."
+(defun goblins--read-session (source sessions prompt)
+  "Choose one of SESSIONS of SOURCE's server, with PROMPT, and return its record."
   (unless sessions (user-error "No running goblin outside a raid"))
-  (let* ((choices (mapcar (lambda (s) (cons (goblins--session-choice s) s)) sessions))
-         (choice (assoc (completing-read prompt choices nil t) choices)))
-    (unless choice (user-error "Select a goblin"))
-    (cdr choice)))
+  (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                             (cdr (goblins--read-goblin prompt source sessions))))
 
 (defun goblins--raid-invite (source raid-name session-id)
   "Add SESSION-ID to the raid RAID-NAME on SOURCE's server, creating it if absent."
@@ -186,7 +177,8 @@
          (line (goblins--raid-line))
          (session (if (eq (car line) 'candidate)
                       (goblins--snapshot-session snapshot (cdr line))
-                    (goblins--read-session (goblins--raid-candidates snapshot)
+                    (goblins--read-session goblins--view-source
+                                           (goblins--raid-candidates snapshot)
                                            (format "Invite to %s: " goblins--view-session)))))
     (goblins--raid-invite goblins--view-source goblins--view-session (plist-get session :id))
     (message "Invited %s to raid %s" (goblins--session-path session) goblins--view-session)))
@@ -329,7 +321,7 @@ otherwise choose a running goblin that is not in a raid."
          (session (if context
                       (or (goblins--snapshot-session snapshot (cdr context))
                           (user-error "The daemon no longer retains this goblin"))
-                    (goblins--read-session (goblins--raid-candidates snapshot)
+                    (goblins--read-session source (goblins--raid-candidates snapshot)
                                            "Create a raid around: ")))
          (names (mapcar (lambda (r) (plist-get r :name)) (goblins--snapshot-raids snapshot))))
     (when-let* ((id (goblins--session-raid-id session)))

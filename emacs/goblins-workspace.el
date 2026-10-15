@@ -72,16 +72,8 @@ A bar's colour is its face's foreground." :group 'goblins)
   :group 'goblins)
 (defface goblins-sidebar-name '((t :inherit font-lock-function-name-face :weight bold))
   "Every goblin's name, whatever its agent." :group 'goblins)
-(defface goblins-activity-working '((t :inherit success))
-  "A goblin's agent at work." :group 'goblins)
-(defface goblins-activity-waiting '((t :inherit warning :weight bold))
-  "A goblin's agent waiting for input or approval." :group 'goblins)
-(defface goblins-activity-idle '((t :inherit shadow))
-  "A goblin's idle agent." :group 'goblins)
 (defface goblins-sidebar-permission '((t :inherit error :weight bold))
   "A goblin's pending permission requests, and the counts of them." :group 'goblins)
-(defface goblins-inbox '((t :inherit font-lock-constant-face))
-  "Messages queued in a goblin's inbox." :group 'goblins)
 (defface goblins-sidebar-separator
   '((((type tty)) :inherit shadow :underline t)
     (t :inherit shadow :strike-through t :height 0.6))
@@ -242,31 +234,6 @@ It starts two columns before the goblin's text, where the active bar is drawn."
             "\n")
     (add-text-properties start (point) (list 'goblins-terminal shell 'goblins-parent id
                                              'goblins-in-group group-key))))
-
-(defun goblins--sidebar-duration (since)
-  "How long ago SINCE, in Unix milliseconds, was: \"<1m\", \"4m\", \"2h\" or \"3d\"."
-  (when (numberp since)
-    (let ((seconds (max 0 (floor (- (float-time) (/ since 1000.0))))))
-      (cond ((< seconds 60) "<1m")
-            ((< seconds 3600) (format "%dm" (/ seconds 60)))
-            ((< seconds 86400) (format "%dh" (/ seconds 3600)))
-            (t (format "%dd" (/ seconds 86400)))))))
-
-(defun goblins--sidebar-status (session)
-  "SESSION's activity line, or its lifecycle state while not running, or nil."
-  (let ((state (plist-get session :state)))
-    (if (not (equal state "running"))
-        (propertize (format "◌ %s" (goblins--safe state)) 'face 'goblins-dim)
-      (when-let* ((activity (pcase (plist-get session :agent_state)
-                              ("working" '("◐ working" goblins-activity-working))
-                              ("waiting-input" '("◆ needs input" goblins-activity-waiting))
-                              ("waiting-approval" '("◆ needs approval" goblins-activity-waiting))
-                              ("idle" '("○ idle" goblins-activity-idle)))))
-        (propertize (concat (car activity)
-                            (when-let* ((age (goblins--sidebar-duration
-                                              (plist-get session :agent_state_since))))
-                              (concat " · " age)))
-                    'face (cadr activity))))))
 
 (defun goblins--sidebar-permission-line (request)
   "REQUEST as \"! jq (package)\", or \"! docker\" when its package names its kind."
@@ -748,7 +715,8 @@ On a raid heading, invite a goblin you choose into that raid."
      (raid
       (let ((snapshot (buffer-local-value 'goblins--snapshot source)))
         (goblins--raid-invite
-         source raid (plist-get (goblins--read-session (goblins--raid-candidates snapshot)
+         source raid (plist-get (goblins--read-session source
+                                                       (goblins--raid-candidates snapshot)
                                                        (format "Invite to %s: " raid))
                                 :id))))
      (t (user-error "Select a goblin or a raid")))))

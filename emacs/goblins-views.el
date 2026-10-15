@@ -29,6 +29,14 @@
   "Running goblins." :group 'goblins)
 (defface goblins-state-failed '((t :inherit error))
   "Failed goblins and denied requests." :group 'goblins)
+(defface goblins-activity-working '((t :inherit success))
+  "A goblin's agent at work." :group 'goblins)
+(defface goblins-activity-waiting '((t :inherit warning :weight bold))
+  "A goblin's agent waiting for input or approval." :group 'goblins)
+(defface goblins-activity-idle '((t :inherit shadow))
+  "A goblin's idle agent." :group 'goblins)
+(defface goblins-inbox '((t :inherit font-lock-constant-face))
+  "Messages queued in a goblin's inbox." :group 'goblins)
 
 (defconst goblins--info-buffer-name "*Goblins Info*")
 (defconst goblins--permissions-buffer-name "*Goblins Permissions*")
@@ -41,6 +49,31 @@
   "Immutable ID of the goblin this view is about.")
 
 ;;;; Shared
+
+(defun goblins--sidebar-duration (since)
+  "How long ago SINCE, in Unix milliseconds, was: \"<1m\", \"4m\", \"2h\" or \"3d\"."
+  (when (numberp since)
+    (let ((seconds (max 0 (floor (- (float-time) (/ since 1000.0))))))
+      (cond ((< seconds 60) "<1m")
+            ((< seconds 3600) (format "%dm" (/ seconds 60)))
+            ((< seconds 86400) (format "%dh" (/ seconds 3600)))
+            (t (format "%dd" (/ seconds 86400)))))))
+
+(defun goblins--sidebar-status (session)
+  "SESSION's activity line, or its lifecycle state while not running, or nil."
+  (let ((state (plist-get session :state)))
+    (if (not (equal state "running"))
+        (propertize (format "◌ %s" (goblins--safe state)) 'face 'goblins-dim)
+      (when-let* ((activity (pcase (plist-get session :agent_state)
+                              ("working" '("◐ working" goblins-activity-working))
+                              ("waiting-input" '("◆ needs input" goblins-activity-waiting))
+                              ("waiting-approval" '("◆ needs approval" goblins-activity-waiting))
+                              ("idle" '("○ idle" goblins-activity-idle)))))
+        (propertize (concat (car activity)
+                            (when-let* ((age (goblins--sidebar-duration
+                                              (plist-get session :agent_state_since))))
+                              (concat " · " age)))
+                    'face (cadr activity))))))
 
 (defun goblins--state-glyph (state)
   "A one-character marker for the session STATE."
@@ -1071,17 +1104,30 @@ Elsewhere, decide what the shown popup asks."
 
 ;;;; Switching
 
-(defun goblins--switch-annotation (session pending)
-  "Describe SESSION, with PENDING requests, for completion."
-  (let* ((raid (plist-get session :raid))
+(defun goblins--goblin-description (source session)
+  "Describe SESSION of SOURCE's server for completion: its type, activity,
+raid and directory, its pending requests and queued messages, and whether
+it has a terminal here."
+  (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
+         (id (plist-get session :id))
+         (pending (cl-count-if (lambda (r) (and (equal (plist-get r :session) id)
+                                                (equal (plist-get r :state) "pending")))
+                               (append (plist-get snapshot :permissions) nil)))
+         (inbox (or (plist-get session :inbox) 0))
+         (raid (plist-get session :raid))
          (raid-name (and (listp raid) (plist-get raid :name)))
          (cwd (plist-get session :cwd)))
     (concat (propertize " " 'display '(space :align-to 32))
-            (propertize (format "%-10s" (goblins--safe (plist-get session :name))) 'face 'goblins-dim)
+            (propertize (format "%-8s" (goblins--safe (plist-get session :name))) 'face 'goblins-dim)
+            " " (truncate-string-to-width (or (goblins--sidebar-status session) "") 20 nil ?\s)
             (if raid-name (propertize (format " raid %-10s" (goblins--safe raid-name)) 'face 'goblins-key)
               (make-string 16 ?\s))
             (if (stringp cwd) (propertize (concat " " (abbreviate-file-name cwd)) 'face 'goblins-dim) "")
-            (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-attention) ""))))
+            (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-attention) "")
+            (if (> inbox 0) (propertize (format " ✉%d" inbox) 'face 'goblins-inbox) "")
+            (if (with-current-buffer source (goblins--terminal-buffer id))
+                (propertize " [term]" 'face 'goblins-dim)
+              ""))))
 
 (defun goblins--default-source ()
   "The status buffer, connected, of the server at hand: this goblin buffer's,
@@ -1105,13 +1151,9 @@ its identity as the `goblins-goblin' property, (DIRECTORY . SESSION-ID)."
   "An annotation function for goblin candidates of SOURCE's server."
   (lambda (candidate)
     (when-let* ((id (cdr (get-text-property 0 'goblins-goblin candidate)))
-                (snapshot (buffer-local-value 'goblins--snapshot source))
-                (session (goblins--snapshot-session snapshot id)))
-      (goblins--switch-annotation
-       session
-       (cl-count-if (lambda (r) (and (equal (plist-get r :session) id)
-                                     (equal (plist-get r :state) "pending")))
-                    (append (plist-get snapshot :permissions) nil))))))
+                (session (goblins--snapshot-session
+                          (buffer-local-value 'goblins--snapshot source) id)))
+      (goblins--goblin-description source session))))
 
 (defun goblins--goblin-table (source candidates)
   "A completion table of goblin CANDIDATES of SOURCE's server, in the
@@ -1140,25 +1182,8 @@ Return (SOURCE . SESSION-ID)."
 With a prefix argument, prompt for the daemon state DIRECTORY."
   (interactive (list (when current-prefix-arg
                        (read-directory-name "Goblins state directory: "))))
-  (let* ((source (goblins--connect directory))
-         (snapshot (buffer-local-value 'goblins--snapshot source))
-         (permissions (append (plist-get snapshot :permissions) nil))
-         (table (mapcar (lambda (s) (cons (goblins--safe (goblins--session-path s)) s))
-                        (cl-remove-if (lambda (s) (member (plist-get s :state) '("stopped" "failed")))
-                                      (append (plist-get snapshot :sessions) nil))))
-         (completion-extra-properties
-          (list :annotation-function
-                (lambda (candidate)
-                  (when-let* ((session (cdr (assoc candidate table))))
-                    (goblins--switch-annotation
-                     session
-                     (cl-count-if (lambda (r) (and (equal (plist-get r :session) (plist-get session :id))
-                                                   (equal (plist-get r :state) "pending")))
-                                  permissions)))))))
-    (unless table (user-error "No running goblins"))
-    (let ((choice (assoc (completing-read "Goblin: " table nil t) table)))
-      (unless choice (user-error "Select a goblin"))
-      (goblins-open-session source (plist-get (cdr choice) :id)))))
+  (let ((goblin (goblins--read-goblin "Goblin: " (goblins--connect directory))))
+    (goblins-open-session (car goblin) (cdr goblin))))
 
 ;;;; Attention
 
