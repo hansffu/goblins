@@ -700,18 +700,7 @@ On a raid heading, invite a goblin you choose into that raid."
         (raid (get-text-property (line-beginning-position) 'goblins-raid))
         (source (goblins--sidebar-ensure-source)))
     (cond
-     (id
-      (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
-             (names (mapcar (lambda (r) (plist-get r :name)) (goblins--snapshot-raids snapshot))))
-        (unless names (user-error "No raid yet; create one with r"))
-        (when (goblins--session-raid-id (goblins--snapshot-session snapshot id))
-          (user-error "%s is already in a raid"
-                      (goblins--session-path (goblins--snapshot-session snapshot id))))
-        (goblins-invite-to-raid
-         source id (completing-read
-                    (format "Invite %s to raid: "
-                            (goblins--session-path (goblins--snapshot-session snapshot id)))
-                    names nil t))))
+     (id (goblins--invite-to-chosen-raid source id))
      (raid
       (let ((snapshot (buffer-local-value 'goblins--snapshot source)))
         (goblins--raid-invite
@@ -817,20 +806,8 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
 (defun goblins-sidebar-stop ()
   "Stop the goblin at point, and its children, after confirming."
   (interactive)
-  (let* ((goblin (goblins--sidebar-goblin-at-point))
-         (source (car goblin))
-         (snapshot (buffer-local-value 'goblins--snapshot source))
-         (session (goblins--snapshot-session snapshot (cdr goblin)))
-         (children (goblins--live-descendants snapshot (cdr goblin))))
-    (when (y-or-n-p (format "Stop %s%s? " (goblins--session-path session)
-                            (if children
-                                (format " and its %d running descendant%s"
-                                        (length children) (if (cdr children) "s" ""))
-                              "")))
-      (goblins--host-call source 'sessions.stop
-                          (append (list :session (cdr goblin))
-                                  (and children (list :kill_children t))))
-      (message "Stopping %s" (goblins--session-path session)))))
+  (let ((goblin (goblins--sidebar-goblin-at-point)))
+    (goblins-stop-goblin (car goblin) (cdr goblin))))
 
 (defun goblins--sidebar-open-in (open)
   "Call OPEN with the session record and status buffer of the goblin at
@@ -865,12 +842,8 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
 (defun goblins-sidebar-kill-execs ()
   "Kill every shell and command running inside the goblin at point."
   (interactive)
-  (let* ((goblin (goblins--sidebar-goblin-at-point))
-         (session (goblins--snapshot-session
-                   (buffer-local-value 'goblins--snapshot (car goblin)) (cdr goblin))))
-    (when (y-or-n-p (format "Kill all shells and commands in %s? "
-                            (goblins--session-path session)))
-      (goblins--host-call (car goblin) 'sessions.kill_execs (list :session (cdr goblin))))))
+  (let ((goblin (goblins--sidebar-goblin-at-point)))
+    (goblins-kill-goblin-execs (car goblin) (cdr goblin))))
 
 (defun goblins-sidebar-destroy-raid ()
   "Dissolve the raid on this heading after confirming.  Its goblins keep running."

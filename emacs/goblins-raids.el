@@ -322,8 +322,14 @@ otherwise choose a running goblin that is not in a raid."
                       (or (goblins--snapshot-session snapshot (cdr context))
                           (user-error "The daemon no longer retains this goblin"))
                     (goblins--read-session source (goblins--raid-candidates snapshot)
-                                           "Create a raid around: ")))
-         (names (mapcar (lambda (r) (plist-get r :name)) (goblins--snapshot-raids snapshot))))
+                                           "Create a raid around: "))))
+    (goblins--raid-around source session)))
+
+(defun goblins--raid-around (source session)
+  "Create a raid around SESSION of SOURCE's server, or add it to one you
+choose, and open the raid's page."
+  (let ((names (mapcar (lambda (r) (plist-get r :name))
+                       (goblins--snapshot-raids (buffer-local-value 'goblins--snapshot source)))))
     (when-let* ((id (goblins--session-raid-id session)))
       (user-error "%s is already in a raid" (goblins--session-path session)))
     (let ((name (string-trim (completing-read "Raid (new or existing): " names))))
@@ -340,6 +346,20 @@ otherwise choose a running goblin that is not in a raid."
       (user-error "%s is already in a raid" (goblins--session-path session)))
     (goblins--raid-invite source raid-name session-id)
     (message "Added %s to raid %s" (goblins--session-path session) raid-name)))
+
+(defun goblins--invite-to-chosen-raid (source session-id)
+  "Add SESSION-ID of SOURCE's server to an existing raid you choose."
+  (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
+         (session (goblins--snapshot-session snapshot session-id))
+         (names (mapcar (lambda (r) (plist-get r :name)) (goblins--snapshot-raids snapshot))))
+    (unless names (user-error "No raid yet; create one with r"))
+    (unless session (user-error "The daemon no longer retains this goblin"))
+    (when (goblins--session-raid-id session)
+      (user-error "%s is already in a raid" (goblins--session-path session)))
+    (goblins-invite-to-raid
+     source session-id (completing-read (format "Invite %s to raid: "
+                                                (goblins--session-path session))
+                                        names nil t))))
 
 (provide 'goblins-raids)
 ;;; goblins-raids.el ends here

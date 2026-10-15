@@ -115,6 +115,32 @@
 
 (defconst goblins--sidebar-buffer-name "*Goblins Sidebar*")
 
+(defun goblins-stop-goblin (source id)
+  "Stop goblin ID of SOURCE's server and its running descendants, after
+confirming."
+  (let* ((snapshot (buffer-local-value 'goblins--snapshot source))
+         (session (goblins--snapshot-session snapshot id))
+         (children (goblins--live-descendants snapshot id)))
+    (unless session (user-error "The daemon no longer retains this goblin"))
+    (when (y-or-n-p (format "Stop %s%s? " (goblins--session-path session)
+                            (if children
+                                (format " and its %d running descendant%s"
+                                        (length children) (if (cdr children) "s" ""))
+                              "")))
+      (goblins--host-call source 'sessions.stop
+                          (append (list :session id)
+                                  (and children (list :kill_children t))))
+      (message "Stopping %s" (goblins--session-path session)))))
+
+(defun goblins-kill-goblin-execs (source id)
+  "Kill every shell and command inside goblin ID of SOURCE's server, after
+confirming."
+  (let ((session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) id)))
+    (unless session (user-error "The daemon no longer retains this goblin"))
+    (when (y-or-n-p (format "Kill all shells and commands in %s? "
+                            (goblins--session-path session)))
+      (goblins--host-call source 'sessions.kill_execs (list :session id)))))
+
 ;;;; Workspace windows
 ;;
 ;; Beside the sidebar the workspace has an agent window on the left, dedicated
@@ -1155,14 +1181,27 @@ its identity as the `goblins-goblin' property, (DIRECTORY . SESSION-ID)."
                           (buffer-local-value 'goblins--snapshot source) id)))
       (goblins--goblin-description source session))))
 
+(defun goblins--terminal-session-named (source name ids)
+  "The session ID of IDS whose agent terminal of SOURCE's server is the
+buffer called NAME, or nil."
+  (when-let* ((buffer (get-buffer name))
+              (key (buffer-local-value 'goblins--session-key buffer))
+              ((equal (car key) (buffer-local-value 'goblins--directory source))))
+    (car (member (nth 2 key) ids))))
+
 (defun goblins--goblin-table (source candidates)
   "A completion table of goblin CANDIDATES of SOURCE's server, in the
-`goblin' category."
-  (let ((annotate (goblins--goblin-annotation source)))
+`goblin' category.  The name of a candidate's agent terminal buffer matches
+too, unlisted, so an Embark action on that buffer can choose its goblin."
+  (let ((annotate (goblins--goblin-annotation source))
+        (ids (mapcar (lambda (c) (cdr (get-text-property 0 'goblins-goblin c))) candidates)))
     (lambda (string predicate action)
-      (if (eq action 'metadata)
-          `(metadata (category . goblin) (annotation-function . ,annotate))
-        (complete-with-action action candidates string predicate)))))
+      (cond ((eq action 'metadata)
+             `(metadata (category . goblin) (annotation-function . ,annotate)))
+            ((and (memq action '(nil lambda))
+                  (goblins--terminal-session-named source string ids))
+             t)
+            (t (complete-with-action action candidates string predicate))))))
 
 (defun goblins--read-goblin (prompt source &optional sessions)
   "Choose one of SESSIONS of SOURCE's server, by default the running ones.
@@ -1173,8 +1212,11 @@ Return (SOURCE . SESSION-ID)."
     (unless candidates (user-error "No running goblins"))
     (let* ((choice (completing-read prompt (goblins--goblin-table source candidates) nil t))
            (found (car (member choice candidates))))
-      (unless found (user-error "Select a goblin"))
-      (cons source (cdr (get-text-property 0 'goblins-goblin found))))))
+      (cons source
+            (or (and found (cdr (get-text-property 0 'goblins-goblin found)))
+                (goblins--terminal-session-named
+                 source choice (mapcar (lambda (s) (plist-get s :id)) sessions))
+                (user-error "Select a goblin"))))))
 
 ;;;###autoload
 (defun goblins-switch (&optional directory)

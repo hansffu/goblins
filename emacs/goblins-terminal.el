@@ -56,18 +56,8 @@
 (defun goblin-stop ()
   "Stop this goblin, and its running descendants, after confirming."
   (interactive)
-  (let* ((goblin (goblins--terminal-goblin))
-         (snapshot (buffer-local-value 'goblins--snapshot (car goblin)))
-         (session (goblins--snapshot-session snapshot (cdr goblin)))
-         (children (goblins--live-descendants snapshot (cdr goblin))))
-    (unless session (user-error "The daemon no longer retains this goblin"))
-    (when (y-or-n-p (format "Stop %s%s? " (goblins--session-path session)
-                            (if children (format " and %d running descendant%s"
-                                                 (length children) (if (cdr children) "s" ""))
-                              "")))
-      (goblins--host-call (car goblin) 'sessions.stop
-                          (append (list :session (cdr goblin))
-                                  (and children (list :kill_children t)))))))
+  (let ((goblin (goblins--terminal-goblin)))
+    (goblins-stop-goblin (car goblin) (cdr goblin))))
 
 (defconst goblins--clipboard-directory "/tmp/goblins-clipboard/"
   "Where pasted clipboard images go inside a goblin.
