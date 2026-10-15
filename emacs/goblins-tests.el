@@ -684,9 +684,9 @@
           (setq buffer-read-only t)
           (cl-letf (((symbol-function 'completing-read)
                      (lambda (_prompt choices &rest _)
-                       (car (cl-find request choices
-                                     :key (lambda (entry) (plist-get (cdr entry) :id))
-                                     :test #'equal)))))
+                       (cl-find request (goblins-test--choices choices)
+                                :key (lambda (c) (get-text-property 0 'goblins-request c))
+                                :test #'equal))))
             (call-interactively (if approved #'goblins-accept #'goblins-deny)))
           (should (derived-mode-p 'goblins-status-mode))
           (should (equal (with-current-buffer source (buffer-string)) "Unrelated notes")))
@@ -2323,6 +2323,46 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (call-interactively #'goblins-goblin-permissions)
         (should (equal (buffer-local-value 'goblins--view-session shown) "session-a"))))))
 
+(ert-deftest goblins-requests-choose-among-pending-requests ()
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p"))
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :permissions
+                       (vector (goblins-test--request-in "x" "session-a" "pending" "jq")
+                               (goblins-test--request-in "y" "session-b" "pending" "git")
+                               (goblins-test--request-in "z" "session-b" "denied" "curl")))))
+    (let (offered decided opened shown)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (let* ((metadata (completion-metadata "" table nil))
+                          (choices (goblins-test--choices table)))
+                     (should (eq (completion-metadata-get metadata 'category) 'goblins-request))
+                     (setq offered (mapcar #'substring-no-properties choices))
+                     (should (string-match-p "package +because"
+                                             (substring-no-properties
+                                              (funcall (completion-metadata-get
+                                                        metadata 'annotation-function)
+                                                       (cadr choices)))))
+                     (cadr choices))))
+                ((symbol-function 'goblins--decide-record)
+                 (lambda (record approved) (setq decided (list (plist-get record :id) approved))))
+                ((symbol-function 'goblins-open-session)
+                 (lambda (src id) (setq opened (list src id))))
+                ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+        (call-interactively #'goblins-requests)
+        (should (equal offered '("session-a: jq [x]" "session-b: git [y]")))
+        ;; The goblin's requests, that one focused.
+        (with-current-buffer shown
+          (should (equal goblins--view-session "session-b"))
+          (should (equal (oref (magit-current-section) value) "y")))
+        (call-interactively #'goblins-request-deny)
+        (should (equal decided '("y" nil)))
+        (call-interactively #'goblins-request-accept)
+        (should (equal decided '("y" t)))
+        (call-interactively #'goblins-request-goblin)
+        (should (equal opened (list source "session-b")))))))
+
 (ert-deftest goblins-embark-acts-on-goblins-and-their-terminals ()
   (skip-unless (require 'embark nil t))
   (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
@@ -2348,7 +2388,12 @@ for session-a, `terminal', and an unrelated buffer, `other'."
     (should (eq (lookup-key goblins-embark-terminal-map "p") #'goblins-goblin-permissions))
     (should (eq (lookup-key goblins-embark-terminal-map "W") #'goblins-show-in-workspace))
     (should (eq (lookup-key goblins-embark-terminal-map "k") #'kill-buffer))
-    (should (eq (lookup-key goblins-embark-terminal-map "w") #'embark-copy-as-kill))))
+    (should (eq (lookup-key goblins-embark-terminal-map "w") #'embark-copy-as-kill))
+    ;; Requests: accept, deny, their goblin.
+    (should (equal (alist-get 'goblins-request embark-keymap-alist) '(goblins-embark-request-map)))
+    (should (eq (lookup-key goblins-embark-request-map "a") #'goblins-request-accept))
+    (should (eq (lookup-key goblins-embark-request-map "d") #'goblins-request-deny))
+    (should (eq (lookup-key goblins-embark-request-map "g") #'goblins-request-goblin))))
 
 (ert-deftest goblins-marginalia-describes-agent-terminals-like-goblins ()
   (skip-unless (require 'marginalia nil t))

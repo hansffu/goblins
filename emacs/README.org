@@ -263,6 +263,7 @@ None of them is required; each part below takes effect once its package loads.
 - *Embark.*  On a goblin candidate, and on a goblin's agent terminal among buffers (in =switch-to-buffer= or =consult-buffer=, as type =goblins-terminal=), these are actions: =W= show in the workspace, =p= permissions, =I= info, =t= shell, =e= Eshell, =d= Dired, =f= find file, =R= raid, =+= invite, =K= stop, =X= kill its shells and commands.  On a goblin =RET= or =o= shows it; on a terminal Embark's buffer actions stay, except that =K= stops the goblin.  The keymaps are =goblins-embark-goblin-map= and =goblins-embark-terminal-map=.
 - *Marginalia.*  Agent terminals among buffers are annotated like goblins: type, activity, raid, directory, pending requests and queued messages.
 - *Consult.*  =consult-buffer= lists the agent terminals under the narrowing key =g= (=goblins-consult-source=); they also stay among the other buffers.
+- *Permission requests.*  =M-x goblins-requests= chooses among the pending requests of every goblin (=goblins-request= completion category, annotated with kind and reason) and shows its goblin's requests with it focused.  =goblins-request-accept=, =-deny= and =-goblin= choose one too, and are its Embark actions: =a= accept, =d= deny, =g= show its goblin, =p= or =RET= its goblin's requests (=goblins-embark-request-map=).  =goblins-accept= and =goblins-deny= outside status use the same completion.
 
 ** Goblin terminals
 

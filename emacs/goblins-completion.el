@@ -14,7 +14,10 @@
 ;; - Embark: goblin candidates, and goblins' agent terminals among buffers
 ;;   (type `goblins-terminal'), get those commands as actions.
 ;; - Marginalia: agent terminals among buffers are described like goblins.
-;; - Consult: `consult-buffer' lists agent terminals under the narrowing key g.
+;; - Consult: `consult-buffer' lists agent terminals under the narrowing key g,
+;;   and `goblins-switch' lists terminals and other goblins apart.
+;; - `goblins-requests' chooses among pending permission requests, which
+;;   Embark can accept, deny or follow to their goblin.
 
 ;;; Code:
 
@@ -189,6 +192,42 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
       (let ((goblin (goblins--read-goblin "Goblin: " source)))
         (goblins-open-session (car goblin) (cdr goblin))))))
 
+;;;; Permission requests
+
+(defun goblins--choose-request (prompt)
+  "Read a pending request of the server at hand with PROMPT; return
+\(SOURCE RECORD), for an `interactive' form."
+  (let ((source (goblins--default-source)))
+    (list source (goblins--read-request prompt source))))
+
+;;;###autoload
+(defun goblins-requests (source record)
+  "Choose a pending permission request and show its goblin's requests, it
+focused.  RECORD is the request of SOURCE's server.  With Embark, act on it
+instead: accept, deny or show its goblin."
+  (interactive (goblins--choose-request "Request: "))
+  (let ((buffer (goblins-permissions-buffer source (plist-get record :session))))
+    (goblins--display-main buffer)
+    (with-current-buffer buffer
+      (when-let* ((section (goblins--find-request-section (plist-get record :id))))
+        (goblins--view-goto (oref section start))))))
+
+(defun goblins-request-accept (source record)
+  "Accept a pending permission request you choose: RECORD of SOURCE's server."
+  (interactive (goblins--choose-request "Accept request: "))
+  (with-current-buffer source (goblins--decide-record record t)))
+
+(defun goblins-request-deny (source record)
+  "Deny a pending permission request you choose: RECORD of SOURCE's server."
+  (interactive (goblins--choose-request "Deny request: "))
+  (with-current-buffer source (goblins--decide-record record nil)))
+
+(defun goblins-request-goblin (source record)
+  "Show the goblin asking for a pending request you choose: RECORD of
+SOURCE's server."
+  (interactive (goblins--choose-request "Goblin of request: "))
+  (goblins-open-session source (plist-get record :session)))
+
 ;;;; Embark
 
 (defvar goblins-embark-terminal-actions
@@ -211,6 +250,15 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
     map)
   "Embark actions for `goblin' targets; Embark's general actions too.")
 
+(defvar goblins-embark-request-map
+  (let ((map (make-sparse-keymap)))
+    (dolist (binding '(("RET" . goblins-requests) ("p" . goblins-requests)
+                       ("a" . goblins-request-accept) ("d" . goblins-request-deny)
+                       ("g" . goblins-request-goblin)))
+      (define-key map (kbd (car binding)) (cdr binding)))
+    map)
+  "Embark actions for `goblins-request' targets: pending permission requests.")
+
 (defvar goblins-embark-terminal-map (make-sparse-keymap)
   "Embark actions for `goblins-terminal' targets: a goblin's agent terminal.
 Embark's buffer actions too, under the goblin actions.")
@@ -228,6 +276,8 @@ it names an agent terminal."
                      (make-composed-keymap goblins-embark-terminal-actions embark-buffer-map))
   (add-to-list 'embark-keymap-alist '(goblin goblins-embark-goblin-map))
   (add-to-list 'embark-keymap-alist '(goblins-terminal goblins-embark-terminal-map))
+  (set-keymap-parent goblins-embark-request-map embark-general-map)
+  (add-to-list 'embark-keymap-alist '(goblins-request goblins-embark-request-map))
   (when-let* ((export (alist-get 'buffer embark-exporters-alist)))
     (add-to-list 'embark-exporters-alist (cons 'goblins-terminal export)))
   ;; A buffer in `consult-buffer' arrives as a multi-category target.

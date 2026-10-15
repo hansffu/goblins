@@ -853,20 +853,52 @@ Daemon refusals become `user-error's and leave the connection alone."
                 (and section (object-of-class-p section 'goblins-request-section)
                      (oref section record)))
             (goblins--ensure-connected)
-            (goblins--choose
-             (if approved "Accept request: " "Deny request: ")
-             (mapcar (lambda (request)
-                       (cons (format "%s: %s — %s [%s]"
-                                     (goblins--safe (plist-get request :agent_name))
-                                     (goblins--safe (plist-get request :package))
-                                     (goblins--safe (plist-get request :reason))
-                                     (plist-get request :id))
-                             request))
-                     (cl-remove-if-not
-                      (lambda (request) (equal (plist-get request :state) "pending"))
-                      (append (plist-get goblins--snapshot :permissions) nil)))
-             "No pending requests"))))
+            (goblins--read-request (if approved "Accept request: " "Deny request: ")
+                                   (current-buffer)))))
     (goblins--decide-record record approved)))
+
+(defun goblins--request-candidate (record)
+  "The pending request RECORD as a completion candidate, with its ID as the
+`goblins-request' property."
+  (propertize (format "%s: %s [%s]"
+                      (goblins--safe (plist-get record :agent_name))
+                      (goblins--safe (plist-get record :package))
+                      (goblins--safe (plist-get record :id)))
+              'goblins-request (plist-get record :id)))
+
+(defun goblins--request-annotation (record)
+  "Describe the pending request RECORD for completion: its kind and reason."
+  (concat (propertize " " 'display '(space :align-to 40))
+          (propertize (format "%-9s" (goblins--safe (or (plist-get record :kind) "package")))
+                      'face 'goblins-dim)
+          " " (goblins--safe (or (plist-get record :reason) ""))))
+
+(defun goblins--read-request (prompt source)
+  "Choose a pending request of SOURCE's server with PROMPT; return its record.
+Candidates are in the `goblins-request' completion category."
+  (let* ((records (cl-remove-if-not
+                   (lambda (request) (equal (plist-get request :state) "pending"))
+                   (append (plist-get (buffer-local-value 'goblins--snapshot source)
+                                      :permissions)
+                           nil)))
+         (candidates (mapcar #'goblins--request-candidate records))
+         (annotate (lambda (candidate)
+                     (when-let* ((record (cl-find (get-text-property 0 'goblins-request candidate)
+                                                  records :key (lambda (r) (plist-get r :id))
+                                                  :test #'equal)))
+                       (goblins--request-annotation record)))))
+    (unless records (user-error "No pending requests"))
+    (let* ((choice (completing-read
+                    prompt
+                    (lambda (string predicate action)
+                      (if (eq action 'metadata)
+                          `(metadata (category . goblins-request)
+                                     (annotation-function . ,annotate))
+                        (complete-with-action action candidates string predicate)))
+                    nil t))
+           (found (car (member choice candidates))))
+      (unless found (user-error "Select a request"))
+      (nth (cl-position found candidates :test #'equal) records))))
 
 (defun goblins--decide-record (record approved)
   "Send the decision APPROVED for RECORD, a pending request, from a status buffer."
