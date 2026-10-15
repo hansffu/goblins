@@ -3820,3 +3820,17 @@ m2, and m3, which failed when beta stopped."
             (should (string-match-p "3 messages" (format "%s" header-line-format)))))
       (dolist (buffer (list list (get-buffer goblins--message-buffer-name) source))
         (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
+(ert-deftest goblins-messages-take-the-window-and-read-on-ret ()
+  (save-window-excursion
+    (delete-other-windows)
+    (goblins-test--messages
+      ;; The list takes the selected window; the reader waits for RET.
+      (should (eq (window-buffer (selected-window)) (current-buffer)))
+      (should (one-window-p t))
+      (should-not (get-buffer-window goblins--message-buffer-name))
+      (goto-char (point-min))
+      (goblins-messages-read)
+      (should (equal (buffer-name) goblins--message-buffer-name))
+      (should (string-match-p "^Hello beta$" (buffer-string)))
+      (should (= (length (window-list)) 2)))))

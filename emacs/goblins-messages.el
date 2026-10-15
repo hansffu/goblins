@@ -8,8 +8,8 @@
 ;; `goblins-messages' lists the messages the daemon's communications log
 ;; holds, one thread per line, folded: the first message, its sender and
 ;; recipient, and how many replies are hidden.  TAB unfolds a thread; its
-;; replies hang below it.  A reader beside the list (below it in a narrow
-;; window) shows the message at point in full and follows point.
+;; replies hang below it.  RET opens a reader beside the list (below it in
+;; a narrow window) that shows the message at point in full and follows point.
 ;;
 ;; f opens a menu of filters: who sent or received the messages, their raid
 ;; or thread, whether they still await a reply or failed, and when they were
@@ -504,8 +504,15 @@ replies when unfolded."
          (window-width . ,(/ (window-total-width window) 2))
          (window-height . ,(/ (window-total-height window) 2)))))))
 
+(defun goblins--messages-display (buffer)
+  "Select BUFFER's window, else show BUFFER beside the agent in the
+workspace, else in the selected window."
+  (cond ((get-buffer-window buffer) (select-window (get-buffer-window buffer)))
+        ((goblins--in-workspace-p) (goblins--display-main buffer))
+        (t (pop-to-buffer-same-window buffer))))
+
 (defun goblins--messages-open (source filters &optional keep)
-  "Show the message list of SOURCE's server with FILTERS, a plist, and the reader.
+  "Show the message list of SOURCE's server with FILTERS, a plist.
 With KEEP, FILTERS join the filters already set; else they replace them."
   (let ((buffer (goblins--view-buffer goblins--messages-buffer-name #'goblins-messages-mode
                                       #'goblins--messages-refresh source nil)))
@@ -515,10 +522,7 @@ With KEEP, FILTERS join the filters already set; else they replace them."
           (setq merged (plist-put merged (pop filters) (pop filters))))
         (setq goblins--messages-filters merged))
       (goblins--messages-render))
-    (if-let* ((window (get-buffer-window buffer)))
-        (select-window window)
-      (goblins--display-main buffer))
-    (goblins--messages-show-reader buffer)
+    (goblins--messages-display buffer)
     buffer))
 
 (defun goblins--messages-source ()
@@ -535,7 +539,7 @@ With KEEP, FILTERS join the filters already set; else they replace them."
 
 ;;;###autoload
 (defun goblins-messages (&optional directory)
-  "Show the messages goblins sent each other, with a reader for the one at point.
+  "Show the messages goblins sent each other; RET reads the one at point.
 With a prefix argument, prompt for the daemon state DIRECTORY."
   (interactive (list (when current-prefix-arg
                        (read-directory-name "Goblins state directory: "))))
@@ -869,9 +873,7 @@ alist of (LABEL . SESSION-ID)."
         (goblins--messages-render)
         (goblins--view-goto (text-property-any (point-min) (point-max) 'goblins-message id))
         (goblins--messages-follow)))
-    (if-let* ((window (get-buffer-window list)))
-        (select-window window)
-      (goblins--display-main list))
+    (goblins--messages-display list)
     (goblins--messages-show-reader list)))
 
 (defun goblins-message-from (id)
