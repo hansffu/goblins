@@ -40,6 +40,31 @@ class EmacsTests(unittest.TestCase):
                  'GOBLINS_TEST_AGENT':agent}, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_live_messages_threads_reader_and_updates(self):
+        daemon = Daemon(); self.addCleanup(daemon.close)
+        chief = daemon.start(agent_name="chief")["session"]
+        sent = subprocess.run([str(daemon.app), "--state-dir", str(daemon.state),
+                               "send", "chief", "--message", "First question"],
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual(sent.returncode, 0, sent.stderr)
+        message = json.loads(sent.stdout)
+        def sandbox(method, params):
+            # The request socket answers one call per connection.
+            peer = RPC(daemon.state / chief / "resources/request.sock")
+            try:
+                return peer.call(method, params)
+            finally:
+                peer.close()
+        claim = sandbox("inbox.next", {"key": "fetch"})
+        sandbox("messages.reply", {"key": "reply", "message": message["id"],
+                                   "claim_generation": claim["claim_generation"],
+                                   "body": "First answer"})
+        result = subprocess.run(['emacs', '--batch', '-Q', '--eval', '(setq load-prefer-newer t)',
+            '-L', str(ROOT/'emacs'), '-l', 'goblins-tests', '-f', 'goblins-test-messages-live'],
+            env={**os.environ, 'GOBLINS_TEST_STATE': str(daemon.state)},
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_live_ownership_tree_and_stopped_branches(self):
         daemon = Daemon()
         self.addCleanup(daemon.close)

@@ -1390,6 +1390,7 @@ Unlike `goblins-status' this never displays the buffer."
 (autoload 'goblins-sidebar-dwim "goblins-workspace" nil t)
 (autoload 'goblins-sidebar-toggle "goblins-workspace" nil t)
 (autoload 'goblins-show-in-workspace "goblins-workspace" nil t)
+(autoload 'goblins-messages "goblins-messages" nil t)
 (autoload 'goblins-shell "goblins-tramp" nil t)
 (autoload 'goblins-eshell "goblins-tramp" nil t)
 (autoload 'goblins-dired "goblins-tramp" nil t)

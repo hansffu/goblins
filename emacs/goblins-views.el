@@ -303,7 +303,8 @@ fits at all.  In a frame too small for two windows, nil."
 (defun goblins--view-buffer-p (buffer)
   "Whether BUFFER is one of the views shared between goblins."
   (with-current-buffer buffer
-    (derived-mode-p 'goblins-info-mode 'goblins-permissions-mode 'goblins-raid-mode)))
+    (derived-mode-p 'goblins-info-mode 'goblins-permissions-mode 'goblins-raid-mode
+                    'goblins-messages-mode 'goblins-message-mode)))
 
 (defun goblins--layout-leaf (window)
   "WINDOW's saved state, as a leaf of `goblins--layout-tree', or nil.

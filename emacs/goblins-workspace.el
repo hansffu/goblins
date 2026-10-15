@@ -20,6 +20,7 @@
 (require 'goblins)
 (require 'goblins-views)
 (require 'goblins-raids)
+(require 'goblins-messages)
 (require 'project)
 (require 'hl-line)
 (require 'transient)
@@ -874,6 +875,9 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
               ("i" . "invite the goblin to a raid; on a raid, invite into it")
               ("RET" . "on a raid: open its page")
               ("D" . "on a raid: dissolve it"))
+     ("Messages" ("m m" . "the goblin's messages; on a raid, those sent within it")
+                 ("m f" . "the messages the goblin sent")
+                 ("m t" . "the messages the goblin received"))
      ("Run" ("c" . "run a goblin in the project at point")
             ("C" . "run a goblin in a project you choose"))
      ("Workspace" ("g" . "reconnect") ("q" . "leave") ("?" . "this help")))))
@@ -1067,6 +1071,48 @@ Moving keeps the menu open; any other key closes it and runs as usual."
 
 ;;;; Mode
 
+;;;; Messages
+
+(defun goblins--sidebar-messages-goblin ()
+  "The goblin whose block this line is in, but not its shells."
+  (or (get-text-property (line-beginning-position) 'goblins-id)
+      (get-text-property (line-beginning-position) 'goblins-detail)
+      (user-error "Select a goblin")))
+
+(defun goblins-sidebar-messages ()
+  "Show the messages of the goblin at point.
+On a raid, show those sent within it."
+  (interactive)
+  (let ((source (goblins--sidebar-ensure-source))
+        (raid (get-text-property (line-beginning-position) 'goblins-raid)))
+    (if raid
+        (goblins-raid-messages
+         source (or (plist-get (goblins--snapshot-raid (buffer-local-value 'goblins--snapshot source)
+                                                       raid)
+                               :id)
+                    raid))
+      (goblins--messages-open source (list :goblin (goblins--sidebar-messages-goblin))))))
+
+(defun goblins-sidebar-messages-from ()
+  "Show the messages the goblin at point sent."
+  (interactive)
+  (goblins--messages-open (goblins--sidebar-ensure-source)
+                          (list :from (goblins--sidebar-messages-goblin))))
+
+(defun goblins-sidebar-messages-to ()
+  "Show the messages the goblin at point received."
+  (interactive)
+  (goblins--messages-open (goblins--sidebar-ensure-source)
+                          (list :to (goblins--sidebar-messages-goblin))))
+
+(defvar goblins-sidebar-messages-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "m" #'goblins-sidebar-messages)
+    (define-key map "f" #'goblins-sidebar-messages-from)
+    (define-key map "t" #'goblins-sidebar-messages-to)
+    map)
+  "The prefix m in the sidebar: a goblin's messages, or a raid's.")
+
 (defvar goblins-sidebar-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -1086,6 +1132,7 @@ Moving keeps the menu open; any other key closes it and runs as usual."
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
                        ("q" . goblins-workspace-quit)))
       (define-key map (kbd (car binding)) (cdr binding)))
+    (define-key map (kbd "m") goblins-sidebar-messages-map)
     map))
 
 ;; Keep Evil optional; its motion state would otherwise shadow j/k/p/RET.
@@ -1117,7 +1164,8 @@ Moving keeps the menu open; any other key closes it and runs as usual."
     (kbd "gr") #'goblins-sidebar-refresh
     (kbd "c") #'goblins-sidebar-run
     (kbd "C") #'goblins-sidebar-run-in-project
-    (kbd "q") #'goblins-workspace-quit)
+    (kbd "q") #'goblins-workspace-quit
+    (kbd "m") goblins-sidebar-messages-map)
   (evil-make-intercept-map goblins-sidebar-mode-map 'motion t))
 
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"

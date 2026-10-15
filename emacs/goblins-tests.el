@@ -3538,3 +3538,285 @@ for session-a, `terminal', and an unrelated buffer, `other'."
     (goblins--insert-agent-fields (list :id "a" :state "running" :name "shell"
                                        :agent_state "waiting-input"))
     (should (string-match-p "Activity:.*waiting-input" (buffer-string)))))
+
+;;; Messages
+
+(require 'goblins-messages)
+
+(defun goblins-test--message (id sender recipient body conversation created &optional reply-to)
+  (list :id id :sender sender :sender_path (if (equal sender "a") "alpha" "beta")
+        :recipient recipient :recipient_path (if (equal recipient "a") "alpha" "beta")
+        :body body :conversation conversation :created_at created :in_reply_to reply-to
+        :state "queued" :failure nil :claim_generation 0))
+
+(defun goblins-test--message-events ()
+  "Two threads: m1 from alpha in raid r1, which beta claimed and answered with
+m2, and m3, which failed when beta stopped."
+  (list
+   (list :kind "raid.created" :actor "host" :timestamp 1000
+         :data (list :raid "i-r1" :name "test" :owner "a"))
+   (list :kind "message.accepted" :actor "a" :timestamp 2000
+         :data (list :change (list :message (goblins-test--message
+                                             "i-m1" "a" "b" "Hello beta\nsecond line" "i-c1" 2000)
+                                   :raid "i-r1" :route "raid")))
+   (list :kind "message.claimed" :actor "b" :timestamp 3000
+         :data (list :change (list :message "i-m1" :claim_generation 1)))
+   (list :kind "message.replied" :actor "b" :timestamp 4000
+         :data (list :change (list :message (goblins-test--message
+                                             "i-m2" "b" "a" "Hi alpha" "i-c1" 4000 "i-m1")
+                                   :completed "i-m1")))
+   (list :kind "message.accepted" :actor "a" :timestamp 5000
+         :data (list :change (list :message (goblins-test--message
+                                             "i-m3" "a" "b" "Only one" "i-c3" 5000)
+                                   :raid nil :route "tree")))
+   (list :kind "recipient.stopped" :actor "host" :timestamp 6000
+         :data (list :recipient "b" :messages ["i-m3"]))))
+
+(defmacro goblins-test--messages (&rest body)
+  "Run BODY in a message list of a fake server holding the test events."
+  (declare (indent 0))
+  `(let ((source (generate-new-buffer " *goblins messages source*")))
+     (unwind-protect
+         (progn
+           (with-current-buffer source
+             (goblins-status-mode)
+             (setq goblins--directory "/tmp/goblins-test" goblins--instance "i"
+                   goblins--subscription "s"
+                   goblins--snapshot
+                   (list :instance "i"
+                         :sessions [(:id "a" :path "alpha" :agent_name "alpha" :name "claude"
+                                     :state "running")
+                                    (:id "b" :path "beta" :agent_name "beta" :name "codex"
+                                     :state "running")]
+                         :raids [(:id "i-r1" :name "test")])))
+           (cl-letf (((symbol-function 'goblins--messages-fetch) #'ignore))
+             (with-current-buffer (goblins--messages-open source nil)
+               (goblins--messages-reset source "i")
+               (mapc #'goblins--messages-ingest (goblins-test--message-events))
+               (goblins--messages-render)
+               ,@body)))
+       (dolist (name (list goblins--messages-buffer-name goblins--message-buffer-name))
+         (when (get-buffer name) (kill-buffer name)))
+       (kill-buffer source))))
+
+(defun goblins-test--lines ()
+  (split-string (string-trim-right (buffer-substring-no-properties (point-min) (point-max))) "\n"))
+
+(ert-deftest goblins-messages-list-threads-folded ()
+  (goblins-test--messages
+    (let ((lines (goblins-test--lines)))
+      (should (= (length lines) 2))
+      (should (string-match-p "\\`▸ [0-9:]\\{8\\}  alpha → beta +Hello beta +\\+1\\'" (car lines)))
+      ;; A thread of one message has nothing to fold, and m3 failed.
+      (should (string-match-p "\\`  [0-9:]\\{8\\}  alpha → beta +✗ Only one\\'" (cadr lines))))
+    (goto-char (point-min))
+    (goblins-messages-fold)
+    (let ((lines (goblins-test--lines)))
+      (should (= (length lines) 3))
+      (should (string-prefix-p "▾ " (car lines)))
+      (should (string-match-p "beta → alpha +└ Hi alpha" (nth 1 lines))))
+    (forward-line 1)
+    (should (equal (goblins--messages-id-at) "i-m2"))
+    ;; Folding from a reply goes back to the thread's first message.
+    (goblins-messages-fold)
+    (should (equal (goblins--messages-id-at) "i-m1"))
+    (should (= (length (goblins-test--lines)) 2))
+    (goblins-messages-fold-all)
+    (should (= (length (goblins-test--lines)) 3))
+    (goblins-messages-fold-all)
+    (should (= (length (goblins-test--lines)) 2))
+    (should (string-match-p "Time.*From → To.*Message.*3 messages" (format "%s" header-line-format)))))
+
+(ert-deftest goblins-messages-filters-narrow-the-list ()
+  (goblins-test--messages
+    (setq goblins--messages-filters (list :from "b"))
+    (goblins--messages-render)
+    (should (= (length (goblins-test--lines)) 1))
+    (should (string-match-p "beta → alpha +Hi alpha" (buffer-string)))
+    (should (string-match-p "from beta.*1 of 3" (format "%s" header-line-format)))
+    (setq goblins--messages-filters (list :raid "i-r1"))
+    (goblins--messages-render)
+    (should (= (length (goblins-test--lines)) 1))
+    (setq goblins--messages-filters (list :thread "i-c1"))
+    (goblins--messages-render)
+    ;; The thread filter shows its thread unfolded.
+    (should (= (length (goblins-test--lines)) 2))
+    (should-error (goblins-messages-fold) :type 'user-error)
+    (setq goblins--messages-filters (list :failed t))
+    (goblins--messages-render)
+    (should (string-match-p "Only one" (buffer-string)))
+    (should (= (length (goblins-test--lines)) 1))
+    ;; Nobody claimed the reply yet.
+    (setq goblins--messages-filters (list :awaiting t))
+    (goblins--messages-render)
+    (should (= (length (goblins-test--lines)) 1))
+    (should (string-match-p "Hi alpha" (buffer-string)))
+    (setq goblins--messages-filters (list :awaiting t :from "a"))
+    (goblins--messages-render)
+    (should (string-match-p "No message passes the filters" (buffer-string)))
+    (setq goblins--messages-filters (list :goblin "a" :until 3.0))
+    (goblins--messages-render)
+    (should (= (length (goblins-test--lines)) 1))
+    (goblins-messages-widen)
+    (should-not goblins--messages-filters)
+    (should (= (length (goblins-test--lines)) 2))))
+
+(ert-deftest goblins-messages-reader-follows-point ()
+  (goblins-test--messages
+    (goto-char (point-min))
+    (goblins-messages-fold)
+    (forward-line 1)
+    (goblins--messages-follow)
+    (with-current-buffer goblins--message-buffer-name
+      (let ((text (buffer-string)))
+        (should (string-match-p "^From     beta (codex)$" text))
+        (should (string-match-p "^To       alpha (claude)$" text))
+        (should (string-match-p "^Thread   c1   message 2 of 2$" text))
+        (should (string-match-p "^Raid     test$" text))
+        (should (string-match-p "^Re       m1   [0-9:]\\{8\\}  alpha  Hello beta$" text))
+        (should (string-match-p "^Hi alpha$" text))))
+    (forward-line -1)
+    (goblins--messages-follow)
+    (with-current-buffer goblins--message-buffer-name
+      (should (string-match-p "claimed by beta [0-9:]\\{8\\}   ·   replied to by m2" (buffer-string)))
+      (should (string-match-p "^Hello beta\nsecond line$" (buffer-string)))
+      ;; RET on the reply's ID shows it in the list.
+      (goto-char (point-min))
+      (search-forward "by m2")
+      (backward-char 1)
+      (goblins-message-visit))
+    (should (equal (goblins--messages-id-at) "i-m2"))
+    (forward-line 1)
+    (goblins--messages-follow)
+    (with-current-buffer goblins--message-buffer-name
+      (should (string-match-p "failed: recipient stopped" (buffer-string)))
+      (should-not (string-match-p "^Raid" (buffer-string))))))
+
+(ert-deftest goblins-messages-embark-targets-and-actions ()
+  (goblins-test--messages
+    (goto-char (point-min))
+    (should (equal (goblins--messages-embark-target)
+                   `(goblins-raid-message "m1" ,(line-beginning-position) . ,(line-end-position))))
+    (forward-line 1)
+    (should (equal (car (goblins--messages-embark-target)) 'goblins-message))
+    (forward-line -1)
+    (goblins--messages-follow)
+    (with-current-buffer goblins--message-buffer-name
+      (goto-char (point-min))
+      (search-forward "alpha")
+      (should (equal (goblins--messages-embark-target)
+                     `(goblin "alpha" ,(- (point) 5) . ,(point))))
+      (search-forward "c1")
+      (should (equal (car (goblins--messages-embark-target)) 'goblins-thread))
+      (should (equal (cadr (goblins--messages-embark-target)) "c1"))
+      (goto-char (point-max))
+      (should (equal (goblins--messages-embark-target) '(goblins-raid-message . "m1"))))
+    ;; Actions on a message filter by what it names; in the list they add up.
+    (goblins-message-to "i-m1")
+    (should (equal goblins--messages-filters '(:to "b")))
+    (goblins-message-thread "i-m1")
+    (should (equal goblins--messages-filters '(:to "b" :thread "i-c1")))
+    (goblins-message-raid "i-m1")
+    (should (equal (plist-get goblins--messages-filters :raid) "i-r1"))
+    (should-error (goblins-message-raid "i-m3") :type 'user-error)
+    (with-temp-buffer
+      ;; Elsewhere they start afresh.
+      (goblins-message-from "i-m2"))
+    (with-current-buffer goblins--messages-buffer-name
+      (should (equal goblins--messages-filters '(:from "b"))))
+    (with-temp-buffer
+      (goblins-thread-messages "i-c3"))
+    (with-current-buffer goblins--messages-buffer-name
+      (should (equal goblins--messages-filters '(:thread "i-c3"))))
+    (should (eq (lookup-key goblins-embark-raid-message-map "r") #'goblins-message-raid))
+    (should-not (lookup-key goblins-embark-message-map "r"))
+    (should (eq (lookup-key goblins-embark-message-map "F") #'goblins-message-from))
+    (should (eq (lookup-key goblins-embark-message-map "T") #'goblins-message-to))
+    (should (eq (lookup-key goblins-embark-message-map "t") #'goblins-message-thread))
+    (should (eq (lookup-key goblins-embark-goblin-messages-map "f") #'goblins-goblin-messages-from))))
+
+(ert-deftest goblins-messages-read-choices ()
+  (goblins-test--messages
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (should (eq (cdr (assq 'category (cdr (funcall table "" nil 'metadata))))
+                             'goblins-message))
+                 "m2")))
+      (should (equal (goblins--read-message "Message: ") "i-m2")))
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "c3")))
+      (should (equal (goblins--read-thread "Thread: ") "i-c3")))
+    (should (equal (goblins--messages-participants) '(("alpha" . "a") ("beta" . "b"))))
+    (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "beta")))
+      (goblins-messages-filter-to)
+      (should (equal goblins--messages-filters '(:to "b")))
+      ;; Again clears it.
+      (goblins-messages-filter-to)
+      (should-not (plist-get goblins--messages-filters :to)))
+    (should (string-match-p "to +any" (goblins--messages-filter-description "to" :to)))
+    (goblins-messages-filter-awaiting)
+    (should (string-match-p "awaiting reply +on"
+                            (goblins--messages-filter-description "awaiting reply" :awaiting)))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "15:30")))
+      (let ((time (goblins--messages-read-time "Since: ")))
+        (should (equal (format-time-string "%H:%M:%S" time) "15:30:00"))))
+    (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "2026-10-15 15:30")))
+      (should (equal (format-time-string "%F %H:%M" (goblins--messages-read-time "Since: "))
+                     "2026-10-15 15:30")))))
+
+(ert-deftest goblins-messages-from-the-sidebar ()
+  (goblins-test--messages
+    (let ((source goblins--view-source))
+      (with-temp-buffer
+        (goblins-sidebar-mode)
+        (setq goblins--sidebar-source source)
+        (let ((inhibit-read-only t))
+         (insert (propertize "▾ raid test\n" 'goblins-raid "test")
+                (propertize "alpha (claude)\n" 'goblins-id "a")
+                (propertize "○ idle\n" 'goblins-detail "a")
+                (propertize "› shell\n" 'goblins-terminal (current-buffer) 'goblins-parent "a")))
+        (goto-char (point-min))
+        (should (eq (key-binding (kbd "m m")) #'goblins-sidebar-messages))
+        (save-current-buffer (goblins-sidebar-messages))
+        (should (equal (buffer-local-value 'goblins--messages-filters
+                                           (get-buffer goblins--messages-buffer-name))
+                       '(:raid "i-r1")))
+        (forward-line 2)
+        (save-current-buffer (goblins-sidebar-messages-from))
+        (should (equal (buffer-local-value 'goblins--messages-filters
+                                           (get-buffer goblins--messages-buffer-name))
+                       '(:from "a")))
+        (forward-line 1)
+        ;; Nothing for shells.
+        (should-error (goblins-sidebar-messages-to) :type 'user-error)))))
+
+(defun goblins-test-messages-live ()
+  "Read a real daemon's messages, then see one sent meanwhile arrive."
+  (let (source list)
+    (unwind-protect
+        (progn
+          (goblins-status (getenv "GOBLINS_TEST_STATE"))
+          (setq source (current-buffer))
+          (goblins-test--wait (lambda () goblins--subscription))
+          (setq list (goblins-messages (getenv "GOBLINS_TEST_STATE")))
+          (with-current-buffer list
+            (goblins-test--wait
+             (lambda () (string-match-p "host → chief +First question +\\+1" (buffer-string))))
+            (goto-char (point-min))
+            (goblins-messages-fold)
+            (should (string-match-p "chief → host +└ First answer" (buffer-string)))
+            (forward-line 1)
+            (goblins--messages-follow))
+          (with-current-buffer goblins--message-buffer-name
+            (should (string-match-p "^From     chief (shell)$" (buffer-string)))
+            (should (string-match-p "^Re       m[0-9]+ .* host  First question$" (buffer-string)))
+            (should (string-match-p "^First answer$" (buffer-string))))
+          (goblins--host-call source 'messages.send
+                              (list :key (md5 "second question") :to "chief"
+                                    :body "Second question"))
+          ;; A new message reaches the list by itself.
+          (with-current-buffer list
+            (goblins-test--wait
+             (lambda () (string-match-p "host → chief +Second question" (buffer-string))))
+            (should (string-match-p "3 messages" (format "%s" header-line-format)))))
+      (dolist (buffer (list list (get-buffer goblins--message-buffer-name) source))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))

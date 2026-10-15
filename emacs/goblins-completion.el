@@ -26,6 +26,7 @@
 (require 'goblins)
 (require 'goblins-views)
 (require 'goblins-raids)
+(require 'goblins-messages)
 
 (declare-function goblins-shell "goblins-tramp" (&optional session display source))
 (declare-function goblins-eshell "goblins-tramp" (&optional session display source))
@@ -239,6 +240,7 @@ SOURCE's server."
                        ("+" . goblins-goblin-invite) ("K" . goblins-goblin-stop)
                        ("X" . goblins-goblin-kill-execs)))
       (define-key map (kbd (car binding)) (cdr binding)))
+    (define-key map (kbd "m") goblins-embark-goblin-messages-map)
     map)
   "Embark actions on a goblin, also on its agent terminal among buffers.")
 
