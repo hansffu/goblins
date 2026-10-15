@@ -2280,6 +2280,98 @@ keeps the parameters of windows that live on."
       (should (string-match-p "set the member's role" (buffer-string)))
       (kill-buffer))))
 
+;;; Completion: commands on a chosen goblin, Embark, Marginalia, Consult
+
+(defmacro goblins-test--terminals (sessions &rest body)
+  "Run BODY in `goblins-test--sidebar' over SESSIONS, with an agent terminal
+for session-a, `terminal', and an unrelated buffer, `other'."
+  (declare (indent 1))
+  `(goblins-test--sidebar ,sessions
+     (let ((goblins--terminal-buffers (make-hash-table :test #'equal))
+           (terminal (generate-new-buffer "*Goblin: session-a*"))
+           (other (generate-new-buffer " *not a goblin*")))
+       (unwind-protect
+           (progn
+             (with-current-buffer terminal
+               (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-a")))
+             (puthash (list "/tmp/goblins-test" "daemon-a" "session-a") terminal
+                      goblins--terminal-buffers)
+             (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) source))
+                       ((symbol-function 'goblins--connect) (lambda (&optional _) source)))
+               ,@body))
+         (kill-buffer terminal)
+         (kill-buffer other)))))
+
+(ert-deftest goblins-commands-act-on-a-chosen-goblin ()
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p"))
+    (let (shown)
+      (cl-letf (((symbol-function 'goblins--display-main) (lambda (b) (setq shown b)))
+                ((symbol-function 'completing-read) (lambda (&rest _) "session-b")))
+        (call-interactively #'goblins-goblin-info)
+        (should (eq shown (get-buffer goblins--info-buffer-name)))
+        (should (equal (buffer-local-value 'goblins--view-session shown) "session-b")))
+      ;; An agent terminal's buffer name chooses its goblin, as an Embark
+      ;; action on that buffer injects it; the table accepts it unlisted.
+      (cl-letf (((symbol-function 'goblins--display-main) (lambda (b) (setq shown b)))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (should (test-completion (buffer-name terminal) table))
+                   (should-not (member (buffer-name terminal) (goblins-test--choices table)))
+                   (should-not (test-completion (buffer-name other) table))
+                   (buffer-name terminal))))
+        (call-interactively #'goblins-goblin-permissions)
+        (should (equal (buffer-local-value 'goblins--view-session shown) "session-a"))))))
+
+(ert-deftest goblins-embark-acts-on-goblins-and-their-terminals ()
+  (skip-unless (require 'embark nil t))
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
+    (should (equal (alist-get 'goblin embark-keymap-alist) '(goblins-embark-goblin-map)))
+    (should (equal (alist-get 'goblins-terminal embark-keymap-alist)
+                   '(goblins-embark-terminal-map)))
+    ;; A goblin's terminal among buffers is a goblins-terminal target, in
+    ;; switch-to-buffer and in consult-buffer alike; other buffers stay buffers.
+    (should (equal (funcall (alist-get 'buffer embark-transformer-alist)
+                            'buffer (buffer-name terminal))
+                   (cons 'goblins-terminal (buffer-name terminal))))
+    (should (equal (funcall (alist-get 'buffer embark-transformer-alist)
+                            'buffer (buffer-name other))
+                   (cons 'buffer (buffer-name other))))
+    (should (equal (funcall (alist-get 'multi-category embark-transformer-alist)
+                            'multi-category
+                            (propertize (buffer-name terminal)
+                                        'multi-category (cons 'buffer terminal)))
+                   (cons 'goblins-terminal (buffer-name terminal))))
+    ;; Goblin actions, and on terminals Embark's buffer actions as well.
+    (should (eq (lookup-key goblins-embark-goblin-map (kbd "RET")) #'goblins-goblin-show))
+    (should (eq (lookup-key goblins-embark-goblin-map "W") #'goblins-show-in-workspace))
+    (should (eq (lookup-key goblins-embark-terminal-map "p") #'goblins-goblin-permissions))
+    (should (eq (lookup-key goblins-embark-terminal-map "W") #'goblins-show-in-workspace))
+    (should (eq (lookup-key goblins-embark-terminal-map "k") #'kill-buffer))
+    (should (eq (lookup-key goblins-embark-terminal-map "w") #'embark-copy-as-kill))))
+
+(ert-deftest goblins-marginalia-describes-agent-terminals-like-goblins ()
+  (skip-unless (require 'marginalia nil t))
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p" :agent_state "idle"))
+    (let ((annotate (car (alist-get 'buffer (if (boundp 'marginalia-annotators)
+                                                 marginalia-annotators
+                                               marginalia-annotator-registry)))))
+      (should (eq annotate #'goblins-marginalia-annotate-buffer))
+      (should (string-match-p "shell +○ idle +/p !1 \\[term\\]"
+                              (substring-no-properties (funcall annotate (buffer-name terminal)))))
+      (should (string-match-p "shell +○ idle"
+                              (substring-no-properties (funcall annotate terminal))))
+      (should-not (string-match-p "○ idle" (or (funcall annotate (buffer-name other)) ""))))))
+
+(ert-deftest goblins-consult-buffer-narrows-to-agent-terminals ()
+  (skip-unless (require 'consult nil t))
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
+    (should (memq 'goblins-consult-source consult-buffer-sources))
+    (should (eq (plist-get goblins-consult-source :narrow) ?g))
+    (should (plist-get goblins-consult-source :hidden))
+    (should (equal (funcall (plist-get goblins-consult-source :items))
+                   (list (cons (buffer-name terminal) terminal))))))
+
 ;;; Switching and attention
 
 (ert-deftest goblins-switch-chooses-among-running-goblins ()

@@ -1389,4 +1389,7 @@ With a prefix argument, prompt for the daemon state directory."
 
 ;; Terminals turn on `goblin-mode'; loaded last since it builds on this file.
 (require 'goblins-terminal)
+;; Commands on a chosen goblin, and what Consult, Embark and Marginalia make
+;; of goblins once they load.
+(require 'goblins-completion)
 ;;; goblins.el ends here

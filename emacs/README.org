@@ -255,6 +255,15 @@ the whole frame; =goblins-workspace-quit-function= restores it.
   then every 30 seconds); =r= in the status buffer or =g= in the sidebar
   reconnects at once.
 
+** Consult, Embark and Marginalia
+
+None of them is required; each part below takes effect once its package loads.
+
+- *Commands on a goblin you choose.*  =goblins-goblin-show=, =-permissions=, =-info=, =-shell=, =-eshell=, =-dired=, =-find-file=, =-raid=, =-invite=, =-stop= and =-kill-execs= read a running goblin in the =goblin= completion category, and =goblins-show-in-workspace= shows one in the workspace.
+- *Embark.*  On a goblin candidate, and on a goblin's agent terminal among buffers (in =switch-to-buffer= or =consult-buffer=, as type =goblins-terminal=), these are actions: =W= show in the workspace, =p= permissions, =I= info, =t= shell, =e= Eshell, =d= Dired, =f= find file, =R= raid, =+= invite, =K= stop, =X= kill its shells and commands.  On a goblin =RET= or =o= shows it; on a terminal Embark's buffer actions stay, except that =K= stops the goblin.  The keymaps are =goblins-embark-goblin-map= and =goblins-embark-terminal-map=.
+- *Marginalia.*  Agent terminals among buffers are annotated like goblins: type, activity, raid, directory, pending requests and queued messages.
+- *Consult.*  =consult-buffer= lists the agent terminals under the narrowing key =g= (=goblins-consult-source=); they also stay among the other buffers.
+
 ** Goblin terminals
 
 Every Ghostel buffer attached to a goblin turns on the minor mode =goblin-mode=,
@@ -366,7 +375,7 @@ Run with an Emacs that already has =magit-section= on its load path:
 emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
   emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
-  emacs/goblins-tramp.el
+  emacs/goblins-tramp.el emacs/goblins-completion.el
 emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
