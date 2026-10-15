@@ -22,6 +22,7 @@
 (declare-function goblins--display-new-agent "goblins-views" (buffer))
 (defvar goblins--last-goblin)
 (declare-function goblins--note-selected "goblins-views" (key))
+(declare-function goblins--session-label "goblins-views" (snapshot id))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
 (declare-function goblin-mode "goblins-terminal" (&optional arg))
@@ -857,14 +858,20 @@ Daemon refusals become `user-error's and leave the connection alone."
                                    (current-buffer)))))
     (goblins--decide-record record approved)))
 
-(defun goblins--request-candidate (record)
-  "The pending request RECORD as a completion candidate, with its ID as the
-`goblins-request' property."
-  (propertize (format "%s: %s [%s]"
-                      (goblins--safe (plist-get record :agent_name))
-                      (goblins--safe (plist-get record :package))
-                      (goblins--safe (plist-get record :id)))
-              'goblins-request (plist-get record :id)))
+(defun goblins--request-candidates (records)
+  "RECORDS, pending requests, as completion candidates like \"gribble: jq\",
+numbered \"<2>\" and on when they would read alike.  Each carries its
+request ID as the `goblins-request' property."
+  (let ((seen (make-hash-table :test #'equal)))
+    (mapcar (lambda (record)
+              (let* ((label (format "%s: %s"
+                                    (goblins--session-label goblins--snapshot
+                                                            (plist-get record :session))
+                                    (goblins--safe (plist-get record :package))))
+                     (count (puthash label (1+ (gethash label seen 0)) seen)))
+                (propertize (if (> count 1) (format "%s <%d>" label count) label)
+                            'goblins-request (plist-get record :id))))
+            records)))
 
 (defun goblins--request-annotation (record)
   "Describe the pending request RECORD for completion: its kind and reason."
@@ -881,7 +888,7 @@ Candidates are in the `goblins-request' completion category."
                    (append (plist-get (buffer-local-value 'goblins--snapshot source)
                                       :permissions)
                            nil)))
-         (candidates (mapcar #'goblins--request-candidate records))
+         (candidates (with-current-buffer source (goblins--request-candidates records)))
          (annotate (lambda (candidate)
                      (when-let* ((record (cl-find (get-text-property 0 'goblins-request candidate)
                                                   records :key (lambda (r) (plist-get r :id))

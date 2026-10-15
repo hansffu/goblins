@@ -276,7 +276,7 @@ so you can give those buffers keys of your own:
   (evil-define-key 'normal goblin-mode-map (kbd "g i") #'goblin-info))
 #+end_src
 
-Its own keys are under =C-c g=: =w= workspace, =s= switch, =i= info, =p=
+Its own keys are under =C-c g=: =w= workspace (in the workspace, its menu: Ghostel passes most other keys to the terminal), =s= switch, =i= info, =p=
 permissions, =r= raid, =K= stop, =v= paste image.  It is a minor mode rather than a mode derived
 from =ghostel-mode= because =ghostel-exec= always puts the buffer in
 =ghostel-mode= itself and Ghostel refuses major-mode changes while the terminal

@@ -2331,7 +2331,8 @@ for session-a, `terminal', and an unrelated buffer, `other'."
             (plist-put goblins--snapshot :permissions
                        (vector (goblins-test--request-in "x" "session-a" "pending" "jq")
                                (goblins-test--request-in "y" "session-b" "pending" "git")
-                               (goblins-test--request-in "z" "session-b" "denied" "curl")))))
+                               (goblins-test--request-in "z" "session-b" "denied" "curl")
+                               (goblins-test--request-in "w" "session-b" "pending" "git")))))
     (let (offered decided opened shown)
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (_prompt table &rest _)
@@ -2351,7 +2352,8 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                  (lambda (src id) (setq opened (list src id))))
                 ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
         (call-interactively #'goblins-requests)
-        (should (equal offered '("session-a: jq [x]" "session-b: git [y]")))
+        ;; Alike requests are numbered apart.
+        (should (equal offered '("session-a: jq" "session-b: git" "session-b: git <2>")))
         ;; The goblin's requests, that one focused.
         (with-current-buffer shown
           (should (equal goblins--view-session "session-b"))
