@@ -244,7 +244,7 @@ the whole frame; =goblins-workspace-quit-function= restores it.
 
 ** Anywhere
 
-- =M-x goblins-switch= completes over the running goblins, annotated with type, activity, raid, directory, pending requests, queued messages and =[term]= when a terminal is open here, and shows (or attaches) the chosen one.  Every prompt for a goblin uses the =goblin= completion category.
+- =M-x goblins-switch= completes over the running goblins, annotated with type, activity, raid, directory, pending requests, queued messages and =[term]= when a terminal is open here, and shows (or attaches) the chosen one.  With Consult installed it lists the agent terminals (narrowing key =t=, including those of goblins that have stopped) apart from the running goblins without one (=a=); set =goblins-switch-use-consult= to nil for plain completion.  Every prompt for a goblin uses the =goblin= completion category.
 - =M-x goblins-raid= is the sidebar's =r= from any goblin terminal.
 - =goblins-attention-mode= shows =Goblins!N= in the mode line while requests are
   pending (click it to open the workspace) and announces new ones through

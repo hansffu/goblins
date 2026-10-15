@@ -1218,15 +1218,6 @@ Return (SOURCE . SESSION-ID)."
                  source choice (mapcar (lambda (s) (plist-get s :id)) sessions))
                 (user-error "Select a goblin"))))))
 
-;;;###autoload
-(defun goblins-switch (&optional directory)
-  "Choose a running goblin and show its terminal, attaching if necessary.
-With a prefix argument, prompt for the daemon state DIRECTORY."
-  (interactive (list (when current-prefix-arg
-                       (read-directory-name "Goblins state directory: "))))
-  (let ((goblin (goblins--read-goblin "Goblin: " (goblins--connect directory))))
-    (goblins-open-session (car goblin) (cdr goblin))))
-
 ;;;; Attention
 
 (defcustom goblins-attention-notify-function #'goblins-notify-message

@@ -27,6 +27,7 @@
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
 (declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
+(declare-function goblins-switch "goblins-completion" (&optional directory))
 (declare-function goblins-shell "goblins-tramp" (&optional session display source))
 (declare-function goblins-eshell "goblins-tramp" (&optional session display source))
 (declare-function goblins-dired "goblins-tramp" (&optional session display source))

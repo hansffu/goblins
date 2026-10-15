@@ -2363,6 +2363,31 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                               (substring-no-properties (funcall annotate terminal))))
       (should-not (string-match-p "○ idle" (or (funcall annotate (buffer-name other)) ""))))))
 
+(ert-deftest goblins-switch-with-consult-lists-terminals-and-other-goblins ()
+  (skip-unless (require 'consult nil t))
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p")
+                                 (goblins-test--session "session-c" :state "stopped"))
+    (let (sources opened)
+      (cl-letf (((symbol-function 'consult-buffer) (lambda (s) (setq sources s)))
+                ((symbol-function 'goblins-open-session)
+                 (lambda (src id) (setq opened (list src id)))))
+        (goblins-switch)
+        (let ((terminals (car sources))
+              (others (cadr sources)))
+          (should (equal (mapcar (lambda (s) (plist-get s :narrow)) sources) '(?t ?a)))
+          (should (equal (funcall (plist-get terminals :items))
+                         (list (cons (buffer-name terminal) terminal))))
+          (should (string-match-p "/p" (funcall (plist-get terminals :annotate) terminal)))
+          (funcall (plist-get terminals :action) terminal)
+          (should (equal opened (list source "session-a")))
+          ;; Running goblins without a terminal, in the goblin category.
+          (should (eq (plist-get others :category) 'goblin))
+          (let ((items (funcall (plist-get others :items))))
+            (should (equal items '("session-b")))
+            (funcall (plist-get others :action) (car items)))
+          (should (equal opened (list source "session-b"))))))))
+
 (ert-deftest goblins-consult-buffer-narrows-to-agent-terminals ()
   (skip-unless (require 'consult nil t))
   (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
@@ -2376,7 +2401,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 
 (ert-deftest goblins-switch-chooses-among-running-goblins ()
   (goblins-test--raid-sidebar
-    (let (offered category annotation opened)
+    (let (offered category annotation opened (goblins-switch-use-consult nil))
       (cl-letf (((symbol-function 'goblins--connect) (lambda (&optional _) source))
                 ((symbol-function 'goblins-open-session)
                  (lambda (src id) (setq opened (list src id))))
@@ -2650,7 +2675,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
     ;; Switching attaches a terminal in goblin-mode, shown in the main window.
     (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
       (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "alpha")))
-        (goblins-switch))
+        (let ((goblins-switch-use-consult nil)) (goblins-switch)))
       (let ((terminal (window-buffer (goblins--main-window))))
         ;; The agent replaces the status buffer, alone beside the sidebar.
         (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list terminal)))

@@ -27,6 +27,7 @@
 (require 'goblins-views)
 (require 'goblins-raids)
 
+(declare-function goblins-switch "goblins-completion" (&optional directory))
 (declare-function evil-normalize-keymaps "evil-core" (&optional state))
 (declare-function goblins-workspace "goblins-workspace" (&optional directory))
 (declare-function ghostel-paste-string "ghostel" (string))

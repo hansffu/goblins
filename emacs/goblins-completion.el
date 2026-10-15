@@ -31,6 +31,7 @@
 (declare-function goblins-show-in-workspace "goblins-workspace" (source id))
 (declare-function marginalia-annotate-buffer "marginalia" (cand))
 (declare-function consult--buffer-state "consult" ())
+(declare-function consult-buffer "consult" (&optional sources))
 (defvar embark-general-map)
 (defvar embark-buffer-map)
 (defvar embark-keymap-alist)
@@ -137,6 +138,56 @@ In the workspace its saved windows come back beside it."
   "Kill the shells and commands inside goblin ID of SOURCE's server."
   (interactive (goblins--choose-goblin "Kill shells and commands in goblin: "))
   (goblins-kill-goblin-execs source id))
+
+;;;; Switching
+
+(defcustom goblins-switch-use-consult t
+  "Whether `goblins-switch' uses Consult, when it is installed.
+It then lists the agent terminals and the goblins without one apart, with
+the narrowing keys t and a."
+  :type 'boolean :group 'goblins)
+
+(defun goblins--switch-sources (source)
+  "Consult sources for `goblins-switch' on SOURCE's server: its agent
+terminals, then its running goblins without one."
+  (let ((directory (buffer-local-value 'goblins--directory source)))
+    (list
+     (list :name "Terminal" :narrow ?t :category 'buffer
+           :face 'consult-buffer :history 'buffer-name-history
+           :annotate #'goblins--terminal-description
+           :action (lambda (buffer)
+                     (let ((goblin (goblins--agent-terminal-goblin buffer)))
+                       (goblins-open-session (car goblin) (cdr goblin))))
+           :items (lambda () (mapcar (lambda (b) (cons (buffer-name b) b))
+                                     (goblins--agent-terminals directory))))
+     (list :name "Not attached" :narrow ?a :category 'goblin
+           :annotate (goblins--goblin-annotation source)
+           :action (lambda (candidate)
+                     (goblins-open-session
+                      source (cdr (get-text-property 0 'goblins-goblin candidate))))
+           :items (lambda ()
+                    (mapcar (lambda (session) (goblins--goblin-candidate source session))
+                            (cl-remove-if
+                             (lambda (session)
+                               (with-current-buffer source
+                                 (goblins--terminal-buffer (plist-get session :id))))
+                             (goblins--running-sessions
+                              (buffer-local-value 'goblins--snapshot source)))))))))
+
+;;;###autoload
+(defun goblins-switch (&optional directory)
+  "Choose a goblin and show its terminal, attaching if necessary.
+With Consult (see `goblins-switch-use-consult') choose among the agent
+terminals and the running goblins without one; else among the running
+goblins.  In the workspace the goblin's saved windows come back beside it.
+With a prefix argument, prompt for the daemon state DIRECTORY."
+  (interactive (list (when current-prefix-arg
+                       (read-directory-name "Goblins state directory: "))))
+  (let ((source (goblins--connect directory)))
+    (if (and goblins-switch-use-consult (require 'consult nil t))
+        (consult-buffer (goblins--switch-sources source))
+      (let ((goblin (goblins--read-goblin "Goblin: " source)))
+        (goblins-open-session (car goblin) (cdr goblin))))))
 
 ;;;; Embark
 
