@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_FRAME: usize = 4096;
 pub const REQUEST_SOCKET: &str = "/run/goblins/request.sock";
-pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the next item.";
+pub const INTEGRATION_PROMPT: &str = "Use goblins-messaging: run /run/goblins/bin/goblins inbox next and process items until empty.";
 
 /// Provider-neutral live activity, independent of sandbox lifecycle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

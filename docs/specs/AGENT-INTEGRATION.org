@@ -68,7 +68,7 @@ The adapter polls =inbox.status= every 500 ms, including outstanding claims.
 It neither fetches nor acknowledges messages. It submits only:
 
 #+begin_quote
-Check your Goblins inbox and process the next item.
+Use goblins-messaging: run /run/goblins/bin/goblins inbox next and process items until empty.
 #+end_quote
 
 Submission uses experimental =thread/queue/add=, never =turn/steer= or PTY

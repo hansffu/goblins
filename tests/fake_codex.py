@@ -16,7 +16,7 @@ if 'Wire' not in globals():
     from codex_wire import Wire
 
 CLI = '/run/goblins/bin/goblins'
-PROMPT = 'Check your Goblins inbox and process the next item.'
+PROMPT = 'Use goblins-messaging: run /run/goblins/bin/goblins inbox next and process items until empty.'
 
 def cli(*args):
     return json.loads(subprocess.check_output([CLI, *args], stderr=subprocess.DEVNULL))

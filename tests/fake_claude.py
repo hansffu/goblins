@@ -12,7 +12,7 @@ import time
 import tty
 
 CLI = "/run/goblins/bin/goblins"
-PROMPT = "Check your Goblins inbox and process the next item."
+PROMPT = "Use goblins-messaging: run /run/goblins/bin/goblins inbox next and process items until empty."
 COMPOSER = os.environ.get("GOBLINS_TEST_COMPOSER", "› ")
 
 def cli(*args):

@@ -1,17 +1,22 @@
 ---
 name: goblins-spawn
-description: MUST use when the user says Goblin, Goblins, goblins CLI, or Goblins daemon, including requests for a goblin subagent. Create and manage child Goblins sandboxes; never substitute a native Agent/team for an explicitly requested Goblin. Use goblins-messaging for coordination.
+description: Create and manage child Goblins sandboxes when delegating work to a Goblin or when the user requests a goblin subagent. Use the goblins CLI for explicitly requested Goblins; use goblins-messaging to contact existing goblins. Mentioning the Goblins project alone does not require delegation.
 ---
 
 A goblin is a separate native agent in a daemon-owned sandbox. For a Goblins
 delegation, create a child with the sandbox's `goblins` CLI.
+The sandbox client is `/run/goblins/bin/goblins`; use that absolute path if a
+dev shell shadows `goblins` with a project or host CLI.
 
 ## Choose the delegation mechanism
 
-Respect an explicit choice of goblins or native subagents. When either would
-fit, prefer native subagents for bounded helper work and goblins for ongoing
-collaborators the user may attach to and interact with throughout a task.
-Messaging or requesting tools alone does not require a separate goblin.
+Respect an explicit choice of goblins or native subagents. If native subagent
+tools are available and either mechanism would fit, prefer native subagents
+for bounded helper work and goblins for ongoing collaborators the user may
+attach to and interact with throughout a task. Otherwise use the available
+mechanism within the user's request. Contact an existing collaborator through
+goblins-messaging; messaging or requesting tools alone does not require a
+new goblin.
 
 For example, a task spanning several repositories may benefit from an
 architect and one developer goblin per application. Keep these roles available

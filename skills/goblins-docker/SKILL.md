@@ -1,7 +1,10 @@
 ---
 name: goblins-docker
-description: Attach a Goblins sandbox to its scope's Docker engine with goblins enable-docker. Use before concluding Docker is unavailable, when work needs Docker, containers, Docker Compose or Testcontainers, or on "Could not find a valid Docker environment", a missing /run/goblins/docker-socket/docker.sock or "docker: command not found".
+description: "Attach a Goblins sandbox to its scope's Docker engine with goblins enable-docker. Use before concluding Docker is unavailable, when work needs Docker, containers, Docker Compose or Testcontainers, or on \"Could not find a valid Docker environment\", a missing /run/goblins/docker-socket/docker.sock or \"docker: command not found\"."
 ---
+
+The sandbox client is `/run/goblins/bin/goblins`; use that absolute path if a
+dev shell shadows `goblins` with a project or host CLI.
 
 Docker in a Goblins sandbox is on demand. When `DOCKER_HOST` is
 `unix:///run/goblins/docker-socket/docker.sock`, this goblin's scope provides a

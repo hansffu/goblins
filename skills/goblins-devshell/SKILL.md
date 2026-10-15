@@ -8,8 +8,11 @@ tools, variables and `shellHook` exports are already in your environment.
 `goblins status` shows the flake. Editing project files does not change the
 active generation.
 
-There is no Nix executable in the sandbox. Use the Goblins commands below.
-Other Nix operations, such as build or flake check, are not available.
+Nix commands are not supported in the sandbox, even if the dev shell provides
+a `nix` binary. Use the Goblins commands below. Other Nix operations, such as
+build or flake check, are not available.
+The sandbox client is `/run/goblins/bin/goblins`; use that absolute path if
+the dev shell shadows `goblins` with a project or host CLI.
 
 ## Change the environment
 
@@ -38,9 +41,11 @@ Choose the flags for the task:
      request may still complete.
    If you end your turn while the refresh is pending, its outcome arrives
    as an operation notice in your inbox (see goblins-messaging). If the
-   refresh command itself did not finish, for example after exit 2, a ready
-   notice means the generation is active but the workspace lock may still be
-   the old one: run `goblins devshell restore-lock` to write the approved lock.
+   refresh process has exited without writing the approved lock, for example
+   after exit 2, a ready notice means the generation is active but the workspace
+   lock may still be the old one: run `goblins devshell restore-lock` to write
+   the approved lock. If the original process is still running, collect its
+   result first; it normally writes the lock itself.
 3. Existing processes, including your current shell and any shell it starts,
    keep the old environment. Separate command executions may not keep
    environment changes, so source `env.sh` in the same Bash command that
@@ -60,8 +65,9 @@ make it foreign. Do not try to bypass the check.
 `goblins devshell restore-lock` overwrites the workspace lock with this
 sandbox's trusted one. Before running it, inspect and preserve any lock
 changes that still matter. If another goblin's refresh wrote the lock,
-restoring breaks its check in turn, so coordinate with that goblin first,
-through your parent when it is not your parent or child. Then make the
+restoring breaks its check in turn, so coordinate with that goblin first.
+Message it directly if it is reachable through your tree or a shared raid;
+otherwise ask your parent or the host to relay the decision. Then make the
 intended change through a refresh with `--lock` or `--update`.
 
 Generations belong to individual sandboxes even though they share files: a

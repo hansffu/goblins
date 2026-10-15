@@ -3,6 +3,9 @@ name: goblins-raids
 description: Use when a Goblins task needs goblins in different branches (not parent and child) to talk directly, or when the user mentions a Goblins raid. Form or join a raid, find members with goblins raid members, and message them through the daemon. Use goblins-messaging for sending and replying.
 ---
 
+The sandbox client is `/run/goblins/bin/goblins`; use that absolute path if a
+dev shell shadows `goblins` with a project or host CLI.
+
 A raid is a temporary group of goblins that may message each other directly,
 even across branches of the ownership tree. It only lets members find each
 other and send; it shares no files, terminals, packages or lifecycle control.
