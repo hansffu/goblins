@@ -1111,7 +1111,8 @@ stopped since."
   "Read a time with Org's date prompt and calendar, with PROMPT and examples.
 Return it in Unix seconds."
   (require 'org)
-  (float-time (org-read-date t t nil (format "%s (%s): " prompt goblins--messages-time-examples))))
+  ;; Org adds its own "Date+time [default]: " after PROMPT.
+  (float-time (org-read-date t t nil (format "%s, like %s. " prompt goblins--messages-time-examples))))
 
 (defun goblins-messages-filter-goblin ()
   "Filter by a goblin that sent or received the messages, or clear that filter."

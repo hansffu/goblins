@@ -3769,7 +3769,7 @@ m2, and m3, which failed when beta stopped."
     (cl-letf (((symbol-function 'org-read-date)
                (lambda (with-time to-time _from prompt &rest _)
                  (should (and with-time to-time))
-                 (should (equal prompt "Sent after (15:30, -1h, -2d 9:00): "))
+                 (should (equal prompt "Sent after, like 15:30, -1h, -2d 9:00. "))
                  (encode-time (list 0 30 15 15 10 2026 nil -1 nil)))))
       (goblins-messages-filter-after))
     (should (equal (format-time-string "%F %H:%M" (plist-get goblins--messages-filters :after))
