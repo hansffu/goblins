@@ -185,7 +185,7 @@ The list takes the selected window (in the workspace, the window beside the agen
 | =t= | one thread, unfolded |
 | =a= | only messages awaiting a reply (still queued or claimed) |
 | =x= | only messages that failed |
-| =<= / =>= | sent after / before a time, read with Org's date prompt and calendar: =15:30= today, =-1h= an hour ago, =-2d 9:00=, or a date |
+| =<= / =>= | sent after / before a time, read with Org's date prompt and calendar: =15:30= today, =-1h= an hour ago, =-2d 9:00=, =-mon= last Monday, or a date; an abbreviated date means this year's or this month's rather than the next, and a date without a time its whole day |
 | =m= | sent in the last minutes |
 | =w= | clear every filter (also =w= in the list) |
 

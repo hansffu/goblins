@@ -495,11 +495,18 @@ replies when unfolded."
   "Redraw the list from the cache and the filters, keeping the message at point
 and each window's scroll position."
   (let* ((inhibit-read-only t)
+         (origin (point))
          ;; Each window's first line, by its message, else its line number.
+         ;; And the message at each window's point: windows keep their own.
          (starts (mapcar (lambda (window)
                            (save-excursion
                              (goto-char (window-start window))
-                             (list window (goblins--messages-id-at) (line-number-at-pos))))
+                             (list window (goblins--messages-id-at) (line-number-at-pos)
+                                   ;; The selected window's point is the buffer's.
+                                   (progn (goto-char (if (eq window (selected-window))
+                                                         origin
+                                                       (window-point window)))
+                                          (goblins--messages-id-at)))))
                          (get-buffer-window-list nil nil t)))
          (records (and goblins--messages (goblins--messages-records)))
          (shown (cl-remove-if-not #'goblins--messages-match-p records))
@@ -530,14 +537,16 @@ and each window's scroll position."
                    (progn (forward-line (1- line))
                           (when (and (eobp) (not (bobp))) (forward-line -1))
                           (point)))))
-      (goblins--view-goto (save-excursion (goto-char pos) (line-beginning-position))))
-    (pcase-dolist (`(,window ,id ,start-line) starts)
+      (goto-char (save-excursion (goto-char pos) (line-beginning-position))))
+    (pcase-dolist (`(,window ,id ,start-line ,at) starts)
       (set-window-start window
                         (or (and id (goblins--messages-position 'goblins-message id))
                             (save-excursion (goto-char (point-min))
                                             (forward-line (1- start-line))
                                             (point)))
-                        t))
+                        t)
+      (set-window-point window (or (and at (goblins--messages-position 'goblins-message at))
+                                   (point))))
     (setq goblins--messages-matching (length shown))
     (goblins--messages-follow t)))
 
@@ -1104,15 +1113,37 @@ stopped since."
     (unless choices (user-error "No message was sent within a raid"))
     (cdr (assoc (completing-read prompt choices nil t) choices))))
 
-(defconst goblins--messages-time-examples "15:30, -1h, -2d 9:00"
+(defconst goblins--messages-time-examples "15:30, -1h, -2d 9:00, -mon"
   "What the time filters' prompt accepts, for their hints.")
 
-(defun goblins--messages-read-time (prompt)
+(defvar org-read-date-prefer-future)
+(defvar org-read-date-final-answer)
+
+(defun goblins--messages-time-given-p (input)
+  "Whether INPUT, an answer to Org's date prompt, names a time of day.
+An empty answer is now, a time too."
+  (or (string-blank-p input)
+      (string-match-p "[0-9]:[0-9]\\|[0-9] *[ap]m\\>\\|[-+][0-9]*h\\>" input)))
+
+(defun goblins--messages-read-time (prompt edge)
   "Read a time with Org's date prompt and calendar, with PROMPT and examples.
+Abbreviated dates mean the past, as messages were sent then.  A date
+without a time means its start when EDGE is `start', its end when `end'.
 Return it in Unix seconds."
   (require 'org)
-  ;; Org adds its own "Date+time [default]: " after PROMPT.
-  (float-time (org-read-date t t nil (format "%s, like %s. " prompt goblins--messages-time-examples))))
+  (let* ((org-read-date-prefer-future nil)
+         ;; Org adds its own "Date+time [default]: " after PROMPT.
+         (time (org-read-date t t nil (format "%s, like %s. " prompt
+                                              goblins--messages-time-examples)))
+         (input org-read-date-final-answer))
+    (float-time
+     (if (or (not (stringp input)) (goblins--messages-time-given-p input))
+         time
+       (let ((day (decode-time time)))
+         (encode-time (list (if (eq edge 'end) 59 0) (if (eq edge 'end) 59 0)
+                            (if (eq edge 'end) 23 0)
+                            (decoded-time-day day) (decoded-time-month day)
+                            (decoded-time-year day) nil -1 nil)))))))
 
 (defun goblins-messages-filter-goblin ()
   "Filter by a goblin that sent or received the messages, or clear that filter."
@@ -1152,12 +1183,12 @@ Return it in Unix seconds."
 (defun goblins-messages-filter-after ()
   "Show only the messages sent after a time, or clear that filter."
   (interactive)
-  (goblins--messages-toggle :after (lambda () (goblins--messages-read-time "Sent after"))))
+  (goblins--messages-toggle :after (lambda () (goblins--messages-read-time "Sent after" 'start))))
 
 (defun goblins-messages-filter-before ()
   "Show only the messages sent before a time, or clear that filter."
   (interactive)
-  (goblins--messages-toggle :before (lambda () (goblins--messages-read-time "Sent before"))))
+  (goblins--messages-toggle :before (lambda () (goblins--messages-read-time "Sent before" 'end))))
 
 (defun goblins-messages-filter-last ()
   "Show only the messages sent in the last minutes, or clear that filter."

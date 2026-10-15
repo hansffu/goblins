@@ -3764,12 +3764,13 @@ m2, and m3, which failed when beta stopped."
                             (goblins--messages-filter-description "awaiting reply" :awaiting)))
     ;; The time filters say what they accept, and read it with Org's prompt.
     (require 'org)
-    (should (string-match-p "sent after +off  15:30, -1h, -2d 9:00"
+    (should (string-match-p "sent after +off  15:30, -1h, -2d 9:00, -mon"
                             (goblins--messages-filter-description "sent after" :after)))
     (cl-letf (((symbol-function 'org-read-date)
                (lambda (with-time to-time _from prompt &rest _)
                  (should (and with-time to-time))
-                 (should (equal prompt "Sent after, like 15:30, -1h, -2d 9:00. "))
+                 (should (equal prompt "Sent after, like 15:30, -1h, -2d 9:00, -mon. "))
+                 (setq org-read-date-final-answer "2026-10-15 15:30")
                  (encode-time (list 0 30 15 15 10 2026 nil -1 nil)))))
       (goblins-messages-filter-after))
     (should (equal (format-time-string "%F %H:%M" (plist-get goblins--messages-filters :after))
@@ -3926,3 +3927,56 @@ m2, and m3, which failed when beta stopped."
         (goblins--messages-update "i-m2" :created 4000)
         (goblins--messages-tick)
         (should (string-match-p "No message passes" (buffer-string)))))))
+
+(ert-deftest goblins-messages-time-filters-mean-the-past-and-whole-days ()
+  (require 'org)
+  (let ((now (decode-time)))
+    (cl-flet ((read (input edge)
+                ;; As if typed: Org reads INPUT and keeps it as its answer.
+                (let ((org-read-date (symbol-function 'org-read-date)))
+                  (cl-letf (((symbol-function 'org-read-date)
+                             (lambda (with-time to-time _from &rest _)
+                               (funcall org-read-date with-time to-time input))))
+                    (decode-time (goblins--messages-read-time "Sent after" edge))))))
+      ;; Yesterday's day of the month is yesterday, not next month.  (On
+      ;; the first a day of the month alone names this month's.)
+      (when (> (decoded-time-day now) 1)
+        (let* ((yesterday (decode-time (time-subtract nil (* 24 3600))))
+               (day (read (format "%d" (decoded-time-day yesterday)) 'start)))
+          (should (equal (list (decoded-time-year day) (decoded-time-month day)
+                               (decoded-time-day day))
+                         (list (decoded-time-year yesterday) (decoded-time-month yesterday)
+                               (decoded-time-day yesterday))))
+          ;; A date alone is its start, or its end.
+          (should (equal (list (decoded-time-hour day) (decoded-time-minute day)) '(0 0)))))
+      (let ((day (read "-1d" 'end)))
+        (should (equal (list (decoded-time-hour day) (decoded-time-minute day)
+                             (decoded-time-second day))
+                       '(23 59 59))))
+      ;; A time is kept as given.
+      (let ((time (read "-1d 9:15" 'start)))
+        (should (equal (list (decoded-time-hour time) (decoded-time-minute time)) '(9 15))))
+      (let ((time (read "-1h" 'start)))
+        (should (= (decoded-time-hour time)
+                   (decoded-time-hour (decode-time (time-subtract nil 3600)))))))))
+
+(ert-deftest goblins-messages-windows-keep-their-own-point ()
+  (save-window-excursion
+    (delete-other-windows)
+    (goblins-test--messages
+      (dotimes (i 60)
+        (goblins--messages-ingest
+         (list :kind "message.accepted" :actor "a" :timestamp 7000
+               :data (list :change (list :message (goblins-test--message
+                                                   (format "i-x%d" i) "a" "b" (format "Note %d" i)
+                                                   (format "i-cx%d" i) (+ 7000 i)))))))
+      (goblins--messages-render)
+      (let ((one (selected-window))
+            (two (split-window-below)))
+        (set-window-buffer two (current-buffer))
+        (set-window-point one (goblins--messages-position 'goblins-message "i-x10"))
+        (set-window-point two (goblins--messages-position 'goblins-message "i-x50"))
+        (goto-char (window-point one))
+        (goblins--messages-render)
+        (should (= (window-point one) (goblins--messages-position 'goblins-message "i-x10")))
+        (should (= (window-point two) (goblins--messages-position 'goblins-message "i-x50")))))))
