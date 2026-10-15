@@ -29,6 +29,7 @@
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+(declare-function evil-make-intercept-map "evil-core" (keymap &optional state aux))
 (defvar embark-general-map)
 (defvar embark-keymap-alist)
 (defvar embark-target-finders)
@@ -1114,6 +1115,8 @@ Return it in Unix seconds."
     (kbd "gr") #'goblins-messages-reload
     (kbd "q") #'goblins-messages-quit
     (kbd "?") #'goblins-messages-help)
+  ;; Above minor modes such as evil-snipe, whose f would shadow the filters.
+  (evil-make-intercept-map goblins-messages-mode-map 'motion t)
   (evil-define-key* 'motion goblins-message-mode-map
     (kbd "RET") #'goblins-message-visit
     (kbd "q") #'quit-window
