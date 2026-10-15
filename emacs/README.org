@@ -121,7 +121,7 @@ directly; there is no need to download another copy of Magit.
 
 * Workspace
 
-=M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory.  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
+=M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory, and selects it; in the workspace it selects the sidebar, showing it if hidden.  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
 
 Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text, and fainter before a child; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
 
@@ -179,6 +179,8 @@ Beside the sidebar:
   Eshell =e=, Dired =d=, =C-c g f= files, files its =goblins-editor= opens) goes
   into the right window used last, and you show, split and arrange anything
   you like there.
+
+=goblins-sidebar-dwim= is =RET= in the sidebar; elsewhere it selects the sidebar, opening the workspace or showing the sidebar as needed, so it suits a global key.  =M-x goblins-show-in-workspace= shows a goblin you choose in the workspace, opening it if needed, with its agent window selected.
 
 =M-x goblins-sidebar-toggle= hides the sidebar, or shows it and selects it (opening the workspace if needed).  Hiding it keeps the workspace: each goblin keeps its windows and what Goblins opens still goes beside the agent.  =q= in the sidebar, or =M-x goblins-workspace-quit=, leaves the workspace.
 

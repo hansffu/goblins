@@ -1063,6 +1063,57 @@ selected in the workspace."
             (if (stringp cwd) (propertize (concat " " (abbreviate-file-name cwd)) 'face 'goblins-dim) "")
             (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-attention) ""))))
 
+(defun goblins--default-source ()
+  "The status buffer, connected, of the server at hand: this goblin buffer's,
+the workspace's, else that of `goblins--resolve-directory'."
+  (goblins--connect (or (car goblins--session-key)
+                        (and (goblins--in-workspace-p) (car goblins--last-goblin)))))
+
+(defun goblins--running-sessions (snapshot)
+  "The sessions of SNAPSHOT that have not finished."
+  (cl-remove-if (lambda (s) (member (plist-get s :state) '("stopped" "failed")))
+                (append (plist-get snapshot :sessions) nil)))
+
+(defun goblins--goblin-candidate (source session)
+  "SESSION of SOURCE's server as a completion candidate: its tree path, with
+its identity as the `goblins-goblin' property, (DIRECTORY . SESSION-ID)."
+  (propertize (goblins--safe (goblins--session-path session))
+              'goblins-goblin (cons (buffer-local-value 'goblins--directory source)
+                                    (plist-get session :id))))
+
+(defun goblins--goblin-annotation (source)
+  "An annotation function for goblin candidates of SOURCE's server."
+  (lambda (candidate)
+    (when-let* ((id (cdr (get-text-property 0 'goblins-goblin candidate)))
+                (snapshot (buffer-local-value 'goblins--snapshot source))
+                (session (goblins--snapshot-session snapshot id)))
+      (goblins--switch-annotation
+       session
+       (cl-count-if (lambda (r) (and (equal (plist-get r :session) id)
+                                     (equal (plist-get r :state) "pending")))
+                    (append (plist-get snapshot :permissions) nil))))))
+
+(defun goblins--goblin-table (source candidates)
+  "A completion table of goblin CANDIDATES of SOURCE's server, in the
+`goblin' category."
+  (let ((annotate (goblins--goblin-annotation source)))
+    (lambda (string predicate action)
+      (if (eq action 'metadata)
+          `(metadata (category . goblin) (annotation-function . ,annotate))
+        (complete-with-action action candidates string predicate)))))
+
+(defun goblins--read-goblin (prompt source &optional sessions)
+  "Choose one of SESSIONS of SOURCE's server, by default the running ones.
+Return (SOURCE . SESSION-ID)."
+  (let* ((sessions (or sessions (goblins--running-sessions
+                                 (buffer-local-value 'goblins--snapshot source))))
+         (candidates (mapcar (lambda (s) (goblins--goblin-candidate source s)) sessions)))
+    (unless candidates (user-error "No running goblins"))
+    (let* ((choice (completing-read prompt (goblins--goblin-table source candidates) nil t))
+           (found (car (member choice candidates))))
+      (unless found (user-error "Select a goblin"))
+      (cons source (cdr (get-text-property 0 'goblins-goblin found))))))
+
 ;;;###autoload
 (defun goblins-switch (&optional directory)
   "Choose a running goblin and show its terminal, attaching if necessary.

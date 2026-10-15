@@ -1347,6 +1347,9 @@ Unlike `goblins-status' this never displays the buffer."
 ;; The workspace lives in its own file, which loads only when first used.  A
 ;; plain autoload form, not a cookie, so it works without generated autoloads.
 (autoload 'goblins-workspace "goblins-workspace" nil t)
+(autoload 'goblins-sidebar-dwim "goblins-workspace" nil t)
+(autoload 'goblins-sidebar-toggle "goblins-workspace" nil t)
+(autoload 'goblins-show-in-workspace "goblins-workspace" nil t)
 (autoload 'goblins-shell "goblins-tramp" nil t)
 (autoload 'goblins-eshell "goblins-tramp" nil t)
 (autoload 'goblins-dired "goblins-tramp" nil t)

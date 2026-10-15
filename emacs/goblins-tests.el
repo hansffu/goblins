@@ -1534,6 +1534,54 @@ keeps the parameters of windows that live on."
             (should-not (goblins--in-workspace-p)))
         (kill-buffer dired)))))
 
+(ert-deftest goblins-workspace-entry-points-select-the-sidebar ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p"))
+    (let* ((sidebar-window (lambda () (get-buffer-window goblins--sidebar-buffer-name)))
+           (leave (lambda ()
+                    (goblins-test--leave-workspace-windows)
+                    (when (funcall sidebar-window) (delete-window (funcall sidebar-window)))
+                    (set-frame-parameter nil 'goblins-workspace-saved-config nil))))
+      (terminal "session-a")
+      (terminal "session-b")
+      (setq goblins--last-goblin '("/tmp/goblins-test" . "session-a"))
+      (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) source))
+                ((symbol-function 'goblins-refresh) #'ignore))
+        (unwind-protect
+            (progn
+              ;; Opening the workspace selects the sidebar, beside the goblin
+              ;; selected last.
+              (funcall leave)
+              (should-not (goblins--in-workspace-p))
+              (goblins-workspace)
+              (should (eq (selected-window) (funcall sidebar-window)))
+              (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+              ;; dwim elsewhere selects it, showing it if hidden.
+              (select-window (goblins--agent-window))
+              (goblins-sidebar-dwim)
+              (should (eq (selected-window) (funcall sidebar-window)))
+              (goblins-sidebar-toggle)
+              (should-not (funcall sidebar-window))
+              (goblins-sidebar-dwim)
+              (should (eq (selected-window) (funcall sidebar-window)))
+              ;; So does goblins-workspace in the workspace.
+              (select-window (goblins--agent-window))
+              (goblins-sidebar-toggle)
+              (goblins-workspace)
+              (should (eq (selected-window) (funcall sidebar-window)))
+              (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+              ;; Showing a goblin in the workspace selects its agent, and opens
+              ;; the workspace when needed.
+              (goblins-show-in-workspace source "session-b")
+              (should (eq (window-buffer) (terminal "session-b")))
+              (funcall leave)
+              (delete-other-windows)
+              (goblins-show-in-workspace source "session-a")
+              (should (funcall sidebar-window))
+              (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+              (should (eq (window-buffer) (terminal "session-a"))))
+          (set-frame-parameter nil 'goblins-workspace-saved-config nil))))))
+
 (ert-deftest goblins-workspace-quit-leaves-no-agent-window ()
   (goblins-test--workspace (list (goblins-test--session "session-a"))
     (terminal "session-a")

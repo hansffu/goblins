@@ -686,11 +686,15 @@ A goblin's detail lines, rules and blank lines are passed by."
       (when-let* ((pos (goblins--sidebar-find anchor))) (goto-char pos)))))
 
 (defun goblins-sidebar-dwim ()
-  "Show the goblin at point in the main window, attaching if necessary.
-On a shell show it; on a raid heading open its page; on a directory heading
-fold or unfold it."
+  "Act on the sidebar line at point, or select the sidebar.
+On a goblin show it beside the sidebar, attaching if necessary; on a shell
+show it; on a raid heading open its page; on a directory heading fold or
+unfold it.  Outside the sidebar, select it, opening the workspace or showing
+the sidebar as needed."
   (interactive)
   (cond
+   ((not (derived-mode-p 'goblins-sidebar-mode))
+    (goblins-workspace))
    ((get-text-property (line-beginning-position) 'goblins-terminal)
     (goblins-select-goblin (goblins--sidebar-ensure-source)
                            (get-text-property (line-beginning-position) 'goblins-parent)
@@ -959,10 +963,7 @@ opens still goes beside the agent.  Without a workspace, open it."
     (let ((selected (eq (selected-window) (goblins--sidebar-window))))
       (delete-window (goblins--sidebar-window))
       (when selected (select-window (goblins--agent-window)))))
-   ((goblins--in-workspace-p)
-    (select-window (goblins--sidebar-show (goblins--workspace-source))))
-   (t (call-interactively #'goblins-workspace)
-      (select-window (goblins--sidebar-window)))))
+   (t (goblins-workspace))))
 
 ;;;; Mode
 
@@ -1082,10 +1083,11 @@ Else the most recently used goblin terminal, else the status buffer alone."
 
 ;;;###autoload
 (defun goblins-workspace (&optional directory)
-  "Open the Goblins workspace: a sidebar of goblins beside the main view.
+  "Open the Goblins workspace and select its sidebar of goblins.
 Beside it the goblin selected last: its agent terminal on the left and its
 saved windows on the right.  Without any goblin terminal the status buffer
-shows until the first agent opens.
+shows until the first agent opens.  In the workspace, select the sidebar,
+showing it if hidden.
 With a prefix argument, prompt for the daemon state directory.
 Switching or creating the workspace is delegated to
 `goblins-workspace-switch-or-create-function'."
@@ -1094,6 +1096,14 @@ Switching or creating the workspace is delegated to
                                             (or goblins--directory
                                                 goblins-state-directory
                                                 (goblins--default-directory))))))
+  (select-window
+   (if (and (goblins--in-workspace-p) (not directory))
+       (goblins--sidebar-show (goblins--workspace-source))
+     (goblins--sidebar-show (goblins--workspace-open directory)))))
+
+(defun goblins--workspace-open (&optional directory)
+  "Open the workspace of DIRECTORY's server and return its status buffer.
+The goblin selected last comes back, its agent window selected."
   (let ((source (goblins--status-buffer directory)))
     (if (goblins--in-workspace-p)
         ;; Already shown: these windows are the selected goblin's.
@@ -1104,7 +1114,20 @@ Switching or creating the workspace is delegated to
         (goblins-refresh)))
     (goblins--sidebar-show source)
     (goblins--workspace-restore source)
-    (goblins--sidebar-update-active)))
+    (goblins--sidebar-update-active)
+    source))
+
+;;;###autoload
+(defun goblins-show-in-workspace (source id)
+  "Show goblin ID of SOURCE's server in the workspace, opening it if needed.
+Its agent terminal, attached if needed, and its saved windows come back, the
+agent window selected."
+  (interactive (let ((goblin (goblins--read-goblin "Show in workspace: "
+                                                   (goblins--default-source))))
+                 (list (car goblin) (cdr goblin))))
+  (unless (goblins--in-workspace-p)
+    (goblins--workspace-open (buffer-local-value 'goblins--directory source)))
+  (goblins-open-session source id))
 
 (provide 'goblins-workspace)
 ;;; goblins-workspace.el ends here
