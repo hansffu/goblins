@@ -499,8 +499,9 @@ replies when unfolded."
          (direction . ,(if (>= (window-total-width window) goblins-messages-reader-side-width)
                            'right
                          'below))
-         (window-width . 0.5)
-         (window-height . 0.5))))))
+         ;; Half the list's window; a fraction would be of the frame.
+         (window-width . ,(/ (window-total-width window) 2))
+         (window-height . ,(/ (window-total-height window) 2)))))))
 
 (defun goblins--messages-open (source filters &optional keep)
   "Show the message list of SOURCE's server with FILTERS, a plist, and the reader.
@@ -600,14 +601,19 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
                   'face 'goblins-dim))
      (if raid (goblins--message-field "Raid" (goblins--safe (goblins--messages-raid-name raid))) "")
      (if (not reply-to) ""
-       (goblins--message-field
-        "Re"
-        (goblins--message-ref (plist-get reply-to :id))
-        (propertize (format "   %s  " (goblins--messages-time (plist-get reply-to :created)))
-                    'face 'goblins-dim)
-        (goblins--messages-goblin (plist-get reply-to :sender) (plist-get reply-to :sender-path))
-        "  "
-        (truncate-string-to-width (goblins--messages-summary reply-to) 80 nil nil "…")))
+       (let ((prefix (concat
+                      (goblins--message-ref (plist-get reply-to :id))
+                      (propertize (format "   %s  " (goblins--messages-time
+                                                       (plist-get reply-to :created)))
+                                  'face 'goblins-dim)
+                      (goblins--messages-goblin (plist-get reply-to :sender)
+                                                (plist-get reply-to :sender-path))
+                      "  ")))
+         ;; One line, however narrow the reader.
+         (goblins--message-field
+          "Re" prefix
+          (truncate-string-to-width (goblins--messages-summary reply-to)
+                                    (max 10 (- width 9 (string-width prefix))) nil nil "…"))))
      (goblins--message-field
       "Sent"
       (goblins--messages-time (plist-get record :created) t)
