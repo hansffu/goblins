@@ -151,6 +151,8 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =r=                          | create a raid around the goblin at point or on the left, or add it to one, and open the raid page |
 | =i=                          | invite the goblin into a raid you pick; on a raid, invite a goblin into it |
 | =D=                          | on a raid: dissolve it (its goblins keep running)        |
+| =m m=                        | the goblin's messages; on a raid, the messages sent within it |
+| =m f= / =m t=                | the messages the goblin sent / received                  |
 | =c= / =C=                    | run a goblin in the project at point / a project you choose |
 | =g= / =gr=                   | reconnect                                                |
 | =?=                          | key help                                                 |
@@ -166,6 +168,28 @@ is no acceptance step.
 In the permissions view the current request is focused: =a= accepts, =d= denies,
 =RET= folds a request, =q= goes back.  Add sections to the info view with
 =goblins-info-section-functions=.
+
+** Messages
+
+=M-x goblins-messages= lists the messages the goblins, you and Goblins itself sent each other, as the daemon's communications log recorded them.  Each thread takes one line, folded: its first message's time, sender → recipient and first line, and =+N= for the replies folded away.  =TAB= unfolds the thread at point (=▸= folded, =▾= unfolded; a thread of one message has no arrow) and its replies hang below it with =├= and =└=; =S-TAB= unfolds every thread, or folds them all.  A failed message is marked =✗=.  The list follows the log by itself: new messages and their claims and replies appear as they happen.
+
+A reader shows the message at point and follows it as you move: its sender and recipient, its thread and its place in it, its raid, the message it answers (=Re=), when it was sent and claimed, the replies to it, and its whole body.  It opens beside the list when the list's window is at least =goblins-messages-reader-side-width= columns wide (160), else below it.  =RET= selects it; there =RET= on a message ID shows that message.
+
+=f= opens the filter menu.  Each key sets its filter, asking for its value, or clears it when set; the menu stays open, and the list and the active filters in its header line follow along.
+
+| Key | Filter |
+|-----+--------|
+| =g= | a goblin that sent or received the messages |
+| =F= / =T= | the goblin that sent / received them |
+| =r= | the raid they were sent in |
+| =t= | one thread, unfolded |
+| =a= | only messages awaiting a reply (still queued or claimed) |
+| =x= | only messages that failed |
+| =<= / =>= | sent since / until a time: =15:30= today or =2026-10-15 15:30= |
+| =m= | sent in the last minutes |
+| =w= | clear every filter (also =w= in the list) |
+
+The list's other keys: =j= / =k= move, =gr= (=g= without Evil) reads the whole log again, =q= closes the list and the reader, =?= lists the keys.  The sidebar's =m= and Embark open the list filtered (see [[*Consult, Embark and Marginalia][Consult, Embark and Marginalia]]); from the list or the reader Embark's filters add to the ones set, from anywhere else they replace them.
 
 ** Moving around
 
@@ -261,6 +285,7 @@ None of them is required; each part below takes effect once its package loads.
 
 - *Commands on a goblin you choose.*  =goblins-goblin-show=, =-permissions=, =-info=, =-shell=, =-eshell=, =-dired=, =-find-file=, =-raid=, =-invite=, =-stop= and =-kill-execs= read a running goblin in the =goblin= completion category, and =goblins-show-in-workspace= shows one in the workspace.
 - *Embark.*  On a goblin candidate, and on a goblin's agent terminal among buffers (in =switch-to-buffer= or =consult-buffer=, as type =goblins-terminal=), these are actions: =W= show in the workspace, =p= permissions, =I= info, =t= shell, =e= Eshell, =d= Dired, =f= find file, =R= raid, =+= invite, =K= stop, =X= kill its shells and commands.  On a goblin =RET= or =o= shows it; on a terminal Embark's buffer actions stay, except that =K= stops the goblin.  The keymaps are =goblins-embark-goblin-map= and =goblins-embark-terminal-map=.
+- *Messages.*  On a goblin, =m= is a prefix for its messages: =m m= those it sent or received, =m f= those it sent, =m t= those it received.  In the message list each message is a target (type =goblins-message=): =F= lists the messages from its sender, =T= those to its recipient, =t= its thread, =RET= shows it; a message sent within a raid (=goblins-raid-message=) adds =r= for the messages of that raid.  In the reader the sender and recipient are goblin targets, the thread ID a =goblins-thread= target (=RET= or =t= lists it) and a message ID a message target; elsewhere the reader is its message.  The commands are =goblins-goblin-messages=, =-messages-from= and =-messages-to=, =goblins-message-from=, =-to=, =-thread=, =-raid= and =-show=, and =goblins-thread-messages=; the keymaps =goblins-embark-goblin-messages-map=, =goblins-embark-message-map=, =goblins-embark-raid-message-map= and =goblins-embark-thread-map=.
 - *Marginalia.*  Agent terminals among buffers are annotated like goblins: type, activity, raid, directory, pending requests and queued messages.
 - *Consult.*  =consult-buffer= lists the agent terminals under the narrowing key =g= (=goblins-consult-source=); they also stay among the other buffers.
 - *Permission requests.*  =M-x goblins-requests= chooses among the pending requests of every goblin (=goblins-request= completion category, annotated with kind and reason) and shows its goblin's requests with it focused.  =goblins-request-accept=, =-deny= and =-goblin= choose one too, and are its Embark actions: =a= accept, =d= deny, =g= show its goblin, =p= or =RET= its goblin's requests (=goblins-embark-request-map=).  =goblins-accept= and =goblins-deny= outside status use the same completion.
@@ -376,7 +401,7 @@ Run with an Emacs that already has =magit-section= on its load path:
 emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
   emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
-  emacs/goblins-tramp.el emacs/goblins-completion.el
+  emacs/goblins-tramp.el emacs/goblins-completion.el emacs/goblins-messages.el
 emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
