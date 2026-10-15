@@ -1207,6 +1207,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
      (let ((goblins--layouts (make-hash-table :test #'equal))
            (goblins--terminal-buffers (make-hash-table :test #'equal))
            (goblins--last-goblin nil)
+           (goblins--previous-goblin nil)
            (terminals nil))
        (save-window-excursion
          (delete-other-windows)
@@ -1564,12 +1565,13 @@ keeps the parameters of windows that live on."
               (should-not (funcall sidebar-window))
               (goblins-sidebar-dwim)
               (should (eq (selected-window) (funcall sidebar-window)))
-              ;; So does goblins-workspace in the workspace.
+              ;; In the workspace, goblins-workspace opens the menu instead.
               (select-window (goblins--agent-window))
-              (goblins-sidebar-toggle)
-              (goblins-workspace)
-              (should (eq (selected-window) (funcall sidebar-window)))
-              (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+              (let ((menu nil))
+                (cl-letf (((symbol-function 'goblins-workspace-menu) (lambda () (setq menu t))))
+                  (goblins-workspace))
+                (should menu))
+              (should (eq (window-buffer) (terminal "session-a")))
               ;; Showing a goblin in the workspace selects its agent, and opens
               ;; the workspace when needed.
               (goblins-show-in-workspace source "session-b")
@@ -1581,6 +1583,106 @@ keeps the parameters of windows that live on."
               (should (equal (goblins-test--layout) (list (terminal "session-a"))))
               (should (eq (window-buffer) (terminal "session-a"))))
           (set-frame-parameter nil 'goblins-workspace-saved-config nil))))))
+
+(ert-deftest goblins-workspace-moves-between-windows-and-goblins ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p")
+                                 (goblins-test--session "session-b" :cwd "/p")
+                                 (goblins-test--session "session-c" :cwd "/q")
+                                 (goblins-test--session "session-d" :cwd "/q" :state "stopped"))
+    (let ((dired (generate-new-buffer " *dired*"))
+          (notes (generate-new-buffer " *notes*"))
+          (split-width-threshold 20)
+          (shown (lambda () (cdr goblins--last-goblin)))
+          (goblins-request-popups nil))
+      (unwind-protect
+          (progn
+            (dolist (id '("session-a" "session-b" "session-c")) (terminal id))
+            (with-current-buffer source
+              (setq goblins--snapshot
+                    (plist-put goblins--snapshot :permissions
+                               (vector (goblins-test--request-in "x" "session-a" "pending")
+                                       (goblins-test--request-in "y" "session-c" "pending")))))
+            (goblins--sidebar-render)
+            (goblins-select-goblin source "session-a" dired)
+            (set-window-buffer (split-window (selected-window) nil 'below) notes)
+            ;; Windows: the agent, then those beside it in turn.
+            (goblins-workspace-select-agent)
+            (should (eq (window-buffer) (terminal "session-a")))
+            (goblins-workspace-select-right)
+            (should (eq (window-buffer) dired))
+            (goblins-workspace-select-right)
+            (should (eq (window-buffer) notes))
+            (goblins-workspace-select-right)
+            (should (eq (window-buffer) dired))
+            (goblins-workspace-select-sidebar)
+            (should (eq (window-buffer) sidebar))
+            ;; Goblins in sidebar order, wrapping, never a stopped one; the
+            ;; sidebar's selection follows.
+            (goblins-workspace-next-goblin)
+            (should (equal (funcall shown) "session-b"))
+            (should (eq (window-buffer) (terminal "session-b")))
+            (should (equal (with-current-buffer sidebar (get-text-property (point) 'goblins-id))
+                           "session-b"))
+            (goblins-workspace-next-goblin)
+            (should (equal (funcall shown) "session-c"))
+            (goblins-workspace-next-goblin)
+            (should (equal (funcall shown) "session-a"))
+            (should (equal (goblins-test--layout) (list (terminal "session-a") dired notes)))
+            (goblins-workspace-previous-goblin)
+            (should (equal (funcall shown) "session-c"))
+            ;; The goblin selected before, back and forth.
+            (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) source)))
+              (goblins-workspace-last-goblin)
+              (should (equal (funcall shown) "session-a"))
+              (goblins-workspace-last-goblin)
+              (should (equal (funcall shown) "session-c")))
+            ;; Waiting goblins only.
+            (goblins-workspace-next-waiting)
+            (should (equal (funcall shown) "session-a"))
+            (goblins-workspace-next-waiting)
+            (should (equal (funcall shown) "session-c"))
+            (goblins-workspace-previous-waiting)
+            (should (equal (funcall shown) "session-a"))
+            ;; Even in a folded group.
+            (with-current-buffer sidebar
+              (goblins--sidebar-set-collapsed '((dir nil "/q")))
+              (goblins--sidebar-render))
+            (goblins-workspace-previous-waiting)
+            (should (equal (funcall shown) "session-c"))
+            (should (equal (with-current-buffer sidebar (get-text-property (point) 'goblins-id))
+                           "session-c")))
+        (kill-buffer dired)
+        (kill-buffer notes)))))
+
+(ert-deftest goblins-sidebar-moves-back-to-the-previous-waiting-goblin ()
+  (goblins-test--sidebar goblins-test--raid-sessions
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :permissions
+                       (vector (goblins-test--request-in "x" "session-a" "pending")
+                               (goblins-test--request-in "y" "session-e" "pending")))))
+    (goblins--sidebar-render)
+    (should (eq (key-binding (kbd "N")) #'goblins-sidebar-previous-pending))
+    (goto-char (point-min))
+    (goblins-sidebar-previous-pending)
+    (should (equal (get-text-property (point) 'goblins-id) "session-e"))
+    (goblins-sidebar-previous-pending)
+    (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+    (goblins-sidebar-previous-pending)
+    (should (equal (get-text-property (point) 'goblins-id) "session-e"))))
+
+(ert-deftest goblins-request-popup-decides-from-other-windows ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p"))
+    (let (decided)
+      (terminal "session-a")
+      (cl-letf (((symbol-function 'goblins--decide-record)
+                 (lambda (record approved) (setq decided (list (plist-get record :id) approved)))))
+        (goblins-select-goblin source "session-a")
+        (should (eq (window-buffer) (terminal "session-a")))
+        (goblins-request-popup-deny)
+        (should (equal decided '("a" nil)))
+        (goblins--popup-close)
+        (should-error (goblins-request-popup-accept) :type 'user-error)))))
 
 (ert-deftest goblins-workspace-quit-leaves-no-agent-window ()
   (goblins-test--workspace (list (goblins-test--session "session-a"))
@@ -2166,7 +2268,7 @@ keeps the parameters of windows that live on."
     (should (eq (key-binding (kbd "?")) #'goblins-sidebar-help))
     (save-window-excursion (goblins-sidebar-help))
     (with-current-buffer "*Goblins Keys*"
-      (should (string-match-p "next goblin waiting for a decision" (buffer-string)))
+      (should (string-match-p "previous goblin waiting for a decision" (buffer-string)))
       (should (string-match-p "dissolve" (buffer-string))))
     (save-window-excursion (goblins-raid-help))
     (with-current-buffer "*Goblins Keys*"

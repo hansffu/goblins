@@ -21,6 +21,7 @@
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
 (declare-function goblins--display-new-agent "goblins-views" (buffer))
 (defvar goblins--last-goblin)
+(declare-function goblins--note-selected "goblins-views" (key))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
 (declare-function goblin-mode "goblins-terminal" (&optional arg))
@@ -1193,7 +1194,7 @@ On failure the buffer is killed and the error re-signalled."
             (goblin-mode 1)
             (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
           (puthash key buffer goblins--terminal-buffers)
-          (setq goblins--last-goblin (cons (car key) session))
+          (goblins--note-selected (cons (car key) session))
           (goblins--render-status-buffers)
           buffer)
       (error

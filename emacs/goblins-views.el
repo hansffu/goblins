@@ -100,6 +100,15 @@
 (defvar goblins--last-goblin nil
   "(DIRECTORY . SESSION-ID) of the selected goblin, whose windows show.")
 
+(defvar goblins--previous-goblin nil
+  "(DIRECTORY . SESSION-ID) of the goblin selected before `goblins--last-goblin'.")
+
+(defun goblins--note-selected (key)
+  "Make KEY, (DIRECTORY . SESSION-ID), the selected goblin."
+  (unless (equal key goblins--last-goblin)
+    (setq goblins--previous-goblin goblins--last-goblin
+          goblins--last-goblin key)))
+
 (defun goblins--in-workspace-p ()
   "Whether this frame shows the workspace: its sidebar, or with the sidebar
 hidden, the agent window.  Window parameters belong to the window
@@ -408,7 +417,7 @@ attached if ATTACH and needed, and its saved windows.  Without a terminal
 the status buffer holds the agent's place."
   (let* ((key (cons (buffer-local-value 'goblins--directory source) id))
          (terminal (with-current-buffer source (goblins--terminal-buffer id))))
-    (setq goblins--last-goblin key)
+    (goblins--note-selected key)
     (let ((agent (goblins--restore-layout key (or terminal source))))
       (when (and attach (not terminal))
         (goblins--attach source id (lambda (b) (goblins--set-agent-buffer agent b))))
@@ -997,28 +1006,39 @@ selected in the workspace."
               (goblins--popup-edits-changed))
       (message "Nothing waiting for a decision"))))
 
+(defun goblins--shown-popup ()
+  "The request popup: this buffer, else the shown one; or a user error."
+  (cond ((derived-mode-p 'goblins-request-popup-mode) (current-buffer))
+        ((get-buffer-window goblins--popup-buffer-name) (get-buffer goblins--popup-buffer-name))
+        (t (user-error "Nothing waiting for a decision"))))
+
 (defun goblins--popup-decide (approved)
-  (if-let* ((edit (car (goblins--live-edits))))
-      (funcall (plist-get edit (if approved :approve :deny)))
-    (let ((record (car (goblins--popup-requests))))
-      (unless record (user-error "Nothing waiting for a decision"))
-      (with-current-buffer goblins--view-source
-        (goblins--decide-record record approved)))))
+  (with-current-buffer (goblins--shown-popup)
+    (if-let* ((edit (car (goblins--live-edits))))
+        (funcall (plist-get edit (if approved :approve :deny)))
+      (let ((record (car (goblins--popup-requests))))
+        (unless record (user-error "Nothing waiting for a decision"))
+        (with-current-buffer goblins--view-source
+          (goblins--decide-record record approved))))))
 
 (defun goblins-request-popup-accept ()
-  "Open the files in the popup, or accept its request."
+  "Open the files in the popup, or accept its request.
+Elsewhere, decide what the shown popup asks."
   (interactive)
   (goblins--popup-decide t))
 
 (defun goblins-request-popup-deny ()
-  "Refuse the files in the popup, or deny its request."
+  "Refuse the files in the popup, or deny its request.
+Elsewhere, decide what the shown popup asks."
   (interactive)
   (goblins--popup-decide nil))
 
 (defun goblins-request-popup-all ()
-  "Show all of the selected goblin's requests, then close the popup."
+  "Show all of the popup's goblin's requests, then close the popup."
   (interactive)
-  (let ((source goblins--view-source) (id goblins--view-session))
+  (let* ((popup (goblins--shown-popup))
+         (source (buffer-local-value 'goblins--view-source popup))
+         (id (buffer-local-value 'goblins--view-session popup)))
     (unless (and (buffer-live-p source) id) (user-error "No goblin selected"))
     (goblins--popup-close)
     (goblins--display-main (goblins-permissions-buffer source id))))

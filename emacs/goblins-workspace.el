@@ -1,7 +1,7 @@
 ;;; goblins-workspace.el --- Sidebar workspace for Goblins -*- lexical-binding: t; -*-
 
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (magit-section "4.0.0"))
+;; Package-Requires: ((emacs "28.1") (magit-section "4.0.0") (transient "0.4.0"))
 ;; Keywords: tools, processes
 
 ;;; Commentary:
@@ -22,6 +22,7 @@
 (require 'goblins-raids)
 (require 'project)
 (require 'hl-line)
+(require 'transient)
 
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
@@ -694,7 +695,7 @@ the sidebar as needed."
   (interactive)
   (cond
    ((not (derived-mode-p 'goblins-sidebar-mode))
-    (goblins-workspace))
+    (goblins-workspace-select-sidebar))
    ((get-text-property (line-beginning-position) 'goblins-terminal)
     (goblins-select-goblin (goblins--sidebar-ensure-source)
                            (get-text-property (line-beginning-position) 'goblins-parent)
@@ -787,35 +788,63 @@ On a raid heading, invite a goblin you choose into that raid."
   (interactive)
   (goblins--sidebar-run-in (project-prompt-project-dir)))
 
-(defun goblins--sidebar-next-waiting (source key)
+(defun goblins--sidebar-next-waiting (source key &optional backward)
   "Return the ID of the next goblin of SOURCE with a pending request after the
-line identified by KEY, in sidebar order with every group unfolded.  Wrap
-around, but never return the goblin on that line itself."
+line identified by KEY, in sidebar order with every group unfolded; BACKWARD,
+the one before it.  Wrap around, but never return the goblin on that line."
   (with-temp-buffer
     (insert (goblins--sidebar-text source nil))
-    (let* ((here (and key (goblins--sidebar-find key)))
-           (from (if here (save-excursion (goto-char here) (forward-line 1) (point))
-                   (point-min)))
-           (found (or (text-property-any from (point-max) 'goblins-pending t)
-                      (and here (text-property-any (point-min) here 'goblins-pending t)))))
-      (and found (get-text-property found 'goblins-id)))))
+    (let* ((here (or (and key (goblins--sidebar-find key))
+                     (if backward (1+ (point-max)) (1- (point-min)))))
+           (stops nil)
+           (pos (point-min)))
+      (while pos
+        (when (get-text-property pos 'goblins-pending)
+          (push (cons pos (get-text-property pos 'goblins-id)) stops))
+        (setq pos (next-single-property-change pos 'goblins-pending)))
+      (let* ((stops (nreverse stops))
+             (before (cl-remove-if-not (lambda (stop) (< (car stop) here)) stops))
+             (after (cl-remove-if-not (lambda (stop) (> (car stop) here)) stops)))
+        (cdr (if backward
+                 (or (car (last before)) (car (last after)))
+               (or (car after) (car before))))))))
+
+(defun goblins--sidebar-reveal (source id &optional sidebar)
+  "Put the point of SIDEBAR, by default the sidebar, on goblin ID of SOURCE,
+unfolding its groups."
+  (when-let* ((sidebar (or sidebar (get-buffer goblins--sidebar-buffer-name)))
+              ((eq (buffer-local-value 'goblins--sidebar-source sidebar) source))
+              (session (goblins--snapshot-session
+                        (buffer-local-value 'goblins--snapshot source) id)))
+    (with-current-buffer sidebar
+      (let ((keys (goblins--sidebar-group-keys session))
+            (folds (goblins--sidebar-collapsed)))
+        (when (cl-intersection folds keys :test #'equal)
+          (goblins--sidebar-set-collapsed (cl-set-difference folds keys :test #'equal))
+          (goblins--sidebar-render)))
+      (when-let* ((pos (goblins--sidebar-find (cons 'id id))))
+        (goto-char pos)
+        (dolist (window (get-buffer-window-list sidebar nil t))
+          (set-window-point window pos))))))
+
+(defun goblins--sidebar-move-to-waiting (backward)
+  (let* ((source (goblins--sidebar-ensure-source))
+         (target (goblins--sidebar-next-waiting source (goblins--sidebar-key-at (point))
+                                                backward)))
+    (if target
+        (goblins--sidebar-reveal source target (current-buffer))
+      (message "No other goblin is waiting for a decision"))))
 
 (defun goblins-sidebar-next-pending ()
   "Move to the next goblin with a pending request, unfolding its groups.
 Goblins in folded groups count too, in the order of the unfolded sidebar."
   (interactive)
-  (let* ((source (goblins--sidebar-ensure-source))
-         (target (goblins--sidebar-next-waiting source (goblins--sidebar-key-at (point)))))
-    (if (not target)
-        (message "No other goblin is waiting for a decision")
-      (let* ((session (goblins--snapshot-session
-                       (buffer-local-value 'goblins--snapshot source) target))
-             (keys (goblins--sidebar-group-keys session))
-             (folds (goblins--sidebar-collapsed)))
-        (when (cl-intersection folds keys :test #'equal)
-          (goblins--sidebar-set-collapsed (cl-set-difference folds keys :test #'equal))
-          (goblins--sidebar-render))
-        (goto-char (goblins--sidebar-find (cons 'id target)))))))
+  (goblins--sidebar-move-to-waiting nil))
+
+(defun goblins-sidebar-previous-pending ()
+  "Move to the previous goblin with a pending request, unfolding its groups."
+  (interactive)
+  (goblins--sidebar-move-to-waiting t))
 
 (defun goblins-sidebar-stop ()
   "Stop the goblin at point, and its children, after confirming."
@@ -888,7 +917,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
   (goblins--describe-keys
    "Goblins sidebar"
    '(("Move" ("j / k" . "next / previous goblin, shell or group")
-             ("n" . "next goblin waiting for a decision")
+             ("n / N" . "next / previous goblin waiting for a decision")
              ("TAB" . "fold the group"))
      ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it")
                ("p" . "permission requests")
@@ -963,7 +992,136 @@ opens still goes beside the agent.  Without a workspace, open it."
     (let ((selected (eq (selected-window) (goblins--sidebar-window))))
       (delete-window (goblins--sidebar-window))
       (when selected (select-window (goblins--agent-window)))))
-   (t (goblins-workspace))))
+   (t (goblins-workspace-select-sidebar))))
+
+;;;; Moving around the workspace
+
+(defun goblins-workspace-select-sidebar ()
+  "Select the sidebar, showing it if hidden and opening the workspace if needed."
+  (interactive)
+  (select-window (goblins--sidebar-show (if (goblins--in-workspace-p)
+                                            (goblins--workspace-source)
+                                          (goblins--workspace-open)))))
+
+(defun goblins-workspace-select-agent ()
+  "Select the agent window."
+  (interactive)
+  (unless (goblins--in-workspace-p) (user-error "Not in the Goblins workspace"))
+  (select-window (goblins--agent-window)))
+
+(defun goblins-workspace-select-right ()
+  "Select a window beside the agent: the one used last, or from one of
+them, the next."
+  (interactive)
+  (unless (goblins--in-workspace-p) (user-error "Not in the Goblins workspace"))
+  (let* ((agent (goblins--agent-window))
+         (area (goblins--area-windows agent))
+         (others (cl-remove-if-not (lambda (w) (and (memq w area) (not (eq w agent))))
+                                   (window-list nil 'no-minibuf agent))))
+    (unless others (user-error "Nothing beside the agent"))
+    (select-window (if (memq (selected-window) others)
+                       (or (cadr (memq (selected-window) others)) (car others))
+                     (goblins--right-window)))))
+
+(defun goblins--sidebar-order (source)
+  "The IDs of SOURCE's running goblins in the order of the unfolded sidebar."
+  (let ((snapshot (buffer-local-value 'goblins--snapshot source))
+        ids)
+    (with-temp-buffer
+      (insert (goblins--sidebar-text source nil))
+      (let ((pos (point-min)))
+        (while pos
+          (let ((id (get-text-property pos 'goblins-id)))
+            (when (and id (not (member id ids))
+                       (not (goblins--sidebar-finished-p
+                             (goblins--snapshot-session snapshot id))))
+              (push id ids)))
+          (setq pos (next-single-property-change pos 'goblins-id)))))
+    (nreverse ids)))
+
+(defun goblins--workspace-current (source)
+  "The ID of the selected goblin, if it is one of SOURCE's server."
+  (and (equal (car goblins--last-goblin) (buffer-local-value 'goblins--directory source))
+       (cdr goblins--last-goblin)))
+
+(defun goblins--workspace-goto (source id)
+  "Show goblin ID of SOURCE beside the sidebar, its line selected there."
+  (goblins--sidebar-reveal source id)
+  (goblins-open-session source id))
+
+(defun goblins-workspace-next-goblin (&optional n)
+  "Show the next goblin in sidebar order, N times; wrap around."
+  (interactive "p")
+  (let* ((source (goblins--workspace-source))
+         (ids (goblins--sidebar-order source))
+         (current (goblins--workspace-current source))
+         (n (or n 1))
+         (index (cl-position current ids :test #'equal))
+         (target (cond ((null index) (if (< n 0) (car (last ids)) (car ids)))
+                       ((cdr ids) (nth (mod (+ index n) (length ids)) ids)))))
+    (if target
+        (goblins--workspace-goto source target)
+      (message (if ids "No other goblin" "No running goblins")))))
+
+(defun goblins-workspace-previous-goblin (&optional n)
+  "Show the previous goblin in sidebar order, N times; wrap around."
+  (interactive "p")
+  (goblins-workspace-next-goblin (- (or n 1))))
+
+(defun goblins--workspace-waiting (backward)
+  (let* ((source (goblins--workspace-source))
+         (current (goblins--workspace-current source))
+         (target (goblins--sidebar-next-waiting source (and current (cons 'id current))
+                                                backward)))
+    (if target
+        (goblins--workspace-goto source target)
+      (message "No other goblin is waiting for a decision"))))
+
+(defun goblins-workspace-next-waiting ()
+  "Show the next goblin waiting for a decision, in sidebar order."
+  (interactive)
+  (goblins--workspace-waiting nil))
+
+(defun goblins-workspace-previous-waiting ()
+  "Show the previous goblin waiting for a decision, in sidebar order."
+  (interactive)
+  (goblins--workspace-waiting t))
+
+(defun goblins-workspace-last-goblin ()
+  "Show the goblin selected before this one."
+  (interactive)
+  (let* ((key (or goblins--previous-goblin (user-error "No goblin selected before")))
+         (source (goblins--status-buffer (car key)))
+         (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                             (cdr key))))
+    (when (or (null session) (goblins--sidebar-finished-p session))
+      (user-error "The goblin selected before has stopped"))
+    (goblins--workspace-goto source (cdr key))))
+
+(transient-define-prefix goblins-workspace-menu ()
+  "Move around the Goblins workspace.
+Moving keeps the menu open; any other key closes it and runs as usual."
+  :transient-non-suffix 'transient--do-exit
+  :display-action '(display-buffer-in-side-window
+                    (side . bottom) (slot . -1) (dedicated . t) (inhibit-same-window . t))
+  [["Windows"
+    ("s" "sidebar" goblins-workspace-select-sidebar :transient t)
+    ("g" "agent" goblins-workspace-select-agent :transient t)
+    ("o" "beside the agent" goblins-workspace-select-right :transient t)]
+   ["Goblins"
+    ("n" "next" goblins-workspace-next-goblin :transient t)
+    ("p" "previous" goblins-workspace-previous-goblin :transient t)
+    ("w" "next waiting" goblins-workspace-next-waiting :transient t)
+    ("W" "previous waiting" goblins-workspace-previous-waiting :transient t)
+    ("l" "selected before" goblins-workspace-last-goblin)
+    ("b" "choose…" goblins-switch)]]
+  [["Request"
+    ("a" "accept" goblins-request-popup-accept)
+    ("d" "deny" goblins-request-popup-deny)
+    ("r" "all requests" goblins-request-popup-all)]
+   ["Workspace"
+    ("t" "hide/show sidebar" goblins-sidebar-toggle)
+    ("Q" "leave" goblins-workspace-quit)]])
 
 ;;;; Mode
 
@@ -975,7 +1133,8 @@ opens still goes beside the agent.  Without a workspace, open it."
                        ("RET" . goblins-sidebar-dwim) ("p" . goblins-sidebar-permissions)
                        ("i" . goblins-sidebar-invite) ("I" . goblins-sidebar-info)
                        ("r" . goblins-raid) ("?" . goblins-sidebar-help)
-                       ("n" . goblins-sidebar-next-pending) ("K" . goblins-sidebar-stop)
+                       ("n" . goblins-sidebar-next-pending) ("N" . goblins-sidebar-previous-pending)
+                       ("K" . goblins-sidebar-stop)
                        ("D" . goblins-sidebar-destroy-raid)
                        ("t" . goblins-sidebar-terminal) ("e" . goblins-sidebar-eshell)
                        ("d" . goblins-sidebar-dired) ("f" . goblins-sidebar-find-file)
@@ -1003,6 +1162,7 @@ opens still goes beside the agent.  Without a workspace, open it."
     (kbd "r") #'goblins-raid
     (kbd "?") #'goblins-sidebar-help
     (kbd "n") #'goblins-sidebar-next-pending
+    (kbd "N") #'goblins-sidebar-previous-pending
     (kbd "K") #'goblins-sidebar-stop
     (kbd "D") #'goblins-sidebar-destroy-raid
     (kbd "t") #'goblins-sidebar-terminal
@@ -1086,8 +1246,8 @@ Else the most recently used goblin terminal, else the status buffer alone."
   "Open the Goblins workspace and select its sidebar of goblins.
 Beside it the goblin selected last: its agent terminal on the left and its
 saved windows on the right.  Without any goblin terminal the status buffer
-shows until the first agent opens.  In the workspace, select the sidebar,
-showing it if hidden.
+shows until the first agent opens.  In the workspace, open
+`goblins-workspace-menu' for moving around it.
 With a prefix argument, prompt for the daemon state directory.
 Switching or creating the workspace is delegated to
 `goblins-workspace-switch-or-create-function'."
@@ -1096,10 +1256,9 @@ Switching or creating the workspace is delegated to
                                             (or goblins--directory
                                                 goblins-state-directory
                                                 (goblins--default-directory))))))
-  (select-window
-   (if (and (goblins--in-workspace-p) (not directory))
-       (goblins--sidebar-show (goblins--workspace-source))
-     (goblins--sidebar-show (goblins--workspace-open directory)))))
+  (if (and (goblins--in-workspace-p) (not directory))
+      (goblins-workspace-menu)
+    (select-window (goblins--sidebar-show (goblins--workspace-open directory)))))
 
 (defun goblins--workspace-open (&optional directory)
   "Open the workspace of DIRECTORY's server and return its status buffer.
