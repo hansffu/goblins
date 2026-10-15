@@ -63,9 +63,12 @@ The default closes the sidebar and restores the configuration saved by
   "The goblin block or shell whose terminal is shown in the main window.
 Plain by default, so the bar alone marks it; give it a background to tint it."
   :group 'goblins)
-(defface goblins-sidebar-active-marker '((t :inherit font-lock-keyword-face :weight bold))
-  "The bar before the goblin block or shell shown in the main window.
-Its foreground is the bar's colour." :group 'goblins)
+(defface goblins-sidebar-bar-shown '((t :inherit font-lock-keyword-face))
+  "The bar of a goblin or shell shown in a window beside the sidebar.
+A bar's colour is its face's foreground." :group 'goblins)
+(defface goblins-sidebar-bar-attached '((t :inherit shadow))
+  "The bar of a goblin whose terminal buffer exists here but is not shown."
+  :group 'goblins)
 (defface goblins-sidebar-name '((t :inherit font-lock-function-name-face :weight bold))
   "Every goblin's name, whatever its agent." :group 'goblins)
 (defface goblins-activity-working '((t :inherit success))
@@ -521,69 +524,84 @@ column before it in a terminal."
   (get-buffer-window goblins--sidebar-buffer-name))
 
 (defun goblins--sidebar-update-active ()
-  "Mark the goblins and shells whose terminals are shown beside the sidebar."
+  "Draw the bars of the sidebar's goblins and shells, and mark those shown.
+A goblin's block has a bar in `goblins-sidebar-bar-shown' while its terminal
+or page is shown beside the sidebar, else in `goblins-sidebar-bar-attached'
+while its terminal buffer exists here, else none.  A shown shell has a second
+bar, in `goblins-sidebar-bar-shown', inside its goblin's.  Shown blocks and
+shells also get `goblins-sidebar-active'."
   (when (buffer-live-p (get-buffer goblins--sidebar-buffer-name))
     (with-current-buffer goblins--sidebar-buffer-name
       (mapc #'delete-overlay goblins--sidebar-active-overlays)
       (setq goblins--sidebar-active-overlays nil)
-      (let ((bars nil))                 ; ((LINE-START . KINDS)...)
-	(dolist (shown (mapcar #'window-buffer (goblins--main-windows)))
-          (let* ((key (buffer-local-value 'goblins--session-key shown))
-		 (id (if key (nth 2 key) (buffer-local-value 'goblins--view-session shown)))
-		 (pos (if (buffer-local-value 'goblins--shell-number shown)
-                          (goblins--sidebar-find (cons 'terminal shown))
-			(and id (goblins--sidebar-find (cons 'id id))))))
-            (when pos
-              ;; A goblin's whole block, or a shell's line, gets the active face
-              ;; under the selection's highlight, and a bar before its text.
-              (let* ((kind (if (get-text-property pos 'goblins-terminal) 'shell 'goblin))
-                     (end (if (eq kind 'shell)
-                              (save-excursion (goto-char pos) (line-beginning-position 2))
-                            (goblins--sidebar-block-end pos)))
-                     (block (make-overlay pos end)))
-		(overlay-put block 'face 'goblins-sidebar-active)
-		(overlay-put block 'priority (1- hl-line-overlay-priority))
-		(push block goblins--sidebar-active-overlays)
-		(save-excursion
-                  (goto-char pos)
-                  (while (< (point) end)
-                    (let ((line (assoc (point) bars)))
-                      (if line (push kind (cdr line)) (push (list (point) kind) bars)))
-                    (forward-line 1)))))))
-	(pcase-dolist (`(,start . ,kinds) bars)
-          (setq goblins--sidebar-active-overlays
-		(nconc (goblins--sidebar-bar start (memq 'goblin kinds) (memq 'shell kinds))
-                       goblins--sidebar-active-overlays)))))))
+      (let ((shown-ids nil) (shown-shells nil))
+        (dolist (shown (mapcar #'window-buffer (goblins--main-windows)))
+          (let ((key (buffer-local-value 'goblins--session-key shown)))
+            (if (buffer-local-value 'goblins--shell-number shown)
+                (push shown shown-shells)
+              (push (if key (nth 2 key) (buffer-local-value 'goblins--view-session shown))
+                    shown-ids))))
+        (save-excursion
+          (goto-char (point-min))
+          (let ((goblin nil) (block-end (point-min)))
+            (while (not (eobp))
+              (let* ((id (get-text-property (point) 'goblins-id))
+                     (shell (get-text-property (point) 'goblins-terminal))
+                     (line-end (line-beginning-position 2)))
+                (when id
+                  (setq block-end (goblins--sidebar-block-end (point))
+                        goblin (cond ((member id shown-ids) 'goblins-sidebar-bar-shown)
+                                     ((and (buffer-live-p goblins--sidebar-source)
+                                           (with-current-buffer goblins--sidebar-source
+                                             (goblins--terminal-buffer id)))
+                                      'goblins-sidebar-bar-attached)))
+                  (when (eq goblin 'goblins-sidebar-bar-shown)
+                    (goblins--sidebar-mark-shown (point) block-end)))
+                (when (>= (point) block-end) (setq goblin nil))
+                (let ((inner (when (and shell (memq shell shown-shells))
+                               (goblins--sidebar-mark-shown (point) line-end)
+                               'goblins-sidebar-bar-shown)))
+                  (when (or goblin inner)
+                    (setq goblins--sidebar-active-overlays
+                          (nconc (goblins--sidebar-bar (point) goblin inner)
+                                 goblins--sidebar-active-overlays))))
+                (goto-char line-end)))))))))
+
+(defun goblins--sidebar-mark-shown (start end)
+  "Give the lines from START to END `goblins-sidebar-active', under the
+selection's highlight."
+  (let ((block (make-overlay start end)))
+    (overlay-put block 'face 'goblins-sidebar-active)
+    (overlay-put block 'priority (1- hl-line-overlay-priority))
+    (push block goblins--sidebar-active-overlays)))
 
 (defun goblins--sidebar-bar (start goblin shell)
   "Draw the bars of the line at START in its last two indentation columns.
-GOBLIN draws the outer bar of an active goblin's block, SHELL the inner bar
-of an active shell, so a shown shell inside a shown goblin has both.  In a
-GUI a bar is a strip of the marker's colour, half a column wide, that fills
-the line's height, so the bars of a block join; the inner one ends a
-quarter column before the highlight, which `goblins--sidebar-mask-margins'
-starts half a column before the text.  A terminal shows a ▌ in each column.
+GOBLIN is the face of the outer bar, of the goblin's block, and SHELL that of
+the inner bar, of a shell line; either may be nil.  A bar's colour is its
+face's foreground.  In a GUI a bar is a strip half a column wide that fills
+the line's height, so the bars of a block join; the inner one ends a quarter
+column before the highlight, which `goblins--sidebar-mask-margins' starts
+half a column before the text.  A terminal shows a ▌ in each column.
 Return the overlays."
   (save-excursion
     (goto-char start)
     (let* ((text (+ start (current-indentation)))
            (outer (make-overlay (- text 2) (1- text))))
       (if (display-graphic-p)
-          (let ((bar (propertize " " 'display '(space :width 0.5)
-                                 'face '(:inherit goblins-sidebar-active-marker
-                                         :inverse-video t)))
+          (let ((bar (lambda (face) (propertize " " 'display '(space :width 0.5)
+                                                'face `(:inherit ,face :inverse-video t))))
                 (gap (lambda (width) (propertize " " 'display `(space :width ,width)
                                                  'face 'default))))
             (overlay-put outer 'before-string
-                         (concat (if goblin bar (funcall gap 0.5))
-                                 (when shell (concat (funcall gap 0.25) bar))))
+                         (concat (if goblin (funcall bar goblin) (funcall gap 0.5))
+                                 (when shell (concat (funcall gap 0.25) (funcall bar shell)))))
             ;; Nothing more when the inner bar already reaches past it.
             (overlay-put outer 'display `(space :align-to ,(- text start 1)))
             (list outer))
-        (let ((inner (make-overlay (1- text) text))
-              (glyph (propertize "▌" 'face 'goblins-sidebar-active-marker)))
-          (when goblin (overlay-put outer 'display glyph))
-          (when shell (overlay-put inner 'display glyph))
+        (let ((inner (make-overlay (1- text) text)))
+          (when goblin (overlay-put outer 'display (propertize "▌" 'face goblin)))
+          (when shell (overlay-put inner 'display (propertize "▌" 'face shell)))
           (list outer inner))))))
 
 (defun goblins--sidebar-block-end (pos)

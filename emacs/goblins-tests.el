@@ -1141,6 +1141,37 @@
                                       (overlays-at (goblins--sidebar-find '(id . "session-a"))))))
         (kill-buffer terminal)))))
 
+(ert-deftest goblins-sidebar-bars-mark-shown-and-attached-goblins ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
+                               (goblins-test--session "session-b" :cwd "/p")
+                               (goblins-test--session "session-c" :cwd "/p"))
+    (let ((shown (generate-new-buffer " *goblins test terminal b*"))
+          (hidden (generate-new-buffer " *goblins test terminal a*"))
+          (goblins--terminal-buffers (make-hash-table :test #'equal)))
+      (unwind-protect
+          (save-window-excursion
+            (rename-buffer goblins--sidebar-buffer-name)
+            (puthash '("/tmp/goblins-test" "daemon-a" "session-a") hidden
+                     goblins--terminal-buffers)
+            (with-current-buffer shown
+              (setq-local goblins--session-key '("/tmp/goblins-test" "daemon-a" "session-b")))
+            (puthash '("/tmp/goblins-test" "daemon-a" "session-b") shown
+                     goblins--terminal-buffers)
+            (set-window-buffer (selected-window) shown)
+            (goblins--sidebar-update-active)
+            (let ((bar (lambda (id)
+                         (let ((pos (goblins--sidebar-find (cons 'id id))))
+                           (cl-some (lambda (o) (and (overlay-get o 'display)
+                                                     (get-text-property 0 'face (overlay-get o 'display))))
+                                    (overlays-in pos (1+ pos)))))))
+              ;; Blue while shown, grey while only its buffer exists, none
+              ;; without one.
+              (should (eq (funcall bar "session-b") 'goblins-sidebar-bar-shown))
+              (should (eq (funcall bar "session-a") 'goblins-sidebar-bar-attached))
+              (should-not (funcall bar "session-c"))))
+        (kill-buffer shown)
+        (kill-buffer hidden)))))
+
 (ert-deftest goblins-workspace-switch-function-is-pluggable ()
   (let (calls)
     (cl-letf (((symbol-function 'goblins--status-buffer)
