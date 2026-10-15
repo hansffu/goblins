@@ -1041,8 +1041,8 @@
     (should (eq (key-binding (kbd "j")) #'goblins-sidebar-next))
     (should (eq (key-binding (kbd "k")) #'goblins-sidebar-previous))
     (should (eq (key-binding (kbd "p")) #'goblins-sidebar-permissions))
-    (should (eq (key-binding (kbd "RET")) #'goblins-sidebar-open))
-    (goblins-sidebar-toggle)
+    (should (eq (key-binding (kbd "RET")) #'goblins-sidebar-dwim))
+    (goblins-sidebar-fold)
     (should-not (string-match-p "session-d" (buffer-string)))
     (should (string-match-p "▸ raid alpha" (buffer-string)))
     ;; Folds survive re-renders, and point stays on the same line.
@@ -1050,7 +1050,7 @@
     (should-not (string-match-p "session-d" (buffer-string)))
     (should (equal (get-text-property (point) 'goblins-group) '(raid "r0")))))
 
-(ert-deftest goblins-sidebar-open-shows-the-terminal-in-the-main-window ()
+(ert-deftest goblins-sidebar-dwim-shows-the-terminal-in-the-main-window ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p"))
     (let* ((terminal (generate-new-buffer " *goblins test terminal*"))
            (goblins--terminal-buffers (make-hash-table :test #'equal))
@@ -1064,7 +1064,7 @@
                        (lambda (buffer &rest _) (setq shown buffer))))
               (goblins-sidebar-next)
               (should (equal (get-text-property (point) 'goblins-id) "session-a"))
-              (goblins-sidebar-open))
+              (goblins-sidebar-dwim))
             (should (eq shown terminal)))
         (kill-buffer terminal)))))
 
@@ -1675,12 +1675,12 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
       (cl-letf (((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
         (goto-char (point-min))
         (should (equal (get-text-property (point) 'goblins-raid) "crew"))
-        (goblins-sidebar-open)
+        (goblins-sidebar-dwim)
         (should (eq (buffer-local-value 'goblins--view-source shown) source))
         (should (equal (buffer-local-value 'goblins--view-session shown) "crew"))
         ;; Directory headings still fold.
         (goblins-sidebar-next)
-        (goblins-sidebar-open)
+        (goblins-sidebar-dwim)
         (should-not (string-match-p "session-a" (buffer-string)))
         (kill-buffer shown)))))
 
@@ -1953,7 +1953,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
 (ert-deftest goblins-sidebar-folds-outlive-the-sidebar-buffer-but-not-emacs ()
   (goblins-test--sidebar goblins-test--raid-sessions
     (goto-char (point-min))
-    (goblins-sidebar-toggle)
+    (goblins-sidebar-fold)
     (should (member '(raid "r0") (gethash "/tmp/goblins-test" goblins--sidebar-folds)))
     ;; A new sidebar for the same server starts with the same folds.
     (with-temp-buffer
@@ -1982,7 +1982,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     ;; Folded groups open to show a waiting goblin.
     (goto-char (point-min))
     (re-search-forward "raid zeta")
-    (goblins-sidebar-toggle)
+    (goblins-sidebar-fold)
     (should-not (string-match-p "session-a" (buffer-string)))
     (goto-char (point-min))
     (re-search-forward "session-e")
@@ -2378,10 +2378,10 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
     (goblins--sidebar-render)
     ;; Fold /p/two/ (session-b, waiting) and raid alpha (nobody waiting).
     (goto-char (point-min))
-    (goblins-sidebar-toggle)
+    (goblins-sidebar-fold)
     (goto-char (point-min))
     (re-search-forward "^▾ /p/two/")
-    (goblins-sidebar-toggle)
+    (goblins-sidebar-fold)
     (should-not (string-match-p "session-b" (buffer-string)))
     (goto-char (point-min))
     (let (visited)
@@ -2590,7 +2590,7 @@ In BODY, (terminal ID) is a fake agent terminal for session ID."
             (should (equal (goblins--sidebar-directory-at-point) "/p"))
             (cl-letf (((symbol-function 'goblins-select-goblin)
                        (lambda (src id right &rest _) (setq shown (list src id right)))))
-              (goblins-sidebar-open))
+              (goblins-sidebar-dwim))
             (should (equal shown (list source "session-a" first)))
             ;; Point stays on its shell; a killed shell leaves the sidebar.
             (goblins--sidebar-render)

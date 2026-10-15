@@ -672,7 +672,7 @@ A goblin's detail lines, rules and blank lines are passed by."
                       nil)
            :key (lambda (s) (plist-get s :id)) :test #'equal))
 
-(defun goblins-sidebar-toggle ()
+(defun goblins-sidebar-fold ()
   "Fold or unfold the group at point, or the group of the goblin at point."
   (interactive)
   (let ((key (or (get-text-property (line-beginning-position) 'goblins-group)
@@ -685,7 +685,7 @@ A goblin's detail lines, rules and blank lines are passed by."
       (goblins--sidebar-render)
       (when-let* ((pos (goblins--sidebar-find anchor))) (goto-char pos)))))
 
-(defun goblins-sidebar-open ()
+(defun goblins-sidebar-dwim ()
   "Show the goblin at point in the main window, attaching if necessary.
 On a shell show it; on a raid heading open its page; on a directory heading
 fold or unfold it."
@@ -704,7 +704,7 @@ fold or unfold it."
     (goblins--display-main
      (goblins-raid-buffer (goblins--sidebar-ensure-source)
                           (get-text-property (line-beginning-position) 'goblins-raid))))
-   (t (goblins-sidebar-toggle))))
+   (t (goblins-sidebar-fold))))
 
 (defun goblins--sidebar-goblin-at-point ()
   "Return (SOURCE . SESSION-ID) for the goblin on this line, or of its shell."
@@ -932,7 +932,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
     (set-keymap-parent map special-mode-map)
     (dolist (binding '(("j" . goblins-sidebar-next) ("k" . goblins-sidebar-previous)
                        ("<down>" . goblins-sidebar-next) ("<up>" . goblins-sidebar-previous)
-                       ("RET" . goblins-sidebar-open) ("p" . goblins-sidebar-permissions)
+                       ("RET" . goblins-sidebar-dwim) ("p" . goblins-sidebar-permissions)
                        ("i" . goblins-sidebar-invite) ("I" . goblins-sidebar-info)
                        ("r" . goblins-raid) ("?" . goblins-sidebar-help)
                        ("n" . goblins-sidebar-next-pending) ("K" . goblins-sidebar-stop)
@@ -940,7 +940,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
                        ("t" . goblins-sidebar-terminal) ("e" . goblins-sidebar-eshell)
                        ("d" . goblins-sidebar-dired) ("f" . goblins-sidebar-find-file)
                        ("X" . goblins-sidebar-kill-execs)
-                       ("TAB" . goblins-sidebar-toggle) ("<tab>" . goblins-sidebar-toggle)
+                       ("TAB" . goblins-sidebar-fold) ("<tab>" . goblins-sidebar-fold)
                        ("g" . goblins-sidebar-refresh)
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
                        ("q" . goblins-workspace-quit)))
@@ -956,7 +956,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
   (evil-define-key* 'motion goblins-sidebar-mode-map
     (kbd "j") #'goblins-sidebar-next
     (kbd "k") #'goblins-sidebar-previous
-    (kbd "RET") #'goblins-sidebar-open
+    (kbd "RET") #'goblins-sidebar-dwim
     (kbd "p") #'goblins-sidebar-permissions
     (kbd "i") #'goblins-sidebar-invite
     (kbd "I") #'goblins-sidebar-info
@@ -970,8 +970,8 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
     (kbd "d") #'goblins-sidebar-dired
     (kbd "f") #'goblins-sidebar-find-file
     (kbd "X") #'goblins-sidebar-kill-execs
-    (kbd "TAB") #'goblins-sidebar-toggle
-    (kbd "<tab>") #'goblins-sidebar-toggle
+    (kbd "TAB") #'goblins-sidebar-fold
+    (kbd "<tab>") #'goblins-sidebar-fold
     (kbd "gr") #'goblins-sidebar-refresh
     (kbd "c") #'goblins-sidebar-run
     (kbd "C") #'goblins-sidebar-run-in-project
@@ -981,8 +981,8 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"
   "Sidebar listing goblins grouped by raid and directory.
 \\<goblins-sidebar-mode-map>
-\\[goblins-sidebar-next] and \\[goblins-sidebar-previous] move, \\[goblins-sidebar-open] opens or attaches,
-\\[goblins-sidebar-permissions] shows permission requests, \\[goblins-sidebar-toggle] folds, \\[goblins-workspace-quit] leaves."
+\\[goblins-sidebar-next] and \\[goblins-sidebar-previous] move, \\[goblins-sidebar-dwim] opens or attaches,
+\\[goblins-sidebar-permissions] shows permission requests, \\[goblins-sidebar-fold] folds, \\[goblins-workspace-quit] leaves."
   (setq-local truncate-lines t
               cursor-type nil
               window-size-fixed 'width
