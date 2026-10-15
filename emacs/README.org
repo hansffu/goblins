@@ -234,7 +234,7 @@ for the goblin at hand; set =goblins-request-popups= to nil to turn it off.  The
 
 Bring your own workspace package by setting
 =goblins-workspace-switch-or-create-function= (called with the name
-=goblins-workspace-name=).  The default saves the window configuration and uses
+=goblins-workspace-name=, by default =*goblins*= so it doesn't clash with a project called goblins).  The default saves the window configuration and uses
 the whole frame; =goblins-workspace-quit-function= restores it.
 
 #+begin_src emacs-lisp

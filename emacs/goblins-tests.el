@@ -1190,7 +1190,7 @@
         (save-window-excursion
           (goblins-workspace)
           (goblins-test--leave-workspace-windows))
-        (should (equal calls '("goblins")))))))
+        (should (equal calls '("*goblins*")))))))
 
 (ert-deftest goblins-workspace-default-switch-saves-and-restores-windows ()
   (save-window-excursion

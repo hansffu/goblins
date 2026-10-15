@@ -35,7 +35,7 @@
 (defvar ghostel-identity)
 (defvar ghostel--process)
 
-(defcustom goblins-workspace-name "goblins"
+(defcustom goblins-workspace-name "*goblins*"
   "Name passed to `goblins-workspace-switch-or-create-function'."
   :type 'string :group 'goblins)
 
