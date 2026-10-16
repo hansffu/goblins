@@ -9,7 +9,7 @@ import unittest
 import uuid
 
 from daemon_support import Daemon, ROOT
-from support import command
+from support import FLAKE, command
 from terminal_support import Terminal
 # A module import, so its DockerTests are not collected here as well.
 import test_docker
@@ -36,7 +36,7 @@ class DevShellTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
-                               f'(builtins.getFlake "path:{ROOT}").inputs.nixpkgs.outPath'])
+                               f'(builtins.getFlake "{FLAKE}").inputs.nixpkgs.outPath'])
 
     def setUp(self):
         root = tempfile.TemporaryDirectory(prefix="goblin-devshell-")
@@ -155,7 +155,7 @@ class DevShellSkillTests(DevShellTests):
     def setUpClass(cls):
         super().setUpClass()
         cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                "path:" + str(ROOT) + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
+                                FLAKE + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
 
     def setUp(self):
         super().setUp()

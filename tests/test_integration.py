@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from support import Session, command, receive, request
+from support import FLAKE, Session, command, receive, request
 from daemon_support import frame
 
 
@@ -45,7 +45,7 @@ class LiveTests(unittest.TestCase):
         for name in ("runtime", "jq", "script-tool", "data-tool", "collision", "cowsay", "symlink-tool"):
             installable = {"jq": "jq^bin", "cowsay": "cowsay^out"}.get(name, name)
             cls.paths[name] = Path(command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
-                "--out-link", str(Path(cls.fixture.name) / name), "path:" + str(Path(__file__).resolve().parents[1]) + "#" + installable]))
+                "--out-link", str(Path(cls.fixture.name) / name), FLAKE + "#" + installable]))
         cls.config = json.loads(cls.paths["runtime"].read_text())
 
     @classmethod

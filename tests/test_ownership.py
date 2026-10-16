@@ -8,7 +8,7 @@ import unittest
 import uuid
 
 from daemon_support import Daemon, RPC, ROOT, frame, receive
-from support import command
+from support import FLAKE, command
 from terminal_support import Terminal
 
 
@@ -364,7 +364,7 @@ class OwnershipTests(unittest.TestCase):
 
 def build(root, check):
     return Path(command(["nix", "build", "--print-out-paths", "--out-link", root / check,
-                         f"path:{ROOT}#checks.x86_64-linux.{check}"])) / "bin/goblins"
+                         f"{FLAKE}#checks.x86_64-linux.{check}"])) / "bin/goblins"
 
 
 class ChildrenFixture(unittest.TestCase):
@@ -509,7 +509,7 @@ class AllowedChildrenTests(ChildrenFixture):
     def test_child_shares_the_parents_dev_shell_generation(self):
         from test_devshell import FLAKE
         nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
-                           f'(builtins.getFlake "path:{ROOT}").inputs.nixpkgs.outPath'])
+                           f'(builtins.getFlake "{FLAKE}").inputs.nixpkgs.outPath'])
         project = self.root / "project"
         project.mkdir()
         flake = lambda marker: (project / "flake.nix").write_text(

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from support import command
+from support import FLAKE, command
 from terminal_support import Terminal
 from daemon_support import Daemon, ROOT
 
@@ -13,7 +13,7 @@ class ConfigurationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gc-") as directory:
             root = Path(directory)
             apps = [Path(command(["nix", "build", "--print-out-paths", "--out-link", root / name,
-                                  "path:" + str(ROOT) + "#checks.x86_64-linux." + name])) / "bin/goblins"
+                                  FLAKE + "#checks.x86_64-linux." + name])) / "bin/goblins"
                     for name in ("named-goblins", "updated-goblins")]
             original, updated = apps
             d = Daemon(original); self.addCleanup(d.close)
@@ -56,7 +56,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_resume_command_is_validated_and_reaches_every_variant(self):
         prelude = f"""
           let
-            flake = builtins.getFlake "path:{ROOT}";
+            flake = builtins.getFlake "{FLAKE}";
             pkgs = flake.legacyPackages.x86_64-linux;
             inherit (flake.lib.x86_64-linux.builders) mkGoblin mkGoblins mkScope;
             base = {{ pkg = pkgs.bashInteractive; binName = "bash"; }};

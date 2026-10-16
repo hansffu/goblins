@@ -5,7 +5,7 @@ import shlex
 import tempfile
 import unittest
 
-from support import command
+from support import FLAKE, command
 from terminal_support import Terminal
 from daemon_support import Daemon
 
@@ -14,7 +14,7 @@ class BindTests(unittest.TestCase):
     def test_fish_config_is_an_explicit_startup_bind(self):
         with tempfile.TemporaryDirectory(prefix="gb-") as directory:
             root = Path(directory)
-            flake = "path:" + str(Path(__file__).resolve().parents[1])
+            flake = FLAKE
             app = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "app",
                                 flake + "#checks.x86_64-linux.configured-shell"])) / "bin/goblins"
             home = root / "home"
@@ -54,7 +54,7 @@ class BindTests(unittest.TestCase):
             for name in ("ro-file", "rw-file", "secret"):
                 (root / name).write_text("initial")
             (root / "readonly/host-link").symlink_to(root / "secret")
-            flake = "path:" + str(Path(__file__).resolve().parents[1])
+            flake = FLAKE
             app = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "app",
                                 flake + "#checks.x86_64-linux.bound-goblins"])) / "bin/goblins"
             state = root / "control"

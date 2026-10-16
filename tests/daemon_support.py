@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from support import command
+from support import FLAKE, command
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,7 +63,7 @@ class RPC:
 
 def app():
     if "GOBLINS_APP" not in os.environ:
-        os.environ["GOBLINS_APP"] = str(Path(command(["nix", "build", "--no-link", "--print-out-paths", "path:" + str(ROOT) + "#checks.x86_64-linux.demo-goblins"])) / "bin/goblins")
+        os.environ["GOBLINS_APP"] = str(Path(command(["nix", "build", "--no-link", "--print-out-paths", FLAKE + "#checks.x86_64-linux.demo-goblins"])) / "bin/goblins")
     return Path(os.environ["GOBLINS_APP"])
 
 

@@ -13,6 +13,9 @@ import tempfile
 import time
 
 HERE = Path(__file__).resolve().parents[1]
+# The repository as a flake: tracked files only (untracked ones need git add),
+# so builds never copy target/ or other ignored files into the store again.
+FLAKE = "git+file://" + str(HERE)
 
 
 def rust_driver():
