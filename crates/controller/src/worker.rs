@@ -57,8 +57,8 @@ pub(super) struct Recreate {
 /// What recreating staged, for the controller's hand-over.
 pub(super) struct Recreated {
     pub packages: Vec<(String, PathBuf)>,
-    /// Recorded names that no longer resolve.
-    pub skipped: Vec<String>,
+    /// What could not be restored, and why.
+    pub skipped: Vec<crate::history::Skipped>,
     /// Why the agent starts a fresh conversation despite a resume command.
     pub fresh: Option<String>,
 }

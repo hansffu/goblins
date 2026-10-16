@@ -110,13 +110,14 @@ class RecreateTests(unittest.TestCase):
         session = launch["session"]
         r = d.get(session)
         self.assertEqual(r["packages"], ["cowsay", "neo-cowsay", "hello"])
-        self.assertEqual((r["skipped"], r["recreated_from"], r["detail"]), (["no-such-goblins-package"], "rec-a", None))
+        self.assertEqual(([s["name"] for s in r["skipped"]], r["recreated_from"], r["detail"]),
+                         (["no-such-goblins-package"], "rec-a", None))
+        self.assertIn("does not provide attribute", r["skipped"][0]["reason"])
         # Its own record: the same lists and variables, the skipped name kept.
         own = d.wait(lambda: d.record(session))
         self.assertEqual(own["packages"], source["packages"])
         self.assertEqual(own["variables"], source["variables"])
-        self.assertEqual((own["skipped"], own["recreated_from"], own["origin"]),
-                         (["no-such-goblins-package"], "rec-a", "rec-a"))
+        self.assertEqual((own["skipped"], own["recreated_from"], own["origin"]), (r["skipped"], "rec-a", "rec-a"))
         self.assertEqual(d.record("rec-a"), source)
         listing = d.cli("history").stdout
         line = next(l for l in listing.splitlines() if l.startswith(session))

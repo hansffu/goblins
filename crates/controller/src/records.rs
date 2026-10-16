@@ -62,7 +62,7 @@ pub fn list(state: &Path, as_json: bool) -> Result<i32> {
             .as_array()
             .into_iter()
             .flatten()
-            .map(text)
+            .map(|s| text(&s["name"]))
             .collect();
         rows.push([
             text(&r["id"]),

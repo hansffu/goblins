@@ -53,13 +53,40 @@ pub struct Record {
     /// records written before it existed, meaning their own id.
     #[serde(default)]
     pub origin: String,
-    /// Approved names that did not resolve when this goblin was recreated.
-    pub skipped: Vec<String>,
+    /// What could not be restored when this goblin was recreated, and why.
+    /// Skipped packages stay in `approved`, so the next recreate tries again.
+    pub skipped: Vec<Skipped>,
     /// Unix milliseconds.
     pub created: u64,
     pub updated: u64,
     /// Informational: a goblin that died with its daemon never gets it.
     pub stopped: Option<u64>,
+}
+/// A recorded package (or `docker`) a recreate could not restore.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Skipped {
+    pub name: String,
+    /// One line of at most 256 bytes, control characters escaped.
+    pub reason: String,
+}
+impl Skipped {
+    pub fn new(name: &str, reason: &str) -> Self {
+        let text = |s: &str| {
+            let mut bounded = String::new();
+            for c in goblins_protocol::plain_text(s.trim()).chars() {
+                if bounded.len() + c.len_utf8() > 256 {
+                    break;
+                }
+                bounded.push(c);
+            }
+            bounded
+        };
+        Self {
+            name: text(name),
+            reason: text(reason),
+        }
+    }
 }
 impl Record {
     pub fn origin(&self) -> &str {
@@ -960,6 +987,30 @@ mod tests {
         let older: Record = serde_json::from_value(value).unwrap();
         assert_eq!(older.origin(), "older");
         drop(s);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn skip_reasons_are_one_bounded_line_and_round_trip() {
+        let skipped = Skipped::new(
+            "hello",
+            &format!("error:\n\u{1b}[31mbroken {}", "é".repeat(200)),
+        );
+        assert!(
+            skipped
+                .reason
+                .starts_with("error:\\u000a\\u001b[31mbroken é")
+        );
+        assert!(skipped.reason.len() <= 256);
+        assert!(!skipped.reason.chars().any(char::is_control));
+        let mut r = record("a", 1);
+        r.skipped = vec![skipped, Skipped::new("docker", "no Docker in scope 'work'")];
+        let root = unix::temp_directory().unwrap();
+        apply(&root, vec![Op::Write(Box::new(r.clone()))], sync);
+        assert_eq!(on_disk(&root)["a"], r);
+        assert_eq!(
+            serde_json::to_value(&r.skipped[1]).unwrap(),
+            serde_json::json!({"name":"docker","reason":"no Docker in scope 'work'"})
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

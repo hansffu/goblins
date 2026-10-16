@@ -240,7 +240,7 @@ pub(crate) fn log_event(directory: &Path, event: &str, fields: serde_json::Value
     }
 }
 /// Recorded grants that resolved, in order, and the names that did not.
-pub(crate) type Resolved = (Vec<(String, PathBuf)>, Vec<String>);
+pub(crate) type Resolved = (Vec<(String, PathBuf)>, Vec<crate::history::Skipped>);
 pub struct Session {
     pub directory: PathBuf,
     pub launch: Launch,
@@ -973,7 +973,11 @@ impl Session {
         let mut skipped = vec![];
         for name in names {
             self.cancel.check()?;
-            if outputs.iter().any(|(n, _)| n == name) || skipped.contains(name) {
+            if outputs.iter().any(|(n, _)| n == name)
+                || skipped
+                    .iter()
+                    .any(|s: &crate::history::Skipped| s.name == *name)
+            {
                 continue;
             }
             let selection = match crate::catalog::select(
@@ -997,7 +1001,7 @@ impl Session {
                         "recreate-skipped",
                         serde_json::json!({"package":name,"detail":error.to_string()}),
                     );
-                    skipped.push(name.clone());
+                    skipped.push(crate::history::Skipped::new(name, &error.to_string()));
                     continue;
                 }
             };

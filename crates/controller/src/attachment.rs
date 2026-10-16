@@ -116,16 +116,11 @@ pub fn recreate(state: PathBuf, configuration: String, id: String, detached: boo
         text(&record["agent_name"]),
         text(&record["recreated_from"])
     );
-    let skipped: Vec<_> = record["skipped"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(text)
-        .collect();
-    if !skipped.is_empty() {
+    for skipped in record["skipped"].as_array().into_iter().flatten() {
         eprintln!(
-            "Skipped packages that no longer resolve: {}",
-            skipped.join(", ")
+            "Skipped: {} — {}",
+            text(&skipped["name"]),
+            text(&skipped["reason"])
         );
     }
     if let Some(detail) = record["detail"].as_str() {

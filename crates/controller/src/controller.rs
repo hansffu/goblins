@@ -95,9 +95,9 @@ pub struct SessionRecord {
     /// The history record this goblin was recreated from.
     #[serde(default)]
     pub recreated_from: Option<String>,
-    /// Recorded packages that no longer resolved when it was recreated.
+    /// What could not be restored when it was recreated, and why.
     #[serde(default)]
-    pub skipped: Vec<String>,
+    pub skipped: Vec<crate::history::Skipped>,
 }
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
