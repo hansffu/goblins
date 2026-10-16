@@ -19,12 +19,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub fn foreground(state: &Path, workspace: Option<PathBuf>) -> Result<()> {
+pub fn foreground(state: &Path, workspace: Option<PathBuf>, keep_sessions: usize) -> Result<()> {
     let mut daemon = Controller::new(state, workspace)?;
+    daemon.open_history(
+        goblins_controller::history::Store::default_directory(),
+        keep_sessions,
+    );
+    let history = daemon.history_status();
     println!(
         "Goblins daemon ready at {}",
         state.join("host.sock").display()
     );
+    match history["reason"].as_str() {
+        None => println!(
+            "Session history in {}",
+            history["directory"].as_str().unwrap_or("-")
+        ),
+        Some(reason) => println!("Running without session history: {reason}"),
+    }
     while !STOP.load(Ordering::Relaxed) && !daemon.shutdown_ready() {
         daemon.tick()?;
         thread::sleep(Duration::from_millis(5));
@@ -74,7 +86,7 @@ fn log_file(state: &Path, write: bool) -> Result<File> {
     Ok(file)
 }
 
-pub fn start(state: &Path, workspace: Option<&Path>) -> Result<()> {
+pub fn start(state: &Path, workspace: Option<&Path>, keep_sessions: usize) -> Result<()> {
     unix::private_directory(state)?;
     let _management = unix::lock(&state.join("server-control.lock"))?;
     if let Some(client) = Client::connect_optional(state)? {
@@ -89,7 +101,8 @@ pub fn start(state: &Path, workspace: Option<&Path>) -> Result<()> {
     command
         .arg("--state-dir")
         .arg(state)
-        .args(["server", "start", "--foreground"])
+        .args(["server", "start", "--foreground", "--keep-sessions"])
+        .arg(keep_sessions.to_string())
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);
@@ -169,6 +182,18 @@ pub fn status(state: &Path) -> Result<i32> {
             client.instance,
             status["sessions"]
         );
+        let history = &status["history"];
+        match (history["owner"].as_bool(), history["directory"].as_str()) {
+            (Some(true), Some(directory)) if history["recording"] == false => println!(
+                "Session history in {directory} (not recording: --workspace snapshots are not recreated)"
+            ),
+            (Some(true), Some(directory)) => println!("Session history in {directory}"),
+            (Some(false), _) => println!(
+                "No session history: {}",
+                history["reason"].as_str().unwrap_or("unavailable")
+            ),
+            _ => (),
+        }
         Ok(0)
     } else if lock_held(state)? {
         println!("Server starting or stopping (not accepting connections)");

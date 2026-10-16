@@ -58,6 +58,16 @@ fn run() -> Result<i32, String> {
                 return Ok(0);
             }
             cli::Command::Integration { command } => return integration(command),
+            cli::Command::Variable {
+                command: cli::VariableCommand::Set { assignments },
+            } => {
+                let set = variables(&assignments)?;
+                println!(
+                    "{}",
+                    call("sessions.set-variables", serde_json::to_value(set).unwrap())?
+                );
+                return Ok(0);
+            }
             cli::Command::Send {
                 recipient,
                 source,
@@ -211,6 +221,22 @@ fn run() -> Result<i32, String> {
     }
     let (package, reason) = parse_args(legacy, &args)?;
     request_permission(json!({"kind":"package","package":package,"reason":reason}))
+}
+/// `KEY=VALUE` arguments, split at the first `=`.
+fn variables(assignments: &[String]) -> Result<goblins_protocol::SetVariables, String> {
+    let mut set = goblins_protocol::SetVariables {
+        variables: Default::default(),
+    };
+    for assignment in assignments {
+        let (key, value) = assignment
+            .split_once('=')
+            .ok_or_else(|| format!("expected KEY=VALUE, got '{assignment}'"))?;
+        if set.variables.insert(key.into(), value.into()).is_some() {
+            return Err(format!("variable '{key}' is given twice"));
+        }
+    }
+    set.validate()?;
+    Ok(set)
 }
 fn raid(command: cli::RaidCommand) -> Result<i32, String> {
     use cli::RaidCommand::*;
@@ -666,5 +692,14 @@ mod tests {
         }
         assert!(parse_args(false, &["tui".into()]).is_err());
         assert!(parse_args(true, &["package".into(), "hello".into()]).is_ok());
+    }
+    #[test]
+    fn variables_split_at_the_first_equals_sign() {
+        let set = variables(&["session_id=a=b".into(), "session_name=".into()]).unwrap();
+        assert_eq!(set.variables["session_id"], "a=b");
+        assert_eq!(set.variables["session_name"], "");
+        assert!(variables(&["novalue".into()]).is_err());
+        assert!(variables(&["a=1".into(), "a=2".into()]).is_err());
+        assert!(variables(&["Bad=1".into()]).is_err());
     }
 }

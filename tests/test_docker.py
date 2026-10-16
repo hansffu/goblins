@@ -100,10 +100,13 @@ class DockerTests(unittest.TestCase):
         self.enable(session, terminal, approved=False)
         self.assert_storage_empty()
         self.assertFalse(self.d.get(session)["docker_enabled"])
+        self.assertFalse(self.d.record(session)["docker_enabled"])
         # A server already running in the shell must remain reachable after activation.
         self.run_ok(terminal, "(python -m http.server 18081 --bind 127.0.0.1 --directory /workspace >/tmp/http.log 2>&1 &)")
         self.enable(session, terminal)
         self.assertTrue(self.d.get(session)["docker_enabled"])
+        # Recorded, so a recreated goblin attaches before its first command.
+        self.d.wait(lambda: self.d.record(session)["docker_enabled"])
         self.assertNotIn("Docker engine", self.d.get(session)["packages"])
         self.run_ok(terminal, "test \"$(readlink /proc/self/ns/net)\" = \"$(cat /workspace/network-before)\"")
         self.load(terminal)

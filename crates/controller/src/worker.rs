@@ -112,6 +112,8 @@ pub(super) enum Source {
         workspace: Option<PathBuf>,
         cwd: Option<PathBuf>,
         state: PathBuf,
+        /// The history store, protected like the daemon's state.
+        history: Option<PathBuf>,
     },
     /// A child of a running session, using a configuration from its branch.
     Child {
@@ -144,6 +146,7 @@ impl Worker {
                         workspace,
                         cwd,
                         state,
+                        history,
                     } => {
                         let manifest = Manifest::read(&configuration)?;
                         let editor = manifest.editor()?;
@@ -155,6 +158,9 @@ impl Worker {
                         if launch.initial_packages.len() > 128 {
                             return Err("initial package limit is 128".into());
                         }
+                        // The scope registry takes the last entry, the daemon's
+                        // state, as its realm.
+                        launch.protected_paths.extend(history);
                         launch.protected_paths.push(std::fs::canonicalize(state)?);
                         let mut session = Session::new_in(
                             launch,

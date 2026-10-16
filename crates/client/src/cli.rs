@@ -80,11 +80,24 @@ pub enum RaidCommand {
     SetRole { role: String },
 }
 #[derive(Subcommand)]
+pub enum VariableCommand {
+    /// Record values for recreating this goblin; an empty VALUE removes KEY
+    Set {
+        #[arg(required = true, value_name = "KEY=VALUE")]
+        assignments: Vec<String>,
+    },
+}
+#[derive(Subcommand)]
 pub enum Command {
     /// Report this sandbox's current agent activity
     SetState {
         #[arg(value_parser = ["unknown", "idle", "working", "waiting-input", "waiting-approval"])]
         state: String,
+    },
+    /// Values this goblin records for being recreated (used by agent hooks)
+    Variable {
+        #[command(subcommand)]
+        command: VariableCommand,
     },
     /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
     Integration {
@@ -390,6 +403,10 @@ mod tests {
         assert!(Cli::try_parse_from(["goblins", "raid", "invite"]).is_err());
         assert!(Cli::try_parse_from(["goblins", "raid", "set-role"]).is_err());
         assert!(Cli::try_parse_from(["goblins", "run", "shell", "--inherit-raid"]).is_ok());
+        assert!(Cli::try_parse_from(["goblins", "variable", "set"]).is_err());
+        assert!(
+            Cli::try_parse_from(["goblins", "variable", "set", "a=1", "name=two words"]).is_ok()
+        );
         assert!(matches!(
             Cli::try_parse_from(["goblins", "editor", "open", "--no-wait", "+3:4", "a"])
                 .unwrap()

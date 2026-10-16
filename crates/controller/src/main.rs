@@ -180,11 +180,12 @@ fn execute(cli: Cli) -> Result<i32> {
             ServerCommand::Start {
                 workspace,
                 foreground,
+                keep_sessions,
             } => {
                 if foreground {
-                    server::foreground(&state, workspace)?;
+                    server::foreground(&state, workspace, keep_sessions)?;
                 } else {
-                    server::start(&state, workspace.as_deref())?;
+                    server::start(&state, workspace.as_deref(), keep_sessions)?;
                 }
             }
             ServerCommand::Stop => server::stop(&state)?,

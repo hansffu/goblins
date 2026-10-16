@@ -221,6 +221,9 @@ pub enum ServerCommand {
         /// Run in this terminal instead, with output on stdout/stderr
         #[arg(long)]
         foreground: bool,
+        /// Session records to keep for 'goblins recreate'
+        #[arg(long, value_name = "N", default_value_t = goblins_controller::history::DEFAULT_KEEP)]
+        keep_sessions: usize,
     },
     /// Stop the server and all its agents, waiting for cleanup
     Stop,

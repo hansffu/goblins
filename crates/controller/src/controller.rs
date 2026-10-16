@@ -508,6 +508,12 @@ pub struct Controller {
     /// in order. Completions are never dropped; new requests are refused
     /// while this is full.
     operation_outbox: VecDeque<crate::operation::Event>,
+    /// Recreate records, or why this daemon keeps none.
+    history: std::result::Result<crate::history::Store, String>,
+    /// The history store's directory, protected from binds even when
+    /// another daemon owns it.
+    history_directory: Option<PathBuf>,
+    keep_sessions: usize,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -550,7 +556,91 @@ impl Controller {
             raid_outbox: VecDeque::new(),
             raid_events: 0,
             operation_outbox: VecDeque::new(),
+            history: Err("this server keeps no session history".into()),
+            history_directory: None,
+            keep_sessions: crate::history::DEFAULT_KEEP,
         })
+    }
+    /// Own the history store in `directory`, or run without history when
+    /// another daemon owns it. Call before the first launch.
+    pub fn open_history(&mut self, directory: Result<PathBuf>, keep: usize) {
+        self.keep_sessions = keep;
+        self.history = match directory {
+            Ok(directory) => {
+                let store = crate::history::Store::open(&directory).map_err(|e| e.to_string());
+                self.history_directory = Some(match &store {
+                    Ok(store) => store.directory.clone(),
+                    Err(_) => directory,
+                });
+                store
+            }
+            Err(e) => Err(format!("no session history: {e}")),
+        };
+    }
+    /// The history store's directory and whether this daemon owns it.
+    pub fn history_status(&self) -> Value {
+        match &self.history {
+            Ok(store) => json!({"directory":store.directory,"owner":true,"keep":self.keep_sessions,
+                "recording":self.workspace.is_none()}),
+            Err(reason) => {
+                json!({"directory":self.history_directory,"owner":false,"reason":reason})
+            }
+        }
+    }
+    /// Live sessions, whose records retention and prune never delete.
+    fn live_sessions(&self) -> std::collections::BTreeSet<String> {
+        self.sessions
+            .iter()
+            .filter(|(_, a)| a.worker.is_some())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+    /// Start the record of a root goblin that reached running.
+    fn record_started(&mut self, a: &Active) {
+        if a.record.parent.is_some() || self.workspace.is_some() {
+            return;
+        }
+        let mut running = self.live_sessions();
+        running.insert(a.record.id.clone());
+        let keep = self.keep_sessions;
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        let now = crate::messaging::now();
+        let mut record =
+            crate::history::Record::new(&a.record.id, &a.record.name, &a.record.agent_name, now);
+        record.cwd = a.record.cwd.clone();
+        record.scope = a.record.scope.clone();
+        record.dev_shell = a.record.dev_shell.clone();
+        record.docker_enabled = a.record.docker_enabled;
+        store.write(record);
+        store.retain(keep, &running);
+    }
+    /// Change the record of a live root goblin. Ok(false) when it has none;
+    /// Err with the reason when the change does not fit, leaving it as it was.
+    fn update_record(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut crate::history::Record) -> std::result::Result<bool, String>,
+    ) -> std::result::Result<bool, String> {
+        let Ok(store) = &mut self.history else {
+            return Ok(false);
+        };
+        // A stopped record is final, and a pruned one is not resurrected.
+        let Some(mut record) = store
+            .records
+            .get(id)
+            .filter(|r| r.stopped.is_none())
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let changed = change(&mut record)?;
+        if changed {
+            record.updated = crate::messaging::now();
+            store.write(record);
+        }
+        Ok(changed)
     }
     fn number(&mut self) -> u64 {
         self.next = self.next.checked_add(1).expect("daemon identity exhausted");
@@ -1025,6 +1115,7 @@ impl Controller {
                 workspace: self.workspace.clone(),
                 cwd: p.cwd.clone(),
                 state: self.state.clone(),
+                history: self.history_directory.clone(),
             },
         };
         let cwd = match &parent {
@@ -1109,6 +1200,23 @@ impl Controller {
                 }
                 self.dirty |= a.report_activity(p.state);
                 Ok(json!({"accepted":true}))
+            }
+            "sessions.set-variables" => {
+                let p: goblins_protocol::SetVariables = params(value)?;
+                p.validate().map_err(|e| (-32602, e))?;
+                let a = self.sessions.get(scope).ok_or_else(missing)?;
+                if a.record.state != "running" || a.worker.is_none() {
+                    return Err(conflict());
+                }
+                // Only the caller's own record. Children and goblins this
+                // daemon keeps no record of succeed without recording.
+                let recorded = self
+                    .history
+                    .as_ref()
+                    .is_ok_and(|store| store.records.contains_key(scope));
+                self.update_record(scope, |r| r.set_variables(&p.variables))
+                    .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
+                Ok(json!({"accepted":true,"recorded":recorded}))
             }
             "sessions.status" => {
                 let _: Empty = params(value)?;
@@ -1293,6 +1401,12 @@ impl Controller {
         if !p.approved {
             self.reply_permission(&p.request, "denied", None);
             self.operation_finished(&p.request, notify, None);
+            let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
+            if actor == "host" && r.kind == "package" {
+                let package = r.package.clone();
+                // Information only; a recreated goblin may ask again.
+                let _ = self.update_record(&p.session, |r| r.deny(&package));
+            }
         }
         self.dirty = true;
         Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
@@ -1356,7 +1470,7 @@ impl Controller {
             "server.status" => {
                 let _: Empty = params(value)?;
                 Ok(
-                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count()}),
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count(),"history":self.history_status()}),
                 )
             }
             "server.stop" => {
@@ -1469,11 +1583,13 @@ impl Controller {
                         | "inbox.requeue"
                         | "communications.list"
                 );
-            let legacy_limit = if matches!(c.role, Role::Host) {
-                16384
-            } else {
-                4096
-            };
+            // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
+            let legacy_limit =
+                if matches!(c.role, Role::Host) || call.method == "sessions.set-variables" {
+                    16384
+                } else {
+                    4096
+                };
             if !messaging && c.body_bytes > legacy_limit {
                 return Err((-32602, "request exceeds method frame limit".into()));
             }
@@ -2042,6 +2158,7 @@ impl Controller {
                         if a.record.state == "starting" {
                             a.record.state = "running".into();
                             a.listener = Some(listener);
+                            self.record_started(&a);
                         }
                         self.dirty = true;
                     }
@@ -2129,6 +2246,7 @@ impl Controller {
                         detail,
                         output,
                     } => {
+                        let mut granted = None;
                         if let Some(p) = a.pending.take() {
                             p.cancel.cancel();
                             if let Some(r) = self.permission_mut(&p.id) {
@@ -2144,6 +2262,9 @@ impl Controller {
                                     .as_deref()
                                     .map(bounded)
                                     .or_else(|| reply.message.clone());
+                                if reply.status == "ready" {
+                                    granted = Some((r.kind.clone(), r.package.clone()));
+                                }
                                 if reply.status == "ready" && r.kind == "docker" {
                                     a.record.docker_enabled = true;
                                 }
@@ -2161,6 +2282,25 @@ impl Controller {
                             self.reply_permission(&p.id, &reply.status, reply.message);
                         }
                         a.record.detail = detail.map(|e| bounded(&e));
+                        if let Some((kind, package)) = granted {
+                            let recorded = if kind == "docker" {
+                                self.update_record(&id, |r| r.update(|r| r.docker_enabled = true))
+                            } else if kind == "package" {
+                                self.update_record(&id, |r| r.approve(&package))
+                            } else {
+                                Ok(false)
+                            };
+                            if let Err(reason) = recorded {
+                                let subject = if kind == "docker" {
+                                    "Docker".to_string()
+                                } else {
+                                    format!("package '{package}'")
+                                };
+                                a.record.detail = Some(bounded(&format!(
+                                    "{subject} is granted but not recorded for recreate: {reason}"
+                                )));
+                            }
+                        }
                         self.dirty = true;
                     }
                     Completed::Failed(e) => {
@@ -2268,6 +2408,10 @@ impl Controller {
                 self.dirty |= a.record.set_agent_state(Default::default());
             }
             self.sessions.insert(id.clone(), a);
+            if stopped {
+                let now = crate::messaging::now();
+                let _ = self.update_record(&id, |r| r.update(|r| r.stopped = Some(now)));
+            }
             if exited {
                 let _ = self.stop_tree(&id, true, None);
             } else if stopped {
@@ -3366,6 +3510,158 @@ mod tests {
         assert_eq!(events[0].request, "s");
         assert_eq!(outcome(&events[0]).1, Some("daemon stopped"));
         fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn records_follow_grants_denials_variables_and_stop() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a", None);
+        let _child = live(&mut d, "kid", Some("a"));
+        let record = |d: &Controller| d.history.as_ref().unwrap().records["a"].clone();
+        d.history
+            .as_mut()
+            .unwrap()
+            .write(crate::history::Record::new("a", "shell", "a", 1));
+        // Variables: only the caller's own record, all keys together.
+        let set = |d: &mut Controller, id: &str, variables: Value| {
+            d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
+        };
+        assert_eq!(
+            set(
+                &mut d,
+                "a",
+                json!({"session_id":"c819","session_name":"Plan it"})
+            )
+            .unwrap(),
+            json!({"accepted":true,"recorded":true})
+        );
+        assert_eq!(record(&d).variables["session_name"], "Plan it");
+        assert!(record(&d).updated > 1);
+        assert_eq!(set(&mut d, "a", json!({"Bad":"x"})).unwrap_err().0, -32602);
+        assert_eq!(
+            set(&mut d, "a", json!({"session_name":""})).unwrap()["recorded"],
+            true
+        );
+        assert!(!record(&d).variables.contains_key("session_name"));
+        assert_eq!(
+            set(&mut d, "kid", json!({"session_id":"other"})).unwrap(),
+            json!({"accepted":true,"recorded":false})
+        );
+        assert!(!d.history.as_ref().unwrap().records.contains_key("kid"));
+        // A host denial, then an approval of the same package.
+        let (worker, sender, _commands) = Worker::listening();
+        d.sessions.get_mut("a").unwrap().worker = Some(worker);
+        let request = |d: &mut Controller, kind: &str| {
+            let (mut c, peer) = connection(Role::Sandbox("a".into()));
+            c.initialized = true;
+            d.dispatch(
+                &mut c,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: Some(json!(1)),
+                    method: "permissions.request".into(),
+                    params: json!({"kind":kind,"package":if kind == "package" {"hello"} else {""},"reason":"test"}),
+                },
+            );
+            d.connections.push(c);
+            (d.permissions.back().unwrap().clone(), peer)
+        };
+        let (denied, _peer) = request(&mut d, "package");
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: denied.id.clone(),
+                approval: denied.approval.clone(),
+                approved: false,
+            },
+            "host",
+        )
+        .unwrap();
+        assert_eq!(record(&d).packages.denied, ["hello"]);
+        let _peer = request(&mut d, "package");
+        sender
+            .send(Completed::Granted {
+                reply: goblins_protocol::Reply::new(None, "ready", None),
+                detail: None,
+                output: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(record(&d).packages.approved, ["hello"]);
+        assert!(record(&d).packages.denied.is_empty());
+        // A full record leaves the grant in place and says so.
+        let mut full = record(&d);
+        full.packages.approved = (0..256).map(|i| format!("p{i}")).collect();
+        d.history.as_mut().unwrap().write(full);
+        d.sessions.get_mut("a").unwrap().record.packages.clear();
+        let _peer = request(&mut d, "package");
+        sender
+            .send(Completed::Granted {
+                reply: goblins_protocol::Reply::new(None, "ready", None),
+                detail: None,
+                output: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sessions["a"].record.packages, ["hello"]);
+        assert!(
+            d.sessions["a"]
+                .record
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("not recorded for recreate")
+        );
+        assert!(!record(&d).packages.approved.contains(&"hello".to_string()));
+        // The stop is recorded once, and the record is final afterwards.
+        sender
+            .send(Completed::Stopped { exit_code: Some(0) })
+            .unwrap();
+        d.tick().unwrap();
+        let stopped = record(&d).stopped.unwrap();
+        assert_eq!(
+            set(&mut d, "a", json!({"session_id":"late"})).unwrap_err(),
+            conflict()
+        );
+        assert_eq!(
+            d.update_record("a", |r| r.update(|r| r.stopped = Some(0))),
+            Ok(false)
+        );
+        assert_eq!(record(&d).stopped, Some(stopped));
+        drop(d);
+        let records = crate::history::Store::open(&path.join("history")).unwrap();
+        assert_eq!(records.records["a"].stopped, Some(stopped));
+        assert_eq!(records.records["a"].variables["session_id"], "c819");
+        drop(records);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_second_daemon_runs_without_history() {
+        let mut first = daemon();
+        let mut second = daemon();
+        let shared = first.state.join("history");
+        first.open_history(Ok(shared.clone()), 100);
+        second.open_history(Ok(shared.clone()), 100);
+        assert_eq!(first.history_status()["owner"], true);
+        let status = second.history_status();
+        assert_eq!(status["owner"], false);
+        assert!(
+            status["reason"]
+                .as_str()
+                .unwrap()
+                .contains("another Goblins server")
+        );
+        // Its own goblins still cannot bind the store.
+        assert_eq!(
+            second.history_directory.as_deref(),
+            Some(fs::canonicalize(&shared).unwrap().as_path())
+        );
+        let paths = [first.state.clone(), second.state.clone()];
+        drop((first, second));
+        for path in paths {
+            fs::remove_dir_all(path).unwrap();
+        }
     }
     #[test]
     fn requests_are_logged_and_a_full_queue_keeps_outcomes_in_order() {

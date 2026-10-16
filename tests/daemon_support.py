@@ -68,18 +68,38 @@ def app():
 
 
 class Daemon:
-    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None):
+    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None, state_home=None, keep=None):
         self.temp = tempfile.TemporaryDirectory(prefix="gd-")
         self.state = Path(self.temp.name) / "state"
         self.app = application or app()
         self.binary, self.manifest = re.search(r'exec (\S+) --runtime (\S+)', self.app.read_text()).groups()
+        # Never the user's own session history: a private store per daemon,
+        # unless a test shares one between daemons.
+        self.state_home = Path(state_home or Path(self.temp.name) / "xdg-state")
+        self.history = self.state_home / "goblins/sessions"
+        self.env = {**(os.environ if env is None else env), "XDG_STATE_HOME": str(self.state_home)}
         argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "server", "start", "--foreground"]
         if workspace:
             argv += ["--workspace", str(workspace)]
-        self.process = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        if keep is not None:
+            argv += ["--keep-sessions", str(keep)]
+        self.process = subprocess.Popen(argv, env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                         preexec_fn=preexec_fn)
         assert "daemon ready" in self.process.stdout.readline(), self.process.stderr.read()
         self.rpc = self.host()
+
+    def record(self, id):
+        """A session's recreate record on disk, or None."""
+        path = self.history / f"{id}.json"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def cli(self, *args, check=True):
+        """The host CLI against this daemon and its history store."""
+        result = subprocess.run([self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), *map(str, args)],
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        if check and result.returncode:
+            raise AssertionError(f"goblins {' '.join(map(str, args))} failed ({result.returncode}): {result.stderr}")
+        return result
 
     def host(self):
         return RPC(self.state / "host.sock")
