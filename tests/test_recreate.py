@@ -112,7 +112,8 @@ class RecreateTests(unittest.TestCase):
         own = d.wait(lambda: d.record(session))
         self.assertEqual(own["packages"], source["packages"])
         self.assertEqual(own["variables"], source["variables"])
-        self.assertEqual((own["skipped"], own["recreated_from"]), (["no-such-goblins-package"], "rec-a"))
+        self.assertEqual((own["skipped"], own["recreated_from"], own["origin"]),
+                         (["no-such-goblins-package"], "rec-a", "rec-a"))
         self.assertEqual(d.record("rec-a"), source)
         listing = d.cli("history").stdout
         line = next(l for l in listing.splitlines() if l.startswith(session))
@@ -139,9 +140,11 @@ class RecreateTests(unittest.TestCase):
             self.output(d, launch, rb"ARGS=fresh\n")
             self.assertIn(reason, d.get(launch["session"])["detail"])
 
-    def test_changed_configuration_failed_start_and_lineage_reservations(self):
+    def test_changed_configuration_failed_start_and_origin_reservations(self):
         cwd = tempfile.TemporaryDirectory(prefix="goblins-recreate-cwd-"); self.addCleanup(cwd.cleanup)
         d = self.daemon(record("rec-f", configuration="fishy", cwd=cwd.name),
+                        record("rec-sibling", configuration="fishy", cwd=cwd.name, recreated_from="rec-f",
+                               origin="rec-f"),
                         record("rec-gone", cwd="/nonexistent-goblins-recreate"))
         # The demo manifest has no 'fishy': the start fails and releases it.
         failed = self.recreate(d, "rec-f", wait="failed")
@@ -150,16 +153,19 @@ class RecreateTests(unittest.TestCase):
         first = self.recreate(d, "rec-f", updated)["session"]
         self.assertEqual(self.exec(d, first, 'printf "%s %s" "$GOBLIN_MARKER" "$(pwd -P)"').stdout,
                          f"updated {Path(cwd.name).resolve()}")
-        # Concurrent recreates of the record, or of the live goblin's own.
-        self.assertIn("recreated from rec-f is live", self.refused(d, "rec-f"))
+        # Concurrent recreates of the record, of a sibling, or of the live
+        # goblin's own: all share the origin.
+        self.assertIn("of the same origin rec-f is live", self.refused(d, "rec-f"))
+        self.assertIn("of the same origin rec-f is live", self.refused(d, "rec-sibling"))
         own = d.wait(lambda: d.record(first))
-        self.assertIn("is live", self.refused(d, first))
+        self.assertEqual(own["origin"], "rec-f")
+        self.assertIn("of the same origin rec-f is live", self.refused(d, first))
         d.rpc.call("sessions.stop", {"session": first})
         d.wait(lambda: d.get(first)["state"] == "stopped")
         # Transitive: the source is refused while a later generation lives.
         second = self.recreate(d, own["id"], updated)["session"]
         self.assertEqual(d.wait(lambda: d.record(second))["recreated_from"], first)
-        self.assertIn(f"{first} was recreated from it", self.refused(d, "rec-f"))
+        self.assertIn(f"({second}) of the same origin rec-f is live", self.refused(d, "rec-f"))
         self.assertIn("no longer exists", self.refused(d, "rec-gone"))
         self.assertIn("--parent", self.refused(d, "rec-gone", parent=second))
         self.assertIn("no recorded goblin", self.refused(d, "nobody"))

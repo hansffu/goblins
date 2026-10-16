@@ -47,6 +47,12 @@ pub struct Record {
     /// Written only by the goblin itself (`sessions.set-variables`).
     pub variables: BTreeMap<String, String>,
     pub recreated_from: Option<String>,
+    /// The goblin that started this line of recreates: its own id, copied
+    /// to every record recreated from it. Live goblins of one origin could
+    /// resume the same conversation, so only one runs at a time. Empty in
+    /// records written before it existed, meaning their own id.
+    #[serde(default)]
+    pub origin: String,
     /// Approved names that did not resolve when this goblin was recreated.
     pub skipped: Vec<String>,
     /// Unix milliseconds.
@@ -56,6 +62,13 @@ pub struct Record {
     pub stopped: Option<u64>,
 }
 impl Record {
+    pub fn origin(&self) -> &str {
+        if self.origin.is_empty() {
+            &self.id
+        } else {
+            &self.origin
+        }
+    }
     pub fn new(id: &str, configuration: &str, agent_name: &str, now: u64) -> Self {
         Self {
             version: VERSION,
@@ -69,6 +82,7 @@ impl Record {
             packages: Packages::default(),
             variables: BTreeMap::new(),
             recreated_from: None,
+            origin: id.into(),
             skipped: vec![],
             created: now,
             updated: now,
@@ -320,31 +334,6 @@ impl Store {
                 goblins_protocol::plain_text(target)
             )
         })
-    }
-    /// The records `id` was recreated from, nearest first.
-    pub fn ancestors(&self, id: &str) -> Vec<String> {
-        let mut seen = BTreeSet::from([id.to_string()]);
-        let mut chain = vec![];
-        let mut current = self.records.get(id).and_then(|r| r.recreated_from.clone());
-        while let Some(parent) = current {
-            if !seen.insert(parent.clone()) {
-                break;
-            }
-            current = self
-                .records
-                .get(&parent)
-                .and_then(|r| r.recreated_from.clone());
-            chain.push(parent);
-        }
-        chain
-    }
-    /// The records recreated from `id`, directly or through others.
-    pub fn descendants(&self, id: &str) -> Vec<String> {
-        self.records
-            .keys()
-            .filter(|other| self.ancestors(other).iter().any(|a| a == id))
-            .cloned()
-            .collect()
     }
 }
 impl Drop for Store {
@@ -741,7 +730,7 @@ mod tests {
         );
     }
     #[test]
-    fn records_resolve_by_id_prefix_or_unique_name_and_know_their_lineage() {
+    fn records_resolve_by_id_prefix_or_unique_name() {
         let (mut s, root) = store();
         let mut first = record("aa-s1", 1);
         first.agent_name = "morb".into();
@@ -764,9 +753,15 @@ mod tests {
                 .contains("2 records are named")
         );
         assert!(s.resolve("zog").unwrap_err().contains("no recorded goblin"));
-        assert_eq!(s.ancestors("b-s3"), ["ab-s2", "aa-s1"]);
-        assert_eq!(s.descendants("aa-s1"), ["ab-s2", "b-s3"]);
-        assert!(s.descendants("b-s3").is_empty());
+        // Older records without an origin are their own.
+        let mut old: Record =
+            serde_json::from_value(serde_json::to_value(record("old", 1)).unwrap()).unwrap();
+        old.origin.clear();
+        assert_eq!(old.origin(), "old");
+        let mut value = serde_json::to_value(record("older", 1)).unwrap();
+        value.as_object_mut().unwrap().remove("origin");
+        let older: Record = serde_json::from_value(value).unwrap();
+        assert_eq!(older.origin(), "older");
         drop(s);
         fs::remove_dir_all(root).unwrap();
     }

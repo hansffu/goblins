@@ -590,7 +590,7 @@ The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/
 
 Only root goblins are recorded and recreated. Children, raids, inbox contents and terminal or process state are not. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so. A server started with =--workspace= neither records nor recreates goblins.
 
-A record cannot be recreated while it, a record it was recreated from, or one recreated from it has a live goblin, so two goblins never resume the same conversation. A recreated goblin that fails to start releases its record again. If the recorded working directory no longer exists, =recreate= refuses.
+Each record names its origin, the first goblin of its line of recreates. A record cannot be recreated while any goblin of the same origin is live, whether the original, one recreated from it, or a sibling, so two goblins never resume the same conversation. A recreated goblin that fails to start releases its record again. If the recorded working directory no longer exists, =recreate= refuses.
 
 ** Keeping the conversation
 

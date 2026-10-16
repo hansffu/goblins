@@ -638,6 +638,7 @@ impl Controller {
             record.variables = source.variables.clone();
             record.skipped = a.record.skipped.clone();
             record.recreated_from = Some(source.id.clone());
+            record.origin = source.origin().to_string();
         }
         store.write(record);
         store.retain(keep, &running);
@@ -685,7 +686,7 @@ impl Controller {
                 ),
             ));
         }
-        if let Some(reason) = self.recreate_conflict(store, &record.id) {
+        if let Some(reason) = self.recreate_conflict(record) {
             return Err((
                 -32009,
                 format!("record {} cannot be recreated now: {reason}", record.id),
@@ -701,44 +702,27 @@ impl Controller {
         p.recorded = Some(Box::new(record.clone()));
         Ok(())
     }
-    /// Why a record cannot be recreated: it, a record it was recreated from,
-    /// or one recreated from it has a live session (starting, running or
-    /// stopping), which could resume the same agent conversation.
-    fn recreate_conflict(&self, store: &crate::history::Store, id: &str) -> Option<String> {
-        let live = |record: &str| {
-            self.sessions
-                .values()
-                .filter(|a| a.worker.is_some())
-                .find_map(|a| {
-                    if a.record.id == record {
-                        Some(format!(
-                            "goblin {} ({}) is live",
-                            a.record.agent_name, a.record.id
-                        ))
-                    } else if a.recreated_from.as_ref().is_some_and(|r| r.id == record) {
-                        Some(format!(
-                            "goblin {} ({}) recreated from {record} is live",
-                            a.record.agent_name, a.record.id
-                        ))
-                    } else {
-                        None
-                    }
-                })
-        };
-        if let Some(reason) = live(id) {
-            return Some(reason);
-        }
-        for ancestor in store.ancestors(id) {
-            if let Some(reason) = live(&ancestor) {
-                return Some(format!("it was recreated from {ancestor}, and {reason}"));
-            }
-        }
-        for descendant in store.descendants(id) {
-            if let Some(reason) = live(&descendant) {
-                return Some(format!("{descendant} was recreated from it, and {reason}"));
-            }
-        }
-        None
+    /// Why a record cannot be recreated: a live goblin (starting, running
+    /// or stopping) shares its origin, so both could resume the same agent
+    /// conversation. That covers the record's own goblin, the goblins it was
+    /// recreated from or into, and siblings, even after pruned records.
+    fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
+        let origin = record.origin();
+        self.sessions
+            .values()
+            .filter(|a| a.worker.is_some() && a.record.parent.is_none())
+            .find(|a| {
+                a.recreated_from
+                    .as_ref()
+                    .map_or(a.record.id.as_str(), |source| source.origin())
+                    == origin
+            })
+            .map(|a| {
+                format!(
+                    "goblin {} ({}) of the same origin {origin} is live",
+                    a.record.agent_name, a.record.id
+                )
+            })
     }
     /// The history store's records for `goblins history`, newest first,
     /// each marked running or not, within the response size.
@@ -3850,7 +3834,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn recreates_are_refused_while_their_lineage_is_live_and_retries_return_the_launch() {
+    fn recreates_are_refused_while_their_origin_is_live_and_retries_return_the_launch() {
         use crate::history::Record;
         let mut d = daemon();
         let path = d.state.clone();
@@ -3860,9 +3844,19 @@ mod tests {
         root.packages.approved = vec!["hello".into()];
         root.variables.insert("session_id".into(), "c819".into());
         store.write(root);
-        let mut child = Record::new("r1", "shell", "grib", 2);
-        child.recreated_from = Some("r0".into());
-        store.write(child);
+        // Two records recreated from r0: siblings of one origin.
+        for (id, name) in [("r1", "grib"), ("r2", "snaga")] {
+            let mut sibling = Record::new(id, "shell", name, 2);
+            sibling.recreated_from = Some("r0".into());
+            sibling.origin = "r0".into();
+            store.write(sibling);
+        }
+        // a3 -> b3 -> c3, with the middle record pruned.
+        store.write(Record::new("a3", "shell", "ugluk", 1));
+        let mut last = Record::new("c3", "shell", "lurtz", 3);
+        last.recreated_from = Some("b3".into());
+        last.origin = "a3".into();
+        store.write(last);
         let mut moved = Record::new("moved", "shell", "zog", 3);
         moved.cwd = Some("/nonexistent-goblins-recreate-cwd".into());
         store.write(moved);
@@ -3908,30 +3902,33 @@ mod tests {
         );
         // A retry is the same launch; another recreate is refused.
         assert_eq!(start(&mut d, recreate("k1", "r0")).unwrap(), first);
-        assert!(
-            start(&mut d, recreate("k2", "morb"))
-                .unwrap_err()
-                .1
-                .contains("recreated from r0 is live")
-        );
-        assert!(
-            start(&mut d, recreate("k2", "r1"))
-                .unwrap_err()
-                .1
-                .contains("it was recreated from r0")
-        );
-        // Released when that session ends.
+        let refused =
+            |d: &mut Controller,
+             start: &mut dyn FnMut(&mut Controller, Value) -> std::result::Result<Value, Fault>,
+             key: &str,
+             target: &str| { start(d, recreate(key, target)).unwrap_err().1 };
+        for target in ["morb", "r1", "r2"] {
+            assert!(
+                refused(&mut d, &mut start, "k2", target).contains("of the same origin r0 is live")
+            );
+        }
+        // Released when that session ends. Siblings exclude each other.
         d.sessions.get_mut(&id).unwrap().worker.take();
-        // A live goblin recreated from it (its own record live) also refuses,
-        // and a goblin already using the name leaves a new name.
-        let _r1 = live(&mut d, "r1", None);
-        assert!(
-            start(&mut d, recreate("k3", "r0"))
-                .unwrap_err()
-                .1
-                .contains("r1 was recreated from it")
-        );
-        d.sessions.get_mut("r1").unwrap().worker.take();
+        let sibling = start(&mut d, recreate("k3", "r1")).unwrap();
+        assert!(refused(&mut d, &mut start, "k4", "r2").contains("same origin r0"));
+        assert!(refused(&mut d, &mut start, "k4", "r0").contains("same origin r0"));
+        let sibling = sibling["session"].as_str().unwrap().to_string();
+        d.sessions.get_mut(&sibling).unwrap().worker.take();
+        // A pruned middle record does not hide the line's origin.
+        let last = start(&mut d, recreate("k5", "c3")).unwrap();
+        assert!(refused(&mut d, &mut start, "k6", "a3").contains("same origin a3"));
+        let last = last["session"].as_str().unwrap().to_string();
+        d.sessions.get_mut(&last).unwrap().worker.take();
+        // Nor does the original goblin itself running.
+        let _a3 = live(&mut d, "a3", None);
+        assert!(refused(&mut d, &mut start, "k7", "c3").contains("goblin a3 (a3)"));
+        d.sessions.get_mut("a3").unwrap().worker.take();
+        // A goblin already using the name leaves a new name.
         let _morb = live(&mut d, "morb", None);
         let again = start(&mut d, recreate("k4", "r0")).unwrap();
         assert_ne!(again["agent_name"], "morb");

@@ -40,6 +40,7 @@ One file per root goblin: =$XDG_STATE_HOME/goblins/sessions/<session-id>.json= (
   "packages": { "approved": ["ripgrep", "jq"], "denied": ["nmap"] },
   "variables": { "session_id": "c8193c93-…", "session_name": "Plan goblin session restore" },
   "recreated_from": null,
+  "origin": "1f6b…-s4",
   "skipped": [],
   "created": 1792156012273,
   "updated": 1792159072343,
@@ -95,7 +96,7 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 =goblins recreate= is =sessions.start= with a new =recreate: ID= parameter, using the caller's current manifest like =goblins run=.
 
 1. *Checks.* Read the record. Refuse in =--workspace= mode, with =--parent=, or if the recorded =cwd= no longer exists.
-2. *Reservation.* The controller keeps a map from record id to the live session (=starting=, =running= or =stopping=) recreated from it. Before =Worker::start=, it refuses if the record, any record it was recreated from, or any record recreated from it has a live session, then reserves the record. The reservation is released when that session stops or fails to start. Duplicate =goblins recreate= calls with different operation keys therefore cannot resume the same agent session twice.
+2. *Reservation.* Every record has an =origin=: its own id, copied to each record recreated from it, so it names the first goblin of a line of recreates. Before =Worker::start=, the controller refuses if any live session (=starting=, =running= or =stopping=) has the same origin: the original goblin itself, a goblin recreated from the line, or one being recreated (its origin is taken from the record it was recreated from). The reservation ends when that session stops or fails to start. Duplicate =goblins recreate= calls with different operation keys, siblings recreated from one record, and lines whose middle record was pruned therefore cannot resume the same agent session twice. (Following =recreated_from= links, as first planned, missed the last two.)
 3. *Launch.* The recorded configuration name is launched with the recorded scope, dev shell reference and =cwd=. The agent name is reused if it is free, otherwise a new one is chosen. The dev shell reference is evaluated afresh, as on any launch.
 4. *Packages, before the agent starts.* The worker resolves each approved name against the current catalog (=Session::realize=, which works before =start=). =Session::start= then takes these outputs as a new =recreated= list:
    - their closures join the initial closure, so they are mounted with the initial store view and no helper call is needed;
