@@ -251,15 +251,22 @@ use std::os::unix::ffi::OsStringExt;
 /// not-yet-created path through its existing ancestors, so bind validation
 /// protects this host-only tree for sessions that never create it.
 pub fn cache_directory(component: &str, create: bool) -> Result<PathBuf> {
-    let cache = std::env::var_os("XDG_CACHE_HOME")
+    xdg_directory("XDG_CACHE_HOME", ".cache", component, create)
+}
+/// The same under `$XDG_STATE_HOME/goblins` (default `~/.local/state`).
+pub fn state_directory(component: &str, create: bool) -> Result<PathBuf> {
+    xdg_directory("XDG_STATE_HOME", ".local/state", component, create)
+}
+fn xdg_directory(variable: &str, fallback: &str, component: &str, create: bool) -> Result<PathBuf> {
+    let base = std::env::var_os(variable)
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("Goblins storage requires HOME or an absolute XDG_CACHE_HOME")?;
-    if !cache.is_absolute() {
-        return Err("Goblins cache directory must be absolute".into());
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
+        .ok_or_else(|| format!("Goblins storage requires HOME or an absolute {variable}"))?;
+    if !base.is_absolute() {
+        return Err("Goblins storage directory must be absolute".into());
     }
-    let root = cache.join("goblins").join(component);
+    let root = base.join("goblins").join(component);
     if create {
         private_directory(&root)?;
     }
@@ -274,8 +281,8 @@ pub fn cache_directory(component: &str, create: bool) -> Result<PathBuf> {
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                suffix.push(ancestor.file_name().ok_or("invalid Goblins cache path")?);
-                ancestor = ancestor.parent().ok_or("invalid Goblins cache path")?;
+                suffix.push(ancestor.file_name().ok_or("invalid Goblins storage path")?);
+                ancestor = ancestor.parent().ok_or("invalid Goblins storage path")?;
             }
             Err(e) => return Err(e.into()),
         }

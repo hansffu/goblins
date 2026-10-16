@@ -22,6 +22,46 @@ pub struct SetState {
     pub state: AgentState,
 }
 
+/// Variables a goblin records for its own recreate record.
+pub const MAX_VARIABLES: usize = 16;
+/// `sessions.set-variables`: all given keys change together; an empty value
+/// removes its key.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetVariables {
+    pub variables: std::collections::BTreeMap<String, String>,
+}
+impl SetVariables {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.variables.is_empty() || self.variables.len() > MAX_VARIABLES {
+            return Err(format!("set 1 to {MAX_VARIABLES} variables at a time"));
+        }
+        for (key, value) in &self.variables {
+            if !variable_key(key) {
+                return Err(format!(
+                    "invalid variable name '{}': use [a-z][a-z0-9_]{{0,31}}",
+                    plain_text(key)
+                ));
+            }
+            if !variable_value(value) {
+                return Err(format!(
+                    "invalid value for '{key}': at most 256 bytes of text without control characters"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+pub fn variable_key(key: &str) -> bool {
+    let mut bytes = key.bytes();
+    (1..=32).contains(&key.len())
+        && bytes.next().is_some_and(|b| b.is_ascii_lowercase())
+        && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+pub fn variable_value(value: &str) -> bool {
+    value.len() <= 256 && !value.chars().any(char::is_control)
+}
+
 pub fn scope_name(name: &str) -> bool {
     let mut bytes = name.bytes();
     (1..=64).contains(&name.len())
@@ -167,6 +207,43 @@ mod tests {
             assert!(!package_name(name));
         }
         assert!(!package_name(&"x".repeat(201)));
+    }
+    #[test]
+    fn variables_are_short_names_and_one_line_values() {
+        let set = |pairs: &[(&str, &str)]| SetVariables {
+            variables: pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        };
+        assert!(
+            set(&[("session_id", "c8193c93"), ("session_name", "Plan it")])
+                .validate()
+                .is_ok()
+        );
+        assert!(set(&[("session_name", "")]).validate().is_ok());
+        assert!(
+            set(&[(&"x".repeat(32), &"é".repeat(128))])
+                .validate()
+                .is_ok()
+        );
+        for bad in [
+            set(&[]),
+            set(&[("Session", "x")]),
+            set(&[("1x", "x")]),
+            set(&[("a-b", "x")]),
+            set(&[(&"x".repeat(33), "x")]),
+            set(&[("name", "two\nlines")]),
+            set(&[("name", "\u{1b}[31m")]),
+            set(&[("name", &"x".repeat(257))]),
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+        let many: Vec<_> = (0..17)
+            .map(|i| (format!("k{i}"), "v".to_string()))
+            .collect();
+        let many: Vec<_> = many.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        assert!(set(&many).validate().is_err());
     }
     #[test]
     fn plain_text_escapes_only_control_and_bidi_characters() {

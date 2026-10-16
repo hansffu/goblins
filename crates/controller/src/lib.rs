@@ -7,6 +7,7 @@ pub mod controller;
 pub mod devshell;
 mod docker;
 pub mod evaluator;
+pub mod history;
 mod network;
 mod process;
 pub mod raid;
