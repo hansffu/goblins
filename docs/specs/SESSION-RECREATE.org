@@ -1,6 +1,6 @@
 #+title: Recreating goblin sessions
 
-Status: plan, 2026-10-16. Not implemented.
+Status: implemented, 2026-10-16. Usage is in the "Recreating goblins" section of [[file:../USAGE.org][USAGE.org]]; the decision is [[file:../adr/0010-recreate-not-restore.md][ADR 0010]].
 
 * Goal
 
@@ -130,7 +130,9 @@ End-to-end, with installed Codex 0.163.0, a faithful copy of the launcher, the r
 - With the stock launcher, resume fails with the permission-override error above, before any request is sent.
 - With only those two flags removed: the terminal UI sends =thread/resume= with an integer request id and no =threadSource=, which =foreground_thread_request= already accepts; the adapter records the resumed id; activity reporting works; the old conversation loads without a new model call; the resume response carries =thread.name=; a rename emits =thread/name/updated= on the proxied connection.
 
-Not yet verified: Claude's =session_title= hook field and transcript title entries against the installed Claude Code.
+Real Claude Code transcripts (2.1.301) contain =ai-title= entries with an =aiTitle= field, repeated through the session, so reading the latest from the end of the file finds one. Not yet verified: Claude's =session_title= hook field and =custom-title= entries (assumed to carry =customTitle=); the hook reads both best-effort.
+
+During implementation the end-to-end test in =tests/test_codex_native.py= also confirmed, with Codex 0.163.0, that =thread/name/set= emits =thread/name/updated= on the terminal's connection and that =/new= in a resumed terminal is reported as a foreground switch.
 
 * Implementation steps
 
