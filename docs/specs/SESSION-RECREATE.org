@@ -11,7 +11,7 @@ This is a *recreate*, not a restore. The daemon keeps a small JSON record per go
 * Decisions
 
 - Records are written by the daemon whenever the recorded state changes. Nothing depends on a clean exit.
-- Recreate uses the current manifest and resolves package names against the current catalog. Names that no longer resolve are skipped and reported.
+- Recreate is best effort: an incomplete recreation is better than none. Anything recorded that cannot be restored is skipped with a reason and the goblin starts anyway; only cancellation aborts. Recreate uses the current manifest and resolves package names against the current catalog.
 - Denied packages are recorded for information only. A recreated goblin can request them again and gets the normal approval prompt.
 - =mkGoblin= gets =resumeCommand=: the agent's argument list for a resumed launch, with ={key}= placeholders filled from variables the goblin recorded. It replaces =args=. =mkGoblin= makes no assumptions about the agent; each builder sets its own.
 - The agent session's id *and name* are recorded, so the right session is easy to find.
@@ -102,7 +102,7 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
    - their closures join the initial closure, so they are mounted with the initial store view and no helper call is needed;
    - after the empty =generation-0=, it stages one package generation per output in recorded order with the existing =profile= logic, pointing =packages/current= at each new generation and adding the output to =Session.packages= before staging the next (=profile= reads both), so the last generation holds every command with the usual earlier-wins priority;
    - they are the session's own grants, not =Launch.initial_packages=, which same-configuration children copy.
-   Names that no longer name a package (the flake lacks the attribute, it is not a derivation, or nixpkgs says it has been removed) go to =skipped=. Any other evaluation failure, such as a download error, and build, mount and cancellation failures fail the recreate. The 128-package limit covers initial packages and recreated grants together.
+   Any failure for one name, whether it is missing, removed, broken, unfree, or fails to download, evaluate or build, puts it in =skipped= with the final Nix error as its reason; the others are still staged. Only cancellation aborts. Skipped names stay in =approved=, so the next recreate tries them again, which matters for temporary download failures. Mount failures still fail the start. The 128-package limit covers initial packages and recreated grants together.
 5. *Docker.* If the record has Docker, the worker mirrors an inheriting child (=Session::child=): it adds the Docker client to the initial packages and sets =docker_inherit_enabled = Some(true)=, so =Session::start= attaches the engine before the agent starts. Without the client staged, =enable_docker= would try a live grant before the helper exists. A scope without Docker fails the recreate.
 6. *Arguments.* =shell_args= is replaced by the resolved =resume_command= when possible.
 7. *Hand-over.* =Completed::Started= gains the recreated names, their outputs and the skipped items with their reasons. The controller puts them into =record.packages= and =Active.granted_outputs= before marking the session =running=, so children's requests for them are approved automatically, as for ordinary grants.

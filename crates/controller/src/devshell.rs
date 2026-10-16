@@ -1381,7 +1381,7 @@ fn preview(
 
 /// Nix prints trace frames before the actual error; lead with the latter so
 /// bounded diagnostics keep it.
-fn cause(message: &str) -> String {
+pub(crate) fn cause(message: &str) -> String {
     match message
         .rfind("\nerror:")
         .or_else(|| message.rfind("       error:"))

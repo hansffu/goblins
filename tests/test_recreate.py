@@ -136,26 +136,43 @@ class RecreateTests(unittest.TestCase):
         self.assertEqual([(r["id"], r["running"]) for r in offline], [(session, None), ("rec-a", None)])
         self.assertRegex(d.cli("history").stdout, rf"(?m)^{session} .* \? ")
 
-    def test_a_failed_lookup_fails_the_recreate_instead_of_skipping(self):
+    def test_packages_that_fail_are_skipped_with_reasons_and_tried_again(self):
         bindir = Path(tempfile.mkdtemp(prefix="goblins-fake-nix-"))
+        self.addCleanup(shutil.rmtree, bindir)
+        offline = bindir / "offline"
+        offline.touch()
         real = shutil.which("nix")
-        # A download failure while evaluating 'hello', as without a network.
+        # While 'offline' exists, evaluating 'cowsay' fails like a download.
         (bindir / "nix").write_text(f"""#!{sys.executable}
 import os, sys
-if "eval" in sys.argv and any(a.endswith(".hello") for a in sys.argv):
+if os.path.exists({str(offline)!r}) and "eval" in sys.argv and any(a.endswith(".cowsay") for a in sys.argv):
     sys.stderr.write("error: unable to download 'https://cache.example/x.narinfo': Couldn't resolve host name (6)\\n")
     sys.exit(1)
 os.execv({real!r}, [{real!r}, *sys.argv[1:]])
 """)
         (bindir / "nix").chmod(0o700)
-        self.addCleanup(shutil.rmtree, bindir)
-        d = self.daemon(record("rec-fetch", packages={"approved": ["hello", "no-such-goblins-package"], "denied": []}),
+        # unrar is unfree, which the pinned catalog refuses to evaluate.
+        approved = ["unrar", "hello", "cowsay"]
+        d = self.daemon(record("rec-best", packages={"approved": approved, "denied": []}),
                         env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"})
-        failed = self.recreate(d, "rec-fetch", wait="failed")
-        detail = d.get(failed["session"])["detail"]
-        self.assertIn("cannot resolve recorded package 'hello'", detail)
-        self.assertIn("unable to download", detail)
-        self.assertIsNone(d.record(failed["session"]))
+        session = self.recreate(d, "rec-best")["session"]
+        r = d.get(session)
+        self.assertEqual(r["packages"], ["hello"])
+        reasons = {s["name"]: s["reason"] for s in r["skipped"]}
+        self.assertEqual(list(reasons), ["unrar", "cowsay"])
+        self.assertIn("unfree", reasons["unrar"])
+        self.assertIn("unable to download", reasons["cowsay"])
+        self.assertEqual(self.exec(d, session, "test -x /run/goblins/packages/current/bin/hello; echo $?").stdout, "0\n")
+        # Skipped packages stay approved, so the next recreate tries again.
+        own = d.wait(lambda: d.record(session))
+        self.assertEqual(own["packages"]["approved"], approved)
+        self.assertEqual(own["skipped"], r["skipped"])
+        d.rpc.call("sessions.stop", {"session": session})
+        d.wait(lambda: (d.record(session) or {}).get("stopped"))
+        offline.unlink()
+        again = d.get(self.recreate(d, session)["session"])
+        self.assertEqual(again["packages"], ["hello", "cowsay"])
+        self.assertEqual([s["name"] for s in again["skipped"]], ["unrar"])
 
     def test_a_missing_variable_or_an_option_like_value_falls_back_to_args(self):
         d = self.daemon(record("rec-missing", agent_name="snaga"),

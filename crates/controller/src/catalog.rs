@@ -73,22 +73,6 @@ pub fn select(
     }
     Ok(selected)
 }
-/// Whether a `select` error means the name no longer names a package in
-/// the catalog, as opposed to a failure to evaluate, fetch or build it.
-pub fn no_longer_a_package(error: &str) -> bool {
-    [
-        "invalid package attribute",
-        "package has an unsupported output name",
-        // Our selection's own throw.
-        "attribute is not a package derivation",
-        // Nix, for an attribute path the flake lacks.
-        "does not provide attribute",
-        // nixpkgs aliases.nix, for a package that was removed.
-        "has been removed",
-    ]
-    .iter()
-    .any(|pattern| error.contains(pattern))
-}
 pub fn preview(
     flake: &str,
     name: &str,
@@ -170,31 +154,5 @@ mod tests {
         assert!(p.build_required);
         assert_eq!(p.download.as_deref(), Some("20.1 KiB"));
         assert!(parse_summary("unexpected output").download.is_none());
-    }
-    #[test]
-    fn only_a_missing_package_counts_as_gone() {
-        let resolve = |e: &str| format!("cannot resolve package 'x' from pinned nixpkgs: {e}");
-        for gone in [
-            "invalid package attribute".to_string(),
-            resolve(
-                "error: flake 'path:/nix/store/x-source' does not provide attribute 'packages.x86_64-linux.x', 'legacyPackages.x86_64-linux.x' or 'x'",
-            ),
-            resolve(
-                "error: … while calling the 'throw' builtin\n error: attribute is not a package derivation",
-            ),
-            resolve("error: 'x' has been removed from nixpkgs as it was unmaintained"),
-        ] {
-            assert!(no_longer_a_package(&gone), "{gone}");
-        }
-        for failure in [
-            resolve(
-                "error: unable to download 'https://cache.nixos.org/x.narinfo': Couldn't resolve host name (6)",
-            ),
-            resolve("error: interrupted by the user"),
-            resolve("error: attribute 'meta' missing"),
-            "could not build package 'x': builder failed".to_string(),
-        ] {
-            assert!(!no_longer_a_package(&failure), "{failure}");
-        }
     }
 }

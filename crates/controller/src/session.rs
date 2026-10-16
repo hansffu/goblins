@@ -966,47 +966,29 @@ impl Session {
         self.build(name, &selection)
     }
     /// Resolve a recreated goblin's recorded grants against the current
-    /// catalog, before `start`: the outputs in recorded order, and the names
-    /// that no longer resolve. A build failure or cancellation fails.
+    /// catalog, before `start`: the outputs in recorded order, and what
+    /// could not be resolved or built, with why. Recreate is best effort: any
+    /// failure for one package skips it, and only cancellation aborts.
     pub(crate) fn resolve_recorded(&self, names: &[String]) -> Result<Resolved> {
         let mut outputs: Vec<(String, PathBuf)> = vec![];
-        let mut skipped = vec![];
+        let mut skipped: Vec<crate::history::Skipped> = vec![];
         for name in names {
             self.cancel.check()?;
-            if outputs.iter().any(|(n, _)| n == name)
-                || skipped
-                    .iter()
-                    .any(|s: &crate::history::Skipped| s.name == *name)
-            {
+            if outputs.iter().any(|(n, _)| n == name) || skipped.iter().any(|s| s.name == *name) {
                 continue;
             }
-            let selection = match crate::catalog::select(
-                &self.launch.flake,
-                name,
-                &self.directory,
-                &self.cancel,
-                true,
-            ) {
-                Ok(selection) => selection,
+            match self.realize(name).and_then(|output| self.root(&output)) {
+                Ok(output) => outputs.push((name.clone(), output)),
                 Err(error) => {
                     self.cancel.check()?;
-                    // Only a name that no longer resolves is skipped; a failed
-                    // evaluation or download must not drop a grant silently.
-                    if !crate::catalog::no_longer_a_package(&error.to_string()) {
-                        return Err(
-                            format!("cannot resolve recorded package '{name}': {error}").into()
-                        );
-                    }
                     self.event(
                         "recreate-skipped",
                         serde_json::json!({"package":name,"detail":error.to_string()}),
                     );
-                    skipped.push(crate::history::Skipped::new(name, &error.to_string()));
-                    continue;
+                    let reason = crate::devshell::cause(&error.to_string());
+                    skipped.push(crate::history::Skipped::new(name, &reason));
                 }
-            };
-            let output = self.root(&self.build(name, &selection)?)?;
-            outputs.push((name.clone(), output));
+            }
         }
         Ok((outputs, skipped))
     }

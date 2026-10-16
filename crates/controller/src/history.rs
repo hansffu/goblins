@@ -67,14 +67,16 @@ pub struct Record {
 #[serde(deny_unknown_fields)]
 pub struct Skipped {
     pub name: String,
-    /// One line of at most 256 bytes, control characters escaped.
+    /// One line of at most 256 bytes: whitespace runs become one space,
+    /// other control characters are escaped.
     pub reason: String,
 }
 impl Skipped {
     pub fn new(name: &str, reason: &str) -> Self {
         let text = |s: &str| {
             let mut bounded = String::new();
-            for c in goblins_protocol::plain_text(s.trim()).chars() {
+            let line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+            for c in goblins_protocol::plain_text(&line).chars() {
                 if bounded.len() + c.len_utf8() > 256 {
                     break;
                 }
@@ -995,11 +997,7 @@ mod tests {
             "hello",
             &format!("error:\n\u{1b}[31mbroken {}", "é".repeat(200)),
         );
-        assert!(
-            skipped
-                .reason
-                .starts_with("error:\\u000a\\u001b[31mbroken é")
-        );
+        assert!(skipped.reason.starts_with("error: \\u001b[31mbroken é"));
         assert!(skipped.reason.len() <= 256);
         assert!(!skipped.reason.chars().any(char::is_control));
         let mut r = record("a", 1);
