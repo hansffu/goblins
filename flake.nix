@@ -31,7 +31,7 @@
       # test suite's daemon. Users declare their own with the builders.
       demoGoblins = import ./nix/demo-goblins {
         inherit pkgs;
-        inherit (goblinsLib) builders;
+        inherit (goblinsLib) builders commonTools;
         agents = llm-agents.packages.${system};
       };
       demo = goblinsLib.builders.mkGoblins { goblins = demoGoblins; };

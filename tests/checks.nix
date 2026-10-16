@@ -269,7 +269,7 @@ in
     api.builders.mkGoblins {
       goblins = import "${source}/nix/demo-goblins" {
         inherit pkgs agents;
-        inherit (api) builders;
+        inherit (api) builders commonTools;
       };
     };
   demo-goblins = demo;
