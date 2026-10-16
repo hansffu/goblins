@@ -338,4 +338,4 @@ Raids end with the daemon and are not recorded. A recreated goblin is in no raid
 
 * TODO Emacs history view
 
-=goblins history= and =goblins resume= are CLI only. An Emacs view could list the records (=history.list= on the host socket) with their agent session names, recreate one at point with the =recreate= parameter of =sessions.start= and attach, and prune. It could also show a recreated goblin's skipped packages and why it did not resume, both in its session record (=skipped=, =detail=).
+=M-x goblins-resume= chooses a record by completion (=goblins-record= category, with Marginalia and Embark) and resumes it, and the info view shows a resumed goblin's record and skipped packages. Still CLI only: a view listing the records (=history.list= on the host socket), for example as the Embark export of =goblins-record= candidates, more Embark actions on a record (copy its id, show it), and pruning.

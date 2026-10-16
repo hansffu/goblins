@@ -190,6 +190,33 @@ class EmacsTests(unittest.TestCase):
             self.assertEqual((Path(workspace) / "emacs-launch.txt").read_text(), "ghostel-run-ok")
 
 
+    def test_live_resume_chooses_a_recorded_conversation(self):
+        daemon = Daemon(); self.addCleanup(daemon.close)
+        session = daemon.start(agent_name="resumable")["session"]
+        peer, request = daemon.pending(session)
+        daemon.decide(request, True)
+        peer.peer.settimeout(60)
+        self.assertEqual(receive(peer.peer)["result"]["status"], "ready"); peer.close()
+        peer = RPC(daemon.state / session / "resources/request.sock")
+        peer.call("sessions.set-variables", {"variables": {"session_name": "Plan the resume"}}); peer.close()
+        record = daemon.wait(lambda: (r if (r := daemon.record(session))["variables"] else None))
+        daemon.rpc.call("sessions.stop", {"session": session, "kill_children": True})
+        daemon.wait(lambda: daemon.record(session)["stopped"])
+        result = subprocess.run(
+            ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
+             "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
+            env={**os.environ, "GOBLINS_APP": str(daemon.app), "GOBLINS_TEST_STATE": str(daemon.state),
+                 "GOBLINS_TEST_RECORD": record["id"]},
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        resumed = result.stdout.split("RESUMED ")[1].strip()
+        launched = daemon.get(resumed)
+        self.assertEqual(launched["recreated_from"], record["id"])
+        self.assertIn("hello", launched["packages"])
+        # Reported once started, in the echo area.
+        self.assertIn(f"Resumed resumable ({record['id']})", result.stderr)
+
     def test_live_workspace_in_a_terminal_emacs(self):
         """Drive the workspace in a real `emacs -nw` against an isolated daemon.
 

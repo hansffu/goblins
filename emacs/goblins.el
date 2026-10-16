@@ -1240,6 +1240,10 @@ On failure the buffer is killed and the error re-signalled."
        (when (buffer-live-p buffer) (kill-buffer buffer))
        (signal (car err) (cdr err))))))
 
+(defun goblins--launch-key ()
+  "A fresh idempotency key for `sessions.start'."
+  (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid)))))
+
 (defun goblins-run (&optional directory display)
   "Choose a configured goblin and launch it in a new Ghostel buffer.
 Launch from the current project's root, or the current directory outside a
@@ -1270,7 +1274,7 @@ Only launches made here are linked by the terminal command."
                (launch (jsonrpc-request
                         connection 'sessions.start
                         (append
-                         (list :key (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid))))
+                         (list :key (goblins--launch-key)
                                :name name :configuration (plist-get configs :configuration)
                                :cwd cwd :rows 24 :cols 80)
                          (and dev-shell (list :dev_shell dev-shell)))

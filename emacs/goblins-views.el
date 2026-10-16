@@ -694,6 +694,10 @@ end of the buffer.  Add your own to show more."
                                       (format "enabled%s" (if-let* ((scope (plist-get session :scope)))
                                                               (format " (scope %s)" scope) ""))
                                     "disabled"))
+      (goblins--info-row "Resumed from" (plist-get session :recreated_from))
+      (goblins--info-row "Skipped"
+                         (mapconcat (lambda (s) (format "%s (%s)" (plist-get s :name) (plist-get s :reason)))
+                                    (plist-get session :skipped) "; "))
       (goblins--info-row "Terminal" (goblins--info-terminal session))
       (goblins--info-row "Emacs buffer"
                          (when-let* ((buffer (with-current-buffer goblins--view-source

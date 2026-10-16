@@ -584,7 +584,7 @@ goblins resume k3f --detached          # by unique id prefix, without attaching
 goblins history prune --older-than 30d # remove old records
 #+end_src
 
-Each conversation has a record with a short id of its own, such as =k3f9x2ab=. =goblins resume ID= takes that id, any goblin id the record ran as (for example a stopped goblin's id in Emacs), the agent's conversation id, or a unique id prefix. Names are reusable labels and select nothing; completion in zsh and fish shows the agent name, chat name and last update next to each id.
+Each conversation has a record with a short id of its own, such as =k3f9x2ab=. =goblins resume ID= takes that id, any goblin id the record ran as (for example a stopped goblin's id in Emacs), the agent's conversation id, or a unique id prefix. Names are reusable labels and select nothing; completion in zsh and fish shows the agent name, chat name and last update next to each id. In Emacs, =M-x goblins-resume= chooses among the conversations not running now by agent and chat name and opens the resumed goblin in a terminal (see the Emacs README).
 
 Resuming launches the recorded configuration with the recorded scope, dev shell and working directory, using the manifest of the =goblins= you run, like =goblins run=. The agent name is reused when it is free. Before the agent starts, the recorded package grants are mounted in the order they were granted, so the agent's first command already has them, and a goblin that had Docker attaches to its scope's engine.
 

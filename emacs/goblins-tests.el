@@ -514,6 +514,33 @@
                (lambda (&rest _) "shell")))
       (should (equal (goblins--read-configuration '("codex" "shell")) "shell")))))
 
+(defun goblins-test-resume-live ()
+  "Resume the recorded conversation GOBLINS_TEST_RECORD from a real daemon's
+history, without a terminal; print the new goblin's ID."
+  (let ((goblins-executable (getenv "GOBLINS_APP"))
+        (goblins-state-directory (getenv "GOBLINS_TEST_STATE"))
+        (record (getenv "GOBLINS_TEST_RECORD"))
+        offered opened annotation)
+    (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+              ((symbol-function 'goblins--open-terminal)
+               (lambda (session agent cwd &optional _) (setq opened (list session agent cwd))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt table &rest _)
+                 (let ((choices (all-completions "" table)))
+                   (setq offered (mapcar #'substring-no-properties choices)
+                         annotation (funcall (completion-metadata-get
+                                              (completion-metadata "" table nil) 'annotation-function)
+                                             (car choices)))
+                   (car choices)))))
+      (call-interactively #'goblins-resume))
+    (should (equal offered '("resumable: Plan the resume")))
+    (should (string-match-p (concat record " .*shell .*\\+hello") (substring-no-properties annotation)))
+    ;; Launched without a directory, as the record shows, it opens in home.
+    (should (equal (cdr opened) (list "resumable" (expand-file-name "~/"))))
+    (with-current-buffer (goblins--status-buffer)
+      (goblins-test--wait (lambda () (null goblins--resuming)) 60))
+    (princ (format "RESUMED %s\n" (car opened)))))
+
 (defun goblins-test-run-live ()
   "Launch real goblins in the installed Ghostel, with no package downloads."
   (require 'ghostel)
@@ -1803,6 +1830,20 @@ keeps the parameters of windows that live on."
         (should (string-match-p "Name +crew" text))
         (should (string-match-p "Owner +session-b" text))
         (should (string-match-p "Members +session-a, session-b" text)))
+      ;; A resumed goblin says from what, and what it had to skip.
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vconcat (mapcar (lambda (s)
+                                            (if (equal (plist-get s :id) "session-a")
+                                                (append (list :recreated_from "k3f9x2ab"
+                                                              :skipped [(:name "cowsay" :reason "gone")])
+                                                        s)
+                                              s))
+                                          (plist-get goblins--snapshot :sessions))))))
+      (goblins--info-render)
+      (should (string-match-p "Resumed from +k3f9x2ab" (buffer-string)))
+      (should (string-match-p "Skipped +cowsay (gone)" (buffer-string)))
       ;; Extra sections plug in.
       (let ((goblins-info-section-functions
              (cons (lambda (session _snapshot)
@@ -2364,6 +2405,109 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (should (equal decided '("y" t)))
         (call-interactively #'goblins-request-goblin)
         (should (equal opened (list source "session-b")))))))
+
+(defun goblins-test--record (id agent &rest props)
+  (append props (list :id id :agent_name agent :configuration "claude" :cwd "/tmp"
+                      :sessions (vector (concat "goblin-" id)) :updated (* 1000 (- (float-time) 7200))
+                      :packages '(:approved ["cowsay"] :denied []) :running :json-false)))
+
+(defconst goblins-test--records
+  (list (goblins-test--record "aaaaaaaa" "nikka" :variables '(:session_id "c-1" :session_name "Fix tests"))
+        (goblins-test--record "bbbbbbbb" "gribble" :running t)
+        (goblins-test--record "cccccccc" "nikka" :variables '(:session_name "Fix tests")
+                              :cwd "/nonexistent/goblins" :docker_enabled t
+                              :skipped [(:name "jq" :reason "gone")])
+        (goblins-test--record "dddddddd" "zorg"))
+  "Newest first, as `history.list' gives them; gribble's runs now.")
+
+(ert-deftest goblins-resume-chooses-among-recorded-conversations ()
+  (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
+    (let (offered annotation calls opened)
+      (cl-letf (((symbol-function 'goblins--host-call)
+                 (lambda (_source method params)
+                   (push (cons method params) calls)
+                   (pcase method
+                     ('history.list (list :records (vconcat goblins-test--records)))
+                     ('sessions.start (list :session "new-1" :agent_name "nikka")))))
+                ((symbol-function 'goblins--require-ghostel) #'ignore)
+                ((symbol-function 'goblins--configurations)
+                 (lambda () '(:configuration "/m.json" :names ("claude"))))
+                ((symbol-function 'goblins--open-terminal)
+                 (lambda (session agent cwd &optional _) (setq opened (list session agent cwd))))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt table &rest _)
+                   (let* ((metadata (completion-metadata "" table nil))
+                          (choices (goblins-test--choices table)))
+                     (should (eq (completion-metadata-get metadata 'category) 'goblins-record))
+                     ;; Newest first, whatever the completion UI would sort.
+                     (should (eq (completion-metadata-get metadata 'display-sort-function) #'identity))
+                     (setq offered (mapcar #'substring-no-properties choices)
+                           annotation (substring-no-properties
+                                       (funcall (completion-metadata-get metadata 'annotation-function)
+                                                (cadr choices))))
+                     ;; Any id `goblins resume' takes matches, unlisted.
+                     (dolist (id '("aaaaaaaa" "goblin-dddddddd" "c-1"))
+                       (should (test-completion id table)))
+                     (should-not (test-completion "zzzzzzzz" table))
+                     (cadr choices)))))
+        (call-interactively #'goblins-resume)
+        ;; Running conversations are left out; alike ones get their record id.
+        (should (equal offered '("nikka: Fix tests <aaaaaaaa>" "nikka: Fix tests <cccccccc>" "zorg")))
+        (should (string-match-p
+                 "cccccccc +2h +claude +/nonexistent/goblins +docker +\\+cowsay +skipped jq" annotation))
+        (should (equal (cdr (assq 'sessions.start calls))
+                       (list :key (plist-get (cdr (assq 'sessions.start calls)) :key)
+                             :configuration "/m.json" :recreate "cccccccc" :rows 24 :cols 80)))
+        (should (equal opened '("new-1" "nikka" "/nonexistent/goblins/")))
+        ;; Once started, what was skipped is reported, once.
+        (with-current-buffer source
+          (should (equal goblins--resuming '("new-1")))
+          (setq goblins--snapshot
+                (plist-put goblins--snapshot :sessions
+                           (vector (goblins-test--session "new-1" :agent_name "nikka" :state "starting"))))
+          (goblins--report-resumed)
+          (should (equal goblins--resuming '("new-1")))
+          (setq goblins--snapshot
+                (plist-put goblins--snapshot :sessions
+                           (vector (goblins-test--session
+                                    "new-1" :agent_name "nikka" :recreated_from "cccccccc"
+                                    :skipped [(:name "cowsay" :reason "no longer a package")]
+                                    :detail "resumed in a fresh conversation: no session_id"))))
+          (let (said)
+            (cl-letf (((symbol-function 'message) (lambda (_f text) (setq said text))))
+              (goblins--report-resumed))
+            (should (equal said (concat "Resumed nikka (cccccccc); skipped cowsay (no longer a package); "
+                                        "resumed in a fresh conversation: no session_id"))))
+          (should-not goblins--resuming)))
+      ;; A typed id resumes its record too; with nothing to resume, say so.
+      (cl-letf (((symbol-function 'goblins--host-call)
+                 (lambda (_source method _params)
+                   (when (eq method 'history.list)
+                     (list :records (vconcat goblins-test--records)))))
+                ((symbol-function 'completing-read) (lambda (&rest _) "goblin-dddddddd")))
+        (should (equal (plist-get (cadr (goblins--choose-record "Resume: ")) :id) "dddddddd")))
+      (cl-letf (((symbol-function 'goblins--host-call)
+                 (lambda (&rest _) (list :records (vector (nth 1 goblins-test--records))))))
+        (should-error (goblins--choose-record "Resume: ") :type 'user-error)))))
+
+(ert-deftest goblins-resume-records-are-embark-and-marginalia-targets ()
+  (skip-unless (and (require 'embark nil t) (require 'marginalia nil t)))
+  (require 'goblins-completion)
+  (should (equal (alist-get 'goblins-record embark-keymap-alist) '(goblins-embark-record-map)))
+  (should (eq (lookup-key goblins-embark-record-map (kbd "RET")) #'goblins-resume))
+  (should (eq (lookup-key goblins-embark-record-map "w") #'embark-copy-as-kill))
+  (let ((annotators (alist-get 'goblins-record (if (boundp 'marginalia-annotators)
+                                                    marginalia-annotators
+                                                  marginalia-annotator-registry))))
+    (should (equal annotators '(goblins-marginalia-annotate-record none)))
+    (let* ((candidate (car (goblins--record-candidates (list (nth 3 goblins-test--records)))))
+           (text (goblins-marginalia-annotate-record candidate)))
+      (should (eq (get-text-property 0 'marginalia--align text) t))
+      (should (string-match-p "dddddddd +2h +claude +/tmp +\\+cowsay" (substring-no-properties text)))
+      ;; Without its property, while the record is read, the candidate is looked up.
+      (let ((goblins--resume-records (list (cons "zorg" (nth 3 goblins-test--records)))))
+        (should (goblins-marginalia-annotate-record "zorg")))
+      (should-not (goblins-marginalia-annotate-record "zorg")))))
 
 (ert-deftest goblins-embark-acts-on-goblins-and-their-terminals ()
   (skip-unless (require 'embark nil t))
