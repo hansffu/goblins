@@ -127,6 +127,37 @@ impl Record {
         let excess = self.sessions.len().saturating_sub(MAX_SESSIONS);
         self.sessions.drain(..excess);
     }
+    /// Bytes as written: pretty-printed, with a final newline.
+    fn size(&self) -> usize {
+        serde_json::to_vec_pretty(self).map_or(usize::MAX, |v| v.len() + 1)
+    }
+    /// Shrink the record until it fits the size a reader accepts, giving up
+    /// what matters least first: why packages were skipped, then which
+    /// were, then the oldest goblin ids beyond the latest. False when it
+    /// still does not fit.
+    pub fn fit(&mut self) -> bool {
+        if self.size() <= MAX_RECORD {
+            return true;
+        }
+        for i in (0..self.skipped.len()).rev() {
+            self.skipped[i].reason.clear();
+            if self.size() <= MAX_RECORD {
+                return true;
+            }
+        }
+        while self.skipped.pop().is_some() {
+            if self.size() <= MAX_RECORD {
+                return true;
+            }
+        }
+        while self.sessions.len() > 1 {
+            self.sessions.remove(0);
+            if self.size() <= MAX_RECORD {
+                return true;
+            }
+        }
+        false
+    }
     /// A new record; `ran_as` adds its goblins.
     pub fn new(id: &str, configuration: &str, agent_name: &str, now: u64) -> Self {
         Self {
@@ -170,8 +201,7 @@ impl Record {
                 goblins_protocol::MAX_VARIABLES
             ));
         }
-        // As written: pretty-printed, with a final newline.
-        if serde_json::to_vec_pretty(&next).map_or(true, |v| v.len() + 1 > MAX_RECORD) {
+        if next.size() > MAX_RECORD {
             return Err(format!("the record would exceed {} KiB", MAX_RECORD / 1024));
         }
         *self = next;
@@ -369,8 +399,18 @@ impl Store {
             _lock: lock,
         })
     }
-    /// Replace a record, in memory now and on disk soon.
-    pub fn write(&mut self, record: Record) {
+    /// Replace a record, in memory now and on disk soon. Only what a reader
+    /// accepts is written: the record is shrunk to fit, and one that cannot
+    /// fit leaves the previous revision in place.
+    pub fn write(&mut self, mut record: Record) {
+        if !record.fit() {
+            eprintln!(
+                "goblins: session record {} would exceed {} KiB; keeping the previous one",
+                record.id,
+                MAX_RECORD / 1024
+            );
+            return;
+        }
         self.records.insert(record.id.clone(), record.clone());
         self.send(Op::Write(Box::new(record)));
     }
@@ -768,6 +808,52 @@ mod tests {
         let many: BTreeMap<_, _> = (0..16).map(|i| (format!("k{i}"), "v".into())).collect();
         assert!(r.set_variables(&many).is_err());
         assert_eq!(r.variables, set(&[("session_id", "x")]));
+    }
+    #[test]
+    fn writes_shrink_a_record_to_what_a_reader_accepts() {
+        let (mut s, _root) = store();
+        // Near the limit with package names, then skip entries on top, as a
+        // resume adds them outside `update`.
+        let mut r = record("a", 1);
+        let long = "x".repeat(190);
+        let mut i = 0;
+        while r.approve(&format!("{long}{i}")).is_ok() && r.size() < 53 * 1024 {
+            i += 1;
+        }
+        for i in 0..64 {
+            r.skipped
+                .push(Skipped::new(&format!("p{i}"), &"why ".repeat(100)));
+        }
+        r.ran_as("s1");
+        r.ran_as("s2");
+        assert!(r.size() > MAX_RECORD);
+        s.write(r.clone());
+        let written = s.records["a"].clone();
+        assert!(written.size() <= MAX_RECORD);
+        // Reasons go first, and only as many as needed.
+        assert_eq!(written.packages, r.packages);
+        assert_eq!(written.skipped.len(), 64);
+        assert!(written.skipped[0].reason.starts_with("why"));
+        assert!(written.skipped[63].reason.is_empty());
+        assert_eq!(written.sessions, r.sessions);
+        let directory = s.directory.clone();
+        settle(&mut s);
+        drop(s);
+        assert_eq!(on_disk(&directory)["a"], written);
+        // A record that cannot fit leaves the previous revision.
+        let (mut s, _root) = store();
+        let mut fits = record("b", 1);
+        fits.ran_as("s1");
+        s.write(fits.clone());
+        let mut huge = fits.clone();
+        huge.variables
+            .insert("session_name".into(), "y".repeat(2 * MAX_RECORD));
+        s.write(huge);
+        assert_eq!(s.records["b"], fits);
+        let directory = s.directory.clone();
+        settle(&mut s);
+        drop(s);
+        assert_eq!(on_disk(&directory)["b"], fits);
     }
     #[test]
     fn writes_replace_records_atomically_and_survive_reopening() {
