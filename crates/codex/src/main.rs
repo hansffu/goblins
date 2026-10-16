@@ -26,6 +26,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Cli {
     #[arg(long, global = true)]
     runtime_dir: Option<PathBuf>,
+    /// The daemon's sandbox endpoint (tests only)
+    #[arg(long, global = true, hide = true)]
+    request_socket: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -91,8 +94,10 @@ fn now_ms() -> u64 {
         .as_millis()
         .min(u64::MAX as u128) as u64
 }
+static REQUEST_SOCKET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 fn daemon(method: &str, value: Value) -> Result<Value> {
-    let mut s = UnixStream::connect(goblins_protocol::REQUEST_SOCKET)?;
+    let socket = REQUEST_SOCKET.get_or_init(|| goblins_protocol::REQUEST_SOCKET.into());
+    let mut s = UnixStream::connect(socket)?;
     s.set_read_timeout(Some(Duration::from_secs(3)))?;
     s.set_write_timeout(Some(Duration::from_secs(3)))?;
     rpc::exchange(&mut s, json!(0), "initialize", json!({"api":1}))?;
@@ -134,6 +139,66 @@ impl Reporter {
             errors,
         }
     }
+}
+/// The foreground thread's id and name, for `goblins recreate`. They are
+/// reported together, off the proxy loop, and a failed report is retried with
+/// a bounded backoff, always with the latest values: an obsolete retry cannot
+/// overwrite a newer thread.
+fn conversation_reporter() -> Sender<(String, String)> {
+    let (desired, updates) = mpsc::channel::<(String, String)>();
+    std::thread::spawn(move || {
+        let first = Duration::from_millis(500);
+        let mut backoff = first;
+        let mut wanted: Option<(String, String)> = None;
+        let mut acknowledged = None;
+        loop {
+            let next = if wanted.is_some() && wanted != acknowledged {
+                match updates.recv_timeout(backoff) {
+                    Ok(next) => Some(next),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match updates.recv() {
+                    Ok(next) => Some(next),
+                    Err(_) => break,
+                }
+            };
+            if let Some(next) = next {
+                wanted = Some(updates.try_iter().last().unwrap_or(next));
+                backoff = first;
+            }
+            let Some((id, name)) = wanted.clone() else {
+                continue;
+            };
+            if acknowledged.as_ref() == wanted.as_ref() {
+                continue;
+            }
+            match daemon(
+                "sessions.set-variables",
+                json!({"variables":{"session_id":id,"session_name":variable_text(&name)}}),
+            ) {
+                Ok(_) => acknowledged = wanted.clone(),
+                Err(e) => {
+                    eprintln!("conversation report failed: {e}");
+                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                }
+            }
+        }
+    });
+    desired
+}
+/// One line of text within the daemon's 256-byte variable value limit.
+fn variable_text(text: &str) -> String {
+    let mut value = String::new();
+    for c in text.chars() {
+        let c = if c.is_control() { ' ' } else { c };
+        if value.len() + c.len_utf8() > 256 {
+            break;
+        }
+        value.push(c);
+    }
+    value
 }
 #[derive(Debug)]
 struct Rejected(String);
@@ -347,7 +412,12 @@ impl Server {
 /// Codex defers SessionStart until the first turn, so this also binds an empty
 /// terminal and immediately guards against late compaction hooks after a switch.
 #[allow(clippy::result_large_err)] // Tungstenite callback requires an unboxed HTTP error response.
-fn native_proxy(listener: &UnixListener, upstream: &Path, dir: &Path) -> Result<()> {
+fn native_proxy(
+    listener: &UnixListener,
+    upstream: &Path,
+    dir: &Path,
+    conversation: &Sender<(String, String)>,
+) -> Result<()> {
     let (native_stream, _) = listener.accept()?;
     native_stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     native_stream.set_write_timeout(Some(Duration::from_secs(3)))?;
@@ -378,6 +448,7 @@ fn native_proxy(listener: &UnixListener, upstream: &Path, dir: &Path) -> Result<
         .get_ref()
         .set_read_timeout(Some(Duration::from_millis(10)))?;
     let mut pending = std::collections::BTreeSet::new();
+    let mut foreground: Option<String> = None;
     fn receive(ws: &mut WebSocket<UnixStream>) -> Result<Option<Message>> {
         match ws.read() {
             Ok(message) => Ok(Some(message)),
@@ -418,13 +489,25 @@ fn native_proxy(listener: &UnixListener, upstream: &Path, dir: &Path) -> Result<
         if let Some(message) = receive(&mut server)? {
             if let Message::Text(text) = &message
                 && let Ok(v) = serde_json::from_str::<Value>(text)
-                && v.get("method").is_none()
-                && let Some(id) = v.get("id")
-                && pending.remove(&id.to_string())
-                && let Some(thread) = v["result"]["thread"]["id"].as_str()
             {
-                atomic(&dir.join("native-thread.json"), &thread)?;
-                atomic(&dir.join("thread.json"), &thread)?;
+                if v.get("method").is_none()
+                    && let Some(id) = v.get("id")
+                    && pending.remove(&id.to_string())
+                    && let Some(thread) = v["result"]["thread"]["id"].as_str()
+                {
+                    atomic(&dir.join("native-thread.json"), &thread)?;
+                    atomic(&dir.join("thread.json"), &thread)?;
+                    // A foreground switch replaces both values at once.
+                    foreground = Some(thread.to_owned());
+                    let name = v["result"]["thread"]["name"].as_str().unwrap_or_default();
+                    let _ = conversation.send((thread.to_owned(), name.to_owned()));
+                } else if v["method"] == "thread/name/updated"
+                    && let Some(thread) = &foreground
+                    && v["params"]["threadId"].as_str() == Some(thread)
+                {
+                    let name = v["params"]["threadName"].as_str().unwrap_or_default();
+                    let _ = conversation.send((thread.clone(), name.to_owned()));
+                }
             }
             let closing = matches!(message, Message::Close(_));
             if matches!(
@@ -487,9 +570,10 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         let upstream = socket.to_owned();
         let runtime = dir.to_owned();
+        let conversation = conversation_reporter();
         std::thread::spawn(move || {
             loop {
-                if let Err(e) = native_proxy(&listener, &upstream, &runtime) {
+                if let Err(e) = native_proxy(&listener, &upstream, &runtime, &conversation) {
                     eprintln!("native proxy: {e}");
                 }
                 // The terminal has disconnected; do not deliver to its old thread.
@@ -647,6 +731,9 @@ fn bind_hook(dir: &Path, v: &Value) -> Result<()> {
 }
 fn main() {
     let cli = Cli::parse();
+    if let Some(socket) = &cli.request_socket {
+        let _ = REQUEST_SOCKET.set(socket.clone());
+    }
     let dir = cli
         .runtime_dir
         .or_else(|| std::env::var_os("GOBLINS_CODEX_RUNTIME").map(PathBuf::from))
@@ -974,8 +1061,9 @@ mod tests {
             let _ = ws.read();
         });
         let runtime = root.clone();
+        let (conversation, _reported) = mpsc::channel();
         let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime).unwrap()
+            native_proxy(&native_listener, &upstream, &runtime, &conversation).unwrap()
         });
         let stream = UnixStream::connect(&endpoint).unwrap();
         let (mut native, handshake) = tungstenite::client("ws://localhost/", stream).unwrap();
@@ -1012,6 +1100,118 @@ mod tests {
         native.close(None).unwrap();
         proxy.join().unwrap();
         remote.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn the_foreground_thread_and_its_name_are_reported_together() {
+        let root = std::env::temp_dir().join(format!(
+            "gn-{}",
+            goblins_protocol::messages::operation_key(None).unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let upstream = root.join("upstream.sock");
+        let endpoint = root.join("native.sock");
+        let listener = UnixListener::bind(&upstream).unwrap();
+        let native_listener = UnixListener::bind(&endpoint).unwrap();
+        let remote = std::thread::spawn(move || {
+            let (peer, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(peer).unwrap();
+            let answer = |ws: &mut WebSocket<UnixStream>, thread: Value| {
+                let v: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                ws.send(Message::text(
+                    json!({"id":v["id"],"result":{"thread":thread}}).to_string(),
+                ))
+                .unwrap();
+            };
+            let renamed = |thread: &str, name: &str| {
+                Message::text(
+                    json!({"method":"thread/name/updated","params":{"threadId":thread,"threadName":name}})
+                        .to_string(),
+                )
+            };
+            answer(&mut ws, json!({"id":"a","name":null}));
+            ws.send(renamed("other", "Not ours")).unwrap();
+            ws.send(renamed("a", "Named\tlater")).unwrap();
+            answer(&mut ws, json!({"id":"c","name":"Old c"}));
+            ws.send(renamed("a", "No longer foreground")).unwrap();
+            let _ = ws.read();
+        });
+        let runtime = root.clone();
+        let (conversation, reported) = mpsc::channel();
+        let proxy = std::thread::spawn(move || {
+            native_proxy(&native_listener, &upstream, &runtime, &conversation).unwrap()
+        });
+        let stream = UnixStream::connect(&endpoint).unwrap();
+        let (mut native, _) = tungstenite::client("ws://localhost/", stream).unwrap();
+        native
+            .send(Message::text(
+                json!({"id":1,"method":"thread/start","params":{}}).to_string(),
+            ))
+            .unwrap();
+        for _ in 0..3 {
+            native.read().unwrap();
+        }
+        native
+            .send(Message::text(
+                json!({"id":2,"method":"thread/resume","params":{"threadId":"c"}}).to_string(),
+            ))
+            .unwrap();
+        for _ in 0..2 {
+            native.read().unwrap();
+        }
+        native.close(None).unwrap();
+        proxy.join().unwrap();
+        remote.join().unwrap();
+        let values: Vec<_> = reported.try_iter().collect();
+        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
+        assert_eq!(
+            values,
+            [pair("a", ""), pair("a", "Named\tlater"), pair("c", "Old c")]
+        );
+        assert_eq!(variable_text("Named\tlater"), "Named later");
+        assert!(variable_text(&"é".repeat(200)).len() <= 256);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn failed_reports_retry_with_only_the_latest_values() {
+        let root = std::env::temp_dir().join(format!(
+            "gr-{}",
+            goblins_protocol::messages::operation_key(None).unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let socket = root.join("request.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        REQUEST_SOCKET.set(socket).unwrap();
+        let (calls, received) = mpsc::channel();
+        std::thread::spawn(move || {
+            for (attempt, peer) in listener.incoming().enumerate() {
+                let mut peer = peer.unwrap();
+                let init = rpc::read(&mut peer).unwrap();
+                peer.write_all(
+                    &rpc::encode(&rpc::result(init["id"].clone(), json!({"api":1}))).unwrap(),
+                )
+                .unwrap();
+                let call = rpc::read(&mut peer).unwrap();
+                let _ = calls.send(call["params"]["variables"].clone());
+                // The first report fails, as an unreachable daemon would.
+                let reply = if attempt == 0 {
+                    rpc::error(call["id"].clone(), -32009, "not yet")
+                } else {
+                    rpc::result(call["id"].clone(), json!({"accepted":true,"recorded":true}))
+                };
+                peer.write_all(&rpc::encode(&reply).unwrap()).unwrap();
+            }
+        });
+        let reporter = conversation_reporter();
+        reporter.send(("old".into(), "Old".into())).unwrap();
+        let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first, json!({"session_id":"old","session_name":"Old"}));
+        reporter.send(("new".into(), "New".into())).unwrap();
+        let retried = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(retried, json!({"session_id":"new","session_name":"New"}));
+        // Acknowledged values are not sent again.
+        reporter.send(("new".into(), "New".into())).unwrap();
+        assert!(received.recv_timeout(Duration::from_secs(2)).is_err());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

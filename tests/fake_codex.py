@@ -85,6 +85,10 @@ def serve(path):
                     elif method == 'thread/start':
                         subprocess.run(['/run/goblins/bin/goblins-codex', 'hook'], input=json.dumps({'hook_event_name': 'SessionStart', 'session_id': state['thread']}).encode(), stdout=subprocess.DEVNULL, check=True)
                         result = {'thread': {'id': state['thread'], 'status': state['status']}}
+                    elif method == 'thread/resume' and params.get('threadId') != state['thread'] and not state['items']:
+                        # The native terminal resuming a recorded thread.
+                        state['thread'] = params['threadId']
+                        result = {'thread': {'id': state['thread'], 'status': state['status'], 'name': 'Resumed thread'}}
                     elif method in ('thread/read', 'thread/resume'): result = {'thread': {'id': state['thread'], 'status': state['status']}}
                     elif method == 'thread/unsubscribe': result = {}
                     elif method == 'thread/items/list': result = {'data': list(reversed(state['items'])), 'nextCursor': None}
@@ -119,7 +123,11 @@ wire = Wire.connect(sys.argv[sys.argv.index('--remote') + 1].removeprefix('unix:
 wire.send({'id': 1, 'method': 'initialize', 'params': {'clientInfo': {'name': 'native', 'version': '0.1'}}})
 while wire.receive().get('id') != 1: pass
 wire.send({'method': 'initialized'})
-wire.send({'id': 2, 'method': 'thread/start', 'params': {}})
+Path('/tmp/goblins-codex/native-args.json').write_text(json.dumps(sys.argv[1:]))
+if 'resume' in sys.argv:
+    wire.send({'id': 2, 'method': 'thread/resume', 'params': {'threadId': sys.argv[sys.argv.index('resume') + 1]}})
+else:
+    wire.send({'id': 2, 'method': 'thread/start', 'params': {}})
 while (result := wire.receive()).get('id') != 2: pass
 thread = result['result']['thread']['id']
 draft = b''

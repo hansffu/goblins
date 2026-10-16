@@ -225,6 +225,47 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(self.d.get(receiver)["agent_state"],"unknown")
         self.assertEqual(self.d.get(receiver)["exit_code"],0)
 
+    def test_recreate_resumes_the_recorded_thread_without_permission_overrides(self):
+        self.assertEqual(self.manifest["goblins"]["codex"]["resume_command"],
+                         ["literal $(false) argument", "resume", "{session_id}"])
+        self.assertEqual(self.manifest["goblins"]["profile"]["resume_command"],
+                         [*self.manifest["goblins"]["profile"]["args"], "resume", "{session_id}"])
+        receiver = self.d.start("notifier", agent_name="receiver")["session"]
+        # The adapter reports the foreground thread the native terminal chose.
+        thread = self.d.wait(lambda: (self.d.record(receiver) or {}).get("variables", {}).get("session_id"))
+        self.assertNotIn("session_name", self.d.record(receiver)["variables"])
+        self.d.rpc.call("sessions.stop", {"session": receiver})
+        self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
+        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
+                                                    "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
+        again = launch["session"]
+        self.d.wait(lambda: (self.d.record(again) or {}).get("variables") ==
+                    {"session_id": thread, "session_name": "Resumed thread"}, timeout=60)
+        import subprocess
+        args = json.loads(subprocess.check_output([str(self.app), "--state-dir", str(self.d.state), "exec", again,
+                                                   "--", "python3", "-c",
+                                                   "print(open('/tmp/goblins-codex/native-args.json').read())"]))
+        self.assertEqual(args[-2:], ["resume", thread])
+        self.assertNotIn("--sandbox", args)
+        self.assertNotIn("--ask-for-approval", args)
+        self.assertIn("--remote", args)
+        # A configuration that passes --sandbox with resume says why it cannot.
+        config = json.loads(Path(self.d.manifest).read_text())
+        config["goblins"]["codex"]["resume_command"] = ["--sandbox", "read-only", "resume", "{session_id}"]
+        path = Path(self.d.temp.name) / "sandbox-resume.json"
+        path.write_text(json.dumps(config))
+        probe = self.d.start("codex", agent_name="probe")["session"]
+        self.sandbox(probe, "sessions.set-variables", {"variables": {"session_id": thread}})
+        self.d.rpc.call("sessions.stop", {"session": probe})
+        self.d.wait(lambda: self.d.get(probe)["state"] == "stopped")
+        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": str(path),
+                                                    "recreate": probe, "rows": 24, "cols": 100})
+        refused = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", launch["session"]])
+        self.addCleanup(refused.close)
+        refused.expect("--sandbox cannot be combined with resume", timeout=60)
+        self.d.wait(lambda: self.d.get(launch["session"])["state"] == "stopped")
+        self.assertEqual(self.d.get(launch["session"])["exit_code"], 2)
+
     def test_native_ui_discovers_managed_hooks(self):
         # Trust only this test workspace in the synthetic native configuration.
         # /hooks is local UI, not a prompt sent to a model.

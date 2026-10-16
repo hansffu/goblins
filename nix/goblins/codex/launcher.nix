@@ -27,6 +27,7 @@ pkgs.writeShellScriptBin binName ''
   )}
   # Native utility/exec subcommands do not accept --remote. Keep them usable.
   skip_value=false
+  resume=false
   for argument in "$@"; do
     if [[ "$skip_value" == true ]]; then skip_value=false; continue; fi
     case "$argument" in
@@ -34,11 +35,26 @@ pkgs.writeShellScriptBin binName ''
         skip_value=true ;;
       --help|-h|--version|-V|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help)
         exec "$codex_executable" --sandbox danger-full-access --ask-for-approval never --enable hooks "''${mcp_overrides[@]}" "$@" ;;
+      resume) resume=true; break ;;
       --|-i|--image) break ;;
       -*) ;;
       *) break ;;
     esac
   done
+  # Codex refuses permission overrides when resuming a remote thread. The
+  # App Server still enforces sandbox_mode and approval_policy itself.
+  permission_args=(--sandbox danger-full-access --ask-for-approval never)
+  if [[ "$resume" == true ]]; then
+    permission_args=()
+    for argument in "$@"; do
+      case "$argument" in
+        --) break ;;
+        -s|--sandbox|--sandbox=*|-s?*|-a|--ask-for-approval|--ask-for-approval=*|-a?*)
+          printf 'Goblins: %s cannot be combined with resume; Goblins sets the sandbox and approval policy on the App Server.\n' "$argument" >&2
+          exit 2 ;;
+      esac
+    done
+  fi
   # /tmp is private to this sandbox, including for parent and child goblins.
   # Keep the server socket outside the mounted/shared Codex configuration.
   export GOBLINS_CODEX_RUNTIME=/tmp/goblins-codex
@@ -134,7 +150,7 @@ pkgs.writeShellScriptBin binName ''
     exit 1
   fi
   "$codex_executable" --remote "unix://$native_socket" \
-    --sandbox danger-full-access --ask-for-approval never --enable hooks \
+    "''${permission_args[@]}" --enable hooks \
     "''${mcp_overrides[@]}" "$@" <&9 9<&- &
   native_pid=$!
   # Preserve native exit status; EXIT tears down both sandbox-local helpers.

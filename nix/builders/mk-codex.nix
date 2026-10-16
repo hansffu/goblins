@@ -15,6 +15,16 @@ in
   codexSettings ? { },
   filterUnavailableMcp ? false,
   allowedPackages ? commonTools,
+  args ? [ ],
+  # `goblins recreate` resumes the foreground thread the adapter recorded.
+  # Options before `resume`, such as -p and -c, still reach the App Server.
+  # This default appends to args, so it suits args made of options only: a
+  # goblin whose args contain a prompt, a subcommand or -- sets its own (or
+  # null).
+  resumeCommand ? args ++ [
+    "resume"
+    "{session_id}"
+  ],
   rwDirs ? [ ],
   env ? { },
   injectedFiles ? { },
@@ -37,6 +47,8 @@ mkGoblin (
       binName
       outName
       description
+      args
+      resumeCommand
       env
       ;
     integration = "codex";

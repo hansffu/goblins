@@ -104,13 +104,14 @@ requires_openai_auth=false
         c = Client(self.root/'server.sock', name); c.wire.peer.settimeout(15)
         self.addCleanup(c.wire.close)
         return c
-    def start_adapter(self):
+    def start_adapter(self, request_socket=None):
         binary = Path(__file__).resolve().parents[1]/'target/debug/goblins-codex'
         self.assertTrue(binary.exists(), 'build goblins-codex before native proxy smoke tests')
         runtime = self.root/'adapter'
         runtime.mkdir(mode=0o700)
         log = (runtime/'log').open('w'); self.addCleanup(log.close)
-        adapter = subprocess.Popen([str(binary),'--runtime-dir',str(runtime),'run','--socket',str(self.root/'server.sock'),'--native-socket',str(runtime/'native.sock')],stdout=subprocess.DEVNULL,stderr=log)
+        daemon = ['--request-socket', str(request_socket)] if request_socket else []
+        adapter = subprocess.Popen([str(binary),'--runtime-dir',str(runtime),*daemon,'run','--socket',str(self.root/'server.sock'),'--native-socket',str(runtime/'native.sock')],stdout=subprocess.DEVNULL,stderr=log)
         def stop():
             adapter.terminate(); adapter.wait(timeout=5)
         self.addCleanup(stop)
@@ -258,6 +259,82 @@ requires_openai_auth=false
         self.add('draft-reminder')
         self.observer.event('turn/completed',lambda p:p['threadId']==self.thread)
         screen_wait(terminal,lambda text:'my unsent draft' in text)
+
+    def fake_daemon(self):
+        """A sandbox endpoint that records the adapter's conversation reports."""
+        from daemon_support import frame, receive
+        import socket
+        path = self.root/'daemon.sock'
+        listener = socket.socket(socket.AF_UNIX); listener.bind(str(path)); listener.listen()
+        self.addCleanup(listener.close)
+        reports = queue.Queue()
+        def serve():
+            while True:
+                try: peer, _ = listener.accept()
+                except OSError: return
+                with peer:
+                    try:
+                        init = receive(peer)
+                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':{'api':1,'role':'sandbox'}}))
+                        call = receive(peer)
+                        if call['method'] == 'sessions.set-variables':
+                            reports.put(call['params']['variables'])
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'accepted':True,'recorded':True}}))
+                        else:
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'error':{'code':-32601,'message':'not in this test'}}))
+                    except (OSError, EOFError, ValueError): pass
+        threading.Thread(target=serve, daemon=True).start()
+        return path, reports
+    def reported(self, reports, expected, timeout=30):
+        deadline = time.monotonic() + timeout
+        seen = []
+        while time.monotonic() < deadline:
+            try: seen.append(reports.get(timeout=.5))
+            except queue.Empty: continue
+            if seen[-1] == expected: return
+        self.fail(f'missing report {expected}; saw {seen}')
+
+    def test_remote_resume_reports_the_conversation_through_rename_and_switch(self):
+        from terminal_support import Terminal, screen_wait
+        hooks = self.owner.call('hooks/list',{'cwds':[str(self.root)]})['data'][0]['hooks']
+        edits = [{'keyPath':'hooks.state.'+json.dumps(h['key'])+'.trusted_hash', 'value':h['currentHash'], 'mergeStrategy':'replace'} for h in hooks]
+        self.owner.call('config/batchWrite', {'edits':edits,'reloadUserConfig':True})
+        self.script()
+        self.owner.call('turn/start', {'threadId': self.thread, 'input': [{'type': 'text', 'text': 'earlier task'}]})
+        self.owner.event('turn/completed')
+        self.owner.call('thread/name/set', {'threadId': self.thread, 'name': 'Original name'})
+        calls = len(self.inputs)
+        # Codex refuses permission overrides when resuming a remote thread:
+        # the reason the launcher leaves them off.
+        refused = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(self.root/'server.sock'), '--sandbox',
+                            'danger-full-access', '--ask-for-approval', 'never', 'resume', self.thread],
+                           cwd=self.root, env=self.env)
+        self.addCleanup(refused.close)
+        refused.expect('Permission overrides are not supported', timeout=30)
+        self.assertNotEqual(refused.wait(), 0)
+        request_socket, reports = self.fake_daemon()
+        runtime = self.start_adapter(request_socket)
+        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(runtime/'native.sock'),
+            '--dangerously-bypass-hook-trust', 'resume', self.thread], cwd=self.root, env=self.env)
+        self.addCleanup(terminal.close)
+        self.reported(reports, {'session_id': self.thread, 'session_name': 'Original name'})
+        self.assertEqual(json.loads((runtime/'thread.json').read_text()), self.thread)
+        screen_wait(terminal, lambda text: 'earlier task' in text, timeout=30)
+        self.assertEqual(len(self.inputs), calls, 'resuming must not call the model')
+        # A rename of the foreground thread reaches the proxied connection.
+        self.observer.call('thread/name/set', {'threadId': self.thread, 'name': 'Renamed'})
+        self.reported(reports, {'session_id': self.thread, 'session_name': 'Renamed'})
+        # A foreground switch replaces both values.
+        terminal.send('/new')
+        time.sleep(1)
+        terminal.send('\r')
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            current = json.loads((runtime/'thread.json').read_text()) if (runtime/'thread.json').exists() else None
+            if current and current != self.thread: break
+            time.sleep(.1)
+        self.assertNotEqual(current, self.thread)
+        self.reported(reports, {'session_id': current, 'session_name': ''})
 
     def test_native_owns_approval_and_input_while_observer_does_not_answer(self):
         self.script({'type': 'response.output_item.done', 'item': {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'touch /tmp/native-approval-test', 'sandbox_permissions': 'require_escalated', 'justification': 'test approval'})}})
