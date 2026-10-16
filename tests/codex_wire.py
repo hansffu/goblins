@@ -45,7 +45,7 @@ class Wire:
         if not h: raise EOFError()
         n = h[1] & 127
         if n == 126: n = struct.unpack('>H', self.file.read(2))[0]
-        if n == 127: n = struct.unpack('>Q', self.file.read(8))[0]
+        elif n == 127: n = struct.unpack('>Q', self.file.read(8))[0]
         mask = self.file.read(4) if h[1] & 128 else None
         body = self.file.read(n)
         if mask: body = bytes(b ^ mask[i % 4] for i, b in enumerate(body))
