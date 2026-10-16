@@ -299,7 +299,30 @@ fn execute(cli: Cli) -> Result<i32> {
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
             return attachment::recreate(state, configuration, id, detached);
         }
-        Command::History { json } => return records::list(&state, json),
+        Command::History {
+            json: _,
+            command:
+                Some(cli::HistoryCommand::Prune {
+                    older_than,
+                    before,
+                    keep,
+                    dry_run,
+                }),
+        } => {
+            return records::prune(
+                &state,
+                goblins_controller::history::Prune {
+                    older_than,
+                    before,
+                    keep,
+                    dry_run,
+                },
+            );
+        }
+        Command::History {
+            json,
+            command: None,
+        } => return records::list(&state, json),
         Command::Configurations => {
             let runtime = cli
                 .runtime

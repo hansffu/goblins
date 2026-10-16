@@ -1669,6 +1669,23 @@ impl Controller {
                 let _: Empty = params(value)?;
                 self.history_list()
             }
+            "history.prune" => {
+                let p: crate::history::Prune = params(value)?;
+                if p.is_empty() {
+                    return Err((-32602, "choose --older-than, --before or --keep".into()));
+                }
+                let running = self.live_sessions();
+                let store = self
+                    .history
+                    .as_mut()
+                    .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+                // Ordered with every write: the writer drops queued revisions.
+                let removed = p.select(&store.records, &running, crate::messaging::now());
+                if !p.dry_run {
+                    store.delete(&removed);
+                }
+                Ok(json!({"removed":removed,"dry_run":p.dry_run}))
+            }
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;

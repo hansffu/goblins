@@ -218,4 +218,35 @@ class RecreateTests(unittest.TestCase):
         time.sleep(1)
         self.assertIsNone(snapshot.record(session))
 
+    def test_prune_by_age_date_and_count_never_running_records(self):
+        now = int(time.time() * 1000)
+        day = 86_400_000
+        d = self.daemon(record("old", updated=now - 40 * day), record("mid", updated=now - 10 * day),
+                        record("new", updated=now - day))
+        running = d.start()["session"]
+        d.wait(lambda: d.record(running))
+        stored = lambda: sorted(p.stem for p in d.history.glob("*.json"))
+        usage = d.cli("history", "prune", check=False)
+        self.assertEqual(usage.returncode, 2)
+        self.assertIn("Usage", usage.stderr)
+        self.assertEqual(d.cli("history", "prune", "--older-than", "30d", "--dry-run").stdout, "Would remove 1 record\nold\n")
+        self.assertEqual(stored(), sorted(["old", "mid", "new", running]))
+        self.assertEqual(d.cli("history", "prune", "--older-than", "30d").stdout, "Removed 1 record\nold\n")
+        before = time.strftime("%Y-%m-%d", time.localtime((now - 5 * day) / 1000))
+        self.assertEqual(d.cli("history", "prune", "--before", before).stdout, "Removed 1 record\nmid\n")
+        self.assertEqual(d.cli("history", "prune", "--keep", "0").stdout, "Removed 1 record\nnew\n")
+        d.wait(lambda: stored() == [running])
+        # Offline, the CLI needs the store's lock.
+        d.rpc.call("sessions.stop", {"session": running})
+        d.wait(lambda: d.record(running)["stopped"])
+        d.process.terminate(); d.process.wait(timeout=10)
+        other = Daemon(state_home=d.state_home); self.addCleanup(other.close)
+        refused = d.cli("history", "prune", "--keep", "0", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("another Goblins server owns", refused.stderr)
+        other.close()
+        self.assertEqual(d.cli("history", "prune", "--keep", "0", "--dry-run").stdout, f"Would remove 1 record\n{running}\n")
+        self.assertEqual(d.cli("history", "prune", "--keep", "0").stdout, f"Removed 1 record\n{running}\n")
+        self.assertEqual(stored(), [])
+
 if __name__ == "__main__": unittest.main(verbosity=2)

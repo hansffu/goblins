@@ -103,7 +103,7 @@ fn page_size() -> usize {
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> mailbox::Result<T> {
     serde_json::from_value(value).map_err(|e| (-32602, e.to_string()))
 }
-pub(crate) fn now() -> u64 {
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

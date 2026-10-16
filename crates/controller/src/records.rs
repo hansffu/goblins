@@ -100,3 +100,47 @@ pub fn list(state: &Path, as_json: bool) -> Result<i32> {
     }
     Ok(0)
 }
+
+/// `goblins history prune`, through the owning daemon or, with none
+/// running here, under the store's own lock.
+pub fn prune(state: &Path, prune: history::Prune) -> Result<i32> {
+    let removed: Vec<String> = match Client::connect_optional(state)? {
+        Some(mut client) => {
+            let result = client.call("history.prune", serde_json::to_value(&prune)?)?;
+            serde_json::from_value(result["removed"].clone())?
+        }
+        None => {
+            let directory = history::Store::default_directory()?;
+            if !directory.exists() {
+                Vec::new()
+            } else {
+                let mut store = history::Store::open(&directory)
+                    .map_err(|e| format!("{e}; prune through that server"))?;
+                // No daemon here and the lock is ours: nothing is running.
+                let removed = prune.select(
+                    &store.records,
+                    &Default::default(),
+                    goblins_controller::messaging::now(),
+                );
+                if !prune.dry_run {
+                    store.delete(&removed);
+                }
+                removed
+            }
+        }
+    };
+    let verb = if prune.dry_run {
+        "Would remove"
+    } else {
+        "Removed"
+    };
+    println!(
+        "{verb} {} record{}",
+        removed.len(),
+        if removed.len() == 1 { "" } else { "s" }
+    );
+    for id in removed {
+        println!("{id}");
+    }
+    Ok(0)
+}

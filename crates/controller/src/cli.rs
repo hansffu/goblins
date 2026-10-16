@@ -120,6 +120,8 @@ pub enum Command {
         /// Print the records as JSON
         #[arg(long)]
         json: bool,
+        #[command(subcommand)]
+        command: Option<HistoryCommand>,
     },
     /// Print configured goblin names and their manifest as JSON (no server needed)
     Configurations,
@@ -216,6 +218,32 @@ pub enum RaidCommand {
         goblin: String,
         role: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum HistoryCommand {
+    /// Remove records that are not running; every given criterion must match
+    #[command(group = clap::ArgGroup::new("criteria").required(true).multiple(true))]
+    Prune {
+        /// Not updated within this age: 30d, 12h or 2w
+        #[arg(long, value_name = "AGE", group = "criteria", value_parser = parse_age)]
+        older_than: Option<u64>,
+        /// Last updated before this local day
+        #[arg(long, value_name = "YYYY-MM-DD", group = "criteria", value_parser = parse_date)]
+        before: Option<u64>,
+        /// Keep the N most recently updated records
+        #[arg(long, value_name = "N", group = "criteria")]
+        keep: Option<usize>,
+        /// Show what would be removed without removing it
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+fn parse_age(text: &str) -> std::result::Result<u64, String> {
+    goblins_controller::history::parse_age(text)
+}
+fn parse_date(text: &str) -> std::result::Result<u64, String> {
+    goblins_controller::history::parse_date(text)
 }
 
 #[derive(Subcommand)]
@@ -565,6 +593,43 @@ mod tests {
                 None
             );
         }
+    }
+    #[test]
+    fn prune_needs_a_criterion() {
+        assert!(Cli::try_parse_from(["goblins", "history", "prune"]).is_err());
+        assert!(Cli::try_parse_from(["goblins", "history", "prune", "--dry-run"]).is_err());
+        assert!(
+            Cli::try_parse_from(["goblins", "history", "prune", "--older-than", "30"]).is_err()
+        );
+        match Cli::try_parse_from([
+            "goblins",
+            "history",
+            "prune",
+            "--older-than",
+            "2d",
+            "--keep",
+            "3",
+            "--dry-run",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Command::History {
+                command:
+                    Some(HistoryCommand::Prune {
+                        older_than,
+                        before,
+                        keep,
+                        dry_run,
+                    }),
+                ..
+            }) => assert_eq!(
+                (older_than, before, keep, dry_run),
+                (Some(2 * 86_400_000), None, Some(3), true)
+            ),
+            _ => panic!("not prune"),
+        }
+        assert!(Cli::try_parse_from(["goblins", "history", "--json"]).is_ok());
     }
     #[test]
     fn terminal_lifecycle_host_commands() {
