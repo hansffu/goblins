@@ -35,6 +35,7 @@ pub struct Packages {
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub version: u32,
+    /// Short and random (`new_id`); the record's goblins are in `sessions`.
     pub id: String,
     /// The configuration name, launched from the current manifest.
     pub configuration: String,
@@ -48,9 +49,8 @@ pub struct Record {
     /// agent's conversation id, `session_id`, keeps one record per
     /// conversation.
     pub variables: BTreeMap<String, String>,
-    /// Every goblin this record ran as, oldest first: the record's id is
-    /// the first, and a recreate adds the next instead of a new record. Any
-    /// of them finds the record.
+    /// Every goblin this record ran as, oldest first; a recreate adds the
+    /// next instead of a new record. Any of them finds the record.
     pub sessions: Vec<String>,
     /// What could not be restored when this goblin was last recreated, and why.
     /// Skipped packages stay in `approved`, so the next recreate tries again.
@@ -89,12 +89,31 @@ impl Skipped {
         }
     }
 }
+/// A short random record id: 8 characters of lowercase Crockford base32
+/// (40 bits), easy to read and type. `taken` rejects ids in use.
+pub fn new_id(taken: impl Fn(&str) -> bool) -> Result<String> {
+    const ALPHABET: &[u8] = b"0123456789abcdefghjkmnpqrstvwxyz";
+    let mut random = File::open("/dev/urandom")?;
+    for _ in 0..16 {
+        let mut bytes = [0; 8];
+        random.read_exact(&mut bytes)?;
+        let id: String = bytes
+            .iter()
+            .map(|b| ALPHABET[usize::from(b & 31)] as char)
+            .collect();
+        // Never a goblin session id's shape, and never one in use.
+        if !taken(&id) {
+            return Ok(id);
+        }
+    }
+    Err("cannot choose a free record id".into())
+}
 /// Goblin session ids a record keeps, the newest.
 pub const MAX_SESSIONS: usize = 256;
 impl Record {
     /// The goblin this record last ran as.
     pub fn latest(&self) -> &str {
-        self.sessions.last().map_or(&self.id, String::as_str)
+        self.sessions.last().map_or("", String::as_str)
     }
     /// The agent's conversation, as the goblin reported it.
     pub fn conversation(&self) -> Option<&str> {
@@ -108,6 +127,7 @@ impl Record {
         let excess = self.sessions.len().saturating_sub(MAX_SESSIONS);
         self.sessions.drain(..excess);
     }
+    /// A new record; `ran_as` adds its goblins.
     pub fn new(id: &str, configuration: &str, agent_name: &str, now: u64) -> Self {
         Self {
             version: VERSION,
@@ -120,7 +140,7 @@ impl Record {
             docker_enabled: false,
             packages: Packages::default(),
             variables: BTreeMap::new(),
-            sessions: vec![id.into()],
+            sessions: vec![],
             skipped: vec![],
             created: now,
             updated: now,
@@ -664,8 +684,10 @@ pub fn local_time(millis: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A record that ran as one goblin of the same id.
     fn record(id: &str, updated: u64) -> Record {
         let mut r = Record::new(id, "shell", "snikk", updated);
+        r.ran_as(id);
         r.updated = updated;
         r
     }
@@ -1010,6 +1032,24 @@ mod tests {
             serde_json::json!({"name":"docker","reason":"no Docker in scope 'work'"})
         );
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn record_ids_are_short_free_and_unlike_goblin_ids() {
+        let id = new_id(|_| false).unwrap();
+        assert_eq!(id.len(), 8);
+        assert!(goblins_protocol::identifier(&id));
+        assert!(
+            id.bytes()
+                .all(|b| b"0123456789abcdefghjkmnpqrstvwxyz".contains(&b))
+        );
+        let taken = std::cell::Cell::new(0);
+        let second = new_id(|candidate| {
+            taken.set(taken.get() + 1);
+            candidate == id || taken.get() < 3
+        })
+        .unwrap();
+        assert_ne!(second, id);
+        assert!(new_id(|_| true).is_err());
     }
     #[test]
     fn ages_and_dates() {

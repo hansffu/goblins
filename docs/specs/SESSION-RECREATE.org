@@ -27,12 +27,12 @@ Children, raids, inbox contents, terminal and process state, Emacs UI. Goblins l
 
 One file per conversation line: =$XDG_STATE_HOME/goblins/sessions/<id>.json= (default =~/.local/state/goblins/sessions=). The directory is 0700 and its files 0600.
 
-As in Claude Code and Codex, ids are the keys and names are labels. A new root goblin starts a record whose id is its goblins session id. Recreating continues that same record: the new goblin is appended to =sessions=, so the record always describes the latest goblin, and any goblin id it ran as (such as one Emacs shows for a stopped goblin) finds it. There is also one record per agent conversation: when a goblin reports a =session_id= that another record holds and no goblin runs that one, the other record is merged in (its goblin ids lead, its approved packages are added) and removed. When the agent switches conversation (=/clear=, =/new=), the record follows the goblin.
+As in Claude Code and Codex, ids are the keys and names are labels. A new root goblin starts a record with a short random id: 8 characters of lowercase Crockford base32, such as =k3f9x2ab=. Goblins session ids (=<instance>-s<n>=) share the server instance's 32-character prefix, so they make poor ids to read or type. Recreating continues that same record: the new goblin is appended to =sessions=, so the record always describes the latest goblin, and any goblin id it ran as (such as one Emacs shows for a stopped goblin) finds it. There is also one record per agent conversation: when a goblin reports a =session_id= that another record holds and no goblin runs that one, the other record is merged in (its goblin ids lead, its approved packages are added) and removed. When the agent switches conversation (=/clear=, =/new=), the record follows the goblin.
 
 #+begin_src json
 {
   "version": 1,
-  "id": "1f6b…-s4",
+  "id": "k3f9x2ab",
   "configuration": "claude",
   "agent_name": "morb",
   "cwd": "/home/hansffu/code/goblins",
@@ -41,7 +41,7 @@ As in Claude Code and Codex, ids are the keys and names are labels. A new root g
   "docker_enabled": false,
   "packages": { "approved": ["ripgrep", "jq"], "denied": ["nmap"] },
   "variables": { "session_id": "c8193c93-…", "session_name": "Plan goblin session restore" },
-  "sessions": ["1f6b…-s4", "9a2c…-s7"],
+  "sessions": ["1f6b…-s4", "9a2c…-s98"],
   "skipped": [],
   "created": 1792156012273,
   "updated": 1792159072343,
@@ -54,7 +54,7 @@ As in Claude Code and Codex, ids are the keys and names are labels. A new root g
 - A name is in the list of its latest *final* outcome: a =ready= grant moves it to =approved=, an explicit host denial moves it to =denied=. Approved-but-failed, withdrawn and cancelled requests change nothing. The two lists never overlap.
 - =variables= is a small key/value map that only the goblin itself writes (see below).
 - =skipped= lists what could not be restored when this record's goblin was recreated, as ={name, reason}= entries: approved packages, and =docker=. The reason is one line of at most 256 bytes, control characters escaped. Skipped packages stay in =approved=, so the next recreate tries them again.
-- =sessions= lists the goblins this record ran as, oldest first, at most 256; the first is the record's id, the last the latest goblin.
+- =sessions= lists the goblins this record ran as, oldest first, at most 256; the last is the latest goblin.
 - =stopped= is informational: a goblin that died with its daemon never gets it. Only the record's latest goblin sets it.
 - Size limits: at most 256 names per package list and 64 KiB per record. A grant that would exceed them is still applied but not recorded, and the record's goblin gets a =detail= saying so.
 

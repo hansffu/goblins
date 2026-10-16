@@ -1,5 +1,6 @@
 """Packaged server lifecycle, help and real shell completion scripts."""
 from pathlib import Path
+import json
 import os
 import re
 import shlex
@@ -175,11 +176,12 @@ class ServerTests(unittest.TestCase):
             self.assertNotIn("snikk", complete(shell, ["goblins", "attach", "--instance", "exact", ""]))
         # Recreate completes record ids, newest first, described by agent
         # name and last update where the shell can show it.
-        ids = [launch["session"] for launch in launches]
         deadline = time.monotonic() + 30
         while len(complete("bash", ["goblins", "recreate", ""])) < 2:
             self.assertLess(time.monotonic(), deadline)
             time.sleep(.1)
+        records = json.loads(self.cli("history", "--json"))
+        ids = [next(r["id"] for r in records if launch["session"] in r["sessions"]) for launch in launches]
         for shell in ("bash", "fish"):
             self.assertEqual(set(complete(shell, ["goblins", "recreate", ""])), set(ids))
             self.assertEqual(set(complete(shell, ["goblins", "recreate", "--detached", ""])), set(ids))

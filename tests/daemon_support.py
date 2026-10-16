@@ -89,9 +89,20 @@ class Daemon:
         self.rpc = self.host()
 
     def record(self, id):
-        """A session's recreate record on disk, or None."""
+        """A recreate record on disk, by record id or a goblin id it ran as, or None."""
         path = self.history / f"{id}.json"
-        return json.loads(path.read_text()) if path.exists() else None
+        if path.exists():
+            return json.loads(path.read_text())
+        for path in self.history.glob("*.json") if self.history.exists() else []:
+            if path.name.startswith("."):
+                continue  # a write in progress
+            try:
+                record = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if id in record.get("sessions", []):
+                return record
+        return None
 
     def cli(self, *args, check=True):
         """The host CLI against this daemon and its history store."""

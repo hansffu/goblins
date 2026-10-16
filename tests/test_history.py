@@ -29,12 +29,14 @@ class HistoryTests(unittest.TestCase):
         launch = d.start()
         session = launch["session"]
         record = d.wait(lambda: d.record(session))
-        self.assertEqual((record["version"], record["id"], record["configuration"], record["agent_name"]),
-                         (1, session, "shell", launch["agent_name"]))
+        self.assertEqual((record["version"], record["sessions"], record["configuration"], record["agent_name"]),
+                         (1, [session], "shell", launch["agent_name"]))
+        # A short random id of its own, unlike the goblin's.
+        self.assertRegex(record["id"], r"^[0-9a-hjkmnp-tv-z]{8}$")
         self.assertEqual(record["packages"], {"approved": [], "denied": []})
         self.assertIsNone(record["stopped"])
         self.assertEqual(os.stat(d.history).st_mode & 0o777, 0o700)
-        self.assertEqual(os.stat(d.history / f"{session}.json").st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(d.history / f"{record['id']}.json").st_mode & 0o777, 0o600)
         # A host denial, then an approval: the latest final outcome wins.
         peer, request = d.pending(session)
         d.decide(request, False)
@@ -73,7 +75,7 @@ class HistoryTests(unittest.TestCase):
         d.rpc.call("sessions.stop", {"session": session, "kill_children": True})
         record = d.wait(lambda: (r if (r := d.record(session))["stopped"] else None))
         self.assertEqual(record["packages"]["approved"], ["hello"])
-        self.assertEqual(sorted(p.name for p in d.history.iterdir()), [".lock", f"{session}.json"])
+        self.assertEqual(sorted(p.name for p in d.history.iterdir()), [".lock", f"{record['id']}.json"])
         status = d.cli("server", "status").stdout
         self.assertIn(f"Session history in {d.history}", status)
 

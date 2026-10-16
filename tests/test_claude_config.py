@@ -273,7 +273,7 @@ class ClaudeConfigTests(unittest.TestCase):
         self.d.wait(lambda: self.d.record(receiver)["variables"].get("session_name") == "Resumed task", timeout=60)
         self.assertEqual(self.d.record(receiver)["variables"]["session_id"], recorded["session_id"])
         self.assertEqual(self.d.record(receiver)["sessions"], [receiver, again["session"]])
-        self.assertIsNone(self.d.record(again["session"]))
+        self.assertFalse((self.d.history / f"{again['session']}.json").exists())
 
 
 if __name__ == "__main__":

@@ -1425,6 +1425,19 @@ impl Controller {
         let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
         terminal.detached = p.detached;
         let recorded = p.recorded.take();
+        // A recreated goblin continues its record; a new root goblin gets a
+        // short record id of its own, used once it reaches running.
+        let line = match &recorded {
+            Some(record) => record.id.clone(),
+            None => {
+                let store = self.history.as_ref().ok();
+                crate::history::new_id(|candidate| {
+                    store.is_some_and(|s| s.records.contains_key(candidate))
+                        || self.sessions.values().any(|a| a.line == candidate)
+                })
+                .map_err(|e| (-32010, e.to_string()))?
+            }
+        };
         let source = match inherited {
             Some(inherited) => Source::Child {
                 inherited,
@@ -1503,7 +1516,7 @@ impl Controller {
                     .as_ref()
                     .map(|r| r.variables.clone())
                     .unwrap_or_default(),
-                line: recorded.as_ref().map_or(id.clone(), |r| r.id.clone()),
+                line,
                 recreated_from: recorded,
                 created: self.next,
                 record,
@@ -3942,10 +3955,11 @@ mod tests {
         let _results = live(&mut d, "a", None);
         let _child = live(&mut d, "kid", Some("a"));
         let record = |d: &Controller| d.history.as_ref().unwrap().records["a"].clone();
-        d.history
-            .as_mut()
-            .unwrap()
-            .write(crate::history::Record::new("a", "shell", "a", 1));
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record
+        });
         // Variables: only the caller's own record, all keys together.
         let set = |d: &mut Controller, id: &str, variables: Value| {
             d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
@@ -4066,10 +4080,12 @@ mod tests {
         let path = d.state.clone();
         d.open_history(Ok(path.join("history")), 100);
         let mut line = Record::new("r0", "shell", "morb", 1);
+        line.ran_as("g0");
         line.packages.approved = vec!["jq".into()];
         line.variables.insert("session_id".into(), "c1".into());
         line.stopped = Some(2);
         let mut other = Record::new("o1", "shell", "grib", 0);
+        other.ran_as("g1");
         other.packages.approved = vec!["tree".into()];
         other.variables.insert("session_id".into(), "c2".into());
         other.stopped = Some(1);
@@ -4089,7 +4105,7 @@ mod tests {
         let record =
             |d: &Controller, id: &str| d.history.as_ref().unwrap().records.get(id).cloned();
         let r0 = record(&d, "r0").unwrap();
-        assert_eq!(r0.sessions, ["r0", "s5"]);
+        assert_eq!(r0.sessions, ["g0", "s5"]);
         assert_eq!(r0.packages.approved, ["jq", "hello"]);
         assert_eq!(r0.stopped, None);
         assert!(record(&d, "s5").is_none());
@@ -4104,11 +4120,11 @@ mod tests {
             true
         );
         let r0 = record(&d, "r0").unwrap();
-        assert_eq!(r0.sessions, ["o1", "r0", "s5"]);
+        assert_eq!(r0.sessions, ["g1", "g0", "s5"]);
         assert_eq!(r0.packages.approved, ["jq", "hello", "tree"]);
         assert_eq!(r0.created, 0);
         assert!(d.history.as_ref().unwrap().deleting.contains("o1"));
-        assert_eq!(d.history.as_ref().unwrap().resolve("o1").unwrap().id, "r0");
+        assert_eq!(d.history.as_ref().unwrap().resolve("g1").unwrap().id, "r0");
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4121,6 +4137,7 @@ mod tests {
         let store = d.history.as_mut().unwrap();
         // A record that ran as goblins r0, r1 and r2.
         let mut root = Record::new("r0", "shell", "morb", 1);
+        root.ran_as("r0");
         root.packages.approved = vec!["hello".into()];
         root.variables.insert("session_id".into(), "c819".into());
         root.ran_as("r1");

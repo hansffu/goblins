@@ -119,7 +119,7 @@ class RecreateTests(unittest.TestCase):
         self.assertEqual(own["packages"], source["packages"])
         self.assertEqual(own["variables"], source["variables"])
         self.assertEqual((own["skipped"], own["stopped"]), (r["skipped"], None))
-        self.assertIsNone(d.record(session))
+        self.assertFalse((d.history / f"{session}.json").exists())
         listing = d.cli("history", "--no-pager").stdout
         line = next(l for l in listing.splitlines() if l.startswith("rec-a"))
         self.assertIn("Plan it", line)
@@ -282,9 +282,9 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         day = 86_400_000
         d = self.daemon(record("old", updated=now - 40 * day), record("mid", updated=now - 10 * day),
                         record("new", updated=now - day))
-        running = d.start()["session"]
-        d.wait(lambda: d.record(running))
-        stored = lambda: sorted(p.stem for p in d.history.glob("*.json"))
+        goblin = d.start()["session"]
+        running = d.wait(lambda: d.record(goblin))["id"]
+        stored = lambda: sorted(p.stem for p in d.history.glob("*.json") if not p.name.startswith("."))
         usage = d.cli("history", "prune", check=False)
         self.assertEqual(usage.returncode, 2)
         self.assertIn("Usage", usage.stderr)
@@ -306,7 +306,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertEqual(d.cli("history", "prune", "--keep", "0").stdout, "Removed 1 record\nnew\n")
         d.wait(lambda: stored() == [running])
         # Offline, the CLI needs the store's lock.
-        d.rpc.call("sessions.stop", {"session": running})
+        d.rpc.call("sessions.stop", {"session": goblin})
         d.wait(lambda: d.record(running)["stopped"])
         d.process.terminate(); d.process.wait(timeout=10)
         other = Daemon(state_home=d.state_home); self.addCleanup(other.close)
