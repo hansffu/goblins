@@ -14,6 +14,14 @@ in
   claudeConfigDir ? "$HOME/.claude",
   claudeSettings ? { },
   allowedPackages ? commonTools,
+  args ? [ ],
+  # `goblins recreate` resumes the conversation the hooks recorded. This
+  # default appends to args, so it suits args made of options only: a goblin
+  # whose args contain a prompt, a subcommand or -- sets its own (or null).
+  resumeCommand ? args ++ [
+    "--resume"
+    "{session_id}"
+  ],
   rwDirs ? [ ],
   env ? { },
   injectedFiles ? { },
@@ -35,6 +43,8 @@ mkGoblin (
       binName
       outName
       description
+      args
+      resumeCommand
       env
       ;
     integration = "claude";

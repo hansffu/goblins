@@ -2,7 +2,11 @@
 let
   hook = pkgs.writeShellApplication {
     name = "goblins-claude-hook";
-    runtimeInputs = [ pkgs.jq ];
+    runtimeInputs = [
+      pkgs.jq
+      pkgs.coreutils
+      pkgs.gnugrep
+    ];
     text = builtins.readFile ./hook.sh;
   };
   handler = matcher: {

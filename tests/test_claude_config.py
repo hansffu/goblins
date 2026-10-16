@@ -160,6 +160,59 @@ class ClaudeConfigTests(unittest.TestCase):
             peer.expect(r"(?:^|\n)AUTH=rotated\n")
         self.assertEqual((self.claude / "settings.json").read_text(), '{"model":"host-model"}')
 
+    def test_hooks_record_the_conversation_and_recreate_resumes_it(self):
+        self.assertEqual(self.manifest["goblins"]["claude"]["resume_command"],
+                         ["literal $(false) argument", "--resume", "{session_id}"])
+        self.assertEqual(self.manifest["goblins"]["custom"]["resume_command"], ["--resume", "{session_id}"])
+        terminal = self.terminal()
+        terminal.expect("claude-probe>", timeout=60)
+        session = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        variables = lambda: self.d.record(session)["variables"]
+        def transcript(path, *entries):
+            for entry in entries:
+                terminal.send(f"printf '%s\\n' {shlex.quote(json.dumps(entry))} >> {path}\n")
+            terminal.send(f"printf 'LINES=%s\\n' \"$(wc -l < {path})\"\n")
+            terminal.expect(r"(?:^|\n)LINES=\d+\n")
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        transcript("/tmp/a.jsonl", {"type": "ai-title", "aiTitle": "AI one", "sessionId": first})
+        self.assertEqual(self.hook(terminal, "SessionStart", session_id=first, transcript_path="/tmp/a.jsonl"), {})
+        self.d.wait(lambda: variables() == {"session_id": first, "session_name": "AI one"})
+        # A custom title wins over a later generated one.
+        transcript("/tmp/a.jsonl", {"type": "custom-title", "customTitle": "Mine", "sessionId": first},
+                   {"type": "ai-title", "aiTitle": "AI two", "sessionId": first})
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="x", session_id=first,
+                                   transcript_path="/tmp/a.jsonl"), {})
+        self.d.wait(lambda: variables()["session_name"] == "Mine")
+        # session_title, when Claude sends it, wins over the transcript.
+        self.assertEqual(self.hook(terminal, "Stop", session_id=first, session_title="Renamed\tline",
+                                   transcript_path="/tmp/a.jsonl"), {})
+        self.d.wait(lambda: variables()["session_name"] == "Renamed line")
+        # An id switch resets the name; one that cannot be read yet is empty.
+        self.hook(terminal, "SessionStart", session_id=second, transcript_path="/tmp/missing.jsonl")
+        self.d.wait(lambda: variables() == {"session_id": second})
+        transcript("/tmp/b.jsonl", {"type": "ai-title", "aiTitle": "B title", "sessionId": second})
+        self.hook(terminal, "UserPromptSubmit", prompt="x", session_id=second, transcript_path="/tmp/b.jsonl")
+        self.d.wait(lambda: variables() == {"session_id": second, "session_name": "B title"})
+        # The same conversation keeps its last known name on a read failure.
+        self.hook(terminal, "Stop", session_id=second, transcript_path="/tmp/missing.jsonl")
+        # A failed call changes nothing, not even the hook's own answer.
+        self.d.rpc.call("messages.send", {"key": "wake", "to": session, "body": "private body"})
+        decision = self.hook(terminal, "Stop", session_id="bad\tid", transcript_path="/tmp/b.jsonl")
+        self.assertEqual(decision["decision"], "block")
+        time.sleep(1)
+        self.assertEqual(variables(), {"session_id": second, "session_name": "B title"})
+        # Recreate resumes the recorded conversation with its own arguments.
+        terminal.send("exit\n")
+        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
+        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
+                                                    "recreate": session, "rows": 24, "cols": 100})
+        resumed = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", launch["session"]])
+        self.addCleanup(resumed.close)
+        resumed.expect(r"CLAUDE_ARG=literal \$\(false\) argument", timeout=60)
+        resumed.expect(r"CLAUDE_ARG=--resume\r?\n")
+        resumed.expect("CLAUDE_ARG=" + second)
+        resumed.expect("claude-probe>")
+
     def test_custom_directory(self):
         custom = self.home / "custom claude"
         custom.mkdir()
@@ -195,6 +248,17 @@ class ClaudeConfigTests(unittest.TestCase):
         self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
         time.sleep(32)
         self.assertEqual(self.d.get(receiver)["agent_state"], "idle")
+        # Its hooks recorded the conversation; recreating resumes it.
+        recorded = self.d.record(receiver)["variables"]
+        self.assertEqual(recorded["session_name"], "Fake task")
+        self.d.rpc.call("sessions.stop", {"session": receiver})
+        self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
+        again = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
+                                                   "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
+        self.assertEqual(again["agent_name"], "receiver")
+        self.d.wait(lambda: (self.d.record(again["session"]) or {}).get("variables", {}).get("session_name")
+                    == "Resumed task", timeout=60)
+        self.assertEqual(self.d.record(again["session"])["variables"]["session_id"], recorded["session_id"])
 
 
 if __name__ == "__main__":

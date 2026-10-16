@@ -10,6 +10,7 @@ from pathlib import Path
 import termios
 import time
 import tty
+import uuid
 
 CLI = "/run/goblins/bin/goblins"
 PROMPT = "Check your Goblins inbox and process the next item."
@@ -18,8 +19,19 @@ COMPOSER = os.environ.get("GOBLINS_TEST_COMPOSER", "› ")
 def cli(*args):
     return json.loads(subprocess.check_output([CLI, *args], stderr=subprocess.DEVNULL))
 
+# The real Goblins hook, with the payload fields Claude Code sends: a
+# conversation id, kept on --resume as Claude does, and its transcript.
+SETTINGS = json.loads(Path("/etc/claude-code/managed-settings.json").read_text())
+RESUMED = "--resume" in sys.argv
+SESSION = sys.argv[sys.argv.index("--resume") + 1] if RESUMED else str(uuid.uuid4())
+TRANSCRIPT = Path("/tmp/fake-claude-transcript.jsonl")
+TRANSCRIPT.write_text(json.dumps({"type": "ai-title", "aiTitle": "Resumed task" if RESUMED else "Fake task",
+                                  "sessionId": SESSION}) + "\n")
+
 def hook(event):
-    return cli("integration", "hook", "--event", event)
+    command = SETTINGS["hooks"][event][0]["hooks"][0]["command"]
+    payload = {"hook_event_name": event, "session_id": SESSION, "transcript_path": str(TRANSCRIPT)}
+    return json.loads(subprocess.check_output([command], input=json.dumps(payload).encode(), stderr=subprocess.DEVNULL))
 
 def ready():
     sys.stdout.write("\x1b[2J\x1b[H" + COMPOSER + "\x1b[?25h")
@@ -83,7 +95,7 @@ try:
         while True:
             item = cli("inbox", "next")
             if item["message"] is None:
-                if hook("Stop")["continue"]:
+                if hook("Stop").get("decision") == "block":
                     continue
                 break
             if item["message"].get("operation"):
