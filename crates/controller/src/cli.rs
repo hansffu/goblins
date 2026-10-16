@@ -109,7 +109,8 @@ pub enum Command {
     },
     /// Start a recorded goblin again from the current configuration of its name
     Recreate {
-        /// Record id, unique id prefix or unique agent name (see 'goblins history')
+        /// Record id, any goblin session id it ran as, its agent's
+        /// conversation id, or a unique prefix (see 'goblins history')
         id: String,
         /// Start without attaching to its terminal
         #[arg(long)]
@@ -120,6 +121,9 @@ pub enum Command {
         /// Print the records as JSON
         #[arg(long)]
         json: bool,
+        /// Print the table directly instead of through $PAGER
+        #[arg(long)]
+        no_pager: bool,
         #[command(subcommand)]
         command: Option<HistoryCommand>,
     },
@@ -286,6 +290,24 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
     let Some((state, slot)) = completion_state(default_state, words) else {
         return 1;
     };
+    if slot == Slot::Record {
+        // Record ids, described by agent name, chat name and last update:
+        // "ID<TAB>DESCRIPTION", newest first. The shells show both.
+        for record in crate::records::records(&state).unwrap_or_default() {
+            let text =
+                |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or("-"));
+            let id = text(&record["id"]);
+            let mut description = vec![text(&record["agent_name"])];
+            if let Some(name) = record["variables"]["session_name"].as_str() {
+                description.push(goblins_protocol::plain_text(name));
+            }
+            if let Some(updated) = record["updated"].as_u64() {
+                description.push(goblins_controller::history::local_time(updated));
+            }
+            println!("{id}\t{}", description.join(" · "));
+        }
+        return 0;
+    }
     let Ok(mut client) = goblins_controller::host::Client::connect(&state) else {
         return 0;
     };
@@ -336,6 +358,8 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
 #[derive(Debug, PartialEq, Eq)]
 enum Slot {
     Goblin,
+    /// A history record, for `recreate`.
+    Record,
     Raid,
 }
 
@@ -396,6 +420,7 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
         Command::Run {
             raid: Some(raid), ..
         } if raid == TARGET => Slot::Raid,
+        Command::Recreate { id, .. } if id == TARGET => Slot::Record,
         Command::Raid { command } => match command {
             RaidCommand::Invite { goblins, .. } if goblins.last().is_some_and(|g| g == TARGET) => {
                 Slot::Goblin
@@ -452,21 +477,36 @@ pub fn completions(shell: clap_complete::Shell, runtime: Option<&Path>) -> Resul
     let hook = match shell {
         clap_complete::Shell::Bash => Some(
             r#"
-    local goblins_names
+    local goblins_names goblins_value goblins_values=()
     if [[ "${COMP_WORDS[COMP_CWORD]}" != -* ]] &&
        goblins_names=$("${COMP_WORDS[0]}" __complete-names -- "${COMP_WORDS[@]:0:COMP_CWORD}" 2>/dev/null); then
-        COMPREPLY=( $(compgen -W "$goblins_names" -- "${COMP_WORDS[COMP_CWORD]}") )
+        # Candidates may carry a description after a tab; Bash shows values only.
+        while IFS=$'\t' read -r goblins_value _; do
+            [[ -n "$goblins_value" ]] && goblins_values+=("$goblins_value")
+        done <<< "$goblins_names"
+        COMPREPLY=( $(compgen -W "${goblins_values[*]}" -- "${COMP_WORDS[COMP_CWORD]}") )
         return
     fi
 "#,
         ),
         clap_complete::Shell::Zsh => Some(
             r#"
-    local goblins_names
+    local goblins_names goblins_line
+    local -a goblins_values goblins_descriptions
     if [[ "${words[CURRENT]}" != -* ]] &&
        goblins_names=$("${words[1]}" __complete-names -- "${words[@]:0:$((CURRENT - 1))}" 2>/dev/null); then
-        if [[ -n "$goblins_names" ]]; then
-            compadd -- "${(@f)goblins_names}"
+        # "VALUE<TAB>DESCRIPTION" lines are listed with their description, in order.
+        for goblins_line in "${(@f)goblins_names}"; do
+            [[ -n "$goblins_line" ]] || continue
+            goblins_values+=("${goblins_line%%$'\t'*}")
+            if [[ "$goblins_line" == *$'\t'* ]]; then
+                goblins_descriptions+=("${goblins_line%%$'\t'*}  -- ${goblins_line#*$'\t'}")
+            fi
+        done
+        if (( ${#goblins_descriptions} )); then
+            compadd -V goblins -l -d goblins_descriptions -- "${goblins_values[@]}"
+        elif (( ${#goblins_values} )); then
+            compadd -- "${goblins_values[@]}"
         fi
         return 0
     fi
@@ -509,7 +549,7 @@ function __fish_goblins_agent_names
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop recreate' -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l raid -r -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role' -f -a '(__fish_goblins_agent_names)'
@@ -553,6 +593,8 @@ mod tests {
             (vec!["goblins", "raid", "destroy"], Slot::Raid),
             (vec!["goblins", "raid", "members"], Slot::Raid),
             (vec!["goblins", "run", "shell", "--raid"], Slot::Raid),
+            (vec!["goblins", "recreate"], Slot::Record),
+            (vec!["goblins", "recreate", "--detached"], Slot::Record),
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),

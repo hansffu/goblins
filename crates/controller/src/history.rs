@@ -44,16 +44,15 @@ pub struct Record {
     pub dev_shell: Option<String>,
     pub docker_enabled: bool,
     pub packages: Packages,
-    /// Written only by the goblin itself (`sessions.set-variables`).
+    /// Written only by the goblin itself (`sessions.set-variables`). The
+    /// agent's conversation id, `session_id`, keeps one record per
+    /// conversation.
     pub variables: BTreeMap<String, String>,
-    pub recreated_from: Option<String>,
-    /// The goblin that started this line of recreates: its own id, copied
-    /// to every record recreated from it. Live goblins of one origin could
-    /// resume the same conversation, so only one runs at a time. Empty in
-    /// records written before it existed, meaning their own id.
-    #[serde(default)]
-    pub origin: String,
-    /// What could not be restored when this goblin was recreated, and why.
+    /// Every goblin this record ran as, oldest first: the record's id is
+    /// the first, and a recreate adds the next instead of a new record. Any
+    /// of them finds the record.
+    pub sessions: Vec<String>,
+    /// What could not be restored when this goblin was last recreated, and why.
     /// Skipped packages stay in `approved`, so the next recreate tries again.
     pub skipped: Vec<Skipped>,
     /// Unix milliseconds.
@@ -90,13 +89,24 @@ impl Skipped {
         }
     }
 }
+/// Goblin session ids a record keeps, the newest.
+pub const MAX_SESSIONS: usize = 256;
 impl Record {
-    pub fn origin(&self) -> &str {
-        if self.origin.is_empty() {
-            &self.id
-        } else {
-            &self.origin
+    /// The goblin this record last ran as.
+    pub fn latest(&self) -> &str {
+        self.sessions.last().map_or(&self.id, String::as_str)
+    }
+    /// The agent's conversation, as the goblin reported it.
+    pub fn conversation(&self) -> Option<&str> {
+        self.variables.get("session_id").map(String::as_str)
+    }
+    /// Record that the line now runs as goblin `session`.
+    pub fn ran_as(&mut self, session: &str) {
+        if !self.sessions.iter().any(|s| s == session) {
+            self.sessions.push(session.into());
         }
+        let excess = self.sessions.len().saturating_sub(MAX_SESSIONS);
+        self.sessions.drain(..excess);
     }
     pub fn new(id: &str, configuration: &str, agent_name: &str, now: u64) -> Self {
         Self {
@@ -110,8 +120,7 @@ impl Record {
             docker_enabled: false,
             packages: Packages::default(),
             variables: BTreeMap::new(),
-            recreated_from: None,
-            origin: id.into(),
+            sessions: vec![id.into()],
             skipped: vec![],
             created: now,
             updated: now,
@@ -421,47 +430,39 @@ impl Store {
         }
         ids
     }
-    /// A record by id, unique id prefix or unique agent name.
+    /// A record by its id, any goblin session id it ran as, its agent's
+    /// conversation id, or a unique prefix of one of its ids. Names are
+    /// reusable labels and select nothing.
     pub fn resolve(&self, target: &str) -> std::result::Result<&Record, String> {
         if target.is_empty() {
-            return Err("name a recorded goblin by id or agent name".into());
+            return Err("name a recorded goblin by id; see 'goblins history'".into());
         }
-        if let Some(record) = self.records.get(target) {
+        let exact = |r: &&Record| {
+            r.id == target
+                || r.sessions.iter().any(|s| s == target)
+                || r.conversation() == Some(target)
+        };
+        if let Some(record) = newest_first(&self.records).into_iter().find(exact) {
             return Ok(record);
         }
-        fn unique<'a>(
-            matches: Vec<&'a Record>,
-            what: &str,
-            target: &str,
-        ) -> std::result::Result<Option<&'a Record>, String> {
-            match matches.len() {
-                0 => Ok(None),
-                1 => Ok(Some(matches[0])),
-                n => Err(format!(
-                    "{n} records {what} '{}'; use a record id from 'goblins history'",
-                    goblins_protocol::plain_text(target)
-                )),
-            }
-        }
-        let prefixed = self
+        let prefixed: Vec<_> = self
             .records
             .values()
-            .filter(|r| r.id.starts_with(target))
+            .filter(|r| {
+                r.id.starts_with(target) || r.sessions.iter().any(|s| s.starts_with(target))
+            })
             .collect();
-        if let Some(record) = unique(prefixed, "have ids starting with", target)? {
-            return Ok(record);
-        }
-        let named = self
-            .records
-            .values()
-            .filter(|r| r.agent_name == target)
-            .collect();
-        unique(named, "are named", target)?.ok_or_else(|| {
-            format!(
-                "no recorded goblin '{}'",
+        match prefixed.len() {
+            1 => Ok(prefixed[0]),
+            0 => Err(format!(
+                "no recorded goblin '{}'; see 'goblins history'",
                 goblins_protocol::plain_text(target)
-            )
-        })
+            )),
+            n => Err(format!(
+                "{n} records have ids starting with '{}'; use more of the id",
+                goblins_protocol::plain_text(target)
+            )),
+        }
     }
 }
 impl Drop for Store {
@@ -956,38 +957,37 @@ mod tests {
         );
     }
     #[test]
-    fn records_resolve_by_id_prefix_or_unique_name() {
+    fn records_resolve_by_any_of_their_ids_and_never_by_name() {
         let (mut s, root) = store();
-        let mut first = record("aa-s1", 1);
-        first.agent_name = "morb".into();
-        s.write(first);
-        let mut second = record("ab-s2", 2);
-        second.agent_name = "grib".into();
-        second.recreated_from = Some("aa-s1".into());
-        s.write(second);
-        let mut third = record("b-s3", 3);
-        third.agent_name = "grib".into();
-        third.recreated_from = Some("ab-s2".into());
-        s.write(third);
-        assert_eq!(s.resolve("aa-s1").unwrap().id, "aa-s1");
-        assert_eq!(s.resolve("b").unwrap().id, "b-s3");
-        assert_eq!(s.resolve("morb").unwrap().id, "aa-s1");
+        let mut line = record("aa-s1", 1);
+        line.agent_name = "morb".into();
+        line.ran_as("ab-s2");
+        line.ran_as("b-s3");
+        line.ran_as("b-s3");
+        line.variables.insert("session_id".into(), "c819".into());
+        s.write(line);
+        let mut other = record("ac-s9", 2);
+        other.agent_name = "morb".into();
+        s.write(other);
+        assert_eq!(s.records["aa-s1"].sessions, ["aa-s1", "ab-s2", "b-s3"]);
+        assert_eq!(s.records["aa-s1"].latest(), "b-s3");
+        for target in ["aa-s1", "ab-s2", "b-s3", "c819", "b", "aa"] {
+            assert_eq!(s.resolve(target).unwrap().id, "aa-s1", "{target}");
+        }
+        assert_eq!(s.resolve("ac").unwrap().id, "ac-s9");
         assert!(s.resolve("a").unwrap_err().contains("2 records"));
         assert!(
-            s.resolve("grib")
+            s.resolve("morb")
                 .unwrap_err()
-                .contains("2 records are named")
+                .contains("no recorded goblin")
         );
-        assert!(s.resolve("zog").unwrap_err().contains("no recorded goblin"));
-        // Older records without an origin are their own.
-        let mut old: Record =
-            serde_json::from_value(serde_json::to_value(record("old", 1)).unwrap()).unwrap();
-        old.origin.clear();
-        assert_eq!(old.origin(), "old");
-        let mut value = serde_json::to_value(record("older", 1)).unwrap();
-        value.as_object_mut().unwrap().remove("origin");
-        let older: Record = serde_json::from_value(value).unwrap();
-        assert_eq!(older.origin(), "older");
+        // A long-lived line keeps the newest goblin ids.
+        let mut long = record("x", 1);
+        for i in 0..MAX_SESSIONS + 5 {
+            long.ran_as(&format!("x-s{i}"));
+        }
+        assert_eq!(long.sessions.len(), MAX_SESSIONS);
+        assert_eq!(long.latest(), format!("x-s{}", MAX_SESSIONS + 4));
         drop(s);
         fs::remove_dir_all(root).unwrap();
     }

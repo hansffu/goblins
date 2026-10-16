@@ -10,7 +10,7 @@ import unittest
 import uuid
 
 from daemon_support import Daemon, ROOT, RPC
-from support import command
+from support import FLAKE, command
 from terminal_support import Terminal
 
 
@@ -19,7 +19,7 @@ class ClaudeConfigTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = Path(command([
             "nix", "build", "--no-link", "--print-out-paths",
-            "path:" + str(ROOT) + "#checks.x86_64-linux.claude-goblins",
+            FLAKE + "#checks.x86_64-linux.claude-goblins",
         ])) / "bin/goblins"
 
     def setUp(self):
@@ -269,9 +269,11 @@ class ClaudeConfigTests(unittest.TestCase):
         again = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
                                                    "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
         self.assertEqual(again["agent_name"], "receiver")
-        self.d.wait(lambda: (self.d.record(again["session"]) or {}).get("variables", {}).get("session_name")
-                    == "Resumed task", timeout=60)
-        self.assertEqual(self.d.record(again["session"])["variables"]["session_id"], recorded["session_id"])
+        # The same record continues, with the resumed conversation.
+        self.d.wait(lambda: self.d.record(receiver)["variables"].get("session_name") == "Resumed task", timeout=60)
+        self.assertEqual(self.d.record(receiver)["variables"]["session_id"], recorded["session_id"])
+        self.assertEqual(self.d.record(receiver)["sessions"], [receiver, again["session"]])
+        self.assertIsNone(self.d.record(again["session"]))
 
 
 if __name__ == "__main__":

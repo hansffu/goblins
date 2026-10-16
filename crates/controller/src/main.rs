@@ -300,7 +300,6 @@ fn execute(cli: Cli) -> Result<i32> {
             return attachment::recreate(state, configuration, id, detached);
         }
         Command::History {
-            json: _,
             command:
                 Some(cli::HistoryCommand::Prune {
                     older_than,
@@ -308,6 +307,7 @@ fn execute(cli: Cli) -> Result<i32> {
                     keep,
                     dry_run,
                 }),
+            ..
         } => {
             return records::prune(
                 &state,
@@ -321,8 +321,9 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Command::History {
             json,
+            no_pager,
             command: None,
-        } => return records::list(&state, json),
+        } => return records::list(&state, json, !no_pager),
         Command::Configurations => {
             let runtime = cli
                 .runtime

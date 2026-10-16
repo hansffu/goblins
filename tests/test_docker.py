@@ -138,7 +138,8 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, "test -S /run/goblins/docker-socket/docker.sock && docker info >/dev/null")
         self.load(terminal)
         self.run_ok(terminal, "docker run --rm goblins-test true")
-        self.assertTrue(self.d.wait(lambda: self.d.record(recreated))["docker_enabled"])
+        self.d.wait(lambda: recreated in self.d.record(session)["sessions"])
+        self.assertTrue(self.d.record(session)["docker_enabled"])
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(recreated)["state"] == "stopped")
 
@@ -150,7 +151,7 @@ class DockerTests(unittest.TestCase):
         (store / "rec-nodocker.json").write_text(json.dumps({
             "version": 1, "id": "rec-nodocker", "configuration": "nodocker", "agent_name": "dockless",
             "cwd": None, "scope": "nodocker", "dev_shell": None, "docker_enabled": True,
-            "packages": {"approved": [], "denied": []}, "variables": {}, "recreated_from": None,
+            "packages": {"approved": [], "denied": []}, "variables": {}, "sessions": ["rec-nodocker"],
             "skipped": [], "created": 1, "updated": 1, "stopped": 2}))
         d = Daemon(self.app, env=self.env, state_home=home)
         self.addCleanup(d.close)
@@ -160,7 +161,8 @@ class DockerTests(unittest.TestCase):
         self.assertEqual(record["state"], "running", record)
         self.assertFalse(record["docker_enabled"])
         self.assertEqual(record["skipped"], [{"name": "docker", "reason": "scope 'nodocker' does not enable Docker"}])
-        self.assertTrue(d.wait(lambda: d.record(launch["session"]))["docker_enabled"])
+        d.wait(lambda: launch["session"] in d.record("rec-nodocker")["sessions"])
+        self.assertTrue(d.record("rec-nodocker")["docker_enabled"])
 
     def test_on_demand_offline_and_independent_scopes(self):
         first, terminal = self.shell("plain")

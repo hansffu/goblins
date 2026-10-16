@@ -121,11 +121,11 @@ class HistoryTests(unittest.TestCase):
         record = other.wait(lambda: other.record(session))
         self.assertEqual(record["packages"]["approved"], ["hello"])
         self.assertEqual(record["variables"], {"session_id": "kept"})
-        self.assertEqual(record["origin"], session)
+        self.assertEqual(record["sessions"], [session])
         with self.assertRaises(ValueError) as refused:
             other.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": other.manifest,
                                               "recreate": session, "rows": 24, "cols": 100})
-        self.assertIn("same origin", refused.exception.args[0]["message"])
+        self.assertIn("is live and runs it", refused.exception.args[0]["message"])
 
     def test_history_store_is_a_protected_path(self):
         d = self.d

@@ -25,7 +25,9 @@ Children, raids, inbox contents, terminal and process state, Emacs UI. Goblins l
 
 * Record
 
-One file per root goblin: =$XDG_STATE_HOME/goblins/sessions/<session-id>.json= (default =~/.local/state/goblins/sessions=). The directory is 0700 and its files 0600.
+One file per conversation line: =$XDG_STATE_HOME/goblins/sessions/<id>.json= (default =~/.local/state/goblins/sessions=). The directory is 0700 and its files 0600.
+
+As in Claude Code and Codex, ids are the keys and names are labels. A new root goblin starts a record whose id is its goblins session id. Recreating continues that same record: the new goblin is appended to =sessions=, so the record always describes the latest goblin, and any goblin id it ran as (such as one Emacs shows for a stopped goblin) finds it. There is also one record per agent conversation: when a goblin reports a =session_id= that another record holds and no goblin runs that one, the other record is merged in (its goblin ids lead, its approved packages are added) and removed. When the agent switches conversation (=/clear=, =/new=), the record follows the goblin.
 
 #+begin_src json
 {
@@ -39,8 +41,7 @@ One file per root goblin: =$XDG_STATE_HOME/goblins/sessions/<session-id>.json= (
   "docker_enabled": false,
   "packages": { "approved": ["ripgrep", "jq"], "denied": ["nmap"] },
   "variables": { "session_id": "c8193c93-…", "session_name": "Plan goblin session restore" },
-  "recreated_from": null,
-  "origin": "1f6b…-s4",
+  "sessions": ["1f6b…-s4", "9a2c…-s7"],
   "skipped": [],
   "created": 1792156012273,
   "updated": 1792159072343,
@@ -53,13 +54,14 @@ One file per root goblin: =$XDG_STATE_HOME/goblins/sessions/<session-id>.json= (
 - A name is in the list of its latest *final* outcome: a =ready= grant moves it to =approved=, an explicit host denial moves it to =denied=. Approved-but-failed, withdrawn and cancelled requests change nothing. The two lists never overlap.
 - =variables= is a small key/value map that only the goblin itself writes (see below).
 - =skipped= lists what could not be restored when this record's goblin was recreated, as ={name, reason}= entries: approved packages, and =docker=. The reason is one line of at most 256 bytes, control characters escaped. Skipped packages stay in =approved=, so the next recreate tries them again.
-- =stopped= is informational: a goblin that died with its daemon never gets it.
+- =sessions= lists the goblins this record ran as, oldest first, at most 256; the first is the record's id, the last the latest goblin.
+- =stopped= is informational: a goblin that died with its daemon never gets it. Only the record's latest goblin sets it.
 - Size limits: at most 256 names per package list and 64 KiB per record. A grant that would exceed them is still applied but not recorded, and the record's goblin gets a =detail= saying so.
 
 ** Store and writing
 
 - A new module =crates/controller/src/history.rs= owns the store.
-- *Ownership.* The daemon takes an exclusive =flock= on =sessions/.lock= at startup and holds it for its lifetime. The owner writes its name (pid and state directory) into the lock file, so others can say who holds it. A second daemon (another =--state-dir=) that cannot get the lock runs without history and says so in =goblins server status=; a thread retries the lock every 2 seconds, so the daemon takes the store over once its holder lets go, and a short CLI prune never leaves a daemon without history. Meanwhile it keeps root goblins' variables in memory (=sessions.set-variables= still answers =recorded: false=); at takeover it writes a record for every running root goblin from its session: name, agent name, working directory, scope, dev shell, Docker, granted packages in grant order, the variables, and for a recreated goblin its source, origin and skipped items. Denials made meanwhile are not recorded. Only the lock holder removes temporary files left by an interrupted write. With one owner, "running" is simply "running in the owning daemon".
+- *Ownership.* The daemon takes an exclusive =flock= on =sessions/.lock= at startup and holds it for its lifetime. The owner writes its name (pid and state directory) into the lock file, so others can say who holds it. A second daemon (another =--state-dir=) that cannot get the lock runs without history and says so in =goblins server status=; a thread retries the lock every 2 seconds, so the daemon takes the store over once its holder lets go, and a short CLI prune never leaves a daemon without history. Meanwhile it keeps root goblins' variables in memory (=sessions.set-variables= still answers =recorded: false=); at takeover it writes a record for every running root goblin from its session: name, agent name, working directory, scope, dev shell, Docker, granted packages in grant order, the variables, and for a recreated goblin the record it continues and its skipped items. Denials made meanwhile are not recorded. Only the lock holder removes temporary files left by an interrupted write. With one owner, "running" is simply "running in the owning daemon".
 - *Writer.* The controller sends whole-record snapshots over a channel to a writer thread, which keeps only the newest revision per id and writes it with temp file, fsync, rename and directory fsync. Disk I/O never runs on the event loop.
 - *Serialisation.* Retention and prune also run on the writer thread, so they are ordered with writes. Deleting a record drops any queued revision for it. A deletion counts only once the file is unlinked and the directory fsynced; the writer reports each outcome, a record that could not be deleted stays, and =history.prune= answers only then, with what was removed and what failed. Running records are never deleted, and only running goblins produce writes, so a late write cannot resurrect a pruned record.
 - *When.* The controller sends a snapshot when a root goblin reaches =running= (=Completed::Started=), on =Completed::Granted= with =ready= for a package or Docker, on a host denial in =decide=, on a variable change, and on stop.
@@ -87,8 +89,8 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 
 ** Commands (host CLI)
 
-- =goblins history= lists records, newest first: id, agent name, configuration, agent session name, working directory, last update, whether it is running, and skipped packages.
-- =goblins recreate ID [--detached]= recreates one record. =ID= is a record id, a unique id prefix, or a unique agent name. It cannot be combined with =--parent=. Without =--detached= it waits for the goblin to run, prints each skipped item as =Skipped: NAME — REASON=, then attaches like =goblins run=.
+- =goblins history= lists records, newest first: id, agent name, configuration, agent session name, working directory, last update, whether it is running, and skipped packages. On a terminal it goes through =$PAGER= (=less= with =LESS=FRX= by default); =--no-pager= prints it directly.
+- =goblins recreate ID [--detached]= recreates one record. =ID= is a record id, any goblin session id the record ran as, the agent's conversation id (=session_id=), or a unique prefix of a record or goblin id. Agent and chat names are labels and select nothing. Shell completion offers record ids, newest first; zsh and fish show the agent name, chat name and last update beside each. It cannot be combined with =--parent=. Without =--detached= it waits for the goblin to run, prints each skipped item as =Skipped: NAME — REASON=, then attaches like =goblins run=.
 - =goblins history prune [--older-than 30d] [--before 2026-10-01] [--keep N] [--dry-run]= removes records that are not running. With no option it removes nothing and prints usage, so prune is always deliberate. These go through the owning daemon (=history.list=, =history.prune=). Otherwise =goblins history= reads the files without the lock (whether they run is then unknown), and =goblins history prune= takes the store lock itself, refusing and naming the owner when another process holds it; that includes a daemon here that runs without history.
 
 ** Daemon
@@ -96,7 +98,7 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 =goblins recreate= is =sessions.start= with a new =recreate: ID= parameter, using the caller's current manifest like =goblins run=.
 
 1. *Checks.* Read the record. Refuse in =--workspace= mode, with =--parent=, or if the recorded =cwd= no longer exists.
-2. *Reservation.* Every record has an =origin=: its own id, copied to each record recreated from it, so it names the first goblin of a line of recreates. Before =Worker::start=, the controller refuses if any live session (=starting=, =running= or =stopping=) has the same origin: the original goblin itself, a goblin recreated from the line, or one being recreated (its origin is taken from the record it was recreated from). The reservation ends when that session stops or fails to start. Duplicate =goblins recreate= calls with different operation keys, siblings recreated from one record, and lines whose middle record was pruned therefore cannot resume the same agent session twice. (Following =recreated_from= links, as first planned, missed the last two.)
+2. *Reservation.* Each live goblin writes one record, its line: the record it was recreated from, otherwise its own. Before =Worker::start=, the controller refuses if a live session (=starting=, =running= or =stopping=) has this record as its line. The reservation ends when that session stops or fails to start. Since a line is one record, duplicate =goblins recreate= calls with different operation keys cannot resume the same agent session twice. (Separate records per recreate, linked by =recreated_from= and later an =origin=, were the first two designs.)
 3. *Launch.* The recorded configuration name is launched with the recorded scope, dev shell reference and =cwd=. The agent name is reused if it is free, otherwise a new one is chosen. The dev shell reference is evaluated afresh, as on any launch.
 4. *Packages, before the agent starts.* The worker resolves each approved name against the current catalog (=Session::realize=, which works before =start=). =Session::start= then takes these outputs as a new =recreated= list:
    - their closures join the initial closure, so they are mounted with the initial store view and no helper call is needed;
@@ -106,7 +108,7 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 5. *Docker.* If the record has Docker, the worker mirrors an inheriting child (=Session::child=): it adds the Docker client to the initial packages and sets =docker_inherit_enabled = Some(true)=, so =Session::start= attaches the engine before the agent starts. Without the client staged, =enable_docker= would try a live grant before the helper exists. If the configuration's scope does not enable Docker, or it runs without a scope, the goblin starts without Docker and =docker= goes to =skipped= with the reason. The new record keeps =docker_enabled=, so a later recreate tries again once the configuration allows it.
 6. *Arguments.* =shell_args= is replaced by the resolved =resume_command= when possible.
 7. *Hand-over.* =Completed::Started= gains the recreated names, their outputs and the skipped items with their reasons. The controller puts them into =record.packages= and =Active.granted_outputs= before marking the session =running=, so children's requests for them are approved automatically, as for ordinary grants.
-8. *Record.* The new goblin gets its own record with the same package lists and variables, =skipped=, and =recreated_from= set to the source id. The source record is left as it is.
+8. *Record.* When the goblin reaches =running=, the record continues: the goblin is appended to =sessions=, its configuration, agent name, scope, dev shell and working directory are updated, =skipped= is replaced, =stopped= is cleared, and the package lists and variables carry on. A start that fails leaves the record as it was.
 
 * Claude
 

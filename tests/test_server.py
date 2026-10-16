@@ -17,17 +17,19 @@ class ServerTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="gv-")
         self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name) / "state"
+        # Servers started here keep their history private, never the user's.
+        self.env = {**os.environ, "XDG_STATE_HOME": str(Path(self.temp.name) / "xdg-state")}
         self.addCleanup(self.stop_server)
 
     def cli(self, *args, code=0):
         result = subprocess.run([str(self.app), "--state-dir", str(self.state), *args],
-                                text=True, capture_output=True, timeout=25)
+                                text=True, capture_output=True, timeout=25, env=self.env)
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         return result.stdout
 
     def stop_server(self):
         subprocess.run([str(self.app), "--state-dir", str(self.state), "server", "stop"],
-                       capture_output=True, timeout=25)
+                       capture_output=True, timeout=25, env=self.env)
 
     def test_background_start_status_logs_stop_and_restart(self):
         self.assertIn("Server stopped", self.cli("server", "status", code=1))
@@ -131,7 +133,7 @@ class ServerTests(unittest.TestCase):
         scripts = {"bash": root / "share/bash-completion/completions/goblins",
                    "fish": root / "share/fish/vendor_completions.d/goblins.fish",
                    "zsh": root / "share/zsh/site-functions/_goblins"}
-        env = {**os.environ, "PATH": str(self.app.parent) + ":" + os.environ["PATH"],
+        env = {**self.env, "PATH": str(self.app.parent) + ":" + os.environ["PATH"],
                "XDG_RUNTIME_DIR": self.temp.name}
 
         def complete(shell, words):
@@ -149,7 +151,9 @@ class ServerTests(unittest.TestCase):
             result = subprocess.run(args, env=env, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stderr, "")
+            completed.extend(line for line in result.stdout.splitlines() if line)
             return [line.split("\t")[0] for line in result.stdout.splitlines() if line]
+        completed = []
 
         for shell in ("bash", "fish"):
             self.assertEqual(complete(shell, ["goblins", "attach", ""]), [])
@@ -169,6 +173,20 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(complete(shell, ["goblins", command, "--state-dir", str(Path(self.temp.name) / "absent state"), ""]), [])
                 self.assertNotIn("snikk", complete(shell, ["goblins", command, "snikk", ""]))
             self.assertNotIn("snikk", complete(shell, ["goblins", "attach", "--instance", "exact", ""]))
+        # Recreate completes record ids, newest first, described by agent
+        # name and last update where the shell can show it.
+        ids = [launch["session"] for launch in launches]
+        deadline = time.monotonic() + 30
+        while len(complete("bash", ["goblins", "recreate", ""])) < 2:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(.1)
+        for shell in ("bash", "fish"):
+            self.assertEqual(set(complete(shell, ["goblins", "recreate", ""])), set(ids))
+            self.assertEqual(set(complete(shell, ["goblins", "recreate", "--detached", ""])), set(ids))
+        completed.clear()
+        complete("fish", ["goblins", "recreate", ""])
+        described = dict(line.split("\t", 1) for line in completed)
+        self.assertTrue(described[ids[0]].startswith("snikk · "), described)
 
         # Exercise real Zsh completion through ZLE, including alias registration.
         zsh = Terminal([shutil.which("zsh"), "-f"], env=env)
@@ -191,6 +209,11 @@ class ServerTests(unittest.TestCase):
             # Ctrl-C is not a reliable way to cancel an interactive input line.
             zsh.send("\x15print COMPLETION_RESET\n")
             zsh.expect(r"(?:^|\n)COMPLETION_RESET\n")
+        zsh.send(f"goblins --state-dir {shlex.quote(str(self.state))} recreate \t\t")
+        zsh.expect(re.escape(ids[0]) + r"\s+-- snikk · ")
+        # A menu selection takes one kill-line to leave and one to clear.
+        zsh.send("\x15\x15print COMPLETION_RESET\n")
+        zsh.expect(r"COMPLETION_RESET\n")
         zsh.send("exit\n")
         self.assertEqual(zsh.wait(), 0)
 

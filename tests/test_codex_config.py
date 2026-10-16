@@ -239,8 +239,9 @@ class CodexConfigTests(unittest.TestCase):
         launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
                                                     "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
         again = launch["session"]
-        self.d.wait(lambda: (self.d.record(again) or {}).get("variables") ==
+        self.d.wait(lambda: self.d.record(receiver)["variables"] ==
                     {"session_id": thread, "session_name": "Resumed thread"}, timeout=60)
+        self.assertEqual(self.d.record(receiver)["sessions"], [receiver, again])
         import subprocess
         args = json.loads(subprocess.check_output([str(self.app), "--state-dir", str(self.d.state), "exec", again,
                                                    "--", "python3", "-c",

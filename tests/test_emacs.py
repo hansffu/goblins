@@ -112,7 +112,9 @@ class EmacsTests(unittest.TestCase):
                     ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
                      "-l", "goblins-tests", "-f", "goblins-test-start-live"],
                     env={**os.environ, "GOBLINS_APP": str(application),
-                         "GOBLINS_TEST_STATE": state},
+                         "GOBLINS_TEST_STATE": state,
+                         # Its server keeps a private history, never the user's.
+                         "XDG_STATE_HOME": os.path.join(state, "xdg-state")},
                     capture_output=True, text=True, timeout=60,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -123,7 +125,8 @@ class EmacsTests(unittest.TestCase):
                     peer.close()
             finally:
                 subprocess.run([str(application), "--state-dir", state, "server", "stop"],
-                               capture_output=True, check=True, timeout=20)
+                               capture_output=True, check=True, timeout=20,
+                               env={**os.environ, "XDG_STATE_HOME": os.path.join(state, "xdg-state")})
 
     def test_live_status_accept_deny_reconnect_and_close(self):
         daemon = Daemon()

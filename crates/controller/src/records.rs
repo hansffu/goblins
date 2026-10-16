@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 /// The records, newest first, each with `running` (null when unknown).
-fn records(state: &Path) -> Result<Vec<Value>> {
+pub(crate) fn records(state: &Path) -> Result<Vec<Value>> {
     if let Some(mut client) = Client::connect_optional(state)? {
         match client.call("history.list", json!({})) {
             Ok(list) => {
@@ -37,7 +37,7 @@ fn records(state: &Path) -> Result<Vec<Value>> {
         .collect())
 }
 
-pub fn list(state: &Path, as_json: bool) -> Result<i32> {
+pub fn list(state: &Path, as_json: bool, pager: bool) -> Result<i32> {
     let records = records(state)?;
     if as_json {
         println!("{}", Value::Array(records));
@@ -89,17 +89,49 @@ pub fn list(state: &Path, as_json: bool) -> Result<i32> {
     let widths: Vec<_> = (0..8)
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
+    let mut table = String::new();
     for row in rows {
         let line: Vec<_> = row
             .iter()
             .zip(&widths)
             .map(|(cell, width)| format!("{cell:width$}"))
             .collect();
-        println!("{}", line.join("  ").trim_end());
+        table.push_str(line.join("  ").trim_end());
+        table.push('\n');
+    }
+    if !pager || !page(&table) {
+        print!("{table}");
     }
     Ok(0)
 }
 
+/// Show `text` through $PAGER (default `less`) when stdout is a terminal,
+/// like git log. False when it was not paged.
+fn page(text: &str) -> bool {
+    use std::io::Write;
+    if unsafe { libc::isatty(1) } != 1 {
+        return false;
+    }
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less".into());
+    if pager.trim().is_empty() || pager.trim() == "cat" {
+        return false;
+    }
+    let Ok(mut child) = std::process::Command::new("/bin/sh")
+        .args(["-c", &pager])
+        .env(
+            "LESS",
+            std::env::var("LESS").unwrap_or_else(|_| "FRX".into()),
+        )
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    else {
+        return false;
+    };
+    // A pager quit early closes its input; that is not an error here.
+    let _ = child.stdin.take().unwrap().write_all(text.as_bytes());
+    let _ = child.wait();
+    true
+}
 /// Removed record ids, and those that could not be removed with why.
 type Outcome = (Vec<String>, Vec<(String, String)>);
 /// `goblins history prune`, through the owning daemon or, when the server

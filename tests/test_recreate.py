@@ -17,7 +17,7 @@ import unittest
 import uuid
 
 from daemon_support import Daemon, RPC, receive
-from support import command
+from support import FLAKE, command
 from daemon_support import ROOT
 
 FRESH = ["--no-config", "-c", "printf 'ARGS=fresh\\n'; exec sleep 600"]
@@ -30,14 +30,14 @@ RESUME = ["--no-config", "-c",
 def record(id, configuration="shell", agent_name="morb", **extra):
     value = {"version": 1, "id": id, "configuration": configuration, "agent_name": agent_name, "cwd": None,
              "scope": None, "dev_shell": None, "docker_enabled": False, "packages": {"approved": [], "denied": []},
-             "variables": {}, "recreated_from": None, "skipped": [], "created": 1, "updated": 1, "stopped": 2}
+             "variables": {}, "sessions": [id], "skipped": [], "created": 1, "updated": 1, "stopped": 2}
     value.update(extra)
     return value
 
 
 def checks_manifest(name):
     app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                        f"path:{ROOT}#checks.x86_64-linux.{name}"])) / "bin/goblins"
+                        f"{FLAKE}#checks.x86_64-linux.{name}"])) / "bin/goblins"
     return re.search(r'exec \S+ --runtime (\S+)', app.read_text()).group(1)
 
 
@@ -113,28 +113,27 @@ class RecreateTests(unittest.TestCase):
         self.assertEqual(([s["name"] for s in r["skipped"]], r["recreated_from"], r["detail"]),
                          (["no-such-goblins-package"], "rec-a", None))
         self.assertIn("does not provide attribute", r["skipped"][0]["reason"])
-        # Its own record: the same lists and variables, the skipped name kept.
-        own = d.wait(lambda: d.record(session))
+        # The record continues: same lists and variables, the skipped name
+        # kept, and this goblin added to the goblins it ran as.
+        own = d.wait(lambda: (r if (r := d.record("rec-a"))["sessions"] == ["rec-a", session] else None))
         self.assertEqual(own["packages"], source["packages"])
         self.assertEqual(own["variables"], source["variables"])
-        self.assertEqual((own["skipped"], own["recreated_from"], own["origin"]), (r["skipped"], "rec-a", "rec-a"))
-        self.assertEqual(d.record("rec-a"), source)
-        listing = d.cli("history").stdout
-        line = next(l for l in listing.splitlines() if l.startswith(session))
+        self.assertEqual((own["skipped"], own["stopped"]), (r["skipped"], None))
+        self.assertIsNone(d.record(session))
+        listing = d.cli("history", "--no-pager").stdout
+        line = next(l for l in listing.splitlines() if l.startswith("rec-a"))
         self.assertIn("Plan it", line)
         self.assertIn("no-such-goblins-package", line)
         self.assertRegex(line, r"\byes\b")
         records = json.loads(d.cli("history", "--json").stdout)
-        self.assertEqual([r["id"] for r in records], [session, "rec-a"])
-        self.assertEqual([r["running"] for r in records], [True, False])
-        # Without a daemon the CLI reads the store under its lock.
+        self.assertEqual([(r["id"], r["running"]) for r in records], [("rec-a", True)])
         d.rpc.call("sessions.stop", {"session": session})
-        d.wait(lambda: d.record(session)["stopped"])
+        d.wait(lambda: d.record("rec-a")["stopped"])
         d.process.terminate(); d.process.wait(timeout=10)
         # Without a daemon the CLI only reads; whether they run is unknown.
         offline = json.loads(d.cli("history", "--json").stdout)
-        self.assertEqual([(r["id"], r["running"]) for r in offline], [(session, None), ("rec-a", None)])
-        self.assertRegex(d.cli("history").stdout, rf"(?m)^{session} .* \? ")
+        self.assertEqual([(r["id"], r["running"]) for r in offline], [("rec-a", None)])
+        self.assertRegex(d.cli("history").stdout, r"(?m)^rec-a .* \? ")
 
     def test_packages_that_fail_are_skipped_with_reasons_and_tried_again(self):
         bindir = Path(tempfile.mkdtemp(prefix="goblins-fake-nix-"))
@@ -164,11 +163,11 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertIn("unable to download", reasons["cowsay"])
         self.assertEqual(self.exec(d, session, "test -x /run/goblins/packages/current/bin/hello; echo $?").stdout, "0\n")
         # Skipped packages stay approved, so the next recreate tries again.
-        own = d.wait(lambda: d.record(session))
+        own = d.wait(lambda: (r if session in (r := d.record("rec-best"))["sessions"] else None))
         self.assertEqual(own["packages"]["approved"], approved)
         self.assertEqual(own["skipped"], r["skipped"])
         d.rpc.call("sessions.stop", {"session": session})
-        d.wait(lambda: (d.record(session) or {}).get("stopped"))
+        d.wait(lambda: d.record("rec-best")["stopped"])
         offline.unlink()
         again = d.get(self.recreate(d, session)["session"])
         self.assertEqual(again["packages"], ["hello", "cowsay"])
@@ -182,7 +181,8 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertEqual(r["skipped"], [{"name": "docker",
                                          "reason": "the configuration runs without a scope, so without Docker"}])
         # Still recorded, so a later recreate tries again.
-        self.assertTrue(d.wait(lambda: d.record(session))["docker_enabled"])
+        d.wait(lambda: session in d.record("rec-docker")["sessions"])
+        self.assertTrue(d.record("rec-docker")["docker_enabled"])
 
     def test_a_missing_variable_or_an_option_like_value_falls_back_to_args(self):
         d = self.daemon(record("rec-missing", agent_name="snaga"),
@@ -194,35 +194,34 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
             self.output(d, launch, rb"ARGS=fresh\n")
             self.assertIn(reason, d.get(launch["session"])["detail"])
 
-    def test_changed_configuration_failed_start_and_origin_reservations(self):
+    def test_changed_configuration_failed_start_and_one_record_per_line(self):
         cwd = tempfile.TemporaryDirectory(prefix="goblins-recreate-cwd-"); self.addCleanup(cwd.cleanup)
         d = self.daemon(record("rec-f", configuration="fishy", cwd=cwd.name),
-                        record("rec-sibling", configuration="fishy", cwd=cwd.name, recreated_from="rec-f",
-                               origin="rec-f"),
                         record("rec-gone", cwd="/nonexistent-goblins-recreate"))
         # The demo manifest has no 'fishy': the start fails and releases it.
         failed = self.recreate(d, "rec-f", wait="failed")
         self.assertIn("unknown goblin", d.get(failed["session"])["detail"])
+        self.assertEqual(d.record("rec-f")["sessions"], ["rec-f"])
         updated = checks_manifest("updated-goblins")
         first = self.recreate(d, "rec-f", updated)["session"]
         self.assertEqual(self.exec(d, first, 'printf "%s %s" "$GOBLIN_MARKER" "$(pwd -P)"').stdout,
                          f"updated {Path(cwd.name).resolve()}")
-        # Concurrent recreates of the record, of a sibling, or of the live
-        # goblin's own: all share the origin.
-        self.assertIn("of the same origin rec-f is live", self.refused(d, "rec-f"))
-        self.assertIn("of the same origin rec-f is live", self.refused(d, "rec-sibling"))
-        own = d.wait(lambda: d.record(first))
-        self.assertEqual(own["origin"], "rec-f")
-        self.assertIn("of the same origin rec-f is live", self.refused(d, first))
+        d.wait(lambda: d.record("rec-f")["sessions"] == ["rec-f", first])
+        # While it runs, the record is refused by any of its ids.
+        for target in ("rec-f", first):
+            self.assertIn(f"goblin morb ({first}) is live and runs it", self.refused(d, target))
         d.rpc.call("sessions.stop", {"session": first})
         d.wait(lambda: d.get(first)["state"] == "stopped")
-        # Transitive: the source is refused while a later generation lives.
-        second = self.recreate(d, own["id"], updated)["session"]
-        self.assertEqual(d.wait(lambda: d.record(second))["recreated_from"], first)
-        self.assertIn(f"({second}) of the same origin rec-f is live", self.refused(d, "rec-f"))
+        # An older goblin id, as Emacs shows stopped goblins, finds the latest.
+        second = self.recreate(d, first, updated)["session"]
+        line = d.wait(lambda: (r if (r := d.record("rec-f"))["sessions"][-1] == second else None))
+        self.assertEqual(line["sessions"], ["rec-f", first, second])
+        self.assertEqual(sorted(p.stem for p in d.history.glob("*.json")), ["rec-f", "rec-gone"])
         self.assertIn("no longer exists", self.refused(d, "rec-gone"))
         self.assertIn("--parent", self.refused(d, "rec-gone", parent=second))
         self.assertIn("no recorded goblin", self.refused(d, "nobody"))
+        # Names are labels: they select nothing.
+        self.assertIn("no recorded goblin", self.refused(d, "morb"))
 
     def test_children_neither_inherit_nor_mount_recreated_grants(self):
         d = self.daemon(record("rec-c", packages={"approved": ["hello"], "denied": []}))
@@ -251,7 +250,8 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
 
     def test_cli_recreate_and_a_workspace_server_refuses(self):
         d = self.daemon(record("rec-cli", agent_name="cli-goblin"))
-        result = d.cli("recreate", "--detached", "cli-goblin")
+        self.assertIn("no recorded goblin", d.cli("recreate", "--detached", "cli-goblin", check=False).stderr)
+        result = d.cli("recreate", "--detached", "rec-cli")
         launch = json.loads(result.stdout)
         self.assertEqual(launch["agent_name"], "cli-goblin")
         d.wait(lambda: d.get(launch["session"])["state"] == "running", timeout=60)
@@ -259,15 +259,14 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         refused = d.cli("recreate", "--detached", "rec-cli", check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("is live", refused.stderr)
-        # Two records carry the name now; the attaching form takes an id.
+        # Attached, by the goblin's own id.
         d.rpc.call("sessions.stop", {"session": launch["session"]})
-        d.wait(lambda: (d.record(launch["session"]) or {}).get("stopped"))
-        self.assertIn("2 records are named", d.cli("recreate", "--detached", "cli-goblin", check=False).stderr)
+        d.wait(lambda: d.record("rec-cli")["stopped"])
         from terminal_support import Terminal
         attached = Terminal([d.binary, "--runtime", d.manifest, "--state-dir", str(d.state), "recreate",
                              launch["session"]], env=d.env)
         self.addCleanup(attached.close)
-        attached.expect(f"Recreated cli-goblin from {launch['session']} as ", timeout=60)
+        attached.expect("Recreated cli-goblin from rec-cli as ", timeout=60)
         attached.send("exit\r")
         self.assertEqual(attached.wait(), 0)
         workspace = tempfile.TemporaryDirectory(prefix="goblins-recreate-ws-"); self.addCleanup(workspace.cleanup)

@@ -181,6 +181,9 @@ struct Active {
     /// A root goblin's recorded variables, kept also while this server has
     /// no history, for a record created when it takes the store over.
     variables: BTreeMap<String, String>,
+    /// The history record this goblin writes: the record it was recreated
+    /// from, otherwise its own id.
+    line: String,
 }
 impl Active {
     /// Refresh activity freshness; true when the visible activity changed.
@@ -666,12 +669,12 @@ impl Controller {
             }
         }
     }
-    /// Live sessions, whose records retention and prune never delete.
-    fn live_sessions(&self) -> std::collections::BTreeSet<String> {
+    /// Records with a live goblin, which retention and prune never delete.
+    fn live_lines(&self) -> std::collections::BTreeSet<String> {
         self.sessions
-            .iter()
-            .filter(|(_, a)| a.worker.is_some())
-            .map(|(id, _)| id.clone())
+            .values()
+            .filter(|a| a.worker.is_some())
+            .map(|a| a.line.clone())
             .collect()
     }
     /// Start the record of a root goblin that reached running.
@@ -679,13 +682,15 @@ impl Controller {
         if a.record.parent.is_some() || self.workspace.is_some() {
             return;
         }
-        let mut running = self.live_sessions();
-        running.insert(a.record.id.clone());
+        let mut running = self.live_lines();
+        running.insert(a.line.clone());
         let keep = self.keep_sessions;
         let Ok(store) = &mut self.history else {
             return;
         };
-        store.write(new_record(a));
+        // A recreated goblin continues its record; a new one starts its own.
+        let record = line_record(a, store.records.get(&a.line));
+        store.write(record);
         store.retain(keep, &running);
     }
     /// Records for root goblins that reached running before this server
@@ -694,7 +699,7 @@ impl Controller {
         if self.workspace.is_some() {
             return;
         }
-        let running = self.live_sessions();
+        let running = self.live_lines();
         let keep = self.keep_sessions;
         let Ok(store) = &mut self.history else {
             return;
@@ -703,9 +708,13 @@ impl Controller {
             if a.record.parent.is_none()
                 && a.record.state == "running"
                 && a.worker.is_some()
-                && !store.records.contains_key(&a.record.id)
+                && store
+                    .records
+                    .get(&a.line)
+                    .is_none_or(|r| r.latest() != a.record.id)
             {
-                store.write(new_record(a));
+                let record = line_record(a, store.records.get(&a.line));
+                store.write(record);
             }
         }
         store.retain(keep, &running);
@@ -770,26 +779,70 @@ impl Controller {
         Ok(())
     }
     /// Why a record cannot be recreated: a live goblin (starting, running
-    /// or stopping) shares its origin, so both could resume the same agent
-    /// conversation. That covers the record's own goblin, the goblins it was
-    /// recreated from or into, and siblings, even after pruned records.
+    /// or stopping) runs it, so both would resume the same conversation.
     fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
-        let origin = record.origin();
         self.sessions
             .values()
             .filter(|a| a.worker.is_some() && a.record.parent.is_none())
-            .find(|a| {
-                a.recreated_from
-                    .as_ref()
-                    .map_or(a.record.id.as_str(), |source| source.origin())
-                    == origin
-            })
+            .find(|a| a.line == record.id)
             .map(|a| {
                 format!(
-                    "goblin {} ({}) of the same origin {origin} is live",
+                    "goblin {} ({}) is live and runs it",
                     a.record.agent_name, a.record.id
                 )
             })
+    }
+    /// One record per agent conversation: when a goblin reports a
+    /// conversation another record holds, and no goblin runs that one, it
+    /// is merged into this goblin's record and removed.
+    fn merge_conversation(&mut self, line: &str) {
+        let live = self.live_lines();
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        let Some(mut merged) = store.records.get(line).cloned() else {
+            return;
+        };
+        let Some(conversation) = merged.conversation().map(String::from) else {
+            return;
+        };
+        let mut others: Vec<_> = store
+            .records
+            .values()
+            .filter(|r| {
+                r.id != line
+                    && r.conversation() == Some(conversation.as_str())
+                    && !live.contains(&r.id)
+                    && !store.deleting.contains(&r.id)
+            })
+            .cloned()
+            .collect();
+        if others.is_empty() {
+            return;
+        }
+        others.sort_by_key(|r| std::cmp::Reverse(r.created));
+        for other in &others {
+            // Their goblins ran first: their ids lead, and still find it.
+            let mut sessions = other.sessions.clone();
+            sessions.retain(|s| !merged.sessions.contains(s));
+            sessions.append(&mut merged.sessions);
+            merged.sessions = sessions;
+            let excess = merged
+                .sessions
+                .len()
+                .saturating_sub(crate::history::MAX_SESSIONS);
+            merged.sessions.drain(..excess);
+            for package in &other.packages.approved {
+                if !merged.packages.denied.contains(package) {
+                    let _ = merged.approve(package);
+                }
+            }
+            merged.created = merged.created.min(other.created);
+        }
+        merged.updated = crate::messaging::now();
+        let ids: Vec<_> = others.into_iter().map(|r| r.id).collect();
+        store.write(merged);
+        store.delete(&ids, None);
     }
     /// The history store's records for `goblins history`, newest first,
     /// each marked running or not, within the response size.
@@ -798,7 +851,7 @@ impl Controller {
             .history
             .as_ref()
             .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
-        let running = self.live_sessions();
+        let running = self.live_lines();
         let mut records = vec![];
         let mut size = 0;
         let mut truncated = false;
@@ -826,7 +879,7 @@ impl Controller {
         if p.is_empty() {
             return Err((-32602, "choose --older-than, --before or --keep".into()));
         }
-        let mut excluded = self.live_sessions();
+        let mut excluded = self.live_lines();
         let serial = self.number();
         let store = self
             .history
@@ -1450,6 +1503,7 @@ impl Controller {
                     .as_ref()
                     .map(|r| r.variables.clone())
                     .unwrap_or_default(),
+                line: recorded.as_ref().map_or(id.clone(), |r| r.id.clone()),
                 recreated_from: recorded,
                 created: self.next,
                 record,
@@ -1497,17 +1551,23 @@ impl Controller {
                 }
                 // Only the caller's own record. Without history the server
                 // keeps them, for a record created when it takes the store.
-                let mut scratch = new_record(a);
+                let line = a.line.clone();
+                let existing = self
+                    .history
+                    .as_ref()
+                    .ok()
+                    .and_then(|store| store.records.get(&line));
+                let recorded = existing.is_some();
+                let mut scratch = line_record(a, existing);
                 scratch
                     .set_variables(&p.variables)
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
-                let recorded = self
-                    .history
-                    .as_ref()
-                    .is_ok_and(|store| store.records.contains_key(scope));
-                self.update_record(scope, |r| r.set_variables(&p.variables))
+                self.update_record(&line, |r| r.set_variables(&p.variables))
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
                 self.sessions.get_mut(scope).unwrap().variables = scratch.variables;
+                if recorded && p.variables.contains_key("session_id") {
+                    self.merge_conversation(&line);
+                }
                 Ok(json!({"accepted":true,"recorded":recorded}))
             }
             "sessions.status" => {
@@ -1699,7 +1759,8 @@ impl Controller {
             if actor == "host" && r.kind == "package" {
                 let package = r.package.clone();
                 // Information only; a recreated goblin may ask again.
-                let _ = self.update_record(&p.session, |r| r.deny(&package));
+                let line = self.sessions[&p.session].line.clone();
+                let _ = self.update_record(&line, |r| r.deny(&package));
             }
         }
         self.dirty = true;
@@ -2604,9 +2665,11 @@ impl Controller {
                         a.record.detail = detail.map(|e| bounded(&e));
                         if let Some((kind, package)) = granted {
                             let recorded = if kind == "docker" {
-                                self.update_record(&id, |r| r.update(|r| r.docker_enabled = true))
+                                self.update_record(&a.line, |r| {
+                                    r.update(|r| r.docker_enabled = true)
+                                })
                             } else if kind == "package" {
-                                self.update_record(&id, |r| r.approve(&package))
+                                self.update_record(&a.line, |r| r.approve(&package))
                             } else {
                                 Ok(false)
                             };
@@ -2730,7 +2793,15 @@ impl Controller {
             self.sessions.insert(id.clone(), a);
             if stopped {
                 let now = crate::messaging::now();
-                let _ = self.update_record(&id, |r| r.update(|r| r.stopped = Some(now)));
+                let line = self.sessions[&id].line.clone();
+                // Only the goblin the record last ran as ends it.
+                let _ = self.update_record(&line, |r| {
+                    if r.latest() == id {
+                        r.update(|r| r.stopped = Some(now))
+                    } else {
+                        Ok(false)
+                    }
+                });
             }
             if exited {
                 let _ = self.stop_tree(&id, true, None);
@@ -2807,29 +2878,27 @@ impl Controller {
         Ok(())
     }
 }
-/// A root goblin's record as it stands: a recreated goblin's starts from
-/// the record it came from (left as it is), then adds what this goblin was
-/// granted.
-fn new_record(a: &Active) -> crate::history::Record {
-    let mut record = crate::history::Record::new(
-        &a.record.id,
-        &a.record.name,
-        &a.record.agent_name,
-        crate::messaging::now(),
-    );
+/// A root goblin's record as it stands. A recreated goblin continues the
+/// record it came from, `existing` when the store still has it; a new one
+/// starts its own. Either way it adds what this goblin was granted.
+fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::history::Record {
+    let now = crate::messaging::now();
+    let mut record = match existing.or(a.recreated_from.as_deref()) {
+        Some(record) => record.clone(),
+        None => crate::history::Record::new(&a.line, &a.record.name, &a.record.agent_name, now),
+    };
+    record.ran_as(&a.record.id);
+    record.configuration = a.record.name.clone();
+    record.agent_name = a.record.agent_name.clone();
     record.cwd = a.record.cwd.clone();
     record.scope = a.record.scope.clone();
     record.dev_shell = a.record.dev_shell.clone();
-    record.docker_enabled = a.record.docker_enabled;
+    // Recorded Docker stays, so an attach skipped now is tried again.
+    record.docker_enabled |= a.record.docker_enabled;
     record.variables = a.variables.clone();
-    if let Some(source) = &a.recreated_from {
-        record.packages = source.packages.clone();
-        record.skipped = a.record.skipped.clone();
-        record.recreated_from = Some(source.id.clone());
-        record.origin = source.origin().to_string();
-        // Docker skipped now is tried again by the next recreate.
-        record.docker_enabled |= source.docker_enabled;
-    }
+    record.skipped = a.record.skipped.clone();
+    record.stopped = None;
+    record.updated = now;
     for package in &a.record.packages {
         // A full record keeps what fits, as a live grant would.
         let _ = record.approve(package);
@@ -2953,6 +3022,7 @@ mod tests {
                 call: None,
                 recreated_from: None,
                 variables: BTreeMap::new(),
+                line: id.clone(),
                 created: 0,
                 record: SessionRecord {
                     agent_state: Default::default(),
@@ -3990,29 +4060,73 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn recreates_are_refused_while_their_origin_is_live_and_retries_return_the_launch() {
+    fn a_recreated_goblin_continues_its_record_and_merges_a_resumed_conversation() {
+        use crate::history::Record;
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let mut line = Record::new("r0", "shell", "morb", 1);
+        line.packages.approved = vec!["jq".into()];
+        line.variables.insert("session_id".into(), "c1".into());
+        line.stopped = Some(2);
+        let mut other = Record::new("o1", "shell", "grib", 0);
+        other.packages.approved = vec!["tree".into()];
+        other.variables.insert("session_id".into(), "c2".into());
+        other.stopped = Some(1);
+        let store = d.history.as_mut().unwrap();
+        store.write(line.clone());
+        store.write(other);
+        // Goblin s5, recreated from r0, reaches running with one more grant.
+        session_with_results_id(&mut d, "s5", vec![]);
+        let mut a = d.sessions.remove("s5").unwrap();
+        a.pending = None;
+        a.line = "r0".into();
+        a.variables = line.variables.clone();
+        a.recreated_from = Some(Box::new(line));
+        a.record.packages = vec!["jq".into(), "hello".into()];
+        d.record_started(&a);
+        d.sessions.insert("s5".into(), a);
+        let record =
+            |d: &Controller, id: &str| d.history.as_ref().unwrap().records.get(id).cloned();
+        let r0 = record(&d, "r0").unwrap();
+        assert_eq!(r0.sessions, ["r0", "s5"]);
+        assert_eq!(r0.packages.approved, ["jq", "hello"]);
+        assert_eq!(r0.stopped, None);
+        assert!(record(&d, "s5").is_none());
+        // It resumes o1's conversation: one record per conversation.
+        assert_eq!(
+            d.sandbox_control(
+                "s5",
+                "sessions.set-variables",
+                json!({"variables":{"session_id":"c2"}})
+            )
+            .unwrap()["recorded"],
+            true
+        );
+        let r0 = record(&d, "r0").unwrap();
+        assert_eq!(r0.sessions, ["o1", "r0", "s5"]);
+        assert_eq!(r0.packages.approved, ["jq", "hello", "tree"]);
+        assert_eq!(r0.created, 0);
+        assert!(d.history.as_ref().unwrap().deleting.contains("o1"));
+        assert_eq!(d.history.as_ref().unwrap().resolve("o1").unwrap().id, "r0");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_record_is_refused_while_a_goblin_runs_it_and_retries_return_the_launch() {
         use crate::history::Record;
         let mut d = daemon();
         let path = d.state.clone();
         d.open_history(Ok(path.join("history")), 100);
         let store = d.history.as_mut().unwrap();
+        // A record that ran as goblins r0, r1 and r2.
         let mut root = Record::new("r0", "shell", "morb", 1);
         root.packages.approved = vec!["hello".into()];
         root.variables.insert("session_id".into(), "c819".into());
+        root.ran_as("r1");
+        root.ran_as("r2");
         store.write(root);
-        // Two records recreated from r0: siblings of one origin.
-        for (id, name) in [("r1", "grib"), ("r2", "snaga")] {
-            let mut sibling = Record::new(id, "shell", name, 2);
-            sibling.recreated_from = Some("r0".into());
-            sibling.origin = "r0".into();
-            store.write(sibling);
-        }
-        // a3 -> b3 -> c3, with the middle record pruned.
         store.write(Record::new("a3", "shell", "ugluk", 1));
-        let mut last = Record::new("c3", "shell", "lurtz", 3);
-        last.recreated_from = Some("b3".into());
-        last.origin = "a3".into();
-        store.write(last);
         let mut moved = Record::new("moved", "shell", "zog", 3);
         moved.cwd = Some("/nonexistent-goblins-recreate-cwd".into());
         store.write(moved);
@@ -4043,8 +4157,11 @@ mod tests {
             start(&mut d, recreate("k0", "nobody")).unwrap_err().0,
             -32004
         );
-        // The record names the configuration and agent name.
-        let first = start(&mut d, recreate("k1", "r0")).unwrap();
+        // Names are labels only.
+        assert_eq!(start(&mut d, recreate("k0", "morb")).unwrap_err().0, -32004);
+        // The record names the configuration and agent name; an old goblin
+        // id finds it.
+        let first = start(&mut d, recreate("k1", "r1")).unwrap();
         let id = first["session"].as_str().unwrap().to_string();
         let record = &d.sessions[&id].record;
         assert_eq!(
@@ -4052,37 +4169,23 @@ mod tests {
             ("shell", "morb")
         );
         assert_eq!(record.recreated_from.as_deref(), Some("r0"));
-        assert_eq!(
-            d.sessions[&id].recreated_from.as_ref().unwrap().variables["session_id"],
-            "c819"
-        );
+        assert_eq!(d.sessions[&id].line, "r0");
+        assert_eq!(d.sessions[&id].variables["session_id"], "c819");
         // A retry is the same launch; another recreate is refused.
-        assert_eq!(start(&mut d, recreate("k1", "r0")).unwrap(), first);
+        assert_eq!(start(&mut d, recreate("k1", "r1")).unwrap(), first);
         let refused =
             |d: &mut Controller,
              start: &mut dyn FnMut(&mut Controller, Value) -> std::result::Result<Value, Fault>,
              key: &str,
              target: &str| { start(d, recreate(key, target)).unwrap_err().1 };
-        for target in ["morb", "r1", "r2"] {
-            assert!(
-                refused(&mut d, &mut start, "k2", target).contains("of the same origin r0 is live")
-            );
+        for target in ["r0", "r1", "r2", "c819"] {
+            assert!(refused(&mut d, &mut start, "k2", target).contains("is live and runs it"));
         }
-        // Released when that session ends. Siblings exclude each other.
+        // Released when that session ends.
         d.sessions.get_mut(&id).unwrap().worker.take();
-        let sibling = start(&mut d, recreate("k3", "r1")).unwrap();
-        assert!(refused(&mut d, &mut start, "k4", "r2").contains("same origin r0"));
-        assert!(refused(&mut d, &mut start, "k4", "r0").contains("same origin r0"));
-        let sibling = sibling["session"].as_str().unwrap().to_string();
-        d.sessions.get_mut(&sibling).unwrap().worker.take();
-        // A pruned middle record does not hide the line's origin.
-        let last = start(&mut d, recreate("k5", "c3")).unwrap();
-        assert!(refused(&mut d, &mut start, "k6", "a3").contains("same origin a3"));
-        let last = last["session"].as_str().unwrap().to_string();
-        d.sessions.get_mut(&last).unwrap().worker.take();
-        // Nor does the original goblin itself running.
+        // The original goblin running its own record refuses too.
         let _a3 = live(&mut d, "a3", None);
-        assert!(refused(&mut d, &mut start, "k7", "c3").contains("goblin a3 (a3)"));
+        assert!(refused(&mut d, &mut start, "k7", "a3").contains("goblin a3 (a3)"));
         d.sessions.get_mut("a3").unwrap().worker.take();
         // A goblin already using the name leaves a new name.
         let _morb = live(&mut d, "morb", None);
@@ -4156,7 +4259,7 @@ mod tests {
         let record = &store.records["g"];
         assert_eq!(record.packages.approved, ["hello"]);
         assert_eq!(record.variables["session_id"], "c819");
-        assert_eq!(record.origin(), "g");
+        assert_eq!(record.sessions, ["g"]);
         drop(second);
         for path in paths {
             fs::remove_dir_all(path).unwrap();
