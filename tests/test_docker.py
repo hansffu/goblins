@@ -118,6 +118,30 @@ class DockerTests(unittest.TestCase):
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
         self.assertFalse(store.exists())
 
+    def test_recreate_attaches_recorded_docker_before_the_first_command(self):
+        import uuid
+        # 'ondemand' does not enable Docker itself; only its record does.
+        session, terminal = self.shell("ondemand")
+        self.enable(session, terminal)
+        terminal.send("exit\n")
+        self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
+        self.assertTrue(self.d.record(session)["docker_enabled"])
+        launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
+                                                    "recreate": session, "rows": 24, "cols": 100})
+        recreated = launch["session"]
+        terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", recreated])
+        self.addCleanup(terminal.close)
+        terminal.expect("docker-test>", timeout=120)
+        record = self.d.get(recreated)
+        self.assertTrue(record["docker_enabled"], record.get("detail"))
+        self.assertTrue(any(p.startswith("docker") for p in record["initial_packages"]), record)
+        self.run_ok(terminal, "test -S /run/goblins/docker-socket/docker.sock && docker info >/dev/null")
+        self.load(terminal)
+        self.run_ok(terminal, "docker run --rm goblins-test true")
+        self.assertTrue(self.d.wait(lambda: self.d.record(recreated))["docker_enabled"])
+        terminal.send("exit\n")
+        self.d.wait(lambda: self.d.get(recreated)["state"] == "stopped")
+
     def test_on_demand_offline_and_independent_scopes(self):
         first, terminal = self.shell("plain")
         second, other = self.shell("plain", scope="offline-b")

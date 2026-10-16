@@ -61,6 +61,83 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
     )
 }
 
+/// `goblins recreate`: start a recorded goblin from the current manifest,
+/// wait until it runs, report what recreating changed, then attach.
+pub fn recreate(state: PathBuf, configuration: String, id: String, detached: bool) -> Result<i32> {
+    use std::io::Read;
+    if !detached && unsafe { libc::isatty(0) != 1 } {
+        return Err("goblins recreate requires terminal input; use --detached".into());
+    }
+    let mut control = Client::connect(&state)?;
+    let dimensions = if detached {
+        libc::winsize {
+            ws_row: 24,
+            ws_col: 80,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }
+    } else {
+        size(0)?
+    };
+    let mut random = [0; 16];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+    let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let launch = control.call(
+        "sessions.start",
+        json!({"key":key,"configuration":configuration,"recreate":id,"detached":detached,
+            "rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}),
+    )?;
+    if detached {
+        println!("{launch}");
+        return Ok(0);
+    }
+    let session = launch["session"].as_str().ok_or("missing session ID")?;
+    let record = loop {
+        let record = control.call("sessions.get", json!({"session":session}))?;
+        if record["state"] != "starting" {
+            break record;
+        }
+        if STOP.load(Ordering::Relaxed) {
+            return Err(format!("interrupted; {session} is still starting").into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let text = |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or("-"));
+    if record["state"] == "failed" {
+        return Err(format!(
+            "recreating {} failed: {}",
+            text(&record["recreated_from"]),
+            text(&record["detail"])
+        )
+        .into());
+    }
+    eprintln!(
+        "Recreated {} from {} as {session}",
+        text(&record["agent_name"]),
+        text(&record["recreated_from"])
+    );
+    let skipped: Vec<_> = record["skipped"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(text)
+        .collect();
+    if !skipped.is_empty() {
+        eprintln!(
+            "Skipped packages that no longer resolve: {}",
+            skipped.join(", ")
+        );
+    }
+    if let Some(detail) = record["detail"].as_str() {
+        eprintln!("{}", goblins_protocol::plain_text(detail));
+    }
+    relay(
+        control,
+        session,
+        record["terminal"].as_str().ok_or("missing terminal path")?,
+    )
+}
+
 pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Result<i32> {
     if unsafe { libc::isatty(0) != 1 } {
         return Err("goblins attach requires terminal input".into());

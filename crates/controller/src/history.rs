@@ -412,8 +412,9 @@ fn write(directory: &Path, record: &Record) -> io::Result<()> {
     }
     result
 }
-/// Every readable record; anything else is reported and left alone.
-fn load(directory: &Path) -> Result<BTreeMap<String, Record>> {
+/// Every readable record; anything else is reported and left alone. Without
+/// the store lock this is only a snapshot.
+pub fn load(directory: &Path) -> Result<BTreeMap<String, Record>> {
     let mut records = BTreeMap::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;

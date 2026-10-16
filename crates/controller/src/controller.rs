@@ -92,6 +92,12 @@ pub struct SessionRecord {
     /// Live non-interactive execs: TRAMP, eshell and scripts.
     #[serde(default)]
     pub execs: u32,
+    /// The history record this goblin was recreated from.
+    #[serde(default)]
+    pub recreated_from: Option<String>,
+    /// Recorded packages that no longer resolved when it was recreated.
+    #[serde(default)]
+    pub skipped: Vec<String>,
 }
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
@@ -166,6 +172,9 @@ struct Active {
     /// Identity of the current trusted dev shell generation.
     dev_identity: Option<String>,
     call: Option<Call>,
+    /// The record this goblin was recreated from, reserved while it is live
+    /// so no other goblin resumes the same agent conversation.
+    recreated_from: Option<Box<crate::history::Record>>,
 }
 impl Active {
     /// Refresh activity freshness; true when the visible activity changed.
@@ -346,6 +355,8 @@ impl Connection {
 struct Start {
     key: String,
     configuration: String,
+    /// Empty for a recreate, which takes it from the record.
+    #[serde(default)]
     name: String,
     agent_name: Option<String>,
     #[serde(default)]
@@ -368,6 +379,13 @@ struct Start {
     /// Sandbox launches only: join the selected parent's raid.
     #[serde(skip)]
     inherit_raid: bool,
+    /// Recreate this recorded goblin (record id, unique id prefix or unique
+    /// agent name) from the current configuration of the same name.
+    #[serde(default)]
+    recreate: Option<String>,
+    /// The record a recreate launch uses, resolved by the daemon.
+    #[serde(skip)]
+    recorded: Option<Box<crate::history::Record>>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -613,8 +631,137 @@ impl Controller {
         record.scope = a.record.scope.clone();
         record.dev_shell = a.record.dev_shell.clone();
         record.docker_enabled = a.record.docker_enabled;
+        // A recreated goblin's own record starts with the same package
+        // lists and variables. The source record is left as it is.
+        if let Some(source) = &a.recreated_from {
+            record.packages = source.packages.clone();
+            record.variables = source.variables.clone();
+            record.skipped = a.record.skipped.clone();
+            record.recreated_from = Some(source.id.clone());
+        }
         store.write(record);
         store.retain(keep, &running);
+    }
+    /// Fill a recreate launch from its record, refusing what cannot be
+    /// recreated now.
+    fn prepare_recreate(&self, p: &mut Start, target: &str) -> std::result::Result<(), Fault> {
+        if p.parent.is_some() {
+            return Err((
+                -32602,
+                "recreate cannot be combined with --parent: only root goblins are recreated".into(),
+            ));
+        }
+        if !p.name.is_empty()
+            || p.agent_name.is_some()
+            || p.cwd.is_some()
+            || p.scope.is_some()
+            || p.dev_shell.is_some()
+            || p.raid.is_some()
+        {
+            return Err((
+                -32602,
+                "recreate takes the configuration, agent name, scope, dev shell and working directory from its record".into(),
+            ));
+        }
+        if self.workspace.is_some() {
+            return Err((
+                -32009,
+                "this server snapshots a --workspace for each goblin, so its goblins are neither recorded nor recreated".into(),
+            ));
+        }
+        let store = self
+            .history
+            .as_ref()
+            .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+        let record = store.resolve(target).map_err(|e| (-32004, e))?;
+        if let Some(cwd) = &record.cwd
+            && !cwd.is_dir()
+        {
+            return Err((
+                -32009,
+                format!(
+                    "the recorded working directory {} no longer exists",
+                    cwd.display()
+                ),
+            ));
+        }
+        if let Some(reason) = self.recreate_conflict(store, &record.id) {
+            return Err((
+                -32009,
+                format!("record {} cannot be recreated now: {reason}", record.id),
+            ));
+        }
+        p.name = record.configuration.clone();
+        // Its own name when that is free, otherwise a new one.
+        p.agent_name = Some(record.agent_name.clone())
+            .filter(|name| self.allocate_name(Some(name), None).is_ok());
+        p.cwd = record.cwd.clone();
+        p.scope = record.scope.clone();
+        p.dev_shell = record.dev_shell.clone();
+        p.recorded = Some(Box::new(record.clone()));
+        Ok(())
+    }
+    /// Why a record cannot be recreated: it, a record it was recreated from,
+    /// or one recreated from it has a live session (starting, running or
+    /// stopping), which could resume the same agent conversation.
+    fn recreate_conflict(&self, store: &crate::history::Store, id: &str) -> Option<String> {
+        let live = |record: &str| {
+            self.sessions
+                .values()
+                .filter(|a| a.worker.is_some())
+                .find_map(|a| {
+                    if a.record.id == record {
+                        Some(format!(
+                            "goblin {} ({}) is live",
+                            a.record.agent_name, a.record.id
+                        ))
+                    } else if a.recreated_from.as_ref().is_some_and(|r| r.id == record) {
+                        Some(format!(
+                            "goblin {} ({}) recreated from {record} is live",
+                            a.record.agent_name, a.record.id
+                        ))
+                    } else {
+                        None
+                    }
+                })
+        };
+        if let Some(reason) = live(id) {
+            return Some(reason);
+        }
+        for ancestor in store.ancestors(id) {
+            if let Some(reason) = live(&ancestor) {
+                return Some(format!("it was recreated from {ancestor}, and {reason}"));
+            }
+        }
+        for descendant in store.descendants(id) {
+            if let Some(reason) = live(&descendant) {
+                return Some(format!("{descendant} was recreated from it, and {reason}"));
+            }
+        }
+        None
+    }
+    /// The history store's records for `goblins history`, newest first,
+    /// each marked running or not, within the response size.
+    fn history_list(&self) -> std::result::Result<Value, Fault> {
+        let store = self
+            .history
+            .as_ref()
+            .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+        let running = self.live_sessions();
+        let mut records = vec![];
+        let mut size = 0;
+        let mut truncated = false;
+        for record in crate::history::newest_first(&store.records) {
+            let mut value = json!(record);
+            value["running"] = json!(running.contains(&record.id));
+            size += serde_json::to_vec(&value).map_or(0, |v| v.len());
+            if size > 900 * 1024 {
+                truncated = true;
+                break;
+            }
+            records.push(value);
+        }
+        Ok(json!({"directory":store.directory,"records":records,"truncated":truncated}))
     }
     /// Change the record of a live root goblin. Ok(false) when it has none;
     /// Err with the reason when the change does not fit, leaving it as it was.
@@ -1013,6 +1160,19 @@ impl Controller {
             return Err(conflict());
         }
         let key = format!("{}:{}", scope.unwrap_or("host"), p.key);
+        // A retried recreate returns its original acceptance even though its
+        // record is reserved by now; the record fills in everything else.
+        let original = p.recreate.is_some().then(|| p.clone());
+        if let Some(target) = p.recreate.clone() {
+            if let Some((old, result)) = self.launches.get(&key) {
+                return if old == &p {
+                    Ok(result.clone())
+                } else {
+                    Err(conflict())
+                };
+            }
+            self.prepare_recreate(&mut p, &target)?;
+        }
         let parent = match (scope, p.parent.as_deref()) {
             (Some(root), None | Some(".")) => Some(root.to_string()),
             (_, Some(target)) => Some(self.resolve_scoped(target, scope)?),
@@ -1102,6 +1262,7 @@ impl Controller {
         let path = directory.join("terminal.sock");
         let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
         terminal.detached = p.detached;
+        let recorded = p.recorded.take();
         let source = match inherited {
             Some(inherited) => Source::Child {
                 inherited,
@@ -1116,6 +1277,11 @@ impl Controller {
                 cwd: p.cwd.clone(),
                 state: self.state.clone(),
                 history: self.history_directory.clone(),
+                recreate: recorded.as_ref().map(|r| crate::worker::Recreate {
+                    packages: r.packages.approved.clone(),
+                    docker: r.docker_enabled,
+                    variables: r.variables.clone(),
+                }),
             },
         };
         let cwd = match &parent {
@@ -1157,6 +1323,8 @@ impl Controller {
             raid: None,
             shells: 0,
             execs: 0,
+            recreated_from: recorded.as_ref().map(|r| r.id.clone()),
+            skipped: vec![],
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
         self.sessions.insert(
@@ -1169,6 +1337,7 @@ impl Controller {
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
                 call: None,
+                recreated_from: recorded,
                 created: self.next,
                 record,
                 worker: Some(worker),
@@ -1178,7 +1347,8 @@ impl Controller {
                 directory,
             },
         );
-        self.launches.insert(key, (p, result.clone()));
+        self.launches
+            .insert(key, (original.unwrap_or(p), result.clone()));
         self.dirty = true;
         if let Some(join) = join {
             self.apply_launch_raid(&id, join)?;
@@ -1290,6 +1460,8 @@ impl Controller {
                         detached: p.detached,
                         raid: None,
                         inherit_raid: p.inherit_raid,
+                        recreate: None,
+                        recorded: None,
                     },
                     Some(scope),
                 )?;
@@ -1493,6 +1665,10 @@ impl Controller {
                 Ok(json!(self.sessions[&id].record))
             }
             "sessions.start" => self.start(params(value)?, None),
+            "history.list" => {
+                let _: Empty = params(value)?;
+                self.history_list()
+            }
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;
@@ -1611,7 +1787,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open","variables"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2143,8 +2319,25 @@ impl Controller {
                         identity,
                         inheritance,
                         exit_watch,
+                        recreated,
                     } => {
                         a.init = Some(control);
+                        // Recreated grants are this goblin's own: children
+                        // asking for them are approved automatically.
+                        if let Some(recreated) = recreated {
+                            for (name, output) in recreated.packages {
+                                if !a.record.packages.contains(&name) {
+                                    a.record.packages.push(name.clone());
+                                }
+                                a.granted_outputs.insert(name, output);
+                            }
+                            a.record.skipped = recreated.skipped;
+                            a.record.detail = recreated.fresh.map(|reason| {
+                                bounded(&format!(
+                                    "recreated without resuming the agent's conversation: {reason}"
+                                ))
+                            });
+                        }
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = scope;
                         a.record.dev_shell = dev_shell;
@@ -2602,6 +2795,7 @@ mod tests {
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
                 call: None,
+                recreated_from: None,
                 created: 0,
                 record: SessionRecord {
                     agent_state: Default::default(),
@@ -2634,6 +2828,8 @@ mod tests {
                     raid: None,
                     shells: 0,
                     execs: 0,
+                    recreated_from: None,
+                    skipped: vec![],
                 },
                 worker: Some(Worker::completed(results)),
                 listener: None,
@@ -3634,6 +3830,108 @@ mod tests {
         assert_eq!(records.records["a"].stopped, Some(stopped));
         assert_eq!(records.records["a"].variables["session_id"], "c819");
         drop(records);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn recreates_are_refused_while_their_lineage_is_live_and_retries_return_the_launch() {
+        use crate::history::Record;
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let store = d.history.as_mut().unwrap();
+        let mut root = Record::new("r0", "shell", "morb", 1);
+        root.packages.approved = vec!["hello".into()];
+        root.variables.insert("session_id".into(), "c819".into());
+        store.write(root);
+        let mut child = Record::new("r1", "shell", "grib", 2);
+        child.recreated_from = Some("r0".into());
+        store.write(child);
+        let mut moved = Record::new("moved", "shell", "zog", 3);
+        moved.cwd = Some("/nonexistent-goblins-recreate-cwd".into());
+        store.write(moved);
+        let (mut host, _peer) = host_connection();
+        let recreate = |key: &str, target: &str| {
+            json!({"key":key,"configuration":"/missing-goblins-test-manifest","recreate":target,
+                "rows":24,"cols":80})
+        };
+        let mut start = |d: &mut Controller, p: Value| d.host(&mut host, "sessions.start", p);
+        let mut with_parent = recreate("k0", "r0");
+        with_parent["parent"] = json!("r0");
+        assert!(
+            start(&mut d, with_parent)
+                .unwrap_err()
+                .1
+                .contains("--parent")
+        );
+        let mut with_name = recreate("k0", "r0");
+        with_name["name"] = json!("shell");
+        assert_eq!(start(&mut d, with_name).unwrap_err().0, -32602);
+        assert!(
+            start(&mut d, recreate("k0", "moved"))
+                .unwrap_err()
+                .1
+                .contains("no longer exists")
+        );
+        assert_eq!(
+            start(&mut d, recreate("k0", "nobody")).unwrap_err().0,
+            -32004
+        );
+        // The record names the configuration and agent name.
+        let first = start(&mut d, recreate("k1", "r0")).unwrap();
+        let id = first["session"].as_str().unwrap().to_string();
+        let record = &d.sessions[&id].record;
+        assert_eq!(
+            (record.name.as_str(), record.agent_name.as_str()),
+            ("shell", "morb")
+        );
+        assert_eq!(record.recreated_from.as_deref(), Some("r0"));
+        assert_eq!(
+            d.sessions[&id].recreated_from.as_ref().unwrap().variables["session_id"],
+            "c819"
+        );
+        // A retry is the same launch; another recreate is refused.
+        assert_eq!(start(&mut d, recreate("k1", "r0")).unwrap(), first);
+        assert!(
+            start(&mut d, recreate("k2", "morb"))
+                .unwrap_err()
+                .1
+                .contains("recreated from r0 is live")
+        );
+        assert!(
+            start(&mut d, recreate("k2", "r1"))
+                .unwrap_err()
+                .1
+                .contains("it was recreated from r0")
+        );
+        // Released when that session ends.
+        d.sessions.get_mut(&id).unwrap().worker.take();
+        // A live goblin recreated from it (its own record live) also refuses,
+        // and a goblin already using the name leaves a new name.
+        let _r1 = live(&mut d, "r1", None);
+        assert!(
+            start(&mut d, recreate("k3", "r0"))
+                .unwrap_err()
+                .1
+                .contains("r1 was recreated from it")
+        );
+        d.sessions.get_mut("r1").unwrap().worker.take();
+        let _morb = live(&mut d, "morb", None);
+        let again = start(&mut d, recreate("k4", "r0")).unwrap();
+        assert_ne!(again["agent_name"], "morb");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        // A --workspace daemon records nothing and recreates nothing.
+        let path = unix::temp_directory().unwrap();
+        let mut d = Controller::new(&path, Some(path.clone())).unwrap();
+        d.open_history(Ok(path.join("history")), 100);
+        let (mut host, _peer) = host_connection();
+        assert!(
+            d.host(&mut host, "sessions.start", recreate("k1", "r0"))
+                .unwrap_err()
+                .1
+                .contains("--workspace")
+        );
+        drop(d);
         fs::remove_dir_all(path).unwrap();
     }
     #[test]

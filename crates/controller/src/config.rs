@@ -419,3 +419,109 @@ impl Configuration {
         })
     }
 }
+
+/// A `resume_command` with its `{key}` placeholders filled from recorded
+/// variables (`{{` and `}}` are literal braces), or why it cannot be used.
+/// Each element stays one argument; no shell is involved.
+pub fn resume_arguments(
+    template: &[String],
+    variables: &BTreeMap<String, String>,
+) -> std::result::Result<Vec<String>, String> {
+    template
+        .iter()
+        .map(|element| {
+            let mut argument = String::new();
+            let mut chars = element.chars().peekable();
+            while let Some(c) = chars.next() {
+                match c {
+                    '{' if chars.peek() == Some(&'{') => {
+                        chars.next();
+                        argument.push('{');
+                    }
+                    '}' if chars.peek() == Some(&'}') => {
+                        chars.next();
+                        argument.push('}');
+                    }
+                    '{' => {
+                        let mut key = String::new();
+                        let mut closed = false;
+                        for c in chars.by_ref() {
+                            if c == '}' {
+                                closed = true;
+                                break;
+                            }
+                            key.push(c);
+                        }
+                        if !closed || !goblins_protocol::variable_key(&key) {
+                            return Err(format!(
+                                "resume command element '{element}' has an invalid placeholder"
+                            ));
+                        }
+                        let value = variables
+                            .get(&key)
+                            .ok_or_else(|| format!("variable '{key}' is not recorded"))?;
+                        // An option-like value could change what the agent does.
+                        if value.starts_with('-') {
+                            return Err(format!("variable '{key}' starts with '-'"));
+                        }
+                        argument.push_str(value);
+                    }
+                    '}' => {
+                        return Err(format!(
+                            "resume command element '{element}' has an unmatched '}}'"
+                        ));
+                    }
+                    c => argument.push(c),
+                }
+            }
+            Ok(argument)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn resume_arguments_fill_placeholders_or_say_why_not() {
+        let variables = BTreeMap::from([
+            ("session_id".to_string(), "c8193c93".to_string()),
+            ("session_name".to_string(), "Plan it; $(false)".to_string()),
+            ("flag".to_string(), "--dangerous".to_string()),
+        ]);
+        let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            resume_arguments(
+                &template(&[
+                    "-p",
+                    "--resume",
+                    "{session_id}",
+                    "--name={session_name}",
+                    "{{x}}"
+                ]),
+                &variables
+            ),
+            Ok(template(&[
+                "-p",
+                "--resume",
+                "c8193c93",
+                "--name=Plan it; $(false)",
+                "{x}"
+            ]))
+        );
+        assert_eq!(
+            resume_arguments(&template(&["{missing}"]), &variables),
+            Err("variable 'missing' is not recorded".into())
+        );
+        assert_eq!(
+            resume_arguments(&template(&["--resume={flag}"]), &variables),
+            Err("variable 'flag' starts with '-'".into())
+        );
+        for bad in ["{session_id", "close}", "{Bad}", "{}", "{{a}"] {
+            assert!(
+                resume_arguments(&template(&[bad]), &variables).is_err(),
+                "{bad}"
+            );
+        }
+    }
+}

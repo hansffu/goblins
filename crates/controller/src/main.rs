@@ -4,6 +4,7 @@ mod attachment;
 mod cli;
 mod exec;
 mod plain;
+mod records;
 mod server;
 mod tui;
 use clap::{CommandFactory, Parser};
@@ -291,6 +292,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 detatched,
             );
         }
+        Command::Recreate { id, detached } => {
+            let runtime = cli
+                .runtime
+                .ok_or("recreate requires --runtime (use the Nix-built goblins command)")?;
+            let configuration = fs::canonicalize(&runtime)?.display().to_string();
+            return attachment::recreate(state, configuration, id, detached);
+        }
+        Command::History { json } => return records::list(&state, json),
         Command::Configurations => {
             let runtime = cli
                 .runtime

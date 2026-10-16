@@ -107,6 +107,20 @@ pub enum Command {
         #[arg(long, value_name = "RAID")]
         raid: Option<String>,
     },
+    /// Start a recorded goblin again from the current configuration of its name
+    Recreate {
+        /// Record id, unique id prefix or unique agent name (see 'goblins history')
+        id: String,
+        /// Start without attaching to its terminal
+        #[arg(long)]
+        detached: bool,
+    },
+    /// List recorded goblins that 'goblins recreate' can start again
+    History {
+        /// Print the records as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Print configured goblin names and their manifest as JSON (no server needed)
     Configurations,
     /// Attach to a sandbox by live name or immutable session ID

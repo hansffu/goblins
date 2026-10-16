@@ -47,6 +47,21 @@ pub(super) enum Work {
         cancel: Cancel,
     },
 }
+/// What a recreated goblin takes from its record.
+pub(super) struct Recreate {
+    /// Approved package names, in grant order.
+    pub packages: Vec<String>,
+    pub docker: bool,
+    pub variables: std::collections::BTreeMap<String, String>,
+}
+/// What recreating staged, for the controller's hand-over.
+pub(super) struct Recreated {
+    pub packages: Vec<(String, PathBuf)>,
+    /// Recorded names that no longer resolve.
+    pub skipped: Vec<String>,
+    /// Why the agent starts a fresh conversation despite a resume command.
+    pub fresh: Option<String>,
+}
 pub(super) enum Completed {
     Preview {
         approval: u64,
@@ -65,6 +80,7 @@ pub(super) enum Completed {
         identity: Identity,
         inheritance: Inheritance,
         exit_watch: OwnedFd,
+        recreated: Option<Recreated>,
     },
     Progress {
         request: String,
@@ -114,6 +130,7 @@ pub(super) enum Source {
         state: PathBuf,
         /// The history store, protected like the daemon's state.
         history: Option<PathBuf>,
+        recreate: Option<Recreate>,
     },
     /// A child of a running session, using a configuration from its branch.
     Child {
@@ -133,6 +150,7 @@ impl Worker {
                 // Disk reads and launch adaptation stay off the event pump.
                 token.check()?;
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
+                let mut recreated = None;
                 let mut session = match source {
                     Source::Child {
                         inherited,
@@ -147,6 +165,7 @@ impl Worker {
                         cwd,
                         state,
                         history,
+                        recreate,
                     } => {
                         let manifest = Manifest::read(&configuration)?;
                         let editor = manifest.editor()?;
@@ -194,6 +213,9 @@ impl Worker {
                                 &token,
                             )?);
                         }
+                        if let Some(recreate) = recreate {
+                            recreated = Some(prepare_recreate(&mut session, recreate)?);
+                        }
                         session
                     }
                 };
@@ -230,6 +252,7 @@ impl Worker {
                     identity: session.identity.clone().unwrap(),
                     inheritance: session.inheritance(),
                     exit_watch: session.exit_watch()?,
+                    recreated,
                 })?;
                 loop {
                     if token.check().is_err() || !session.alive() {
@@ -438,6 +461,37 @@ impl Worker {
             thread: Some(thread),
         }
     }
+}
+/// Stage a recreated goblin's record before it starts: Docker, the recorded
+/// grants resolved against the current catalog, and its resume arguments.
+fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreated> {
+    if recreate.docker {
+        session.attach_docker_at_start()?;
+    }
+    let (packages, skipped) = session.resolve_recorded(&recreate.packages)?;
+    if session.launch.initial_packages.len() + packages.len() > 128 {
+        return Err("initial package limit is 128, recreated grants included".into());
+    }
+    session.recreated = packages.clone();
+    let fresh = match &session.launch.resume_command {
+        None => None,
+        Some(template) => match crate::config::resume_arguments(template, &recreate.variables) {
+            Ok(arguments) => {
+                session.arguments = Some(arguments);
+                None
+            }
+            Err(reason) => Some(reason),
+        },
+    };
+    session.event(
+        "recreate",
+        serde_json::json!({"packages":packages,"skipped":skipped,"fresh":fresh}),
+    );
+    Ok(Recreated {
+        packages,
+        skipped,
+        fresh,
+    })
 }
 impl Worker {
     /// Completion is usable only after observing the channel disconnected and

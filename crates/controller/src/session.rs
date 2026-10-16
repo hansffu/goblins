@@ -239,6 +239,8 @@ pub(crate) fn log_event(directory: &Path, event: &str, fields: serde_json::Value
         );
     }
 }
+/// Recorded grants that resolved, in order, and the names that did not.
+pub(crate) type Resolved = (Vec<(String, PathBuf)>, Vec<String>);
 pub struct Session {
     pub directory: PathBuf,
     pub launch: Launch,
@@ -272,6 +274,12 @@ pub struct Session {
     candidate: Option<crate::devshell::Candidate>,
     pub(crate) configuration: String,
     pub(crate) branch: Arc<crate::branch::Branch>,
+    /// A recreated goblin's recorded grants, staged before the agent starts.
+    /// They are this session's own grants: children do not inherit them.
+    pub(crate) recreated: Vec<(String, PathBuf)>,
+    /// The agent's arguments for this sandbox only, instead of
+    /// `launch.shell_args` (a resumed conversation). Children use the latter.
+    pub(crate) arguments: Option<Vec<String>>,
 }
 impl Session {
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
@@ -318,6 +326,8 @@ impl Session {
             candidate: None,
             configuration: String::new(),
             branch: Arc::default(),
+            recreated: Vec::new(),
+            arguments: None,
         };
         for name in ["store", "packages", "roots", "workspace"] {
             fs::create_dir(session.directory.join(name))?;
@@ -548,6 +558,8 @@ impl Session {
         ];
         roots.extend(self.launch.initial_packages.clone());
         roots.extend(self.launch.initial_closure.clone());
+        // Mounted with the initial store view: no helper call is needed.
+        roots.extend(self.recreated.iter().map(|(_, output)| output.clone()));
         roots.extend(etc.iter().map(|(source, _)| source.clone()));
         if let Some(dev) = &self.launch.dev_shell {
             // Retain the evaluated source for refresh diffs; it is never mounted.
@@ -561,6 +573,17 @@ impl Session {
         let empty = self.directory.join("packages/generation-0");
         fs::create_dir_all(empty.join("bin"))?;
         symlink("generation-0", self.directory.join("packages/current"))?;
+        // Recreated grants, one generation each in recorded order, as their
+        // live grants published them: the last holds every command, and an
+        // earlier grant wins a collision.
+        for (name, output) in std::mem::take(&mut self.recreated) {
+            let generation = self.profile(&output)?;
+            let staged = self.directory.join("packages/next");
+            let _ = fs::remove_file(&staged);
+            symlink(generation.file_name().unwrap(), &staged)?;
+            fs::rename(staged, self.directory.join("packages/current"))?;
+            self.packages.insert(name, output);
+        }
         let listener = UnixListener::bind(self.directory.join("request.sock"))?;
         fs::set_permissions(
             self.directory.join("request.sock"),
@@ -857,7 +880,7 @@ impl Session {
         command
             .args(init)
             .arg(&self.launch.shell)
-            .args(&self.launch.shell_args)
+            .args(self.arguments.as_ref().unwrap_or(&self.launch.shell_args))
             .stdin(Stdio::from(control_r))
             .stdout(Stdio::from(reply_w))
             .stderr(File::create(self.directory.join("helper.log"))?);
@@ -940,8 +963,71 @@ impl Session {
             &self.cancel,
             true,
         )?;
+        self.build(name, &selection)
+    }
+    /// Resolve a recreated goblin's recorded grants against the current
+    /// catalog, before `start`: the outputs in recorded order, and the names
+    /// that no longer resolve. A build failure or cancellation fails.
+    pub(crate) fn resolve_recorded(&self, names: &[String]) -> Result<Resolved> {
+        let mut outputs: Vec<(String, PathBuf)> = vec![];
+        let mut skipped = vec![];
+        for name in names {
+            self.cancel.check()?;
+            if outputs.iter().any(|(n, _)| n == name) || skipped.contains(name) {
+                continue;
+            }
+            let selection = match crate::catalog::select(
+                &self.launch.flake,
+                name,
+                &self.directory,
+                &self.cancel,
+                true,
+            ) {
+                Ok(selection) => selection,
+                Err(error) => {
+                    self.cancel.check()?;
+                    self.event(
+                        "recreate-skipped",
+                        serde_json::json!({"package":name,"detail":error.to_string()}),
+                    );
+                    skipped.push(name.clone());
+                    continue;
+                }
+            };
+            let output = self.root(&self.build(name, &selection)?)?;
+            outputs.push((name.clone(), output));
+        }
+        Ok((outputs, skipped))
+    }
+    /// Attach Docker before the agent starts, as an inheriting child does:
+    /// the client is an initial package, so no live grant is needed.
+    pub(crate) fn attach_docker_at_start(&mut self) -> Result<()> {
+        match &self.launch.scope {
+            Some(scope) if scope.definition.docker => (),
+            Some(scope) => {
+                return Err(format!(
+                    "the recorded goblin had Docker, but scope '{}' does not enable Docker",
+                    scope.name
+                )
+                .into());
+            }
+            None => {
+                return Err(
+                    "the recorded goblin had Docker, but its configuration has no scope".into(),
+                );
+            }
+        }
+        self.docker_inherit_enabled = Some(true);
+        if let Some(client) = self.launch.docker.as_ref().and_then(|d| d.client.clone())
+            && !self.launch.initial_packages.contains(&client)
+        {
+            self.launch.initial_packages.push(client);
+        }
+        Ok(())
+    }
+    fn build(&self, name: &str, selection: &crate::catalog::Selection) -> Result<PathBuf> {
         let attr = crate::catalog::attribute(&self.launch.flake, name);
-        let output = selection.output;
+        let output = &selection.output;
         let result = self
             .command(
                 crate::catalog::nix()
