@@ -841,8 +841,7 @@ impl Controller {
         }
         merged.updated = crate::messaging::now();
         let ids: Vec<_> = others.into_iter().map(|r| r.id).collect();
-        store.write(merged);
-        store.delete(&ids, None);
+        store.merge(merged, &ids);
     }
     /// The history store's records for `goblins history`, newest first,
     /// each marked running or not, within the response size.

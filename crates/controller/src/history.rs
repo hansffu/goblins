@@ -316,6 +316,12 @@ enum Op {
         ids: Vec<String>,
         tag: Option<u64>,
     },
+    /// Write `record`, then delete `sources` only once it is durable: the
+    /// records merged into it.
+    Merge {
+        record: Box<Record>,
+        sources: Vec<String>,
+    },
 }
 /// What a delete actually did, once its files are gone for good.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -413,6 +419,25 @@ impl Store {
         }
         self.records.insert(record.id.clone(), record.clone());
         self.send(Op::Write(Box::new(record)));
+    }
+    /// Replace `record` with the records `sources` merged into it. They are
+    /// deleted only once it is written durably; until then, or if it cannot
+    /// be, they stay.
+    pub fn merge(&mut self, mut record: Record, sources: &[String]) {
+        if !record.fit() {
+            eprintln!(
+                "goblins: session record {} would exceed {} KiB; not merging into it",
+                record.id,
+                MAX_RECORD / 1024
+            );
+            return;
+        }
+        self.records.insert(record.id.clone(), record.clone());
+        self.deleting.extend(sources.iter().cloned());
+        self.send(Op::Merge {
+            record: Box::new(record),
+            sources: sources.to_vec(),
+        });
     }
     /// Delete records, dropping any revision of them still queued. They
     /// stay until the writer confirms; `poll` reports the outcome under
@@ -544,7 +569,15 @@ fn sync(directory: &Path) -> io::Result<()> {
     File::open(directory)?.sync_all()
 }
 fn apply(directory: &Path, batch: Vec<Op>, sync: impl Fn(&Path) -> io::Result<()>) -> Vec<Deleted> {
+    // Revisions coalesce, but never move past a delete queued after them.
     let mut pending = BTreeMap::new();
+    let flush = |pending: &mut BTreeMap<String, Box<Record>>| {
+        for record in std::mem::take(pending).values() {
+            if let Err(e) = write(directory, record) {
+                eprintln!("goblins: cannot write session record {}: {e}", record.id);
+            }
+        }
+    };
     let mut results = vec![];
     for op in batch {
         match op {
@@ -552,37 +585,72 @@ fn apply(directory: &Path, batch: Vec<Op>, sync: impl Fn(&Path) -> io::Result<()
                 pending.insert(record.id.clone(), record);
             }
             Op::Delete { ids, tag } => {
-                let mut result = Deleted {
-                    tag,
-                    ..Default::default()
-                };
-                for id in ids {
-                    pending.remove(&id);
-                    match fs::remove_file(path(directory, &id)) {
-                        Ok(()) => result.removed.push(id),
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => result.removed.push(id),
-                        Err(e) => result.failed.push((id, e.to_string())),
-                    }
+                // Queued revisions of deleted records are dropped.
+                for id in &ids {
+                    pending.remove(id);
                 }
-                // A deletion that a crash could undo has not happened yet.
-                if !result.removed.is_empty()
-                    && let Err(e) = sync(directory)
-                {
-                    let removed = std::mem::take(&mut result.removed);
-                    result
-                        .failed
-                        .extend(removed.into_iter().map(|id| (id, e.to_string())));
+                flush(&mut pending);
+                results.push(remove(directory, ids, tag, &sync));
+            }
+            Op::Merge { record, sources } => {
+                pending.remove(&record.id);
+                for id in &sources {
+                    pending.remove(id);
                 }
-                results.push(result);
+                flush(&mut pending);
+                results.push(match write(directory, &record) {
+                    Ok(()) => remove(directory, sources, None, &sync),
+                    // Nothing is lost: the sources stay, and so does the
+                    // previous revision of the record.
+                    Err(e) => Deleted {
+                        tag: None,
+                        removed: vec![],
+                        failed: sources
+                            .into_iter()
+                            .map(|id| {
+                                let reason = format!(
+                                    "record {} it merged into was not written: {e}",
+                                    record.id
+                                );
+                                (id, reason)
+                            })
+                            .collect(),
+                    },
+                });
             }
         }
     }
-    for record in pending.values() {
-        if let Err(e) = write(directory, record) {
-            eprintln!("goblins: cannot write session record {}: {e}", record.id);
+    flush(&mut pending);
+    results
+}
+/// Delete record files, durably before they are reported removed.
+fn remove(
+    directory: &Path,
+    ids: Vec<String>,
+    tag: Option<u64>,
+    sync: impl Fn(&Path) -> io::Result<()>,
+) -> Deleted {
+    let mut result = Deleted {
+        tag,
+        ..Default::default()
+    };
+    for id in ids {
+        match fs::remove_file(path(directory, &id)) {
+            Ok(()) => result.removed.push(id),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => result.removed.push(id),
+            Err(e) => result.failed.push((id, e.to_string())),
         }
     }
-    results
+    // A deletion that a crash could undo has not happened yet.
+    if !result.removed.is_empty()
+        && let Err(e) = sync(directory)
+    {
+        let removed = std::mem::take(&mut result.removed);
+        result
+            .failed
+            .extend(removed.into_iter().map(|id| (id, e.to_string())));
+    }
+    result
 }
 /// Temp file, fsync, rename and directory fsync: a reader sees the old or
 /// the new record, never part of one.
@@ -938,6 +1006,64 @@ mod tests {
         );
         assert_eq!(on_disk(&root).into_keys().collect::<Vec<_>>(), ["b"]);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_merge_deletes_its_sources_only_once_the_record_is_written() {
+        let root = unix::temp_directory().unwrap();
+        apply(
+            &root,
+            vec![
+                Op::Write(Box::new(record("a", 1))),
+                Op::Write(Box::new(record("b", 2))),
+            ],
+            sync,
+        );
+        let mut merged = record("c", 3);
+        merged.approve("jq").unwrap();
+        // The record cannot be written (here: an id no file may have).
+        let mut unwritable = merged.clone();
+        unwritable.id = "../c".into();
+        let results = apply(
+            &root,
+            vec![Op::Merge {
+                record: Box::new(unwritable),
+                sources: vec!["a".into(), "b".into()],
+            }],
+            sync,
+        );
+        assert!(results[0].removed.is_empty());
+        assert_eq!(
+            results[0]
+                .failed
+                .iter()
+                .map(|f| f.0.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert!(results[0].failed[0].1.contains("was not written"));
+        assert_eq!(on_disk(&root).into_keys().collect::<Vec<_>>(), ["a", "b"]);
+        // Written: the sources go, and a queued revision of one goes with them.
+        let results = apply(
+            &root,
+            vec![
+                Op::Write(Box::new(record("a", 4))),
+                Op::Merge {
+                    record: Box::new(merged.clone()),
+                    sources: vec!["a".into(), "b".into()],
+                },
+            ],
+            sync,
+        );
+        assert_eq!(results[0].removed, ["a", "b"]);
+        assert_eq!(on_disk(&root).into_values().collect::<Vec<_>>(), [merged]);
+        fs::remove_dir_all(root).unwrap();
+        // Through the store: kept in memory until the writer confirms.
+        let (mut s, _root) = store();
+        s.write(record("a", 1));
+        s.merge(record("c", 3), &["a".into()]);
+        assert!(s.deleting.contains("a"));
+        settle(&mut s);
+        assert!(!s.records.contains_key("a") && s.records.contains_key("c"));
     }
     #[test]
     fn a_failed_delete_is_reported_and_the_record_kept() {
