@@ -998,16 +998,10 @@ impl Session {
         match &self.launch.scope {
             Some(scope) if scope.definition.docker => (),
             Some(scope) => {
-                return Err(format!(
-                    "the recorded goblin had Docker, but scope '{}' does not enable Docker",
-                    scope.name
-                )
-                .into());
+                return Err(format!("scope '{}' does not enable Docker", scope.name).into());
             }
             None => {
-                return Err(
-                    "the recorded goblin had Docker, but its configuration has no scope".into(),
-                );
+                return Err("the configuration runs without a scope, so without Docker".into());
             }
         }
         self.docker_inherit_enabled = Some(true);

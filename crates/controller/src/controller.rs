@@ -696,6 +696,8 @@ impl Controller {
             record.skipped = a.record.skipped.clone();
             record.recreated_from = Some(source.id.clone());
             record.origin = source.origin().to_string();
+            // Docker skipped now is tried again by the next recreate.
+            record.docker_enabled |= source.docker_enabled;
         }
         store.write(record);
         store.retain(keep, &running);

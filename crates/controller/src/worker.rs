@@ -465,12 +465,23 @@ impl Worker {
 /// Stage a recreated goblin's record before it starts: Docker, the recorded
 /// grants resolved against the current catalog, and its resume arguments.
 fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreated> {
-    if recreate.docker {
-        session.attach_docker_at_start()?;
+    // Best effort: what cannot be restored is skipped with a reason.
+    let mut skipped = vec![];
+    if recreate.docker
+        && let Err(reason) = session.attach_docker_at_start()
+    {
+        skipped.push(crate::history::Skipped::new("docker", &reason.to_string()));
     }
-    let (packages, skipped) = session.resolve_recorded(&recreate.packages)?;
-    if session.launch.initial_packages.len() + packages.len() > 128 {
-        return Err("initial package limit is 128, recreated grants included".into());
+    let (mut packages, unresolved) = session.resolve_recorded(&recreate.packages)?;
+    skipped.extend(unresolved);
+    let room = 128usize.saturating_sub(session.launch.initial_packages.len());
+    if packages.len() > room {
+        for (name, _) in packages.split_off(room) {
+            skipped.push(crate::history::Skipped::new(
+                &name,
+                "initial package limit is 128, recreated grants included",
+            ));
+        }
     }
     session.recreated = packages.clone();
     let fresh = match &session.launch.resume_command {

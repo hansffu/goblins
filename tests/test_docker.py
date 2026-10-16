@@ -142,6 +142,26 @@ class DockerTests(unittest.TestCase):
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(recreated)["state"] == "stopped")
 
+    def test_recreate_in_a_scope_without_docker_starts_without_it(self):
+        import uuid
+        home = Path(tempfile.mkdtemp(prefix="goblins-docker-home-", dir=self.root))
+        store = home / "goblins/sessions"
+        store.mkdir(parents=True, mode=0o700)
+        (store / "rec-nodocker.json").write_text(json.dumps({
+            "version": 1, "id": "rec-nodocker", "configuration": "nodocker", "agent_name": "dockless",
+            "cwd": None, "scope": "nodocker", "dev_shell": None, "docker_enabled": True,
+            "packages": {"approved": [], "denied": []}, "variables": {}, "recreated_from": None,
+            "skipped": [], "created": 1, "updated": 1, "stopped": 2}))
+        d = Daemon(self.app, env=self.env, state_home=home)
+        self.addCleanup(d.close)
+        launch = d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": d.manifest,
+                                               "recreate": "rec-nodocker", "rows": 24, "cols": 100, "detached": True})
+        record = d.wait(lambda: (r if (r := d.get(launch["session"]))["state"] != "starting" else None), timeout=120)
+        self.assertEqual(record["state"], "running", record)
+        self.assertFalse(record["docker_enabled"])
+        self.assertEqual(record["skipped"], [{"name": "docker", "reason": "scope 'nodocker' does not enable Docker"}])
+        self.assertTrue(d.wait(lambda: d.record(launch["session"]))["docker_enabled"])
+
     def test_on_demand_offline_and_independent_scopes(self):
         first, terminal = self.shell("plain")
         second, other = self.shell("plain", scope="offline-b")

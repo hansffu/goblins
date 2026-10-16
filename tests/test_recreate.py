@@ -174,6 +174,16 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertEqual(again["packages"], ["hello", "cowsay"])
         self.assertEqual([s["name"] for s in again["skipped"]], ["unrar"])
 
+    def test_docker_the_configuration_no_longer_offers_is_skipped(self):
+        d = self.daemon(record("rec-docker", docker_enabled=True))
+        session = self.recreate(d, "rec-docker")["session"]
+        r = d.get(session)
+        self.assertFalse(r["docker_enabled"])
+        self.assertEqual(r["skipped"], [{"name": "docker",
+                                         "reason": "the configuration runs without a scope, so without Docker"}])
+        # Still recorded, so a later recreate tries again.
+        self.assertTrue(d.wait(lambda: d.record(session))["docker_enabled"])
+
     def test_a_missing_variable_or_an_option_like_value_falls_back_to_args(self):
         d = self.daemon(record("rec-missing", agent_name="snaga"),
                         record("rec-option", agent_name="grub", variables={"session_id": "--dangerous"}))
