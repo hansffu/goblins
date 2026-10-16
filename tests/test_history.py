@@ -104,6 +104,29 @@ class HistoryTests(unittest.TestCase):
         again = Daemon(state_home=d.state_home); self.addCleanup(again.close)
         self.assertTrue(again.rpc.call("server.status", {})["history"]["owner"])
 
+    def test_a_server_that_takes_the_store_over_records_its_running_goblins(self):
+        import uuid
+        d = self.d
+        other = Daemon(state_home=d.state_home); self.addCleanup(other.close)
+        session = other.start()["session"]
+        peer, request = other.pending(session)
+        other.decide(request, True)
+        peer.peer.settimeout(60)
+        self.assertEqual(receive(peer.peer)["result"]["status"], "ready"); peer.close()
+        self.assertEqual(self.sandbox(session, "sessions.set-variables", {"variables": {"session_id": "kept"}}, d=other),
+                         {"accepted": True, "recorded": False})
+        self.assertIsNone(d.record(session))
+        d.process.terminate(); d.process.wait(timeout=10)
+        other.wait(lambda: other.rpc.call("server.status", {})["history"]["owner"], timeout=15)
+        record = other.wait(lambda: other.record(session))
+        self.assertEqual(record["packages"]["approved"], ["hello"])
+        self.assertEqual(record["variables"], {"session_id": "kept"})
+        self.assertEqual(record["origin"], session)
+        with self.assertRaises(ValueError) as refused:
+            other.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": other.manifest,
+                                              "recreate": session, "rows": 24, "cols": 100})
+        self.assertIn("same origin", refused.exception.args[0]["message"])
+
     def test_history_store_is_a_protected_path(self):
         d = self.d
         d.start()

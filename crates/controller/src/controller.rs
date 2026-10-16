@@ -178,6 +178,9 @@ struct Active {
     /// The record this goblin was recreated from, reserved while it is live
     /// so no other goblin resumes the same agent conversation.
     recreated_from: Option<Box<crate::history::Record>>,
+    /// A root goblin's recorded variables, kept also while this server has
+    /// no history, for a record created when it takes the store over.
+    variables: BTreeMap<String, String>,
 }
 impl Active {
     /// Refresh activity freshness; true when the visible activity changed.
@@ -651,6 +654,7 @@ impl Controller {
         self.history_waiting = None;
         self.history_directory = Some(store.directory.clone());
         self.history = Ok(store);
+        self.record_running();
     }
     /// The history store's directory and whether this daemon owns it.
     pub fn history_status(&self) -> Value {
@@ -681,25 +685,29 @@ impl Controller {
         let Ok(store) = &mut self.history else {
             return;
         };
-        let now = crate::messaging::now();
-        let mut record =
-            crate::history::Record::new(&a.record.id, &a.record.name, &a.record.agent_name, now);
-        record.cwd = a.record.cwd.clone();
-        record.scope = a.record.scope.clone();
-        record.dev_shell = a.record.dev_shell.clone();
-        record.docker_enabled = a.record.docker_enabled;
-        // A recreated goblin's own record starts with the same package
-        // lists and variables. The source record is left as it is.
-        if let Some(source) = &a.recreated_from {
-            record.packages = source.packages.clone();
-            record.variables = source.variables.clone();
-            record.skipped = a.record.skipped.clone();
-            record.recreated_from = Some(source.id.clone());
-            record.origin = source.origin().to_string();
-            // Docker skipped now is tried again by the next recreate.
-            record.docker_enabled |= source.docker_enabled;
+        store.write(new_record(a));
+        store.retain(keep, &running);
+    }
+    /// Records for root goblins that reached running before this server
+    /// owned the history store, so they can be recreated too.
+    fn record_running(&mut self) {
+        if self.workspace.is_some() {
+            return;
         }
-        store.write(record);
+        let running = self.live_sessions();
+        let keep = self.keep_sessions;
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        for a in self.sessions.values() {
+            if a.record.parent.is_none()
+                && a.record.state == "running"
+                && a.worker.is_some()
+                && !store.records.contains_key(&a.record.id)
+            {
+                store.write(new_record(a));
+            }
+        }
         store.retain(keep, &running);
     }
     /// Fill a recreate launch from its record, refusing what cannot be
@@ -1438,6 +1446,10 @@ impl Controller {
                 granted_outputs: BTreeMap::new(),
                 dev_identity: None,
                 call: None,
+                variables: recorded
+                    .as_ref()
+                    .map(|r| r.variables.clone())
+                    .unwrap_or_default(),
                 recreated_from: recorded,
                 created: self.next,
                 record,
@@ -1479,14 +1491,23 @@ impl Controller {
                 if a.record.state != "running" || a.worker.is_none() {
                     return Err(conflict());
                 }
-                // Only the caller's own record. Children and goblins this
-                // daemon keeps no record of succeed without recording.
+                if a.record.parent.is_some() {
+                    // Children are not recorded; their hooks need no special case.
+                    return Ok(json!({"accepted":true,"recorded":false}));
+                }
+                // Only the caller's own record. Without history the server
+                // keeps them, for a record created when it takes the store.
+                let mut scratch = new_record(a);
+                scratch
+                    .set_variables(&p.variables)
+                    .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
                 let recorded = self
                     .history
                     .as_ref()
                     .is_ok_and(|store| store.records.contains_key(scope));
                 self.update_record(scope, |r| r.set_variables(&p.variables))
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
+                self.sessions.get_mut(scope).unwrap().variables = scratch.variables;
                 Ok(json!({"accepted":true,"recorded":recorded}))
             }
             "sessions.status" => {
@@ -2786,6 +2807,35 @@ impl Controller {
         Ok(())
     }
 }
+/// A root goblin's record as it stands: a recreated goblin's starts from
+/// the record it came from (left as it is), then adds what this goblin was
+/// granted.
+fn new_record(a: &Active) -> crate::history::Record {
+    let mut record = crate::history::Record::new(
+        &a.record.id,
+        &a.record.name,
+        &a.record.agent_name,
+        crate::messaging::now(),
+    );
+    record.cwd = a.record.cwd.clone();
+    record.scope = a.record.scope.clone();
+    record.dev_shell = a.record.dev_shell.clone();
+    record.docker_enabled = a.record.docker_enabled;
+    record.variables = a.variables.clone();
+    if let Some(source) = &a.recreated_from {
+        record.packages = source.packages.clone();
+        record.skipped = a.record.skipped.clone();
+        record.recreated_from = Some(source.id.clone());
+        record.origin = source.origin().to_string();
+        // Docker skipped now is tried again by the next recreate.
+        record.docker_enabled |= source.docker_enabled;
+    }
+    for package in &a.record.packages {
+        // A full record keeps what fits, as a live grant would.
+        let _ = record.approve(package);
+    }
+    record
+}
 fn unsent<T>(error: std::sync::mpsc::TrySendError<T>) -> T {
     match error {
         std::sync::mpsc::TrySendError::Full(work)
@@ -2902,6 +2952,7 @@ mod tests {
                 dev_identity: None,
                 call: None,
                 recreated_from: None,
+                variables: BTreeMap::new(),
                 created: 0,
                 record: SessionRecord {
                     agent_state: Default::default(),
@@ -4054,7 +4105,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn a_second_daemon_runs_without_history() {
+    fn a_second_daemon_runs_without_history_and_records_its_goblins_on_takeover() {
         let mut first = daemon();
         let mut second = daemon();
         let shared = first.state.join("history");
@@ -4074,7 +4125,24 @@ mod tests {
             second.history_directory.as_deref(),
             Some(fs::canonicalize(&shared).unwrap().as_path())
         );
-        // Released, the store is taken over without a restart.
+        // A goblin running meanwhile keeps its variables in the server.
+        let _g = live(&mut second, "g", None);
+        let _kid = live(&mut second, "kid", Some("g"));
+        second.sessions.get_mut("g").unwrap().record.packages = vec!["hello".into()];
+        for id in ["g", "kid"] {
+            assert_eq!(
+                second
+                    .sandbox_control(
+                        id,
+                        "sessions.set-variables",
+                        json!({"variables":{"session_id":"c819"}})
+                    )
+                    .unwrap()["recorded"],
+                false
+            );
+        }
+        // Released, the store is taken over without a restart, and the
+        // running root goblin gets its record.
         let paths = [first.state.clone(), second.state.clone()];
         drop(first);
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
@@ -4083,6 +4151,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         assert_eq!(second.history_status()["owner"], true);
+        let store = second.history.as_ref().unwrap();
+        assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g"]);
+        let record = &store.records["g"];
+        assert_eq!(record.packages.approved, ["hello"]);
+        assert_eq!(record.variables["session_id"], "c819");
+        assert_eq!(record.origin(), "g");
         drop(second);
         for path in paths {
             fs::remove_dir_all(path).unwrap();
