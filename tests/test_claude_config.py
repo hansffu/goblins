@@ -195,12 +195,25 @@ class ClaudeConfigTests(unittest.TestCase):
         self.d.wait(lambda: variables() == {"session_id": second, "session_name": "B title"})
         # The same conversation keeps its last known name on a read failure.
         self.hook(terminal, "Stop", session_id=second, transcript_path="/tmp/missing.jsonl")
-        # A failed call changes nothing, not even the hook's own answer.
+        # Recording never delays the inbox decision, even when the transcript
+        # cannot be read in time (a FIFO without a writer blocks its reader).
         self.d.rpc.call("messages.send", {"key": "wake", "to": session, "body": "private body"})
+        terminal.send("mkfifo /tmp/slow.jsonl; printf 'FIFO=%s\\n' \"$?\"\n")
+        terminal.expect(r"(?:^|\n)FIFO=0\n")
+        started = time.monotonic()
+        decision = self.hook(terminal, "Stop", session_id=second, transcript_path="/tmp/slow.jsonl")
+        self.assertEqual(decision["decision"], "block")
+        self.assertLess(time.monotonic() - started, 2.5)
+        # A failed call changes nothing, not even the hook's own answer.
         decision = self.hook(terminal, "Stop", session_id="bad\tid", transcript_path="/tmp/b.jsonl")
         self.assertEqual(decision["decision"], "block")
-        time.sleep(1)
+        time.sleep(7)
         self.assertEqual(variables(), {"session_id": second, "session_name": "B title"})
+        # The next hook is recorded once the slow read gave up.
+        third = str(uuid.uuid4())
+        self.hook(terminal, "UserPromptSubmit", prompt="x", session_id=third, transcript_path="/tmp/b.jsonl")
+        self.d.wait(lambda: variables() == {"session_id": third, "session_name": "B title"})
+        second = third
         # Recreate resumes the recorded conversation with its own arguments.
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")

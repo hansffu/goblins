@@ -6,6 +6,7 @@ let
       pkgs.jq
       pkgs.coreutils
       pkgs.gnugrep
+      pkgs.util-linux
     ];
     text = builtins.readFile ./hook.sh;
   };

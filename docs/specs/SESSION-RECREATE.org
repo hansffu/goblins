@@ -112,9 +112,9 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 
 - =nix/goblins/claude/hook.sh= keeps =session_id=, =transcript_path= and =session_title= from the hook input.
 - On =SessionStart=, =UserPromptSubmit= and =Stop=, it sends =session_id= and =session_name= together with one =goblins variable set= call, only when they differ from the last *acknowledged* values (cached in the sandbox's =/tmp= after a successful call).
-- The name is =session_title= when Claude provides it (custom names such as =/rename=). Otherwise it is the latest title in the transcript, read from the end of the file: a =custom-title= entry wins over an =ai-title= entry. These entry types are Claude internals, so reading them is best-effort.
+- The name is =session_title= when Claude provides it (custom names such as =/rename=). Otherwise it is the latest title in the transcript's last 4 MiB: a =custom-title= entry wins over an =ai-title= entry. These entry types are Claude internals, so reading them is best-effort.
 - When =session_id= changes, the name is reset with it; a name that cannot be read yet is sent empty. Keeping the last known name on a read failure only applies while =session_id= is unchanged.
-- Variable reporting never changes the hook's existing inbox decision or output, and runs within the hook's 5-second timeout. A failed call is simply retried on the next hook.
+- Variable reporting never changes or delays the hook's inbox decision or output. The hook only stores its input as the latest in the sandbox's =/tmp= and starts the reporter in its own session (=setsid=), detached from the hook's pipes. Reporters run one at a time under a lock and always work on the latest input, so a slow one cannot overwrite newer values. The transcript is read once, its last 4 MiB, within 5 seconds. A failed call is simply retried on the next hook.
 - =mkClaudeGoblin= default: =resumeCommand = args ++ [ "--resume" "{session_id}" ]=, overridable, including with =null=.
 
 * Codex
