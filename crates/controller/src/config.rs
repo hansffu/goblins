@@ -497,7 +497,9 @@ mod tests {
                     "--resume",
                     "{session_id}",
                     "--name={session_name}",
-                    "{{x}}"
+                    "{{x}}",
+                    // An argument the agent builders escaped, such as JSON.
+                    r#"{{"mcpServers":{{}}}}"#
                 ]),
                 &variables
             ),
@@ -506,7 +508,8 @@ mod tests {
                 "--resume",
                 "c8193c93",
                 "--name=Plan it; $(false)",
-                "{x}"
+                "{x}",
+                r#"{"mcpServers":{}}"#
             ]))
         );
         assert_eq!(

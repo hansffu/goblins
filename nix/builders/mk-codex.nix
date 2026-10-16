@@ -5,6 +5,9 @@
 }:
 let
   codex = import ../goblins/codex { inherit pkgs; };
+  # Arguments as literal template elements: their braces are text, not
+  # placeholders, as in -c inline tables or --mcp-config JSON.
+  literal = map (builtins.replaceStrings [ "{" "}" ] [ "{{" "}}" ]);
 in
 {
   pkg ? pkgs.codex,
@@ -16,12 +19,12 @@ in
   filterUnavailableMcp ? false,
   allowedPackages ? commonTools,
   args ? [ ],
-  # `goblins recreate` resumes the foreground thread the adapter recorded.
+  # `goblins resume` resumes the foreground thread the adapter recorded.
   # Options before `resume`, such as -p and -c, still reach the App Server.
   # This default appends to args, so it suits args made of options only: a
   # goblin whose args contain a prompt, a subcommand or -- sets its own (or
   # null).
-  resumeCommand ? args ++ [
+  resumeCommand ? literal args ++ [
     "resume"
     "{session_id}"
   ],

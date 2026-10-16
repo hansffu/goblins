@@ -5,6 +5,9 @@
 }:
 let
   claude = import ../goblins/claude { inherit pkgs; };
+  # Arguments as literal template elements: their braces are text, not
+  # placeholders, as in -c inline tables or --mcp-config JSON.
+  literal = map (builtins.replaceStrings [ "{" "}" ] [ "{{" "}}" ]);
 in
 {
   pkg ? pkgs.claude-code,
@@ -15,10 +18,10 @@ in
   claudeSettings ? { },
   allowedPackages ? commonTools,
   args ? [ ],
-  # `goblins recreate` resumes the conversation the hooks recorded. This
+  # `goblins resume` resumes the conversation the hooks recorded. This
   # default appends to args, so it suits args made of options only: a goblin
   # whose args contain a prompt, a subcommand or -- sets its own (or null).
-  resumeCommand ? args ++ [
+  resumeCommand ? literal args ++ [
     "--resume"
     "{session_id}"
   ],

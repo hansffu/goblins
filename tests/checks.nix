@@ -863,6 +863,31 @@ in
         "{session_id}"
         "{{literal}}"
       ];
+    # Braces in args are literal in the default resume command, not placeholders.
+    assert
+      (mkCodexGoblin {
+        args = [
+          "-c"
+          "mcp_servers.x={command=\"y\"}"
+        ];
+      }).goblin.resume_command == [
+        "-c"
+        "mcp_servers.x={{command=\"y\"}}"
+        "resume"
+        "{session_id}"
+      ];
+    assert
+      (mkClaudeGoblin {
+        args = [
+          "--mcp-config"
+          "{\"mcpServers\":{}}"
+        ];
+      }).goblin.resume_command == [
+        "--mcp-config"
+        "{{\"mcpServers\":{{}}}}"
+        "--resume"
+        "{session_id}"
+      ];
     assert (mkClaudeGoblin { allowedChildren = [ "codex" ]; }).goblin.allowed_children == [ "codex" ];
     assert (mkCodexGoblin { allowedChildren = [ ]; }).goblin.allowed_children == [ ];
     # Not a scope default: a scope variant keeps the goblin's own value.
