@@ -174,19 +174,19 @@ class ServerTests(unittest.TestCase):
                 self.assertEqual(complete(shell, ["goblins", command, "--state-dir", str(Path(self.temp.name) / "absent state"), ""]), [])
                 self.assertNotIn("snikk", complete(shell, ["goblins", command, "snikk", ""]))
             self.assertNotIn("snikk", complete(shell, ["goblins", "attach", "--instance", "exact", ""]))
-        # Recreate completes record ids, newest first, described by agent
+        # Resume completes record ids, newest first, described by agent
         # name and last update where the shell can show it.
         deadline = time.monotonic() + 30
-        while len(complete("bash", ["goblins", "recreate", ""])) < 2:
+        while len(complete("bash", ["goblins", "resume", ""])) < 2:
             self.assertLess(time.monotonic(), deadline)
             time.sleep(.1)
         records = json.loads(self.cli("history", "--json"))
         ids = [next(r["id"] for r in records if launch["session"] in r["sessions"]) for launch in launches]
         for shell in ("bash", "fish"):
-            self.assertEqual(set(complete(shell, ["goblins", "recreate", ""])), set(ids))
-            self.assertEqual(set(complete(shell, ["goblins", "recreate", "--detached", ""])), set(ids))
+            self.assertEqual(set(complete(shell, ["goblins", "resume", ""])), set(ids))
+            self.assertEqual(set(complete(shell, ["goblins", "resume", "--detached", ""])), set(ids))
         completed.clear()
-        complete("fish", ["goblins", "recreate", ""])
+        complete("fish", ["goblins", "resume", ""])
         described = dict(line.split("\t", 1) for line in completed)
         self.assertTrue(described[ids[0]].startswith("snikk · "), described)
 
@@ -211,7 +211,7 @@ class ServerTests(unittest.TestCase):
             # Ctrl-C is not a reliable way to cancel an interactive input line.
             zsh.send("\x15print COMPLETION_RESET\n")
             zsh.expect(r"(?:^|\n)COMPLETION_RESET\n")
-        zsh.send(f"goblins --state-dir {shlex.quote(str(self.state))} recreate \t\t")
+        zsh.send(f"goblins --state-dir {shlex.quote(str(self.state))} resume \t\t")
         zsh.expect(re.escape(ids[0]) + r"\s+-- snikk · ")
         # A menu selection takes one kill-line to leave and one to clear.
         zsh.send("\x15\x15print COMPLETION_RESET\n")

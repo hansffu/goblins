@@ -330,7 +330,7 @@ use it, and dev shell refresh does not support it.
 
 * TODO Recreate children with their root
 
-=goblins recreate= starts only the recorded root goblin ([[file:../adr/0010-recreate-not-restore.md][ADR 0010]], [[file:SESSION-RECREATE.org][SESSION-RECREATE.org]]). Children are neither recorded nor recreated, so a coordinator comes back without the reviewers it had launched. Recording a child would need its parent's record id, its configuration name and its own package lists and variables; recreating it would need the parent's branch snapshot, which the recreated root takes from the current manifest. Decide whether children come back automatically, on request, or stay a manual =goblins run --parent=.
+=goblins resume= starts only the recorded root goblin ([[file:../adr/0010-recreate-not-restore.md][ADR 0010]], [[file:SESSION-RECREATE.org][SESSION-RECREATE.org]]). Children are neither recorded nor recreated, so a coordinator comes back without the reviewers it had launched. Recording a child would need its parent's record id, its configuration name and its own package lists and variables; recreating it would need the parent's branch snapshot, which the recreated root takes from the current manifest. Decide whether children come back automatically, on request, or stay a manual =goblins run --parent=.
 
 * TODO Recreate raid membership
 
@@ -338,4 +338,4 @@ Raids end with the daemon and are not recorded. A recreated goblin is in no raid
 
 * TODO Emacs history view
 
-=goblins history= and =goblins recreate= are CLI only. An Emacs view could list the records (=history.list= on the host socket) with their agent session names, recreate one at point with the =recreate= parameter of =sessions.start= and attach, and prune. It could also show a recreated goblin's skipped packages and why it did not resume, both in its session record (=skipped=, =detail=).
+=goblins history= and =goblins resume= are CLI only. An Emacs view could list the records (=history.list= on the host socket) with their agent session names, recreate one at point with the =recreate= parameter of =sessions.start= and attach, and prune. It could also show a recreated goblin's skipped packages and why it did not resume, both in its session record (=skipped=, =detail=).

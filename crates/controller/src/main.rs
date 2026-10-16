@@ -292,12 +292,12 @@ fn execute(cli: Cli) -> Result<i32> {
                 detatched,
             );
         }
-        Command::Recreate { id, detached } => {
+        Command::Resume { id, detached } => {
             let runtime = cli
                 .runtime
-                .ok_or("recreate requires --runtime (use the Nix-built goblins command)")?;
+                .ok_or("resume requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            return attachment::recreate(state, configuration, id, detached);
+            return attachment::resume(state, configuration, id, detached);
         }
         Command::History {
             command:

@@ -548,7 +548,7 @@ Detached output retains a tail of up to 64 KiB; older bytes can be discarded so
 background writers keep running. This is raw output, not full terminal screen
 restoration or durable scrollback. An attached slow reader still backpressures
 its sandbox. Reconnect is to the same daemon only; restarting it loses sessions,
-which =goblins recreate= can start again (see [[*Recreating goblins][Recreating goblins]]).
+which =goblins resume= can bring back (see [[*Resuming conversations][Resuming conversations]]).
 =kill= and the existing =stop= command use the same session shutdown path.
 Session records retain a =stop_reason= identifying a host stop, the goblin that
 requested it, or an owner exiting. When shutdown leaves no payload exit code,
@@ -573,30 +573,34 @@ Page Up/Down scroll request details; Ctrl-C also closes the frontend. Preview es
 may be Unknown. Colors use the terminal palette; =NO_COLOR= suppresses colors.
 The plain view additionally accepts =status= to print current state.
 
-* Recreating goblins
+* Resuming conversations
 
-A goblin that stopped, crashed or lost its server, also through a host reboot, can be started again with the access it had, and its agent picks up its conversation where it left off. This is a recreate, not a restore: the goblin starts from the *current* configuration of the same name, and the packages it was granted are resolved again. Nothing pins store paths, so a record costs a few hundred bytes and no disk space in the store.
+A goblin that stopped, crashed or lost its server, also through a host reboot, can be resumed: a new goblin starts in the same environment, with the access it had, and its agent picks up the conversation where it left off. The environment is recreated, not restored: the goblin starts from the *current* configuration of the same name, and the packages it was granted are resolved again. Nothing pins store paths, so a record costs a few hundred bytes and no disk space in the store.
 
 #+begin_src sh
-goblins history                        # recorded goblins, newest first, in $PAGER
-goblins recreate k3f9x2ab              # start it again and attach (TAB completes ids)
-goblins recreate k3f --detached        # by unique id prefix, without attaching
+goblins history                        # resumable conversations, newest first, in $PAGER
+goblins resume k3f9x2ab                # resume one and attach (TAB completes ids)
+goblins resume k3f --detached          # by unique id prefix, without attaching
 goblins history prune --older-than 30d # remove old records
 #+end_src
 
-Each record has a short id of its own, such as =k3f9x2ab=. =goblins recreate ID= takes that id, any goblin id the record ran as (for example a stopped goblin's id in Emacs), the agent's conversation id, or a unique id prefix. Names are reusable labels and select nothing; completion in zsh and fish shows the agent name, chat name and last update next to each id. It launches the recorded configuration with the recorded scope, dev shell and working directory, using the manifest of the =goblins= you run, like =goblins run=. The agent name is reused when it is free. Before the agent starts, the recorded package grants are mounted in the order they were granted, so the agent's first command already has them, and a goblin that had Docker attaches to its scope's engine. If the current configuration's scope no longer offers Docker, the goblin starts without it, reports it as skipped, and keeps Docker in its record for the next recreate. Recreating is best effort: a package that cannot be restored, because it is gone, broken, unfree or failed to download or build, is skipped with the reason and the goblin starts without it. =recreate= prints each as =Skipped: NAME — REASON=, =goblins history= lists them, and they stay in the record, so the next recreate tries them again. Without =--detached=, =recreate= waits until the goblin runs, reports what it skipped, and attaches.
+Each conversation has a record with a short id of its own, such as =k3f9x2ab=. =goblins resume ID= takes that id, any goblin id the record ran as (for example a stopped goblin's id in Emacs), the agent's conversation id, or a unique id prefix. Names are reusable labels and select nothing; completion in zsh and fish shows the agent name, chat name and last update next to each id.
 
-The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/goblins/sessions=), one private JSON file per conversation line. Recreating a goblin continues its record instead of starting a new one, so the record always describes the latest goblin, including packages granted after an earlier recreate, and it lists every goblin id it ran as. If a goblin resumes a conversation another record holds, that record is merged into its own; if its agent switches to a new conversation, the record follows the goblin. The server writes it whenever it changes: when the goblin starts running, when a package grant or Docker becomes ready, when the host denies a package, when the goblin records a variable, and when it stops. Nothing depends on a clean exit. Denied packages are listed for information only; a recreated goblin can request them again. 
+Resuming launches the recorded configuration with the recorded scope, dev shell and working directory, using the manifest of the =goblins= you run, like =goblins run=. The agent name is reused when it is free. Before the agent starts, the recorded package grants are mounted in the order they were granted, so the agent's first command already has them, and a goblin that had Docker attaches to its scope's engine.
 
-Only root goblins are recorded and recreated. Children, raids, inbox contents and terminal or process state are not. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so and names the owner. It takes the history over once the owner stops, and then records the root goblins it is running, including the conversation their agents reported meanwhile. A server started with =--workspace= neither records nor recreates goblins.
+Resuming is best effort: a package that cannot be restored, because it is gone, broken, unfree or failed to download or build, is skipped with the reason and the goblin starts without it. If the current configuration's scope no longer offers Docker, the goblin starts without Docker. =resume= prints each skipped item as =Skipped: NAME — REASON=, =goblins history= lists them, and they stay in the record, so the next resume tries them again. Without =--detached=, =resume= waits until the goblin runs, reports what it skipped, and attaches.
 
-A record cannot be recreated while a goblin runs it, so two goblins never resume the same conversation. A recreated goblin that fails to start releases its record again. If the recorded working directory no longer exists, =recreate= refuses.
+The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/goblins/sessions=), one private JSON file per conversation. Resuming continues the record instead of starting a new one, so it always describes the latest goblin, including packages granted after an earlier resume, and it lists every goblin id it ran as. If a goblin resumes a conversation another record holds, for example with =claude --resume= by hand, that record is merged into its own; if its agent switches to a new conversation (=/clear=, =/new=), the record follows the goblin. The server writes it whenever it changes: when the goblin starts running, when a package grant or Docker becomes ready, when the host denies a package, when the goblin records a variable, and when it stops. Nothing depends on a clean exit. Denied packages are listed for information only; a resumed goblin can request them again.
+
+What is not resumed: children, raids, inbox contents, and terminal or process state. Only root goblins are recorded. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so and names the owner. It takes the history over once the owner stops, and then records the root goblins it is running, including the conversation their agents reported meanwhile. A server started with =--workspace= neither records nor resumes goblins.
+
+A conversation cannot be resumed while a goblin runs it, so two goblins never resume the same conversation. A resumed goblin that fails to start releases its record again. If the recorded working directory no longer exists, =resume= refuses.
 
 ** Keeping the conversation
 
 A goblin records its own variables with =goblins variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16. Children may call it too: it succeeds without recording anything.
 
-=resumeCommand= on =mkGoblin= is the agent's argument list for a recreated goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
+=resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 
 - =mkClaudeGoblin= records Claude's =session_id= and the session's name (=session_name=) from its hooks. The name is the one Claude reports, else the latest custom (=/rename=) or generated title in the transcript. Its default is =resumeCommand = args ++ [ "--resume" "{session_id}" ]=.
 - =mkCodexGoblin= records the terminal's foreground thread and its name through the Codex adapter, including renames and switches. Its default is =resumeCommand = args ++ [ "resume" "{session_id}" ]=. Options before =resume=, such as =-p= and =-c=, still reach the App Server; =--sandbox= and =--ask-for-approval= cannot be combined with =resume= and are refused, since Goblins sets those on the App Server.
@@ -609,7 +613,7 @@ The server keeps the 100 most recently updated records; =goblins server start --
 
 =goblins history prune= removes records that are not running, by =--older-than AGE= (=30d=, =12h=, =2w=), =--before YYYY-MM-DD= (local day) or =--keep N= (the N most recently updated stay). A record is removed when it matches every option given; =--dry-run= only lists them. A record whose file cannot be deleted stays, and prune lists it with the reason and exits 1. Without an option it prints its usage and removes nothing. It goes through the server that owns the history. Otherwise it takes the history's lock itself, and refuses, naming the owner, when another server holds it. Without a server that owns the history, =goblins history= reads the records without the lock and shows =?= for whether they run.
 
-Frontends use the host methods =history.list=, =history.prune= and the =recreate= parameter of =sessions.start=; see [[file:specs/DAEMON.org::*Session history and recreate (2026-10-16)][DAEMON.org]].
+Frontends use the host methods =history.list=, =history.prune= and the =recreate= parameter of =sessions.start= (the protocol's name for resuming); see [[file:specs/DAEMON.org::*Session history and recreate (2026-10-16)][DAEMON.org]].
 
 * Shells, commands and editors inside a running goblin
 
@@ -756,7 +760,7 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =description= | Single-line configuration description; defaults to =${binName} running in a Goblins sandbox= |
 | =allowedPackages= | Initially available packages; defaults to agent-sandbox =commonTools= |
 | =args= | Literal entry argument list; defaults to =[]= |
-| =resumeCommand= | Arguments instead of =args= when =goblins recreate= resumes the agent; =null= (default) starts afresh. See [[*Recreating goblins][Recreating goblins]] |
+| =resumeCommand= | Arguments instead of =args= when =goblins resume= resumes the agent; =null= (default) starts afresh. See [[*Resuming conversations][Resuming conversations]] |
 | =env= | Literal string environment values; defaults to ={}= |
 | =allowNix= | Must be =false=; host daemon stays hidden |
 | =allowUnixSockets= | Must be =true= for the request transport |

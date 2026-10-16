@@ -81,7 +81,7 @@ pub enum RaidCommand {
 }
 #[derive(Subcommand)]
 pub enum VariableCommand {
-    /// Record values for recreating this goblin; an empty VALUE removes KEY
+    /// Record values for resuming this goblin; an empty VALUE removes KEY
     Set {
         #[arg(required = true, value_name = "KEY=VALUE")]
         assignments: Vec<String>,
@@ -94,7 +94,7 @@ pub enum Command {
         #[arg(value_parser = ["unknown", "idle", "working", "waiting-input", "waiting-approval"])]
         state: String,
     },
-    /// Values this goblin records for being recreated (used by agent hooks)
+    /// Values this goblin records for being resumed (used by agent hooks)
     Variable {
         #[command(subcommand)]
         command: VariableCommand,

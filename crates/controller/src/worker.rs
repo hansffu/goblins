@@ -479,7 +479,7 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
         for (name, _) in packages.split_off(room) {
             skipped.push(crate::history::Skipped::new(
                 &name,
-                "initial package limit is 128, recreated grants included",
+                "initial package limit is 128, resumed grants included",
             ));
         }
     }

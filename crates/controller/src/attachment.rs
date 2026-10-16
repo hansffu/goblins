@@ -61,12 +61,12 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
     )
 }
 
-/// `goblins recreate`: start a recorded goblin from the current manifest,
-/// wait until it runs, report what recreating changed, then attach.
-pub fn recreate(state: PathBuf, configuration: String, id: String, detached: bool) -> Result<i32> {
+/// `goblins resume`: recreate a recorded goblin from the current manifest,
+/// wait until it runs, report what it could not restore, then attach.
+pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool) -> Result<i32> {
     use std::io::Read;
     if !detached && unsafe { libc::isatty(0) != 1 } {
-        return Err("goblins recreate requires terminal input; use --detached".into());
+        return Err("goblins resume requires terminal input; use --detached".into());
     }
     let mut control = Client::connect(&state)?;
     let dimensions = if detached {
@@ -105,14 +105,14 @@ pub fn recreate(state: PathBuf, configuration: String, id: String, detached: boo
     let text = |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or("-"));
     if record["state"] == "failed" {
         return Err(format!(
-            "recreating {} failed: {}",
+            "resuming {} failed: {}",
             text(&record["recreated_from"]),
             text(&record["detail"])
         )
         .into());
     }
     eprintln!(
-        "Recreated {} from {} as {session}",
+        "Resumed {} ({}) as {session}",
         text(&record["agent_name"]),
         text(&record["recreated_from"])
     );

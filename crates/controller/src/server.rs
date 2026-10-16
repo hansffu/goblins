@@ -185,7 +185,7 @@ pub fn status(state: &Path) -> Result<i32> {
         let history = &status["history"];
         match (history["owner"].as_bool(), history["directory"].as_str()) {
             (Some(true), Some(directory)) if history["recording"] == false => println!(
-                "Session history in {directory} (not recording: --workspace snapshots are not recreated)"
+                "Session history in {directory} (not recording: goblins of a --workspace server cannot be resumed)"
             ),
             (Some(true), Some(directory)) => println!("Session history in {directory}"),
             (Some(false), _) => println!(

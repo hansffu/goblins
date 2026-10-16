@@ -314,8 +314,8 @@ goblins configurations               # configured names, as JSON
 goblins run CONFIG [--name NAME] [--detached] [--scope S] [--dev-shell FLAKE] [--raid R]
 goblins run CONFIG --parent NAME     # start a child of a running goblin
 goblins list                         # running goblins and recent history
-goblins history                      # recorded goblins that can be recreated
-goblins recreate NAME [--detached]   # start a stopped goblin again, resuming its agent
+goblins history                      # conversations that can be resumed
+goblins resume ID [--detached]       # resume one in a new goblin with the same environment
 
 goblins attach NAME                  # reconnect a terminal
 goblins detach NAME                  # detach it, leave the goblin running
@@ -352,7 +352,7 @@ goblins editor open FILE               # open a file in your Emacs
 
 - Closing the TUI or a terminal leaves goblins running; =goblins attach= reconnects.
 - A goblin stops when its program exits (=exit= or Ctrl-D in a shell), and its children stop with it.
-- =goblins server stop= stops everything. Goblins do not survive a server restart or reboot, but =goblins recreate= starts a recorded goblin again from its current configuration, with its granted packages, and resumes the agent's conversation (see "Recreating goblins" in [[file:docs/USAGE.org][USAGE.org]]).
+- =goblins server stop= stops everything. Goblins do not survive a server restart or reboot, but =goblins resume= continues a goblin's conversation in a new goblin with the same environment: its current configuration, granted packages and Docker (see "Resuming conversations" in [[file:docs/USAGE.org][USAGE.org]]).
 - =--state-dir DIR= runs a separate, isolated server; pass it to every command that should talk to that server.
 
 ** Shell completion
@@ -424,7 +424,7 @@ See [[file:emacs/README.org][the Emacs guide]] for all keys, the workspace layou
 - The working directory and every =rw*= path you grant are your real files: the goblin can change or delete them. Use =goblins server start --workspace DIR= to give each top-level goblin a disposable copy at =/workspace= instead.
 - Agent config directories are mounted writable, so agents can read your credentials there.
 - Package grants can only add packages from Goblins' pinned nixpkgs. They do not activate development setup hooks; use a dev shell for that.
-- Goblins do not survive a server restart; a recreated one starts afresh apart from its packages, Docker and agent conversation. There are no live file or network grants yet, and no domain allowlist.
+- Goblins do not survive a server restart; a resumed one starts afresh apart from its packages, Docker and agent conversation. There are no live file or network grants yet, and no domain allowlist.
 - At most 16 goblins run at once.
 
 * Documentation

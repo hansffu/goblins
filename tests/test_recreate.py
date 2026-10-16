@@ -250,23 +250,23 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
 
     def test_cli_recreate_and_a_workspace_server_refuses(self):
         d = self.daemon(record("rec-cli", agent_name="cli-goblin"))
-        self.assertIn("no recorded goblin", d.cli("recreate", "--detached", "cli-goblin", check=False).stderr)
-        result = d.cli("recreate", "--detached", "rec-cli")
+        self.assertIn("no recorded goblin", d.cli("resume", "--detached", "cli-goblin", check=False).stderr)
+        result = d.cli("resume", "--detached", "rec-cli")
         launch = json.loads(result.stdout)
         self.assertEqual(launch["agent_name"], "cli-goblin")
         d.wait(lambda: d.get(launch["session"])["state"] == "running", timeout=60)
         self.assertEqual(d.get(launch["session"])["recreated_from"], "rec-cli")
-        refused = d.cli("recreate", "--detached", "rec-cli", check=False)
+        refused = d.cli("resume", "--detached", "rec-cli", check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("is live", refused.stderr)
         # Attached, by the goblin's own id.
         d.rpc.call("sessions.stop", {"session": launch["session"]})
         d.wait(lambda: d.record("rec-cli")["stopped"])
         from terminal_support import Terminal
-        attached = Terminal([d.binary, "--runtime", d.manifest, "--state-dir", str(d.state), "recreate",
+        attached = Terminal([d.binary, "--runtime", d.manifest, "--state-dir", str(d.state), "resume",
                              launch["session"]], env=d.env)
         self.addCleanup(attached.close)
-        attached.expect("Recreated cli-goblin from rec-cli as ", timeout=60)
+        attached.expect(r"Resumed cli-goblin \(rec-cli\) as ", timeout=60)
         attached.send("exit\r")
         self.assertEqual(attached.wait(), 0)
         workspace = tempfile.TemporaryDirectory(prefix="goblins-recreate-ws-"); self.addCleanup(workspace.cleanup)

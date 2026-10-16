@@ -725,7 +725,7 @@ impl Controller {
         if p.parent.is_some() {
             return Err((
                 -32602,
-                "recreate cannot be combined with --parent: only root goblins are recreated".into(),
+                "resume cannot be combined with --parent: only root goblins are resumed".into(),
             ));
         }
         if !p.name.is_empty()
@@ -737,13 +737,13 @@ impl Controller {
         {
             return Err((
                 -32602,
-                "recreate takes the configuration, agent name, scope, dev shell and working directory from its record".into(),
+                "resume takes the configuration, agent name, scope, dev shell and working directory from its record".into(),
             ));
         }
         if self.workspace.is_some() {
             return Err((
                 -32009,
-                "this server snapshots a --workspace for each goblin, so its goblins are neither recorded nor recreated".into(),
+                "this server snapshots a --workspace for each goblin, so its goblins are neither recorded nor resumed".into(),
             ));
         }
         let store = self
@@ -765,7 +765,7 @@ impl Controller {
         if let Some(reason) = self.recreate_conflict(record) {
             return Err((
                 -32009,
-                format!("record {} cannot be recreated now: {reason}", record.id),
+                format!("record {} cannot be resumed now: {reason}", record.id),
             ));
         }
         p.name = record.configuration.clone();
@@ -2534,9 +2534,7 @@ impl Controller {
                             }
                             a.record.skipped = recreated.skipped;
                             a.record.detail = recreated.fresh.map(|reason| {
-                                bounded(&format!(
-                                    "recreated without resuming the agent's conversation: {reason}"
-                                ))
+                                bounded(&format!("resumed in a fresh conversation: {reason}"))
                             });
                         }
                         a.record.docker_enabled = docker_enabled;
@@ -2693,7 +2691,7 @@ impl Controller {
                                     format!("package '{package}'")
                                 };
                                 a.record.detail = Some(bounded(&format!(
-                                    "{subject} is granted but not recorded for recreate: {reason}"
+                                    "{subject} is granted but not recorded for resume: {reason}"
                                 )));
                             }
                         }
@@ -4048,7 +4046,7 @@ mod tests {
                 .detail
                 .as_deref()
                 .unwrap()
-                .contains("not recorded for recreate")
+                .contains("not recorded for resume")
         );
         assert!(!record(&d).packages.approved.contains(&"hello".to_string()));
         // The stop is recorded once, and the record is final afterwards.

@@ -107,8 +107,8 @@ pub enum Command {
         #[arg(long, value_name = "RAID")]
         raid: Option<String>,
     },
-    /// Start a recorded goblin again from the current configuration of its name
-    Recreate {
+    /// Resume a recorded conversation in a new goblin with the same environment
+    Resume {
         /// Record id, any goblin session id it ran as, its agent's
         /// conversation id, or a unique prefix (see 'goblins history')
         id: String,
@@ -116,7 +116,7 @@ pub enum Command {
         #[arg(long)]
         detached: bool,
     },
-    /// List recorded goblins that 'goblins recreate' can start again
+    /// List recorded conversations that 'goblins resume' can continue
     History {
         /// Print the records as JSON
         #[arg(long)]
@@ -267,7 +267,7 @@ pub enum ServerCommand {
         /// Run in this terminal instead, with output on stdout/stderr
         #[arg(long)]
         foreground: bool,
-        /// Session records to keep for 'goblins recreate'
+        /// Session records to keep for 'goblins resume'
         #[arg(long, value_name = "N", default_value_t = goblins_controller::history::DEFAULT_KEEP)]
         keep_sessions: usize,
     },
@@ -358,7 +358,7 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
 #[derive(Debug, PartialEq, Eq)]
 enum Slot {
     Goblin,
-    /// A history record, for `recreate`.
+    /// A history record, for `resume`.
     Record,
     Raid,
 }
@@ -420,7 +420,7 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
         Command::Run {
             raid: Some(raid), ..
         } if raid == TARGET => Slot::Raid,
-        Command::Recreate { id, .. } if id == TARGET => Slot::Record,
+        Command::Resume { id, .. } if id == TARGET => Slot::Record,
         Command::Raid { command } => match command {
             RaidCommand::Invite { goblins, .. } if goblins.last().is_some_and(|g| g == TARGET) => {
                 Slot::Goblin
@@ -549,7 +549,7 @@ function __fish_goblins_agent_names
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop recreate' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop resume' -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l raid -r -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role' -f -a '(__fish_goblins_agent_names)'
@@ -593,8 +593,8 @@ mod tests {
             (vec!["goblins", "raid", "destroy"], Slot::Raid),
             (vec!["goblins", "raid", "members"], Slot::Raid),
             (vec!["goblins", "run", "shell", "--raid"], Slot::Raid),
-            (vec!["goblins", "recreate"], Slot::Record),
-            (vec!["goblins", "recreate", "--detached"], Slot::Record),
+            (vec!["goblins", "resume"], Slot::Record),
+            (vec!["goblins", "resume", "--detached"], Slot::Record),
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),
