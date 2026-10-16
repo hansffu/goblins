@@ -1,0 +1,147 @@
+#+title: Recreating goblin sessions
+
+Status: plan, 2026-10-16. Not implemented.
+
+* Goal
+
+A goblin that has stopped, crashed, or lost its daemon (including a host reboot) can be started again with the access it had, and its agent conversation picks up where it left off (=claude --resume ID=, =codex resume ID=).
+
+This is a *recreate*, not a restore. The daemon keeps a small JSON record per goblin and launches a new goblin from it using the *current* configuration of the same name. If the =mkGoblin= configuration has changed since, the new version is used and the recorded package grants are applied on top. Nothing that pins store paths is kept: no GC roots, no manifest snapshot, no sandbox state. Saving disk space is the point; losing exact fidelity is the accepted tradeoff.
+
+* Decisions
+
+- Records are written by the daemon whenever the recorded state changes. Nothing depends on a clean exit.
+- Recreate uses the current manifest and resolves package names against the current catalog. Names that no longer resolve are skipped and reported.
+- Denied packages are recorded for information only. A recreated goblin can request them again and gets the normal approval prompt.
+- =mkGoblin= gets =resumeCommand=: the agent's argument list for a resumed launch, with ={key}= placeholders filled from variables the goblin recorded. It replaces =args=. =mkGoblin= makes no assumptions about the agent; each builder sets its own.
+- The agent session's id *and name* are recorded, so the right session is easy to find.
+- Only root goblins get records. Children are neither recorded nor recreated.
+- The last 100 records are kept by default. A prune command, modelled on =nix-collect-garbage=, removes older ones by age, date or count.
+- One daemon owns the history store at a time.
+
+* Out of scope (v1)
+
+Children, raids, inbox contents, terminal and process state, Emacs UI. Goblins launched by a daemon running with =--workspace= (snapshot mode) are not recorded; =goblins recreate= on such an id fails with an explicit error instead of starting in an empty workspace.
+
+* Record
+
+One file per root goblin: =$XDG_STATE_HOME/goblins/sessions/<session-id>.json= (default =~/.local/state/goblins/sessions=). The directory is 0700 and its files 0600.
+
+#+begin_src json
+{
+  "version": 1,
+  "id": "1f6b…-s4",
+  "configuration": "claude",
+  "agent_name": "morb",
+  "cwd": "/home/hansffu/code/goblins",
+  "scope": "personal",
+  "dev_shell": null,
+  "docker_enabled": false,
+  "packages": { "approved": ["ripgrep", "jq"], "denied": ["nmap"] },
+  "variables": { "session_id": "c8193c93-…", "session_name": "Plan goblin session restore" },
+  "recreated_from": null,
+  "skipped": [],
+  "created": 1792156012273,
+  "updated": 1792159072343,
+  "stopped": null
+}
+#+end_src
+
+- =packages.approved= holds names whose grant reached =ready=, in grant order, so =PATH= priority is preserved.
+- =packages.denied= holds names the host explicitly denied.
+- A name is in the list of its latest *final* outcome: a =ready= grant moves it to =approved=, an explicit host denial moves it to =denied=. Approved-but-failed, withdrawn and cancelled requests change nothing. The two lists never overlap.
+- =variables= is a small key/value map that only the goblin itself writes (see below).
+- =skipped= lists approved names that did not resolve when this record's goblin was recreated. They stay in =approved=.
+- =stopped= is informational: a goblin that died with its daemon never gets it.
+- Size limits: at most 256 names per package list and 64 KiB per record. A grant that would exceed them is still applied but not recorded, and the record's goblin gets a =detail= saying so.
+
+** Store and writing
+
+- A new module =crates/controller/src/history.rs= owns the store.
+- *Ownership.* The daemon takes an exclusive =flock= on =sessions/.lock= at startup and holds it for its lifetime. A second daemon (another =--state-dir=) that cannot get the lock runs without history and says so in =goblins server status=. With one owner, "running" is simply "running in the owning daemon".
+- *Writer.* The controller sends whole-record snapshots over a channel to a writer thread, which keeps only the newest revision per id and writes it with temp file, fsync, rename and directory fsync. Disk I/O never runs on the event loop.
+- *Serialisation.* Retention and prune also run on the writer thread, so they are ordered with writes. Deleting a record drops any queued revision for it. Running records are never deleted, and only running goblins produce writes, so a late write cannot resurrect a pruned record.
+- *When.* The controller sends a snapshot when a root goblin reaches =running= (=Completed::Started=), on =Completed::Granted= with =ready= for a package or Docker, on a host denial in =decide=, on a variable change, and on stop.
+- *Protection.* The store directory is added to =protected_paths=, so binds and working directories cannot overlap it. =scope.rs= uses =protected_paths.last()= as the daemon's realm for the scope registry, so the history path is inserted before the runtime state entry, not appended.
+- *Retention.* After creating a record, the writer deletes the least recently updated records that are not running, beyond the limit (default 100, =goblins server start --keep-sessions N=). Records left without =stopped= by a crash count like any other stopped record.
+
+* Variables
+
+A generic, agent-agnostic way for a goblin to record values for its own record.
+
+- Sandbox RPC =sessions.set-variables {variables: {key: value}}=, handled next to =sessions.set-state= in =sandbox_control=. All given keys change together, so an agent can switch =session_id= and =session_name= in one call. It only ever writes the calling session's record. For children it succeeds without recording, so agent hooks need no special case.
+- Sandbox CLI: =goblins variable set KEY=VALUE…= in =crates/client=.
+- Limits: keys match =[a-z][a-z0-9_]{0,31}=; values are UTF-8 without control characters, at most 256 bytes; at most 16 keys per record. An empty value removes the key.
+- Values are display text and may contain spaces. When a value fills a =resumeCommand= placeholder it must not start with =-=; otherwise recreate falls back to plain =args= and reports why.
+
+* =resumeCommand=
+
+- =mkGoblin= option =resumeCommand ? null=: a list of strings, used *instead of* =args= as the agent's arguments (=Launch.shell_args=). The executable is not part of it. ={key}= is replaced by the variable =key=; ={{= and =}}= are literal braces. Each element stays one argv element; no shell is involved.
+- =nix/internal/validate.nix= checks the type and placeholder syntax. =mk-goblin.nix= emits it as =resume_command= in the goblin's manifest entry; =config.rs= reads it into =Configuration= and =Launch=.
+- On recreate, when the configuration has a =resume_command= and every placeholder it references has a value, it replaces =shell_args=. Otherwise the goblin starts with its normal =args=: the sandbox is recreated and the agent starts a fresh conversation.
+- If the recorded agent session no longer exists, the agent's own error is what the user sees. There is no silent fallback to a fresh conversation.
+- The Claude and Codex defaults below append to =args=. They suit =args= made of options only. A goblin whose =args= contain a prompt, a subcommand or =--= must set its own =resumeCommand=; the builders document this.
+
+* Recreate
+
+** Commands (host CLI)
+
+- =goblins history= lists records, newest first: id, agent name, configuration, agent session name, working directory, last update, whether it is running, and skipped packages.
+- =goblins recreate ID [--detached]= recreates one record. =ID= is a record id, a unique id prefix, or a unique agent name. It cannot be combined with =--parent=. Without =--detached= it waits for the goblin to run, prints any skipped packages, then attaches like =goblins run=.
+- =goblins history prune [--older-than 30d] [--before 2026-10-01] [--keep N] [--dry-run]= removes records that are not running. With no option it removes nothing and prints usage, so prune is always deliberate. These go through the owning daemon (=history.list=, =history.prune=); with no daemon running, the CLI takes the store lock itself.
+
+** Daemon
+
+=goblins recreate= is =sessions.start= with a new =recreate: ID= parameter, using the caller's current manifest like =goblins run=.
+
+1. *Checks.* Read the record. Refuse in =--workspace= mode, with =--parent=, or if the recorded =cwd= no longer exists.
+2. *Reservation.* The controller keeps a map from record id to the live session (=starting=, =running= or =stopping=) recreated from it. Before =Worker::start=, it refuses if the record, any record it was recreated from, or any record recreated from it has a live session, then reserves the record. The reservation is released when that session stops or fails to start. Duplicate =goblins recreate= calls with different operation keys therefore cannot resume the same agent session twice.
+3. *Launch.* The recorded configuration name is launched with the recorded scope, dev shell reference and =cwd=. The agent name is reused if it is free, otherwise a new one is chosen. The dev shell reference is evaluated afresh, as on any launch.
+4. *Packages, before the agent starts.* The worker resolves each approved name against the current catalog (=Session::realize=, which works before =start=). =Session::start= then takes these outputs as a new =recreated= list:
+   - their closures join the initial closure, so they are mounted with the initial store view and no helper call is needed;
+   - instead of the empty =generation-0=, it builds one package generation per output in recorded order with the existing =profile= logic, publishes the last as =packages/current=, and fills =Session.packages=;
+   - they are the session's own grants, not =Launch.initial_packages=, which same-configuration children copy.
+   Names that do not resolve go to =skipped=. Build, mount and cancellation failures fail the recreate. The 128-package limit covers initial packages and recreated grants together.
+5. *Docker.* If the record has Docker, the worker sets =docker_inherit_enabled = Some(true)=, so =Session::start= attaches the engine before the agent starts, as for an inheriting child. A scope without Docker fails the recreate.
+6. *Arguments.* =shell_args= is replaced by the resolved =resume_command= when possible.
+7. *Hand-over.* =Completed::Started= gains the recreated names, their outputs and the skipped names. The controller puts them into =record.packages= and =Active.granted_outputs= before marking the session =running=, so children's requests for them are approved automatically, as for ordinary grants.
+8. *Record.* The new goblin gets its own record with the same package lists and variables, =skipped=, and =recreated_from= set to the source id. The source record is left as it is.
+
+* Claude
+
+- =nix/goblins/claude/hook.sh= keeps =session_id=, =transcript_path= and =session_title= from the hook input.
+- On =SessionStart=, =UserPromptSubmit= and =Stop=, it sends =session_id= and =session_name= together with one =goblins variable set= call, only when they differ from the last *acknowledged* values (cached in the sandbox's =/tmp= after a successful call).
+- The name is =session_title= when Claude provides it (custom names such as =/rename=). Otherwise it is the latest title in the transcript, read from the end of the file: a =custom-title= entry wins over an =ai-title= entry. These entry types are Claude internals, so reading them is best-effort.
+- When =session_id= changes, the name is reset with it; a name that cannot be read yet is sent empty. Keeping the last known name on a read failure only applies while =session_id= is unchanged.
+- Variable reporting never changes the hook's existing inbox decision or output, and runs within the hook's 5-second timeout. A failed call is simply retried on the next hook.
+- =mkClaudeGoblin= default: =resumeCommand = args ++ [ "--resume" "{session_id}" ]=, overridable, including with =null=.
+
+* Codex
+
+- *Launcher fix.* Codex refuses =--sandbox= and =--ask-for-approval= when resuming a remote thread ("Permission overrides are not supported when resuming a remote task."). =nix/goblins/codex/launcher.nix= must leave those two flags off the remote terminal UI when its first positional argument is =resume=. The app-server keeps enforcing =sandbox_mode= and =approval_policy= through its own =-c= settings. If the caller passes either flag with =resume=, the launcher exits with a clear error.
+- *Reporting.* =goblins-codex='s =native_proxy= (=crates/codex/src/main.rs=) already records the foreground thread id from correlated =thread/start=, =thread/resume= and =thread/fork= responses. It now also keeps the desired =session_id= and =session_name= (from =result.thread.name=) and sends them together with =sessions.set-variables=. It takes =thread/name/updated= (=params.threadName=) as the new name only when =params.threadId= is the current foreground thread. A foreground switch replaces both values at once.
+- *Retries.* Reporting runs off the proxy loop. A failed report is retried with a bounded backoff, always with the latest desired values, so an obsolete retry cannot overwrite a newer thread.
+- =mkCodexGoblin= default: =resumeCommand = args ++ [ "resume" "{session_id}" ]=. Options placed before =resume=, such as =-p= and =-c=, still reach the app-server; this was verified end-to-end.
+
+* Verified so far
+
+End-to-end, with installed Codex 0.163.0, a faithful copy of the launcher, the real adapter and a synthetic provider (2026-10-16):
+
+- With the stock launcher, resume fails with the permission-override error above, before any request is sent.
+- With only those two flags removed: the terminal UI sends =thread/resume= with an integer request id and no =threadSource=, which =foreground_thread_request= already accepts; the adapter records the resumed id; activity reporting works; the old conversation loads without a new model call; the resume response carries =thread.name=; a rename emits =thread/name/updated= on the proxied connection.
+
+Not yet verified: Claude's =session_title= hook field and transcript title entries against the installed Claude Code.
+
+* Implementation steps
+
+Each step is one commit with its tests. Python suites run one at a time.
+
+1. Fix =tests/codex_wire.py=: the second payload-length check must be =elif=; a 127-byte frame is decoded twice and raises =MemoryError=.
+2. =history.rs=: record type, store lock, writer thread, atomic writes, retention, prune. Rust unit tests: atomic replacement, newest revision wins, approved/denied moves, size limits, retention skipping running records and counting crash-left records, a queued write dropped by prune.
+3. Controller wiring: records created and updated at the points listed above; protected path ordering; =sessions.set-variables=; =goblins variable set=. Python tests: a record follows grants, denials, Docker and variables; it survives =kill -9= of the daemon; a second daemon runs without history.
+4. Nix: =resumeCommand= through =mk-goblin.nix=, =mk-goblins.nix=, =validate.nix= and =config.rs=. =tests/test_configuration.py= covers validation and the emitted manifest.
+5. Recreate: =recreate= on =sessions.start=, reservation, recorded packages in =Session::start=, Docker, argument substitution, agent-name reuse, hand-over in =Completed::Started=, =goblins recreate=, =goblins history=. Python tests: the goblin's very first command sees recreated packages and Docker; changed configuration; a package removed from the catalog is skipped and listed; a same-configuration child does not get recreated grants mounted; a child's request for one is approved automatically; concurrent and transitive recreates are refused; a failed start releases the reservation; =--workspace= and =--parent= refused; a missing variable or a value starting with =-= falls back to =args=.
+6. =goblins history prune=: =--older-than=, =--before=, =--keep=, =--dry-run=, offline use with the store lock.
+7. Claude: hook reporting and the =mkClaudeGoblin= default. =tests/fake_claude.py= sends hook payloads with ids, titles and transcripts, including an id switch and a failed call.
+8. Codex: launcher fix, adapter reporting with retries, =mkCodexGoblin= default. End-to-end test in =tests/test_codex_native.py= modelled on the verification above, including rename, a foreground switch, and =--sandbox= passed with =resume=.
+9. Docs: a recreate section in =docs/USAGE.org=, an ADR for recreate-not-restore, and follow-ups in =docs/specs/TODO.org= (children, raids, Emacs history view).
