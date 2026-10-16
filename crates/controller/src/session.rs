@@ -986,6 +986,13 @@ impl Session {
                 Ok(selection) => selection,
                 Err(error) => {
                     self.cancel.check()?;
+                    // Only a name that no longer resolves is skipped; a failed
+                    // evaluation or download must not drop a grant silently.
+                    if !crate::catalog::no_longer_a_package(&error.to_string()) {
+                        return Err(
+                            format!("cannot resolve recorded package '{name}': {error}").into()
+                        );
+                    }
                     self.event(
                         "recreate-skipped",
                         serde_json::json!({"package":name,"detail":error.to_string()}),

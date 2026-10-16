@@ -5,8 +5,11 @@ so each test chooses exactly what was recorded. No coding agents are used:
 the demo shell configuration stands in, with probe arguments.
 """
 import json
+import os
 from pathlib import Path
 import re
+import shutil
+import sys
 import socket
 import tempfile
 import time
@@ -129,6 +132,27 @@ class RecreateTests(unittest.TestCase):
         d.process.terminate(); d.process.wait(timeout=10)
         offline = json.loads(d.cli("history", "--json").stdout)
         self.assertEqual([(r["id"], r["running"]) for r in offline], [(session, False), ("rec-a", False)])
+
+    def test_a_failed_lookup_fails_the_recreate_instead_of_skipping(self):
+        bindir = Path(tempfile.mkdtemp(prefix="goblins-fake-nix-"))
+        real = shutil.which("nix")
+        # A download failure while evaluating 'hello', as without a network.
+        (bindir / "nix").write_text(f"""#!{sys.executable}
+import os, sys
+if "eval" in sys.argv and any(a.endswith(".hello") for a in sys.argv):
+    sys.stderr.write("error: unable to download 'https://cache.example/x.narinfo': Couldn't resolve host name (6)\\n")
+    sys.exit(1)
+os.execv({real!r}, [{real!r}, *sys.argv[1:]])
+""")
+        (bindir / "nix").chmod(0o700)
+        self.addCleanup(shutil.rmtree, bindir)
+        d = self.daemon(record("rec-fetch", packages={"approved": ["hello", "no-such-goblins-package"], "denied": []}),
+                        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"})
+        failed = self.recreate(d, "rec-fetch", wait="failed")
+        detail = d.get(failed["session"])["detail"]
+        self.assertIn("cannot resolve recorded package 'hello'", detail)
+        self.assertIn("unable to download", detail)
+        self.assertIsNone(d.record(failed["session"]))
 
     def test_a_missing_variable_or_an_option_like_value_falls_back_to_args(self):
         d = self.daemon(record("rec-missing", agent_name="snaga"),
