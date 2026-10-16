@@ -532,6 +532,11 @@ pub struct Controller {
     /// another daemon owns it.
     history_directory: Option<PathBuf>,
     keep_sessions: usize,
+    /// The store, once the process that holds it lets go. A short CLI
+    /// call must not leave this server without history for good.
+    history_waiting: Option<std::sync::mpsc::Receiver<crate::history::Store>>,
+    /// Ends the waiting thread with this server.
+    history_token: std::sync::Arc<()>,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -577,23 +582,72 @@ impl Controller {
             history: Err("this server keeps no session history".into()),
             history_directory: None,
             keep_sessions: crate::history::DEFAULT_KEEP,
+            history_waiting: None,
+            history_token: std::sync::Arc::new(()),
         })
     }
-    /// Own the history store in `directory`, or run without history when
-    /// another daemon owns it. Call before the first launch.
+    /// Own the history store in `directory`. While another process holds
+    /// it, run without history and take it over once it is released.
+    /// Call before the first launch.
     pub fn open_history(&mut self, directory: Result<PathBuf>, keep: usize) {
         self.keep_sessions = keep;
-        self.history = match directory {
-            Ok(directory) => {
-                let store = crate::history::Store::open(&directory).map_err(|e| e.to_string());
-                self.history_directory = Some(match &store {
-                    Ok(store) => store.directory.clone(),
-                    Err(_) => directory,
-                });
-                store
+        let directory = match directory {
+            Ok(directory) => directory,
+            Err(e) => {
+                self.history = Err(format!("no session history: {e}"));
+                return;
             }
-            Err(e) => Err(format!("no session history: {e}")),
         };
+        let owner = format!(
+            "goblins server (pid {}, --state-dir {})",
+            std::process::id(),
+            self.state.display()
+        );
+        match crate::history::Store::open(&directory, &owner) {
+            Ok(store) => {
+                self.history_directory = Some(store.directory.clone());
+                self.history = Ok(store);
+            }
+            Err(error) => {
+                self.history_directory = Some(directory.clone());
+                self.history = Err(error.to_string());
+                if error.is::<crate::history::Held>() {
+                    self.history = Err(format!(
+                        "{error}; this server takes it over once it is released"
+                    ));
+                    let (found, waiting) = std::sync::mpsc::sync_channel(1);
+                    let alive = std::sync::Arc::downgrade(&self.history_token);
+                    std::thread::spawn(move || {
+                        while alive.upgrade().is_some() {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            match crate::history::Store::open(&directory, &owner) {
+                                Ok(store) => {
+                                    let _ = found.send(store);
+                                    return;
+                                }
+                                Err(e) if e.is::<crate::history::Held>() => (),
+                                Err(_) => return,
+                            }
+                        }
+                    });
+                    self.history_waiting = Some(waiting);
+                }
+            }
+        }
+    }
+    /// Take over the history store once its holder released it.
+    fn poll_history(&mut self) {
+        let Some(store) = self
+            .history_waiting
+            .as_ref()
+            .and_then(|w| w.try_recv().ok())
+        else {
+            return;
+        };
+        println!("Session history in {}", store.directory.display());
+        self.history_waiting = None;
+        self.history_directory = Some(store.directory.clone());
+        self.history = Ok(store);
     }
     /// The history store's directory and whether this daemon owns it.
     pub fn history_status(&self) -> Value {
@@ -2205,6 +2259,7 @@ impl Controller {
     }
     pub fn tick(&mut self) -> Result<()> {
         self.expire_activity(Instant::now());
+        self.poll_history();
         // Drain human input and native output before checking wake revisions.
         for a in self.sessions.values_mut() {
             if let Err(e) = a.terminal.tick() {
@@ -3827,7 +3882,7 @@ mod tests {
         );
         assert_eq!(record(&d).stopped, Some(stopped));
         drop(d);
-        let records = crate::history::Store::open(&path.join("history")).unwrap();
+        let records = crate::history::Store::open(&path.join("history"), "test").unwrap();
         assert_eq!(records.records["a"].stopped, Some(stopped));
         assert_eq!(records.records["a"].variables["session_id"], "c819");
         drop(records);
@@ -3958,19 +4013,27 @@ mod tests {
         assert_eq!(first.history_status()["owner"], true);
         let status = second.history_status();
         assert_eq!(status["owner"], false);
+        let reason = status["reason"].as_str().unwrap();
         assert!(
-            status["reason"]
-                .as_str()
-                .unwrap()
-                .contains("another Goblins server")
+            reason.contains(&format!("--state-dir {}) owns", first.state.display())),
+            "{reason}"
         );
+        assert!(reason.contains("takes it over once it is released"));
         // Its own goblins still cannot bind the store.
         assert_eq!(
             second.history_directory.as_deref(),
             Some(fs::canonicalize(&shared).unwrap().as_path())
         );
+        // Released, the store is taken over without a restart.
         let paths = [first.state.clone(), second.state.clone()];
-        drop((first, second));
+        drop(first);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while second.history.is_err() && Instant::now() < deadline {
+            second.tick().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(second.history_status()["owner"], true);
+        drop(second);
         for path in paths {
             fs::remove_dir_all(path).unwrap();
         }

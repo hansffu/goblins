@@ -87,8 +87,9 @@ class HistoryTests(unittest.TestCase):
         other = Daemon(state_home=d.state_home); self.addCleanup(other.close)
         status = other.rpc.call("server.status", {})["history"]
         self.assertFalse(status["owner"])
-        self.assertIn("another Goblins server", status["reason"])
-        self.assertIn("No session history: another Goblins server", other.cli("server", "status").stdout)
+        owner = f"goblins server (pid {d.process.pid}, --state-dir {d.state}) owns {d.history}"
+        self.assertIn(owner, status["reason"])
+        self.assertIn(f"No session history: {owner}", other.cli("server", "status").stdout)
         foreign = other.start()["session"]
         self.assertEqual(self.sandbox(foreign, "sessions.set-variables", {"variables": {"session_id": "x"}}, d=other),
                          {"accepted": True, "recorded": False})

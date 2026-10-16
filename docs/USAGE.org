@@ -588,7 +588,7 @@ goblins history prune --older-than 30d # remove old records
 
 The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/goblins/sessions=), one private JSON file per root goblin. The server writes it whenever it changes: when the goblin starts running, when a package grant or Docker becomes ready, when the host denies a package, when the goblin records a variable, and when it stops. Nothing depends on a clean exit. Denied packages are listed for information only; a recreated goblin can request them again. The recreated goblin gets a record of its own, with the same packages and variables and a reference to the record it came from; the source record is left as it is.
 
-Only root goblins are recorded and recreated. Children, raids, inbox contents and terminal or process state are not. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so. A server started with =--workspace= neither records nor recreates goblins.
+Only root goblins are recorded and recreated. Children, raids, inbox contents and terminal or process state are not. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so and names the owner. It takes the history over once the owner stops. A server started with =--workspace= neither records nor recreates goblins.
 
 Each record names its origin, the first goblin of its line of recreates. A record cannot be recreated while any goblin of the same origin is live, whether the original, one recreated from it, or a sibling, so two goblins never resume the same conversation. A recreated goblin that fails to start releases its record again. If the recorded working directory no longer exists, =recreate= refuses.
 
@@ -607,7 +607,7 @@ Both defaults append to =args=, so they suit =args= made of options only. A gobl
 
 The server keeps the 100 most recently updated records; =goblins server start --keep-sessions N= changes that. Running records are never removed, and records left without a stop time by a crash count like any other.
 
-=goblins history prune= removes records that are not running, by =--older-than AGE= (=30d=, =12h=, =2w=), =--before YYYY-MM-DD= (local day) or =--keep N= (the N most recently updated stay). A record is removed when it matches every option given; =--dry-run= only lists them. Without an option it prints its usage and removes nothing. It goes through the server that owns the history, or, with no server running at this =--state-dir=, takes the history's lock itself.
+=goblins history prune= removes records that are not running, by =--older-than AGE= (=30d=, =12h=, =2w=), =--before YYYY-MM-DD= (local day) or =--keep N= (the N most recently updated stay). A record is removed when it matches every option given; =--dry-run= only lists them. Without an option it prints its usage and removes nothing. It goes through the server that owns the history. Otherwise it takes the history's lock itself, and refuses, naming the owner, when another server holds it. Without a server that owns the history, =goblins history= reads the records without the lock and shows =?= for whether they run.
 
 Frontends use the host methods =history.list=, =history.prune= and the =recreate= parameter of =sessions.start=; see [[file:specs/DAEMON.org::*Session history and recreate (2026-10-16)][DAEMON.org]].
 

@@ -212,6 +212,15 @@ pub fn newest_first(records: &BTreeMap<String, Record>) -> Vec<&Record> {
     list
 }
 
+/// Another process owns the store; the text names it.
+#[derive(Debug)]
+pub struct Held(pub String);
+impl std::fmt::Display for Held {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Held {}
 enum Op {
     Write(Box<Record>),
     Delete(Vec<String>),
@@ -229,13 +238,39 @@ impl Store {
     pub fn default_directory() -> Result<PathBuf> {
         unix::state_directory("sessions", false)
     }
-    /// Take the store's lock and read its records. Fails when another
-    /// process owns the store.
-    pub fn open(directory: &Path) -> Result<Self> {
+    /// Take the store's lock, naming this process as its `owner`, and read
+    /// its records. Fails with `Held` when another process owns the store.
+    pub fn open(directory: &Path, owner: &str) -> Result<Self> {
         unix::private_directory(directory)?;
         let directory = fs::canonicalize(directory)?;
-        let lock = unix::lock(&directory.join(".lock"))
-            .map_err(|_| format!("another Goblins server owns {}", directory.display()))?;
+        let path = directory.join(".lock");
+        let mut lock = unix::lock(&path).map_err(|_| {
+            let holder = fs::read_to_string(&path).unwrap_or_default();
+            let holder = goblins_protocol::plain_text(holder.trim());
+            Held(format!(
+                "{} owns {}",
+                if holder.is_empty() {
+                    "another Goblins process"
+                } else {
+                    &holder
+                },
+                directory.display()
+            ))
+        })?;
+        // Readers name the owner from the lock file's contents.
+        lock.set_len(0)?;
+        lock.write_all(owner.as_bytes())?;
+        // Only the owner removes what an interrupted write left behind.
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(".tmp-"))
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
         let records = load(&directory)?;
         let (commands, received) = mpsc::channel();
         let target = directory.clone();
@@ -412,8 +447,7 @@ pub fn load(directory: &Path) -> Result<BTreeMap<String, Record>> {
             continue;
         };
         if name.starts_with(".tmp-") {
-            // A write interrupted by a crash; the record before it remains.
-            let _ = fs::remove_file(entry.path());
+            // Being written, or left by a crash; the owner cleans it up.
             continue;
         }
         let Some(id) = name.strip_suffix(".json") else {
@@ -527,7 +561,7 @@ mod tests {
     fn store() -> (Store, PathBuf) {
         let root = unix::temp_directory().unwrap();
         let directory = root.join("sessions");
-        (Store::open(&directory).unwrap(), root)
+        (Store::open(&directory, "test").unwrap(), root)
     }
     #[test]
     fn approved_and_denied_follow_the_latest_final_outcome() {
@@ -615,17 +649,19 @@ mod tests {
         // An interrupted write leaves the previous record and is cleaned up.
         fs::write(directory.join(".tmp-a.json"), b"{\"partial").unwrap();
         fs::write(directory.join("broken.json"), b"{\"partial").unwrap();
-        let s = Store::open(&directory).unwrap();
+        // Reading without the lock leaves an owner's temporary file alone.
+        load(&directory).unwrap();
+        assert!(directory.join(".tmp-a.json").exists());
+        let s = Store::open(&directory, "the test owner (pid 1)").unwrap();
         assert_eq!(s.records.len(), 1);
         assert_eq!(s.records["a"], a);
         assert!(!directory.join(".tmp-a.json").exists());
         // One owner at a time.
-        assert!(
-            Store::open(&directory)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("another Goblins server")
+        let held = Store::open(&directory, "second").err().unwrap();
+        assert!(held.is::<Held>());
+        assert_eq!(
+            held.to_string(),
+            format!("the test owner (pid 1) owns {}", directory.display())
         );
         drop(s);
         fs::remove_dir_all(root).unwrap();

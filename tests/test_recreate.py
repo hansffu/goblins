@@ -130,8 +130,10 @@ class RecreateTests(unittest.TestCase):
         d.rpc.call("sessions.stop", {"session": session})
         d.wait(lambda: d.record(session)["stopped"])
         d.process.terminate(); d.process.wait(timeout=10)
+        # Without a daemon the CLI only reads; whether they run is unknown.
         offline = json.loads(d.cli("history", "--json").stdout)
-        self.assertEqual([(r["id"], r["running"]) for r in offline], [(session, False), ("rec-a", False)])
+        self.assertEqual([(r["id"], r["running"]) for r in offline], [(session, None), ("rec-a", None)])
+        self.assertRegex(d.cli("history").stdout, rf"(?m)^{session} .* \? ")
 
     def test_a_failed_lookup_fails_the_recreate_instead_of_skipping(self):
         bindir = Path(tempfile.mkdtemp(prefix="goblins-fake-nix-"))
@@ -271,10 +273,26 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         d.wait(lambda: d.record(running)["stopped"])
         d.process.terminate(); d.process.wait(timeout=10)
         other = Daemon(state_home=d.state_home); self.addCleanup(other.close)
+        owner = f"goblins server (pid {other.process.pid}, --state-dir {other.state}) owns {d.history}"
         refused = d.cli("history", "prune", "--keep", "0", check=False)
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("another Goblins server owns", refused.stderr)
+        self.assertIn(owner, refused.stderr)
+        # Listing reads without the lock and leaves the owner's files alone.
+        (d.history / f".tmp-{running}.json").write_text("{")
+        self.assertIn(running, d.cli("history").stdout)
+        self.assertTrue((d.history / f".tmp-{running}.json").exists())
+        # A server without history prunes like the CLI alone: it refuses too.
+        third = Daemon(state_home=d.state_home); self.addCleanup(third.close)
+        refused = third.cli("history", "prune", "--keep", "0", check=False)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn(owner, refused.stderr)
+        # Released, the waiting server takes the store over.
         other.close()
+        third.wait(lambda: third.rpc.call("server.status", {})["history"]["owner"], timeout=15)
+        self.assertFalse((d.history / f".tmp-{running}.json").exists())
+        self.assertEqual(third.cli("history", "prune", "--keep", "0", "--dry-run").stdout,
+                         f"Would remove 1 record\n{running}\n")
+        third.close()
         self.assertEqual(d.cli("history", "prune", "--keep", "0", "--dry-run").stdout, f"Would remove 1 record\n{running}\n")
         self.assertEqual(d.cli("history", "prune", "--keep", "0").stdout, f"Removed 1 record\n{running}\n")
         self.assertEqual(stored(), [])

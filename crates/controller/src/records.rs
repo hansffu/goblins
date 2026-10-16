@@ -19,20 +19,19 @@ fn records(state: &Path) -> Result<Vec<Value>> {
             Err(e) => return Err(e),
         }
     }
+    // Read only, without the lock: a server starting now must not find its
+    // store held, and the owner's files are left alone. Whether a record
+    // runs in some other server is unknown here.
     let directory = history::Store::default_directory()?;
     if !directory.exists() {
         return Ok(vec![]);
     }
-    // Holding the lock proves no daemon runs any of them.
-    let (records, running) = match history::Store::open(&directory) {
-        Ok(store) => (store.records.clone(), json!(false)),
-        Err(_) => (history::load(&directory)?, Value::Null),
-    };
+    let records = history::load(&directory)?;
     Ok(history::newest_first(&records)
         .into_iter()
         .map(|record| {
             let mut value = json!(record);
-            value["running"] = running.clone();
+            value["running"] = Value::Null;
             value
         })
         .collect())
@@ -101,33 +100,20 @@ pub fn list(state: &Path, as_json: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// `goblins history prune`, through the owning daemon or, with none
-/// running here, under the store's own lock.
+/// `goblins history prune`, through the owning daemon or, when the server
+/// here has no history or none runs, under the store's own lock.
 pub fn prune(state: &Path, prune: history::Prune) -> Result<i32> {
-    let removed: Vec<String> = match Client::connect_optional(state)? {
-        Some(mut client) => {
-            let result = client.call("history.prune", serde_json::to_value(&prune)?)?;
-            serde_json::from_value(result["removed"].clone())?
+    let mut removed = None;
+    if let Some(mut client) = Client::connect_optional(state)? {
+        match client.call("history.prune", serde_json::to_value(&prune)?) {
+            Ok(result) => removed = Some(serde_json::from_value(result["removed"].clone())?),
+            Err(e) if e.to_string().contains("no session history") => (),
+            Err(e) => return Err(e),
         }
-        None => {
-            let directory = history::Store::default_directory()?;
-            if !directory.exists() {
-                Vec::new()
-            } else {
-                let mut store = history::Store::open(&directory)
-                    .map_err(|e| format!("{e}; prune through that server"))?;
-                // No daemon here and the lock is ours: nothing is running.
-                let removed = prune.select(
-                    &store.records,
-                    &Default::default(),
-                    goblins_controller::messaging::now(),
-                );
-                if !prune.dry_run {
-                    store.delete(&removed);
-                }
-                removed
-            }
-        }
+    }
+    let removed: Vec<String> = match removed {
+        Some(removed) => removed,
+        None => offline_prune(&prune)?,
     };
     let verb = if prune.dry_run {
         "Would remove"
@@ -143,4 +129,30 @@ pub fn prune(state: &Path, prune: history::Prune) -> Result<i32> {
         println!("{id}");
     }
     Ok(0)
+}
+
+/// Prune under the store's lock; refuses, naming the owner, when another
+/// process holds it. With the lock ours, none of its goblins is running.
+fn offline_prune(prune: &history::Prune) -> Result<Vec<String>> {
+    let directory = history::Store::default_directory()?;
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let owner = format!("goblins history prune (pid {})", std::process::id());
+    let mut store = history::Store::open(&directory, &owner).map_err(|e| {
+        if e.is::<history::Held>() {
+            format!("{e}; prune through that server with its --state-dir").into()
+        } else {
+            e
+        }
+    })?;
+    let removed = prune.select(
+        &store.records,
+        &Default::default(),
+        goblins_controller::messaging::now(),
+    );
+    if !prune.dry_run {
+        store.delete(&removed);
+    }
+    Ok(removed)
 }
