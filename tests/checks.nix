@@ -224,6 +224,14 @@ let
     }
     { allowedChildren = [ "../bad" ]; }
     { allowedChildren = [ 1 ]; }
+    { resumeCommand = "--resume {session_id}"; }
+    { resumeCommand = [ 1 ]; }
+    { resumeCommand = [ "{Session}" ]; }
+    { resumeCommand = [ "{unclosed" ]; }
+    { resumeCommand = [ "lone}" ]; }
+    { resumeCommand = [ "{session-id}" ]; }
+    { resumeCommand = [ "{}" ]; }
+    { resumeCommand = [ "{${pkgs.lib.fixedWidthString 33 "x" ""}}" ]; }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     if [[ "$1" == --version || "$1" == app-server ]]; then
@@ -839,6 +847,22 @@ in
     assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
     assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
     assert (mkGoblin base).goblin.allowed_children == null;
+    assert (mkGoblin base).goblin.resume_command == null;
+    assert
+      (mkGoblin (
+        base
+        // {
+          resumeCommand = [
+            "--resume"
+            "{session_id}"
+            "{{literal}}"
+          ];
+        }
+      )).goblin.resume_command == [
+        "--resume"
+        "{session_id}"
+        "{{literal}}"
+      ];
     assert (mkClaudeGoblin { allowedChildren = [ "codex" ]; }).goblin.allowed_children == [ "codex" ];
     assert (mkCodexGoblin { allowedChildren = [ ]; }).goblin.allowed_children == [ ];
     # Not a scope default: a scope variant keeps the goblin's own value.

@@ -17,6 +17,10 @@ pub struct Configuration {
     pub network: bool,
     pub build_spec: PathBuf,
     pub args: Vec<String>,
+    /// The agent's arguments for a recreated goblin, instead of `args`, with
+    /// `{key}` placeholders for its recorded variables.
+    #[serde(default)]
+    pub resume_command: Option<Vec<String>>,
     pub env: BTreeMap<String, String>,
     pub client_package: PathBuf,
     pub helper: PathBuf,
@@ -288,6 +292,9 @@ pub struct Launch {
     pub shell: PathBuf,
     #[serde(default = "default_args")]
     pub shell_args: Vec<String>,
+    /// Replaces `shell_args` on recreate when every placeholder has a value.
+    #[serde(default)]
+    pub resume_command: Option<Vec<String>>,
     pub posix_shell: PathBuf,
     pub helper: PathBuf,
     pub bwrap: PathBuf,
@@ -375,6 +382,7 @@ impl Configuration {
             cwd: None,
             shell: string("sandboxed_binary")?.into(),
             shell_args: self.args.clone(),
+            resume_command: self.resume_command.clone(),
             posix_shell: string("shell")?.into(),
             helper: self.helper.clone(),
             bwrap: spec["dependencies"]["bwrap"]

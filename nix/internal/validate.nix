@@ -34,6 +34,11 @@ let
     builtins.isAttrs mounts
     && builtins.all (name: validName name && mountPath mounts.${name}) (builtins.attrNames mounts)
     && lib.unique (builtins.attrValues mounts) == builtins.attrValues mounts;
+  # {key} placeholders for recorded variables; {{ and }} are literal braces.
+  resumeElement =
+    element:
+    builtins.isString element
+    && builtins.match "([^{}]|\\{\\{|}}|\\{[a-z][a-z0-9_]{0,31}})*" element != null;
   defaultKeys = [
     "allowedPackages"
     "env"
@@ -71,6 +76,7 @@ in
         roDirs
         roFiles
         args
+        resumeCommand
         injectedFiles
         devShellInjectedFiles
         env
@@ -142,6 +148,12 @@ in
       fail "rwDirs, rwFiles, roDirs and roFiles must be lists of path strings"
     else if !builtins.isList args || !builtins.all builtins.isString args then
       fail "args must be a list of strings"
+    else if
+      !(
+        resumeCommand == null || builtins.isList resumeCommand && builtins.all resumeElement resumeCommand
+      )
+    then
+      fail "resumeCommand must be null or a list of strings whose placeholders are {key} (key: a lowercase letter, then up to 31 lowercase letters, digits or _), with {{ and }} for literal braces"
     else if !etcFiles injectedFiles || !etcFiles devShellInjectedFiles then
       fail "injectedFiles and devShellInjectedFiles must map relative /etc file names to text or file derivations"
     else if

@@ -30,6 +30,11 @@ let
       description ? "${binName} running in a Goblins sandbox",
       allowedPackages ? sandbox.commonTools,
       args ? [ ],
+      # The agent's arguments when `goblins recreate` resumes its recorded
+      # conversation, instead of `args`: {key} is the variable the goblin
+      # recorded (`goblins variable set`), {{ and }} are literal braces. Each
+      # element stays one argument. Null: a recreated goblin starts afresh.
+      resumeCommand ? null,
       env ? { },
       allowNix ? false,
       allowUnixSockets ? true,
@@ -96,6 +101,7 @@ let
       // {
         inherit
           args
+          resumeCommand
           description
           integration
           injectedFiles
@@ -122,6 +128,7 @@ let
           ;
         allowed_scopes = allowedScopes;
         allowed_children = allowedChildren;
+        resume_command = resumeCommand;
         scope_storage = scopeStorage;
         env = effectiveEnv;
         client_package = client;
