@@ -155,6 +155,9 @@ struct Call {
 fn call_key(serial: u64) -> String {
     format!("call-{serial}")
 }
+fn prune_key(serial: u64) -> String {
+    format!("prune-{serial}")
+}
 struct Active {
     activity_at: Option<Instant>,
     created: u64,
@@ -800,6 +803,64 @@ impl Controller {
             records.push(value);
         }
         Ok(json!({"directory":store.directory,"records":records,"truncated":truncated}))
+    }
+    /// `history.prune`. Records go only once the writer has deleted them
+    /// durably, so the caller waits for that and learns what failed.
+    fn history_prune(
+        &mut self,
+        c: &mut Connection,
+        id: Value,
+        value: Value,
+    ) -> std::result::Result<Option<Value>, Fault> {
+        let p: crate::history::Prune = params(value)?;
+        if p.is_empty() {
+            return Err((-32602, "choose --older-than, --before or --keep".into()));
+        }
+        let mut excluded = self.live_sessions();
+        let serial = self.number();
+        let store = self
+            .history
+            .as_mut()
+            .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+        excluded.extend(store.deleting.iter().cloned());
+        let removed = p.select(&store.records, &excluded, crate::messaging::now());
+        if p.dry_run || removed.is_empty() {
+            return Ok(Some(
+                json!({"removed":removed,"failed":[],"dry_run":p.dry_run}),
+            ));
+        }
+        // Ordered with every write: the writer drops queued revisions.
+        store.delete(&removed, Some(serial));
+        c.waiting = Some((prune_key(serial), id));
+        Ok(None)
+    }
+    /// Apply finished deletes and answer the prunes waiting for them.
+    fn poll_deletes(&mut self) {
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        for result in store.poll() {
+            let Some(tag) = result.tag else {
+                continue;
+            };
+            let failed: Vec<_> = result
+                .failed
+                .iter()
+                .map(|(id, reason)| json!({"id":id,"reason":reason}))
+                .collect();
+            let key = prune_key(tag);
+            for c in &mut self.connections {
+                if let Some((waiting, rpc_id)) = &c.waiting
+                    && *waiting == key
+                {
+                    c.queue(rpc::result(
+                        rpc_id.clone(),
+                        json!({"removed":result.removed,"failed":failed,"dry_run":false}),
+                    ));
+                    c.waiting = None;
+                }
+            }
+        }
     }
     /// Change the record of a live root goblin. Ok(false) when it has none;
     /// Err with the reason when the change does not fit, leaving it as it was.
@@ -1707,23 +1768,6 @@ impl Controller {
                 let _: Empty = params(value)?;
                 self.history_list()
             }
-            "history.prune" => {
-                let p: crate::history::Prune = params(value)?;
-                if p.is_empty() {
-                    return Err((-32602, "choose --older-than, --before or --keep".into()));
-                }
-                let running = self.live_sessions();
-                let store = self
-                    .history
-                    .as_mut()
-                    .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
-                // Ordered with every write: the writer drops queued revisions.
-                let removed = p.select(&store.records, &running, crate::messaging::now());
-                if !p.dry_run {
-                    store.delete(&removed);
-                }
-                Ok(json!({"removed":removed,"dry_run":p.dry_run}))
-            }
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;
@@ -1914,6 +1958,9 @@ impl Controller {
             match &c.role {
                 Role::Host if call.method == "sessions.exec" => {
                     self.exec_start(c, id.clone(), call.params).map(|()| None)
+                }
+                Role::Host if call.method == "history.prune" => {
+                    self.history_prune(c, id.clone(), call.params)
                 }
                 Role::Host => self.host(c, &call.method, call.params).map(Some),
                 Role::Sandbox(session) => {
@@ -2260,6 +2307,7 @@ impl Controller {
     pub fn tick(&mut self) -> Result<()> {
         self.expire_activity(Instant::now());
         self.poll_history();
+        self.poll_deletes();
         // Drain human input and native output before checking wake revisions.
         for a in self.sessions.values_mut() {
             if let Err(e) = a.terminal.tick() {

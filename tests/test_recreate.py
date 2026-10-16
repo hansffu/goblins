@@ -263,6 +263,16 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertIn("Usage", usage.stderr)
         self.assertEqual(d.cli("history", "prune", "--older-than", "30d", "--dry-run").stdout, "Would remove 1 record\nold\n")
         self.assertEqual(stored(), sorted(["old", "mid", "new", running]))
+        # A deletion that fails is reported, and the record stays.
+        d.history.chmod(0o500)
+        try:
+            failed = d.cli("history", "prune", "--older-than", "30d", check=False)
+        finally:
+            d.history.chmod(0o700)
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(failed.stdout, "Removed 0 records\n")
+        self.assertIn("Could not remove 1 record:\nold: ", failed.stderr)
+        self.assertIn("old", [r["id"] for r in json.loads(d.cli("history", "--json").stdout)])
         self.assertEqual(d.cli("history", "prune", "--older-than", "30d").stdout, "Removed 1 record\nold\n")
         before = time.strftime("%Y-%m-%d", time.localtime((now - 5 * day) / 1000))
         self.assertEqual(d.cli("history", "prune", "--before", before).stdout, "Removed 1 record\nmid\n")

@@ -100,19 +100,35 @@ pub fn list(state: &Path, as_json: bool) -> Result<i32> {
     Ok(0)
 }
 
+/// Removed record ids, and those that could not be removed with why.
+type Outcome = (Vec<String>, Vec<(String, String)>);
 /// `goblins history prune`, through the owning daemon or, when the server
 /// here has no history or none runs, under the store's own lock.
 pub fn prune(state: &Path, prune: history::Prune) -> Result<i32> {
-    let mut removed = None;
+    let mut outcome = None;
     if let Some(mut client) = Client::connect_optional(state)? {
         match client.call("history.prune", serde_json::to_value(&prune)?) {
-            Ok(result) => removed = Some(serde_json::from_value(result["removed"].clone())?),
+            Ok(result) => {
+                let failed: Vec<Value> = serde_json::from_value(result["failed"].clone())?;
+                outcome = Some((
+                    serde_json::from_value(result["removed"].clone())?,
+                    failed
+                        .iter()
+                        .map(|f| {
+                            (
+                                f["id"].as_str().unwrap_or("-").to_string(),
+                                f["reason"].as_str().unwrap_or("-").to_string(),
+                            )
+                        })
+                        .collect(),
+                ));
+            }
             Err(e) if e.to_string().contains("no session history") => (),
             Err(e) => return Err(e),
         }
     }
-    let removed: Vec<String> = match removed {
-        Some(removed) => removed,
+    let (removed, failed): Outcome = match outcome {
+        Some(outcome) => outcome,
         None => offline_prune(&prune)?,
     };
     let verb = if prune.dry_run {
@@ -128,15 +144,26 @@ pub fn prune(state: &Path, prune: history::Prune) -> Result<i32> {
     for id in removed {
         println!("{id}");
     }
-    Ok(0)
+    if failed.is_empty() {
+        return Ok(0);
+    }
+    eprintln!(
+        "Could not remove {} record{}:",
+        failed.len(),
+        if failed.len() == 1 { "" } else { "s" }
+    );
+    for (id, reason) in failed {
+        eprintln!("{id}: {}", goblins_protocol::plain_text(&reason));
+    }
+    Ok(1)
 }
 
 /// Prune under the store's lock; refuses, naming the owner, when another
 /// process holds it. With the lock ours, none of its goblins is running.
-fn offline_prune(prune: &history::Prune) -> Result<Vec<String>> {
+fn offline_prune(prune: &history::Prune) -> Result<Outcome> {
     let directory = history::Store::default_directory()?;
     if !directory.exists() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     let owner = format!("goblins history prune (pid {})", std::process::id());
     let mut store = history::Store::open(&directory, &owner).map_err(|e| {
@@ -151,8 +178,9 @@ fn offline_prune(prune: &history::Prune) -> Result<Vec<String>> {
         &Default::default(),
         goblins_controller::messaging::now(),
     );
-    if !prune.dry_run {
-        store.delete(&removed);
+    if prune.dry_run {
+        return Ok((removed, Vec::new()));
     }
-    Ok(removed)
+    let result = store.delete_now(&removed);
+    Ok((result.removed, result.failed))
 }

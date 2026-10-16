@@ -223,13 +223,28 @@ impl std::fmt::Display for Held {
 impl std::error::Error for Held {}
 enum Op {
     Write(Box<Record>),
-    Delete(Vec<String>),
+    /// Delete these records; `tag` identifies the caller waiting for it.
+    Delete {
+        ids: Vec<String>,
+        tag: Option<u64>,
+    },
+}
+/// What a delete actually did, once its files are gone for good.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Deleted {
+    pub tag: Option<u64>,
+    pub removed: Vec<String>,
+    /// Records still on disk, with the reason.
+    pub failed: Vec<(String, String)>,
 }
 /// The history store this process owns: its lock, the records and the writer.
 pub struct Store {
     pub directory: PathBuf,
     pub records: BTreeMap<String, Record>,
+    /// Records whose deletion the writer has not confirmed yet.
+    pub deleting: BTreeSet<String>,
     commands: Option<mpsc::Sender<Op>>,
+    deleted: mpsc::Receiver<Deleted>,
     thread: Option<JoinHandle<()>>,
     _lock: File,
 }
@@ -273,6 +288,7 @@ impl Store {
         }
         let records = load(&directory)?;
         let (commands, received) = mpsc::channel();
+        let (results, deleted) = mpsc::channel();
         let target = directory.clone();
         let thread = thread::Builder::new()
             .name("goblins-history".into())
@@ -280,13 +296,17 @@ impl Store {
                 while let Ok(op) = received.recv() {
                     let mut batch = vec![op];
                     batch.extend(received.try_iter());
-                    apply(&target, batch);
+                    for result in apply(&target, batch, sync) {
+                        let _ = results.send(result);
+                    }
                 }
             })?;
         Ok(Self {
             directory,
             records,
+            deleting: BTreeSet::new(),
             commands: Some(commands),
+            deleted,
             thread: Some(thread),
             _lock: lock,
         })
@@ -296,15 +316,57 @@ impl Store {
         self.records.insert(record.id.clone(), record.clone());
         self.send(Op::Write(Box::new(record)));
     }
-    /// Delete records, dropping any revision of them still queued.
-    pub fn delete(&mut self, ids: &[String]) {
-        if ids.is_empty() {
-            return;
+    /// Delete records, dropping any revision of them still queued. They
+    /// stay until the writer confirms; `poll` reports the outcome under
+    /// `tag`, and a record that could not be deleted is kept.
+    pub fn delete(&mut self, ids: &[String], tag: Option<u64>) {
+        self.deleting.extend(ids.iter().cloned());
+        self.send(Op::Delete {
+            ids: ids.to_vec(),
+            tag,
+        });
+    }
+    /// Outcomes of finished deletes, applied to the records.
+    pub fn poll(&mut self) -> Vec<Deleted> {
+        let results: Vec<_> = self.deleted.try_iter().collect();
+        for result in &results {
+            self.settle(result);
         }
-        for id in ids {
+        results
+    }
+    /// Delete and wait for the outcome, for the CLI without a server.
+    pub fn delete_now(&mut self, ids: &[String]) -> Deleted {
+        self.delete(ids, Some(0));
+        loop {
+            match self.deleted.recv() {
+                Ok(result) => {
+                    self.settle(&result);
+                    if result.tag == Some(0) {
+                        return result;
+                    }
+                }
+                Err(_) => {
+                    return Deleted {
+                        tag: Some(0),
+                        removed: vec![],
+                        failed: ids
+                            .iter()
+                            .map(|id| (id.clone(), "history writer stopped".into()))
+                            .collect(),
+                    };
+                }
+            }
+        }
+    }
+    fn settle(&mut self, result: &Deleted) {
+        for id in &result.removed {
             self.records.remove(id);
+            self.deleting.remove(id);
         }
-        self.send(Op::Delete(ids.to_vec()));
+        for (id, reason) in &result.failed {
+            self.deleting.remove(id);
+            eprintln!("goblins: cannot delete session record {id}: {reason}");
+        }
     }
     fn send(&self, op: Op) {
         if let Some(commands) = &self.commands {
@@ -316,16 +378,18 @@ impl Store {
     /// beyond `keep`. Records left without `stopped` by a crash count as
     /// stopped. Returns the deleted ids.
     pub fn retain(&mut self, keep: usize, running: &BTreeSet<String>) -> Vec<String> {
-        let excess = self.records.len().saturating_sub(keep);
+        let excess = (self.records.len() - self.deleting.len()).saturating_sub(keep);
         let mut old: Vec<_> = self
             .records
             .values()
-            .filter(|r| !running.contains(&r.id))
+            .filter(|r| !running.contains(&r.id) && !self.deleting.contains(&r.id))
             .map(|r| (r.updated, r.id.clone()))
             .collect();
         old.sort();
         let ids: Vec<_> = old.into_iter().take(excess).map(|(_, id)| id).collect();
-        self.delete(&ids);
+        if !ids.is_empty() {
+            self.delete(&ids, None);
+        }
         ids
     }
     /// A record by id, unique id prefix or unique agent name.
@@ -385,22 +449,41 @@ fn path(directory: &Path, id: &str) -> PathBuf {
 }
 /// One batch of queued operations, in order: only the newest revision of a
 /// record is written, and a delete drops revisions queued before it.
-fn apply(directory: &Path, batch: Vec<Op>) {
+/// A directory fsync, which makes renames and deletions in it durable.
+fn sync(directory: &Path) -> io::Result<()> {
+    File::open(directory)?.sync_all()
+}
+fn apply(directory: &Path, batch: Vec<Op>, sync: impl Fn(&Path) -> io::Result<()>) -> Vec<Deleted> {
     let mut pending = BTreeMap::new();
+    let mut results = vec![];
     for op in batch {
         match op {
             Op::Write(record) => {
                 pending.insert(record.id.clone(), record);
             }
-            Op::Delete(ids) => {
+            Op::Delete { ids, tag } => {
+                let mut result = Deleted {
+                    tag,
+                    ..Default::default()
+                };
                 for id in ids {
                     pending.remove(&id);
                     match fs::remove_file(path(directory, &id)) {
-                        Ok(()) => (),
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-                        Err(e) => eprintln!("goblins: cannot delete session record {id}: {e}"),
+                        Ok(()) => result.removed.push(id),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => result.removed.push(id),
+                        Err(e) => result.failed.push((id, e.to_string())),
                     }
                 }
+                // A deletion that a crash could undo has not happened yet.
+                if !result.removed.is_empty()
+                    && let Err(e) = sync(directory)
+                {
+                    let removed = std::mem::take(&mut result.removed);
+                    result
+                        .failed
+                        .extend(removed.into_iter().map(|id| (id, e.to_string())));
+                }
+                results.push(result);
             }
         }
     }
@@ -409,6 +492,7 @@ fn apply(directory: &Path, batch: Vec<Op>) {
             eprintln!("goblins: cannot write session record {}: {e}", record.id);
         }
     }
+    results
 }
 /// Temp file, fsync, rename and directory fsync: a reader sees the old or
 /// the new record, never part of one.
@@ -558,6 +642,16 @@ mod tests {
     fn on_disk(directory: &Path) -> BTreeMap<String, Record> {
         load(directory).unwrap()
     }
+    /// Wait until the writer confirmed every delete.
+    fn settle(s: &mut Store) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !s.deleting.is_empty() && std::time::Instant::now() < deadline {
+            s.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Writes, too: a tagged no-op delete follows them through the writer.
+        s.delete_now(&[]);
+    }
     fn store() -> (Store, PathBuf) {
         let root = unix::temp_directory().unwrap();
         let directory = root.join("sessions");
@@ -679,19 +773,83 @@ mod tests {
                 Op::Write(Box::new(first.clone())),
                 Op::Write(Box::new(second.clone())),
             ],
+            sync,
         );
         assert_eq!(on_disk(&root)["a"], second);
         // A prune after a queued write: neither revision is left.
         first.updated = 3;
-        apply(
+        let results = apply(
             &root,
             vec![
                 Op::Write(Box::new(first.clone())),
-                Op::Delete(vec!["a".into()]),
+                Op::Delete {
+                    ids: vec!["a".into()],
+                    tag: Some(7),
+                },
                 Op::Write(Box::new(record("b", 4))),
             ],
+            sync,
+        );
+        assert_eq!(
+            results,
+            [Deleted {
+                tag: Some(7),
+                removed: vec!["a".into()],
+                failed: vec![]
+            }]
         );
         assert_eq!(on_disk(&root).into_keys().collect::<Vec<_>>(), ["b"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn a_failed_delete_is_reported_and_the_record_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut s, root) = store();
+        s.write(record("a", 1));
+        s.write(record("b", 2));
+        let directory = s.directory.clone();
+        settle(&mut s);
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = s.delete_now(&["a".into()]);
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.removed.is_empty());
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].0, "a");
+        assert!(s.records.contains_key("a"));
+        assert!(s.deleting.is_empty());
+        let result = s.delete_now(&["a".into()]);
+        assert_eq!(result.removed, ["a"]);
+        assert!(!s.records.contains_key("a"));
+        drop(s);
+        assert_eq!(on_disk(&directory).into_keys().collect::<Vec<_>>(), ["b"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn deletes_are_durable_before_they_are_reported() {
+        let root = unix::temp_directory().unwrap();
+        apply(&root, vec![Op::Write(Box::new(record("a", 1)))], sync);
+        apply(&root, vec![Op::Write(Box::new(record("b", 1)))], sync);
+        let synced = std::cell::RefCell::new(vec![]);
+        let delete = |id: &str| Op::Delete {
+            ids: vec![id.into()],
+            tag: None,
+        };
+        // Each delete fsyncs the directory after unlinking.
+        let results = apply(&root, vec![delete("a")], |d: &Path| {
+            synced.borrow_mut().push(d.join("a.json").exists());
+            Ok(())
+        });
+        assert_eq!(*synced.borrow(), [false]);
+        assert_eq!(results[0].removed, ["a"]);
+        // An fsync that fails leaves the deletion unconfirmed.
+        let results = apply(&root, vec![delete("b")], |_: &Path| {
+            Err(io::Error::other("fsync failed"))
+        });
+        assert!(results[0].removed.is_empty());
+        assert_eq!(
+            results[0].failed,
+            [("b".to_string(), "fsync failed".to_string())]
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -707,6 +865,9 @@ mod tests {
         s.write(record("newest", 5));
         let running = BTreeSet::from(["running".to_string()]);
         assert_eq!(s.retain(2, &running), ["crashed", "stopped"]);
+        // Records being deleted are not selected twice.
+        assert!(s.retain(2, &running).is_empty());
+        settle(&mut s);
         assert_eq!(s.records.keys().collect::<Vec<_>>(), ["newest", "running"]);
         // Running records stay even beyond the limit.
         assert_eq!(s.retain(0, &running), ["newest"]);
