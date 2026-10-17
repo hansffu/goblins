@@ -339,3 +339,19 @@ Raids end with the daemon and are not recorded. A recreated goblin is in no raid
 * TODO Emacs history view
 
 =M-x goblins-resume= chooses a record by completion (=goblins-record= category, with Marginalia and Embark) and resumes it, and the info view shows a resumed goblin's record and skipped packages. Still CLI only: a view listing the records (=history.list= on the host socket), for example as the Embark export of =goblins-record= candidates, more Embark actions on a record (copy its id, show it), and pruning.
+
+* TODO Opt-in notice when a detached host command starts
+
+A detached =goblin host run= is silent until it finishes, so its agent cannot tell "waiting for approval" from "approved and running" without polling =goblin host status= ([[file:../adr/0012-host-commands.md][ADR 0012]]). Add an opt-in flag, for example =goblin host run --detach --notify-start=, that also queues an operation notice when the host approves and the job starts, so the agent can follow its log or move on. Opt-in because every notice wakes the agent: for short jobs it would be a second turn right after the first. The request would carry the flag in =HostCommand=; =decide_host= in =crates/controller/src/controller/host.rs= would queue the extra notice on approval, and the =goblins-host= skill would say when to use it.
+
+* TODO Cancel host commands from the host side
+
+The daemon accepts =host.cancel= from host connections, but there is no =goblins= command, TUI action or Emacs action for it. Today the human can only deny a pending request; a running job is stopped by its goblin (=goblin host cancel=) or by stopping the goblin. Add a host CLI command and a frontend action for running jobs.
+
+* TODO Remove the hidden goblins alias inside sandboxes
+
+The in-sandbox CLI is =goblin=; =/run/goblins/bin/goblins= stays as a hidden link for conversations recorded before the rename ([[file:NIX-AND-HOST-COMMANDS.org][NIX-AND-HOST-COMMANDS.org]], section 2.3). Remove it, and the test in =tests/test_connected.py= that uses it, once recreated goblins no longer resume such conversations.
+
+* TODO Git identity for goblins
+
+A goblin's home is private and empty, so =git commit= fails without an identity. Each configuration has to bind a git config (=roFiles=) or set =GIT_AUTHOR_*= and =GIT_COMMITTER_*= in =env=. Consider documenting this next to the =goblins-dev= setup, or an option that passes the host's identity in.
