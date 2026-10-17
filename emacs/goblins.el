@@ -1175,15 +1175,17 @@ On other status sections, toggle their visibility."
     name))
 
 ;;;###autoload
-(defun goblins--launch-location ()
+(defun goblins--launch-location (&optional nix)
   "Return (CWD . DEV-SHELL) for a launch from the current buffer.
 Inside a project.el project, launch from its root and, when the root has a
 flake.nix, ask whether to use it as the dev shell.  Otherwise use
-`default-directory' and no dev shell."
+`default-directory' and no dev shell.  NIX non-nil means the configuration
+has allowNix: its agent runs nix develop itself, so there is no question."
   (let* ((project (and (require 'project nil t) (project-current)))
          (cwd (expand-file-name (if project (project-root project) default-directory))))
     (cons cwd
           (and project
+               (not nix)
                (file-exists-p (expand-file-name "flake.nix" cwd))
                (y-or-n-p (format "Use %s as the dev shell? "
                                  (abbreviate-file-name (expand-file-name "flake.nix" cwd))))
@@ -1265,7 +1267,8 @@ Only launches made here are linked by the terminal command."
                                 (goblins--default-directory)))
            (configs (goblins--configurations))
            (name (goblins--read-configuration (plist-get configs :names)))
-           (location (goblins--launch-location))
+           (location (goblins--launch-location
+                      (member name (plist-get configs :nix))))
            (cwd (car location))
            (dev-shell (cdr location))
            (status (goblins--connect state-directory)))

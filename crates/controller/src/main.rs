@@ -329,6 +329,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("configurations requires --runtime (use the Nix-built goblins command)")?;
             let manifest = Manifest::read(&runtime)?;
+            // Configurations with allowNix use Nix rather than a Goblins dev
+            // shell, so frontends don't offer one for them.
+            let mut nix = Vec::new();
+            for (name, config) in &manifest.goblins {
+                if config.allows_nix()? {
+                    nix.push(name);
+                }
+            }
             println!(
                 "{}",
                 serde_json::json!({
@@ -336,7 +344,8 @@ fn execute(cli: Cli) -> Result<i32> {
                     "names": manifest.goblins.keys().collect::<Vec<_>>(),
                     "descriptions": manifest.goblins.iter().map(|(name, config)| {
                         (name.clone(), config.description.clone())
-                    }).collect::<std::collections::BTreeMap<_, _>>()
+                    }).collect::<std::collections::BTreeMap<_, _>>(),
+                    "nix": nix,
                 })
             );
         }

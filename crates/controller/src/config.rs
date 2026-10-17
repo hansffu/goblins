@@ -345,9 +345,18 @@ fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
 }
 impl Configuration {
+    fn spec(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::from_slice(&read_regular(
+            &self.build_spec,
+            MAX_MANIFEST_BYTES,
+        )?)?)
+    }
+    /// mkGoblin's allowNix, from the build spec the launch also reads.
+    pub fn allows_nix(&self) -> Result<bool> {
+        Ok(self.spec()?["allow_nix"] == true)
+    }
     pub fn launch(&self) -> Result<Launch> {
-        let spec: serde_json::Value =
-            serde_json::from_slice(&read_regular(&self.build_spec, MAX_MANIFEST_BYTES)?)?;
+        let spec = self.spec()?;
         if spec["platform"] != "linux"
             || !spec["allow_nix"].is_boolean()
             || spec["allow_unix_sockets"] != true

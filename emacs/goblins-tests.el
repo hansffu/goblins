@@ -493,7 +493,11 @@
             (should (string-match-p "flake\\.nix as the dev shell\\? \\'" (car prompts)))
             (setq answer t)
             (should (equal (goblins--launch-location)
-                           (cons root (directory-file-name (file-truename root))))))
+                           (cons root (directory-file-name (file-truename root)))))
+            ;; A configuration with allowNix runs nix develop itself.
+            (setq prompts nil)
+            (should (equal (goblins--launch-location t) (cons root nil)))
+            (should-not prompts))
           (setq prompts nil)
           ;; Outside a project: the current directory, never a dev shell.
           (write-region "{}" nil (expand-file-name "flake.nix" outside))
