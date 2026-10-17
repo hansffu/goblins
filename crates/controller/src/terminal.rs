@@ -179,9 +179,11 @@ impl Terminal {
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.dimensions = Some((rows, cols));
+        // The screen model needs room to wrap: vt100 panics wrapping on a
+        // single row or column. The PTY still gets the real size.
         self.screen
             .screen_mut()
-            .set_size(rows.min(200), cols.min(500));
+            .set_size(rows.clamp(2, 200), cols.clamp(2, 500));
         self.revision += 1;
         let Some(master) = self.master.as_ref() else {
             return Ok(());
@@ -489,6 +491,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_tiny_window_never_breaks_the_screen_model() {
+        // A client in a one-line window (or a terminal reporting 0x0, sent
+        // as 1x1) resizes the payload to that; wrapping output must not
+        // panic the daemon in the screen parser.
+        let mut f = Fixture::new();
+        for (rows, cols) in [(1, 1), (1, 80), (24, 1)] {
+            // The fixture's master is no PTY, so only the model resizes.
+            let _ = f.terminal.resize(rows, cols);
+            f.payload
+                .write_all(
+                    "wrap this line past the edge 中文 again\r\n"
+                        .repeat(3)
+                        .as_bytes(),
+                )
+                .unwrap();
+            for _ in 0..4 {
+                f.terminal.tick().unwrap();
+            }
+        }
+    }
     #[test]
     fn terminal_reports_are_independent_of_stream_read_boundaries() {
         let now = Instant::now();
