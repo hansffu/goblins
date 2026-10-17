@@ -594,7 +594,7 @@ The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/
 
 What is not resumed: children, raids, inbox contents, and terminal or process state. Only root goblins are recorded. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so and names the owner. It takes the history over once the owner stops, and then records the root goblins it is running, including the conversation their agents reported meanwhile. A server started with =--workspace= neither records nor resumes goblins.
 
-A conversation cannot be resumed while a goblin runs it, so two goblins never resume the same conversation. A resumed goblin that fails to start releases its record again. If the recorded working directory no longer exists, =resume= refuses.
+A conversation cannot be resumed while a goblin runs it, so two goblins never resume the same conversation, nor while a prune is removing its record. A resumed goblin that fails to start releases its record again. If the recorded working directory no longer exists, =resume= refuses.
 
 ** Keeping the conversation
 
@@ -602,8 +602,8 @@ A goblin records its own variables with =goblins variable set KEY=VALUE…= insi
 
 =resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 
-- =mkClaudeGoblin= records Claude's =session_id= and the session's name (=session_name=) from its hooks. The name is the one Claude reports, else the latest custom (=/rename=) or generated title in the transcript. Its default is =resumeCommand = args ++ [ "--resume" "{session_id}" ]=.
-- =mkCodexGoblin= records the terminal's foreground thread and its name through the Codex adapter, including renames and switches. Its default is =resumeCommand = args ++ [ "resume" "{session_id}" ]=. Options before =resume=, such as =-p= and =-c=, still reach the App Server; =--sandbox= and =--ask-for-approval= cannot be combined with =resume= and are refused, since Goblins sets those on the App Server.
+- =mkClaudeGoblin= records Claude's =session_id= and the session's name (=session_name=) from its hooks. The name is the one Claude reports, else the latest custom (=/rename=) or generated title in the transcript. Its default is =resumeCommand = args ++ [ "--resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =--mcp-config= JSON).
+- =mkCodexGoblin= records the terminal's foreground thread and its name through the Codex adapter, including renames and switches. Its default is =resumeCommand = args ++ [ "resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =-c= inline tables). Options before =resume=, such as =-p= and =-c=, still reach the App Server; =--sandbox= and =--ask-for-approval= cannot be combined with =resume= and are refused, since Goblins sets those on the App Server.
 
 Both defaults append to =args=, so they suit =args= made of options only. A goblin whose =args= contain a prompt, a subcommand or =--= sets its own =resumeCommand=, or =null= to always start afresh.
 

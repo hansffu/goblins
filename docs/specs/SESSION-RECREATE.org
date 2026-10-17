@@ -27,7 +27,7 @@ Children, raids, inbox contents, terminal and process state, Emacs UI. Goblins l
 
 One file per conversation line: =$XDG_STATE_HOME/goblins/sessions/<id>.json= (default =~/.local/state/goblins/sessions=). The directory is 0700 and its files 0600.
 
-As in Claude Code and Codex, ids are the keys and names are labels. A new root goblin starts a record with a short random id: 8 characters of lowercase Crockford base32, such as =k3f9x2ab=. Goblins session ids (=<instance>-s<n>=) share the server instance's 32-character prefix, so they make poor ids to read or type. Recreating continues that same record: the new goblin is appended to =sessions=, so the record always describes the latest goblin, and any goblin id it ran as (such as one Emacs shows for a stopped goblin) finds it. There is also one record per agent conversation: when a goblin reports a =session_id= that another record holds and no goblin runs that one, the other record is merged in (its goblin ids lead, its approved packages are added) and removed. When the agent switches conversation (=/clear=, =/new=), the record follows the goblin.
+As in Claude Code and Codex, ids are the keys and names are labels. A new root goblin starts a record with a short random id: 8 characters of lowercase Crockford base32, such as =k3f9x2ab=. Goblins session ids (=<instance>-s<n>=) share the server instance's 32-character prefix, so they make poor ids to read or type. Recreating continues that same record: the new goblin is appended to =sessions=, so the record always describes the latest goblin, and any goblin id it ran as (such as one Emacs shows for a stopped goblin) finds it. There is also one record per agent conversation: when a goblin reports a =session_id= that another record holds and no goblin runs that one, the other record is merged in (its goblin ids lead, its approved packages are added) and removed, only once the merged record is written durably. A record queued for deletion by prune or retention is neither listed nor recreated. When the agent switches conversation (=/clear=, =/new=), the record follows the goblin.
 
 #+begin_src json
 {
@@ -56,7 +56,7 @@ As in Claude Code and Codex, ids are the keys and names are labels. A new root g
 - =skipped= lists what could not be restored when this record's goblin was recreated, as ={name, reason}= entries: approved packages, and =docker=. The reason is one line of at most 256 bytes, control characters escaped. Skipped packages stay in =approved=, so the next recreate tries them again.
 - =sessions= lists the goblins this record ran as, oldest first, at most 256; the last is the latest goblin.
 - =stopped= is informational: a goblin that died with its daemon never gets it. Only the record's latest goblin sets it.
-- Size limits: at most 256 names per package list and 64 KiB per record. A grant that would exceed them is still applied but not recorded, and the record's goblin gets a =detail= saying so.
+- Size limits: at most 256 names per package list and 64 KiB per record. A grant that would exceed them is still applied but not recorded, and the record's goblin gets a =detail= saying so. The store never writes a record a reader would reject: a record rebuilt past 64 KiB (skip reasons, variables, goblin ids) drops skip reasons first, then skipped names, then its oldest goblin ids, and one that still does not fit leaves the previous revision.
 
 ** Store and writing
 
@@ -83,7 +83,7 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 - =nix/internal/validate.nix= checks the type and placeholder syntax. =mk-goblin.nix= emits it as =resume_command= in the goblin's manifest entry; =config.rs= reads it into =Configuration= and =Launch=.
 - On recreate, when the configuration has a =resume_command= and every placeholder it references has a value, it replaces =shell_args=. Otherwise the goblin starts with its normal =args=: the sandbox is recreated and the agent starts a fresh conversation.
 - If the recorded agent session no longer exists, the agent's own error is what the user sees. There is no silent fallback to a fresh conversation.
-- The Claude and Codex defaults below append to =args=. They suit =args= made of options only. A goblin whose =args= contain a prompt, a subcommand or =--= must set its own =resumeCommand=; the builders document this.
+- The Claude and Codex defaults below append to =args=, with its braces escaped (={= to ={{=, =}= to =}}=) so arguments such as JSON or TOML tables stay literal. They suit =args= made of options only. A goblin whose =args= contain a prompt, a subcommand or =--= must set its own =resumeCommand=; the builders document this.
 
 * Recreate
 

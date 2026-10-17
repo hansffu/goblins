@@ -751,6 +751,11 @@ impl Controller {
             .as_ref()
             .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
         let record = store.resolve(target).map_err(|e| (-32004, e))?;
+        // A prune or retention queued it: it is gone once the writer
+        // confirms, so a goblin must not take it over now.
+        if store.deleting.contains(&record.id) {
+            return Err((-32009, format!("record {} is being removed", record.id)));
+        }
         if let Some(cwd) = &record.cwd
             && !cwd.is_dir()
         {
@@ -855,6 +860,9 @@ impl Controller {
         let mut size = 0;
         let mut truncated = false;
         for record in crate::history::newest_first(&store.records) {
+            if store.deleting.contains(&record.id) {
+                continue;
+            }
             let mut value = json!(record);
             value["running"] = json!(running.contains(&record.id));
             size += serde_json::to_vec(&value).map_or(0, |v| v.len());
@@ -4141,6 +4149,9 @@ mod tests {
         root.ran_as("r2");
         store.write(root);
         store.write(Record::new("a3", "shell", "ugluk", 1));
+        store.write(Record::new("pruned", "shell", "snaga", 1));
+        // Queued for deletion, not yet confirmed by the writer.
+        store.deleting.insert("pruned".into());
         let mut moved = Record::new("moved", "shell", "zog", 3);
         moved.cwd = Some("/nonexistent-goblins-recreate-cwd".into());
         store.write(moved);
@@ -4173,6 +4184,21 @@ mod tests {
         );
         // Names are labels only.
         assert_eq!(start(&mut d, recreate("k0", "morb")).unwrap_err().0, -32004);
+        // A record being removed is neither resumed nor listed.
+        assert!(
+            start(&mut d, recreate("k0", "pruned"))
+                .unwrap_err()
+                .1
+                .contains("is being removed")
+        );
+        let listed = d.history_list().unwrap();
+        assert!(
+            listed["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["id"] != "pruned")
+        );
         // The record names the configuration and agent name; an old goblin
         // id finds it.
         let first = start(&mut d, recreate("k1", "r1")).unwrap();
