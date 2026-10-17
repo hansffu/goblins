@@ -34,7 +34,11 @@
         inherit (goblinsLib) builders commonTools;
         agents = llm-agents.packages.${system};
       };
-      demo = goblinsLib.builders.mkGoblins { goblins = demoGoblins; };
+      demoScopes = import ./nix/demo-goblins/scopes.nix { inherit (goblinsLib.builders) mkScope; };
+      demo = goblinsLib.builders.mkGoblins {
+        goblins = demoGoblins;
+        scopes = demoScopes;
+      };
       dockerShell = import ./nix/demo-goblins/shell.nix {
         inherit pkgs;
         inherit (goblinsLib.builders) mkGoblin;
@@ -49,7 +53,7 @@
         docker.enable = true;
       };
       devGoblins = goblinsLib.builders.mkGoblins {
-        scopes = devScopes;
+        scopes = demoScopes // devScopes;
         editor.emacs.enable = true;
         goblins = demoGoblins // {
           shell = dockerShell;

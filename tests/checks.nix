@@ -120,7 +120,7 @@ let
       };
     }
     {
-      scopes.work = mkScope { };
+      scopes.work = mkScope { docker.enable = true; };
       goblins = {
         plain = mkGoblin (base // { scope = "work"; });
         nix = mkGoblin (
@@ -291,6 +291,7 @@ in
         inherit pkgs agents;
         inherit (api) builders commonTools;
       };
+      scopes = import "${source}/nix/demo-goblins/scopes.nix" { inherit (api.builders) mkScope; };
     };
   demo-goblins = demo;
   # Each feature set gets its own skills, and none of them presents a
@@ -632,6 +633,17 @@ in
         allowedDomains = [ ];
         allowedPackages = [ ];
         env.GOBLINS_TEST_COMPOSER = "  ❯ ";
+      };
+      # Host command notices (tests/test_operation_notices.py).
+      host-notifier = mkClaudeGoblin {
+        pkg = pkgs.writeScriptBin "claude" (
+          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_claude.py
+        );
+        allowedDomains = [ ];
+        allowedPackages = [ ];
+        env.GOBLINS_TEST_COMPOSER = "  ❯ ";
+        hostCommands.enable = true;
+        rwDirs = [ "$HOME/shared" ];
       };
     };
   };
@@ -1150,6 +1162,21 @@ in
       };
     assert ((mkClaudeGoblin { }).withScopeDefaults { env.FROM_SCOPE = "1"; }).goblin.env ? FROM_SCOPE;
     assert (mkGoblin (base // { allowNix = true; })).goblin.nix;
+    # Without Docker, a scope may mix goblins with and without Nix.
+    assert
+      !rejected {
+        scopes.work = mkScope { };
+        goblins = {
+          plain = mkGoblin (base // { scope = "work"; });
+          nix = mkGoblin (
+            base
+            // {
+              scope = "work";
+              allowNix = true;
+            }
+          );
+        };
+      };
     assert !(mkGoblin base).goblin.nix;
     assert !((mkGoblin base).goblin.env ? NIX_CONFIG);
     assert pkgs.lib.hasInfix "flakes" (mkGoblin (base // { allowNix = true; })).goblin.env.NIX_CONFIG;

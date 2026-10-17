@@ -148,5 +148,49 @@ class ClaudeNotices(Notices, unittest.TestCase):
     composer = "❯ "
 
 
+class HostCommandNotices(unittest.TestCase):
+    """An attached host command delivers its own result; a detached one, or
+    one whose client went away, gets a notice."""
+
+    def setUp(self):
+        app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
+                            "git+" + ROOT.as_uri() + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
+        temp = tempfile.TemporaryDirectory(prefix="gnotice-")
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name) / "home"
+        (home / ".claude").mkdir(parents=True)
+        self.shared = home / "shared"
+        self.shared.mkdir()
+        self.d = Daemon(app, env={**os.environ, "HOME": str(home)})
+        self.addCleanup(self.d.close)
+        self.receiver = self.d.start("host-notifier", agent_name="receiver")["session"]
+
+    def socket(self):
+        return RPC(self.d.state / self.receiver / "resources/request.sock")
+
+    def request(self, **host):
+        return {"kind": "host-command", "reason": "notice test",
+                "host": {"argv": ["true"], "cwd": str(self.shared), **host}}
+
+    def completed(self, request):
+        events = self.d.rpc.call("communications.list", {"session": self.receiver})["events"]
+        return next((e for e in events if e["kind"] == "operation.completed"
+                     and e["data"]["request"] == request), None)
+
+    def test_only_results_nobody_received_become_notices(self):
+        attached = self.socket()
+        attached.send("permissions.request", self.request())
+        request = receive(attached.peer)["params"]["request"]
+        self.d.decide(self.d.wait(lambda: next(iter(self.d.permissions(state="pending")), None)), True)
+        self.assertEqual(receive(attached.peer)["result"]["status"], "finished")
+        attached.close()
+        detached = self.socket()
+        other = detached.call("permissions.request", self.request(detach=True))["request"]
+        detached.close()
+        self.d.decide(self.d.wait(lambda: next(iter(self.d.permissions(state="pending")), None)), True)
+        self.assertIsNotNone(self.d.wait(lambda: (e := self.completed(other)) and e["data"].get("notice")))
+        self.assertIsNone(self.completed(request)["data"].get("notice"))
+
+
 if __name__ == "__main__":
     unittest.main()

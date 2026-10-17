@@ -89,8 +89,9 @@ When an operation ends, whether it succeeded, was denied, failed, was
 withdrawn because its command stopped waiting, or was cancelled, Goblins puts
 one operation notice in your inbox. Its sender is `goblins` and its
 `message.operation` field holds `request`, `kind`, `subject`, `status` and
-`message`. The notice arrives even when the command already printed the same
-result, because Goblins cannot tell whether you saw that output. It wakes you
+`message`. Usually the notice arrives even when the command already printed
+the same result, because Goblins cannot tell whether you saw that output; an
+operation's own skill says when it does not. It wakes you
 like any other inbox item: the idle notifier resumes you after you yield, and
 the turn-end hook holds your turn open if it arrived while you were working.
 Human typing, interruption and a paused integration defer it in the same way.

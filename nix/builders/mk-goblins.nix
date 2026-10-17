@@ -103,8 +103,9 @@ let
     ) scopes;
   # Members share one network namespace, so they must agree on network policy.
   networks = perScope "network";
-  # A shared Docker engine's store view comes from its members.
-  nixAccess = perScope "nix";
+  # A shared Docker engine's store view comes from its members, so they must
+  # agree on allowNix in a scope with Docker.
+  nixAccess = lib.filterAttrs (scope: _: scopes.${scope}.docker) (perScope "nix");
 in
 assert validate.goblins goblins;
 assert lib.assertMsg (
@@ -136,7 +137,7 @@ assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
 )) "mkGoblins: members of a scope must have the same allowedDomains network policy";
 assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
   builtins.attrValues nixAccess
-)) "mkGoblins: members of a scope must have the same allowNix";
+)) "mkGoblins: members of a scope with Docker must have the same allowNix";
 import ../packages/goblins.nix {
   inherit pkgs goblins configurations;
   editor =

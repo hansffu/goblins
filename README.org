@@ -148,9 +148,14 @@ To try Goblins from a checkout without configuring anything, =nix shell path:.#d
 | =allowedDomains=                   | =null= (default): open internet; =[]=: no network. Domain filtering is not supported |
 | =injectedFiles=                    | Files placed read-only under =/etc= inside the sandbox                             |
 | =scope=, =allowedScopes=, =docker=     | See [[*Scopes][Scopes]] and [[*Docker][Docker]]                                                            |
+| =allowNix=, =hostCommands=           | Ordinary =nix= commands; approved commands on the host. See [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]] and [[file:docs/USAGE.org::*Host commands][Host commands]] |
 | =allowedChildren=                  | See [[*Children and raids][Children and raids]]                                                           |
 
 The rest of the home directory inside a sandbox is private and temporary. See the [[file:docs/USAGE.org::*Nix API][Nix API reference]] for all options and limits.
+
+** A goblin for developing Goblins
+
+The =goblins-dev= demo goblin (=nix/demo-goblins/=) is set up for working on Goblins itself: Claude Code with =allowNix= and =hostCommands.enable=, in a =goblins-dev= scope whose storage keeps =$HOME/.cargo= and =$HOME/.cache/nix= between sessions, and =claude= and =codex= children allowed in that scope. To use the same setup from your own configuration, copy that goblin and =nix/demo-goblins/scopes.nix=; without the scope, Cargo and the Nix fetcher download everything again in every session. See [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]].
 
 ** Codex and Claude Code
 

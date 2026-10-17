@@ -180,7 +180,26 @@ not applied).
 
 It needs a multi-user Nix install with a running daemon. The socket is =/nix/var/nix/daemon-socket/socket=, or =NIX_DAEMON_SOCKET_PATH= in the server's environment; without one the goblin fails to start. Only the socket is shared, not the rest of =/nix/var= or a custom socket's directory.
 
-=allowNix= requires =allowedDomains = null=: the daemon downloads substitutes and fixed-output derivations over the host network, so an offline goblin with Nix would not be offline. Every goblin that may join a scope must have the same =allowNix=, because a shared Docker engine's store view comes from its members.
+=allowNix= requires =allowedDomains = null=: the daemon downloads substitutes and fixed-output derivations over the host network, so an offline goblin with Nix would not be offline. Every goblin that may join a scope with Docker must have the same =allowNix=, because a shared Docker engine's store view comes from its members; other scopes may mix them.
+
+The sandbox's home is private and empty at each start, so Cargo, the Nix fetcher cache and similar caches start empty too. Keep them in scope storage, as the =goblins-dev= demo goblin does (=nix/demo-goblins/scopes.nix=):
+
+#+begin_src nix
+scopes.goblins-dev = mkScope {
+  storage.cargo.path = "$HOME/.cargo";
+  storage.nix-cache.path = "$HOME/.cache/nix";
+};
+goblins.goblins-dev = mkClaudeGoblin {
+  allowNix = true;
+  hostCommands.enable = true;
+  scope = "goblins-dev";
+  allowedChildren = [ "goblins-dev" "claude" "codex" ];
+};
+# Children join their parent's scope, so their configurations allow it:
+goblins.claude = mkClaudeGoblin { allowedScopes = [ "goblins-dev" ]; };
+#+end_src
+
+Don't bind the host's own =~/.cache/nix= instead: a goblin that writes it could change what flake references resolve to for your own Nix commands.
 
 A goblin with Nix uses Nix instead of the Goblins package and dev shell workflows: =request-package=, =devshell diff=, =devshell refresh= and =flake run= are refused with a hint, and a recreated goblin skips its recorded package grants. Starting it in a dev shell (=--dev-shell=) still works. Its agent gets a =goblins-nix= skill instead of =goblins-packages= and =goblins-devshell=; =goblin status= shows =Nix: available=.
 
@@ -203,7 +222,7 @@ goblin host list
 
 The command runs as you, with no shell, in the server's environment plus any =--env KEY=VALUE=, with =GOBLINS_HOST_JOB= set and =TMPDIR= unset. Its directory, the current one or =--cwd=, must be the shared working directory or a directory granted to the goblin, which have the same paths on both sides; the sandbox's private home and =/tmp= are refused. Output goes to =/run/goblins/host-jobs/JOB/output.log= inside the sandbox (read-only, at most 16 MiB per job; the last 8 finished jobs are kept). At most 4 host commands per goblin run at once.
 
-Without =--detach= the command waits for the decision and the job, prints the job's output and exits with the job's exit code (128+N for a signal). 125 means it did not run or its outcome is unknown, 126 and 127 that the command could not be executed or found. Interrupting it, or a detached job's =goblin host cancel=, stops the job. =--detach= returns at once with the request ID, which is also the job ID; an agent goblin gets an operation notice when the job ends or is denied. =goblin host wait= exits like an attached run, or 124 if the job is still running after its =--timeout= (default 540 s).
+Without =--detach= the command waits for the decision and the job, prints the job's output and exits with the job's exit code (128+N for a signal). 125 means it did not run or its outcome is unknown, 126 and 127 that the command could not be executed or found. Interrupting it, or a detached job's =goblin host cancel=, stops the job. =--detach= returns at once with the request ID, which is also the job ID; an agent goblin gets an operation notice when the job ends or is denied. An attached run that delivered its result to the waiting client gets no notice; one whose client went away does. =goblin host wait= exits like an attached run, or 124 if the job is still running after its =--timeout= (default 540 s).
 
 When a job ends, whether its command exits, it is cancelled or times out, or its goblin stops, everything the command started is stopped too, including daemons it left in the background: a subreaper supervisor collects them. If the server dies, its jobs are stopped the same way.
 

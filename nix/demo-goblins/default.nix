@@ -13,13 +13,17 @@ in
     inherit pkgs;
     inherit (builders) mkGoblin;
   };
+  # Unscoped when started directly; as goblins-dev's children they join its
+  # scope.
   codex = builders.mkCodexGoblin {
     pkg = agents.codex;
     allowedPackages = tools;
+    allowedScopes = [ "goblins-dev" ];
   };
   claude = builders.mkClaudeGoblin {
     pkg = agents.claude-code;
     allowedPackages = tools;
+    allowedScopes = [ "goblins-dev" ];
   };
   # For developing Goblins from a goblin: ordinary Nix commands against the
   # host daemon, and approved host commands for the Bubblewrap, namespace and
@@ -31,6 +35,8 @@ in
     allowedPackages = tools;
     allowNix = true;
     hostCommands.enable = true;
+    # Cargo and Nix fetcher caches that outlive the session (scopes.nix).
+    scope = "goblins-dev";
     allowedChildren = [
       "goblins-dev"
       "claude"

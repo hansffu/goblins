@@ -42,8 +42,8 @@ pub(crate) struct Shared {
     pub net: File,
     pub pid: Option<File>,
     online: bool,
-    /// Whether members see the host store: the shared engine's view of it
-    /// comes from its members, so they must agree.
+    /// Whether members see the host store: a shared engine's view of it comes
+    /// from its members, so in a scope with Docker they must agree.
     nix: bool,
     state: Mutex<State>,
     _keeper: Keeper,
@@ -210,8 +210,12 @@ impl Shared {
             )
             .into());
         }
-        if self.nix != launch.allow_nix {
-            return Err(format!("scope '{}' has a different allowNix setting", self.name).into());
+        if self.definition.docker && self.nix != launch.allow_nix {
+            return Err(format!(
+                "scope '{}' has Docker and a different allowNix setting",
+                self.name
+            )
+            .into());
         }
         if launch
             .scope

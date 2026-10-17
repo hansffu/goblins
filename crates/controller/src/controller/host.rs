@@ -325,16 +325,21 @@ impl Controller {
             r.state = state.into();
             r.message = Some(message.clone());
         }
-        // The attached request waits under the request ID.
+        // The attached request waits under the request ID. When it is still
+        // there, the agent gets the result from it and needs no notice too;
+        // a client that went away (say, a tool timeout) leaves the notice.
+        let mut delivered = false;
         for c in &mut self.connections {
             if let Some((waiting, rpc_id)) = &c.waiting
                 && *waiting == job.request
+                && !c.dead
             {
                 c.queue(rpc::result(rpc_id.clone(), result.clone()));
                 c.close = true;
+                delivered = true;
             }
         }
-        self.operation_finished(&job.request, job.notify, Some(message));
+        self.operation_finished(&job.request, job.notify && !delivered, Some(message));
         self.dirty = true;
     }
 
