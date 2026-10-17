@@ -507,13 +507,13 @@ class AllowedChildrenTests(ChildrenFixture):
         self.assertEqual((self.workspace / "seen").read_text(), "0\n")
 
     def test_child_shares_the_parents_dev_shell_generation(self):
-        from test_devshell import FLAKE
+        from test_devshell import TEMPLATE
         nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
                            f'(builtins.getFlake "{FLAKE}").inputs.nixpkgs.outPath'])
         project = self.root / "project"
         project.mkdir()
         flake = lambda marker: (project / "flake.nix").write_text(
-            FLAKE.replace("NIXPKGS", nixpkgs).replace("@MARKER@", marker))
+            TEMPLATE.replace("NIXPKGS", nixpkgs).replace("@MARKER@", marker))
         flake("original")
         command(["nix", "flake", "lock", f"path:{project}"])
         command(["git", "-C", str(project), "init", "-q"])

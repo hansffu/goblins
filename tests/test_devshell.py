@@ -14,7 +14,7 @@ from terminal_support import Terminal
 # A module import, so its DockerTests are not collected here as well.
 import test_docker
 
-FLAKE = """{
+TEMPLATE = """{
   inputs.nixpkgs.url = "path:NIXPKGS";
   outputs = { nixpkgs, ... }:
     let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {
@@ -52,7 +52,7 @@ class DevShellTests(unittest.TestCase):
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
-            FLAKE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker))
+            TEMPLATE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker))
 
     def run_cli(self, *args):
         terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "run", "shell", *args],
@@ -448,7 +448,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
-            FLAKE.replace("NIXPKGS", self.nixpkgs)
+            TEMPLATE.replace("NIXPKGS", self.nixpkgs)
             .replace('DEV_MARKER = "@MARKER@";', "DEV_MARKER = builtins.readFile ../marker;"))
 
     def test_subdirectory_flake_uses_files_outside_its_directory(self):
@@ -515,7 +515,7 @@ class DevShellFlakeRunTests(DevShellRefreshTests):
         super().setUp()
 
     def write_flake(self, marker):
-        flake = FLAKE.replace("let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {",
+        flake = TEMPLATE.replace("let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {",
                               "let pkgs = nixpkgs.legacyPackages.x86_64-linux;\n"
                               "        greet = pkgs.writeShellScriptBin \"greet\" ''echo \"greet:@MARKER@:$*\"'';\n"
                               "    in {")
