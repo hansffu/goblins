@@ -624,7 +624,7 @@ end of the buffer.  Add your own to show more."
         (insert "  none\n")
       (dolist (record (reverse records))
         (insert "  " (goblins--permission-glyph record) " "
-                (propertize (format "%-18s" (goblins--safe (plist-get record :package)))
+                (propertize (format "%-18s" (goblins--request-subject record))
                             'face 'goblins-key)
                 (goblins--safe (plist-get record :state))
                 (let ((kind (plist-get record :kind)))
@@ -758,7 +758,7 @@ end of the buffer.  Add your own to show more."
 (defun goblins--permission-heading (record)
   (format "  %s %s  %s%s"
           (goblins--permission-glyph record)
-          (propertize (goblins--safe (plist-get record :package)) 'font-lock-face 'goblins-key)
+          (propertize (goblins--request-subject record) 'font-lock-face 'goblins-key)
           (propertize (goblins--permission-outcome record) 'font-lock-face 'goblins-dim)
           (let ((kind (plist-get record :kind)))
             (if (member kind '(nil "package")) ""
@@ -966,7 +966,35 @@ has gone).")
     (insert "    " (propertize (goblins--safe file) 'face 'goblins-key) "\n"))
   (insert (propertize "a open   d refuse   q later" 'face 'goblins-dim)))
 
+(defun goblins--popup-insert-host-command (session pending)
+  "The popup for a host command: each part on its own field, the command
+wrapped instead of one long heading."
+  (let* ((record (car pending))
+         (lines (split-string (or (plist-get (plist-get record :preview) :description) "")
+                              "\n" t)))
+    (insert (propertize (goblins--safe (or (plist-get session :agent_name)
+                                           (plist-get record :agent_name)))
+                        'face 'bold)
+            " asks to run a command on the host"
+            (goblins--waiting (length pending))
+            "\n")
+    ;; "Runs on the host as you, ..." first, then "Command: ...", "Directory: ...".
+    (dolist (line (cdr lines))
+      (if (string-match "\\`\\([^:]+:\\) \\(.*\\)\\'" line)
+          (goblins--wrapped-field (match-string 1 line) (match-string 2 line))
+        (goblins--wrapped-field "" line)))
+    (goblins--wrapped-field "Reason:" (plist-get record :reason))
+    (when lines
+      (insert "    " (propertize (goblins--safe (car lines)) 'face 'goblins-dim) "\n"))
+    (insert (propertize "a accept   d deny   p all requests   q close" 'face 'goblins-dim))))
+
 (defun goblins--popup-insert-request (session pending)
+  (if (and (equal (plist-get (car pending) :kind) "host-command")
+           (plist-get (plist-get (car pending) :preview) :description))
+      (goblins--popup-insert-host-command session pending)
+    (goblins--popup-insert-permission session pending)))
+
+(defun goblins--popup-insert-permission (session pending)
   (let ((record (car pending)))
     (insert (propertize (goblins--safe (or (plist-get session :agent_name)
                                            (plist-get record :agent_name)))
@@ -1238,7 +1266,7 @@ while `goblins-attention-mode' is on."
   "Announce the permission request RECORD in the echo area."
   (message "Goblins: %s asks for %s — %s"
            (goblins--safe (plist-get record :agent_name))
-           (goblins--safe (plist-get record :package))
+           (goblins--request-subject record)
            (goblins--safe (plist-get record :reason))))
 
 (defun goblins--pending-total ()

@@ -4128,3 +4128,31 @@ m2, and m3, which failed when beta stopped."
         (goblins--messages-render)
         (should (= (window-point one) (goblins--messages-position 'goblins-message "i-x10")))
         (should (= (window-point two) (goblins--messages-position 'goblins-message "i-x50")))))))
+
+;; A host command's approval lists its parts as fields, the command wrapped
+;; to the window with every character kept, instead of one long heading.
+(ert-deftest goblins-host-command-requests-wrap-instead-of-one-long-heading ()
+  (let* ((command (concat "bash -c 'echo \"ON-HOST  in $PWD\"; " (make-string 150 ?x) "'"))
+         (record (list :kind "host-command" :agent_name "zazzik" :reason "verify"
+                       :package (concat command " (in /home/u/project)") :state "pending"
+                       :preview (list :kind "host-command"
+                                      :description (concat "Runs on the host as you, outside the sandbox.\n"
+                                                           "Command: " command "\n"
+                                                           "Directory: /home/u/project\n"
+                                                           "Time limit: none")))))
+    (with-temp-buffer
+      (goblins--popup-insert-request nil (list record))
+      (let ((text (buffer-string)))
+        (should (string-match-p "\\`zazzik asks to run a command on the host\n" text))
+        (should (string-match-p "^    Directory:  /home/u/project$" text))
+        (should (string-match-p "^    Time limit: none$" text))
+        (should (string-match-p "^    Reason:     verify$" text))
+        (should (string-match-p "^    Runs on the host as you" text))
+        (should (cl-every (lambda (line) (<= (length line) 100)) (split-string text "\n")))
+        (string-match "^    Command:    \\([^\0]*?\\)\n    Directory:" text)
+        (should (equal (mapconcat (lambda (line) (substring line (min 16 (length line))))
+                                  (split-string (concat (make-string 16 ?\s) (match-string 1 text)) "\n")
+                                  "")
+                       command))))
+    (should (<= (length (goblins--request-subject record)) 60))
+    (should (equal (goblins--request-subject (list :kind "package" :package "jq")) "jq"))))

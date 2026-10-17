@@ -316,6 +316,32 @@ all other files in a collapsed section of their own."
 (defun goblins--field (label value)
   (insert (format "    %-12s%s\n" label (goblins--safe value))))
 
+(defun goblins--wrapped-field (label value)
+  "Insert a field like `goblins--field', VALUE wrapped to the window.
+Long values such as host commands break at spaces where they can, and
+continue under the value; no character of VALUE is changed or dropped."
+  (let* ((indent (make-string 16 ?\s))
+         (window (get-buffer-window (current-buffer) t))
+         (width (max 20 (- (if window (window-body-width window) 100) 17)))
+         (rest (goblins--safe value))
+         (first t))
+    (while (or first (not (string-empty-p rest)))
+      (let ((cut (if (<= (length rest) width)
+                     (length rest)
+                   (let ((space (cl-position ?\s rest :end width :from-end t)))
+                     (if (and space (> space 0)) (1+ space) width)))))
+        (insert (if first (format "    %-12s" label) indent)
+                (substring rest 0 cut) "\n")
+        (setq rest (substring rest cut) first nil)))))
+
+(defun goblins--request-subject (record)
+  "What RECORD asks for, on one line.  A host command is cut to 60
+characters: its approval shows it whole."
+  (let ((subject (goblins--safe (plist-get record :package))))
+    (if (equal (plist-get record :kind) "host-command")
+        (truncate-string-to-width subject 60 nil nil "…")
+      subject)))
+
 (defun goblins--awaiting-preview-p (record)
   "Whether RECORD is a dev shell refresh whose preview is not ready yet."
   (and (equal (plist-get record :kind) "devshell")
@@ -331,7 +357,7 @@ HIDE starts it folded and HEADING replaces the default heading text."
       (or heading
           (format "  %s  %s  [%s]"
                   (goblins--request-agent-label record)
-                  (goblins--safe (plist-get record :package))
+                  (goblins--request-subject record)
                   (goblins--safe (plist-get record :state)))))
     (when details
       (goblins--field "Reason:" (plist-get record :reason))
@@ -349,9 +375,9 @@ HIDE starts it folded and HEADING replaces the default heading text."
                                     (or (plist-get preview :download) "unknown")
                                     (if (eq (plist-get preview :build_required) t) "yes" "no"))))
                       "\n")))
-          (goblins--field "Preview:" (car lines))
+          (goblins--wrapped-field "Preview:" (car lines))
           (dolist (line (cdr lines))
-            (goblins--field "" line))))
+            (goblins--wrapped-field "" line))))
       (when (goblins--awaiting-preview-p record)
         (goblins--field "Preview:" "evaluating the refresh; its preview follows"))
       (when-let* ((message (plist-get record :message)))
@@ -867,7 +893,7 @@ request ID as the `goblins-request' property."
               (let* ((label (format "%s: %s"
                                     (goblins--session-label goblins--snapshot
                                                             (plist-get record :session))
-                                    (goblins--safe (plist-get record :package))))
+                                    (goblins--request-subject record)))
                      (count (puthash label (1+ (gethash label seen 0)) seen)))
                 (propertize (if (> count 1) (format "%s <%d>" label count) label)
                             'goblins-request (plist-get record :id))))
