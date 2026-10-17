@@ -247,8 +247,10 @@ class HostCommandTests(unittest.TestCase):
         # Approval views keep working, and every accepted request is complete.
         snapshot = self.d.host().call("state.subscribe", {})["snapshot"]
         records = {r["id"]: r for r in snapshot["permissions"]}
+        # Shown whole: each apostrophe quoted as '\'' by the display quoting.
+        whole = "true '" + "'\\''" * 6000 + "'"
         for r in accepted:
-            self.assertIn("'" * 50, records[r["request"]]["preview"]["command"])
+            self.assertEqual(records[r["request"]]["preview"]["command"], whole)
         self.assertLess(len(json.dumps(snapshot)), 1024 * 1024)
 
     def test_a_goblin_without_host_commands_cannot_ask(self):
