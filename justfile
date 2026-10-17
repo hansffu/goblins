@@ -1,5 +1,5 @@
-# Open the user's Emacs from the dev shell, with this checkout's elisp on the
-# load-path.  The dev shell's `goblins' comes first on PATH, so Emacs runs the
-# packaged-from-source CLI instead of the installed one.
+# Open the user's Emacs with this checkout's elisp on the load-path and its
+# demo goblins as the CLI: `goblins-executable' is the dev-goblins package,
+# which is not on the dev shell's PATH.
 emacs *args:
-    nix develop -c emacs --eval "(progn (add-to-list 'load-path \"{{justfile_directory()}}/emacs\") (require 'goblins-workspace))" {{args}}
+    goblins=$(nix build --no-link --print-out-paths .#dev-goblins) && nix develop -c emacs --eval "(progn (add-to-list 'load-path \"{{justfile_directory()}}/emacs\") (setq goblins-executable \"$goblins/bin/goblins\") (require 'goblins-workspace))" {{args}}

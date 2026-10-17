@@ -3,8 +3,9 @@
   goblinsLib,
   sandbox,
   agents,
-  # The demo goblins the dev shell and the Python tests use.
+  # The demo goblins the Python tests use.
   demo,
+  devShell,
 }:
 let
   inherit (goblinsLib.builders)
@@ -273,6 +274,10 @@ in
       };
     };
   demo-goblins = demo;
+  # Inside a goblin, `nix develop` must not put a host `goblins` on PATH.
+  dev-shell-without-goblins =
+    assert !builtins.any (p: pkgs.lib.getName p == "goblins") devShell.nativeBuildInputs;
+    pkgs.runCommand "goblins-dev-shell-without-goblins" { } "touch $out";
   runtime-no-python =
     let
       minimal = mkGoblins { goblins.shell = mkGoblin (base // { allowedPackages = [ ]; }); };

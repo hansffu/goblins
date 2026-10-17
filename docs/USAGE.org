@@ -2,10 +2,10 @@
 
 * Start the daemon and frontends
 
-Install a =goblins= built with =mkGoblins= (see [[file:../README.org::*Install][Install]]), or, from a checkout, enter the development shell, whose =goblins= has the demo configurations:
+Install a =goblins= built with =mkGoblins= (see [[file:../README.org::*Install][Install]]), or, from a checkout, use the =dev-goblins= package, whose =goblins= has the demo configurations:
 
 #+begin_src sh
-nix develop path:.
+nix shell path:.#dev-goblins
 goblins server start
 #+end_src
 
@@ -267,11 +267,11 @@ attached, and to run =goblins enable-docker= instead of concluding that the
 sandbox has no Docker.
 
 For automatic startup, set =mkGoblin { docker.enable = true; ... }= (default
-false). The development environment enables it for the Fish shell, in a
+false). The =dev-goblins= package enables it for the Fish shell, in a
 temporary =dev= scope:
 
 #+begin_src sh
-nix develop
+nix shell .#dev-goblins
 goblins server start
 goblins run shell
 #+end_src
@@ -281,7 +281,7 @@ development environment. To keep the Docker experiment apart from your own
 server, give it a private state directory:
 
 #+begin_src sh
-nix develop
+nix shell .#dev-goblins
 goblins --state-dir /tmp/my-docker-goblins server start
 goblins --state-dir /tmp/my-docker-goblins run shell
 # Inside the shell:

@@ -31,19 +31,19 @@ Accepted decisions:
 
 * Build and run from a checkout
 
-The root flake provides the builders (=lib=) and a development shell for x86_64-linux, with nixpkgs, agent-sandbox.nix and llm-agents.nix pinned in =flake.lock=. It has no =goblins= package: users build theirs with =mkGoblins= and their own configurations.
+The root flake provides the builders (=lib=) and a development shell for x86_64-linux, with nixpkgs, agent-sandbox.nix and llm-agents.nix pinned in =flake.lock=. Its =dev-goblins= package is a =goblins= with demo configurations for trying and testing the checkout; users build theirs with =mkGoblins= and their own configurations.
 
 #+begin_src sh
-nix develop path:.
+nix shell path:.#dev-goblins
 goblins server start
 goblins tui
-# In another terminal, also in the dev shell:
+# In another terminal, also in that shell:
 goblins run shell
 #+end_src
 
-=nix develop path:.= puts a =goblins= built from the checkout and the build tools on =PATH=. Its configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex= (with Fish among their tools, for =goblins-shell-program=); =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. The Python tests' daemon uses the same demo goblins without Docker or the editor, built as =checks.x86_64-linux.demo-goblins=. The explicit =path:.= also includes uncommitted source files. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
+=nix shell path:.#dev-goblins= puts a =goblins= built from the checkout on =PATH=. The development shell (=nix develop=) has only the build tools: inside a goblin, a =goblins= there would shadow the sandbox's own CLI. The package's configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex= (with Fish among their tools, for =goblins-shell-program=); =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. The Python tests' daemon uses the same demo goblins without Docker or the editor, built as =checks.x86_64-linux.demo-goblins=. The explicit =path:.= also includes uncommitted source files. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
 
-=just emacs= opens Emacs from the dev shell with this checkout's =emacs/= on the load path, so it uses the dev shell's =goblins=.
+=just emacs= opens Emacs from the dev shell with this checkout's =emacs/= on the load path and =goblins-executable= set to the =dev-goblins= package.
 
 * Test
 

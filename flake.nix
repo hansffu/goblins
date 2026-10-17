@@ -55,29 +55,8 @@
           shell = dockerShell;
         };
       };
-    in
-    {
-      lib.${system} = goblinsLib;
-      packages.${system} = {
-        inherit (demo) helper;
-      }
-      // import ./tests/fixtures.nix {
-        inherit pkgs sandbox;
-        inherit (demo) helper;
-      };
-      checks.${system} = import ./tests/checks.nix {
-        inherit
-          pkgs
-          goblinsLib
-          sandbox
-          demo
-          ;
-        agents = llm-agents.packages.${system};
-      };
-      formatter.${system} = pkgs.nixfmt;
-      devShells.${system}.default = pkgs.mkShell {
+      devShell = pkgs.mkShell {
         packages = [
-          devGoblins
           pkgs.rustc
           pkgs.cargo
           pkgs.rustfmt
@@ -91,6 +70,32 @@
           pkgs.zsh
         ];
       };
+    in
+    {
+      lib.${system} = goblinsLib;
+      packages.${system} = {
+        inherit (demo) helper;
+        # The demo goblins, for trying and testing a checkout (`just emacs`).
+        # Not in the dev shell: inside a goblin, `nix develop` would put this
+        # host CLI ahead of the sandbox's own `goblin`.
+        dev-goblins = devGoblins;
+      }
+      // import ./tests/fixtures.nix {
+        inherit pkgs sandbox;
+        inherit (demo) helper;
+      };
+      checks.${system} = import ./tests/checks.nix {
+        inherit
+          pkgs
+          goblinsLib
+          sandbox
+          demo
+          devShell
+          ;
+        agents = llm-agents.packages.${system};
+      };
+      formatter.${system} = pkgs.nixfmt;
+      devShells.${system}.default = devShell;
       # Only validated attributes from this pinned package set are requestable.
       legacyPackages.${system} = pkgs;
     };
