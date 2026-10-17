@@ -205,7 +205,7 @@ A goblin with Nix uses Nix instead of the Goblins package and dev shell workflow
 
 Links made by =nix build= in the shared working directory are ordinary GC roots on the host. The sandbox's own =/tmp= and home are private, so a =result= link there leaves its output unrooted. Children with another configuration get that configuration's store view.
 
-The sandbox acts as the host user towards the daemon. If that user is in =trusted-users=, so is the goblin.
+The sandbox acts as the host user towards the daemon. If that user is in =trusted-users=, which Nix documents as essentially equivalent to root access, so is the goblin, without any approval: it can import unsigned store paths and set daemon options, such as hooks the daemon runs as root. Use =allowNix= only for goblins you would give that, or keep your user out of =trusted-users=.
 
 * Host commands
 
@@ -220,11 +220,11 @@ goblin host status|logs [--follow]|wait [--timeout S]|cancel JOB
 goblin host list
 #+end_src
 
-The command runs as you, with no shell, in the server's environment plus any =--env KEY=VALUE=, with =GOBLINS_HOST_JOB= set and =TMPDIR= unset. Its directory, the current one or =--cwd=, must be the shared working directory or a directory granted to the goblin, which have the same paths on both sides; the sandbox's private home and =/tmp= are refused. Output goes to =/run/goblins/host-jobs/JOB/output.log= inside the sandbox (read-only, at most 16 MiB per job; the last 8 finished jobs are kept). At most 4 host commands per goblin run at once.
+Approving a command approves whatever the files it reads say, such as scripts, build files and tests in the shared directory, which the goblin can change at any time. The command runs as you, with no shell, in the server's environment plus any =--env KEY=VALUE= (for the command only, not its supervisor), with =GOBLINS_HOST_JOB= set and =TMPDIR= unset. Its directory, the current one or =--cwd=, must be the shared working directory or a directory granted to the goblin, which have the same paths on both sides; the sandbox's private home and =/tmp= are refused. Output goes to =/run/goblins/host-jobs/JOB/output.log= inside the sandbox (read-only, at most 16 MiB per job; the last 8 finished jobs are kept). At most 4 host commands per goblin run at once.
 
 Without =--detach= the command waits for the decision and the job, prints the job's output and exits with the job's exit code (128+N for a signal). 125 means it did not run or its outcome is unknown, 126 and 127 that the command could not be executed or found. Interrupting it, or a detached job's =goblin host cancel=, stops the job. =--detach= returns at once with the request ID, which is also the job ID; an agent goblin gets an operation notice when the job ends or is denied. An attached run that delivered its result to the waiting client gets no notice; one whose client went away does. =goblin host wait= exits like an attached run, or 124 if the job is still running after its =--timeout= (default 540 s).
 
-When a job ends, whether its command exits, it is cancelled or times out, or its goblin stops, everything the command started is stopped too, including daemons it left in the background: a subreaper supervisor collects them. If the server dies, its jobs are stopped the same way.
+When a job ends, whether its command exits, it is cancelled or times out, or its goblin stops, everything the command started is stopped too, including daemons it left in the background: a subreaper supervisor collects them. Processes it hands to other services, such as =systemd-run --user=, are not its own and keep running. If the server dies, its jobs are stopped the same way.
 
 Inside a host command, the host =goblins= CLI refuses to use its default server without =--state-dir=, since that server runs the goblin that asked. Tests that start their own server with =--state-dir=, as the Python test helpers do, work. Codex and Claude Code goblins with host commands get a =goblins-host= skill; =goblin status= shows =Host commands: available after approval=.
 

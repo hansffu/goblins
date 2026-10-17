@@ -20,4 +20,4 @@ A goblin starts with a fixed closure and asks for anything else through package 
 
 ## Consequences
 
-The goblin can read and run anything in the host store, and acts as the host user towards the daemon, with that user's trust. Builds go through the daemon's own sandbox. `result` links in the shared working directory are host GC roots; links in the sandbox's private `/tmp` or home are not. The full plan, including what remains to verify, is `docs/specs/NIX-AND-HOST-COMMANDS.org`.
+The goblin can read and run anything in the host store, and acts as the host user towards the daemon. If that user is in `trusted-users`, which Nix documents as essentially equivalent to root, so is the goblin: it can import unsigned store paths and set daemon options without any approval. Even untrusted, it can build, fetch over the host network and fill the store. Builds go through the daemon's own sandbox. `result` links in the shared working directory are host GC roots; links in the sandbox's private `/tmp` or home are not. The full plan, including what remains to verify, is `docs/specs/NIX-AND-HOST-COMMANDS.org`.

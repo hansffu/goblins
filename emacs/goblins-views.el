@@ -968,29 +968,33 @@ has gone).")
 
 (defun goblins--popup-insert-host-command (session pending)
   "The popup for a host command: each part on its own field, the command
-wrapped instead of one long heading."
+wrapped instead of one long heading.  The fields come from the preview's
+structured values, which the daemon escaped: no request text can add a
+line or a field."
   (let* ((record (car pending))
-         (lines (split-string (or (plist-get (plist-get record :preview) :description) "")
-                              "\n" t)))
+         (preview (plist-get record :preview))
+         (description (or (plist-get preview :description) "")))
     (insert (propertize (goblins--safe (or (plist-get session :agent_name)
                                            (plist-get record :agent_name)))
                         'face 'bold)
             " asks to run a command on the host"
             (goblins--waiting (length pending))
             "\n")
-    ;; "Runs on the host as you, ..." first, then "Command: ...", "Directory: ...".
-    (dolist (line (cdr lines))
-      (if (string-match "\\`\\([^:]+:\\) \\(.*\\)\\'" line)
-          (goblins--wrapped-field (match-string 1 line) (match-string 2 line))
-        (goblins--wrapped-field "" line)))
+    (goblins--wrapped-field "Command:" (plist-get preview :command))
+    (goblins--wrapped-field "Directory:" (plist-get preview :directory))
+    (seq-doseq (variable (plist-get preview :environment))
+      (goblins--wrapped-field "Variable:" variable))
+    (goblins--wrapped-field "Time limit:" (plist-get preview :time_limit))
     (goblins--wrapped-field "Reason:" (plist-get record :reason))
-    (when lines
-      (insert "    " (propertize (goblins--safe (car lines)) 'face 'goblins-dim) "\n"))
+    ;; The daemon's warning, its first line.
+    (insert "    " (propertize (goblins--safe (car (split-string description "\n")))
+                               'face 'goblins-dim)
+            "\n")
     (insert (propertize "a accept   d deny   p all requests   q close" 'face 'goblins-dim))))
 
 (defun goblins--popup-insert-request (session pending)
   (if (and (equal (plist-get (car pending) :kind) "host-command")
-           (plist-get (plist-get (car pending) :preview) :description))
+           (plist-get (plist-get (car pending) :preview) :command))
       (goblins--popup-insert-host-command session pending)
     (goblins--popup-insert-permission session pending)))
 

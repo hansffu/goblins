@@ -218,6 +218,40 @@ class HostCommandTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.d.get(session)["state"], "running")
 
+    def test_requests_are_shown_whole_or_refused_and_views_stay_healthy(self):
+        parent, _ = self.launch()
+        peer = RPC(self.d.state / parent / "resources/request.sock")
+        self.addCleanup(peer.close)
+        sessions = [parent]
+        for i in range(12):
+            child = peer.call("sessions.start", {"key": f"c{i}", "name": "host", "agent_name": f"kid{i}", "detached": True})["session"]
+            sessions.append(child)
+        self.d.wait(lambda: all(self.d.get(s)["state"] == "running" for s in sessions), timeout=120)
+
+        def request(session, quotes):
+            client = RPC(self.d.state / session / "resources/request.sock")
+            try:
+                return client.call("permissions.request", {"kind": "host-command", "reason": "size", "host": {
+                    "argv": ["true", "'" * quotes], "cwd": str(self.project), "detach": True}})
+            except ValueError as error:
+                return error.args[0]
+            finally:
+                client.close()
+        # Too long to show whole: refused, never cut.
+        self.assertIn("too long to show", str(request(sessions[0], 12000)))
+        # Each fits on its own; together they would overflow approval views.
+        results = [request(s, 6000) for s in sessions]
+        accepted = [r for r in results if "request" in r]
+        refused = [r for r in results if "request" not in r]
+        self.assertTrue(accepted and refused, results)
+        self.assertTrue(all("too many large requests" in str(r) for r in refused), refused)
+        # Approval views keep working, and every accepted request is complete.
+        snapshot = self.d.host().call("state.subscribe", {})["snapshot"]
+        records = {r["id"]: r for r in snapshot["permissions"]}
+        for r in accepted:
+            self.assertIn("'" * 50, records[r["request"]]["preview"]["command"])
+        self.assertLess(len(json.dumps(snapshot)), 1024 * 1024)
+
     def test_a_goblin_without_host_commands_cannot_ask(self):
         session, terminal = self.launch("plain")
         output, code = self.run_in(terminal, "goblin host run --reason no -- true")

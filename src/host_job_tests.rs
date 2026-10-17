@@ -129,3 +129,39 @@ fn a_failing_log_still_stops_the_job() {
     assert!(!dir.join("status.json").exists());
     assert!(!alive(&dir, "command.pid"));
 }
+
+/// The request's variables reach the command, not the supervisor, so an
+/// override such as LD_PRELOAD cannot take over supervision.
+#[test]
+fn request_variables_reach_only_the_command() {
+    let dir = directory("env");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_goblins-mount-helper"));
+    let mut job = command
+        .arg("--host-job")
+        .arg(dir.join("output.log"))
+        .arg(dir.join("status.json"))
+        .args([
+            "65536",
+            "0",
+            "--env",
+            "GOBLINS_TEST_MARK",
+            "for the command",
+        ])
+        .args([
+            "--",
+            "sh",
+            "-c",
+            "echo \"MARK=$GOBLINS_TEST_MARK\"; sleep 1",
+        ])
+        .current_dir(&dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let supervisor = fs::read(format!("/proc/{}/environ", job.id())).unwrap();
+    assert!(!String::from_utf8_lossy(&supervisor).contains("GOBLINS_TEST_MARK"));
+    assert!(finished(&mut job, Duration::from_secs(8)).success());
+    let output = fs::read_to_string(dir.join("output.log")).unwrap();
+    assert!(output.contains("MARK=for the command"), "{output}");
+}

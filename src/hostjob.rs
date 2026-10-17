@@ -5,7 +5,11 @@
 //! collects every process the command leaves behind, and stops them whenever
 //! the job ends, also after a normal exit, before it reports the outcome.
 //!
-//! goblins-mount-helper --host-job LOG STATUS LIMIT TIMEOUT -- ARGV...
+//! goblins-mount-helper --host-job LOG STATUS LIMIT TIMEOUT [--env KEY VALUE]... -- ARGV...
+//!
+//! The request's environment overrides reach the command only: the
+//! supervisor runs with the daemon's environment, so an override such as
+//! LD_PRELOAD cannot take over supervision or the reported outcome.
 use super::{cvt, pipe};
 use std::{
     fs::{self, File, OpenOptions},
@@ -222,15 +226,27 @@ fn stop_all(group: i32, deadline: Instant) {
 
 pub fn run() -> io::Result<i32> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 8 || args[6] != "--" {
-        return Err(io::Error::other(
-            "usage: --host-job LOG STATUS LIMIT TIMEOUT -- ARGV...",
-        ));
+    let usage = || {
+        io::Error::other(
+            "usage: --host-job LOG STATUS LIMIT TIMEOUT [--env KEY VALUE]... -- ARGV...",
+        )
+    };
+    if args.len() < 8 {
+        return Err(usage());
     }
     let (log, status) = (Path::new(&args[2]), Path::new(&args[3]));
     let limit: u64 = args[4].parse().map_err(io::Error::other)?;
     let timeout: u64 = args[5].parse().map_err(io::Error::other)?;
-    let argv = &args[7..];
+    let mut env = Vec::new();
+    let mut rest = &args[6..];
+    while rest.first().is_some_and(|a| a == "--env") && rest.len() >= 3 {
+        env.push((&rest[1], &rest[2]));
+        rest = &rest[3..];
+    }
+    if rest.len() < 2 || rest[0] != "--" {
+        return Err(usage());
+    }
+    let argv = &rest[1..];
     cvt(unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) })?;
     for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
         unsafe { libc::signal(signal, stop as *const () as libc::sighandler_t) };
@@ -256,6 +272,7 @@ pub fn run() -> io::Result<i32> {
     let mut command = Command::new(&argv[0]);
     command
         .args(&argv[1..])
+        .envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::from(write.try_clone()?))
         .stderr(Stdio::from(write))

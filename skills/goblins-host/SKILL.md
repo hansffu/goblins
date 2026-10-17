@@ -60,7 +60,8 @@ An attached run that delivered its result gets no notice; if it was
 interrupted or its connection was lost, the notice reports the outcome.
 
 Ending a job, or this goblin stopping, stops every process the command
-started, including daemons it left in the background.
+started, including daemons it left in the background, but not processes
+handed to user services such as `systemd-run --user`; don't do that.
 
 `bwrap` may be on your PATH (the Claude Code package brings it), but it
 cannot create namespaces in this sandbox: use a host command instead.

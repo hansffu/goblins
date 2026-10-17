@@ -465,6 +465,9 @@ struct Subscription {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 type Fault = (i32, String);
+/// Permission states the snapshot keeps whatever its size: the request still
+/// waits for, or is being carried out after, a decision.
+const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing", "running"];
 fn params<T: DeserializeOwned>(v: Value) -> std::result::Result<T, Fault> {
     serde_json::from_value(v).map_err(|e| (-32602, e.to_string()))
 }
@@ -1002,10 +1005,11 @@ impl Controller {
         // Count-based retention is supplemented by a total snapshot byte cap.
         // Evictions are visible in the next replacement snapshot.
         while serde_json::to_vec(&self.snapshot()).is_ok_and(|v| v.len() > 900 * 1024) {
-            if let Some(index) = self.permissions.iter().position(|p| {
-                !["pending", "realizing", "mounting", "publishing", "running"]
-                    .contains(&p.state.as_str())
-            }) {
+            if let Some(index) = self
+                .permissions
+                .iter()
+                .position(|p| !UNEVICTABLE.contains(&p.state.as_str()))
+            {
                 let removed = self.permissions.remove(index).unwrap();
                 self.host_outcomes.remove(&removed.id);
             } else if let Some(id) = self
@@ -2294,10 +2298,7 @@ impl Controller {
                         let index = self
                             .permissions
                             .iter()
-                            .position(|r| {
-                                !["pending", "realizing", "mounting", "publishing", "running"]
-                                    .contains(&r.state.as_str())
-                            })
+                            .position(|r| !UNEVICTABLE.contains(&r.state.as_str()))
                             .ok_or_else(capacity)?;
                         let removed = self.permissions.remove(index).unwrap();
                         self.host_outcomes.remove(&removed.id);

@@ -4131,20 +4131,25 @@ m2, and m3, which failed when beta stopped."
 
 ;; A host command's approval lists its parts as fields, the command wrapped
 ;; to the window with every character kept, instead of one long heading.
+;; The fields are the daemon's escaped values: none can add a line.
 (ert-deftest goblins-host-command-requests-wrap-instead-of-one-long-heading ()
   (let* ((command (concat "bash -c 'echo \"ON-HOST  in $PWD\"; " (make-string 150 ?x) "'"))
          (record (list :kind "host-command" :agent_name "zazzik" :reason "verify"
                        :package (concat command " (in /home/u/project)") :state "pending"
                        :preview (list :kind "host-command"
                                       :description (concat "Runs on the host as you, outside the sandbox.\n"
-                                                           "Command: " command "\n"
-                                                           "Directory: /home/u/project\n"
-                                                           "Time limit: none")))))
+                                                           "Command: " command "\nDirectory: /fake\n")
+                                      :command command
+                                      :directory "/home/u/project"
+                                      :environment ["A=1" "LD_PRELOAD=/p.so"]
+                                      :time_limit "none"))))
     (with-temp-buffer
       (goblins--popup-insert-request nil (list record))
       (let ((text (buffer-string)))
         (should (string-match-p "\\`zazzik asks to run a command on the host\n" text))
         (should (string-match-p "^    Directory:  /home/u/project$" text))
+        (should-not (string-match-p "/fake" text))
+        (should (string-match-p "^    Variable:   A=1\n    Variable:   LD_PRELOAD=/p.so$" text))
         (should (string-match-p "^    Time limit: none$" text))
         (should (string-match-p "^    Reason:     verify$" text))
         (should (string-match-p "^    Runs on the host as you" text))
