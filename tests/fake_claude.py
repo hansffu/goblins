@@ -12,7 +12,7 @@ import time
 import tty
 import uuid
 
-CLI = "/run/goblins/bin/goblins"
+CLI = "/run/goblins/bin/goblin"
 PROMPT = "Check your Goblins inbox and process the next item."
 COMPOSER = os.environ.get("GOBLINS_TEST_COMPOSER", "› ")
 

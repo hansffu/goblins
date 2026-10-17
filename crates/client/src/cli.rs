@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[derive(Parser)]
 #[command(
-    name = "goblins",
+    name = "goblin",
     about = "Manage descendant sandboxes and request packages"
 )]
 pub struct Cli {
@@ -52,7 +52,7 @@ pub enum FlakeCommand {
 pub enum EditorCommand {
     /// Open files in the host's editor; waits until it is done with all of them
     #[command(
-        override_usage = "goblins editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]..."
+        override_usage = "goblin editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]..."
     )]
     Open {
         /// [--no-wait] [+LINE[:COL]] FILE...; a position applies to the next file
@@ -310,7 +310,7 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
 }
 pub fn completions(shell: clap_complete::Shell) {
     let mut bytes = Vec::new();
-    clap_complete::generate(shell, &mut Cli::command(), "goblins", &mut bytes);
+    clap_complete::generate(shell, &mut Cli::command(), "goblin", &mut bytes);
     let mut script = String::from_utf8(bytes).unwrap();
     let hook = match shell {
         clap_complete::Shell::Bash => Some(
@@ -338,18 +338,18 @@ pub fn completions(shell: clap_complete::Shell) {
         _ => None,
     };
     if let Some(hook) = hook {
-        script = script.replacen("_goblins() {", &format!("_goblins() {{{hook}"), 1);
+        script = script.replacen("_goblin() {", &format!("_goblin() {{{hook}"), 1);
     }
     print!("{script}");
     if shell == clap_complete::Shell::Fish {
         println!(
             r#"
-function __fish_goblins_subtree_candidates
+function __fish_goblin_subtree_candidates
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblins -f -a '(__fish_goblins_subtree_candidates)'
-complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_subtree_candidates)'
+complete -c goblin -f -a '(__fish_goblin_subtree_candidates)'
+complete -c goblin -n '__fish_goblin_using_subcommand run' -l parent -r -f -a '(__fish_goblin_subtree_candidates)'
 "#
         );
     }
@@ -362,18 +362,18 @@ mod tests {
     fn restricted_commands_and_completion_positions() {
         Cli::command().debug_assert();
         for args in [
-            vec!["goblins", "rpc", "server.stop", "{}"],
-            vec!["goblins", "run", "shell", "--runtime", "/tmp/manifest"],
+            vec!["goblin", "rpc", "server.stop", "{}"],
+            vec!["goblin", "run", "shell", "--runtime", "/tmp/manifest"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
         assert_eq!(
-            slot(["goblins", "run"].map(String::from).to_vec()),
+            slot(["goblin", "run"].map(String::from).to_vec()),
             Some(false)
         );
         assert_eq!(
             slot(
-                ["goblins", "run", "shell", "--parent"]
+                ["goblin", "run", "shell", "--parent"]
                     .map(String::from)
                     .to_vec()
             ),
@@ -381,34 +381,34 @@ mod tests {
         );
         assert_eq!(
             slot(
-                ["goblins", "run", "shell", "--name"]
+                ["goblin", "run", "shell", "--name"]
                     .map(String::from)
                     .to_vec()
             ),
             None
         );
-        assert!(Cli::try_parse_from(["goblins", "run", "shell", "--detatched"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "attach", "child"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "status"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "detach"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "detatch"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--detatched"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "attach", "child"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "detach"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "detatch"]).is_err());
         assert_eq!(
-            slot(["goblins", "attach"].map(String::from).to_vec()),
+            slot(["goblin", "attach"].map(String::from).to_vec()),
             Some(true)
         );
         assert_eq!(
-            slot(["goblins", "raid", "invite"].map(String::from).to_vec()),
+            slot(["goblin", "raid", "invite"].map(String::from).to_vec()),
             Some(true)
         );
-        assert!(Cli::try_parse_from(["goblins", "raid", "invite"]).is_err());
-        assert!(Cli::try_parse_from(["goblins", "raid", "set-role"]).is_err());
-        assert!(Cli::try_parse_from(["goblins", "run", "shell", "--inherit-raid"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "variable", "set"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "raid", "invite"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "raid", "set-role"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--inherit-raid"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "variable", "set"]).is_err());
         assert!(
-            Cli::try_parse_from(["goblins", "variable", "set", "a=1", "name=two words"]).is_ok()
+            Cli::try_parse_from(["goblin", "variable", "set", "a=1", "name=two words"]).is_ok()
         );
         assert!(matches!(
-            Cli::try_parse_from(["goblins", "editor", "open", "--no-wait", "+3:4", "a"])
+            Cli::try_parse_from(["goblin", "editor", "open", "--no-wait", "+3:4", "a"])
                 .unwrap()
                 .command,
             Command::Editor { command: EditorCommand::Open { args } } if args.len() == 3

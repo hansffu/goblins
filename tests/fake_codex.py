@@ -15,7 +15,7 @@ import tty
 if 'Wire' not in globals():
     from codex_wire import Wire
 
-CLI = '/run/goblins/bin/goblins'
+CLI = '/run/goblins/bin/goblin'
 PROMPT = 'Check your Goblins inbox and process the next item.'
 
 def cli(*args):

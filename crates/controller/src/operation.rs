@@ -92,7 +92,7 @@ pub fn notice(
     let detail = message.map(|m| format!(": {m}")).unwrap_or_default();
     format!(
         "Goblins operation {request}: {what} {outcome}{detail}.\n\
-         This notice needs no reply. Complete it with goblins inbox complete, then \
+         This notice needs no reply. Complete it with goblin inbox complete, then \
          continue the work that waited for this result. If you already handled the \
          result, completing the notice is all that is needed."
     )

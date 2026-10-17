@@ -53,13 +53,13 @@ class HistoryTests(unittest.TestCase):
         peer.peer.sendall(b"x"); peer.close()
         d.wait(lambda: d.rpc.call("permissions.get", {"request": request["id"]})["state"] == "withdrawn")
         # Variables from the sandbox CLI, all keys in one call.
-        result = d.cli("exec", session, "--", "/run/goblins/bin/goblins", "variable", "set",
+        result = d.cli("exec", session, "--", "/run/goblins/bin/goblin", "variable", "set",
                        "session_id=c8193c93-1", "session_name=Plan goblin session restore")
         self.assertEqual(json.loads(result.stdout), {"accepted": True, "recorded": True})
         record = d.wait(lambda: (r if (r := d.record(session))["variables"].get("session_id") else None))
         self.assertEqual(record["variables"], {"session_id": "c8193c93-1", "session_name": "Plan goblin session restore"})
         self.assertGreaterEqual(record["updated"], record["created"])
-        refused = d.cli("exec", session, "--", "/run/goblins/bin/goblins", "variable", "set", "Bad=1", check=False)
+        refused = d.cli("exec", session, "--", "/run/goblins/bin/goblin", "variable", "set", "Bad=1", check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("invalid variable name", refused.stderr)
         self.sandbox(session, "sessions.set-variables", {"variables": {"session_name": ""}})

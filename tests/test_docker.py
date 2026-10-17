@@ -82,7 +82,7 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, f"docker load -i {shlex.quote(str(self.rw / 'image.tar.gz'))}")
 
     def enable(self, session, terminal, approved=True, options=""):
-        terminal.send("goblins enable-docker --reason 'integration test' " + options + "\n")
+        terminal.send("goblin enable-docker --reason 'integration test' " + options + "\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
         self.assertEqual(request["kind"], "docker")
         self.d.decide(request, approved)
@@ -112,7 +112,7 @@ class DockerTests(unittest.TestCase):
         self.load(terminal)
         self.run_ok(terminal, "docker run --rm --network host goblins-test wget -q -O - -T 5 http://127.0.0.1:18081/network-before")
         store, = self.storage.iterdir()
-        self.run_ok(terminal, "goblins enable-docker")
+        self.run_ok(terminal, "goblin enable-docker")
         self.assertEqual(list(self.storage.iterdir()), [store])
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
@@ -216,7 +216,7 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, "! command -v docker")
         # A new, explicitly approved request can still succeed after withdrawal.
         self.enable(session, terminal)
-        self.run_ok(terminal, 'case "$(goblins status)" in *"Docker: enabled"*) true;; *) false;; esac')
+        self.run_ok(terminal, 'case "$(goblin status)" in *"Docker: enabled"*) true;; *) false;; esac')
 
     def test_children_inherit_scope_and_activation(self):
         self.named_storage = True
@@ -267,7 +267,7 @@ class DockerTests(unittest.TestCase):
         self.addCleanup(terminal.close)
         terminal.expect("docker-test>", timeout=60)
         for _ in range(2):
-            terminal.send("goblins enable-docker\n")
+            terminal.send("goblin enable-docker\n")
             request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
             self.d.decide(request, True)
             terminal.expect('"status":"error"', timeout=60)
@@ -419,7 +419,7 @@ class DockerTests(unittest.TestCase):
     def test_docker_requires_a_docker_scope(self):
         for name in ("unscoped", "nodocker"):
             session, terminal = self.shell(name)
-            self.run_ok(terminal, "! command -v docker; ! goblins enable-docker")
+            self.run_ok(terminal, "! command -v docker; ! goblin enable-docker")
             self.assertFalse(self.d.permissions(session=session, state="pending"))
             self.assertFalse(self.d.get(session)["docker_enabled"])
 
@@ -446,7 +446,7 @@ class DockerTests(unittest.TestCase):
         first, one = self.shell("scoped")
         self.enable(first, one)
         second, two = self.shell("scoped")
-        two.send("goblins enable-docker\n")
+        two.send("goblin enable-docker\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
         self.d.decide(request, True)
         two.expect('"status":"error"', timeout=60)
@@ -463,7 +463,7 @@ class DockerTests(unittest.TestCase):
         self.enable(first, one); self.load(one)
         self.run_ok(one, f"docker run --rm -v /:/engine goblins-test ln -s {self.rw} /engine{extra_ro}")
         second, two = self.shell("extra", cwd=self.rw)
-        two.send("goblins enable-docker\n")
+        two.send("goblin enable-docker\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
         self.d.decide(request, True)
         two.expect('"status":"error"', timeout=60)

@@ -14,7 +14,7 @@ fn parse_args(legacy: bool, args: &[String]) -> Result<(String, String), String>
     let mut args = args.iter();
     let kind = if legacy { "package" } else { "request-package" };
     if args.next().map(String::as_str) != Some(kind) {
-        return Err("usage: goblins request-package PACKAGE [--reason TEXT]".into());
+        return Err("usage: goblin request-package PACKAGE [--reason TEXT]".into());
     }
     let mut package = None;
     let mut reason = "Requested from the sandbox shell".to_string();
@@ -49,7 +49,7 @@ fn run() -> Result<i32, String> {
     }
     if !legacy {
         let command =
-            cli::Cli::try_parse_from(std::iter::once("goblins".to_string()).chain(args.clone()))
+            cli::Cli::try_parse_from(std::iter::once("goblin".to_string()).chain(args.clone()))
                 .unwrap_or_else(|e| e.exit())
                 .command;
         match command {
@@ -423,7 +423,7 @@ fn waiting_call(
     }
     Ok(Ok(reply["result"].clone()))
 }
-/// `goblins editor open`: ask the host editor to open sandbox files, by
+/// `goblin editor open`: ask the host editor to open sandbox files, by
 /// default waiting until it is done with all of them.
 fn editor_open(args: &[String]) -> Result<i32, String> {
     use goblins_protocol::editor;

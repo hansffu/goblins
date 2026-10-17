@@ -17,8 +17,9 @@ class ConnectedTests(unittest.TestCase):
         client.send("printf 'BEFORE=%s\\n' $fish_pid; command -q hello; printf 'ABSENT=%s\\n' $status\n")
         pid = client.expect(r"(?:^|\n)BEFORE=(\d+)\n").group(1)
         client.expect(r"(?:^|\n)ABSENT=127\n")
-        for package, approved in [("hello", False), ("hello", True), ("cowsay", True)]:
-            client.send(f"goblins request-package {package} --reason 'actual sandbox client'; printf 'RESULT_CODE=%s\\n' $status\n")
+        # The last request uses the old command name, kept for recorded conversations.
+        for cli, package, approved in [("goblin", "hello", False), ("goblin", "hello", True), ("goblins", "cowsay", True)]:
+            client.send(f"{cli} request-package {package} --reason 'actual sandbox client'; printf 'RESULT_CODE=%s\\n' $status\n")
             record = d.wait(lambda: next(iter(d.permissions(state="pending")), None))
             token = record["approval"]
             ui.expect("Type approve " + token)
@@ -29,7 +30,7 @@ class ConnectedTests(unittest.TestCase):
         client.send("hello; cowsay live-grant-ok; printf 'AFTER=%s\\n' $fish_pid\n")
         client.expect(r"(?:^|\n)Hello, world!\n"); client.expect("live-grant-ok")
         self.assertEqual(client.expect(r"(?:^|\n)AFTER=(\d+)\n").group(1), pid)
-        client.send(f"goblins tui; printf 'RESTRICTED=%s\\n' $status; test -e {d.state}/host.sock; printf 'HOST_HIDDEN=%s\\n' $status; test -e /nix/var/nix/daemon-socket/socket; printf 'NIX_HIDDEN=%s\\n' $status\n")
+        client.send(f"goblin tui; printf 'RESTRICTED=%s\\n' $status; test -e {d.state}/host.sock; printf 'HOST_HIDDEN=%s\\n' $status; test -e /nix/var/nix/daemon-socket/socket; printf 'NIX_HIDDEN=%s\\n' $status\n")
         client.expect(r"(?:^|\n)RESTRICTED=2\n"); client.expect(r"(?:^|\n)HOST_HIDDEN=1\n"); client.expect(r"(?:^|\n)NIX_HIDDEN=1\n")
         client.send("sleep 60\n"); client.send("\x03"); client.send("echo INTERRUPTED\n"); client.expect(r"(?:^|\n)INTERRUPTED\n")
         import fcntl, struct, termios

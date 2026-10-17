@@ -617,7 +617,7 @@ impl Mailbox {
                 if original.sender == NOTICE_SENDER {
                     return Err((
                         -32009,
-                        "operation notices take no reply; complete the claim with goblins inbox complete"
+                        "operation notices take no reply; complete the claim with goblin inbox complete"
                             .into(),
                     ));
                 }

@@ -84,7 +84,7 @@ if [ -e {self.dir}/fail ]; then echo "emacsclient: edit aborted" >&2; exit 3; fi
         # Blocking by default: the edit ends when the editor is done.
         (self.dir / "block").touch()
         editor = subprocess.Popen([str(self.app), "--state-dir", str(self.d.state), "exec",
-                                   "gribble", "--", "goblins", "editor", "open", "/tmp/msg"])
+                                   "gribble", "--", "goblin", "editor", "open", "/tmp/msg"])
         self.d.wait(lambda: (self.dir / "args").exists() and self.args()[-1] == "/goblins:gribble:/tmp/msg")
         time.sleep(.5)
         self.assertIsNone(editor.poll())

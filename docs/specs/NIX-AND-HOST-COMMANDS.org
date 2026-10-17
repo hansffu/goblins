@@ -210,7 +210,7 @@ Labels: *[E]* existing functionality, *[P]* proposed change, *[V]* assumption th
 - *[P]* All six skills and the new ones use =goblin …=. The skill names (=goblins-messaging= etc.) stay: they name the product, not the command.
 - *[P]* The demo Fish shell's init (=nix/demo-goblins/shell.nix=: =goblins completions fish | source=) and every test that types =goblins …= inside a sandbox terminal (=tests/test_devshell.py=, =tests/test_ownership.py=, =tests/test_raids.py=, …), plus =tests/checks.nix=.
 - *[P]* Daemon-produced text that names in-sandbox commands: =devshell.rs:464=, =589–590=, =753= and the operation-notice bodies in =operation.rs=.
-- *[P]* Docs: =USAGE.org=, the specs and ADRs that show in-sandbox commands. Historical results (=docs/RESULTS.org=, =docs/results/=) stay as written.
+- *[P]* Docs: the user docs (=README.org=, =docs/USAGE.org=) and the skills. The specs, ADRs, architecture diagrams and results (=docs/specs/=, =docs/adr/=, =docs/architecture/=, =docs/RESULTS.org=, =docs/results/=) stay as written: they record designs and runs at the time.
 - The split also helps humans: =goblins …= on the host, =goblin …= inside a goblin.
 - *Compatibility:* keep a =goblins= link to the client for one transition period, hidden from completions and docs. Recreated goblins resume conversations that used the old name, and a shadowed =goblins= now fails clearly anyway: the host CLI finds no =host.sock= inside a sandbox. Remove the link in a later release.
 

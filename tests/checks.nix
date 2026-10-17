@@ -274,6 +274,18 @@ in
       };
     };
   demo-goblins = demo;
+  # Inside a sandbox the CLI is `goblin`; `goblins` is the host CLI, named in
+  # agent instructions only where a line says it is for the host.
+  sandbox-cli-name =
+    pkgs.runCommand "goblins-sandbox-cli-name" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
+      files="${../skills}/*/SKILL.md ${../nix/goblins/claude}/* ${../nix/goblins/codex}/*"
+      if grep -nE '(^|[^-_/.[:alnum:]])goblins (send|reply|inbox|status|run|attach|stop|raid|request-package|enable-docker|devshell|flake|editor|variable|integration|set-state|list|kill|detach|completions)\b' $files | grep -v 'on the host' \
+        || grep -nE '/run/goblins/bin/goblins([^-[:alnum:]]|$)' $files; then
+        echo 'In-sandbox instructions must call goblin, not goblins' >&2
+        exit 1
+      fi
+      touch $out
+    '';
   # Inside a goblin, `nix develop` must not put a host `goblins` on PATH.
   dev-shell-without-goblins =
     assert !builtins.any (p: pkgs.lib.getName p == "goblins") devShell.nativeBuildInputs;

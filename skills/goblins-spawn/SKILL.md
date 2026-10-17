@@ -1,10 +1,10 @@
 ---
 name: goblins-spawn
-description: MUST use when the user says Goblin, Goblins, goblins CLI, or Goblins daemon, including requests for a goblin subagent. Create and manage child Goblins sandboxes; never substitute a native Agent/team for an explicitly requested Goblin. Use goblins-messaging for coordination.
+description: MUST use when the user says Goblin, Goblins, the goblin or goblins CLI, or Goblins daemon, including requests for a goblin subagent. Create and manage child Goblins sandboxes; never substitute a native Agent/team for an explicitly requested Goblin. Use goblins-messaging for coordination.
 ---
 
 A goblin is a separate native agent in a daemon-owned sandbox. For a Goblins
-delegation, create a child with the sandbox's `goblins` CLI.
+delegation, create a child with the sandbox's `goblin` CLI.
 
 ## Choose the delegation mechanism
 
@@ -21,8 +21,8 @@ must already be accessible. A child is not a separate checkout.
 
 ## Create and coordinate
 
-Pick a configuration from the allowed children that `goblins status` lists,
-then run `goblins run CONFIG --name CHILD --detached`, substituting that
+Pick a configuration from the allowed children that `goblin status` lists,
+then run `goblin run CONFIG --name CHILD --detached`, substituting that
 configuration and a child name. A child shares the parent's workspace, scope
 and dev shell but runs its own configuration and access (for example another
 agent type); it gains no access for the parent. `--detached` leaves the child
@@ -33,7 +33,7 @@ Read [goblins-messaging](../goblins-messaging/SKILL.md) to send the child's task
 and handle its replies through the daemon. Provide the role, relevant context,
 repository paths and expected coordination; a launch alone does not assign work
 or transfer the parent's conversation. Give the user the returned session ID
-for `goblins attach SESSION_ID` when direct interaction is useful.
+for `goblins attach SESSION_ID` (on the host) when direct interaction is useful.
 
 User conversations in one goblin do not automatically reach the others. Relay
 relevant task decisions through daemon messaging. Siblings cannot send directly
@@ -50,7 +50,7 @@ stop or replace it. Exiting the parent sandbox stops its descendants.
 
 When the overall task is complete, collect final replies and preserve needed
 results before stopping children created solely for that task with
-`goblins stop SESSION_ID`. Preserve sessions the user wants for continued
+`goblin stop SESSION_ID`. Preserve sessions the user wants for continued
 interaction, and report which remain. Stopping loses live state and private
 temporary files. Use `--kill-children` only when all descendants are also ready
 for cleanup; let the daemon release resources rather than deleting state files.

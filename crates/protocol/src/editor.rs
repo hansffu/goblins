@@ -76,7 +76,7 @@ pub fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     result
 }
 
-/// `goblins editor open` arguments: `[--no-wait] [+LINE[:COL]] FILE ...`, where
+/// `goblin editor open` arguments: `[--no-wait] [+LINE[:COL]] FILE ...`, where
 /// a position applies to the file after it, as with emacsclient. Returns the
 /// files, still relative, and whether to wait.
 pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
@@ -119,7 +119,7 @@ pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
         return Err("a position must be followed by a file".into());
     }
     if files.is_empty() {
-        return Err("usage: goblins editor open [--no-wait] [+LINE[:COL]] FILE...".into());
+        return Err("usage: goblin editor open [--no-wait] [+LINE[:COL]] FILE...".into());
     }
     Ok((files, wait))
 }

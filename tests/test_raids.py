@@ -98,7 +98,7 @@ class RaidTests(unittest.TestCase):
         # The in-sandbox CLI: status, members and send by name.
         terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", "alpha"])
         self.addCleanup(terminal.close)
-        terminal.send("goblins status; goblins raid members; goblins send beta --message from-cli --key cli-send; "
+        terminal.send("goblin status; goblin raid members; goblin send beta --message from-cli --key cli-send; "
                       "printf 'SEND=%s\\n' $status\n")
         output = terminal.expect(r"(?s)(.*?)SEND=(\d+)\n")
         text = output.group(1).decode(errors="replace")

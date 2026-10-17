@@ -30,7 +30,7 @@ Inside Fish:
 
 #+begin_src fish
 echo $fish_pid
-goblins request-package hello --reason "Try a live package grant"
+goblin request-package hello --reason "Try a live package grant"
 hello
 echo $fish_pid
 #+end_src
@@ -84,7 +84,7 @@ shell like =nix develop -c=: a Bash inside the sandbox sources
 =XDG_DATA_DIRS= come first; variables =nix develop= ignores (=HOME=, =TMPDIR=,
 =TERM= and others) or that belong to the sandbox (=USER=, =DOCKER_HOST=,
 =GOBLINS_*=, ...) are left out. =GOBLINS_DEV_SHELL= names the flake reference and
-=goblins status= shows it. Source =env.sh= again in Bash to get the functions,
+=goblin status= shows it. Source =env.sh= again in Bash to get the functions,
 which are not inherited by programs.
 
 Children start in their parent's current dev shell generation; they cannot
@@ -100,14 +100,14 @@ itself would silently fetch unlocked inputs.
 ** Refreshing from inside the sandbox
 
 #+begin_src sh
-goblins devshell refresh --reason "picked up the new formatter"
-goblins devshell refresh --update nixpkgs   # --update alone updates all inputs
-goblins devshell refresh --lock             # lock inputs newly added to flake.nix
-goblins devshell diff [--update [INPUT...] | --lock]   # preview only
-goblins devshell restore-lock
+goblin devshell refresh --reason "picked up the new formatter"
+goblin devshell refresh --update nixpkgs   # --update alone updates all inputs
+goblin devshell refresh --lock             # lock inputs newly added to flake.nix
+goblin devshell diff [--update [INPUT...] | --lock]   # preview only
+goblin devshell restore-lock
 #+end_src
 
-=goblins devshell diff= prints, as plain text, the summary and source diff a
+=goblin devshell diff= prints, as plain text, the summary and source diff a
 refresh with the same options would show the approver, without asking the host
 or changing anything: no request, no lock write, no new generation. It uses the
 same lock check, evaluator, network and time limit as a refresh, and may run
@@ -127,7 +127,7 @@ An agent never changes =flake.lock= by
 hand: only the lock the sandbox was launched with, or one in an approved
 generation, is trusted. Every refresh first compares the workspace lock (as
 JSON) with the trusted lock and fails on any other, naming what changed;
-=goblins devshell restore-lock= writes the trusted lock back. With =--update= or
+=goblin devshell restore-lock= writes the trusted lock back. With =--update= or
 =--lock= the candidate lock is computed in a private copy, validated (only
 locked https forges, https tarballs, store paths and paths inside the flake)
 and written to the workspace only after approval.
@@ -153,12 +153,12 @@ subdirectory, start the sandbox from the repository root:
 ** Running flake apps
 
 #+begin_src sh
-goblins flake run                    # apps.<system>.default
-goblins flake run '#fmt' -- --check  # arguments after --
-goblins flake run .#fmt
+goblin flake run                    # apps.<system>.default
+goblin flake run '#fmt' -- --check  # arguments after --
+goblin flake run .#fmt
 #+end_src
 
-Inside a dev shell sandbox, =goblins flake run= is the =nix run= equivalent for
+Inside a dev shell sandbox, =goblin flake run= is the =nix run= equivalent for
 the dev shell's own flake; other flakes are refused. It resolves like =nix run=:
 =apps.<system>.APP=, whose =program= must be in the store and come from what the
 app builds, else =packages.<system>.APP= with =meta.mainProgram= (or =pname=,
@@ -167,7 +167,7 @@ or the name) under =bin/=. =APP= defaults to =default=.
 The app comes from the sandbox's current trusted generation, so it needs no
 approval: its source and lock are ones you launched or approved. The workspace
 flake must still equal that generation; after any edit to a tracked file,
-=goblins devshell refresh= first. Evaluation runs in the evaluator sandbox with
+=goblin devshell refresh= first. Evaluation runs in the evaluator sandbox with
 the goblin's network and without import-from-derivation, and fails after the
 same 10 minutes as a refresh. Building has no limit. The app's closure is then
 mounted read-only, and the in-sandbox client =exec=s the program with the
@@ -249,7 +249,7 @@ still works. Scope storage is protected against ordinary filesystem grants.
 Inside a running sandbox whose scope enables Docker, attach to its engine:
 
 #+begin_src sh
-goblins enable-docker --reason 'Run the integration test services'
+goblin enable-docker --reason 'Run the integration test services'
 docker compose up
 #+end_src
 
@@ -259,11 +259,11 @@ Docker. Goblins without a scope, or whose scope does not set
 =docker.enable = true=, cannot use Docker.
 It also installs the Docker CLI into the running shell. Repeating the command
 after activation succeeds without another approval or a second daemon.
-=goblins status= reports whether Docker is enabled. =request-package docker=
+=goblin status= reports whether Docker is enabled. =request-package docker=
 remains a package request; installing a client does not enable a daemon.
 The Codex and Claude Code integrations install a =goblins-docker= skill that
 tells agents a missing socket under =DOCKER_HOST= means Docker is not yet
-attached, and to run =goblins enable-docker= instead of concluding that the
+attached, and to run =goblin enable-docker= instead of concluding that the
 sandbox has no Docker.
 
 For automatic startup, set =mkGoblin { docker.enable = true; ... }= (default
@@ -362,7 +362,7 @@ Current limits:
   must be within the authorized GID mapping.
 - Live Nix package grants update the shell. Attaching a new member adds its
   current package closure to the shared engine, and store paths mounted later
-  (package grants, dev shell refreshes, =goblins flake run=) are added too, so
+  (package grants, dev shell refreshes, =goblin flake run=) are added too, so
   containers can bind-mount them.
 - The pinned Docker daemon has a small patch to allow native rootless setup
   without requiring RootlessKit's port-mapping service, and to make BuildKit
@@ -528,7 +528,7 @@ is a parameter change and conflicts. Retry the original request exactly.
 Closing =tui=, pressing =q= in fullscreen or typing =quit= in plain mode, or closing a terminal
 client leaves sessions owned by the daemon. A fresh =tui= discovers current
 sessions, pending approvals and retained outcomes from a new atomic snapshot.
-From inside a sandbox, =goblins detach= returns
+From inside a sandbox, =goblin detach= returns
 to the host terminal with exit status 0. The shell, its working directory,
 variables, processes and pending approvals stay alive. From the host:
 
@@ -598,7 +598,7 @@ A conversation cannot be resumed while a goblin runs it, so two goblins never re
 
 ** Keeping the conversation
 
-A goblin records its own variables with =goblins variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16. Children may call it too: it succeeds without recording anything.
+A goblin records its own variables with =goblin variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16. Children may call it too: it succeeds without recording anything.
 
 =resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 
@@ -665,8 +665,8 @@ goblin gets the tools TRAMP needs (coreutils, sed, grep, findutils, gawk) and
 
 #+begin_src sh
 # Inside a sandbox; like emacsclient, a position applies to the next file.
-goblins editor open +12:3 notes.md /tmp/diagram.svg
-goblins editor open --no-wait /tmp/plot.png
+goblin editor open +12:3 notes.md /tmp/diagram.svg
+goblin editor open --no-wait /tmp/plot.png
 git commit          # opens the message in your Emacs and waits for C-x #
 #+end_src
 
@@ -821,17 +821,17 @@ goblins run shell --name snikk --detatched
 goblins run shell --parent snikk --name scout --detatched
 
 # Inside snikk: start another child, or a grandchild of scout.
-goblins run shell --name builder
-goblins run shell --parent scout --name helper --detatched
-goblins list
-goblins kill scout --kill-children
+goblin run shell --name builder
+goblin run shell --parent scout --name helper --detatched
+goblin list
+goblin kill scout --kill-children
 #+end_src
 
 Both CLIs attach on =run= by default. =--detatched= (also =--detached=) returns
 immediately with JSON containing the session ID and name. Inside a sandbox,
-=goblins attach CHILD= attaches to a descendant by relative tree path, name or ID;
-=goblins detach= returns to the enclosing shell while leaving that sandbox running.
-=goblins status= prints the current sandbox's name, configuration, allowed child
+=goblin attach CHILD= attaches to a descendant by relative tree path, name or ID;
+=goblin detach= returns to the enclosing shell while leaving that sandbox running.
+=goblin status= prints the current sandbox's name, configuration, allowed child
 configurations, state, raid and ID.
 Attachment and terminal resizing are restricted to descendants; a sandbox cannot
 attach to itself, its ancestors or another branch.
@@ -854,10 +854,10 @@ mkGoblins {
 }
 #+end_src
 
-Inside the coordinator, =goblins run reviewer --name review --detached=
+Inside the coordinator, =goblin run reviewer --name review --detached=
 starts a Claude child. The check uses the selected parent's list, also for host
 =--parent= launches and for =--parent= selecting a descendant; each child uses
-its own configuration's list for further children. =goblins status= shows the
+its own configuration's list for further children. =goblin status= shows the
 list, and sandbox completion of =run= offers it.
 
 A child always shares its parent's workspace, working directory, scope (and so
@@ -941,12 +941,12 @@ anywhere in the tree, also with =--parent=.
 Inside a goblin:
 
 #+begin_src sh
-goblins raid create review
-goblins raid invite scout helper            # direct children only
-goblins run shell --name tester --detached --inherit-raid
-goblins raid set-role builder
-goblins raid members
-goblins raid leave
+goblin raid create review
+goblin raid invite scout helper            # direct children only
+goblin run shell --name tester --detached --inherit-raid
+goblin raid set-role builder
+goblin raid members
+goblin raid leave
 #+end_src
 
 Any member may invite its direct children; siblings, grandchildren and other
@@ -954,7 +954,7 @@ branches cannot be recruited from inside a sandbox. =--inherit-raid= joins the
 new child to the selected parent's raid (it fails if the parent is in none)
 and still follows =allowedChildren=. =raid members= prints one line per member,
 leading with the name, role and full tree path, then configuration, state,
-owner and ID; use the path or ID with =goblins send= when a name is ambiguous.
+owner and ID; use the path or ID with =goblin send= when a name is ambiguous.
 Roles describe work (=coordinator=, =builder=, =reviewer=, ...); several members
 can share one, a role can be changed but not cleared, and it never makes a
 goblin the owner. Roles are not message destinations.
@@ -968,7 +968,7 @@ already delivered stay with their recipient, who can read, complete or requeue
 them, but a =reply= to a sender it no longer shares a raid or tree relation
 with fails with "not allowed: 'SENDER' is no longer in this goblin's raid".
 
-Host =goblins list= records and sandbox =goblins status= show each goblin's
+Host =goblins list= records and sandbox =goblin status= show each goblin's
 raid name, role and owner. Raid names and roles use the agent-name grammar
 (lowercase letters, digits and hyphens, starting with a letter, at most 32).
 
@@ -1126,8 +1126,8 @@ submission ownership suspends new submissions until reconciliation finds proof;
 resume never discards that record. Status and logs live in the sandbox's private
 =/tmp/goblins-codex= directory. Manual inbox commands remain available.
 
-Activity appears in =goblins status= and the Emacs overview, sidebar and details.
-Any provider may report it inside its own sandbox using =goblins set-state
+Activity appears in =goblin status= and the Emacs overview, sidebar and details.
+Any provider may report it inside its own sandbox using =goblin set-state
 working= (also =unknown=, =idle=, =waiting-input=, =waiting-approval=). Reports
 expire after 30 seconds. Codex reports native transitions and ten-second
 heartbeats automatically. Activity is separate from sandbox lifecycle and
@@ -1205,7 +1205,7 @@ that Claude sees during skill selection.
 
 * Manual inbox messaging
 
-Host and sandbox CLIs can send text through daemon-owned inboxes:
+Host and sandbox CLIs (=goblins= on the host, =goblin= inside a sandbox) can send text through daemon-owned inboxes:
 
 #+begin_src sh
 goblins send scout --message "my message"
@@ -1225,16 +1225,16 @@ Starting sessions can receive queued work before their payload is ready.
 Inside the receiving sandbox, claim and answer an item:
 
 #+begin_src sh
-goblins inbox status
-goblins inbox next --key fetch-1
-goblins reply MESSAGE_ID --claim-generation 1 --message "done" --key reply-1
+goblin inbox status
+goblin inbox next --key fetch-1
+goblin reply MESSAGE_ID --claim-generation 1 --message "done" --key reply-1
 #+end_src
 
 Use the message ID and claim generation returned by =inbox next=. Replying
 atomically completes the original and queues a response to its sender. The
 host can use the same inbox commands to receive replies. To finish without a
-reply, use =goblins inbox complete MESSAGE_ID --claim-generation N=. To return
-a claim to its queue, use =goblins inbox requeue MESSAGE_ID
+reply, use =goblin inbox complete MESSAGE_ID --claim-generation N=. To return
+a claim to its queue, use =goblin inbox requeue MESSAGE_ID
 --claim-generation N --reason TEXT=. Requeue invalidates the previous claim
 generation. An inbox has at most one outstanding claim; another fetch returns
 that claim until it is completed, replied to, or requeued.

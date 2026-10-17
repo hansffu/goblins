@@ -248,7 +248,7 @@ ls /run/goblins
         self.assertEqual(listing, {"bin", "packages", "request.sock"})
 
     def test_editor_open_is_refused_without_an_editor(self):
-        r = self.run_exec("gribble", "--", "goblins", "editor", "open", "--no-wait", "/tmp/x")
+        r = self.run_exec("gribble", "--", "goblin", "editor", "open", "--no-wait", "/tmp/x")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no editor is configured", r.stderr)
 

@@ -4,7 +4,7 @@ description: Request a missing command or development tool inside a Goblins sand
 ---
 
 Check whether the required command is already available. If it is missing,
-use `goblins request-package PACKAGE --reason "REASON"` to request a package
+use `goblin request-package PACKAGE --reason "REASON"` to request a package
 from the host-controlled pinned nixpkgs set. Give the nixpkgs attribute name,
 such as `jq` or `python3Packages.black`, not a path, URL, Nix expression or
 output selector. State briefly which user task needs it.
@@ -23,7 +23,7 @@ There is no `nix` command in the sandbox; do not try `nix develop`, `nix run`
 or `nix shell`.
 
 Docker is not a package: to use containers, follow goblins-docker and run
-`goblins enable-docker` instead of requesting `docker`.
+`goblin enable-docker` instead of requesting `docker`.
 
 Request only tools needed for the current task, through Goblins rather than a
 host package manager. This does not replace the project's normal dependency

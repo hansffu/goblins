@@ -11,7 +11,7 @@ This is a personal experiment, built with substantial AI-generated code. It is m
 Goblins runs shells and coding agents (Codex, Claude Code) in Linux sandboxes, called /goblins/. A goblin starts with a small, fixed set of packages. When it needs another tool, it asks for it:
 
 #+begin_src sh
-goblins request-package jq --reason "Parse the API response"
+goblin request-package jq --reason "Parse the API response"
 #+end_src
 
 You approve or deny the request in a terminal UI or in Emacs, and an approved package appears inside the running sandbox at once, without restarting it.
@@ -124,7 +124,7 @@ goblins run shell --name snikk
 Inside the sandbox, request a package, approve it in the TUI, then use it:
 
 #+begin_src fish
-goblins request-package cowsay --reason "Try a live package grant"
+goblin request-package cowsay --reason "Try a live package grant"
 cowsay hello
 #+end_src
 
@@ -202,7 +202,7 @@ mkGoblins {
 - Storage is a fresh directory managed by Goblins, mounted at =path=; it does not reuse what is already at that path on the host. Remove =rwDirs= entries for the same path when moving a cache into a scope.
 - Every goblin that may join a scope must have the same online/offline network policy.
 - =namespaces.pid.enable = false= stops members seeing each other's processes.
-- =goblins status= inside a goblin shows its scope.
+- =goblin status= inside a goblin shows its scope.
 
 ** Risks: scopes are trust groups, not isolation boundaries
 
@@ -237,7 +237,7 @@ mkGoblins {
 Inside a goblin of that scope:
 
 #+begin_src sh
-goblins enable-docker --reason "Run the integration test services"
+goblin enable-docker --reason "Run the integration test services"
 docker compose up
 #+end_src
 
@@ -268,10 +268,10 @@ The flake must be in the goblin's working directory and fully locked. Goblins ev
 When the flake changes, the goblin asks for the new version:
 
 #+begin_src sh
-goblins devshell diff                       # preview, no request
-goblins devshell refresh --reason "added a formatter"
-goblins devshell refresh --update nixpkgs   # update a lock input
-goblins flake run '#fmt' -- --check         # run the flake's apps
+goblin devshell diff                       # preview, no request
+goblin devshell refresh --reason "added a formatter"
+goblin devshell refresh --update nixpkgs   # update a lock input
+goblin flake run '#fmt' -- --check         # run the flake's apps
 #+end_src
 
 The approval shows what changed: inputs, Nix files, packages, environment and what will be built. A goblin cannot change =flake.lock= behind your back; only locks you launched with or approved are trusted. See [[file:docs/USAGE.org::*Flake dev shells][the dev shell reference]].
@@ -293,8 +293,8 @@ Goblins can message their parent and children. A /raid/ also lets goblins in dif
 
 #+begin_src sh
 goblins raid invite review chief critic   # host: create raid 'review', owned by chief
-goblins raid members                      # inside a member
-goblins send critic --message "Please review the build."
+goblin raid members                       # inside a member
+goblin send critic --message "Please review the build."
 #+end_src
 
 Codex and Claude Code goblins are woken when a message arrives. See [[file:docs/USAGE.org::*Sandbox ownership][sandbox ownership]], [[file:docs/USAGE.org::*Raids][raids]] and [[file:docs/USAGE.org::*Manual inbox messaging][messaging]].
@@ -332,18 +332,20 @@ A goblin is addressed by its name, its tree path (=snikk/scout= for a child) or 
 
 ** Inside a goblin
 
+Inside a goblin the command is =goblin=, so that a project's dev shell that ships the host =goblins= cannot shadow it:
+
 #+begin_src sh
-goblins status                         # name, configuration, scope, raid
-goblins request-package NAME --reason TEXT
-goblins enable-docker --reason TEXT
-goblins devshell refresh | diff | restore-lock
-goblins flake run [#APP] [-- ARGS]
-goblins run CONFIG --name NAME         # start a child
-goblins list | attach | kill           # manage descendants
-goblins detach                         # return to the enclosing terminal
-goblins send parent --message TEXT     # message the parent, children or raid
-goblins inbox status | next            # read messages
-goblins editor open FILE               # open a file in your Emacs
+goblin status                         # name, configuration, scope, raid
+goblin request-package NAME --reason TEXT
+goblin enable-docker --reason TEXT
+goblin devshell refresh | diff | restore-lock
+goblin flake run [#APP] [-- ARGS]
+goblin run CONFIG --name NAME         # start a child
+goblin list | attach | kill           # manage descendants
+goblin detach                         # return to the enclosing terminal
+goblin send parent --message TEXT     # message the parent, children or raid
+goblin inbox status | next            # read messages
+goblin editor open FILE               # open a file in your Emacs
 #+end_src
 
 =request-package= takes a nixpkgs attribute name, such as =cowsay= or =python3Packages.black=, from Goblins' pinned nixpkgs.

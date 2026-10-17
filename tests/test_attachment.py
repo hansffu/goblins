@@ -93,7 +93,7 @@ class AttachmentTests(unittest.TestCase):
         session = d.rpc.call("sessions.list", {})[0]["id"]
         identity = d.get(session)["identity"]
         for _ in range(2):
-            client.send("goblins detach; printf 'DETACHED_CODE=%s\\n' $status\n")
+            client.send("goblin detach; printf 'DETACHED_CODE=%s\\n' $status\n")
             self.assertEqual(client.wait(), 0)
             self.assertEqual(d.get(session)["state"], "running")
             self.assertEqual(d.get(session)["identity"], identity)
@@ -134,7 +134,7 @@ class AttachmentTests(unittest.TestCase):
         client.send("echo READY\n")
         client.expect(r"(?:^|\n)READY\n")
         session = d.rpc.call("sessions.list", {})[0]["id"]
-        client.send("goblins detach; string repeat -n 200000 x; touch /tmp/output-finished\n")
+        client.send("goblin detach; string repeat -n 200000 x; touch /tmp/output-finished\n")
         self.assertEqual(client.wait(), 0)
         # /proc sees the sandbox root without adding host authority to payloads.
         from pathlib import Path
@@ -169,7 +169,7 @@ class AttachmentTests(unittest.TestCase):
         # Detach does not cancel a concurrent package approval.
         pending, permission = d.pending(a["session"])
         self.addCleanup(pending.close)
-        client.send("goblins detach\n")
+        client.send("goblin detach\n")
         self.assertEqual(client.wait(), 0)
         self.assertEqual(d.rpc.call("permissions.get", {"request": permission["id"]})["state"], "pending")
         killed = json.loads(subprocess.check_output(

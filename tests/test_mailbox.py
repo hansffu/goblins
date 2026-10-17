@@ -80,7 +80,7 @@ class MailboxTests(unittest.TestCase):
             path = Path(host_file.name)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         # The same pathname refers to different files in the two namespaces.
-        terminal.send(f"printf 'sandbox-only contents' > {path}; goblins send scout --file {path} --key local-file; rm {path}; printf 'MAILBOX_SENT\\n'\n")
+        terminal.send(f"printf 'sandbox-only contents' > {path}; goblin send scout --file {path} --key local-file; rm {path}; printf 'MAILBOX_SENT\\n'\n")
         output = terminal.expect(r"(?s)(.*?)\nMAILBOX_SENT\n").group(1).decode(errors="replace")
         self.assertEqual(path.read_text(), "host-only contents")
         path.unlink()

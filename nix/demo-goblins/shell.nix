@@ -10,7 +10,7 @@ mkGoblin (
     args = [
       "--interactive"
       "--init-command"
-      "goblins completions fish | source"
+      "goblin completions fish | source"
     ];
   }
   // options

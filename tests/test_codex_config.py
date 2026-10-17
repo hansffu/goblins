@@ -216,7 +216,7 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(self.d.get(receiver)["state"],"running")
         self.d.rpc.call("messages.send",{"key":"manual","to":receiver,"body":"manual fallback"})
         import subprocess
-        command = [str(self.app),"--state-dir",str(self.d.state),"exec",receiver,"--","/run/goblins/bin/goblins"]
+        command = [str(self.app),"--state-dir",str(self.d.state),"exec",receiver,"--","/run/goblins/bin/goblin"]
         item = json.loads(subprocess.check_output([*command,"inbox","next"]))
         subprocess.run([*command,"reply",item["message"]["id"],"--claim-generation",str(item["claim_generation"]),"--message","processed manually"],check=True,capture_output=True)
         self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 5)

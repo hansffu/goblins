@@ -32,7 +32,7 @@ let
       args ? [ ],
       # The agent's arguments when `goblins recreate` resumes its recorded
       # conversation, instead of `args`: {key} is the variable the goblin
-      # recorded (`goblins variable set`), {{ and }} are literal braces. Each
+      # recorded (`goblin variable set`), {{ and }} are literal braces. Each
       # element stays one argument. Null: a recreated goblin starts afresh.
       resumeCommand ? null,
       env ? { },

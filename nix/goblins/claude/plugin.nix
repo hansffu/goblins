@@ -13,7 +13,7 @@ pkgs.symlinkJoin {
         {
           name = "goblins-inbox";
           description = "Goblins daemon inbox messages";
-          command = ''/run/goblins/bin/goblins integration watch --epoch "$GOBLINS_INTEGRATION_EPOCH" --delivery notification'';
+          command = ''/run/goblins/bin/goblin integration watch --epoch "$GOBLINS_INTEGRATION_EPOCH" --delivery notification'';
         }
       ]
     ))
