@@ -69,8 +69,9 @@ impl Spec {
             None => "none".into(),
         };
         let mut lines = vec![
-            "Runs on the host as you, outside the sandbox. Files it reads, such as \
-             scripts, build files and tests, are whatever the goblin wrote there."
+            "Runs on the host as you, outside the sandbox, with your files, services \
+             and credentials. Scripts, build files and tests it reads are whatever the \
+             goblin writes, also after this request."
                 .to_string(),
             format!("Command: {command}"),
             format!("Directory: {directory}"),
