@@ -220,12 +220,11 @@ class HostCommandTests(unittest.TestCase):
 
     def test_requests_are_shown_whole_or_refused_and_views_stay_healthy(self):
         parent, _ = self.launch()
-        peer = RPC(self.d.state / parent / "resources/request.sock")
-        self.addCleanup(peer.close)
         sessions = [parent]
         for i in range(12):
-            child = peer.call("sessions.start", {"key": f"c{i}", "name": "host", "agent_name": f"kid{i}", "detached": True})["session"]
-            sessions.append(child)
+            # The request socket answers one call per connection.
+            sessions.append(self.sandbox(parent, "sessions.start", {
+                "key": f"c{i}", "name": "host", "agent_name": f"kid{i}", "detached": True})["session"])
         self.d.wait(lambda: all(self.d.get(s)["state"] == "running" for s in sessions), timeout=120)
 
         def request(session, quotes):
