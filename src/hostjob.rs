@@ -30,8 +30,10 @@ extern "C" fn stop(_: i32) {
 /// How long the command's process group has to exit after SIGTERM.
 const GRACE: Duration = Duration::from_secs(10);
 /// After the command exits, output from what it left behind is still copied
-/// until the pipe is idle this long.
+/// until the pipe is idle this long, and for at most DRAIN_LIMIT: a process
+/// that keeps writing must not keep the job from ending.
 const DRAIN_IDLE: Duration = Duration::from_millis(200);
+const DRAIN_LIMIT: Duration = Duration::from_secs(2);
 /// Upper bound on stopping the processes left behind.
 const CLEANUP: Duration = Duration::from_secs(10);
 const TRUNCATED: &[u8] = b"\n[goblins: output limit reached; the rest was discarded]\n";
@@ -233,6 +235,9 @@ pub fn run() -> io::Result<i32> {
     for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
         unsafe { libc::signal(signal, stop as *const () as libc::sighandler_t) };
     }
+    // A log over a file size limit fails a write instead of killing the
+    // supervisor before it stopped the job (the command gets the default).
+    unsafe { libc::signal(libc::SIGXFSZ, libc::SIG_IGN) };
     let mut outcome = Outcome::default();
     let mut output = Log {
         file: OpenOptions::new()
@@ -255,6 +260,12 @@ pub fn run() -> io::Result<i32> {
         .stdout(Stdio::from(write.try_clone()?))
         .stderr(Stdio::from(write))
         .process_group(0);
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGXFSZ, libc::SIG_DFL);
+            Ok(())
+        });
+    }
     let child = match command.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -269,23 +280,65 @@ pub fn run() -> io::Result<i32> {
     };
     drop(command);
     let pid = child.id() as i32;
+    // Whatever supervising runs into, nothing the command started outlives
+    // the supervisor: stop it all before reporting, also on an error.
+    let supervised = supervise(pid, read.as_raw_fd(), &mut output, &mut outcome, timeout);
+    stop_all(pid, Instant::now() + CLEANUP);
+    // Every writer is gone now: copy what is left.
+    let drained = (|| -> io::Result<()> {
+        while output.copy(read.as_raw_fd())? == Read::Data {}
+        Ok(())
+    })();
+    drop((child, read));
+    supervised?;
+    drained?;
+    outcome.truncated = output.truncated;
+    write_status(status, &outcome)?;
+    Ok(0)
+}
+
+/// Copy output until the command exits, stopping it when the daemon drops the
+/// lifetime pipe, a signal asks to, or the timeout passes. Then copy what the
+/// processes it left behind still write, for a bounded time.
+fn supervise(
+    pid: i32,
+    output_fd: RawFd,
+    output: &mut Log,
+    outcome: &mut Outcome,
+    timeout: u64,
+) -> io::Result<()> {
     let started = Instant::now();
-    let output_fd = read.as_raw_fd();
     let mut terminated: Option<Instant> = None;
     let mut lifetime_open = true;
-    let ended = loop {
-        let fds: &[RawFd] = if lifetime_open {
-            &[output_fd, 0]
-        } else {
-            &[output_fd]
-        };
-        let ready = wait(fds, Duration::from_millis(100))?;
-        if ready[0] {
-            output.copy(output_fd)?;
-        }
-        if lifetime_open && ready[1] || STOP.load(Ordering::Relaxed) {
+    // Once every writer closed it, a pipe polls as hung up at once.
+    let mut output_open = true;
+    let poll = |output_open: bool, lifetime_open: bool, timeout: Duration| {
+        let fds: Vec<RawFd> = [(output_open, output_fd), (lifetime_open, 0)]
+            .into_iter()
+            .filter_map(|(open, fd)| open.then_some(fd))
+            .collect();
+        let ready = wait(&fds, timeout)?;
+        let mut flags = ready.into_iter();
+        Ok::<_, io::Error>((
+            output_open && flags.next().unwrap_or(false),
+            lifetime_open && flags.next().unwrap_or(false),
+        ))
+    };
+    let stop_requested = |lifetime_ready: bool, lifetime_open: &mut bool| {
+        if *lifetime_open && lifetime_ready || STOP.load(Ordering::Relaxed) {
             // Data or hang-up: the daemon no longer wants this job.
-            lifetime_open = false;
+            *lifetime_open = false;
+            return true;
+        }
+        false
+    };
+    let ended = loop {
+        let (output_ready, lifetime_ready) =
+            poll(output_open, lifetime_open, Duration::from_millis(100))?;
+        if output_ready && output.copy(output_fd)? == Read::End {
+            output_open = false;
+        }
+        if stop_requested(lifetime_ready, &mut lifetime_open) {
             outcome.cancelled = true;
         }
         reap_orphans(pid);
@@ -308,24 +361,24 @@ pub fn run() -> io::Result<i32> {
         }
     };
     (outcome.exit_code, outcome.signal) = ended;
-    // Output from what the command left behind, until it goes quiet.
+    // Output from what the command left behind, until it goes quiet, for
+    // DRAIN_LIMIT at most, and not after a stop request.
+    let deadline = Instant::now() + DRAIN_LIMIT;
     let mut idle = Instant::now();
-    while idle.elapsed() < DRAIN_IDLE {
+    while output_open && idle.elapsed() < DRAIN_IDLE && Instant::now() < deadline {
         reap_orphans(pid);
-        if wait(&[output_fd], DRAIN_IDLE)?[0] {
+        let (output_ready, lifetime_ready) = poll(true, lifetime_open, DRAIN_IDLE)?;
+        if stop_requested(lifetime_ready, &mut lifetime_open) {
+            break;
+        }
+        if output_ready {
             if output.copy(output_fd)? == Read::End {
                 break;
             }
             idle = Instant::now();
         }
     }
-    stop_all(pid, Instant::now() + CLEANUP);
-    // Every writer is gone now: copy what is left.
-    while output.copy(output_fd)? == Read::Data {}
-    drop((child, read));
-    outcome.truncated = output.truncated;
-    write_status(status, &outcome)?;
-    Ok(0)
+    Ok(())
 }
 
 fn write_status(status: &Path, outcome: &Outcome) -> io::Result<()> {
