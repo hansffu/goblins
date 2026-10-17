@@ -3,10 +3,18 @@
   builders,
   commonTools,
   agents,
+  # More scopes the agents may join as children, such as the dev shell's.
+  agentScopes ? [ ],
 }:
 let
   # Fish too, for a shell inside the agent goblins (goblins-shell-program).
   tools = commonTools ++ [ pkgs.fish ];
+  # Every demo goblin may start the agents as helpers; none may start
+  # goblins-dev, the only one with Nix and host commands.
+  allowedChildren = [
+    "claude"
+    "codex"
+  ];
 in
 {
   shell = import ./shell.nix {
@@ -18,12 +26,14 @@ in
   codex = builders.mkCodexGoblin {
     pkg = agents.codex;
     allowedPackages = tools;
-    allowedScopes = [ "goblins-dev" ];
+    allowedScopes = [ "goblins-dev" ] ++ agentScopes;
+    inherit allowedChildren;
   };
   claude = builders.mkClaudeGoblin {
     pkg = agents.claude-code;
     allowedPackages = tools;
-    allowedScopes = [ "goblins-dev" ];
+    allowedScopes = [ "goblins-dev" ] ++ agentScopes;
+    inherit allowedChildren;
   };
   # For developing Goblins from a goblin: ordinary Nix commands against the
   # host daemon, and approved host commands for the Bubblewrap, namespace and
@@ -37,10 +47,6 @@ in
     hostCommands.enable = true;
     # Cargo and Nix fetcher caches that outlive the session (scopes.nix).
     scope = "goblins-dev";
-    allowedChildren = [
-      "goblins-dev"
-      "claude"
-      "codex"
-    ];
+    inherit allowedChildren;
   };
 }

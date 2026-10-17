@@ -6,6 +6,8 @@
   # The demo goblins the Python tests use.
   demo,
   devShell,
+  # The dev-goblins package: the demo goblins with a Docker shell.
+  devGoblins,
 }:
 let
   inherit (goblinsLib.builders)
@@ -236,6 +238,7 @@ let
       devShellInjectedFiles."same.conf" = "b";
     }
     { allowedChildren = "bad"; }
+    { allowedChildren = null; }
     {
       allowedChildren = [
         "bad"
@@ -294,6 +297,18 @@ in
       scopes = import "${source}/nix/demo-goblins/scopes.nix" { inherit (api.builders) mkScope; };
     };
   demo-goblins = demo;
+  # Every demo goblin may start the agents, also the dev package's shell in
+  # its dev scope, and no goblin may start goblins-dev.
+  demo-children = pkgs.runCommand "goblins-demo-children" { nativeBuildInputs = [ pkgs.jq ]; } ''
+    jq -e '.goblins as $g
+      | ($g | keys) == ["claude", "codex", "goblins-dev", "shell"]
+      and all($g[]; .allowed_children == ["claude", "codex"])
+      and $g.shell.scope == "dev"
+      and ($g.claude.scopes | has("dev")) and ($g.codex.scopes | has("dev"))
+      and ($g.claude.host_commands | not) and ($g.codex.host_commands | not)
+      and $g["goblins-dev"].host_commands' ${devGoblins.config}
+    touch $out
+  '';
   # Each feature set gets its own skills, and none of them presents a
   # workflow the sandbox doesn't have (tests/test_*_config.py check the mounts).
   skill-selection =
@@ -467,6 +482,8 @@ in
           ];
           scope = default;
           allowedScopes = allowedScopes.${name} or [ ];
+          # Children of their own kind (tests/test_docker.py).
+          allowedChildren = [ name ];
           allowedPackages = [
             pkgs.coreutils
             pkgs.curl
@@ -517,6 +534,7 @@ in
         pkg = codexProbe;
         filterUnavailableMcp = false;
         args = [ "literal $(false) argument" ];
+        allowedChildren = [ "codex" ];
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -533,6 +551,8 @@ in
         );
         allowedDomains = [ ];
         allowedPackages = [ pkgs.python3 ];
+        # A child of its own kind (test_parent_and_child_servers_have_independent_bindings).
+        allowedChildren = [ "notifier" ];
       };
       profile = mkCodexGoblin {
         pkg = pkgs.writeScriptBin "codex" (
@@ -601,6 +621,7 @@ in
       claude = mkClaudeGoblin {
         pkg = claudeProbe;
         args = [ "literal $(false) argument" ];
+        allowedChildren = [ "claude" ];
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -721,8 +742,12 @@ in
             "private"
           ];
           env.OVERRIDDEN = "from-goblin";
+          allowedChildren = [ "member" ];
         };
-        loner = member { allowedScopes = [ "work" ]; };
+        loner = member {
+          allowedScopes = [ "work" ];
+          allowedChildren = [ "member" ];
+        };
         builder = member {
           scope = "builds";
           rwDirs = [ "$GOBLINS_TEST_ROOT/projects" ];
@@ -750,6 +775,7 @@ in
           VISUAL = "custom-visual";
         };
         allowedScopes = [ "work" ];
+        allowedChildren = [ "plain" ];
       };
     };
   };
@@ -768,6 +794,7 @@ in
           pkgs.curl
         ];
         env.PS1 = "network-test> ";
+        allowedChildren = [ "online" ];
       };
       offline = mkGoblin {
         pkg = pkgs.bashInteractive;
@@ -968,12 +995,12 @@ in
       };
     in
     pkgs.runCommand "goblins-allowed-children-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
-      # Resolved on top-level configurations (omitted means only itself) and
-      # never carried by scope variants.
+      # Resolved on top-level configurations (omitted means none) and never
+      # carried by scope variants.
       jq -e '.api == 2 and .helper_api == 5
         and .goblins.claude.allowed_children == ["claude", "codex"]
         and .goblins.codex.allowed_children == []
-        and .goblins.shell.allowed_children == ["shell"]
+        and .goblins.shell.allowed_children == []
         and (.goblins.shell.scopes.work | has("allowed_children") | not)' ${manifest.config}
       touch $out
     '';
@@ -1072,7 +1099,7 @@ in
     assert (mkGoblin (base // { scope = "work"; })).goblin.scope == "work";
     assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
     assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
-    assert (mkGoblin base).goblin.allowed_children == null;
+    assert (mkGoblin base).goblin.allowed_children == [ ];
     assert (mkGoblin base).goblin.resume_command == null;
     assert
       (mkGoblin (

@@ -51,11 +51,11 @@ let
         "allowed_scopes"
         "allowed_children"
       ];
-  # Omitted: only the configuration itself. The daemon applies the same bounds.
+  # The daemon applies the same bounds.
   allowedChildren =
     name: goblin:
     let
-      children = if goblin.allowed_children == null then [ name ] else goblin.allowed_children;
+      children = goblin.allowed_children;
       undeclared = builtins.filter (child: !(goblins ? ${child})) children;
     in
     if builtins.length children > 64 then

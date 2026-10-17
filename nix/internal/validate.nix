@@ -124,14 +124,12 @@ in
       fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
     else if
       !(
-        allowedChildren == null
-        ||
-          builtins.isList allowedChildren
-          && builtins.all (name: builtins.isString name && validName name) allowedChildren
-          && lib.unique allowedChildren == allowedChildren
+        builtins.isList allowedChildren
+        && builtins.all (name: builtins.isString name && validName name) allowedChildren
+        && lib.unique allowedChildren == allowedChildren
       )
     then
-      fail "allowedChildren must be null or a list of unique goblin names"
+      fail "allowedChildren must be a list of unique goblin names"
     else if !storageMounts scopeStorage then
       fail "scopeStorage must map storage names to distinct absolute or $HOME paths outside /nix, /proc, /dev and /run/goblins"
     else if !builtins.isBool allowNix then

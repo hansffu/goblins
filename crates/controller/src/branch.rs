@@ -160,19 +160,19 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_null_list_permits_only_the_configuration_itself() {
-        // Manifests from older builds carry no allowed_children.
+    fn a_missing_list_permits_no_children() {
         let (_, branch) = manifest(json!({"shell": goblin(json!({})), "other": goblin(json!({}))}))
             .branch("shell", None)
             .unwrap();
         assert_eq!(names(&branch), ["shell"]);
-        assert_eq!(branch.allowed_children("shell"), ["shell"]);
-        assert!(branch.permit("shell", "shell").is_ok());
-        assert_eq!(
-            branch.permit("shell", "other").unwrap_err(),
-            "configuration 'other' is not an allowed child of 'shell'; allowed: shell"
-        );
-        // The default self-child needs no snapshot entry and roots nothing.
+        assert!(branch.allowed_children("shell").is_empty());
+        for child in ["shell", "other"] {
+            assert_eq!(
+                branch.permit("shell", child).unwrap_err(),
+                "configuration 'shell' permits no children"
+            );
+        }
+        // The root needs no snapshot entry and roots nothing.
         assert!(branch.entries["shell"].configuration.is_none());
     }
 

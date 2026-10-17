@@ -48,10 +48,9 @@ pub struct Configuration {
     /// The same goblin with each permitted scope's defaults merged in by Nix.
     #[serde(default)]
     pub scopes: BTreeMap<String, Configuration>,
-    /// Configurations this one may launch as children. Nix always writes it
-    /// on top-level configurations; absent (an older build) means itself only.
+    /// Configurations this one may launch as children; none when absent.
     #[serde(default)]
-    pub allowed_children: Option<Vec<String>>,
+    pub allowed_children: Vec<String>,
     #[serde(skip)]
     pub selected_scope: Option<Scope>,
 }
@@ -189,9 +188,9 @@ impl Manifest {
             }
         }
         for (name, config) in &self.goblins {
-            if let Some(children) = &config.allowed_children
-                && (children.len() > MAX_CHILDREN
-                    || !children.iter().all(|c| goblins_protocol::identifier(c)))
+            let children = &config.allowed_children;
+            if children.len() > MAX_CHILDREN
+                || !children.iter().all(|c| goblins_protocol::identifier(c))
             {
                 return Err(format!(
                     "invalid allowed_children for '{name}': at most {MAX_CHILDREN} names of at most 64 characters"
@@ -204,10 +203,7 @@ impl Manifest {
     /// A top-level configuration's permitted children; unknown names have none.
     fn children(&self, name: &str) -> Vec<String> {
         match self.goblins.get(name) {
-            Some(config) => config
-                .allowed_children
-                .clone()
-                .unwrap_or_else(|| vec![name.to_string()]),
+            Some(config) => config.allowed_children.clone(),
             None => vec![],
         }
     }

@@ -3242,7 +3242,7 @@ mod tests {
                 "coordinator": goblin(json!(["coordinator", "reviewer", "scoped"])),
                 "reviewer": goblin(json!(["shell"])),
                 "shell": goblin(json!([])),
-                "scoped": {"scope": "work", "scopes": {"work": goblin(Value::Null)},
+                "scoped": {"scope": "work", "scopes": {"work": goblin(json!([]))},
                     "build_spec": "/unused", "args": [], "env": {}, "client_package": "/unused",
                     "helper": "/unused", "flake": "unused"},
             },

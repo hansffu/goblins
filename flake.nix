@@ -39,6 +39,17 @@
         goblins = demoGoblins;
         scopes = demoScopes;
       };
+      # The demo goblins for the Python tests, whose shells start shells.
+      testGoblins = goblinsLib.builders.mkGoblins {
+        goblins = demoGoblins // {
+          shell = import ./nix/demo-goblins/shell.nix {
+            inherit pkgs;
+            inherit (goblinsLib.builders) mkGoblin;
+            options.allowedChildren = [ "shell" ];
+          };
+        };
+        scopes = demoScopes;
+      };
       dockerShell = import ./nix/demo-goblins/shell.nix {
         inherit pkgs;
         inherit (goblinsLib.builders) mkGoblin;
@@ -55,9 +66,17 @@
       devGoblins = goblinsLib.builders.mkGoblins {
         scopes = demoScopes // devScopes;
         editor.emacs.enable = true;
-        goblins = demoGoblins // {
-          shell = dockerShell;
-        };
+        # The shell runs in the dev scope, which its agent children join.
+        goblins =
+          import ./nix/demo-goblins {
+            inherit pkgs;
+            inherit (goblinsLib) builders commonTools;
+            agents = llm-agents.packages.${system};
+            agentScopes = [ "dev" ];
+          }
+          // {
+            shell = dockerShell;
+          };
       };
       devShell = pkgs.mkShell {
         packages = [
@@ -93,9 +112,10 @@
           pkgs
           goblinsLib
           sandbox
-          demo
           devShell
+          devGoblins
           ;
+        demo = testGoblins;
         agents = llm-agents.packages.${system};
       };
       formatter.${system} = pkgs.nixfmt;

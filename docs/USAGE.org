@@ -193,7 +193,7 @@ goblins.goblins-dev = mkClaudeGoblin {
   allowNix = true;
   hostCommands.enable = true;
   scope = "goblins-dev";
-  allowedChildren = [ "goblins-dev" "claude" "codex" ];
+  allowedChildren = [ "claude" "codex" ];
 };
 # Children join their parent's scope, so their configurations allow it:
 goblins.claude = mkClaudeGoblin { allowedScopes = [ "goblins-dev" ]; };
@@ -892,12 +892,9 @@ Attachment and terminal resizing are restricted to descendants; a sandbox cannot
 attach to itself, its ancestors or another branch.
 
 A sandbox may start children using the configurations in its
-=allowedChildren= list. Omitting the option permits only the sandbox's own
-configuration, so by default a =shell= sandbox starts only =shell= children, a
-=codex= sandbox only =codex= children and a =claude= sandbox only =claude=
-children. An explicit list replaces that default (include the configuration's
-own name to keep it), and an empty list permits no children. =mkGoblins=
-rejects names it does not declare, and lists over 64 names.
+=allowedChildren= list. The default is an empty list: no children, not even of
+its own configuration (list its own name for that). =mkGoblins= rejects names
+it does not declare, and lists over 64 names.
 
 #+begin_src nix
 mkGoblins {

@@ -2,7 +2,7 @@
 
 Date: 2026-10-17
 
-Status: Accepted. Its security model is still to be reviewed.
+Status: Accepted. Security-reviewed on 2026-10-17; the decisions are under Consequences.
 
 ## Context
 
@@ -19,5 +19,7 @@ Output goes to the session directory, which the sandbox sees read-only at `/run/
 The interface is a CLI command with a skill that explains it, like the other Goblins features, not an MCP tool.
 
 ## Consequences
+
+After the security review the human accepted that an approved command runs whatever the shared files say, also after approval, and kept the daemon's environment and arbitrary request variables, which reach the command only. Which goblins can ask is configuration: `hostCommands.enable` on a configuration, and `allowedChildren`, which now defaults to no children, decides which configurations a goblin can start.
 
 A goblin with host commands can do anything the user can, once each command is approved. The approval view is the control, which the skill helps by asking for a reason that names any goblin a command serves. Processes that escape through the user's own services (for example `systemd-run --user`) are not stopped with the job. Jobs are not recreated with their goblin. The full plan is `docs/specs/NIX-AND-HOST-COMMANDS.org`.

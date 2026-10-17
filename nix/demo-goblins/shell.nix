@@ -12,6 +12,10 @@ mkGoblin (
       "--init-command"
       "goblin completions fish | source"
     ];
+    allowedChildren = [
+      "claude"
+      "codex"
+    ];
   }
   // options
 )
