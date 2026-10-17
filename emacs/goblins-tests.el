@@ -2668,6 +2668,93 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (goblins-attention-mode -1))
       (should-not (memq 'goblins--mode-line-string global-mode-string)))))
 
+(ert-deftest goblins-attention-mode-counts-and-announces-agent-prompts ()
+  (goblins-test--buffer
+    (let ((global-mode-string nil) announced
+          (waiting (lambda (&rest states)
+                     (let ((snapshot (goblins-test--snapshot (goblins-test--request "a"))))
+                       (plist-put snapshot :sessions
+                                  (vconcat (seq-map-indexed
+                                            (lambda (state i)
+                                              (goblins-test--session (format "s%d" i) :agent_state state))
+                                            states)))))))
+      (unwind-protect
+          (let ((goblins-attention-approval-function (lambda (s) (push (plist-get s :id) announced))))
+            (goblins-attention-mode 1)
+            ;; Goblins already waiting when Emacs connects are counted, not announced.
+            (setq goblins--seen-approvals 'unset
+                  goblins--snapshot (funcall waiting "waiting-approval" "working"))
+            (goblins--note-requests)
+            (goblins--render)
+            (should-not announced)
+            (should (string-match-p "Goblins!2" goblins--mode-line-string))
+            ;; A new prompt is announced once; waiting for input is neither.
+            (setq goblins--snapshot (funcall waiting "waiting-approval" "waiting-approval" "waiting-input"))
+            (goblins--note-requests)
+            (goblins--note-requests)
+            (goblins--render)
+            (should (equal announced '("s1")))
+            (should (string-match-p "Goblins!3" goblins--mode-line-string))
+            ;; Waiting again after answering is a new prompt.
+            (setq goblins--snapshot (funcall waiting "working" "waiting-approval"))
+            (goblins--note-requests)
+            (setq goblins--snapshot (funcall waiting "waiting-approval" "waiting-approval"))
+            (goblins--note-requests)
+            (should (equal announced '("s0" "s1"))))
+        (goblins-attention-mode -1)))))
+
+(ert-deftest goblins-notify-uses-desktop-notifications-or-the-echo-area ()
+  ;; Loaded first, so it does not replace the stand-ins below.
+  (require 'notifications nil t)
+  (dolist (capabilities '((:body :body-markup) (:body)))
+    (let (shown clicked)
+      (cl-letf (((symbol-function 'notifications-get-capabilities) (lambda (&rest _) capabilities))
+                ((symbol-function 'notifications-notify)
+                 (lambda (&rest params) (setq shown params) 1)))
+        (goblins--notify "Goblins: snikk asks for a && b" "a & <b>"
+                         (lambda () (setq clicked t)))
+        ;; The title is never markup; the body only where the server reads it.
+        (should (equal (plist-get shown :title) "Goblins: snikk asks for a && b"))
+        (should (equal (plist-get shown :body)
+                       (if (memq :body-markup capabilities) "a &amp; &lt;b&gt;" "a & <b>")))
+        (funcall (plist-get shown :on-action) 1 "default")
+        (should clicked))))
+  (dolist (failing '(notifications-notify notifications-get-capabilities))
+    (cl-letf (((symbol-function 'notifications-get-capabilities) (lambda (&rest _) nil))
+              ((symbol-function failing) (lambda (&rest _) (error "No D-Bus"))))
+      (should (equal (goblins--notify "Goblins: snikk needs your approval" "body" #'ignore)
+                     "Goblins: snikk needs your approval — body")))))
+
+(ert-deftest goblins-announcements-that-wait-do-not-repeat ()
+  "A hook that processes events meanwhile, as a desktop notification does,
+sees the new baseline: neither the same nor a newer snapshot repeats one."
+  (goblins-test--buffer
+    (let ((goblins--seen-approvals nil) (goblins--seen-requests nil)
+          approvals requests nested)
+      (setq goblins--snapshot
+            (list :permissions (vector (goblins-test--request "a"))
+                  :sessions (vector (goblins-test--session "s" :agent_state "waiting-approval"))))
+      (let ((goblins-approval-hook
+             (list (lambda (session)
+                     (push (plist-get session :id) approvals)
+                     (unless nested
+                       (setq nested t)
+                       ;; Unchanged, then a newer snapshot with one more.
+                       (goblins--note-requests)
+                       (setq goblins--snapshot
+                             (list :permissions (vector (goblins-test--request "a")
+                                                        (goblins-test--request "b"))
+                                   :sessions (vector (goblins-test--session "s" :agent_state "waiting-approval")
+                                                     (goblins-test--session "t" :agent_state "waiting-approval"))))
+                       (goblins--note-requests)))))
+            (goblins-request-hook (list (lambda (r) (push (plist-get r :id) requests)))))
+        (goblins--note-requests)
+        (should (equal (sort approvals #'string<) '("s" "t")))
+        (should (equal (sort requests #'string<) '("a" "b")))
+        ;; The newest baseline stays.
+        (should (equal goblins--seen-approvals '("s" "t")))
+        (should (equal goblins--seen-requests '("a" "b")))))))
+
 ;;; goblin-mode
 
 (ert-deftest goblin-mode-gives-goblin-terminals-their-own-keys ()

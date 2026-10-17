@@ -69,11 +69,20 @@ The last delay repeats until a connection succeeds.  nil disables reconnecting."
 Functions run in the server's status buffer and receive the request record.
 Requests already pending when Emacs first connects are not announced.")
 
+(defvar goblins-approval-hook nil
+  "Abnormal hook run with each goblin whose agent began waiting at its own
+permission prompt (one without `bypassPermissions').  Functions run in the
+server's status buffer and receive the session record.  Goblins already
+waiting when Emacs first connects are not announced.")
+
 (defvar-local goblins--reconnect-timer nil)
 (defvar-local goblins--reconnect-attempt 0)
 (defvar-local goblins--seen-requests 'unset
   "IDs of the pending requests already announced, or `unset' before the first
 snapshot.")
+(defvar-local goblins--seen-approvals 'unset
+  "IDs of the goblins waiting at their agent's own permission prompt at the
+last snapshot, or `unset' before the first.")
 
 (defclass goblins-section (magit-section) ())
 (defclass goblins-agent-section (goblins-section) ())
@@ -680,18 +689,43 @@ disconnect; the status buffer's notice already reports it."
                     "; r to reconnect"))))
   (goblins--render))
 
+(defun goblins--announce-new (items seen hook)
+  "Run HOOK with each of ITEMS whose id the buffer-local SEEN did not hold,
+unless it is `unset', and leave SEEN holding ITEMS' ids.  SEEN is updated
+before HOOK runs: a hook that waits, as a desktop notification does, can
+process the next snapshot meanwhile, which must not announce them again."
+  (let ((before (symbol-value seen)))
+    (set seen (mapcar (lambda (item) (plist-get item :id)) items))
+    (unless (eq before 'unset)
+      (dolist (item items)
+        (unless (member (plist-get item :id) before)
+          (condition-case-unless-debug err
+              (run-hook-with-args hook item)
+            (error (message "%s: %S" hook err))))))))
+
 (defun goblins--note-requests ()
-  "Run `goblins-request-hook' for requests that became pending."
-  (let ((pending (cl-remove-if-not
-                  (lambda (r) (equal (plist-get r :state) "pending"))
-                  (append (plist-get goblins--snapshot :permissions) nil))))
-    (unless (eq goblins--seen-requests 'unset)
-      (dolist (record pending)
-        (unless (member (plist-get record :id) goblins--seen-requests)
-          (with-demoted-errors "goblins-request-hook: %S"
-            (run-hook-with-args 'goblins-request-hook record)))))
-    ;; Settled requests never become pending again, so only pending IDs matter.
-    (setq goblins--seen-requests (mapcar (lambda (r) (plist-get r :id)) pending))))
+  "Run `goblins-request-hook' for requests that became pending, and
+`goblins-approval-hook' for goblins that began waiting for approval."
+  ;; Settled requests never become pending again, so only pending IDs matter.
+  (goblins--announce-new (cl-remove-if-not
+                          (lambda (r) (equal (plist-get r :state) "pending"))
+                          (append (plist-get goblins--snapshot :permissions) nil))
+                         'goblins--seen-requests 'goblins-request-hook)
+  (goblins--note-approvals))
+
+(defun goblins--waiting-approval (snapshot)
+  "The running goblins of SNAPSHOT waiting at their agent's own permission
+prompt."
+  (cl-remove-if-not (lambda (s) (and (equal (plist-get s :state) "running")
+                                     (equal (plist-get s :agent_state) "waiting-approval")))
+                    (append (plist-get snapshot :sessions) nil)))
+
+(defun goblins--note-approvals ()
+  "Run `goblins-approval-hook' for goblins that began waiting for approval.
+A goblin that stops waiting and waits again is announced again: it is a new
+prompt."
+  (goblins--announce-new (goblins--waiting-approval goblins--snapshot)
+                         'goblins--seen-approvals 'goblins-approval-hook))
 
 (defun goblins--echo-unless-shown (buffer text)
   "Show TEXT in the echo area when no window shows status BUFFER."

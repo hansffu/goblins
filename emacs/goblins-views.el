@@ -1271,10 +1271,17 @@ Return (SOURCE . SESSION-ID)."
 
 ;;;; Attention
 
-(defcustom goblins-attention-notify-function #'goblins-notify-message
+(defcustom goblins-attention-notify-function #'goblins-notify-request
   "Function called with a permission request record when it becomes pending,
-while `goblins-attention-mode' is on."
+while `goblins-attention-mode' is on.  It runs in the server's status buffer.
+`goblins-notify-message' announces in the echo area only."
   :type 'function :group 'goblins)
+
+(defcustom goblins-attention-approval-function #'goblins-notify-approval
+  "Function called with a goblin's session record when its agent begins
+waiting at its own permission prompt, while `goblins-attention-mode' is on.
+It runs in the server's status buffer.  nil announces nothing."
+  :type '(choice function (const :tag "Nothing" nil)) :group 'goblins)
 
 (defvar goblins--mode-line-string ""
   "Mode line text of `goblins-attention-mode'.")
@@ -1287,25 +1294,68 @@ while `goblins-attention-mode' is on."
            (goblins--request-subject record)
            (goblins--safe (plist-get record :reason))))
 
-(defun goblins--pending-total ()
-  "Pending requests over every connected server."
+(defun goblins--notify (title body action)
+  "Show TITLE and BODY as a desktop notification that calls ACTION when
+clicked, or in the echo area when Emacs has no notification service.
+Both are shown as plain text."
+  (unless (condition-case nil
+              (and (require 'notifications)
+                   (notifications-notify
+                    :title title
+                    ;; A server with body markup would read the goblin's text
+                    ;; as markup; the title is never markup.
+                    :body (if (memq :body-markup (notifications-get-capabilities))
+                              (replace-regexp-in-string
+                               "[&<>]" (lambda (c) (pcase c ("&" "&amp;") ("<" "&lt;") (_ "&gt;")))
+                               body t t)
+                            body)
+                    :app-name "Goblins" :actions '("default" "Show")
+                    :on-action (lambda (_id _key)
+                                 (ignore-errors (select-frame-set-input-focus (selected-frame)))
+                                 (funcall action))))
+            (error nil))
+    (message "%s — %s" title body)))
+
+(defun goblins-notify-request (record)
+  "Announce the permission request RECORD with `goblins--notify'; clicking
+it shows the request."
+  (let ((source (current-buffer)))
+    (goblins--notify (format "Goblins: %s asks for %s"
+                             (goblins--safe (plist-get record :agent_name))
+                             (goblins--request-subject record))
+                     (goblins--safe (plist-get record :reason))
+                     (lambda () (when (buffer-live-p source) (goblins-requests source record))))))
+
+(defun goblins-notify-approval (session)
+  "Announce that SESSION's agent waits at its own permission prompt with
+`goblins--notify'; clicking it shows the goblin's terminal."
+  (let ((source (current-buffer))
+        (id (plist-get session :id)))
+    (goblins--notify (format "Goblins: %s needs your approval"
+                             (goblins--safe (plist-get session :agent_name)))
+                     "It is waiting at its own permission prompt."
+                     (lambda () (when (buffer-live-p source) (goblins-open-session source id))))))
+
+(defun goblins--attention-total ()
+  "What waits for your approval over every connected server: pending
+requests and goblins at their agent's own permission prompt."
   (let ((total 0))
     (dolist (buffer (buffer-list))
       (when (eq (buffer-local-value 'major-mode buffer) 'goblins-status-mode)
-        (setq total (+ total (cl-count-if
-                              (lambda (r) (equal (plist-get r :state) "pending"))
-                              (append (plist-get (buffer-local-value 'goblins--snapshot buffer)
-                                                 :permissions)
-                                      nil))))))
+        (let ((snapshot (buffer-local-value 'goblins--snapshot buffer)))
+          (setq total (+ total
+                         (cl-count-if (lambda (r) (equal (plist-get r :state) "pending"))
+                                      (append (plist-get snapshot :permissions) nil))
+                         (length (goblins--waiting-approval snapshot)))))))
     total))
 
 (defun goblins--update-mode-line ()
-  (let ((total (goblins--pending-total)))
+  (let ((total (goblins--attention-total)))
     (setq goblins--mode-line-string
           (if (= total 0) ""
             (propertize (format " Goblins!%d" total)
                         'face 'goblins-attention
-                        'help-echo "Goblins waiting for a decision; mouse-1: open the workspace"
+                        'help-echo "Goblins waiting for your approval; mouse-1: open the workspace"
                         'mouse-face 'mode-line-highlight
                         'local-map (make-mode-line-mouse-map 'mouse-1 #'goblins-workspace))))
     (force-mode-line-update t)))
@@ -1313,10 +1363,16 @@ while `goblins-attention-mode' is on."
 (defun goblins--attention-request (record)
   (funcall goblins-attention-notify-function record))
 
+(defun goblins--attention-approval (session)
+  (when goblins-attention-approval-function
+    (funcall goblins-attention-approval-function session)))
+
 ;;;###autoload
 (define-minor-mode goblins-attention-mode
-  "Show pending Goblins requests in the mode line and announce new ones.
-New requests are passed to `goblins-attention-notify-function'."
+  "Show in the mode line how much waits for your approval, and announce it.
+Counts pending requests and goblins waiting at their agent's own permission
+prompt.  New ones are passed to `goblins-attention-notify-function' and
+`goblins-attention-approval-function', which show desktop notifications."
   :global t :group 'goblins
   (if goblins-attention-mode
       (progn
@@ -1324,11 +1380,16 @@ New requests are passed to `goblins-attention-notify-function'."
           (setq global-mode-string (append global-mode-string '(goblins--mode-line-string))))
         (add-hook 'goblins-snapshot-hook #'goblins--update-mode-line)
         (add-hook 'goblins-request-hook #'goblins--attention-request)
+        (add-hook 'goblins-approval-hook #'goblins--attention-approval)
         (goblins--update-mode-line))
     (setq global-mode-string (delq 'goblins--mode-line-string global-mode-string))
     (remove-hook 'goblins-snapshot-hook #'goblins--update-mode-line)
-    (remove-hook 'goblins-request-hook #'goblins--attention-request)))
+    (remove-hook 'goblins-request-hook #'goblins--attention-request)
+    (remove-hook 'goblins-approval-hook #'goblins--attention-approval)))
 
+(declare-function notifications-notify "notifications" (&rest params))
+(declare-function notifications-get-capabilities "notifications" (&optional bus))
+(declare-function goblins-requests "goblins-completion" (source record))
 (declare-function goblins-workspace "goblins-workspace" (&optional directory))
 
 (provide 'goblins-views)
