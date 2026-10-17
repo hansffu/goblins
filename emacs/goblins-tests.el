@@ -1441,7 +1441,7 @@ keeps the parameters of windows that live on."
         (should (string-match-p "Reason: +Try a live grant" (buffer-string)))
         ;; a decides the request shown.
         (cl-letf (((symbol-function 'goblins--decide-record)
-                   (lambda (record approved) (setq decided (list (plist-get record :id) approved)))))
+                   (lambda (record approved &optional _shown) (setq decided (list (plist-get record :id) approved)))))
           (goblins-request-popup-accept))
         (should (equal decided '("a" t))))
       ;; A goblin with nothing waiting closes it.
@@ -1711,7 +1711,7 @@ keeps the parameters of windows that live on."
     (let (decided)
       (terminal "session-a")
       (cl-letf (((symbol-function 'goblins--decide-record)
-                 (lambda (record approved) (setq decided (list (plist-get record :id) approved)))))
+                 (lambda (record approved &optional _shown) (setq decided (list (plist-get record :id) approved)))))
         (goblins-select-goblin source "session-a")
         (should (eq (window-buffer) (terminal "session-a")))
         (goblins-request-popup-deny)
@@ -1814,7 +1814,7 @@ keeps the parameters of windows that live on."
   (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "pending"))
     (let (decided)
       (cl-letf (((symbol-function 'goblins--decide-record)
-                 (lambda (record approved)
+                 (lambda (record approved &optional _shown)
                    (setq decided (list (current-buffer) (plist-get record :id) approved)))))
         (with-current-buffer (goblins-permissions-buffer source "session-a")
           (goblins-permissions-accept)
@@ -2392,7 +2392,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                                                        (cadr choices)))))
                      (cadr choices))))
                 ((symbol-function 'goblins--decide-record)
-                 (lambda (record approved) (setq decided (list (plist-get record :id) approved))))
+                 (lambda (record approved &optional _shown) (setq decided (list (plist-get record :id) approved))))
                 ((symbol-function 'goblins-open-session)
                  (lambda (src id) (setq opened (list src id))))
                 ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
@@ -4161,3 +4161,50 @@ m2, and m3, which failed when beta stopped."
                        command))))
     (should (<= (length (goblins--request-subject record)) 60))
     (should (equal (goblins--request-subject (list :kind "package" :package "jq")) "jq"))))
+
+;; A host command is accepted only where it is shown whole: its details view
+;; or the popup.  Choosing it from a list or completion opens the details
+;; instead of sending a decision; denying works anywhere.
+(ert-deftest goblins-host-commands-are-accepted-only-where-shown-whole ()
+  (let ((request (append (goblins-test--request-in "h1" "session-a" "pending" "true (in /p/one)")
+                         (list :preview '(:kind "host-command" :description "Runs on the host"
+                                          :command "true" :directory "/p/one"
+                                          :environment ["LD_PRELOAD=/p/one/payload.so"]
+                                          :time_limit "none")))))
+    (setq request (plist-put request :kind "host-command"))
+    (goblins-test--view (list request)
+      (let (sent shown)
+       (unwind-protect
+        (progn
+        (cl-letf (((symbol-function 'goblins--request)
+                   (lambda (method params _callback) (push (list method params) sent)))
+                  ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+          (with-current-buffer source
+            (setq-local goblins--connection 'test goblins--subscription "sub")
+            ;; Completion and Embark: details open, nothing is sent.
+            (should-error (goblins-request-accept source request) :type 'user-error)
+            (should-not sent)
+            (should (eq shown (get-buffer goblins--permissions-buffer-name))))
+          (with-current-buffer shown
+            (let ((text (buffer-string)))
+              (should (string-match-p "LD_PRELOAD=/p/one/payload.so" text))
+              (should (string-match-p "Directory" text)))
+            (goblins--view-goto (oref (goblins--find-request-section "h1") start))
+            ;; Folded, it shows only its heading: no.
+            (magit-section-hide (goblins--find-request-section "h1"))
+            (should-error (goblins-permissions-accept) :type 'user-error)
+            (should-not sent)
+            ;; Shown whole: the decision goes out.
+            (magit-section-show (goblins--find-request-section "h1"))
+            (goblins-permissions-accept)
+            (should (equal (car sent) '(permissions.decide
+                                        (:session "session-a" :request "h1"
+                                         :approval "approval-h1" :approved t)))))
+          ;; Denial needs no review.
+          (with-current-buffer source
+            (clrhash goblins--decisions)
+            (setq sent nil)
+            (goblins-request-deny source request)
+            (should (equal (plist-get (cadr (car sent)) :approved) :json-false)))))
+        ;; Not a real connection: nothing to close when the test ends.
+        (with-current-buffer source (setq-local goblins--connection nil)))))))

@@ -78,7 +78,9 @@ snapshot.")
 (defclass goblins-section (magit-section) ())
 (defclass goblins-agent-section (goblins-section) ())
 (defclass goblins-request-section (goblins-section)
-  ((record :initarg :record :initform nil)))
+  ((record :initarg :record :initform nil)
+   ;; Rendered with its fields and preview, not as a heading only.
+   (details :initarg :details :initform nil)))
 (defclass goblins-fold-section (goblins-section) ()
   "Sections TAB folds, also in the details view.")
 (defclass goblins-summary-section (goblins-fold-section) ())
@@ -334,6 +336,21 @@ continue under the value; no character of VALUE is changed or dropped."
                 (substring rest 0 cut) "\n")
         (setq rest (substring rest cut) first nil)))))
 
+(defun goblins--insert-host-command (preview)
+  "Insert a host command's PREVIEW as fields: its warning, command,
+directory, each variable and time limit.  These are the daemon's escaped
+values, so no request text can add a line or a field."
+  (insert "    " (propertize (goblins--safe (car (split-string
+                                                   (or (plist-get preview :description) "")
+                                                   "\n")))
+                               'face 'goblins-dim)
+          "\n")
+  (goblins--wrapped-field "Command:" (plist-get preview :command))
+  (goblins--wrapped-field "Directory:" (plist-get preview :directory))
+  (seq-doseq (variable (plist-get preview :environment))
+    (goblins--wrapped-field "Variable:" variable))
+  (goblins--wrapped-field "Time limit:" (plist-get preview :time_limit)))
+
 (defun goblins--request-subject (record)
   "What RECORD asks for, on one line.  A host command is cut to 60
 characters: its approval shows it whole."
@@ -353,6 +370,7 @@ HIDE starts it folded and HEADING replaces the default heading text."
   (magit-insert-section section
     (goblins-request-section (plist-get record :id) hide)
     (oset section record record)
+    (oset section details details)
     (magit-insert-heading
       (or heading
           (format "  %s  %s  [%s]"
@@ -364,7 +382,11 @@ HIDE starts it folded and HEADING replaces the default heading text."
       (goblins--field "Session:" (plist-get record :session))
       (goblins--field "Request:" (plist-get record :id))
       (when-let* ((preview (plist-get record :preview))
-                  ((not (equal (plist-get preview :kind) "devshell"))))
+                  ((plist-get preview :command)))
+        (goblins--insert-host-command preview))
+      (when-let* ((preview (plist-get record :preview))
+                  ((not (equal (plist-get preview :kind) "devshell")))
+                  ((not (plist-get preview :command))))
         ;; A multi-line description is escaped line by line.
         (let ((lines (split-string
                       (or (plist-get preview :description)
@@ -873,16 +895,24 @@ Daemon refusals become `user-error's and leave the connection alone."
       (jsonrpc-error
        (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
 
+(defun goblins--section-shows-p (section)
+  "Whether SECTION, a request section, shows its whole request: rendered
+with its details, and neither it nor a parent folded."
+  (and (object-of-class-p section 'goblins-request-section)
+       (oref section details)
+       (cl-loop for s = section then (oref s parent)
+                while s never (oref s hidden))))
+
 (defun goblins--decide (approved)
-  (let* ((record
+  (let* ((section (and (derived-mode-p 'goblins-status-mode) (magit-current-section)))
+         (record
           (if (derived-mode-p 'goblins-status-mode)
-              (let ((section (magit-current-section)))
-                (and section (object-of-class-p section 'goblins-request-section)
-                     (oref section record)))
+              (and section (object-of-class-p section 'goblins-request-section)
+                   (oref section record))
             (goblins--ensure-connected)
             (goblins--read-request (if approved "Accept request: " "Deny request: ")
                                    (current-buffer)))))
-    (goblins--decide-record record approved)))
+    (goblins--decide-record record approved (and section (goblins--section-shows-p section)))))
 
 (defun goblins--request-candidates (records)
   "RECORDS, pending requests, as completion candidates like \"gribble: jq\",
@@ -933,13 +963,23 @@ Candidates are in the `goblins-request' completion category."
       (unless found (user-error "Select a request"))
       (nth (cl-position found candidates :test #'equal) records))))
 
-(defun goblins--decide-record (record approved)
-  "Send the decision APPROVED for RECORD, a pending request, from a status buffer."
+(declare-function goblins--review-request "goblins-views" (source record))
+
+(defun goblins--decide-record (record approved &optional shown)
+  "Send the decision APPROVED for RECORD, a pending request, from a status buffer.
+SHOWN means the caller displays the whole request.  A host command is
+accepted only then: its command, directory, variables and time limit are
+what the approval grants, and a list or completion shows only a label.
+Otherwise its details open instead."
   (let ((id (plist-get record :id)))
     (unless (and goblins--connection goblins--subscription)
       (user-error "Disconnected; use M-x goblins-refresh to reconnect"))
     (unless (equal (plist-get record :state) "pending")
       (user-error "Place point on a pending request"))
+    (when (and approved (equal (plist-get record :kind) "host-command") (not shown))
+      (when (fboundp 'goblins--review-request)
+        (goblins--review-request (current-buffer) record))
+      (user-error "Review the whole host command, then accept it there"))
     ;; The preview is the approver's whole basis for a refresh.
     (when (and approved (goblins--awaiting-preview-p record))
       (user-error "The refresh is still being evaluated; decide once its preview is shown"))

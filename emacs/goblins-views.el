@@ -837,13 +837,24 @@ end of the buffer.  Add your own to show more."
       (setq goblins--permissions-seen (mapcar (lambda (r) (plist-get r :id)) pending)
             goblins--view-fresh nil))))
 
+(defun goblins--review-request (source record)
+  "Show RECORD, a pending request of SOURCE's server, with all its details,
+for a decision there."
+  (let ((buffer (goblins-permissions-buffer source (plist-get record :session))))
+    (goblins--display-main buffer)
+    (with-current-buffer buffer
+      (when-let* ((section (goblins--find-request-section (plist-get record :id))))
+        (magit-section-show section)
+        (goblins--view-goto (oref section start))))))
+
 (defun goblins-permissions-decide (approved)
   "Decide the request at point, else the only pending one.
 Accept it when APPROVED is non-nil, otherwise deny it."
   (let* ((section (magit-current-section))
-         (record (or (and section (object-of-class-p section 'goblins-request-section)
-                          (equal (plist-get (oref section record) :state) "pending")
-                          (oref section record))
+         (at-point (and section (object-of-class-p section 'goblins-request-section)
+                        (equal (plist-get (oref section record) :state) "pending")
+                        section))
+         (record (or (and at-point (oref at-point record))
                      (let ((pending (cl-remove-if-not
                                      (lambda (r)
                                        (and (equal (plist-get r :session) goblins--view-session)
@@ -854,7 +865,8 @@ Accept it when APPROVED is non-nil, otherwise deny it."
                          (car pending))))))
     (unless record (user-error "No pending request for this goblin"))
     (with-current-buffer goblins--view-source
-      (goblins--decide-record record approved))))
+      (goblins--decide-record record approved
+                              (and at-point (goblins--section-shows-p at-point))))))
 
 (defun goblins-permissions-accept ()
   "Accept the current request."
@@ -1115,7 +1127,9 @@ selected in the workspace."
       (let ((record (car (goblins--popup-requests))))
         (unless record (user-error "Nothing waiting for a decision"))
         (with-current-buffer goblins--view-source
-          (goblins--decide-record record approved))))))
+          ;; The popup shows a host command whole from its structured fields.
+          (goblins--decide-record record approved
+                                  (and (plist-get (plist-get record :preview) :command) t)))))))
 
 (defun goblins-request-popup-accept ()
   "Open the files in the popup, or accept its request.
