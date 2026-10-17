@@ -1617,6 +1617,7 @@ impl Controller {
                     "dev_shell":record.dev_shell,
                     "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
                     "host_commands":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.host_commands()),
+                    "permission_bypass":self.sessions[scope].inheritance.as_ref().and_then(|i| i.permission_bypass()),
                     "allowed_children":self.sessions[scope].inheritance.as_ref()
                         .map_or(&[][..], |i| i.allowed_children()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,

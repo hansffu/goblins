@@ -133,8 +133,10 @@ class OwnershipTests(unittest.TestCase):
             self.sandbox(parent["session"], "sessions.status", {"session":unrelated["session"]})
         status = self.sandbox(parent["session"], "sessions.status", {})
         self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled",
-                                       "dev_shell", "nix", "host_commands", "allowed_children", "raid"})
+                                       "dev_shell", "nix", "host_commands", "permission_bypass", "allowed_children", "raid"})
         self.assertEqual(status["agent_state"], "unknown")
+        # A shell has no agent, so no permissions to bypass.
+        self.assertIsNone(status["permission_bypass"])
         self.assertEqual(status["allowed_children"], ["shell"])
         self.assertEqual(status["agent_name"], "parent")
         pipeline = RPC(self.d.state / parent["session"] / "resources/request.sock")

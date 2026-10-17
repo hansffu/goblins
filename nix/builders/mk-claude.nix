@@ -18,6 +18,8 @@ in
   claudeSettings ? { },
   allowedPackages ? commonTools,
   args ? [ ],
+  # Passed to mkGoblin too, which validates and records it.
+  bypassPermissions ? false,
   # `goblins resume` resumes the conversation the hooks recorded. This
   # default appends to args, so it suits args made of options only: a goblin
   # whose args contain a prompt, a subcommand or -- sets its own (or null).
@@ -55,6 +57,7 @@ mkGoblin (
       inherit
         pkg
         binName
+        bypassPermissions
         claudeConfigDir
         ;
       inherit (claude) plugin;

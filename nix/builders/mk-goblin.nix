@@ -53,6 +53,11 @@ let
       # enable: the goblin may ask the host to run commands outside its
       # sandbox (`goblin host run`), each approved like a package request.
       hostCommands ? { },
+      # The agent skips its own permission prompts: Claude Code's
+      # --dangerously-skip-permissions, Codex's approval policy "never". Off,
+      # Goblins requests no bypass and the agent's own settings decide. Agent
+      # goblins only.
+      bypassPermissions ? false,
       scope ? null,
       allowedScopes ? [ ],
       scopeStorage ? { },
@@ -123,6 +128,7 @@ let
           allowedScopes
           scopeStorage
           allowedChildren
+          bypassPermissions
           ;
         docker = dockerOptions;
         hostCommands = hostCommandOptions;
@@ -150,6 +156,7 @@ let
         # For mkGoblins' scope check only; the daemon reads the build spec.
         nix = allowNix;
         host_commands = hostCommandOptions.enable;
+        bypass_permissions = bypassPermissions;
         docker = {
           daemon = "${dockerDaemon}/bin/dockerd";
           client = "${pkgs.docker-client}";

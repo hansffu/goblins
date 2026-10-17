@@ -165,7 +165,11 @@ The =goblins-dev= demo goblin (=nix/demo-goblins/=) is set up for working on Gob
 - Hooks and skills mounted only inside the sandbox, under =/etc=. They teach the agent to request packages, enable Docker, start child goblins and exchange messages. Your own agent configuration is not modified.
 - =codexSettings= / =claudeSettings= for extra sandbox-only agent settings, for example =codexSettings.model_reasoning_effort = "high";= or =claudeSettings.model = "sonnet";=.
 
-The agents run without their own permission prompts (Codex with =--sandbox danger-full-access --ask-for-approval never=, Claude Code with =--dangerously-skip-permissions=); Goblins is the sandbox and approves packages. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
+- =bypassPermissions = true;= to run the agent without its own permission prompts: Claude Code with =--dangerously-skip-permissions=, Codex with the approval policy =never=. It is off by default, and then Goblins asks for no bypass: the agent's own settings decide, such as =permissions.defaultMode= in your Claude settings or =claudeSettings=, or =approval_policy= in your Codex config or =codexSettings=.
+
+Goblins is the sandbox either way, so Codex always runs with =--sandbox danger-full-access= (its own sandbox cannot run inside a goblin). That makes Codex's default approval policy, =on-request=, leave asking to the model: without bypass, Codex rarely prompts, while Claude Code's default mode asks before each tool that changes something. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
+
+Until this option, the agents always bypassed their prompts; a configuration that wants that now sets =bypassPermissions = true;=.
 
 * Scopes
 
@@ -432,6 +436,7 @@ See [[file:emacs/README.org][the Emacs guide]] for all keys, the workspace layou
 - Network access is open by default. Set =allowedDomains = []= for an offline goblin.
 - The working directory and every =rw*= path you grant are your real files: the goblin can change or delete them. Use =goblins server start --workspace DIR= to give each top-level goblin a disposable copy at =/workspace= instead.
 - Agent config directories are mounted writable, so agents can read your credentials there.
+- An agent's own permission prompts are a second check inside the sandbox, not part of it. With =bypassPermissions=, the agent does whatever the sandbox allows without asking; without it, it asks as its own settings say, which your settings can also turn off. =goblin status= shows what the configuration requests, not the agent's effective mode.
 - Package grants can only add packages from Goblins' pinned nixpkgs. They do not activate development setup hooks; use a dev shell for that.
 - =allowNix= gives a goblin the whole host Nix store, read-only, and the host Nix daemon, as =allowNix= in agent-sandbox.nix does. It reaches no files directly, but the daemon acts for your user: if you are in Nix's =trusted-users=, which Nix documents as essentially equivalent to root, the goblin can import unsigned store paths and set daemon options, such as hooks the daemon runs as root, without any approval. The daemon's own downloads also ignore the goblin's network policy. Give =allowNix= only to goblins you would give that, or keep your user out of =trusted-users=.
 - A host command (=hostCommands.enable=) runs as you, outside the sandbox, once you approve it, with your files, services, credentials and the server's environment. It runs whatever the files it reads say, such as scripts, build files and tests the goblin can change, also after you approved. Approve each one as you would let the goblin run anything as you.

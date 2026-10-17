@@ -19,6 +19,8 @@ in
   filterUnavailableMcp ? false,
   allowedPackages ? commonTools,
   args ? [ ],
+  # Passed to mkGoblin too, which validates and records it.
+  bypassPermissions ? false,
   # `goblins resume` resumes the foreground thread the adapter recorded.
   # Options before `resume`, such as -p and -c, still reach the App Server.
   # This default appends to args, so it suits args made of options only: a
@@ -59,6 +61,7 @@ mkGoblin (
       inherit
         pkg
         binName
+        bypassPermissions
         codexConfigDir
         filterUnavailableMcp
         ;

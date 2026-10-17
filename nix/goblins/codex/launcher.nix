@@ -2,12 +2,17 @@
 {
   pkg,
   binName,
+  bypassPermissions,
   codexConfigDir,
   filterUnavailableMcp,
 }:
 let
   inherit (pkgs) lib;
   directory = runtimeDirectory codexConfigDir;
+  # Codex's own command sandbox cannot run inside a goblin (no namespaces),
+  # so Goblins is the sandbox either way. Only the approval policy follows
+  # bypassPermissions; otherwise Codex's own configuration chooses it.
+  approval = lib.optionalString bypassPermissions " --ask-for-approval never";
 in
 pkgs.writeShellScriptBin binName ''
   set -e
@@ -34,7 +39,7 @@ pkgs.writeShellScriptBin binName ''
       -c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--local-provider|--enable|--disable)
         skip_value=true ;;
       --help|-h|--version|-V|exec|e|review|login|logout|mcp|plugin|app-server|remote-control|completion|update|doctor|sandbox|debug|apply|queue|archive|delete|migrate-rollouts|unarchive|cloud|exec-server|features|help)
-        exec "$codex_executable" --sandbox danger-full-access --ask-for-approval never --enable hooks "''${mcp_overrides[@]}" "$@" ;;
+        exec "$codex_executable" --sandbox danger-full-access${approval} --enable hooks "''${mcp_overrides[@]}" "$@" ;;
       resume) resume=true; break ;;
       --|-i|--image) break ;;
       -*) ;;
@@ -42,15 +47,16 @@ pkgs.writeShellScriptBin binName ''
     esac
   done
   # Codex refuses permission overrides when resuming a remote thread. The
-  # App Server still enforces sandbox_mode and approval_policy itself.
-  permission_args=(--sandbox danger-full-access --ask-for-approval never)
+  # adapter sets the resumed thread's sandbox and approval policy instead,
+  # since a thread keeps the policy it was saved with.
+  permission_args=(--sandbox danger-full-access${approval})
   if [[ "$resume" == true ]]; then
     permission_args=()
     for argument in "$@"; do
       case "$argument" in
         --) break ;;
         -s|--sandbox|--sandbox=*|-s?*|-a|--ask-for-approval|--ask-for-approval=*|-a?*)
-          printf 'Goblins: %s cannot be combined with resume; Goblins sets the sandbox and approval policy on the App Server.\n' "$argument" >&2
+          printf 'Goblins: %s cannot be combined with resume; Goblins sets the sandbox and approval policy of the resumed thread.\n' "$argument" >&2
           exit 2 ;;
       esac
     done
@@ -122,7 +128,7 @@ pkgs.writeShellScriptBin binName ''
   # Goblins owns sandbox and package policy; hooks and MCP config remain native.
   "$codex_executable" app-server --listen "unix://$socket" \
     "''${profile_overrides[@]}" "''${server_overrides[@]}" \
-    -c 'sandbox_mode="danger-full-access"' -c 'approval_policy="never"' \
+    -c 'sandbox_mode="danger-full-access"'${lib.optionalString bypassPermissions " -c 'approval_policy=\"never\"'"} \
     --enable hooks "''${mcp_overrides[@]}" \
     9<&- </dev/null >"$GOBLINS_CODEX_RUNTIME/app-server.log" 2>&1 &
   server_pid=$!
@@ -136,7 +142,7 @@ pkgs.writeShellScriptBin binName ''
     printf 'Goblins Codex App Server failed to start; see %s/app-server.log.\n' "$GOBLINS_CODEX_RUNTIME" >&2
     exit 1
   fi
-  /run/goblins/bin/goblins-codex run --socket "$socket" --native-socket "$native_socket" \
+  /run/goblins/bin/goblins-codex run --socket "$socket" --native-socket "$native_socket"${lib.optionalString bypassPermissions " --bypass-permissions"} \
     9<&- </dev/null >"$GOBLINS_CODEX_RUNTIME/adapter.log" 2>&1 &
   adapter_pid=$!
   ready=false

@@ -30,6 +30,7 @@ Accepted decisions:
 - [[file:adr/0008-raids.md][ADR 0008]]: raids are a communication-only grouping
 - [[file:adr/0011-nix-in-a-goblin.md][ADR 0011]]: allowNix gives a goblin the host store and Nix daemon
 - [[file:adr/0012-host-commands.md][ADR 0012]]: approved host commands under a subreaper supervisor
+- [[file:adr/0013-agent-permission-bypass.md][ADR 0013]]: agents keep their own permission prompts unless a configuration bypasses them
 
 * Build and run from a checkout
 

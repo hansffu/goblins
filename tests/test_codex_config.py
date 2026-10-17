@@ -261,6 +261,12 @@ class CodexConfigTests(unittest.TestCase):
         self.assertNotIn("--sandbox", args)
         self.assertNotIn("--ask-for-approval", args)
         self.assertIn("--remote", args)
+        # The adapter resumes it with this configuration's permissions instead,
+        # here Codex's default policy, since it does not bypass approvals.
+        params = json.loads(subprocess.check_output([str(self.app), "--state-dir", str(self.d.state), "exec", again,
+                                                     "--", "python3", "-c",
+                                                     "print(open('/tmp/goblins-codex/resume-params.json').read())"]))
+        self.assertEqual((params["approvalPolicy"], params["sandbox"]), ("on-request", "danger-full-access"))
         # A configuration that passes --sandbox with resume says why it cannot.
         config = json.loads(Path(self.d.manifest).read_text())
         config["goblins"]["codex"]["resume_command"] = ["--sandbox", "read-only", "resume", "{session_id}"]
@@ -316,6 +322,10 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(settings['model_providers']['fixture']['base_url'], 'http://localhost/fixture')
         self.assertEqual(settings['model_provider'], 'literal $(false) provider')
         self.assertEqual(settings['features'], {'plugins': False})
+        # Full access always; the approval policy is Codex's own without
+        # bypassPermissions.
+        self.assertEqual(settings['sandbox_mode'], 'danger-full-access')
+        self.assertNotIn('approval_policy', settings)
         self.assertIn('plugins', args)
         self.assertNotIn('--profile', args)
         self.assertEqual(path.read_text(), profile)

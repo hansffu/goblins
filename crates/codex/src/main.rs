@@ -40,6 +40,9 @@ enum Command {
         /// Pass through the native connection to capture exact start/resume IDs
         #[arg(long)]
         native_socket: Option<PathBuf>,
+        /// The goblin bypasses Codex's approvals (bypassPermissions)
+        #[arg(long)]
+        bypass_permissions: bool,
     },
     Hook,
     Status,
@@ -411,12 +414,15 @@ impl Server {
 /// only successful foreground start/resume/fork responses select a thread.
 /// Codex defers SessionStart until the first turn, so this also binds an empty
 /// terminal and immediately guards against late compaction hooks after a switch.
+/// The one change: resume and fork requests get this goblin's permissions
+/// (`thread_permissions`).
 #[allow(clippy::result_large_err)] // Tungstenite callback requires an unboxed HTTP error response.
 fn native_proxy(
     listener: &UnixListener,
     upstream: &Path,
     dir: &Path,
     conversation: &Sender<(String, String)>,
+    bypass: bool,
 ) -> Result<()> {
     let (native_stream, _) = listener.accept()?;
     native_stream.set_read_timeout(Some(Duration::from_secs(3)))?;
@@ -464,16 +470,38 @@ fn native_proxy(
         }
     }
     loop {
-        if let Some(message) = receive(&mut native)? {
+        if let Some(mut message) = receive(&mut native)? {
             if let Message::Text(text) = &message
-                && let Ok(v) = serde_json::from_str::<Value>(text)
-                && foreground_thread_request(&v)
-                && let Some(id) = v.get("id")
+                && let Ok(mut v) = serde_json::from_str::<Value>(text)
             {
-                if pending.len() >= 64 {
-                    return Err("too many pending native thread requests".into());
+                if foreground_thread_request(&v)
+                    && let Some(id) = v.get("id")
+                {
+                    if pending.len() >= 64 {
+                        return Err("too many pending native thread requests".into());
+                    }
+                    pending.insert(id.to_string());
                 }
-                pending.insert(id.to_string());
+                if matches!(v["method"].as_str(), Some("thread/resume" | "thread/fork"))
+                    && v["params"].is_object()
+                {
+                    match thread_permissions(&mut v["params"], bypass, |params| {
+                        configured_approval(upstream, params)
+                    }) {
+                        Ok(()) => message = Message::text(v.to_string()),
+                        // Never forward it unchanged: the thread would keep
+                        // the policy it was saved with.
+                        Err(e) => {
+                            let id = v["id"].clone();
+                            pending.remove(&id.to_string());
+                            native.send(Message::text(
+                                json!({"id":id,"error":{"code":-32603,"message":format!("Goblins could not apply this goblin's approval policy: {e}")}})
+                                    .to_string(),
+                            ))?;
+                            continue;
+                        }
+                    }
+                }
             }
             let closing = matches!(message, Message::Close(_));
             if matches!(
@@ -541,7 +569,63 @@ fn foreground_thread_request(v: &Value) -> bool {
             .is_none_or(|source| source == "user")
 }
 
-fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
+/// A resumed or forked thread keeps the approval policy it was saved with, not
+/// the server's, so set it on the request: "never" when the goblin bypasses
+/// approvals, else the request's own (also as a config override) or the one
+/// `configured` reads for the request. Codex leaves it unset to mean
+/// on-request. The sandbox is always full access: Goblins is the sandbox, and
+/// Codex's own cannot run inside a goblin.
+fn thread_permissions(
+    params: &mut Value,
+    bypass: bool,
+    configured: impl FnOnce(&Value) -> Result<Value>,
+) -> Result<()> {
+    let given = |value: &Value| (!value.is_null()).then(|| value.clone());
+    if given(&params["sandbox"]).is_none() {
+        params["sandbox"] = json!("danger-full-access");
+    }
+    let policy = if bypass {
+        json!("never")
+    } else if let Some(policy) =
+        given(&params["approvalPolicy"]).or_else(|| given(&params["config"]["approval_policy"]))
+    {
+        policy
+    } else {
+        given(&configured(params)?).unwrap_or_else(|| json!("on-request"))
+    };
+    params["approvalPolicy"] = policy;
+    Ok(())
+}
+
+/// The approval policy Codex's configuration gives the directory a resume or
+/// fork request runs in: its cwd, else the directory the thread was saved
+/// with, which Codex restores. On a connection of its own.
+fn configured_approval(upstream: &Path, params: &Value) -> Result<Value> {
+    let (transitions, _) = mpsc::channel();
+    let mut server = Server::connect(upstream, transitions)?;
+    let result = (|| -> Result<Value> {
+        let cwd = match &params["cwd"] {
+            Value::Null => server.call(
+                "thread/read",
+                json!({"threadId":params["threadId"],"includeTurns":false}),
+            )?["thread"]["cwd"]
+                .clone(),
+            cwd => cwd.clone(),
+        };
+        if !cwd.is_string() {
+            return Err("no working directory for the thread".into());
+        }
+        let read = server.call("config/read", json!({"cwd":cwd}))?;
+        match read.get("config") {
+            Some(config) => Ok(config["approval_policy"].clone()),
+            None => Err("config/read returned no config".into()),
+        }
+    })();
+    let _ = server.ws.close(None);
+    result
+}
+
+fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) -> Result<()> {
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -573,7 +657,8 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
         let conversation = conversation_reporter();
         std::thread::spawn(move || {
             loop {
-                if let Err(e) = native_proxy(&listener, &upstream, &runtime, &conversation) {
+                if let Err(e) = native_proxy(&listener, &upstream, &runtime, &conversation, bypass)
+                {
                     eprintln!("native proxy: {e}");
                 }
                 // The terminal has disconnected; do not deliver to its old thread.
@@ -775,7 +860,8 @@ fn main() {
             Command::Run {
                 socket,
                 native_socket,
-            } => run(&dir, &socket, native_socket.as_deref()),
+                bypass_permissions,
+            } => run(&dir, &socket, native_socket.as_deref(), bypass_permissions),
             Command::Hook => {
                 let mut input = String::new();
                 io::stdin().take(65537).read_to_string(&mut input)?;
@@ -871,6 +957,76 @@ fn profile_arguments(input: &str, path: &Path, base: &toml::Table) -> Result<Vec
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+    #[test]
+    fn resumed_threads_get_the_goblins_permissions_not_their_saved_ones() {
+        let apply = |params: Value, bypass: bool, configured: Value| {
+            let mut params = params;
+            let mut asked = None;
+            thread_permissions(&mut params, bypass, |params| {
+                asked = Some(params["cwd"].as_str().map(str::to_owned));
+                Ok(configured)
+            })
+            .unwrap();
+            (
+                params["sandbox"].clone(),
+                params["approvalPolicy"].clone(),
+                asked,
+            )
+        };
+        let granular =
+            json!({"granular":{"sandbox_approval":true,"rules":false,"mcp_elicitations":true}});
+        // Unset (missing or null) reads the configuration for the request's
+        // directory; Codex's own default when that is unset too.
+        assert_eq!(
+            apply(
+                json!({"threadId":"t","approvalPolicy":null,"sandbox":null}),
+                false,
+                Value::Null
+            ),
+            (json!("danger-full-access"), json!("on-request"), Some(None))
+        );
+        assert_eq!(
+            apply(
+                json!({"threadId":"t","cwd":"/work"}),
+                false,
+                granular.clone()
+            ),
+            (
+                json!("danger-full-access"),
+                granular.clone(),
+                Some(Some("/work".into()))
+            )
+        );
+        // The request's own policy wins, also given as a config override.
+        assert_eq!(
+            apply(
+                json!({"threadId":"t","approvalPolicy":"never"}),
+                false,
+                json!("on-request")
+            )
+            .1,
+            json!("never")
+        );
+        assert_eq!(
+            apply(
+                json!({"threadId":"t","config":{"approval_policy":granular}}),
+                false,
+                json!("never")
+            ),
+            (json!("danger-full-access"), granular, None)
+        );
+        // Bypassing always resumes with "never", without reading anything.
+        assert_eq!(
+            apply(
+                json!({"threadId":"t","approvalPolicy":"on-request","sandbox":"read-only"}),
+                true,
+                Value::Null
+            ),
+            (json!("read-only"), json!("never"), None)
+        );
+        let mut params = json!({"threadId":"t"});
+        assert!(thread_permissions(&mut params, false, |_| Err("unreachable".into())).is_err());
+    }
     #[test]
     fn native_background_requests_do_not_select_the_conversation() {
         for method in ["thread/start", "thread/resume", "thread/fork"] {
@@ -1024,6 +1180,30 @@ mod tests {
         let (notice_tx, notice_rx) = mpsc::channel();
         let remote = std::thread::spawn(move || {
             let (peer, _) = listener.accept().unwrap();
+            // The resume's approval policy comes from config/read on a
+            // connection of its own, for the thread's saved directory.
+            let config = std::thread::spawn(move || {
+                let (peer, _) = listener.accept().unwrap();
+                let mut ws = tungstenite::accept(peer).unwrap();
+                let mut read = None;
+                while let Ok(Message::Text(text)) = ws.read() {
+                    let v: Value = serde_json::from_str(&text).unwrap();
+                    if v["method"] == "thread/read" {
+                        assert_eq!(
+                            v["params"],
+                            json!({"threadId":"switched","includeTurns":false})
+                        );
+                        ws.send(Message::text(json!({"id":v["id"],"result":{"thread":{"id":"switched","cwd":"/saved"}}}).to_string())).unwrap();
+                    } else if v["method"] == "config/read" {
+                        read = Some(v["params"].clone());
+                        ws.send(Message::text(json!({"id":v["id"],"result":{"config":{"approval_policy":"on-request"}}}).to_string())).unwrap();
+                    } else if v.get("id").is_some() {
+                        ws.send(Message::text(json!({"id":v["id"],"result":{}}).to_string()))
+                            .unwrap();
+                    }
+                }
+                read
+            });
             let mut ws = tungstenite::accept_hdr(
                 peer,
                 |_: &tungstenite::handshake::server::Request,
@@ -1054,6 +1234,12 @@ mod tests {
             let resume: Value =
                 serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
             assert_eq!(resume["method"], "thread/resume");
+            assert_eq!(
+                resume["params"],
+                json!({"threadId":"switched","approvalPolicy":"on-request","sandbox":"danger-full-access"})
+            );
+            // Without a cwd, the directory the thread was saved with.
+            assert_eq!(config.join().unwrap(), Some(json!({"cwd":"/saved"})));
             ws.send(Message::text(
                 json!({"id":resume["id"],"result":{"thread":{"id":"switched"}}}).to_string(),
             ))
@@ -1063,7 +1249,7 @@ mod tests {
         let runtime = root.clone();
         let (conversation, _reported) = mpsc::channel();
         let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime, &conversation).unwrap()
+            native_proxy(&native_listener, &upstream, &runtime, &conversation, false).unwrap()
         });
         let stream = UnixStream::connect(&endpoint).unwrap();
         let (mut native, handshake) = tungstenite::client("ws://localhost/", stream).unwrap();
@@ -1139,7 +1325,8 @@ mod tests {
         let runtime = root.clone();
         let (conversation, reported) = mpsc::channel();
         let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime, &conversation).unwrap()
+            // Bypassing: the resume below needs no config/read connection.
+            native_proxy(&native_listener, &upstream, &runtime, &conversation, true).unwrap()
         });
         let stream = UnixStream::connect(&endpoint).unwrap();
         let (mut native, _) = tungstenite::client("ws://localhost/", stream).unwrap();

@@ -37,6 +37,10 @@ pub struct Configuration {
     /// mkGoblin's hostCommands.enable: `goblin host run` may ask the host.
     #[serde(default)]
     pub host_commands: bool,
+    /// mkGoblin's bypassPermissions: the agent launcher skips the agent's own
+    /// permission prompts. Only shown; the launcher already applies it.
+    #[serde(default)]
+    pub bypass_permissions: bool,
     /// Default scope; `allowed_scopes` may be selected at launch instead.
     #[serde(default)]
     pub scope: Option<String>,
@@ -290,6 +294,9 @@ pub struct Launch {
     /// The sandbox may ask the host to run commands outside it.
     #[serde(default)]
     pub host_commands: bool,
+    /// The configuration asks the agent to skip its own permission prompts.
+    #[serde(default)]
+    pub bypass_permissions: bool,
     #[serde(default)]
     pub pasta: Option<PathBuf>,
     #[serde(skip)]
@@ -385,6 +392,7 @@ impl Configuration {
             description: self.description.clone(),
             allow_nix: spec["allow_nix"] == true,
             host_commands: self.host_commands,
+            bypass_permissions: self.bypass_permissions,
             pasta: if self.network {
                 Some(
                     spec["dependencies"]["pasta"]

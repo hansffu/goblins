@@ -2,6 +2,7 @@
 {
   pkg,
   binName,
+  bypassPermissions,
   claudeConfigDir,
   plugin,
 }:
@@ -16,6 +17,7 @@ pkgs.writeShellScriptBin binName ''
   # Register before native launch; the notifier never claims inbox items.
   registration=$(/run/goblins/bin/goblin integration register --driver claude)
   export GOBLINS_INTEGRATION_EPOCH=$(${pkgs.jq}/bin/jq -r .epoch <<< "$registration")
-  # Goblins owns the outer sandbox and permission boundary.
-  exec "$claude_executable" --plugin-dir ${lib.escapeShellArg plugin} --dangerously-skip-permissions "$@"
+  # Without bypassPermissions, Claude Code's own settings choose the
+  # permission mode.
+  exec "$claude_executable" --plugin-dir ${lib.escapeShellArg plugin} ${lib.optionalString bypassPermissions "--dangerously-skip-permissions "}"$@"
 ''

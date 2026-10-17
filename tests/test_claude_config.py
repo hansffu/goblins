@@ -79,8 +79,9 @@ class ClaudeConfigTests(unittest.TestCase):
         plugin = terminal.expect(
             r"CLAUDE_ARG=(/nix/store/[^\n]+-goblins-claude-plugin)"
         ).group(1).decode()
-        terminal.expect(r"CLAUDE_ARG=--dangerously-skip-permissions")
-        terminal.expect(r"CLAUDE_ARG=literal \$\(false\) argument")
+        # Next, with no --dangerously-skip-permissions before it: without
+        # bypassPermissions, Claude Code's own settings choose the mode.
+        terminal.expect(r"\A\s*CLAUDE_ARG=literal \$\(false\) argument")
         terminal.expect("claude-probe>")
         terminal.send(
             "printf 'UID=%s\\n' \"$(id -u)\"; "
@@ -102,6 +103,8 @@ class ClaudeConfigTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)SETUP=0\n")
         terminal.expect(r"(?:^|\n)READONLY=1\n")
         terminal.expect(r"(?:^|\n)SECRET=1\n")
+        terminal.send("goblin status\n")
+        terminal.expect("Agent permission bypass: not requested")
         parent = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
         integration = self.d.rpc.call("integration.status", {"session": parent})
         self.assertEqual(integration["driver"], "claude")
@@ -237,12 +240,16 @@ class ClaudeConfigTests(unittest.TestCase):
         )
         terminal.expect(r"(?:^|\n)NIX_SKILLS=0\n")
 
-    def test_custom_directory(self):
+    def test_custom_directory_and_permission_bypass(self):
         custom = self.home / "custom claude"
         custom.mkdir()
         terminal = self.terminal("custom")
         terminal.expect("CLAUDE_DIR=" + re.escape(str(custom)), timeout=60)
+        # This configuration sets bypassPermissions.
+        terminal.expect(r"CLAUDE_ARG=--dangerously-skip-permissions")
         terminal.expect("claude-probe>")
+        terminal.send("goblin status\n")
+        terminal.expect("Agent permission bypass: requested")
 
     def test_spawn_message_wakes_indented_claude_composer(self):
         launch = self.d.start("notifier", agent_name="receiver")

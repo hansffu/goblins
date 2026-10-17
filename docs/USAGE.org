@@ -657,7 +657,7 @@ A goblin records its own variables with =goblin variable set KEY=VALUE…= insid
 =resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 
 - =mkClaudeGoblin= records Claude's =session_id= and the session's name (=session_name=) from its hooks. The name is the one Claude reports, else the latest custom (=/rename=) or generated title in the transcript. Its default is =resumeCommand = args ++ [ "--resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =--mcp-config= JSON).
-- =mkCodexGoblin= records the terminal's foreground thread and its name through the Codex adapter, including renames and switches. Its default is =resumeCommand = args ++ [ "resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =-c= inline tables). Options before =resume=, such as =-p= and =-c=, still reach the App Server; =--sandbox= and =--ask-for-approval= cannot be combined with =resume= and are refused, since Goblins sets those on the App Server.
+- =mkCodexGoblin= records the terminal's foreground thread and its name through the Codex adapter, including renames and switches. Its default is =resumeCommand = args ++ [ "resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =-c= inline tables). Options before =resume=, such as =-p= and =-c=, still reach the App Server; =--sandbox= and =--ask-for-approval= cannot be combined with =resume= and are refused, since Codex refuses them when resuming and Goblins sets the resumed thread's sandbox and approval policy itself (see [[*Codex configuration][Codex configuration]]).
 
 Both defaults append to =args=, so they suit =args= made of options only. A goblin whose =args= contain a prompt, a subcommand or =--= sets its own =resumeCommand=, or =null= to always start afresh.
 
@@ -819,6 +819,7 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =allowNix= | =false= (default): no =nix=, only the closure of the granted packages. =true=: ordinary =nix= commands against the host daemon and the whole host store; requires =allowedDomains = null=. See [[*Nix in a goblin][Nix in a goblin]] |
 | =allowUnixSockets= | Must be =true= for the request transport |
 | =hostCommands.enable= | =false= (default). =true=: the goblin may ask to run approved commands on the host, outside its sandbox. See [[*Host commands][Host commands]] |
+| =bypassPermissions= | =false= (default): Goblins asks the agent for no bypass, and its own permission settings decide. =true=: the agent skips its own permission prompts (Claude Code's =--dangerously-skip-permissions=, Codex's approval policy =never=). Agent goblins only. See [[*Codex configuration][Codex]] and [[*Claude Code configuration][Claude Code]] |
 | =allowedDomains= | =null= (default): open internet; =[]= disables networking; domain filtering is not implemented |
 | =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
 | =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Forwarded startup host bind paths; defaults to =[]= |
@@ -1105,10 +1106,9 @@ credentials are not exposed by this mount. Normal native writes to the shared
 directory remain visible to the host; Goblins does not copy or rewrite its
 configuration to install hooks.
 
-The launcher runs Codex with =--sandbox danger-full-access
---ask-for-approval never= inside Goblins' existing sandbox. Codex can use the
-same files and commands as the shell goblin; Goblins still owns isolation and
-package approvals. =args= are passed unchanged after these defaults.
+The launcher runs Codex with =--sandbox danger-full-access= inside Goblins' existing sandbox: Codex's own command sandbox needs namespaces, which a goblin does not have. Codex can use the same files and commands as the shell goblin; Goblins still owns isolation and package approvals. =args= are passed unchanged after these defaults.
+
+The approval policy is Codex's own unless the configuration sets =bypassPermissions = true;=, which adds =--ask-for-approval never= (and =approval_policy = "never"= on the App Server). Without it, the policy comes from your =~/.codex/config.toml=, a profile or =-c= in =args=, or =codexSettings.approval_policy=, and defaults to Codex's =on-request=. With full access, =on-request= leaves asking to the model, so Codex rarely prompts; it is not a per-command check. A thread keeps the approval policy it was saved with, so when the terminal resumes or forks a thread, the adapter sets the policy the configuration gives now (=never= when bypassing, else the configured one for that directory) and full access. A thread that is still loaded in the App Server keeps its live policy, including a change made with =/permissions=.
 
 =codexSettings= generates sandbox-only =/etc/codex/config.toml=. These are
 system defaults below Codex's user/project/CLI layers. Native hooks from
@@ -1220,14 +1220,9 @@ mkClaudeGoblin {
 }
 #+end_src
 
-It accepts normal =mkGoblin= options and adds a writable mount of
-=claudeConfigDir=. The directory must already exist. The launcher sets
-=CLAUDE_CONFIG_DIR=, disables native auto-updates, and passes
-=--dangerously-skip-permissions= because Goblins already owns the outer sandbox
-and package approval boundary. The namespace helper uses root only while
-assembling mounts, then runs the payload as unprivileged UID/GID 1000; no
-=sudo= or host-root process is involved. Use =claudeConfigDir= rather than setting
-=env.CLAUDE_CONFIG_DIR= directly.
+It accepts normal =mkGoblin= options and adds a writable mount of =claudeConfigDir=. The directory must already exist. The launcher sets =CLAUDE_CONFIG_DIR= and disables native auto-updates. The namespace helper uses root only while assembling mounts, then runs the payload as unprivileged UID/GID 1000; no =sudo= or host-root process is involved. Use =claudeConfigDir= rather than setting =env.CLAUDE_CONFIG_DIR= directly.
+
+With =bypassPermissions = true;= the launcher passes =--dangerously-skip-permissions=, and Claude Code runs without its permission prompts. Without it, Claude Code chooses its mode from its own settings (=permissions.defaultMode= in your settings or =claudeSettings=), on every start including a recreated goblin's =--resume=; its default mode asks before edits and commands. A goblin waiting at such a prompt shows as waiting for approval.
 
 =claudeSettings= generates sandbox-only
 =/etc/claude-code/managed-settings.json=. User hooks are retained after the

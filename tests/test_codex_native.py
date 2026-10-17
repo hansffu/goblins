@@ -89,29 +89,38 @@ wire_api="responses"
 supports_websockets=false
 requires_openai_auth=false
 ''')
-        log = (self.root/'log').open('w'); self.addCleanup(log.close)
-        self.server = subprocess.Popen(['codex', 'app-server', '--listen', 'unix://'+str(self.root/'server.sock')], cwd=self.root, env=self.env, stdout=subprocess.DEVNULL, stderr=log)
         self.addCleanup(self.stop)
+        self.start_server()
+        self.owner = self.client('native-terminal')
+        self.observer = self.client('goblins-observer')
+        self.thread = self.owner.call('thread/start', {'cwd': str(self.root), 'approvalPolicy': 'on-request', 'sandbox': 'read-only', 'model': 'fixture-model'})['thread']['id']
+    def start_server(self):
+        log = (self.root/'log').open('a'); self.addCleanup(log.close)
+        self.server = subprocess.Popen(['codex', 'app-server', '--listen', 'unix://'+str(self.root/'server.sock')], cwd=self.root, env=self.env, stdout=subprocess.DEVNULL, stderr=log)
         for _ in range(1200):
             if (self.root/'server.sock').exists(): break
             if self.server.poll() is not None: self.fail((self.root/'log').read_text())
             time.sleep(.025)
         self.assertTrue((self.root/'server.sock').exists(), (self.root/'log').read_text())
-        self.owner = self.client('native-terminal')
-        self.observer = self.client('goblins-observer')
-        self.thread = self.owner.call('thread/start', {'cwd': str(self.root), 'approvalPolicy': 'on-request', 'sandbox': 'read-only', 'model': 'fixture-model'})['thread']['id']
+    def restart_server(self):
+        """A fresh server, which has no thread loaded."""
+        self.stop()
+        (self.root/'server.sock').unlink(missing_ok=True)
+        self.start_server()
     def client(self, name):
         c = Client(self.root/'server.sock', name); c.wire.peer.settimeout(15)
         self.addCleanup(c.wire.close)
         return c
-    def start_adapter(self, request_socket=None):
+    def start_adapter(self, request_socket=None, bypass=False, name='adapter'):
         binary = Path(__file__).resolve().parents[1]/'target/debug/goblins-codex'
         self.assertTrue(binary.exists(), 'build goblins-codex before native proxy smoke tests')
-        runtime = self.root/'adapter'
+        runtime = self.root/name
         runtime.mkdir(mode=0o700)
         log = (runtime/'log').open('w'); self.addCleanup(log.close)
-        daemon = ['--request-socket', str(request_socket)] if request_socket else []
-        adapter = subprocess.Popen([str(binary),'--runtime-dir',str(runtime),*daemon,'run','--socket',str(self.root/'server.sock'),'--native-socket',str(runtime/'native.sock')],stdout=subprocess.DEVNULL,stderr=log)
+        # Never the real sandbox endpoint, which these tests may run inside.
+        daemon = ['--request-socket', str(request_socket or self.root/'no-daemon.sock')]
+        mode = ['--bypass-permissions'] if bypass else []
+        adapter = subprocess.Popen([str(binary),'--runtime-dir',str(runtime),*daemon,'run','--socket',str(self.root/'server.sock'),'--native-socket',str(runtime/'native.sock'),*mode],cwd=self.root,stdout=subprocess.DEVNULL,stderr=log)
         def stop():
             adapter.terminate(); adapter.wait(timeout=5)
         self.addCleanup(stop)
@@ -268,6 +277,7 @@ requires_openai_auth=false
         listener = socket.socket(socket.AF_UNIX); listener.bind(str(path)); listener.listen()
         self.addCleanup(listener.close)
         reports = queue.Queue()
+        self.states = queue.Queue()
         def serve():
             while True:
                 try: peer, _ = listener.accept()
@@ -280,6 +290,9 @@ requires_openai_auth=false
                         if call['method'] == 'sessions.set-variables':
                             reports.put(call['params']['variables'])
                             peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'accepted':True,'recorded':True}}))
+                        elif call['method'] == 'sessions.set-state':
+                            self.states.put(call['params']['state'])
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{}}))
                         else:
                             peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'error':{'code':-32601,'message':'not in this test'}}))
                     except (OSError, EOFError, ValueError): pass
@@ -354,5 +367,92 @@ requires_openai_auth=false
         self.script()
         self.owner.wire.send({'id': v['id'], 'result': {'answers': {'q': {'answers': ['A']}}}})
         self.owner.event('turn/completed')
+
+    def saved(self, approval, sandbox, cwd=None):
+        """A thread saved with these permissions, not loaded in a fresh server."""
+        thread = self.owner.call('thread/start', {'cwd': str(cwd or self.root), 'approvalPolicy': approval, 'sandbox': sandbox, 'model': 'fixture-model'})['thread']['id']
+        self.script()
+        self.owner.call('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': 'saved task'}]})
+        self.owner.event('turn/completed')
+        self.restart_server()
+        return thread
+
+    def test_a_resumed_thread_gets_the_configured_approval_policy_not_its_saved_one(self):
+        thread = self.saved('never', 'danger-full-access')
+        runtime = self.start_adapter()
+        # The terminal's connection, through the adapter.
+        terminal = Client(runtime/'native.sock', 'native-terminal'); terminal.wire.peer.settimeout(15)
+        self.addCleanup(terminal.wire.close)
+        resumed = terminal.call('thread/resume', {'threadId': thread})
+        # The config leaves approval_policy unset: Codex's own default.
+        self.assertEqual(resumed['approvalPolicy'], 'on-request')
+        self.assertEqual(resumed['sandbox']['type'], 'dangerFullAccess')
+        # With full access, on-request does not ask even for a command the
+        # model wants to escalate: the docs say so, and this notices a change.
+        self.script({'type': 'response.output_item.done', 'item': {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'true', 'sandbox_permissions': 'require_escalated', 'justification': 'test approval'})}})
+        self.script()
+        terminal.call('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': 'escalated task'}]})
+        terminal.event('turn/completed')
+        self.assertNotIn('item/commandExecution/requestApproval', [e.get('method') for e in terminal.events])
+        # A configured policy replaces the default.
+        config = self.root/'config.toml'
+        config.write_text('approval_policy="never"\n' + config.read_text())
+        self.restart_server()
+        runtime = self.start_adapter(name='configured')
+        terminal = Client(runtime/'native.sock', 'native-terminal'); terminal.wire.peer.settimeout(15)
+        self.addCleanup(terminal.wire.close)
+        self.assertEqual(terminal.call('thread/resume', {'threadId': thread})['approvalPolicy'], 'never')
+
+    def test_the_configured_policy_is_the_saved_threads_directorys(self):
+        # Your config says never; the thread's project says on-request.
+        project = self.root/'project'
+        (project/'.codex').mkdir(parents=True)
+        (project/'.codex'/'config.toml').write_text('approval_policy="on-request"\n')
+        config = self.root/'config.toml'
+        config.write_text('approval_policy="never"\n' + config.read_text() + f'[projects."{project}"]\ntrust_level="trusted"\n')
+        thread = self.saved('never', 'danger-full-access', cwd=project)
+        # The adapter runs in the root, whose policy is never.
+        runtime = self.start_adapter()
+        terminal = Client(runtime/'native.sock', 'native-terminal'); terminal.wire.peer.settimeout(15)
+        self.addCleanup(terminal.wire.close)
+        resumed = terminal.call('thread/resume', {'threadId': thread})
+        self.assertEqual((resumed['cwd'], resumed['approvalPolicy']), (str(project), 'on-request'))
+        forked = terminal.call('thread/fork', {'threadId': thread})
+        self.assertEqual(forked['approvalPolicy'], 'on-request')
+
+    def test_a_bypassing_goblin_resumes_a_prompting_thread_without_approvals(self):
+        from terminal_support import Terminal, screen_wait
+        thread = self.saved('on-request', 'danger-full-access')
+        owner = self.client('native-terminal')
+        hooks = owner.call('hooks/list', {'cwds': [str(self.root)]})['data'][0]['hooks']
+        owner.call('config/batchWrite', {'edits': [{'keyPath': 'hooks.state.'+json.dumps(h['key'])+'.trusted_hash', 'value': h['currentHash'], 'mergeStrategy': 'replace'} for h in hooks], 'reloadUserConfig': True})
+        runtime = self.start_adapter(bypass=True)
+        # Codex's own terminal, which sends no permissions on resume.
+        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(runtime/'native.sock'), '--dangerously-bypass-hook-trust', 'resume', thread], cwd=self.root, env=self.env)
+        self.addCleanup(terminal.close)
+        screen_wait(terminal, lambda text: 'saved task' in text, timeout=30)
+        # The thread is loaded now; resuming it again reports its live policy.
+        live = self.client('inspector').call('thread/resume', {'threadId': thread, 'excludeTurns': True})
+        self.assertEqual(live['approvalPolicy'], 'never')
+        self.assertEqual(live['sandbox']['type'], 'dangerFullAccess')
+
+    def test_approvals_reach_the_terminal_through_the_adapter_and_report_waiting(self):
+        thread = self.saved('on-request', 'read-only')
+        request_socket, _ = self.fake_daemon()
+        runtime = self.start_adapter(request_socket)
+        terminal = Client(runtime/'native.sock', 'native-terminal'); terminal.wire.peer.settimeout(15)
+        self.addCleanup(terminal.wire.close)
+        # A policy the request gives itself stays: here one that asks.
+        resumed = terminal.call('thread/resume', {'threadId': thread, 'approvalPolicy': 'on-request', 'sandbox': 'read-only'})
+        self.assertEqual(resumed['approvalPolicy'], 'on-request')
+        self.script({'type': 'response.output_item.done', 'item': {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'touch /tmp/native-approval-test', 'sandbox_permissions': 'require_escalated', 'justification': 'test approval'})}})
+        terminal.call('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': 'approval task'}]})
+        envelope = terminal.event('item/commandExecution/requestApproval', envelope=True)
+        deadline = time.monotonic() + 15
+        while self.states.get(timeout=max(deadline - time.monotonic(), .1)) != 'waiting-approval':
+            pass
+        self.script()
+        terminal.wire.send({'id': envelope['id'], 'result': {'decision': 'decline'}})
+        terminal.event('turn/completed')
 
 if __name__ == '__main__': unittest.main()

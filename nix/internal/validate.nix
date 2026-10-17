@@ -86,6 +86,7 @@ in
         allowedScopes
         scopeStorage
         allowedChildren
+        bypassPermissions
         ;
     in
     if !validName binName || !validName outName then
@@ -120,6 +121,11 @@ in
       || !builtins.isBool hostCommands.enable
     then
       fail "hostCommands accepts only enable (boolean)"
+    else if !builtins.isBool bypassPermissions then
+      fail "bypassPermissions must be a boolean"
+    # Only an agent has permission prompts to bypass.
+    else if bypassPermissions && integration == null then
+      fail "bypassPermissions needs an agent goblin (mkClaudeGoblin or mkCodexGoblin)"
     else if !(scope == null || validScope scope) || !scopes allowedScopes then
       fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
     else if

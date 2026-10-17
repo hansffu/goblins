@@ -239,6 +239,9 @@ let
     }
     { allowedChildren = "bad"; }
     { allowedChildren = null; }
+    { bypassPermissions = "yes"; }
+    # A plain goblin has no agent prompts to bypass.
+    { bypassPermissions = true; }
     {
       allowedChildren = [
         "bad"
@@ -309,6 +312,46 @@ in
       and $g["goblins-dev"].host_commands' ${devGoblins.config}
     touch $out
   '';
+  # The launchers ask the agent to skip its own prompts only with
+  # bypassPermissions; Codex keeps full access either way (Goblins is the
+  # sandbox) and gets "never" only when bypassing.
+  agent-permissions =
+    let
+      claude = import ../nix/goblins/claude { inherit pkgs; };
+      codex = import ../nix/goblins/codex { inherit pkgs; };
+      launchers = bypassPermissions: {
+        claude = claude.mkLauncher {
+          pkg = agents.claude-code;
+          binName = "claude";
+          claudeConfigDir = "$HOME/.claude";
+          inherit (claude) plugin;
+          inherit bypassPermissions;
+        };
+        codex = codex.mkLauncher {
+          pkg = agents.codex;
+          binName = "codex";
+          codexConfigDir = "$HOME/.codex";
+          filterUnavailableMcp = false;
+          inherit bypassPermissions;
+        };
+      };
+      own = launchers false;
+      bypass = launchers true;
+    in
+    pkgs.runCommand "goblins-agent-permissions" { } ''
+      # `! grep` would not stop the build under set -e.
+      if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
+      grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
+      for launcher in ${own.codex}/bin/codex ${bypass.codex}/bin/codex; do
+        grep -q -- 'permission_args=(--sandbox danger-full-access' $launcher
+        grep -q -- "-c 'sandbox_mode=\"danger-full-access\"'" $launcher
+      done
+      if grep -q -e 'approval_policy=' -e '--ask-for-approval never' -e --bypass-permissions ${own.codex}/bin/codex; then exit 1; fi
+      grep -q -- 'permission_args=(--sandbox danger-full-access --ask-for-approval never)' ${bypass.codex}/bin/codex
+      grep -q -- "-c 'approval_policy=\"never\"'" ${bypass.codex}/bin/codex
+      grep -q -- '--native-socket "$native_socket" --bypass-permissions' ${bypass.codex}/bin/codex
+      touch $out
+    '';
   # Each feature set gets its own skills, and none of them presents a
   # workflow the sandbox doesn't have (tests/test_*_config.py check the mounts).
   skill-selection =
@@ -642,6 +685,7 @@ in
       custom = mkClaudeGoblin {
         pkg = claudeProbe;
         claudeConfigDir = "\${HOME}/custom claude";
+        bypassPermissions = true;
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -1100,6 +1144,9 @@ in
     assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
     assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
     assert (mkGoblin base).goblin.allowed_children == [ ];
+    assert !(mkGoblin base).goblin.bypass_permissions;
+    assert !(mkClaudeGoblin { }).goblin.bypass_permissions;
+    assert (mkCodexGoblin { bypassPermissions = true; }).goblin.bypass_permissions;
     assert (mkGoblin base).goblin.resume_command == null;
     assert
       (mkGoblin (
@@ -1223,6 +1270,7 @@ in
       (options: !(builtins.tryEval (mkCodexGoblin options).goblin.build_spec.drvPath).success)
       [
         { codexConfigDir = null; }
+        { bypassPermissions = "yes"; }
         { codexConfigDir = "relative"; }
         { env.CODEX_HOME = "/different"; }
         { injectedFiles."codex/config.toml" = "override"; }
@@ -1238,6 +1286,7 @@ in
       (options: !(builtins.tryEval (mkClaudeGoblin options).goblin.build_spec.drvPath).success)
       [
         { claudeConfigDir = null; }
+        { bypassPermissions = "yes"; }
         { claudeConfigDir = "relative"; }
         { env.CLAUDE_CONFIG_DIR = "/different"; }
         { injectedFiles."claude-code/managed-settings.json" = "override"; }

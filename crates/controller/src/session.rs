@@ -194,6 +194,14 @@ impl Inheritance {
     pub(crate) fn host_commands(&self) -> bool {
         self.launch.host_commands
     }
+    /// Whether the configuration asks its agent to skip its own permission
+    /// prompts; None for a goblin without an agent.
+    pub(crate) fn permission_bypass(&self) -> Option<bool> {
+        self.launch
+            .integration
+            .as_ref()
+            .map(|_| self.launch.bypass_permissions)
+    }
     /// The host directory for a host command started at sandbox `path`.
     pub(crate) fn host_directory(&self, path: &Path) -> Result<(File, PathBuf)> {
         self.binds.resolve_shared(path)

@@ -128,7 +128,7 @@ fn run() -> Result<i32, String> {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}\nDev shell: {}\nRaid: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -159,6 +159,13 @@ fn run() -> Result<i32, String> {
                         "available after approval"
                     } else {
                         "none"
+                    },
+                    // What the configuration asks, not what the agent's own
+                    // settings make of it; no line for a goblin without an agent.
+                    match record["permission_bypass"].as_bool() {
+                        Some(true) => "\nAgent permission bypass: requested",
+                        Some(false) => "\nAgent permission bypass: not requested",
+                        None => "",
                     },
                     record["dev_shell"].as_str().unwrap_or("none"),
                     match raid["name"].as_str() {
