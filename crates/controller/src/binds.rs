@@ -361,30 +361,35 @@ impl Plan {
             .map(|p| store_root(p))
             .collect()
     }
+    /// Bubblewrap arguments for the declared mounts and, with a staging store
+    /// (`Some`), the store targets they select. A sandbox that sees the host
+    /// store (`None`) already has every target.
     pub fn append_args(
         &self,
         args: &mut Vec<String>,
-        staging: &Path,
+        staging: Option<&Path>,
         initial: &BTreeSet<PathBuf>,
     ) -> Result<()> {
-        for (destination, source) in &self.store_targets {
-            if initial.iter().any(|p| destination.starts_with(p)) {
-                continue;
+        if let Some(staging) = staging {
+            for (destination, source) in &self.store_targets {
+                if initial.iter().any(|p| destination.starts_with(p)) {
+                    continue;
+                }
+                let placeholder = staging.join(destination.strip_prefix("/nix/store")?);
+                // The backing store skeleton is host-private and read-only in the
+                // sandbox. Prepare nested destinations before Bubblewrap sees it.
+                if source.is_dir() {
+                    fs::create_dir_all(placeholder)?;
+                } else {
+                    fs::create_dir_all(placeholder.parent().unwrap())?;
+                    File::create(placeholder)?;
+                }
+                args.extend([
+                    "--ro-bind".into(),
+                    source.display().to_string(),
+                    destination.display().to_string(),
+                ]);
             }
-            let placeholder = staging.join(destination.strip_prefix("/nix/store")?);
-            // The backing store skeleton is host-private and read-only in the
-            // sandbox. Prepare nested destinations before Bubblewrap sees it.
-            if source.is_dir() {
-                fs::create_dir_all(placeholder)?;
-            } else {
-                fs::create_dir_all(placeholder.parent().unwrap())?;
-                File::create(placeholder)?;
-            }
-            args.extend([
-                "--ro-bind".into(),
-                source.display().to_string(),
-                destination.display().to_string(),
-            ]);
         }
         for mount in self.mounts() {
             args.extend([
@@ -484,7 +489,7 @@ mod tests {
         );
         let mut args = vec![];
         child
-            .append_args(&mut args, &root, &BTreeSet::new())
+            .append_args(&mut args, Some(&root), &BTreeSet::new())
             .unwrap();
         assert_eq!(
             args,

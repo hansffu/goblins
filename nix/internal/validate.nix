@@ -127,8 +127,12 @@ in
       fail "allowedChildren must be null or a list of unique goblin names"
     else if !storageMounts scopeStorage then
       fail "scopeStorage must map storage names to distinct absolute or $HOME paths outside /nix, /proc, /dev and /run/goblins"
-    else if allowNix != false then
-      fail "host Nix access is prohibited; request packages through goblins"
+    else if !builtins.isBool allowNix then
+      fail "allowNix must be a boolean"
+    # The host Nix daemon fetches substitutes and fixed-output derivations over
+    # the host's network, so an offline goblin with Nix would not be offline.
+    else if allowNix && allowedDomains != null then
+      fail "allowNix requires allowedDomains = null: the host Nix daemon downloads over the host network"
     else if allowUnixSockets != true then
       fail "allowUnixSockets must be true for the session request socket"
     else if

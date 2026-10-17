@@ -34,8 +34,8 @@ hand container work to a child, tell it to check `goblin status` and enable
 Docker if needed.
 
 If `DOCKER_HOST` is unset, this goblin has no Docker engine. Say so instead of
-requesting approval. Never substitute `goblin request-package docker` or start
-your own daemon: a Docker client package provides no engine. Do not change
+requesting approval. Never install a Docker package or start your own daemon:
+a Docker client provides no engine. Do not change
 `DOCKER_HOST` or the Testcontainers settings Goblins provides.
 
 After a successful attachment, rerun the command that needed Docker. Force a

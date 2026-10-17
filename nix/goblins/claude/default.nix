@@ -4,15 +4,10 @@ let
   inherit (pkgs) lib;
   hooks = import ./hooks.nix { inherit pkgs; };
   plugin = import ./plugin.nix { inherit pkgs; };
-  managedFiles = [
-    "claude-code/managed-settings.json"
-    "claude-code/.claude/skills/goblins-spawn/SKILL.md"
-    "claude-code/.claude/skills/goblins-messaging/SKILL.md"
-    "claude-code/.claude/skills/goblins-packages/SKILL.md"
-    "claude-code/.claude/skills/goblins-docker/SKILL.md"
-    "claude-code/.claude/skills/goblins-raids/SKILL.md"
-    "claude-code/.claude/skills/goblins-devshell/SKILL.md"
-  ];
+  skills = import ../skills.nix { inherit lib; };
+  skillFile = name: "claude-code/.claude/skills/${name}/SKILL.md";
+  skillFiles = lib.mapAttrs' (name: text: lib.nameValuePair (skillFile name) text);
+  managedFiles = [ "claude-code/managed-settings.json" ] ++ map skillFile (skills { }).managed;
   runtimeDirectory =
     path:
     assert lib.assertMsg (builtins.isString path)
@@ -37,39 +32,27 @@ in
   packages = [ hooks.package ];
   inherit plugin;
   mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
-  mkInjectedFiles = settings: {
-    "claude-code/managed-settings.json" =
-      (pkgs.formats.json { }).generate "goblins-claude-settings.json"
-        (
-          settings
-          // {
-            hooks = hooks.mkHooks (settings.hooks or { });
-            skillOverrides = (settings.skillOverrides or { }) // {
-              goblins-spawn = "on";
-              goblins-messaging = "on";
-              goblins-packages = "on";
-              goblins-docker = "on";
-              goblins-raids = "on";
-              # Mounted only in dev shell sandboxes.
-              goblins-devshell = "on";
-            };
-          }
-        );
-    "claude-code/.claude/skills/goblins-spawn/SKILL.md" =
-      builtins.readFile ../../../skills/goblins-spawn/SKILL.md;
-    "claude-code/.claude/skills/goblins-messaging/SKILL.md" =
-      builtins.readFile ../../../skills/goblins-messaging/SKILL.md;
-    "claude-code/.claude/skills/goblins-packages/SKILL.md" =
-      builtins.readFile ../../../skills/goblins-packages/SKILL.md;
-    "claude-code/.claude/skills/goblins-docker/SKILL.md" =
-      builtins.readFile ../../../skills/goblins-docker/SKILL.md;
-    "claude-code/.claude/skills/goblins-raids/SKILL.md" =
-      builtins.readFile ../../../skills/goblins-raids/SKILL.md;
-  };
-  devShellInjectedFiles = {
-    "claude-code/.claude/skills/goblins-devshell/SKILL.md" =
-      builtins.readFile ../../../skills/goblins-devshell/SKILL.md;
-  };
+  mkInjectedFiles =
+    { settings, nix }:
+    let
+      selected = skills { inherit nix; };
+    in
+    {
+      "claude-code/managed-settings.json" =
+        (pkgs.formats.json { }).generate "goblins-claude-settings.json"
+          (
+            settings
+            // {
+              hooks = hooks.mkHooks (settings.hooks or { });
+              # The dev shell skill is mounted only in dev shell sandboxes.
+              skillOverrides =
+                (settings.skillOverrides or { })
+                // lib.mapAttrs (_: _: "on") (selected.always // selected.devShell);
+            }
+          );
+    }
+    // skillFiles selected.always;
+  devShellInjectedFiles = nix: skillFiles (skills { inherit nix; }).devShell;
 
   goblinOptions =
     options:

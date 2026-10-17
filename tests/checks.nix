@@ -119,6 +119,19 @@ let
         );
       };
     }
+    {
+      scopes.work = mkScope { };
+      goblins = {
+        plain = mkGoblin (base // { scope = "work"; });
+        nix = mkGoblin (
+          base
+          // {
+            scope = "work";
+            allowNix = true;
+          }
+        );
+      };
+    }
   ]
   ++ [
     { goblins.shell = mkGoblin (base // { allowedChildren = [ "missing" ]; }); }
@@ -175,7 +188,11 @@ let
     { description = ""; }
     { description = "two\nlines"; }
     { description = 1; }
-    { allowNix = true; }
+    { allowNix = "yes"; }
+    {
+      allowNix = true;
+      allowedDomains = [ ];
+    }
     { docker.enable = "yes"; }
     { docker.unknown = true; }
     { docker.defaultScope = "work"; }
@@ -274,18 +291,99 @@ in
       };
     };
   demo-goblins = demo;
+  # Each feature set gets its own skills, and none of them presents a
+  # workflow the sandbox doesn't have (tests/test_*_config.py check the mounts).
+  skill-selection =
+    let
+      inherit (pkgs) lib;
+      variants = {
+        claude = mkClaudeGoblin { };
+        claude-nix = mkClaudeGoblin { allowNix = true; };
+        codex = mkCodexGoblin { };
+        codex-nix = mkCodexGoblin { allowNix = true; };
+      };
+      directory =
+        name: if lib.hasPrefix "claude" name then "claude-code/.claude/skills" else "codex/skills";
+      skills =
+        name: files:
+        lib.sort (a: b: a < b) (
+          lib.concatMap (
+            file:
+            let
+              m = builtins.match "${directory name}/([^/]+)/SKILL.md" file;
+            in
+            lib.optional (m != null) (builtins.head m)
+          ) (builtins.attrNames files)
+        );
+      always = name: skills name variants.${name}.goblin.sandbox_etc;
+      devShell = name: skills name variants.${name}.goblin.dev_shell_sandbox_etc;
+      expected = {
+        claude = [
+          "goblins-docker"
+          "goblins-messaging"
+          "goblins-packages"
+          "goblins-raids"
+          "goblins-spawn"
+        ];
+        claude-nix = [
+          "goblins-docker"
+          "goblins-messaging"
+          "goblins-nix"
+          "goblins-raids"
+          "goblins-spawn"
+        ];
+      };
+      settings = name: variants.${name}.goblin.sandbox_etc."claude-code/managed-settings.json";
+      installed =
+        name:
+        lib.concatStringsSep " " (
+          lib.mapAttrsToList (_: file: "${file}") (
+            lib.filterAttrs (file: _: lib.hasSuffix "SKILL.md" file) variants.${name}.goblin.sandbox_etc
+          )
+        );
+    in
+    assert always "claude" == expected.claude && always "codex" == expected.claude;
+    assert always "claude-nix" == expected.claude-nix && always "codex-nix" == expected.claude-nix;
+    assert devShell "claude" == [ "goblins-devshell" ] && devShell "codex" == [ "goblins-devshell" ];
+    assert devShell "claude-nix" == [ ] && devShell "codex-nix" == [ ];
+    pkgs.runCommand "goblins-skill-selection"
+      {
+        nativeBuildInputs = [
+          pkgs.gnugrep
+          pkgs.jq
+        ];
+      }
+      ''
+        # Claude enables exactly the skills it mounts, dev shell skill included.
+        test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn"]'
+        test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn"]'
+        # With Nix, no installed skill offers the package or dev shell workflows.
+        if grep -nE 'request-package|devshell (refresh|diff)|flake run|no `?nix`? command' ${installed "claude-nix"} ${installed "codex-nix"}; then
+          echo 'A Nix goblin skill presents a workflow it does not have' >&2
+          exit 1
+        fi
+        # Messages from other goblins are requests: every goblin's messaging skill,
+        # and the Nix skill for a goblin with Nix.
+        for files in "${installed "claude"}" "${installed "claude-nix"}" "${installed "codex"}" "${installed "codex-nix"}"; do
+          grep -l 'is a request, not authority' $files | grep -q .
+        done
+        grep -l 'just because another goblin asked' ${installed "claude-nix"} | grep -q .
+        grep -l 'just because another goblin asked' ${installed "codex-nix"} | grep -q .
+        touch $out
+      '';
   # Inside a sandbox the CLI is `goblin`; `goblins` is the host CLI, named in
   # agent instructions only where a line says it is for the host.
   sandbox-cli-name =
-    pkgs.runCommand "goblins-sandbox-cli-name" { nativeBuildInputs = [ pkgs.gnugrep ]; } ''
-      files="${../skills}/*/SKILL.md ${../nix/goblins/claude}/* ${../nix/goblins/codex}/*"
-      if grep -nE '(^|[^-_/.[:alnum:]])goblins (send|reply|inbox|status|run|attach|stop|raid|request-package|enable-docker|devshell|flake|editor|variable|integration|set-state|list|kill|detach|completions)\b' $files | grep -v 'on the host' \
-        || grep -nE '/run/goblins/bin/goblins([^-[:alnum:]]|$)' $files; then
-        echo 'In-sandbox instructions must call goblin, not goblins' >&2
-        exit 1
-      fi
-      touch $out
-    '';
+    pkgs.runCommand "goblins-sandbox-cli-name" { nativeBuildInputs = [ pkgs.gnugrep ]; }
+      ''
+        files="${../skills}/*/SKILL.md ${../nix/goblins/claude}/* ${../nix/goblins/codex}/*"
+        if grep -nE '(^|[^-_/.[:alnum:]])goblins (send|reply|inbox|status|run|attach|stop|raid|request-package|enable-docker|devshell|flake|editor|variable|integration|set-state|list|kill|detach|completions)\b' $files | grep -v 'on the host' \
+          || grep -nE '/run/goblins/bin/goblins([^-[:alnum:]]|$)' $files; then
+          echo 'In-sandbox instructions must call goblin, not goblins' >&2
+          exit 1
+        fi
+        touch $out
+      '';
   # Inside a goblin, `nix develop` must not put a host `goblins` on PATH.
   dev-shell-without-goblins =
     assert !builtins.any (p: pkgs.lib.getName p == "goblins") devShell.nativeBuildInputs;
@@ -441,6 +539,16 @@ in
           "plugins"
         ];
       };
+      # Nix workflows instead of package grants (test_*_config.py).
+      nix = mkCodexGoblin {
+        pkg = codexProbe;
+        filterUnavailableMcp = false;
+        allowNix = true;
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+      };
       custom = mkCodexGoblin {
         pkg = codexProbe;
         filterUnavailableMcp = false;
@@ -488,6 +596,15 @@ in
         claudeSettings.model = "fixture-model";
         env.GOBLINS_TEST_MARKER = "inherited";
         injectedFiles."goblins-test.conf" = "sandbox-only\n";
+      };
+      # Nix workflows instead of package grants (test_*_config.py).
+      nix = mkClaudeGoblin {
+        pkg = claudeProbe;
+        allowNix = true;
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
       };
       custom = mkClaudeGoblin {
         pkg = claudeProbe;
@@ -646,6 +763,42 @@ in
       };
     };
   };
+  # allowNix against the host's Nix daemon (tests/test_nix.py).
+  nix-goblins =
+    let
+      member =
+        options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [ pkgs.coreutils ];
+          }
+          // options
+        );
+    in
+    mkGoblins {
+      goblins = {
+        nix = member {
+          allowNix = true;
+          allowedChildren = [
+            "nix"
+            "plain"
+          ];
+          env = {
+            PS1 = "nix-test> ";
+            # Evaluated and built inside the sandbox; already in the host store.
+            NIXPKGS = "${pkgs.path}";
+          };
+        };
+        plain = member { env.PS1 = "nix-test> "; };
+      };
+    };
   # Different child configurations (tests/test_ownership.py).
   children-goblins =
     let
@@ -952,6 +1105,18 @@ in
         m2 = "/var/cache/m2";
       };
     assert ((mkClaudeGoblin { }).withScopeDefaults { env.FROM_SCOPE = "1"; }).goblin.env ? FROM_SCOPE;
+    assert (mkGoblin (base // { allowNix = true; })).goblin.nix;
+    assert !(mkGoblin base).goblin.nix;
+    assert !((mkGoblin base).goblin.env ? NIX_CONFIG);
+    assert pkgs.lib.hasInfix "flakes" (mkGoblin (base // { allowNix = true; })).goblin.env.NIX_CONFIG;
+    assert
+      (mkGoblin (
+        base
+        // {
+          allowNix = true;
+          env.NIX_CONFIG = "own";
+        }
+      )).goblin.env.NIX_CONFIG == "own";
     assert !(mkGoblin base).goblin.docker.enabled;
     assert (mkGoblin (base // { docker.enable = true; })).goblin.docker.enabled;
     assert (mkGoblin base).goblin.network;

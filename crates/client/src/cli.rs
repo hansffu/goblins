@@ -139,7 +139,7 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// This sandbox's flake dev shell (there is no nix command)
+    /// This sandbox's host-evaluated flake dev shell
     Devshell {
         #[command(subcommand)]
         command: DevshellCommand,

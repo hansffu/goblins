@@ -61,7 +61,13 @@ mkGoblin (
     };
     allowedPackages = allowedPackages ++ claude.packages;
     rwDirs = pkgs.lib.unique (rwDirs ++ [ claudeConfigDir ]);
-    injectedFiles = injectedFiles // claude.mkInjectedFiles claudeSettings;
-    devShellInjectedFiles = devShellInjectedFiles // claude.devShellInjectedFiles;
+    injectedFiles =
+      injectedFiles
+      // claude.mkInjectedFiles {
+        settings = claudeSettings;
+        nix = options.allowNix or false;
+      };
+    devShellInjectedFiles =
+      devShellInjectedFiles // claude.devShellInjectedFiles (options.allowNix or false);
   }
 )

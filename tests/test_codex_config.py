@@ -103,6 +103,17 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual((self.codex / "config.toml").read_bytes(), self.original)
         self.assertFalse((self.codex / "hooks.json").exists())
 
+    def test_a_goblin_with_nix_gets_the_nix_skill_instead_of_packages(self):
+        terminal = self.terminal("nix", "nixer")
+        terminal.expect("codex-probe>")
+        skills = "/etc/codex/skills"
+        terminal.send(
+            f"test -r {skills}/goblins-nix/SKILL.md && test -r {skills}/goblins-messaging/SKILL.md "
+            f"&& test ! -e {skills}/goblins-packages && test ! -e {skills}/goblins-devshell "
+            "&& command -v nix >/dev/null; printf 'NIX_SKILLS=%s\\n' \"$?\"\n"
+        )
+        terminal.expect(r"(?:^|\n)NIX_SKILLS=0\n")
+
     def test_custom_directory_and_native_auth_status(self):
         custom = self.home / "custom codex"
         custom.mkdir()

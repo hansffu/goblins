@@ -30,6 +30,13 @@ use std::{
     time::Duration,
 };
 
+/// Why an allowNix goblin gets no package grants.
+pub(crate) const NIX_PACKAGES: &str =
+    "this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request";
+/// Why an allowNix goblin gets no dev shell refreshes or flake runs.
+pub(crate) const NIX_DEV_SHELL: &str =
+    "this goblin has Nix; use nix develop and nix run instead of the Goblins dev shell commands";
+
 fn canonical_store_output(path: &Path) -> bool {
     let name = path.file_name().and_then(|p| p.to_str());
     let Some(name) = name else {
@@ -173,6 +180,11 @@ impl Inheritance {
     }
     pub(crate) fn initially_available(&self, path: &Path) -> bool {
         self.launch.initial_packages.iter().any(|p| p == path)
+    }
+    /// The sandbox runs ordinary Nix commands against the host daemon, so
+    /// package grants and dev shell refreshes do not apply.
+    pub(crate) fn nix(&self) -> bool {
+        self.launch.allow_nix
     }
 }
 #[cfg(test)]
@@ -504,6 +516,22 @@ impl Session {
         private.push(crate::scope_storage::root(false)?);
         private.push(self.directory.clone());
         private.extend(etc.iter().map(|(_, destination)| destination.clone()));
+        // allowNix: the host store and the daemon's socket, as (what to bind at
+        // its own path, the socket). The default socket's directory holds
+        // nothing else, and binding it survives the socket being recreated; a
+        // socket elsewhere is bound alone, not its neighbours.
+        let nix_socket = if self.launch.allow_nix {
+            let socket = crate::evaluator::daemon_socket()?;
+            let default = Path::new(crate::evaluator::DAEMON_SOCKET);
+            if socket.parent() == Some(default) {
+                Some((default.to_path_buf(), socket))
+            } else {
+                crate::binds::validate(&socket, &private)?;
+                Some((socket.clone(), socket))
+            }
+        } else {
+            None
+        };
         if self.binds.is_none() {
             let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
             if let Some(parent) = &self.parent_binds {
@@ -567,7 +595,9 @@ impl Session {
             roots.push(dev.profile.clone());
         }
         let initial = self.closure(&roots)?;
-        self.placeholders(&initial)?;
+        if !self.launch.allow_nix {
+            self.placeholders(&initial)?;
+        }
         // An empty first generation: the granted-package directory leads PATH
         // from the start, so tools that list PATH once (TRAMP) see later grants.
         let empty = self.directory.join("packages/generation-0");
@@ -686,8 +716,13 @@ impl Session {
             workspace_fd.to_string(),
             "/workspace".into(),
         ]);
+        let store = if self.launch.allow_nix {
+            PathBuf::from("/nix/store")
+        } else {
+            self.directory.join("store")
+        };
         for (flag, source, dest) in [
-            ("--ro-bind", self.directory.join("store"), "/nix/store"),
+            ("--ro-bind", store, "/nix/store"),
             (
                 "--ro-bind",
                 self.directory.join("packages"),
@@ -721,6 +756,16 @@ impl Session {
         for (name, value) in &self.launch.env {
             args.extend(["--setenv".into(), name.clone(), value.clone()]);
         }
+        // After the goblin's env: the launch uses --clearenv, so without these
+        // the client would not find a socket outside the default path.
+        if let Some((_, socket)) = &nix_socket {
+            args.extend(["--setenv", "NIX_REMOTE", "daemon"].map(String::from));
+            args.extend([
+                "--setenv".into(),
+                "NIX_DAEMON_SOCKET_PATH".into(),
+                socket.display().to_string(),
+            ]);
+        }
         if let Some(dev) = &self.launch.dev_shell {
             let directory = self.directory.join("devshell");
             fs::create_dir_all(&directory)?;
@@ -734,14 +779,21 @@ impl Session {
                 dev.reference.clone(),
             ]);
         }
-        for path in &initial {
-            args.extend([
-                "--ro-bind".into(),
-                path.display().to_string(),
-                path.display().to_string(),
-            ]);
+        let staging = self.directory.join("store");
+        if !self.launch.allow_nix {
+            for path in &initial {
+                args.extend([
+                    "--ro-bind".into(),
+                    path.display().to_string(),
+                    path.display().to_string(),
+                ]);
+            }
         }
-        binds.append_args(&mut args, &self.directory.join("store"), &initial)?;
+        binds.append_args(
+            &mut args,
+            (!self.launch.allow_nix).then_some(staging.as_path()),
+            &initial,
+        )?;
         for (source, destination) in &etc {
             args.extend([
                 "--ro-bind".into(),
@@ -757,6 +809,11 @@ impl Session {
         // The engine has its own PID namespace and mounts a fresh /proc.
         self.docker_filesystem
             .extend(["--proc", "/proc"].map(String::from));
+        // Not in the engine's view: containers never reach the Nix daemon.
+        if let Some((mount, _)) = &nix_socket {
+            let mount = mount.display().to_string();
+            args.extend(["--ro-bind".into(), mount.clone(), mount]);
+        }
         if shared_pid {
             // The helper mounted the scope's /proc; a member's own user
             // namespace could not. Keep Bubblewrap's read-only /proc hardening.
@@ -972,6 +1029,14 @@ impl Session {
     pub(crate) fn resolve_recorded(&self, names: &[String]) -> Result<Resolved> {
         let mut outputs: Vec<(String, PathBuf)> = vec![];
         let mut skipped: Vec<crate::history::Skipped> = vec![];
+        if self.launch.allow_nix {
+            for name in names {
+                if !skipped.iter().any(|s| s.name == *name) {
+                    skipped.push(crate::history::Skipped::new(name, NIX_PACKAGES));
+                }
+            }
+            return Ok((outputs, skipped));
+        }
         for name in names {
             self.cancel.check()?;
             if outputs.iter().any(|(n, _)| n == name) || skipped.iter().any(|s| s.name == *name) {
@@ -1146,6 +1211,11 @@ impl Session {
         missing: &BTreeSet<PathBuf>,
         before_mount: &mut impl FnMut(usize, &Path) -> Result<()>,
     ) -> Result<()> {
+        // The sandbox and an attached engine already see the whole host store.
+        if self.launch.allow_nix {
+            self.mounted.extend(missing.iter().cloned());
+            return Ok(());
+        }
         self.placeholders(missing)?;
         for (count, item) in missing.iter().enumerate() {
             self.cancel.check()?;

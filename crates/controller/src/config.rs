@@ -285,6 +285,9 @@ impl Manifest {
 pub struct Launch {
     #[serde(default)]
     pub description: String,
+    /// The host store and Nix daemon are visible (mkGoblin's allowNix).
+    #[serde(default)]
+    pub allow_nix: bool,
     #[serde(default)]
     pub pasta: Option<PathBuf>,
     #[serde(skip)]
@@ -346,7 +349,7 @@ impl Configuration {
         let spec: serde_json::Value =
             serde_json::from_slice(&read_regular(&self.build_spec, MAX_MANIFEST_BYTES)?)?;
         if spec["platform"] != "linux"
-            || spec["allow_nix"] != false
+            || !spec["allow_nix"].is_boolean()
             || spec["allow_unix_sockets"] != true
         {
             return Err("unsupported Goblin sandbox policy".into());
@@ -369,6 +372,7 @@ impl Configuration {
         env.extend(self.env.clone());
         Ok(Launch {
             description: self.description.clone(),
+            allow_nix: spec["allow_nix"] == true,
             pasta: if self.network {
                 Some(
                     spec["dependencies"]["pasta"]

@@ -67,6 +67,11 @@ let
         # Keep its cleanup enabled without requesting a privileged container.
         TESTCONTAINERS_RYUK_CONTAINER_PRIVILEGED = "false";
       }
+      # The sandbox has no /etc/nix: enable the flake CLI, as agent-sandbox.nix
+      # documents. A goblin's own env.NIX_CONFIG wins.
+      // lib.optionalAttrs allowNix {
+        NIX_CONFIG = "experimental-features = nix-command flakes\naccept-flake-config = false";
+      }
       // env;
       sandboxOptions = {
         inherit
@@ -133,6 +138,8 @@ let
         env = effectiveEnv;
         client_package = client;
         network = allowedDomains == null;
+        # For mkGoblins' scope check only; the daemon reads the build spec.
+        nix = allowNix;
         docker = {
           daemon = "${dockerDaemon}/bin/dockerd";
           client = "${pkgs.docker-client}";

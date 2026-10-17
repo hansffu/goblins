@@ -126,7 +126,7 @@ fn run() -> Result<i32, String> {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nDev shell: {}\nRaid: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nNix: {}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -146,6 +146,12 @@ fn run() -> Result<i32, String> {
                         "enabled"
                     } else {
                         "disabled"
+                    },
+                    // Ordinary nix commands against the host daemon.
+                    if record["nix"] == true {
+                        "available"
+                    } else {
+                        "none"
                     },
                     record["dev_shell"].as_str().unwrap_or("none"),
                     match raid["name"].as_str() {

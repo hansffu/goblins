@@ -65,7 +65,13 @@ mkGoblin (
     };
     allowedPackages = allowedPackages ++ codex.packages;
     rwDirs = pkgs.lib.unique (rwDirs ++ [ codexConfigDir ]);
-    injectedFiles = injectedFiles // codex.mkInjectedFiles codexSettings;
-    devShellInjectedFiles = devShellInjectedFiles // codex.devShellInjectedFiles;
+    injectedFiles =
+      injectedFiles
+      // codex.mkInjectedFiles {
+        settings = codexSettings;
+        nix = options.allowNix or false;
+      };
+    devShellInjectedFiles =
+      devShellInjectedFiles // codex.devShellInjectedFiles (options.allowNix or false);
   }
 )

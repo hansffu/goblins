@@ -90,15 +90,21 @@ let
         allowed_children = allowedChildren name value.goblin;
       }
   ) goblins;
+  # The values of `field` among the configurations that may join each scope.
+  perScope =
+    field:
+    lib.mapAttrs (
+      scope: _:
+      lib.unique (
+        lib.concatMap (
+          configuration: lib.optional (configuration.scopes ? ${scope}) configuration.${field}
+        ) (builtins.attrValues configurations)
+      )
+    ) scopes;
   # Members share one network namespace, so they must agree on network policy.
-  networks = lib.mapAttrs (
-    scope: _:
-    lib.unique (
-      lib.concatMap (
-        configuration: lib.optional (configuration.scopes ? ${scope}) configuration.network
-      ) (builtins.attrValues configurations)
-    )
-  ) scopes;
+  networks = perScope "network";
+  # A shared Docker engine's store view comes from its members.
+  nixAccess = perScope "nix";
 in
 assert validate.goblins goblins;
 assert lib.assertMsg (
@@ -128,6 +134,9 @@ assert lib.assertMsg (
 assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
   builtins.attrValues networks
 )) "mkGoblins: members of a scope must have the same allowedDomains network policy";
+assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
+  builtins.attrValues nixAccess
+)) "mkGoblins: members of a scope must have the same allowNix";
 import ../packages/goblins.nix {
   inherit pkgs goblins configurations;
   editor =

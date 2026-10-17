@@ -28,6 +28,7 @@ Accepted decisions:
 - [[file:adr/0006-shared-scopes.md][ADR 0006]]: scopes share namespaces and storage
 - [[file:adr/0007-flake-dev-shells.md][ADR 0007]]: host-trusted flake dev shells with approved refreshes
 - [[file:adr/0008-raids.md][ADR 0008]]: raids are a communication-only grouping
+- [[file:adr/0011-nix-in-a-goblin.md][ADR 0011]]: allowNix gives a goblin the host store and Nix daemon
 
 * Build and run from a checkout
 

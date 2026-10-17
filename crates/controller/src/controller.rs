@@ -1597,6 +1597,7 @@ impl Controller {
                     "name":record.name,"description":record.description,
                     "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
+                    "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
                     "allowed_children":self.sessions[scope].inheritance.as_ref()
                         .map_or(&[][..], |i| i.allowed_children()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
@@ -2152,6 +2153,9 @@ impl Controller {
                             })
                         };
                         let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
+                        if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
+                            return Err((-32602, crate::session::NIX_DEV_SHELL.into()));
+                        }
                         if a.record.dev_shell.is_none() {
                             return Err((
                                 -32602,
@@ -2194,6 +2198,17 @@ impl Controller {
                     let a = self.sessions.get(&session).ok_or_else(missing)?;
                     if a.record.state != "running" || a.pending.is_some() {
                         return Err(conflict());
+                    }
+                    if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
+                        match p.kind.as_str() {
+                            "package" => {
+                                return Err((-32602, crate::session::NIX_PACKAGES.into()));
+                            }
+                            "devshell" => {
+                                return Err((-32602, crate::session::NIX_DEV_SHELL.into()));
+                            }
+                            _ => (),
+                        }
                     }
                     let docker_scope = a
                         .inheritance

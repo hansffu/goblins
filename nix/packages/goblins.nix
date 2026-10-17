@@ -17,7 +17,7 @@ let
   };
   prepare =
     configuration:
-    configuration
+    builtins.removeAttrs configuration [ "nix" ]
     // {
       # Keep mkSandbox's policy/closure specification, but remove references
       # used only by its static Python launcher. The Rust adapter uses

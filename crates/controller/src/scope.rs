@@ -42,6 +42,9 @@ pub(crate) struct Shared {
     pub net: File,
     pub pid: Option<File>,
     online: bool,
+    /// Whether members see the host store: the shared engine's view of it
+    /// comes from its members, so they must agree.
+    nix: bool,
     state: Mutex<State>,
     _keeper: Keeper,
     // Dropped last: temporary data outlives every member process and engine.
@@ -182,6 +185,7 @@ impl Shared {
             net: namespaces.net.try_clone()?,
             pid: namespaces.pid.as_ref().map(File::try_clone).transpose()?,
             online: launch.pasta.is_some(),
+            nix: launch.allow_nix,
             state: Mutex::new(State {
                 engine: None,
                 users: 0,
@@ -205,6 +209,9 @@ impl Shared {
                 self.name
             )
             .into());
+        }
+        if self.nix != launch.allow_nix {
+            return Err(format!("scope '{}' has a different allowNix setting", self.name).into());
         }
         if launch
             .scope

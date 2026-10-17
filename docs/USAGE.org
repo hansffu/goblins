@@ -174,6 +174,20 @@ mounted read-only, and the in-sandbox client =exec=s the program with the
 caller's environment and terminal, like =nix run= (the dev shell environment is
 not applied).
 
+* Nix in a goblin
+
+=mkGoblin { allowNix = true; ... }= (also on =mkClaudeGoblin= and =mkCodexGoblin=) lets a goblin run ordinary =nix build=, =nix shell=, =nix develop=, =nix run= and =nix flake= commands. The sandbox sees the whole host store read-only and the host Nix daemon's socket; =nix= is on =PATH=, and =NIX_REMOTE=daemon=, =NIX_DAEMON_SOCKET_PATH= and a default =NIX_CONFIG= (the flake CLI, no flake =nixConfig=) are set. A goblin's own =env.NIX_CONFIG= replaces the default. Builds run in the host daemon, so new outputs appear in the sandbox at once.
+
+It needs a multi-user Nix install with a running daemon. The socket is =/nix/var/nix/daemon-socket/socket=, or =NIX_DAEMON_SOCKET_PATH= in the server's environment; without one the goblin fails to start. Only the socket is shared, not the rest of =/nix/var= or a custom socket's directory.
+
+=allowNix= requires =allowedDomains = null=: the daemon downloads substitutes and fixed-output derivations over the host network, so an offline goblin with Nix would not be offline. Every goblin that may join a scope must have the same =allowNix=, because a shared Docker engine's store view comes from its members.
+
+A goblin with Nix uses Nix instead of the Goblins package and dev shell workflows: =request-package=, =devshell diff=, =devshell refresh= and =flake run= are refused with a hint, and a recreated goblin skips its recorded package grants. Starting it in a dev shell (=--dev-shell=) still works. Its agent gets a =goblins-nix= skill instead of =goblins-packages= and =goblins-devshell=; =goblin status= shows =Nix: available=.
+
+Links made by =nix build= in the shared working directory are ordinary GC roots on the host. The sandbox's own =/tmp= and home are private, so a =result= link there leaves its output unrooted. Children with another configuration get that configuration's store view.
+
+The sandbox acts as the host user towards the daemon. If that user is in =trusted-users=, so is the goblin.
+
 * Scopes (Linux, no VM)
 
 A scope is a named trust group. Its members share a network namespace, by
@@ -762,7 +776,7 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =args= | Literal entry argument list; defaults to =[]= |
 | =resumeCommand= | Arguments instead of =args= when =goblins resume= resumes the agent; =null= (default) starts afresh. See [[*Resuming conversations][Resuming conversations]] |
 | =env= | Literal string environment values; defaults to ={}= |
-| =allowNix= | Must be =false=; host daemon stays hidden |
+| =allowNix= | =false= (default): no =nix=, only the closure of the granted packages. =true=: ordinary =nix= commands against the host daemon and the whole host store; requires =allowedDomains = null=. See [[*Nix in a goblin][Nix in a goblin]] |
 | =allowUnixSockets= | Must be =true= for the request transport |
 | =allowedDomains= | =null= (default): open internet; =[]= disables networking; domain filtering is not implemented |
 | =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
