@@ -42,6 +42,18 @@ fn execute(cli: Cli) -> Result<i32> {
     let root = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| format!("/run/user/{uid}").into());
+    // A host command (`goblin host run`) works for a goblin of the default
+    // server. Tests it runs must name their own server, never reach or stop
+    // that one by accident.
+    if cli.state_dir.is_none()
+        && std::env::var_os("GOBLINS_HOST_JOB").is_some()
+        && !matches!(
+            command,
+            Command::Configurations | Command::Completions { .. }
+        )
+    {
+        return Err("inside a Goblins host command (GOBLINS_HOST_JOB), pass --state-dir: the default server runs the goblin that asked for this command".into());
+    }
     let state = cli.state_dir.unwrap_or_else(|| {
         if root.is_dir() {
             root.join("goblins")

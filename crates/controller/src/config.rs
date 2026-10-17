@@ -34,6 +34,9 @@ pub struct Configuration {
     pub integration: Option<String>,
     #[serde(default)]
     pub docker: Option<Docker>,
+    /// mkGoblin's hostCommands.enable: `goblin host run` may ask the host.
+    #[serde(default)]
+    pub host_commands: bool,
     /// Default scope; `allowed_scopes` may be selected at launch instead.
     #[serde(default)]
     pub scope: Option<String>,
@@ -288,6 +291,9 @@ pub struct Launch {
     /// The host store and Nix daemon are visible (mkGoblin's allowNix).
     #[serde(default)]
     pub allow_nix: bool,
+    /// The sandbox may ask the host to run commands outside it.
+    #[serde(default)]
+    pub host_commands: bool,
     #[serde(default)]
     pub pasta: Option<PathBuf>,
     #[serde(skip)]
@@ -382,6 +388,7 @@ impl Configuration {
         Ok(Launch {
             description: self.description.clone(),
             allow_nix: spec["allow_nix"] == true,
+            host_commands: self.host_commands,
             pasta: if self.network {
                 Some(
                     spec["dependencies"]["pasta"]

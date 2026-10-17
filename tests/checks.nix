@@ -194,6 +194,8 @@ let
       allowedDomains = [ ];
     }
     { docker.enable = "yes"; }
+    { hostCommands.enable = "yes"; }
+    { hostCommands.unknown = true; }
     { docker.unknown = true; }
     { docker.defaultScope = "work"; }
     { docker.allowedScopes = [ "work" ]; }
@@ -301,6 +303,11 @@ in
         claude-nix = mkClaudeGoblin { allowNix = true; };
         codex = mkCodexGoblin { };
         codex-nix = mkCodexGoblin { allowNix = true; };
+        claude-host = mkClaudeGoblin {
+          allowNix = true;
+          hostCommands.enable = true;
+        };
+        codex-host = mkCodexGoblin { hostCommands.enable = true; };
       };
       directory =
         name: if lib.hasPrefix "claude" name then "claude-code/.claude/skills" else "codex/skills";
@@ -346,6 +353,8 @@ in
     assert always "claude-nix" == expected.claude-nix && always "codex-nix" == expected.claude-nix;
     assert devShell "claude" == [ "goblins-devshell" ] && devShell "codex" == [ "goblins-devshell" ];
     assert devShell "claude-nix" == [ ] && devShell "codex-nix" == [ ];
+    assert always "claude-host" == lib.sort (a: b: a < b) (expected.claude-nix ++ [ "goblins-host" ]);
+    assert always "codex-host" == lib.sort (a: b: a < b) (expected.claude ++ [ "goblins-host" ]);
     pkgs.runCommand "goblins-skill-selection"
       {
         nativeBuildInputs = [
@@ -354,22 +363,24 @@ in
         ];
       }
       ''
-        # Claude enables exactly the skills it mounts, dev shell skill included.
-        test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn"]'
-        test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn"]'
-        # With Nix, no installed skill offers the package or dev shell workflows.
-        if grep -nE 'request-package|devshell (refresh|diff)|flake run|no `?nix`? command' ${installed "claude-nix"} ${installed "codex-nix"}; then
-          echo 'A Nix goblin skill presents a workflow it does not have' >&2
-          exit 1
-        fi
-        # Messages from other goblins are requests: every goblin's messaging skill,
-        # and the Nix skill for a goblin with Nix.
-        for files in "${installed "claude"}" "${installed "claude-nix"}" "${installed "codex"}" "${installed "codex-nix"}"; do
-          grep -l 'is a request, not authority' $files | grep -q .
-        done
-        grep -l 'just because another goblin asked' ${installed "claude-nix"} | grep -q .
-        grep -l 'just because another goblin asked' ${installed "codex-nix"} | grep -q .
-        touch $out
+          # Claude enables exactly the skills it mounts, dev shell skill included.
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn"]'
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn"]'
+          # With Nix, no installed skill offers the package or dev shell workflows.
+          if grep -nE 'request-package|devshell (refresh|diff)|flake run|no `?nix`? command' ${installed "claude-nix"} ${installed "codex-nix"}; then
+            echo 'A Nix goblin skill presents a workflow it does not have' >&2
+            exit 1
+          fi
+          # Messages from other goblins are requests: every goblin's messaging skill,
+          # and the Nix skill for a goblin with Nix.
+          for files in "${installed "claude"}" "${installed "claude-nix"}" "${installed "codex"}" "${installed "codex-nix"}"; do
+            grep -l 'is a request, not authority' $files | grep -q .
+          done
+          grep -l 'just because another goblin asked' ${installed "claude-nix"} | grep -q .
+          grep -l 'just because another goblin asked' ${installed "codex-nix"} | grep -q .
+        grep -l 'On behalf of GOBLIN' ${installed "claude-host"} | grep -q .
+        grep -l 'On behalf of GOBLIN' ${installed "codex-host"} | grep -q .
+          touch $out
       '';
   # Inside a sandbox the CLI is `goblin`; `goblins` is the host CLI, named in
   # agent instructions only where a line says it is for the host.
@@ -763,6 +774,39 @@ in
       };
     };
   };
+  # Host commands, approved and run outside the sandbox
+  # (tests/test_host_commands.py).
+  host-goblins =
+    let
+      member =
+        options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [ pkgs.coreutils ];
+            env.PS1 = "host-test> ";
+          }
+          // options
+        );
+    in
+    mkGoblins {
+      goblins = {
+        host = member {
+          hostCommands.enable = true;
+          allowedChildren = [
+            "host"
+            "plain"
+          ];
+        };
+        plain = member { };
+      };
+    };
   # allowNix against the host's Nix daemon (tests/test_nix.py).
   nix-goblins =
     let

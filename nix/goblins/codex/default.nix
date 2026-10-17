@@ -35,13 +35,17 @@ in
   ];
   mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
   mkInjectedFiles =
-    { settings, nix }:
+    {
+      settings,
+      nix,
+      host,
+    }:
     {
       "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" (
         settings // { hooks = hooks.mkHooks (settings.hooks or { }); }
       );
     }
-    // skillFiles (skills { inherit nix; }).always;
+    // skillFiles (skills { inherit nix host; }).always;
   devShellInjectedFiles = nix: skillFiles (skills { inherit nix; }).devShell;
 
   # Preserve ordinary mkGoblin options, including ones added in the future.

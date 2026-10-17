@@ -81,6 +81,7 @@ in
         devShellInjectedFiles
         env
         docker
+        hostCommands
         scope
         allowedScopes
         scopeStorage
@@ -113,6 +114,12 @@ in
       || !builtins.isBool docker.enable
     then
       fail "docker accepts only enable (boolean)"
+    else if
+      !builtins.isAttrs hostCommands
+      || builtins.attrNames hostCommands != [ "enable" ]
+      || !builtins.isBool hostCommands.enable
+    then
+      fail "hostCommands accepts only enable (boolean)"
     else if !(scope == null || validScope scope) || !scopes allowedScopes then
       fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
     else if

@@ -27,6 +27,7 @@ use std::{
 
 mod editor;
 mod exec;
+mod host;
 mod raids;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
 
@@ -144,6 +145,10 @@ struct Pending {
     cancel: Cancel,
     /// The requester has an agent integration to wake with a completion notice.
     notify: bool,
+    /// A host command waiting for the decision.
+    host: Option<host::Spec>,
+    /// The request outlives its connection (`goblin host run --detach`).
+    detached: bool,
 }
 /// A sandbox call waiting on the worker (`flake.run`, `devshell.diff`). One
 /// at a time per sandbox; the worker runs them in turn with other work.
@@ -522,6 +527,9 @@ pub struct Controller {
     sessions: BTreeMap<String, Active>,
     execs: BTreeMap<u64, exec::Exec>,
     edits: Vec<editor::Edit>,
+    host_jobs: Vec<host::Job>,
+    /// Finished host commands' results, by request.
+    host_outcomes: BTreeMap<String, Value>,
     permissions: VecDeque<PermissionRecord>,
     launches: BTreeMap<String, (Start, Value)>,
     shutdown: Option<(u64, Instant)>,
@@ -580,6 +588,8 @@ impl Controller {
             sessions: BTreeMap::new(),
             execs: BTreeMap::new(),
             edits: Vec::new(),
+            host_jobs: Vec::new(),
+            host_outcomes: BTreeMap::new(),
             permissions: VecDeque::new(),
             launches: BTreeMap::new(),
             shutdown: None,
@@ -993,9 +1003,11 @@ impl Controller {
         // Evictions are visible in the next replacement snapshot.
         while serde_json::to_vec(&self.snapshot()).is_ok_and(|v| v.len() > 900 * 1024) {
             if let Some(index) = self.permissions.iter().position(|p| {
-                !["pending", "realizing", "mounting", "publishing"].contains(&p.state.as_str())
+                !["pending", "realizing", "mounting", "publishing", "running"]
+                    .contains(&p.state.as_str())
             }) {
-                self.permissions.remove(index);
+                let removed = self.permissions.remove(index).unwrap();
+                self.host_outcomes.remove(&removed.id);
             } else if let Some(id) = self
                 .sessions
                 .iter()
@@ -1258,6 +1270,7 @@ impl Controller {
         let message = format!("goblin {} has stopped", self.sessions[id].record.path);
         self.end_execs(id, &message);
         self.end_edits(id);
+        self.end_host_jobs(id);
         self.dirty = true;
         Ok(json!({"accepted":true}))
     }
@@ -1291,6 +1304,7 @@ impl Controller {
     fn withdraw(&mut self, connection: u64) {
         self.exec_withdraw(connection);
         self.edit_withdraw(connection);
+        self.host_withdraw(connection);
         // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
             if a.call.as_ref().is_some_and(|w| w.connection == connection) {
@@ -1301,7 +1315,7 @@ impl Controller {
         for a in self.sessions.values_mut() {
             if a.pending
                 .as_ref()
-                .is_some_and(|p| p.connection == connection)
+                .is_some_and(|p| p.connection == connection && !p.detached)
             {
                 let p = a.pending.as_ref().unwrap();
                 if self
@@ -1598,6 +1612,7 @@ impl Controller {
                     "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
                     "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
+                    "host_commands":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.host_commands()),
                     "allowed_children":self.sessions[scope].inheritance.as_ref()
                         .map_or(&[][..], |i| i.allowed_children()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
@@ -1687,6 +1702,10 @@ impl Controller {
                 self.stop_tree(&id, p.kill_children, Some(reason))
             }
             m if m.starts_with("raids.") => self.sandbox_raids(scope, m, value),
+            "host.status" | "host.list" | "host.cancel" => {
+                let scope = scope.to_string();
+                self.host_control(Some(&scope), method, value)
+            }
             _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
         }
     }
@@ -1717,7 +1736,9 @@ impl Controller {
         }
         // Order a decision against bytes/EOF already present, consuming
         // unexpected input instead of letting it hide a disconnected peer.
-        if let Some(peer) = self
+        if pending.detached {
+            // No connection waits for a detached host command.
+        } else if let Some(peer) = self
             .connections
             .iter_mut()
             .find(|c| c.id == pending.connection)
@@ -1743,6 +1764,9 @@ impl Controller {
         let pending = a.pending.as_ref().unwrap();
         let notify = pending.notify;
         pending.cancel.cancel();
+        if pending.host.is_some() {
+            return self.decide_host(p, actor);
+        }
         if p.approved {
             let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
             a.worker
@@ -1940,6 +1964,7 @@ impl Controller {
                 Ok(json!({"accepted":true}))
             }
             m if m.starts_with("raids.") => self.host_raids(m, value),
+            "host.cancel" | "host.status" | "host.list" => self.host_control(None, method, value),
             _ => Err((-32601, "method unavailable on host endpoint".into())),
         }
     }
@@ -1964,12 +1989,16 @@ impl Controller {
                         | "communications.list"
                 );
             // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
-            let legacy_limit =
-                if matches!(c.role, Role::Host) || call.method == "sessions.set-variables" {
-                    16384
-                } else {
-                    4096
-                };
+            // Host commands carry argument lists (rpc::MAX_HOST_COMMAND).
+            let legacy_limit = if matches!(c.role, Role::Host)
+                || matches!(
+                    call.method.as_str(),
+                    "sessions.set-variables" | "permissions.request"
+                ) {
+                16384
+            } else {
+                4096
+            };
             if !messaging && c.body_bytes > legacy_limit {
                 return Err((-32602, "request exceeds method frame limit".into()));
             }
@@ -1991,7 +2020,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open","variables"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2228,6 +2257,18 @@ impl Controller {
                     if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
                     }
+                    // The approval shows the resolved host directory, and
+                    // approving runs exactly this.
+                    let host = match &p.host {
+                        Some(command) if p.kind == "host-command" => {
+                            let spec = self.host_spec(&session, command)?;
+                            p.package = spec.subject();
+                            Some(spec)
+                        }
+                        _ => None,
+                    };
+                    let host_preview = host.as_ref().map(host::Spec::preview);
+                    let detached = host.as_ref().is_some_and(|h| h.detach);
                     if p.kind == "devshell" {
                         if a.record.dev_shell.is_none() {
                             return Err((
@@ -2254,11 +2295,12 @@ impl Controller {
                             .permissions
                             .iter()
                             .position(|r| {
-                                !["pending", "realizing", "mounting", "publishing"]
+                                !["pending", "realizing", "mounting", "publishing", "running"]
                                     .contains(&r.state.as_str())
                             })
                             .ok_or_else(capacity)?;
-                        self.permissions.remove(index);
+                        let removed = self.permissions.remove(index).unwrap();
+                        self.host_outcomes.remove(&removed.id);
                     }
                     let serial = self.number();
                     let request = format!("{}-r{serial}", self.instance);
@@ -2320,6 +2362,8 @@ impl Controller {
                         connection: c.id,
                         cancel,
                         notify,
+                        host,
+                        detached,
                     });
                     self.permissions.push_back(PermissionRecord {
                         kind: p.kind.clone(),
@@ -2331,7 +2375,7 @@ impl Controller {
                         reason: p.reason,
                         state: if auto_approve { "realizing" } else { "pending" }.into(),
                         approved: if auto_approve { Some(true) } else { None },
-                        preview: docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Children inherit the attachment.")})),
+                        preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Children inherit the attachment.")}))),
                         message: None,
                     });
                     let r = self.permissions.back().unwrap();
@@ -2342,9 +2386,20 @@ impl Controller {
                         automatic: auto_approve,
                     };
                     let session = r.session.clone();
+                    let host = r.kind == "host-command";
                     self.operation(&request, &session, change);
-                    c.waiting = Some((request, id.clone()));
                     self.dirty = true;
+                    if detached {
+                        // Its outcome arrives as an operation notice.
+                        c.close = true;
+                        return Ok(Some(json!({"request":request,"status":"pending"})));
+                    }
+                    if host {
+                        // The ID comes first: it names the job's output.
+                        c.queue(json!({"jsonrpc":"2.0","method":"host.submitted",
+                            "params":{"request":request}}));
+                    }
+                    c.waiting = Some((request, id.clone()));
                     Ok(None)
                 }
             }
@@ -2483,6 +2538,7 @@ impl Controller {
         }
         self.poll_init();
         self.poll_edits();
+        self.poll_host_jobs();
         for _ in 0..HOSTS {
             match self.listener.accept() {
                 Ok((p, _))
@@ -2844,6 +2900,7 @@ impl Controller {
                     self.end_execs(&id, &message);
                 }
                 self.end_edits(&id);
+                self.end_host_jobs(&id);
                 let children: Vec<_> = self
                     .sessions
                     .iter()
@@ -3101,6 +3158,8 @@ mod tests {
                     connection: 99,
                     cancel: Cancel::default(),
                     notify: false,
+                    host: None,
+                    detached: false,
                 }),
                 terminal,
                 directory,

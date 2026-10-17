@@ -188,6 +188,27 @@ Links made by =nix build= in the shared working directory are ordinary GC roots 
 
 The sandbox acts as the host user towards the daemon. If that user is in =trusted-users=, so is the goblin.
 
+* Host commands
+
+=mkGoblin { hostCommands.enable = true; ... }= lets a goblin ask the host to run a command outside its sandbox, for work a sandbox cannot do: Bubblewrap and other namespace tools, UID/GID mappings, Goblins' own integration and Docker tests. Every run is a permission request you approve in the TUI, the plain approval view or Emacs, like a package request. The approval shows the command, the host directory it runs in, extra environment variables and its time limit, and approving runs exactly that.
+
+#+begin_src sh
+# Inside the goblin:
+goblin host run --reason "Run the Docker tests" -- \
+  nix develop -c python3 -m unittest discover -s tests -p test_docker.py -v
+goblin host run --detach --reason "Long test run" --timeout 3600 -- make check
+goblin host status|logs [--follow]|wait [--timeout S]|cancel JOB
+goblin host list
+#+end_src
+
+The command runs as you, with no shell, in the server's environment plus any =--env KEY=VALUE=, with =GOBLINS_HOST_JOB= set and =TMPDIR= unset. Its directory, the current one or =--cwd=, must be the shared working directory or a directory granted to the goblin, which have the same paths on both sides; the sandbox's private home and =/tmp= are refused. Output goes to =/run/goblins/host-jobs/JOB/output.log= inside the sandbox (read-only, at most 16 MiB per job; the last 8 finished jobs are kept). At most 4 host commands per goblin run at once.
+
+Without =--detach= the command waits for the decision and the job, prints the job's output and exits with the job's exit code (128+N for a signal). 125 means it did not run or its outcome is unknown, 126 and 127 that the command could not be executed or found. Interrupting it, or a detached job's =goblin host cancel=, stops the job. =--detach= returns at once with the request ID, which is also the job ID; an agent goblin gets an operation notice when the job ends or is denied. =goblin host wait= exits like an attached run, or 124 if the job is still running after its =--timeout= (default 540 s).
+
+When a job ends, whether its command exits, it is cancelled or times out, or its goblin stops, everything the command started is stopped too, including daemons it left in the background: a subreaper supervisor collects them. If the server dies, its jobs are stopped the same way.
+
+Inside a host command, the host =goblins= CLI refuses to use its default server without =--state-dir=, since that server runs the goblin that asked. Tests that start their own server with =--state-dir=, as the Python test helpers do, work. Codex and Claude Code goblins with host commands get a =goblins-host= skill; =goblin status= shows =Host commands: available after approval=.
+
 * Scopes (Linux, no VM)
 
 A scope is a named trust group. Its members share a network namespace, by
@@ -778,6 +799,7 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =env= | Literal string environment values; defaults to ={}= |
 | =allowNix= | =false= (default): no =nix=, only the closure of the granted packages. =true=: ordinary =nix= commands against the host daemon and the whole host store; requires =allowedDomains = null=. See [[*Nix in a goblin][Nix in a goblin]] |
 | =allowUnixSockets= | Must be =true= for the request transport |
+| =hostCommands.enable= | =false= (default). =true=: the goblin may ask to run approved commands on the host, outside its sandbox. See [[*Host commands][Host commands]] |
 | =allowedDomains= | =null= (default): open internet; =[]= disables networking; domain filtering is not implemented |
 | =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
 | =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Forwarded startup host bind paths; defaults to =[]= |

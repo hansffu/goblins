@@ -33,9 +33,13 @@ in
   inherit plugin;
   mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
   mkInjectedFiles =
-    { settings, nix }:
+    {
+      settings,
+      nix,
+      host,
+    }:
     let
-      selected = skills { inherit nix; };
+      selected = skills { inherit nix host; };
     in
     {
       "claude-code/managed-settings.json" =

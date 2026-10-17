@@ -1,5 +1,6 @@
 //! Untrusted request client. No controller or helper dependency.
 mod cli;
+mod host;
 mod init;
 mod preview;
 use clap::Parser;
@@ -110,6 +111,7 @@ fn run() -> Result<i32, String> {
                 );
             }
             cli::Command::Devshell { command } => return devshell(command),
+            cli::Command::Host { command } => return host::command(command),
             cli::Command::Editor {
                 command: cli::EditorCommand::Open { args },
             } => return editor_open(&args),
@@ -126,7 +128,7 @@ fn run() -> Result<i32, String> {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nNix: {}\nDev shell: {}\nRaid: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nAllowed children: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -150,6 +152,11 @@ fn run() -> Result<i32, String> {
                     // Ordinary nix commands against the host daemon.
                     if record["nix"] == true {
                         "available"
+                    } else {
+                        "none"
+                    },
+                    if record["host_commands"] == true {
+                        "available after approval"
                     } else {
                         "none"
                     },

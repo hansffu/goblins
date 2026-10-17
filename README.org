@@ -23,6 +23,7 @@ Around that, Goblins provides:
 - *Scopes*: trust groups of goblins sharing a network, caches and optionally a rootless Docker engine.
 - *Flake dev shells*: start a goblin inside a project's =nix develop= environment, and approve changes to it.
 - *Nix access* (=allowNix=): a goblin can run ordinary =nix= commands against the host's Nix daemon instead of requesting packages (see [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]]).
+- *Host commands* (=hostCommands.enable=): a goblin can ask to run a command on the host, outside its sandbox, once you approve it (see [[file:docs/USAGE.org::*Host commands][Host commands]]).
 - *Children and raids*: goblins can start other goblins and message each other.
 - *Emacs integration*: approvals, a workspace with each goblin's terminals, and TRAMP access to files inside sandboxes.
 

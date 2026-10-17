@@ -50,6 +50,9 @@ let
       devShellInjectedFiles ? { },
       integration ? null,
       docker ? { },
+      # enable: the goblin may ask the host to run commands outside its
+      # sandbox (`goblin host run`), each approved like a package request.
+      hostCommands ? { },
       scope ? null,
       allowedScopes ? [ ],
       scopeStorage ? { },
@@ -62,6 +65,10 @@ let
         enable = false;
       }
       // docker;
+      hostCommandOptions = {
+        enable = false;
+      }
+      // hostCommands;
       effectiveEnv = {
         # Ryuk needs the session Docker socket, not a writable sysfs mount.
         # Keep its cleanup enabled without requesting a privileged container.
@@ -117,6 +124,7 @@ let
           allowedChildren
           ;
         docker = dockerOptions;
+        hostCommands = hostCommandOptions;
       }
     );
     wrapped
@@ -140,6 +148,7 @@ let
         network = allowedDomains == null;
         # For mkGoblins' scope check only; the daemon reads the build spec.
         nix = allowNix;
+        host_commands = hostCommandOptions.enable;
         docker = {
           daemon = "${dockerDaemon}/bin/dockerd";
           client = "${pkgs.docker-client}";

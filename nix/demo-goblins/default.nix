@@ -22,13 +22,15 @@ in
     allowedPackages = tools;
   };
   # For developing Goblins from a goblin: ordinary Nix commands against the
-  # host daemon. Host commands and the self-hosting setup join it as they are
-  # implemented (docs/specs/NIX-AND-HOST-COMMANDS.org).
+  # host daemon, and approved host commands for the Bubblewrap, namespace and
+  # Docker tests. The self-hosting setup joins it as it is implemented
+  # (docs/specs/NIX-AND-HOST-COMMANDS.org).
   goblins-dev = builders.mkClaudeGoblin {
     pkg = agents.claude-code;
     description = "Claude Code with the host's Nix, for developing Goblins";
     allowedPackages = tools;
     allowNix = true;
+    hostCommands.enable = true;
     allowedChildren = [
       "goblins-dev"
       "claude"

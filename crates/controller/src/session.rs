@@ -186,6 +186,18 @@ impl Inheritance {
     pub(crate) fn nix(&self) -> bool {
         self.launch.allow_nix
     }
+    /// The helper binary, which also supervises host commands.
+    pub(crate) fn helper(&self) -> &Path {
+        &self.launch.helper
+    }
+    /// The sandbox may ask the host to run commands (`goblin host run`).
+    pub(crate) fn host_commands(&self) -> bool {
+        self.launch.host_commands
+    }
+    /// The host directory for a host command started at sandbox `path`.
+    pub(crate) fn host_directory(&self, path: &Path) -> Result<(File, PathBuf)> {
+        self.binds.resolve_shared(path)
+    }
 }
 #[cfg(test)]
 impl Inheritance {
@@ -813,6 +825,16 @@ impl Session {
         if let Some((mount, _)) = &nix_socket {
             let mount = mount.display().to_string();
             args.extend(["--ro-bind".into(), mount.clone(), mount]);
+        }
+        // Host command output, read-only; the daemon writes it as jobs run.
+        if self.launch.host_commands {
+            let jobs = self.directory.join("host-jobs");
+            fs::create_dir_all(&jobs)?;
+            args.extend([
+                "--ro-bind".into(),
+                jobs.display().to_string(),
+                "/run/goblins/host-jobs".into(),
+            ]);
         }
         if shared_pid {
             // The helper mounted the scope's /proc; a member's own user

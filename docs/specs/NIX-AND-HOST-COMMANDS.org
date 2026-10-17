@@ -1,6 +1,6 @@
 #+title: Plan: allowNix and host commands (Goblins developing Goblins)
 
-Status: steps 0 (CLI naming, dev shell) and A (allowNix) are implemented; ADR 0011 records the allowNix decisions. Host commands (B) and self-hosting (C) wait for the security review of the host tool. Planned against commit =1e41ac0= and agent-sandbox.nix =566defa=.
+Status: steps 0 (CLI naming, dev shell), A (allowNix) and B (host commands) are implemented; ADRs 0011 and 0012 record the decisions. The host tool's security review is still to come. In C, the =goblins-dev= demo goblin has both features; the deploy step is the user's. Where B differs from this plan: =TMPDIR= is unset for jobs instead of a private one (even a short private directory made nested =nix develop= socket paths too long), and the job output stays in the session directory. Planned against commit =1e41ac0= and agent-sandbox.nix =566defa=.
 
 Labels: *[E]* existing functionality, *[P]* proposed change, *[V]* assumption that needs an experiment.
 

@@ -66,6 +66,7 @@ mkGoblin (
       // claude.mkInjectedFiles {
         settings = claudeSettings;
         nix = options.allowNix or false;
+        host = options.hostCommands.enable or false;
       };
     devShellInjectedFiles =
       devShellInjectedFiles // claude.devShellInjectedFiles (options.allowNix or false);

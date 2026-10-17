@@ -139,6 +139,11 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Run commands on the host, outside this sandbox, after approval
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
     /// This sandbox's host-evaluated flake dev shell
     Devshell {
         #[command(subcommand)]
@@ -424,6 +429,48 @@ pub struct MessageSource {
     /// Sender-local UTF-8 file, or - for stdin (contents are sent)
     #[arg(long, conflicts_with = "message", required_unless_present = "message")]
     pub file: Option<std::path::PathBuf>,
+}
+#[derive(Subcommand)]
+pub enum HostCommand {
+    /// Ask the host to run COMMAND; waits for approval and the job unless --detach
+    Run {
+        /// Why the task needs it, shown to the approver
+        #[arg(long)]
+        reason: String,
+        /// Return once submitted; the outcome arrives as an inbox notice
+        #[arg(long)]
+        detach: bool,
+        /// Directory to run in (default: the current one); must be shared with the host
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+        /// Add or replace a variable in the host environment
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Cancel the job after this many seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// A host command's state, and its exit code once finished
+    Status { job: String },
+    /// A host command's output so far
+    Logs {
+        job: String,
+        /// Keep printing until the job ends
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Wait for a host command and exit like an attached run (124: still running)
+    Wait {
+        job: String,
+        #[arg(long, value_name = "SECONDS", default_value_t = 540)]
+        timeout: u64,
+    },
+    /// Withdraw a pending host command or stop a running one
+    Cancel { job: String },
+    /// This sandbox's host commands
+    List,
 }
 #[derive(Subcommand)]
 pub enum InboxCommand {

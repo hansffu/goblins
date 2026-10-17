@@ -79,10 +79,12 @@ pub fn notice(
         "docker" => format!("Docker attachment ({subject})"),
         "package" => format!("package request '{subject}'"),
         "devshell" => format!("dev shell {subject}"),
+        "host-command" => format!("host command {subject}"),
         other => format!("{other} request '{subject}'"),
     };
     let outcome = match status {
         "ready" => "succeeded",
+        "finished" => "finished",
         "denied" => "was denied by the host",
         "failed" => "failed",
         "withdrawn" => "was withdrawn before a decision because its request connection closed",

@@ -70,6 +70,7 @@ mkGoblin (
       // codex.mkInjectedFiles {
         settings = codexSettings;
         nix = options.allowNix or false;
+        host = options.hostCommands.enable or false;
       };
     devShellInjectedFiles =
       devShellInjectedFiles // codex.devShellInjectedFiles (options.allowNix or false);

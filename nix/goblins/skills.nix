@@ -4,6 +4,8 @@
 { lib }:
 {
   nix ? false,
+  # hostCommands.enable: the goblins-host skill for `goblin host run`.
+  host ? false,
 }:
 let
   skill = name: builtins.readFile ../../skills/${name}/SKILL.md;
@@ -16,7 +18,11 @@ let
 in
 {
   # Mounted in every sandbox of the configuration.
-  always = lib.genAttrs (common ++ (if nix then [ "goblins-nix" ] else [ "goblins-packages" ])) skill;
+  always = lib.genAttrs (
+    common
+    ++ (if nix then [ "goblins-nix" ] else [ "goblins-packages" ])
+    ++ lib.optional host "goblins-host"
+  ) skill;
   # Mounted only in sandboxes launched with a dev shell.
   devShell = lib.optionalAttrs (!nix) { goblins-devshell = skill "goblins-devshell"; };
   # Every skill Goblins manages, installed or not: injectedFiles cannot take
@@ -25,5 +31,6 @@ in
     "goblins-packages"
     "goblins-devshell"
     "goblins-nix"
+    "goblins-host"
   ];
 }

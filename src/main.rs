@@ -285,8 +285,12 @@ impl Drop for Session {
     }
 }
 mod docker;
+mod hostjob;
 mod scope;
 fn run() -> io::Result<i32> {
+    if env::args().nth(1).as_deref() == Some("--host-job") {
+        return hostjob::run();
+    }
     if env::args().nth(1).as_deref() == Some("--scope-keeper") {
         return scope::run();
     }
