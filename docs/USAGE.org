@@ -87,9 +87,9 @@ shell like =nix develop -c=: a Bash inside the sandbox sources
 =goblin status= shows it. Source =env.sh= again in Bash to get the functions,
 which are not inherited by programs.
 
-Children start in their parent's current dev shell generation; they cannot
+Goblins a raid owner runs start in its current dev shell generation; they cannot
 choose another. Later edits to the workspace flake do not change a running
-sandbox or its children until it refreshes. The sandbox has no =nix= command.
+sandbox until it refreshes. The sandbox has no =nix= command.
 
 All evaluation runs in a host-side evaluator sandbox: Bubblewrap with the store,
 the Nix daemon socket, the flake's source tree and a private state directory,
@@ -136,8 +136,9 @@ After approval Goblins builds and mounts the new closure and replaces
 =/run/goblins/devshell/env.sh=; the refresh command then runs it once, so the
 new =shellHook= runs inside the sandbox. Running processes keep their old
 environment: source =env.sh= in Bash, or start a new shell, to use the new
-generation. New children start in it. A refresh to a generation this sandbox or
-an ancestor already has (same flake source and lock) is approved
+generation. Goblins it runs from then on start in it. A refresh to the
+generation this sandbox already has, or to one it copied as auto-approved from
+the raid owner that ran it (same flake source and lock), is approved
 automatically. Fetches during a refresh use the goblin's own network; an
 offline goblin's evaluation is offline too. Evaluation before approval fails
 after 10 minutes; set =GOBLINS_EVALUATION_TIMEOUT= (seconds) in the daemon's
@@ -193,9 +194,9 @@ goblins.goblins-dev = mkClaudeGoblin {
   allowNix = true;
   hostCommands.enable = true;
   scope = "goblins-dev";
-  allowedChildren = [ "claude" "codex" ];
+  allowedRunTargets = [ "claude" "codex" ];
 };
-# Children join their parent's scope, so their configurations allow it:
+# Goblins it runs join its scope, so their configurations allow it:
 goblins.claude = mkClaudeGoblin { allowedScopes = [ "goblins-dev" ]; };
 #+end_src
 
@@ -203,7 +204,7 @@ Don't bind the host's own =~/.cache/nix= instead: a goblin that writes it could 
 
 A goblin with Nix uses Nix instead of the Goblins package and dev shell workflows: =request-package=, =devshell diff=, =devshell refresh= and =flake run= are refused with a hint, and a recreated goblin skips its recorded package grants. Starting it in a dev shell (=--dev-shell=) still works. Its agent gets a =goblins-nix= skill instead of =goblins-packages= and =goblins-devshell=; =goblin status= shows =Nix: available=.
 
-Links made by =nix build= in the shared working directory are ordinary GC roots on the host. The sandbox's own =/tmp= and home are private, so a =result= link there leaves its output unrooted. Children with another configuration get that configuration's store view.
+Links made by =nix build= in the shared working directory are ordinary GC roots on the host. The sandbox's own =/tmp= and home are private, so a =result= link there leaves its output unrooted. Goblins a raid owner runs with another configuration get that configuration's store view.
 
 The sandbox acts as the host user towards the daemon. If that user is in =trusted-users=, which Nix documents as essentially equivalent to root access, so is the goblin, without any approval: it can import unsigned store paths and set daemon options, such as hooks the daemon runs as root. Use =allowNix= only for goblins you would give that, or keep your user out of =trusted-users=.
 
@@ -275,7 +276,7 @@ mkGoblins {
 - A goblin joins at most one scope, chosen when a root sandbox starts: its
   =scope=, or =goblins run CONFIG --scope NAME= for a scope in =allowedScopes=.
   A goblin without a default scope starts unscoped unless =--scope= is given.
-  Children always inherit their parent's scope.
+  Goblins a raid owner runs always join its scope.
 - A scope instance starts with its first member and stops after its last member
   exits. Persistent storage survives; temporary storage is shared while the
   scope has members and deleted after the last one leaves. A later member of a
@@ -422,8 +423,8 @@ Current limits:
   without requiring RootlessKit's port-mapping service, and to make BuildKit
   honor the launcher's outer-cgroup-namespace setting. A trusted native
   bootstrap creates the namespaces while preserving =no_new_privs=.
-- Children inherit their parent's scope and Docker activation. Independent
-  root sandboxes require approval unless startup-enabled.
+- Goblins a raid owner runs join its scope and Docker activation. Other
+  sandboxes require approval unless startup-enabled.
 
 *The shared engine extends the scope's trust group.* All members control the
 same Docker API, containers and data, and can access the combined filesystem
@@ -491,7 +492,7 @@ responsive endpoint, or on an error. Missing-server status/logs do not start it.
 Nix packages install completion scripts in the standard Fish, Bash and Zsh
 locations under =share/=. Your shell/profile needs its usual completion loading
 enabled. Scripts complete commands, options, paths and this Nix package's =run=
-configuration keys. =attach=, =detach=, =stop=, =kill= and =run --parent= also complete live agent
+configuration keys. =attach=, =detach=, =stop=, =kill= and raid commands also complete live agent
 names by querying the current server, respecting =--state-dir=. No names are
 offered when the server is stopped; completion never starts a server. Editor
 attachments using =--instance= require exact IDs and do not offer name candidates.
@@ -531,8 +532,8 @@ goblins stop snikk
 Agent names are case-sensitive, 1..32 ASCII lowercase letters, digits or hyphens,
 starting with a letter. Invalid names and explicit live-name collisions return
 clear errors. No normalization or automatic suffix is applied to explicit names.
-Names are unique among siblings, including starting and stopping sessions, and
-remain reserved until the session and its descendants finish cleanup. Once released, a name may be
+Names are unique among live goblins, including starting and stopping sessions,
+and remain reserved until the session finishes cleanup. Once released, a name may be
 reused, even while the previous session's terminal output is still draining.
 There is no renaming operation.
 
@@ -551,14 +552,14 @@ and the reusable configuration identity. Permission records and events retain
 the agent name even if the corresponding session record is later evicted.
 Historical sessions and permissions may share a name, but always have distinct
 immutable IDs. =stop ID_OR_NAME= and host =sessions.get/stop {session}= accept
-an exact session ID, a tree path (for example =snikk/scout=), or an unambiguous live agent name. After completion, inspect/stop retained
+an exact session ID or a live agent name. After completion, inspect/stop retained
 history by ID. A reused name targets its current live session; use IDs in
 scripts that must keep targeting the original launch. Approval decisions,
 permission filters and resize still require IDs, never agent names.
 
 For host API 1, =sessions.start= keeps =name= as the configuration key and
-=configuration= as the absolute manifest path. Optional =parent= selects a running
-sandbox; omission selects the host root. Optional =detached=true= launches without
+=configuration= as the absolute manifest path; once it validates it is the
+daemon's current manifest. Optional =detached=true= launches without
 a terminal consumer. Optional =agent_name= requests a
 session name; omitted or null means automatic allocation. For example:
 
@@ -646,13 +647,13 @@ Resuming is best effort: a package that cannot be restored, because it is gone, 
 
 The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/goblins/sessions=), one private JSON file per conversation. Resuming continues the record instead of starting a new one, so it always describes the latest goblin, including packages granted after an earlier resume, and it lists every goblin id it ran as. If a goblin resumes a conversation another record holds, for example with =claude --resume= by hand, that record is merged into its own; if its agent switches to a new conversation (=/clear=, =/new=), the record follows the goblin. The server writes it whenever it changes: when the goblin starts running, when a package grant or Docker becomes ready, when the host denies a package, when the goblin records a variable, and when it stops. Nothing depends on a clean exit. Denied packages are listed for information only; a resumed goblin can request them again.
 
-What is not resumed: children, raids, inbox contents, and terminal or process state. Only root goblins are recorded. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so and names the owner. It takes the history over once the owner stops, and then records the root goblins it is running, including the conversation their agents reported meanwhile. A server started with =--workspace= neither records nor resumes goblins.
+What is not resumed: raids, inbox contents, and terminal or process state. Every goblin is recorded, including those a raid owner ran; a resumed one starts as a goblin of its own, in no raid. One server owns the history at a time: another server (another =--state-dir=) runs without history, and =goblins server status= says so and names the owner. It takes the history over once the owner stops, and then records the goblins it is running, including the conversation their agents reported meanwhile. A server started with =--workspace= neither records nor resumes goblins.
 
 A conversation cannot be resumed while a goblin runs it, so two goblins never resume the same conversation, nor while a prune is removing its record. A resumed goblin that fails to start releases its record again. If the recorded working directory no longer exists, =resume= refuses.
 
 ** Keeping the conversation
 
-A goblin records its own variables with =goblin variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16. Children may call it too: it succeeds without recording anything.
+A goblin records its own variables with =goblin variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16.
 
 =resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 
@@ -681,13 +682,12 @@ socket: nothing in the sandbox can open, find or impersonate it.
 #+begin_src sh
 goblins exec -t snikk                       # the sandbox's own $SHELL, on a new terminal
 goblins exec snikk -- git status            # a command; stdout, stderr and the exit code pass through
-goblins exec -w /tmp -e TERM=dumb snikk.kid -- make test   # a child, by tree path (. or /)
+goblins exec -w /tmp -e TERM=dumb scout -- make test
 goblins exec --tty=auto snikk -- sh         # a terminal only when stdin is one
 goblins rpc sessions.kill_execs '{"session":"snikk"}'
 #+end_src
 
-- The goblin is a name, a tree path (=gribble/snaga= or =gribble.snaga=) or a
-  session ID. Processes run with the goblin's uid, namespaces, seccomp filter,
+- The goblin is an agent name or a session ID. Processes run with the goblin's uid, namespaces, seccomp filter,
   environment and dev shell, each in its own session and process group.
 - With =-t= the terminal is created on the host and its master stays with the
   client; closing the client hangs up the shell, like =ssh -t=. Without it the
@@ -725,7 +725,7 @@ git commit          # opens the message in your Emacs and waits for C-x #
 #+end_src
 
 The daemon runs =emacsclient -a false= (=editor.emacs.command=, by default from
-the daemon's =PATH=) without a shell, always with =/goblins:<tree path>:/abs/path=
+the daemon's =PATH=) without a shell, always with =/goblins:<agent name>:/abs/path=
 names it builds itself, so a goblin cannot open another goblin's files or host
 paths. It first pins that name in Emacs to the requesting goblin of this
 daemon (=goblins-pin-host=, so goblins.el must be loaded in the Emacs that runs
@@ -855,124 +855,15 @@ or the default output and its runtime closure; they do not activate development
 setup hooks. =/bin/sh= uses agent-sandbox's Bash wrapper even when Fish or another
 program is the goblin entry point.
 
-* Sandbox ownership
+* Goblins and raids
 
-The fullscreen TUI and Emacs status show sandbox ownership as a tree rooted at
-=host=. Children appear beneath their parent, including multiple generations.
-In the TUI use Left/Right to collapse/expand a branch (Left on a leaf goes to its
-parent), Up/Down to select, and Enter to inspect packages. Emacs uses =TAB= to
-fold branches, =RET= for details, =b= to return, and =t= for terminal links. Approval labels include full
-sandbox paths so matching child names in different branches remain distinct.
+There is no ownership tree: every goblin is a peer, addressed by its agent name, which is unique among running goblins, or its session ID. The fullscreen TUI and Emacs list goblins flat. A goblin stops only itself: its program exiting, =goblins kill= or =goblins stop= stop that goblin and no other. Daemon shutdown stops all of them.
 
-
-The host is the root of the ownership tree. Host launches are root children by
-default; =--parent NAME_OR_PATH_OR_ID= creates a child of a running sandbox.
-Inside a sandbox, =run= defaults to that sandbox as parent. Its =--parent= can
-select =.= (itself) or any running descendant. Completion offers only eligible
-parents within the caller's subtree.
-
-#+begin_src sh
-# Host: start a parent without attaching, then create a child.
-goblins run shell --name snikk --detatched
-goblins run shell --parent snikk --name scout --detatched
-
-# Inside snikk: start another child, or a grandchild of scout.
-goblin run shell --name builder
-goblin run shell --parent scout --name helper --detatched
-goblin list
-goblin kill scout --kill-children
-#+end_src
-
-Both CLIs attach on =run= by default. =--detatched= (also =--detached=) returns
-immediately with JSON containing the session ID and name. Inside a sandbox,
-=goblin attach CHILD= attaches to a descendant by relative tree path, name or ID;
-=goblin detach= returns to the enclosing shell while leaving that sandbox running.
-=goblin status= prints the current sandbox's name, configuration, allowed child
-configurations, state, raid and ID.
-Attachment and terminal resizing are restricted to descendants; a sandbox cannot
-attach to itself, its ancestors or another branch.
-
-A sandbox may start children using the configurations in its
-=allowedChildren= list. The default is an empty list: no children, not even of
-its own configuration (list its own name for that). =mkGoblins= rejects names
-it does not declare, and lists over 64 names.
-
-#+begin_src nix
-mkGoblins {
-  goblins = {
-    coordinator = mkCodexGoblin { allowedChildren = [ "coordinator" "reviewer" "shell" ]; };
-    reviewer = mkClaudeGoblin { allowedChildren = [ ]; };
-    shell = mkGoblin { pkg = pkgs.fish; binName = "fish"; };
-  };
-}
-#+end_src
-
-Inside the coordinator, =goblin run reviewer --name review --detached=
-starts a Claude child. The check uses the selected parent's list, also for host
-=--parent= launches and for =--parent= selecting a descendant; each child uses
-its own configuration's list for further children. =goblin status= shows the
-list, and sandbox completion of =run= offers it.
-
-A child always shares its parent's workspace, working directory, scope (and so
-the scope's Docker engine) and current dev shell generation. A child with its parent's configuration
-also shares its pinned startup binds with the same read/write permissions. A
-child with another configuration instead runs that configuration's executable,
-arguments, environment, packages, =/etc= files, agent integration, network
-policy and declared binds, so it may have access its parent lacks; the parent
-gains none of it. Its declared binds are opened when the child starts, and a
-bind that cannot be opened fails only that child. It starts attached to the
-scope's Docker engine when its parent was attached, or when its own definition
-sets =docker.enable=; as for any members of one engine, they cannot mount
-different files at the same path. Package approvals of ancestors carry down on
-request as for any child. The configuration must support the inherited scope,
-or its absence; a different default scope is ignored. Otherwise the launch is
-rejected, for example with "configuration 'X' cannot be launched here: 'X' does
-not allow scope 'work'".
-
-A root launch snapshots every configuration its =allowedChildren= reach and
-keeps their Nix store paths from garbage collection. Rebuilding or replacing the
-installed configuration does not change what an existing branch may launch,
-and host =goblins run CHILD --parent P= leaves that decision to the daemon even
-when the new build no longer declares =CHILD=. Changing a host path or
-rebuilding a configuration does not widen a child's access. A server started
-from a build before =allowedChildren= reports "unknown field
-`allowed_children`" for newer configurations; restart it with the new build. With daemon =--workspace=, each root child gets its own snapshot, which
-it shares with its descendants. Shared workspace writes are visible throughout
-that branch; ownership restricts control operations, not access to these shared
-files.
-
-Sandbox =list= shows descendants only, with relative tree paths. =kill= and
-=stop= address only descendants by name, relative path or ID. Parent, sibling,
-and unrelated IDs return the same absent-record error as nonexistent IDs.
-The daemon enforces this on the session's authenticated socket; changing CLI
-arguments or sending raw RPC cannot select another identity, host manifest,
-terminal socket, filesystem grant or approval authority. Names and launch retry
-keys are scoped so another branch's names or keys do not cause collisions.
-
-Normal root-process exit (including Ctrl-D in a shell), startup failure, or
-worker failure stops the entire subtree. Explicit =kill= and =stop= refuse to
-stop a sandbox with live descendants, warning that =--kill-children= is required.
-With that flag the operation stops the whole subtree. Daemon shutdown stops all
-sandboxes. Stopping parents cannot accept new descendants during cleanup.
-
-Package requests always go through the host. A successful package grant makes
-that approval available to the requesting sandbox and its descendants, never
-its ancestors or other branches. Descendants must still request the package;
-packages are not mounted proactively. The host automatically approves requests
-covered by an ancestor's available package, even across intervening descendants
-that have not requested it. Otherwise the request appears in the host approval
-interface. Existing pending requests become eligible when an ancestor receives
-the package. Inheritance policy is isolated in the controller's
-=inherits_package= function for future changes.
+Goblins work together in raids. A raid lets its members find and message each other, and lets its owner run new goblins into it and stop the ones it ran. A goblin can message only the members of its raid, and reply to the host.
 
 * Raids
 
-A raid is a temporary group of goblins, possibly from different branches,
-configurations or scopes, whose members can find and message each other
-directly. It adds only messaging access: members share no files, terminals,
-packages or lifecycle control, and cannot read each other's inboxes. A goblin
-is in at most one raid. Raids last until dissolved or until the daemon stops;
-they are never restored.
+A raid is a temporary group of goblins, possibly with different configurations or scopes. Membership adds messaging: members share no files, terminals or packages, and cannot read each other's inboxes. A goblin is in at most one raid. Raids last until dissolved or until the daemon stops; they are never restored.
 
 On the host:
 
@@ -981,49 +872,54 @@ goblins raid invite review chief builder   # creates 'review'; chief owns it
 goblins run claude --name critic --raid review --detached
 goblins raid members review                # add --json for the record
 goblins raid set-role review critic reviewer
+goblins raid set-owner review builder      # move ownership; resumes a paused raid
 goblins raid destroy review                # dissolves; stops nobody
+goblins raid destroy review --stop-members # dissolves and stops every member
 #+end_src
 
-=raid invite= creates the raid if it does not exist, with the first goblin as
-owner, and checks every goblin before changing anything: an absent, stopped or
-already-raided goblin fails the whole invite. Inviting a current member does
-nothing; a member of another raid is never moved. =run --raid= creates the raid
-with the new goblin as owner, or joins it. The host may invite and launch
-anywhere in the tree, also with =--parent=.
+=raid invite= creates the raid if it does not exist, with the first goblin as owner, and checks every goblin before changing anything: an absent, stopped or already-raided goblin fails the whole invite. Inviting a current member does nothing; a member of another raid is never moved. =run --raid= creates the raid with the new goblin as owner, or joins it.
 
 Inside a goblin:
 
 #+begin_src sh
 goblin raid create review
-goblin raid invite scout helper            # direct children only
-goblin run shell --name tester --detached --inherit-raid
+goblin run reviewer --name critic          # the owner runs a member
 goblin raid set-role builder
 goblin raid members
 goblin raid leave
 #+end_src
 
-Any member may invite its direct children; siblings, grandchildren and other
-branches cannot be recruited from inside a sandbox. =--inherit-raid= joins the
-new child to the selected parent's raid (it fails if the parent is in none)
-and still follows =allowedChildren=. =raid members= prints one line per member,
-leading with the name, role and full tree path, then configuration, state,
-owner and ID; use the path or ID with =goblin send= when a name is ambiguous.
-Roles describe work (=coordinator=, =builder=, =reviewer=, ...); several members
-can share one, a role can be changed but not cleared, and it never makes a
-goblin the owner. Roles are not message destinations.
+=raid members= prints one line per member: name, role, configuration, state, owner, whether a raid owner created it, and ID. Roles describe work (=coordinator=, =builder=, =reviewer=, ...); several members can share one, a role can be changed but not cleared, and it never makes a goblin the owner. Roles are not message destinations. Goblins cannot invite other goblins; only the host does.
 
-The owner leaving, stopping, exiting or failing to start dissolves the raid
-for everyone, without stopping any goblin (the owner's own descendants still
-stop through the ownership tree). A non-owner leaving removes only itself. A
-dissolved name can be reused; former members are not rejoined. After leaving
-or dissolution, new sends that relied on the raid fail as absent. Messages
-already delivered stay with their recipient, who can read, complete or requeue
-them, but a =reply= to a sender it no longer shares a raid or tree relation
-with fails with "not allowed: 'SENDER' is no longer in this goblin's raid".
+When the owner leaves, stops, exits, fails to start or is kicked while members remain, the raid is /paused/. Members keep running, but sends and replies between them are refused with "raid 'R' is paused until the host selects a new owner; you will get a notice when it resumes". The TUI and Emacs show a request to resolve it: pick a new owner among the members, dissolve the raid, or dissolve it and stop every member. This request answers only to the raid and the pause it was shown for; =permissions.decide= refuses it. Once a new owner is selected, every goblin that was refused gets a notice from =goblins=. A raid dissolves when its last member leaves, or when the host destroys it; dissolving stops nobody unless asked. A dissolved name can be reused; former members are not rejoined.
 
-Host =goblins list= records and sandbox =goblin status= show each goblin's
-raid name, role and owner. Raid names and roles use the agent-name grammar
-(lowercase letters, digits and hyphens, starting with a letter, at most 32).
+After leaving or dissolution, new sends that relied on the raid fail as absent. Messages already delivered stay with their recipient, who can read, complete or requeue them, but a =reply= to a sender it no longer shares an unpaused raid with fails with "not allowed: 'SENDER' is no longer in this goblin's raid".
+
+Host =goblins list= records and sandbox =goblin status= show each goblin's raid name, role, owner and whether the raid is paused. Raid names and roles use the agent-name grammar (lowercase letters, digits and hyphens, starting with a letter, at most 32).
+
+* Running raid members
+
+A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME]=. It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
+
+#+begin_src nix
+mkGoblins {
+  goblins = {
+    coordinator = mkCodexGoblin { allowedRunTargets = [ "coordinator" "reviewer" "shell" ]; };
+    reviewer = mkClaudeGoblin { allowedRunTargets = [ ]; };
+    shell = mkGoblin { pkg = pkgs.fish; binName = "fish"; };
+  };
+}
+#+end_src
+
+Inside the coordinator, =goblin raid create crew= and =goblin run reviewer --name review= run a Claude goblin into its raid. Only an owner of an unpaused raid runs goblins, and the check uses the owner's own list, as loaded when it started. =goblin status= shows the list, and sandbox completion of =run= offers it.
+
+The new goblin is a /created member/ of the raid. It shares its owner's workspace, working directory (the directory the owner opened, even if the host path was renamed since), scope (and so the scope's Docker engine) and current dev shell generation. Everything else comes from its own configuration: executable, arguments, environment, packages, =/etc= files, agent integration, network policy and declared binds, so it may have access its owner lacks; the owner gains none of it. Its declared binds are opened when it starts, and a bind that cannot be opened fails only that goblin. It starts attached to the scope's Docker engine when its owner was attached, or when its own definition sets =docker.enable=; as for any members of one engine, they cannot mount different files at the same path. The configuration must support the owner's scope, or its absence; a different default scope is ignored. Otherwise the launch fails, for example with "configuration 'X' cannot be launched here: 'X' does not allow scope 'work'".
+
+A created member's configuration comes from the daemon's /current manifest/: the last manifest the host used that validated, from =goblins server start= or the latest host =run= or =resume=. =goblins server status= shows it. After a rebuild, new members use it once you launch a goblin from the new build or restart the server. A host launch whose manifest does not validate leaves the current one in place, and the daemon keeps each manifest from garbage collection while it is current or a launch from it is starting. A server started from a build before =allowedRunTargets= reports "unknown field `allowed_run_targets`" for newer configurations; restart it with the new build. With daemon =--workspace=, a created member shares its owner's snapshot.
+
+Created members are not children. Their owner exiting or stopping does not stop them; the raid pauses instead. Inside a goblin, =goblin list= shows the members created in the raid it owns, and =goblin stop NAME= (or =kill=) stops one, with the reason "stopped by raid owner NAME (ID)". Members the host invited, the owner itself and goblins elsewhere return the same absent-record error as nonexistent IDs. A new owner takes over the members any earlier owner created; an owner that loses ownership loses them at once. A created member cannot leave the raid on its own; the host can kick it. The daemon enforces all of this on the session's authenticated socket; changing CLI arguments or sending raw RPC cannot select another identity, host manifest, terminal socket, filesystem grant or approval authority.
+
+Package requests always go through the host. When an owner runs a member, the member gets an /auto-approve/ copy of the owner's approved packages and of the owner's own auto-approve set, and of the dev shell generations it has: a request for one of them is granted without asking, with the exact output the owner had. Nothing is mounted until the member asks. Packages the owner is granted later do not reach members it already ran. A goblin's own repeated request for a package it has, or a refresh to its current dev shell, is also approved automatically. A member whose copied approvals would exceed 256 packages or 32 dev shells is refused. The member's history record keeps its auto-approve list, so a resumed member keeps it.
 
 * State, workspace and authority
 
@@ -1043,7 +939,7 @@ are visible on the host and in the sandbox. Each launch supplies its own directo
 independently of where the daemon started. Protected controller paths cannot be
 exposed this way.
 
-To use a separate disposable copy at =/workspace= for every root child instead,
+To use a separate disposable copy at =/workspace= for every goblin the host launches instead,
 start the daemon with:
 
 #+begin_src sh
@@ -1063,7 +959,7 @@ roots. Remove crash leftovers only after verifying that daemon/session is gone.
 There is no startup recovery or automatic reconciliation of old directories.
 
 The restricted executable inside the sandbox supports package requests,
-subtree =run/list/kill/stop/attach= commands, =status= for its own identity,
+raid commands, =run/list/kill/stop= for members of the raid it owns, =status= for its own identity,
 and detaching its own terminal. It
 initializes on that session's endpoint and sends JSON-RPC 2.0 with Content-Length
 framing. It cannot choose its authority, manifest, PID, mount target, namespace,
@@ -1099,7 +995,7 @@ are read during Nix evaluation/build. The helper sets =CODEX_HOME= to the
 expanded directory and enables native hooks. Use =codexConfigDir= rather than
 =env.CODEX_HOME= to change it.
 
-Parent and child use the same mounted directory, including file-based native
+A raid owner and the Codex goblins it runs use the same mounted directory, including file-based native
 auth and refreshes. This also shares native history/configuration; private
 history for the anti-cheating live fixture remains separate work. Keyring-only
 credentials are not exposed by this mount. Normal native writes to the shared
@@ -1117,7 +1013,7 @@ Codex treats this system source as managed; no host hook-trust changes or
 blanket hook-trust bypass is needed. The =goblins-spawn=, =goblins-messaging=,
 =goblins-packages= and =goblins-docker= skills are mounted at
 =/etc/codex/skills/NAME/SKILL.md=, and =goblins-devshell= too in a sandbox
-launched with a dev shell (and its children). Spawning creates the child; messaging assigns
+launched with a dev shell (and the goblins it runs). Running creates the member; messaging assigns
 its work and handles replies. Reply-dependent work waits for the matching reply
 before proceeding. When none is available, the agent yields its turn for the
 hook or notifier to resume it.
@@ -1138,8 +1034,8 @@ with DNS forwarding and no domain allowlist, HTTP proxy or TLS interception.
 The current transport uses IPv4, as agent-sandbox's Linux launcher does.
 Host loopback is not mapped and no inbound ports are automatically published.
 =allowedDomains = []= opts out of networking. Domain filters and explicit host
-or published-port mappings remain unsupported. Children inherit the selected
-configuration and receive independent network namespaces.
+or published-port mappings remain unsupported. Goblins a raid owner runs use
+their own configuration's network policy and get independent network namespaces.
 
 Configured MCP tools are preserved by default. To opt into skipping unavailable
 local executables through invocation-only overrides, set
@@ -1203,7 +1099,7 @@ injectedFiles."my-agent/config.json" = ''{"enabled": true}'';
 #+end_src
 
 =mkGoblin.devShellInjectedFiles= takes the same form but is mounted only in
-sandboxes launched with a dev shell, and their children; the two cannot name
+sandboxes launched with a dev shell, and the goblins they run; the two cannot name
 the same file.
 
 * Claude Code configuration
@@ -1231,8 +1127,8 @@ Goblins =SessionStart=, =UserPromptSubmit= and =Stop= handlers. The shared
 skills are mounted
 under =/etc/claude-code/.claude/skills/=, Claude Code's enterprise skill scope;
 =goblins-devshell= is mounted there only in a sandbox launched with a dev shell
-(and its children).
-No host Claude settings or skills are rewritten. Parent and child sandboxes
+(and the goblins it runs).
+No host Claude settings or skills are rewritten. A raid owner and the Claude goblins it runs
 share the selected Claude directory, including file-based authentication and
 native state. Managed =skillOverrides= keep all the integration skills =on=
 for both model and direct user invocation. The shared descriptions name exact
@@ -1264,9 +1160,9 @@ Exactly one of =--message= or =--file= is required. The sending CLI reads the
 file in its own filesystem and submits its UTF-8 contents, limited to 8 KiB.
 The daemon stores those contents; the recipient needs no access to the source
 pathname. The source can be removed after acceptance. Host sends use sender
-=host=. A sandbox can address its parent (=parent=) and descendants by scoped
-name, path or immutable session ID, and members of its [[*Raids][raid]] by name, full
-tree path or ID; the host can address any live session.
+=host=. A sandbox can address the members of its unpaused [[*Raids][raid]] by agent name
+or immutable session ID, and reply to the host; the host can address any live
+session.
 Starting sessions can receive queued work before their payload is ready.
 
 Inside the receiving sandbox, claim and answer an item:
@@ -1302,10 +1198,10 @@ goblins communications-log --session scout --follow --json
 
 The log includes acceptance, claims, replies, completion, requeue, recipient
 exit and raid membership changes (=raid.created=, =raid.joined=, =raid.role=,
-=raid.left=, =raid.dissolved=). A =message.accepted= record's =route= is
-=raid= (with the raid's ID) when raid membership was its only authorization,
-and =tree= otherwise. Identical retries return the original receipt without another acceptance
-record. =--session= includes the selected session's subtree; omit it to inspect
+=raid.left=, =raid.paused=, =raid.owner=, =raid.dissolved=, and =raid.notice=
+for a resume notice). A =message.accepted= record's =route= is =raid= (with the
+raid's ID) for messages between goblins, and =host= for the host's. Identical retries return the original receipt without another acceptance
+record. =--session= shows that session's events; omit it to inspect
 all exchanges. Follow currently polls the daemon. Audit files are private
 =STATE/communications-INSTANCE.jsonl= files and survive normal session cleanup.
 Use =goblins communications-log --log FILE --json= after daemon shutdown. Records contain message text, so handle them as
