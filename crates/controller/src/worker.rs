@@ -211,19 +211,32 @@ impl Worker {
                         recreate,
                         sequence,
                     } => {
-                        let lease = std::sync::Arc::new(crate::config::ManifestLease::create(
+                        // A manifest that does not validate fails the launch. One
+                        // that cannot be rooted only does not become current:
+                        // the launch reports its own errors, such as no Nix daemon.
+                        Manifest::validate(&configuration)?;
+                        let unrooted = match crate::config::ManifestLease::create(
                             &configuration,
                             &state.join("manifests"),
                             sequence,
                             &token,
-                        )?);
-                        results.try_send(Completed::Manifest {
-                            sequence,
-                            lease: lease.clone(),
-                        })?;
-                        // Kept until it started, even once a newer manifest
-                        // replaces it as the daemon's current one.
-                        held_lease = Some(lease);
+                        ) {
+                            Ok(lease) => {
+                                let lease = std::sync::Arc::new(lease);
+                                results.try_send(Completed::Manifest {
+                                    sequence,
+                                    lease: lease.clone(),
+                                })?;
+                                // Kept until it started, even once a newer manifest
+                                // replaces it as the daemon's current one.
+                                held_lease = Some(lease);
+                                None
+                            }
+                            Err(error) => {
+                                token.check()?;
+                                Some(error.to_string())
+                            }
+                        };
                         let manifest = Manifest::read(&configuration)?;
                         let editor = manifest.editor()?;
                         let run_targets: std::sync::Arc<[String]> =
@@ -247,6 +260,10 @@ impl Worker {
                             directory,
                         )?;
                         token.check()?;
+                        if let Some(error) = unrooted {
+                            session
+                                .event("manifest-not-current", serde_json::json!({"detail":error}));
+                        }
                         session.configuration = name;
                         session.run_targets = run_targets;
                         if let Some(reference) = dev_shell {
