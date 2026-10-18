@@ -36,28 +36,20 @@ since this uses the new =configurations= and =attach= commands.
 
 The buffer updates automatically
 and includes agents, pending requests, and collapsible recent request history.
-Agents form a tree rooted at =host=, with children nested beneath their owners.
-Branches start expanded; =TAB= collapses or expands children only. The overview
-contains headings only, with no detail rows. =RET= opens a separate details view
-for the selected sandbox or request. Sandbox details show session IDs and
-startup/granted packages; request details show the reason and preview. Details
-update live and stay tied to the selected identity. Use =b= or =q= to return to
-the tree with selection and branch folds preserved. Request labels use the
-sandbox's full tree path to distinguish matching names in different branches.
+Agents are listed flat, by their agent names, which are unique among running goblins. The overview contains headings only, with no detail rows. =RET= opens a separate details view for the selected sandbox or request. Sandbox details show session IDs, who ran the goblin if a raid owner did, and startup, granted and auto-approved packages; request details show the reason and preview. Details update live and stay tied to the selected identity. Use =b= or =q= to return to the overview with its selection preserved.
 
-Stopped children remain under their parent while any session in that root branch
-is active. Entire stopped or failed trees move intact to “Stopped agents”. That
-section and recent request history start collapsed. Live updates preserve section
-identity, selection and your folding choices.
+Stopped and failed goblins move to “Stopped agents”. That section and recent request history start collapsed. Live updates preserve section identity, selection and your folding choices.
+
+A paused raid (its owner left while members remain) shows up as a pending request. Its popup lists the raid's members: =o= picks a new owner, which resumes the raid, =x= dissolves it, and =k= dissolves it and stops its members. Accepting or denying it like a package request is refused.
 
 | Key | Action |
 |-----+--------|
 | =R= | Choose and launch a goblin in Ghostel |
 | =n= / =p= | Next / previous section |
-| =TAB= | Expand / collapse tree children |
+| =TAB= | Expand / collapse the section |
 | =RET= | Open sandbox or request details |
 | =t= | Open the selected sandbox's Ghostel terminal |
-| =b= | Return from details to the tree |
+| =b= | Return from details to the overview |
 | =a= | Accept the pending request at point |
 | =d= | Deny the pending request at point |
 | =g= or =r= | Reconnect and refresh |
@@ -70,10 +62,10 @@ When Evil is enabled, the buffer starts in normal state with dedicated bindings:
 | =R= | Choose and launch a goblin in Ghostel |
 | =j= / =k= | Next / previous section |
 | =h= / =l= | Collapse / expand section |
-| =TAB= or =za= | Expand / collapse tree children |
+| =TAB= or =za= | Expand / collapse the section |
 | =RET= | Open sandbox or request details |
 | =t= | Open the selected sandbox's Ghostel terminal |
-| =b= | Return from details to the tree |
+| =b= | Return from details to the overview |
 | =a= / =d= | Accept / deny the pending request at point |
 | =gr= or =r= | Reconnect and refresh |
 | =gg= / =G= | Beginning / end of buffer |
@@ -123,9 +115,9 @@ directly; there is no need to download another copy of Magit.
 
 =M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory, and selects it; in the workspace it opens a menu for moving around (see [[*Moving around][Moving around]]).  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
 
-Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text, and fainter before a child; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
+Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
 
-The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  A bar down a goblin's block, two columns before its text, says where its terminal is: blue while it or the goblin's page is shown beside the sidebar (=goblins-sidebar-bar-shown=), grey while its terminal buffer exists here but is hidden (=goblins-sidebar-bar-attached=), and no bar without one.  A bar's colour is its face's foreground.  A shell shown beside the sidebar has its own blue bar inside its goblin's, with a gap between them.  Give =goblins-sidebar-active= a background to tint the shown blocks and shells as well.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox=, =goblins-sidebar-separator= and =goblins-sidebar-child-separator=.
+The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  A bar down a goblin's block, two columns before its text, says where its terminal is: blue while it or the goblin's page is shown beside the sidebar (=goblins-sidebar-bar-shown=), grey while its terminal buffer exists here but is hidden (=goblins-sidebar-bar-attached=), and no bar without one.  A bar's colour is its face's foreground.  A shell shown beside the sidebar has its own blue bar inside its goblin's, with a gap between them.  Give =goblins-sidebar-active= a background to tint the shown blocks and shells as well.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox= and =goblins-sidebar-separator=.
 
 In Evil's motion state the sidebar's own keys take precedence over every minor
 mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
@@ -142,7 +134,7 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =TAB=                        | fold the group                                           |
 | =p=                          | permissions of the goblin: current request, history      |
 | =I=                          | info: everything the daemon knows about the goblin       |
-| =K=                          | stop the goblin (and its running descendants)            |
+| =K=                          | stop the goblin (only it: no other goblin stops with it) |
 | =t=                          | a new shell terminal inside the goblin, listed below it  |
 | =e=                          | Eshell inside the goblin, in its directory               |
 | =d=                          | Dired inside the goblin, in its directory                |
@@ -158,12 +150,7 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =?=                          | key help                                                 |
 | =q=                          | leave the workspace                                      |
 
-The raid page lists the members (role, directory, =[term]= when an Emacs
-terminal is open) and the running goblins that could join.  =i= invites the
-goblin at point or one you choose, =x= kicks the member at point (kicking the
-owner dissolves the raid), =R= sets a member's role, =D= dissolves the raid,
-=RET= opens a goblin and =?= lists the keys.  Invitations join at once; there
-is no acceptance step.
+The raid page lists the members (role, directory, whether its owner created it, =[term]= when an Emacs terminal is open) and the running goblins that could join, and says when the raid is paused.  =i= invites the goblin at point or one you choose, =x= kicks the member at point (kicking the owner pauses the raid), =o= makes the member at point owner (resuming a paused raid), =R= sets a member's role, =D= dissolves the raid (with a prefix argument it also stops the members), =RET= opens a goblin and =?= lists the keys.  Invitations join at once; there is no acceptance step.
 
 In the permissions view the current request is focused: =a= accepts, =d= denies,
 =RET= folds a request, =q= goes back.  Add sections to the info view with
@@ -328,10 +315,10 @@ disable.
 
 #+begin_example
 C-x C-f /goblins:gribble:/tmp/diagram.svg
-C-x C-f /goblins:gribble.snaga:/workspace/     ; a child: its tree path, with . for /
+C-x C-f /goblins:snaga:/workspace/
 #+end_example
 
-The host is an agent name, a tree path or a session ID, and running goblins
+The host is an agent name or a session ID, and running goblins
 complete after =/goblins:=. The method's login program is =goblins exec=, so
 dired, saving, eshell, =shell-command=, compile, grep, magit and eglot work
 inside the sandbox, with its live =PATH=; asynchronous processes each run as

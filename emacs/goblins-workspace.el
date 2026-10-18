@@ -79,13 +79,7 @@ A bar's colour is its face's foreground." :group 'goblins)
 (defface goblins-sidebar-separator
   '((((type tty)) :inherit shadow :underline t)
     (t :inherit shadow :strike-through t :height 0.6))
-  "The rule between top-level goblins." :group 'goblins)
-(defface goblins-sidebar-child-separator
-  '((((type tty) (background dark)) :foreground "gray30" :underline t)
-    (((type tty)) :foreground "gray80" :underline t)
-    (((background dark)) :foreground "gray30" :strike-through t :height 0.6)
-    (t :foreground "gray80" :strike-through t :height 0.6))
-  "The fainter rule before a child goblin." :group 'goblins)
+  "The rule between goblins." :group 'goblins)
 
 (defvar-local goblins--sidebar-source nil
   "The status buffer whose snapshot this sidebar shows.")
@@ -130,6 +124,18 @@ Directories and sessions keep snapshot order inside each group."
             (cond ((and (car a) (null (car b))) t)
                   ((and (null (car a)) (car b)) nil)
                   (t (string< (or (cadr a) "") (or (cadr b) ""))))))))
+
+(defun goblins--sidebar-raid-prompts (raid-id permissions)
+  "Count pending PERMISSIONS prompts for the paused raid RAID-ID whose
+former owner is no longer one of its members."
+  (cl-count-if (lambda (r) (and (equal (plist-get r :kind) "raid-owner")
+                                (equal (plist-get r :state) "pending")
+                                (equal (plist-get (plist-get r :preview) :raid) raid-id)
+                                (not (cl-find (plist-get r :session)
+                                              (append (plist-get (plist-get r :preview) :members) nil)
+                                              :key (lambda (m) (plist-get m :id))
+                                              :test #'equal))))
+               permissions))
 
 (defun goblins--sidebar-pending (session-id permissions)
   "Count pending PERMISSIONS requests of SESSION-ID."
@@ -238,10 +244,13 @@ It starts two columns before the goblin's text, where the active bar is drawn."
                                              'goblins-in-group group-key))))
 
 (defun goblins--sidebar-permission-line (request)
-  "REQUEST as \"! jq (package)\", or \"! docker\" when its package names its kind."
+  "REQUEST as \"! jq (package)\", or \"! docker\" when its package names its kind.
+A paused raid's prompt reads \"! raid crew paused\"."
   (let ((package (goblins--safe (plist-get request :package)))
         (kind (goblins--safe (or (plist-get request :kind) "package"))))
-    (propertize (concat "! " package (if (equal package kind) "" (format " (%s)" kind)))
+    (propertize (cond ((equal kind "raid-owner") (format "! raid %s paused" package))
+                      ((equal package kind) (concat "! " package))
+                      (t (format "! %s (%s)" package kind)))
                 'face 'goblins-sidebar-permission)))
 
 (defun goblins--sidebar-inbox-line (session)
@@ -285,13 +294,13 @@ SHELLS are its shell buffers the sidebar lists."
                      " · "))
        'face 'goblins-dim))))
 
-(defun goblins--sidebar-insert-tree (tree depth group-key permissions shells &optional rule)
-  "Insert the block of TREE's goblin at DEPTH, then its children's blocks.
+(defun goblins--sidebar-insert-goblin (session depth group-key permissions shells &optional rule)
+  "Insert the block of SESSION's goblin at DEPTH.
 A RULE face draws a separator above it.  The block is the goblin's name, its
-activity, pending requests and queued messages, then its SHELLS; only the name
-and the shells are stops for movement."
-  (let* ((session (car tree))
-         (id (plist-get session :id))
+activity, the raid owner that created it, pending requests and queued
+messages, then its SHELLS; only the name and the shells are stops for
+movement."
+  (let* ((id (plist-get session :id))
          (finished (goblins--sidebar-finished-p session))
          (requests (cl-remove-if-not
                     (lambda (r) (and (equal (plist-get r :session) id)
@@ -313,6 +322,9 @@ and the shells are stops for movement."
         (put-text-property start (point) 'goblins-pending t)))
     (unless finished
       (dolist (line `(,(goblins--sidebar-status session)
+                      ,(when-let* ((creator (goblins--created-by session)))
+                         (propertize (format "created by %s" (goblins--safe creator))
+                                     'face 'goblins-dim))
                       ,@(mapcar #'goblins--sidebar-permission-line requests)
                       ,(goblins--sidebar-inbox-line session)))
         (when line (goblins--sidebar-insert-detail depth id group-key line))))
@@ -320,10 +332,7 @@ and the shells are stops for movement."
     (when-let* ((elsewhere (goblins--sidebar-elsewhere session own)))
       (goblins--sidebar-insert-detail depth id group-key elsewhere))
     (dolist (shell own)
-      (goblins--sidebar-insert-shell shell depth id group-key))
-    (dolist (child (cdr tree))
-      (goblins--sidebar-insert-tree child (1+ depth) group-key permissions shells
-                                    'goblins-sidebar-child-separator))))
+      (goblins--sidebar-insert-shell shell depth id group-key))))
 
 (defun goblins--sidebar-finished-p (session)
   (member (plist-get session :state) '("stopped" "failed")))
@@ -363,7 +372,8 @@ The text is built apart from the sidebar so a failure cannot blank it."
                (count (lambda (members)
                         (apply #'+ (mapcar (lambda (s) (goblins--sidebar-pending
                                                         (plist-get s :id) permissions))
-                                           members)))))
+                                           members))))
+               (raids (append (plist-get snapshot :raids) nil)))
           (if (null sessions)
               (insert (propertize "No running goblins\n" 'face 'goblins-dim))
             (dolist (raid (goblins--sidebar-groups sessions))
@@ -372,9 +382,19 @@ The text is built apart from the sidebar so a failure cannot blank it."
                 (when (or (null rkey)
                           (goblins--sidebar-insert-group
                            (list 'raid rkey) 0
-                           (format "raid %s" (or (cadr raid) rkey)) collapsed
+                           (format "raid %s%s" (or (cadr raid) rkey)
+                                   (if (eq (plist-get (cl-find rkey raids
+                                                               :key (lambda (r) (plist-get r :id))
+                                                               :test #'equal)
+                                                      :paused)
+                                           t)
+                                       " · paused" ""))
+                           collapsed
                            (list 'goblins-raid (or (cadr raid) rkey))
-                           (funcall count (apply #'append (mapcar #'cdr (cddr raid))))))
+                           ;; A paused raid's prompt is its former owner's,
+                           ;; which may no longer be a member.
+                           (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
+                              (goblins--sidebar-raid-prompts rkey permissions))))
                   (dolist (dir (cddr raid))
                     (let ((gkey (list 'dir rkey (car dir))))
                       (when (goblins--sidebar-insert-group
@@ -383,9 +403,9 @@ The text is built apart from the sidebar so a failure cannot blank it."
                                (abbreviate-file-name (file-name-as-directory (car dir))))
                              collapsed nil (funcall count (cdr dir)))
                         (let ((rule nil))
-                          (dolist (tree (goblins--agent-forest (cdr dir)))
-                            (goblins--sidebar-insert-tree
-                             tree (1+ (/ indent 2)) gkey permissions shells rule)
+                          (dolist (session (cdr dir))
+                            (goblins--sidebar-insert-goblin
+                             session (1+ (/ indent 2)) gkey permissions shells rule)
                             (setq rule 'goblins-sidebar-separator))))))))))))
       (buffer-string))))
 
@@ -576,7 +596,7 @@ Return the overlays."
 
 (defun goblins--sidebar-block-end (pos)
   "The end of the block of the goblin whose name is on the line at POS: its
-detail and shell lines, without its children."
+detail and shell lines."
   (let ((id (get-text-property pos 'goblins-id)))
     (save-excursion
       (goto-char pos)
@@ -806,7 +826,7 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
   (goblins--sidebar-move-to-waiting t))
 
 (defun goblins-sidebar-stop ()
-  "Stop the goblin at point, and its children, after confirming."
+  "Stop the goblin at point after confirming."
   (interactive)
   (let ((goblin (goblins--sidebar-goblin-at-point)))
     (goblins-stop-goblin (car goblin) (cdr goblin))))
@@ -847,12 +867,13 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
   (let ((goblin (goblins--sidebar-goblin-at-point)))
     (goblins-kill-goblin-execs (car goblin) (cdr goblin))))
 
-(defun goblins-sidebar-destroy-raid ()
-  "Dissolve the raid on this heading after confirming.  Its goblins keep running."
-  (interactive)
+(defun goblins-sidebar-destroy-raid (&optional stop)
+  "Dissolve the raid on this heading after confirming.  Its goblins keep
+running; with a prefix argument STOP, they are stopped too."
+  (interactive "P")
   (let ((raid (get-text-property (line-beginning-position) 'goblins-raid)))
     (unless raid (user-error "Select a raid heading"))
-    (goblins-destroy-raid (goblins--sidebar-ensure-source) raid)))
+    (goblins-destroy-raid (goblins--sidebar-ensure-source) raid stop)))
 
 (defun goblins-sidebar-help ()
   "Describe the sidebar keys."
@@ -865,7 +886,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
      ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it")
                ("p" . "permission requests")
                ("I" . "info")
-               ("K" . "stop it (and its children)")
+               ("K" . "stop it")
                ("t" . "a shell terminal inside it, listed below it")
                ("e" . "Eshell inside it")
                ("d" . "Dired inside it")
@@ -874,7 +895,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
      ("Raids" ("r" . "create a raid around the goblin, or join one")
               ("i" . "invite the goblin to a raid; on a raid, invite into it")
               ("RET" . "on a raid: open its page")
-              ("D" . "on a raid: dissolve it"))
+              ("D" . "on a raid: dissolve it; C-u D also stops its members"))
      ("Messages" ("m m" . "the goblin's messages; on a raid, those sent within it")
                  ("m f" . "the messages the goblin sent")
                  ("m t" . "the messages the goblin received"))

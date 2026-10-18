@@ -137,7 +137,7 @@ In the workspace its saved windows come back beside it."
   (goblins--invite-to-chosen-raid source id))
 
 (defun goblins-goblin-stop (source id)
-  "Stop goblin ID of SOURCE's server and its children, after confirming."
+  "Stop goblin ID of SOURCE's server after confirming."
   (interactive (goblins--choose-goblin "Stop goblin: "))
   (goblins-stop-goblin source id))
 

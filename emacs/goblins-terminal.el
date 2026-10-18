@@ -55,7 +55,7 @@
     (goblins--display-main (goblins-permissions-buffer (car goblin) (cdr goblin)))))
 
 (defun goblin-stop ()
-  "Stop this goblin, and its running descendants, after confirming."
+  "Stop this goblin after confirming."
   (interactive)
   (let ((goblin (goblins--terminal-goblin)))
     (goblins-stop-goblin (car goblin) (cdr goblin))))
