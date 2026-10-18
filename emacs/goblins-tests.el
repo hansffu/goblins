@@ -2261,13 +2261,36 @@ keeps the parameters of windows that live on."
       (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
         (goto-char (point-min))
         (goblins-sidebar-destroy-raid)
-        (should (equal (pop calls) '(raids.destroy :raid "crew")))
+        (should (equal (pop calls) '(raids.destroy :raid "crew" :id "r1")))
         (forward-line 1)
         (should-error (goblins-sidebar-destroy-raid) :type 'user-error)
         (with-current-buffer (goblins-raid-buffer source "crew")
           (goblins-raid-destroy)
-          (should (equal (pop calls) '(raids.destroy :raid "crew")))
+          (should (equal (pop calls) '(raids.destroy :raid "crew" :id "r1")))
           (kill-buffer))))))
+
+(ert-deftest goblins-dissolving-a-raid-names-the-raid-that-was-confirmed ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :raids
+                         [(:id "r1" :name "crew" :owner "session-a" :generation 2 :members [])])))
+      ;; While you decide, the raid is replaced by another of the same name:
+      ;; the call still names the one you confirmed, so the daemon refuses it.
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (_)
+                   (with-current-buffer source
+                     (setq goblins--snapshot
+                           (plist-put goblins--snapshot :raids
+                                      [(:id "r2" :name "crew" :owner "session-b" :generation 0
+                                        :members [])])))
+                   t)))
+        (goblins-destroy-raid source "crew" t))
+      (should (equal (pop calls)
+                     '(raids.destroy :raid "crew" :id "r1" :generation 2 :stop_members t)))
+      (should-error (goblins-destroy-raid source "absent") :type 'user-error)
+      (should-not calls))))
 
 (ert-deftest goblins-raid-page-sets-roles-and-marks-emacs-terminals ()
   (goblins-test--raid-sidebar

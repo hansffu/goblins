@@ -262,13 +262,20 @@ Roles can be changed but not cleared."
 
 (defun goblins-destroy-raid (source name &optional stop)
   "Dissolve the raid NAME on SOURCE's server after confirming.
-Its goblins keep running unless STOP, which stops every member."
-  (when (y-or-n-p (if stop
-                      (format "Dissolve raid %s and stop all its members? " name)
-                    (format "Dissolve raid %s?  Its goblins keep running. " name)))
-    (goblins--host-call source 'raids.destroy
-                        (append (list :raid name) (and stop (list :stop_members t))))
-    (message "Dissolved raid %s%s" name (if stop " and stopped its members" ""))))
+Its goblins keep running unless STOP, which stops every member.  The raid's
+ID and generation are taken before asking, so a raid that changed while you
+decided, or another one by the same name, is refused rather than dissolved."
+  (let* ((raid (or (goblins--snapshot-raid (buffer-local-value 'goblins--snapshot source) name)
+                   (user-error "No raid %s" name)))
+         (generation (plist-get raid :generation))
+         (params (append (list :raid name :id (plist-get raid :id))
+                         (and (numberp generation) (list :generation generation))
+                         (and stop (list :stop_members t)))))
+    (when (y-or-n-p (if stop
+                        (format "Dissolve raid %s and stop all its members? " name)
+                      (format "Dissolve raid %s?  Its goblins keep running. " name)))
+      (goblins--host-call source 'raids.destroy params)
+      (message "Dissolved raid %s%s" name (if stop " and stopped its members" "")))))
 
 (defun goblins-raid-destroy (&optional stop)
   "Dissolve this raid after confirming.  Its goblins keep running; with a
