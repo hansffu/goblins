@@ -3,6 +3,8 @@
 
 * Status and purpose
 
+Superseded: children were removed and raids gained ownership transfer and created members ([[file:RAIDS-REPLACE-CHILDREN.org][RAIDS-REPLACE-CHILDREN.org]], [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]). This document is kept for history.
+
 This is a functional specification for two planned features. It describes
 user-visible behaviour, not implementation or protocol design. It does not
 claim that these features are implemented.

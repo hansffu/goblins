@@ -1,7 +1,7 @@
 #+title: Plan: raids replace children
 #+date: 2026-10-18
 
-Status: approved by review (round 2, with the corrections applied); awaiting the user's approval. Nothing here is implemented. It supersedes the parent/child parts of [[file:CHILDREN-AND-RAIDS.org][CHILDREN-AND-RAIDS.org]] and [[file:CHILDREN-AND-RAIDS-TECHNICAL.org][CHILDREN-AND-RAIDS-TECHNICAL.org]] and the "ownership never moves" rule of [[file:../adr/0008-raids.md][ADR 0008]].
+Status: approved by review and by the user on 2026-10-18; implementation in progress. The decision is [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]. It supersedes the parent/child parts of [[file:CHILDREN-AND-RAIDS.org][CHILDREN-AND-RAIDS.org]] and [[file:CHILDREN-AND-RAIDS-TECHNICAL.org][CHILDREN-AND-RAIDS-TECHNICAL.org]] and the "ownership never moves" rule of [[file:../adr/0008-raids.md][ADR 0008]].
 
 Labels: *[E]* existing behaviour, *[P]* proposed change, *[D]* decision taken with the user on 2026-10-18, *[R]* settled in review.
 
