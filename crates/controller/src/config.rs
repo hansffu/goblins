@@ -52,9 +52,9 @@ pub struct Configuration {
     /// The same goblin with each permitted scope's defaults merged in by Nix.
     #[serde(default)]
     pub scopes: BTreeMap<String, Configuration>,
-    /// Configurations this one may launch as children; none when absent.
+    /// Configurations this one may run as raid members; none when absent.
     #[serde(default)]
-    pub allowed_children: Vec<String>,
+    pub allowed_run_targets: Vec<String>,
     #[serde(skip)]
     pub selected_scope: Option<Scope>,
 }
@@ -108,8 +108,8 @@ pub struct Editor {
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-/// Bound on a configuration's `allowed_children`, as in mkGoblins.
-pub const MAX_CHILDREN: usize = 64;
+/// Bound on a configuration's `allowed_run_targets`, as in mkGoblins.
+pub const MAX_RUN_TARGETS: usize = 64;
 fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
@@ -155,7 +155,7 @@ impl Manifest {
         self.resolve(name, config, scope)
     }
     /// Select the root like `select`, then snapshot every configuration its
-    /// `allowed_children` reach, resolved for the root's actual scope.
+    /// `allowed_run_targets` reach, resolved for the root's actual scope.
     pub(crate) fn branch(
         self,
         name: &str,
@@ -192,12 +192,12 @@ impl Manifest {
             }
         }
         for (name, config) in &self.goblins {
-            let children = &config.allowed_children;
-            if children.len() > MAX_CHILDREN
+            let children = &config.allowed_run_targets;
+            if children.len() > MAX_RUN_TARGETS
                 || !children.iter().all(|c| goblins_protocol::identifier(c))
             {
                 return Err(format!(
-                    "invalid allowed_children for '{name}': at most {MAX_CHILDREN} names of at most 64 characters"
+                    "invalid allowed_run_targets for '{name}': at most {MAX_RUN_TARGETS} names of at most 64 characters"
                 )
                 .into());
             }
@@ -207,7 +207,7 @@ impl Manifest {
     /// A top-level configuration's permitted children; unknown names have none.
     fn children(&self, name: &str) -> Vec<String> {
         match self.goblins.get(name) {
-            Some(config) => config.allowed_children.clone(),
+            Some(config) => config.allowed_run_targets.clone(),
             None => vec![],
         }
     }

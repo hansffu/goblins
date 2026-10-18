@@ -11,7 +11,7 @@ let
   tools = commonTools ++ [ pkgs.fish ];
   # Every demo goblin may start the agents as helpers; none may start
   # goblins-dev, the only one with Nix and host commands.
-  allowedChildren = [
+  allowedRunTargets = [
     "claude"
     "codex"
   ];
@@ -27,13 +27,13 @@ in
     pkg = agents.codex;
     allowedPackages = tools;
     allowedScopes = [ "goblins-dev" ] ++ agentScopes;
-    inherit allowedChildren;
+    inherit allowedRunTargets;
   };
   claude = builders.mkClaudeGoblin {
     pkg = agents.claude-code;
     allowedPackages = tools;
     allowedScopes = [ "goblins-dev" ] ++ agentScopes;
-    inherit allowedChildren;
+    inherit allowedRunTargets;
   };
   # For developing Goblins from a goblin: ordinary Nix commands against the
   # host daemon, and approved host commands for the Bubblewrap, namespace and
@@ -47,6 +47,6 @@ in
     hostCommands.enable = true;
     # Cargo and Nix fetcher caches that outlive the session (scopes.nix).
     scope = "goblins-dev";
-    inherit allowedChildren;
+    inherit allowedRunTargets;
   };
 }

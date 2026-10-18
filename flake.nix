@@ -45,7 +45,7 @@
           shell = import ./nix/demo-goblins/shell.nix {
             inherit pkgs;
             inherit (goblinsLib.builders) mkGoblin;
-            options.allowedChildren = [ "shell" ];
+            options.allowedRunTargets = [ "shell" ];
           };
         };
         scopes = demoScopes;

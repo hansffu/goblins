@@ -133,11 +133,11 @@ class OwnershipTests(unittest.TestCase):
             self.sandbox(parent["session"], "sessions.status", {"session":unrelated["session"]})
         status = self.sandbox(parent["session"], "sessions.status", {})
         self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled",
-                                       "dev_shell", "nix", "host_commands", "permission_bypass", "allowed_children", "raid"})
+                                       "dev_shell", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid"})
         self.assertEqual(status["agent_state"], "unknown")
         # A shell has no agent, so no permissions to bypass.
         self.assertIsNone(status["permission_bypass"])
-        self.assertEqual(status["allowed_children"], ["shell"])
+        self.assertEqual(status["allowed_run_targets"], ["shell"])
         self.assertEqual(status["agent_name"], "parent")
         pipeline = RPC(self.d.state / parent["session"] / "resources/request.sock")
         try:
@@ -315,7 +315,7 @@ class OwnershipTests(unittest.TestCase):
             "parent": parent["session"], "rows": 24, "cols": 80,
         })
         self.running(sibling)
-        with self.assertRaisesRegex(ValueError, "'codex' is not an allowed child of 'shell'; allowed: shell"):
+        with self.assertRaisesRegex(ValueError, "'codex' is not an allowed run target of 'shell'; allowed: shell"):
             self.d.rpc.call("sessions.start", {
                 "key": "different", "configuration": self.d.manifest, "name": "codex",
                 "parent": parent["session"], "rows": 24, "cols": 80,
@@ -433,7 +433,7 @@ class AllowedChildrenTests(ChildrenFixture):
     def test_child_runs_its_own_configuration_in_the_parents_workspace(self):
         root = self.start_root()
         root_status = self.sandbox(root["session"], "sessions.status", {})
-        self.assertEqual(root_status["allowed_children"], ["coordinator", "reviewer", "shell", "broken", "unscoped"])
+        self.assertEqual(root_status["allowed_run_targets"], ["coordinator", "reviewer", "shell", "broken", "unscoped"])
         child = self.launch(root, "reviewer")
         record = self.d.get(child["session"])
         self.assertEqual((record["name"], record["parent"]), ("reviewer", root["session"]))
@@ -441,7 +441,7 @@ class AllowedChildrenTests(ChildrenFixture):
         # The record keeps the parent's manifest: the snapshot's origin.
         self.assertEqual(record["configuration"], self.d.get(root["session"])["configuration"])
         status = self.sandbox(child["session"], "sessions.status", {})
-        self.assertEqual((status["name"], status["allowed_children"]), ("reviewer", []))
+        self.assertEqual((status["name"], status["allowed_run_targets"]), ("reviewer", []))
         # The root launch retained the permitted configuration's build spec.
         spec = json.loads(Path(self.d.manifest).read_text())["goblins"]["reviewer"]["build_spec"]
         self.assertTrue((self.d.state / root["session"] / "resources/roots" / Path(spec).name).is_symlink())
@@ -461,7 +461,7 @@ class AllowedChildrenTests(ChildrenFixture):
         self.run_in(root, "goblin status > /workspace/status; goblin __complete-names -- goblin run > /workspace/complete",
                     "status-done")
         self.assertIn("Configuration: coordinator\nDescription: coordinator child configuration\n"
-                      "Allowed children: coordinator, reviewer, shell, broken, unscoped\n",
+                      "Run targets: coordinator, reviewer, shell, broken, unscoped\n",
                       (self.workspace / "status").read_text())
         self.assertEqual((self.workspace / "complete").read_text().split(),
                          ["coordinator", "reviewer", "shell", "broken", "unscoped"])
@@ -476,15 +476,15 @@ class AllowedChildrenTests(ChildrenFixture):
 
     def test_each_parent_uses_its_own_list(self):
         root = self.start_root()
-        self.refused(root, "unlisted", "configuration 'unlisted' is not an allowed child of 'coordinator'; "
+        self.refused(root, "unlisted", "configuration 'unlisted' is not an allowed run target of 'coordinator'; "
                                        "allowed: coordinator, reviewer, shell, broken, unscoped")
         reviewer = self.launch(root, "reviewer")
         # An empty list rejects even the parent's own configuration.
-        self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no children")
+        self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no run targets")
         shell = self.launch(root, "shell")
         leaf = self.launch(shell, "reviewer", "leaf")
         self.assertEqual(self.d.get(leaf["session"])["parent"], shell["session"])
-        refused = "configuration 'coordinator' is not an allowed child of 'shell'; allowed: reviewer"
+        refused = "configuration 'coordinator' is not an allowed run target of 'shell'; allowed: reviewer"
         self.refused(shell, "coordinator", refused)
         # Selecting a descendant uses its list, from the root and from the host.
         self.refused(root, "coordinator", refused, parent="shell")
@@ -581,7 +581,7 @@ class AllowedChildrenTests(ChildrenFixture):
         # Never permitted: rejected by the daemon, not the newer manifest.
         result = cli("run", "unlisted", "--parent", "root", "--detached")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("'unlisted' is not an allowed child of 'coordinator'", result.stderr)
+        self.assertIn("'unlisted' is not an allowed run target of 'coordinator'", result.stderr)
         # Without --parent the installed build still decides.
         result = cli("run", "reviewer", "--detached")
         self.assertIn("unknown configuration 'reviewer'", result.stderr)
@@ -621,13 +621,13 @@ class AllowedChildrenTests(ChildrenFixture):
         # The retained configuration still launches from the parent's snapshot.
         self.assertEqual(self.d.get(self.launch(root, "reviewer")["session"])["name"], "reviewer")
 
-    def test_daemon_rejects_an_allowed_children_list_over_the_bound(self):
+    def test_daemon_rejects_an_allowed_run_targets_list_over_the_bound(self):
         manifest = self.root / "oversized.json"
         configuration = json.loads(Path(self.d.manifest).read_text())
-        configuration["goblins"]["coordinator"]["allowed_children"] = [f"g{i}" for i in range(65)]
+        configuration["goblins"]["coordinator"]["allowed_run_targets"] = [f"g{i}" for i in range(65)]
         manifest.write_text(json.dumps(configuration))
         record = self.failed(self.d.start("coordinator", manifest=manifest, wait=False))
-        self.assertIn("invalid allowed_children for 'coordinator'", record["detail"])
+        self.assertIn("invalid allowed_run_targets for 'coordinator'", record["detail"])
 
 
 class AllowedChildrenDockerTests(ChildrenFixture):

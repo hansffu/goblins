@@ -85,7 +85,7 @@ in
         scope
         allowedScopes
         scopeStorage
-        allowedChildren
+        allowedRunTargets
         bypassPermissions
         ;
     in
@@ -130,12 +130,12 @@ in
       fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
     else if
       !(
-        builtins.isList allowedChildren
-        && builtins.all (name: builtins.isString name && validName name) allowedChildren
-        && lib.unique allowedChildren == allowedChildren
+        builtins.isList allowedRunTargets
+        && builtins.all (name: builtins.isString name && validName name) allowedRunTargets
+        && lib.unique allowedRunTargets == allowedRunTargets
       )
     then
-      fail "allowedChildren must be a list of unique goblin names"
+      fail "allowedRunTargets must be a list of unique goblin names"
     else if !storageMounts scopeStorage then
       fail "scopeStorage must map storage names to distinct absolute or $HOME paths outside /nix, /proc, /dev and /run/goblins"
     else if !builtins.isBool allowNix then

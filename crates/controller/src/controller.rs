@@ -1618,8 +1618,8 @@ impl Controller {
                     "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
                     "host_commands":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.host_commands()),
                     "permission_bypass":self.sessions[scope].inheritance.as_ref().and_then(|i| i.permission_bypass()),
-                    "allowed_children":self.sessions[scope].inheritance.as_ref()
-                        .map_or(&[][..], |i| i.allowed_children()),
+                    "allowed_run_targets":self.sessions[scope].inheritance.as_ref()
+                        .map_or(&[][..], |i| i.allowed_run_targets()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
                         "role":r.role,"owner":r.owner,
                         "owner_path":self.sessions.get(&r.owner).map(|a| &a.record.path)}))}))
@@ -2025,7 +2025,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -3235,7 +3235,7 @@ mod tests {
         let goblin = |children: Value| {
             json!({"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
                 "client_package": "/unused", "helper": "/unused", "flake": "unused",
-                "allowed_children": children})
+                "allowed_run_targets": children})
         };
         let manifest: crate::config::Manifest = serde_json::from_value(json!({
             "api": 2, "helper_api": 5,
@@ -3282,16 +3282,16 @@ mod tests {
         // The host selecting a descendant uses that descendant's list.
         assert_eq!(
             refused(&mut d, start("coordinator", "child"), None),
-            "configuration 'coordinator' is not an allowed child of 'reviewer'; allowed: shell"
+            "configuration 'coordinator' is not an allowed run target of 'reviewer'; allowed: shell"
         );
         assert_eq!(
             refused(&mut d, start("reviewer", "leaf"), None),
-            "configuration 'shell' permits no children"
+            "configuration 'shell' permits no run targets"
         );
         // So does a sandbox selecting its descendant with --parent.
         assert_eq!(
             refused(&mut d, start("reviewer", "child"), Some(&root)),
-            "configuration 'reviewer' is not an allowed child of 'reviewer'; allowed: shell"
+            "configuration 'reviewer' is not an allowed run target of 'reviewer'; allowed: shell"
         );
         assert_eq!(
             refused(&mut d, start("scoped", "."), Some(&root)),
@@ -4614,7 +4614,7 @@ mod tests {
             "api": 2, "helper_api": 5,
             "goblins": {"shell": {"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
                 "client_package": "/unused", "helper": "/unused", "flake": "unused",
-                "allowed_children": ["shell"]}},
+                "allowed_run_targets": ["shell"]}},
             "scopes": {},
         }))
         .unwrap();

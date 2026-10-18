@@ -61,10 +61,10 @@ let
       scope ? null,
       allowedScopes ? [ ],
       scopeStorage ? { },
-      # Configurations this one may launch as children; none by default, not
+      # Configurations this one may run as raid members (goblin run); none by default, not
       # even itself. Not a scope default: mkGoblins resolves it once per
       # configuration.
-      allowedChildren ? [ ],
+      allowedRunTargets ? [ ],
     }@options:
     let
       dockerOptions = {
@@ -127,7 +127,7 @@ let
           scope
           allowedScopes
           scopeStorage
-          allowedChildren
+          allowedRunTargets
           bypassPermissions
           ;
         docker = dockerOptions;
@@ -147,7 +147,7 @@ let
           scope
           ;
         allowed_scopes = allowedScopes;
-        allowed_children = allowedChildren;
+        allowed_run_targets = allowedRunTargets;
         resume_command = resumeCommand;
         scope_storage = scopeStorage;
         env = effectiveEnv;

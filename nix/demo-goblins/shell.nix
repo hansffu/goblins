@@ -12,7 +12,7 @@ mkGoblin (
       "--init-command"
       "goblin completions fish | source"
     ];
-    allowedChildren = [
+    allowedRunTargets = [
       "claude"
       "codex"
     ];

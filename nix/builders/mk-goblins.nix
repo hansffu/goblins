@@ -49,21 +49,21 @@ let
       builtins.removeAttrs goblin [
         "scope"
         "allowed_scopes"
-        "allowed_children"
+        "allowed_run_targets"
       ];
   # The daemon applies the same bounds.
-  allowedChildren =
+  allowedRunTargets =
     name: goblin:
     let
-      children = goblin.allowed_children;
+      children = goblin.allowed_run_targets;
       undeclared = builtins.filter (child: !(goblins ? ${child})) children;
     in
     if builtins.length children > 64 then
-      fail "'${name}' allowedChildren lists more than 64 goblins"
+      fail "'${name}' allowedRunTargets lists more than 64 goblins"
     else if builtins.any (child: builtins.stringLength child > 64) children then
-      fail "'${name}' allowedChildren names must be at most 64 characters"
+      fail "'${name}' allowedRunTargets names must be at most 64 characters"
     else if undeclared != [ ] then
-      fail "'${name}' allowedChildren references undeclared goblin '${builtins.head undeclared}'"
+      fail "'${name}' allowedRunTargets references undeclared goblin '${builtins.head undeclared}'"
     else
       children;
   configurations = lib.mapAttrs (
@@ -87,7 +87,7 @@ let
       value.goblin
       // {
         scopes = lib.genAttrs (names value.goblin) (variant name value);
-        allowed_children = allowedChildren name value.goblin;
+        allowed_run_targets = allowedRunTargets name value.goblin;
       }
   ) goblins;
   # The values of `field` among the configurations that may join each scope.

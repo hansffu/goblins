@@ -13,13 +13,13 @@ pub(crate) struct Branch {
     entries: BTreeMap<String, Entry>,
 }
 pub(crate) struct Entry {
-    pub allowed_children: Vec<String>,
+    pub allowed_run_targets: Vec<String>,
     /// The configuration resolved for the branch's scope, or why it cannot
     /// run here. None for the root entry until another configuration lists it.
     configuration: Option<std::result::Result<Configuration, String>>,
 }
 impl Branch {
-    /// Walk `allowed_children` breadth-first from the root. A broken reachable
+    /// Walk `allowed_run_targets` breadth-first from the root. A broken reachable
     /// configuration is recorded, not returned: the root must still start.
     pub(crate) fn snapshot(
         root: &str,
@@ -33,8 +33,8 @@ impl Branch {
             if entries.contains_key(&name) {
                 continue;
             }
-            let allowed_children = children(&name);
-            for child in &allowed_children {
+            let allowed_run_targets = children(&name);
+            for child in &allowed_run_targets {
                 if *child != name {
                     listed.insert(child.clone());
                 }
@@ -43,7 +43,7 @@ impl Branch {
             entries.insert(
                 name,
                 Entry {
-                    allowed_children,
+                    allowed_run_targets,
                     configuration: None,
                 },
             );
@@ -69,21 +69,21 @@ impl Branch {
             }
         }
     }
-    pub(crate) fn allowed_children(&self, configuration: &str) -> &[String] {
+    pub(crate) fn allowed_run_targets(&self, configuration: &str) -> &[String] {
         self.entries
             .get(configuration)
-            .map_or(&[], |e| &e.allowed_children)
+            .map_or(&[], |e| &e.allowed_run_targets)
     }
     /// Whether a session of `parent` may launch a `child`, with the reason
     /// shown to the caller otherwise.
     pub(crate) fn permit(&self, parent: &str, child: &str) -> std::result::Result<(), String> {
-        let allowed = self.allowed_children(parent);
+        let allowed = self.allowed_run_targets(parent);
         if allowed.is_empty() {
-            return Err(format!("configuration '{parent}' permits no children"));
+            return Err(format!("configuration '{parent}' permits no run targets"));
         }
         if !allowed.iter().any(|c| c == child) {
             return Err(format!(
-                "configuration '{child}' is not an allowed child of '{parent}'; allowed: {}",
+                "configuration '{child}' is not an allowed run target of '{parent}'; allowed: {}",
                 allowed.join(", ")
             ));
         }
@@ -165,11 +165,11 @@ mod tests {
             .branch("shell", None)
             .unwrap();
         assert_eq!(names(&branch), ["shell"]);
-        assert!(branch.allowed_children("shell").is_empty());
+        assert!(branch.allowed_run_targets("shell").is_empty());
         for child in ["shell", "other"] {
             assert_eq!(
                 branch.permit("shell", child).unwrap_err(),
-                "configuration 'shell' permits no children"
+                "configuration 'shell' permits no run targets"
             );
         }
         // The root needs no snapshot entry and roots nothing.
@@ -179,10 +179,10 @@ mod tests {
     #[test]
     fn explicit_lists_cycles_and_empty_lists() {
         let (_, branch) = manifest(json!({
-            "coordinator": goblin(json!({"allowed_children": ["coordinator", "reviewer", "shell"]})),
-            "reviewer": goblin(json!({"allowed_children": []})),
-            "shell": goblin(json!({"allowed_children": ["coordinator"]})),
-            "unreachable": goblin(json!({"allowed_children": ["unreachable"]})),
+            "coordinator": goblin(json!({"allowed_run_targets": ["coordinator", "reviewer", "shell"]})),
+            "reviewer": goblin(json!({"allowed_run_targets": []})),
+            "shell": goblin(json!({"allowed_run_targets": ["coordinator"]})),
+            "unreachable": goblin(json!({"allowed_run_targets": ["unreachable"]})),
         }))
         .branch("coordinator", None)
         .unwrap();
@@ -193,11 +193,11 @@ mod tests {
         assert!(branch.permit("shell", "coordinator").is_ok());
         assert_eq!(
             branch.permit("reviewer", "reviewer").unwrap_err(),
-            "configuration 'reviewer' permits no children"
+            "configuration 'reviewer' permits no run targets"
         );
         assert_eq!(
             branch.permit("shell", "reviewer").unwrap_err(),
-            "configuration 'reviewer' is not an allowed child of 'shell'; allowed: coordinator"
+            "configuration 'reviewer' is not an allowed run target of 'shell'; allowed: coordinator"
         );
         assert!(branch.permit("coordinator", "unreachable").is_err());
     }
@@ -207,7 +207,7 @@ mod tests {
         let goblins = json!({
             "root": goblin(json!({
                 "scope": "work", "scopes": {"work": goblin(json!({"description": "root in work"}))},
-                "allowed_children": ["root", "member", "elsewhere", "unscoped", "required", "joins"],
+                "allowed_run_targets": ["root", "member", "elsewhere", "unscoped", "required", "joins"],
             })),
             // A different default scope is ignored, never followed.
             "member": goblin(json!({
@@ -266,17 +266,17 @@ mod tests {
     fn list_bounds_are_enforced_when_reading_the_manifest() {
         let many: Vec<_> = (0..65).map(|i| format!("g{i}")).collect();
         for children in [json!(many), json!(["x".repeat(65)]), json!(["../bad"])] {
-            let error = manifest(json!({"shell": goblin(json!({"allowed_children": children}))}))
+            let error = manifest(json!({"shell": goblin(json!({"allowed_run_targets": children}))}))
                 .branch("shell", None)
                 .err()
                 .unwrap();
             assert!(
-                error.to_string().contains("invalid allowed_children"),
+                error.to_string().contains("invalid allowed_run_targets"),
                 "{error}"
             );
         }
         assert!(
-            manifest(json!({"shell": goblin(json!({"allowed_children": many[..64]}))}))
+            manifest(json!({"shell": goblin(json!({"allowed_run_targets": many[..64]}))}))
                 .select("shell", None)
                 .is_ok()
         );

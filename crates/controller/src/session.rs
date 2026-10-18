@@ -151,8 +151,8 @@ pub(crate) struct Inheritance {
 }
 impl Inheritance {
     /// The configurations this session may launch as children.
-    pub(crate) fn allowed_children(&self) -> &[String] {
-        self.branch.allowed_children(&self.configuration)
+    pub(crate) fn allowed_run_targets(&self) -> &[String] {
+        self.branch.allowed_run_targets(&self.configuration)
     }
     pub(crate) fn permit(&self, child: &str) -> std::result::Result<(), String> {
         self.branch.permit(&self.configuration, child)

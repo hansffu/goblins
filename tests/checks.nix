@@ -32,7 +32,7 @@ let
         ];
         allowedPackages = [ pkgs.coreutils ];
         env.GOBLIN_MARKER = "literal $HOME $(false)";
-        allowedChildren = [
+        allowedRunTargets = [
           "fishy"
           "utility"
         ];
@@ -53,7 +53,7 @@ let
             GOBLIN_MARKER = "utility";
             PS1 = "utility> ";
           };
-          allowedChildren = [ ];
+          allowedRunTargets = [ ];
         }
       );
     };
@@ -136,19 +136,19 @@ let
     }
   ]
   ++ [
-    { goblins.shell = mkGoblin (base // { allowedChildren = [ "missing" ]; }); }
+    { goblins.shell = mkGoblin (base // { allowedRunTargets = [ "missing" ]; }); }
     # Over the bound: 65 declared goblins, or a name longer than 64 characters.
     (
       let
         names = map (i: "g${toString i}") (pkgs.lib.range 1 65);
       in
       {
-        goblins = pkgs.lib.genAttrs names (_: mkGoblin (base // { allowedChildren = names; }));
+        goblins = pkgs.lib.genAttrs names (_: mkGoblin (base // { allowedRunTargets = names; }));
       }
     )
     {
       goblins = {
-        shell = mkGoblin (base // { allowedChildren = [ (pkgs.lib.fixedWidthString 65 "x" "") ]; });
+        shell = mkGoblin (base // { allowedRunTargets = [ (pkgs.lib.fixedWidthString 65 "x" "") ]; });
         ${pkgs.lib.fixedWidthString 65 "x" ""} = mkGoblin base;
       };
     }
@@ -237,19 +237,19 @@ let
       injectedFiles."same.conf" = "a";
       devShellInjectedFiles."same.conf" = "b";
     }
-    { allowedChildren = "bad"; }
-    { allowedChildren = null; }
+    { allowedRunTargets = "bad"; }
+    { allowedRunTargets = null; }
     { bypassPermissions = "yes"; }
     # A plain goblin has no agent prompts to bypass.
     { bypassPermissions = true; }
     {
-      allowedChildren = [
+      allowedRunTargets = [
         "bad"
         "bad"
       ];
     }
-    { allowedChildren = [ "../bad" ]; }
-    { allowedChildren = [ 1 ]; }
+    { allowedRunTargets = [ "../bad" ]; }
+    { allowedRunTargets = [ 1 ]; }
     { resumeCommand = "--resume {session_id}"; }
     { resumeCommand = [ 1 ]; }
     { resumeCommand = [ "{Session}" ]; }
@@ -302,10 +302,10 @@ in
   demo-goblins = demo;
   # Every demo goblin may start the agents, also the dev package's shell in
   # its dev scope, and no goblin may start goblins-dev.
-  demo-children = pkgs.runCommand "goblins-demo-children" { nativeBuildInputs = [ pkgs.jq ]; } ''
+  demo-run-targets = pkgs.runCommand "goblins-demo-run-targets" { nativeBuildInputs = [ pkgs.jq ]; } ''
     jq -e '.goblins as $g
       | ($g | keys) == ["claude", "codex", "goblins-dev", "shell"]
-      and all($g[]; .allowed_children == ["claude", "codex"])
+      and all($g[]; .allowed_run_targets == ["claude", "codex"])
       and $g.shell.scope == "dev"
       and ($g.claude.scopes | has("dev")) and ($g.codex.scopes | has("dev"))
       and ($g.claude.host_commands | not) and ($g.codex.host_commands | not)
@@ -526,7 +526,7 @@ in
           scope = default;
           allowedScopes = allowedScopes.${name} or [ ];
           # Children of their own kind (tests/test_docker.py).
-          allowedChildren = [ name ];
+          allowedRunTargets = [ name ];
           allowedPackages = [
             pkgs.coreutils
             pkgs.curl
@@ -577,7 +577,7 @@ in
         pkg = codexProbe;
         filterUnavailableMcp = false;
         args = [ "literal $(false) argument" ];
-        allowedChildren = [ "codex" ];
+        allowedRunTargets = [ "codex" ];
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -595,7 +595,7 @@ in
         allowedDomains = [ ];
         allowedPackages = [ pkgs.python3 ];
         # A child of its own kind (test_parent_and_child_servers_have_independent_bindings).
-        allowedChildren = [ "notifier" ];
+        allowedRunTargets = [ "notifier" ];
       };
       profile = mkCodexGoblin {
         pkg = pkgs.writeScriptBin "codex" (
@@ -664,7 +664,7 @@ in
       claude = mkClaudeGoblin {
         pkg = claudeProbe;
         args = [ "literal $(false) argument" ];
-        allowedChildren = [ "claude" ];
+        allowedRunTargets = [ "claude" ];
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -786,11 +786,11 @@ in
             "private"
           ];
           env.OVERRIDDEN = "from-goblin";
-          allowedChildren = [ "member" ];
+          allowedRunTargets = [ "member" ];
         };
         loner = member {
           allowedScopes = [ "work" ];
-          allowedChildren = [ "member" ];
+          allowedRunTargets = [ "member" ];
         };
         builder = member {
           scope = "builds";
@@ -819,7 +819,7 @@ in
           VISUAL = "custom-visual";
         };
         allowedScopes = [ "work" ];
-        allowedChildren = [ "plain" ];
+        allowedRunTargets = [ "plain" ];
       };
     };
   };
@@ -838,7 +838,7 @@ in
           pkgs.curl
         ];
         env.PS1 = "network-test> ";
-        allowedChildren = [ "online" ];
+        allowedRunTargets = [ "online" ];
       };
       offline = mkGoblin {
         pkg = pkgs.bashInteractive;
@@ -882,7 +882,7 @@ in
       goblins = {
         host = member {
           hostCommands.enable = true;
-          allowedChildren = [
+          allowedRunTargets = [
             "host"
             "plain"
           ];
@@ -913,7 +913,7 @@ in
       goblins = {
         nix = member {
           allowNix = true;
-          allowedChildren = [
+          allowedRunTargets = [
             "nix"
             "plain"
           ];
@@ -971,7 +971,7 @@ in
       };
       goblins = {
         coordinator = member "coordinator" {
-          allowedChildren = [
+          allowedRunTargets = [
             "coordinator"
             "reviewer"
             "shell"
@@ -980,7 +980,7 @@ in
           ];
         };
         reviewer = member "reviewer" {
-          allowedChildren = [ ];
+          allowedRunTargets = [ ];
           rwDirs = [ "$GOBLINS_TEST_ROOT/reviewer" ];
           # Only the reviewer's closure has cowsay, which shows that the
           # branch retained it rather than the root's own roots.
@@ -989,19 +989,19 @@ in
             pkgs.cowsay
           ];
         };
-        shell = member "shell" { allowedChildren = [ "reviewer" ]; };
+        shell = member "shell" { allowedRunTargets = [ "reviewer" ]; };
         unlisted = member "unlisted" { };
         broken = member "broken" { roDirs = [ "$GOBLINS_TEST_ROOT/missing" ]; };
         unscoped = member "unscoped" { allowedScopes = [ ]; };
         # Attached at start; its "plain" children attach through it.
         attached = member "attached" (docker {
           docker.enable = true;
-          allowedChildren = [ "plain" ];
+          allowedRunTargets = [ "plain" ];
         });
         plain = member "plain" (docker { });
         # Not attached; its "eager" children attach through their own option.
         detached = member "detached" (docker {
-          allowedChildren = [ "eager" ];
+          allowedRunTargets = [ "eager" ];
         });
         eager = member "eager" (docker {
           docker.enable = true;
@@ -1013,39 +1013,39 @@ in
     goblins.coordinator = mkGoblin (
       base
       // {
-        allowedChildren = [ ];
+        allowedRunTargets = [ ];
         env.CHILD_MARKER = "updated";
       }
     );
   };
-  allowed-children-manifest =
+  run-targets-manifest =
     let
       manifest = mkGoblins {
         scopes.work = mkScope { };
         goblins = {
           claude = mkClaudeGoblin {
             pkg = claudeProbe;
-            allowedChildren = [
+            allowedRunTargets = [
               "claude"
               "codex"
             ];
           };
           codex = mkCodexGoblin {
             pkg = codexProbe;
-            allowedChildren = [ ];
+            allowedRunTargets = [ ];
           };
           shell = mkGoblin (base // { allowedScopes = [ "work" ]; });
         };
       };
     in
-    pkgs.runCommand "goblins-allowed-children-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
+    pkgs.runCommand "goblins-run-targets-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
       # Resolved on top-level configurations (omitted means none) and never
       # carried by scope variants.
       jq -e '.api == 2 and .helper_api == 5
-        and .goblins.claude.allowed_children == ["claude", "codex"]
-        and .goblins.codex.allowed_children == []
-        and .goblins.shell.allowed_children == []
-        and (.goblins.shell.scopes.work | has("allowed_children") | not)' ${manifest.config}
+        and .goblins.claude.allowed_run_targets == ["claude", "codex"]
+        and .goblins.codex.allowed_run_targets == []
+        and .goblins.shell.allowed_run_targets == []
+        and (.goblins.shell.scopes.work | has("allowed_run_targets") | not)' ${manifest.config}
       touch $out
     '';
   cli-completions =
@@ -1143,7 +1143,7 @@ in
     assert (mkGoblin (base // { scope = "work"; })).goblin.scope == "work";
     assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
     assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
-    assert (mkGoblin base).goblin.allowed_children == [ ];
+    assert (mkGoblin base).goblin.allowed_run_targets == [ ];
     assert !(mkGoblin base).goblin.bypass_permissions;
     assert !(mkClaudeGoblin { }).goblin.bypass_permissions;
     assert (mkCodexGoblin { bypassPermissions = true; }).goblin.bypass_permissions;
@@ -1188,11 +1188,11 @@ in
         "--resume"
         "{session_id}"
       ];
-    assert (mkClaudeGoblin { allowedChildren = [ "codex" ]; }).goblin.allowed_children == [ "codex" ];
-    assert (mkCodexGoblin { allowedChildren = [ ]; }).goblin.allowed_children == [ ];
+    assert (mkClaudeGoblin { allowedRunTargets = [ "codex" ]; }).goblin.allowed_run_targets == [ "codex" ];
+    assert (mkCodexGoblin { allowedRunTargets = [ ]; }).goblin.allowed_run_targets == [ ];
     # Not a scope default: a scope variant keeps the goblin's own value.
     assert
-      ((mkGoblin (base // { allowedChildren = [ "x" ]; })).withScopeDefaults { }).goblin.allowed_children
+      ((mkGoblin (base // { allowedRunTargets = [ "x" ]; })).withScopeDefaults { }).goblin.allowed_run_targets
       == [ "x" ];
     assert
       let

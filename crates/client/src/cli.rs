@@ -273,7 +273,7 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
         // only its own configuration.
         let status = rpc::exchange(&mut socket, json!(1), "sessions.status", json!({}))
             .map_err(|e| e.to_string())?;
-        match status["allowed_children"].as_array() {
+        match status["allowed_run_targets"].as_array() {
             Some(names) => names
                 .iter()
                 .filter_map(|n| n.as_str())
