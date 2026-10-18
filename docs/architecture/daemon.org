@@ -46,7 +46,7 @@ flowchart TB
 
 The session worker exclusively owns the =Session= that performs blocking launch, Nix, profile and helper operations. Startup hands the controller the PTY master, sandbox request listener, init control socket, namespace identity, exit-watch descriptor and inheritance capability. The controller uses these handles to serve public requests while the worker continues managing resource lifetime. Work results change the controller's visible state; the worker does not mutate its records directly.
 
-The messaging worker owns mailbox mutations, claim generations, retry receipts, integration state and journal I/O. The controller sends a session directory and ordered raid/operation events with calls or sync batches. This keeps mailbox authorization and its audit history serialized in one place. A raid join only authorizes communication after it has been recorded; removals apply even when logging fails. Tree routes remain available if raid logging fails. See [[file:../../crates/controller/src/mailbox.rs][mailbox.rs]] and [[file:../../crates/controller/src/messaging.rs][messaging.rs]].
+The messaging worker owns mailbox mutations, claim generations, retry receipts, integration state and journal I/O. The controller sends a session directory and ordered raid/operation events with calls or sync batches. This keeps mailbox authorization and its audit history serialized in one place. A raid join only authorizes communication after it has been recorded; removals apply even when logging fails. Host routes remain available if raid logging fails. See [[file:../../crates/controller/src/mailbox.rs][mailbox.rs]] and [[file:../../crates/controller/src/messaging.rs][messaging.rs]].
 
 * Event loop and responsiveness
 
@@ -60,7 +60,7 @@ The queues are intentionally finite. Session workers have command capacity 4 and
 
 =Connection= tracks role, initialization, decoder, request deadlines, pending calls, subscription state and queued responses. The accepted socket assigns =Role::Host= or =Role::Sandbox(session)=. Dispatch validates the method and typed parameters against that role before changing state.
 
-Host callers can choose root configurations, decide permissions and inspect the whole controller. Sandbox callers can request their own capabilities, start permitted children and control their authorized subtree. Sandbox records omit host paths, process IDs and private diagnostics. Raids extend message reach, not this lifecycle view.
+Host callers can choose root configurations, decide permissions and inspect the whole controller. Sandbox callers can request their own capabilities, and a raid owner can run permitted members and list and stop the members created in its raid. Sandbox records omit host paths, process IDs and private diagnostics. Raid membership alone grants only messaging.
 
 =state.subscribe= returns a snapshot with daemon instance, subscription ID and sequence. Dirty state is published as a replacement snapshot. Clients must reconnect/resubscribe after a sequence gap rather than applying guessed patches. Historical session/permission records are bounded and may be evicted; the communications log serves a different audit purpose.
 
@@ -109,6 +109,6 @@ Host =goblins exec= uses the private init-control channel to create a process in
 
 Session cleanup kills remaining member processes, stops its helper and releases roots, mounts, workspace references and scope/Docker leases. Reference-counted shared resources remain while another member needs them. The last scope member releases namespace/network infrastructure; temporary storage is removed, while persistent scope/Docker data remains.
 
-Stopping a session with live descendants requires =--kill-children=. Natural parent exit stops its descendants automatically. The event loop serializes stopping with child creation so a stopped subtree cannot accept new launches. Raid-owner departure dissolves its raid without stopping peers.
+Stopping a session stops only it: there is no tree to cascade through. A raid owner leaving pauses its raid while members remain, and the host resolves it with a new owner or dissolution. Control rights over created members are checked against the controller's raid state on every call, so a pause or ownership change revokes them at once.
 
 =server.stop= requests orderly daemon shutdown over the host API; server management uses locks and the live connection rather than killing a recorded PID. Controller destruction cancels outstanding operations, transfers queued audit events while draining results, cancels and joins session workers, cleans session directories and removes =host.sock=. The messaging worker finishes remaining mailbox cleanup before it is joined. This is orderly cleanup, not persistence/recovery of running sandboxes after a crash.

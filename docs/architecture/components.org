@@ -76,7 +76,7 @@ The protocol crate has no Nix, launch or approval authority. The sandbox client 
 | Channel                                 | Participants                         | Contents and authority                                                                                        |
 |-----------------------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------|
 | =STATE/host.sock=                         | Host CLI, TUI, Emacs to controller   | JSON-RPC launch, inspect, decide, subscribe, stop, exec and messaging calls; host authority                   |
-| =/run/goblins/request.sock=               | Sandbox client to controller         | JSON-RPC requests associated with that session; permissions, subtree operations, inbox, raids and integration |
+| =/run/goblins/request.sock=               | Sandbox client to controller         | JSON-RPC requests associated with that session; permissions, raid members, inbox, raids and integration |
 | Session =terminal.sock= / =sessions.attach= | Attachment client to terminal broker | Framed terminal input/output after attachment handshake; raw bytes are not approval RPC                       |
 | Worker channels                         | Controller to session worker         | Bounded Rust =sync_channel= commands and completions                                                            |
 | Messaging channels                      | Controller to messaging worker       | Calls, directory/raid/operation events, notification delivery reports and responses                           |
@@ -96,19 +96,18 @@ A live package grant resolves an approved output on the host, roots its closure,
 
 Namespace/mount failures have different consequences. A refused mount can leave already-mounted approved paths in place without publishing the new profile. An unacknowledged mount makes the actual mount state uncertain and stops the session. See [[file:../../crates/controller/src/session.rs][session.rs]], [[file:../../crates/controller/src/binds.rs][binds.rs]], [[file:../../crates/controller/src/seccomp.rs][seccomp.rs]] and [[file:../../src/main.rs][the helper]].
 
-* Ownership trees, scopes and raids
+* Scopes and raids
 
 These are separate relationships, with separate authorization rules.
 
 | Relationship   | What it controls                                                                                     | Lifetime and restrictions                                                                                   |
 |----------------+------------------------------------------------------------------------------------------------------+-------------------------------------------------------------------------------------------------------------|
-| Ownership tree | Child launches, descendant lifecycle/terminal access, inherited workspace and selected trusted state | Child belongs to a parent; parent exit stops descendants; selected parent's =allowedChildren= limits launches |
 | Scope          | Shared network, optional PID namespace, managed storage and optional Docker engine                   | Starts with first member, releases live resources with last member; persistent data can outlive members     |
-| Raid           | Discovery and direct messaging across ownership branches                                             | At most one raid per goblin; owner departure dissolves it; no resource or lifecycle grants                  |
+| Raid           | Discovery and direct messaging; the owner runs members and stops the members created in it          | At most one raid per goblin; owner departure pauses it until the host picks an owner or dissolves it        |
 
-Children share their parent's workspace, scope and current dev shell generation, but use their selected configuration's packages, environment and file grants. Package approval inheritance is downward and on request; a child can reuse an ancestor's exact granted output without a new decision. Children retain the branch's configuration snapshot rather than reopening a rebuilt host manifest. New host root launches can use a newer manifest while existing sessions retain their configuration.
+Goblins a raid owner runs share its workspace, scope and current dev shell generation, but use their own configuration's packages, environment and file grants, resolved from the daemon's current manifest: the last validated one the host used. They copy the owner's approvals as an auto-approve set at launch and can reuse those exact outputs on request without a new decision. They are not children: an owner stopping does not stop them. Running sessions keep the configuration they started with.
 
-Scopes are trust groups. Shared PID namespaces expose processes to peers; managed storage is writable by members; Docker members control one engine whose filesystem grants are combined. Joining a scope does not authorize messaging. Raids authorize messages only, and do not weaken sandbox file, terminal or stop authorization.
+Scopes are trust groups. Shared PID namespaces expose processes to peers; managed storage is writable by members; Docker members control one engine whose filesystem grants are combined. Joining a scope does not authorize messaging. Raids authorize messages, and an owner's control of the members it created; they do not weaken sandbox file or terminal authorization.
 
 * State and persistence
 
@@ -121,6 +120,6 @@ Scopes are trust groups. Shared PID namespaces expose processes to peers; manage
 | Server output                                                          | =server.log=                                                            | Retained host diagnostics                                                                 |
 | Scope storage and Docker data                                          | Host-user cache, managed by scope leases                              | Persistent scopes retain data while idle; temporary scopes delete it after last member    |
 | Configuration/source snapshots                                         | Nix store with runtime GC roots                                       | Roots protect running branches, packages and trusted generations                          |
-| Workspace                                                              | Host cwd mount, or disposable snapshot selected by server =--workspace= | Cwd writes affect the host; snapshot branches are disposable and children share the copy  |
+| Workspace                                                              | Host cwd mount, or disposable snapshot selected by server =--workspace= | Cwd writes affect the host; snapshots are disposable and the goblins a raid owner runs share its copy  |
 
 The default daemon state directory is =$XDG_RUNTIME_DIR/goblins= (or =/run/user/UID/goblins=), falling back to =/tmp/goblins-control-UID= when the runtime directory is absent. =--state-dir= overrides it. Persistent scope stores use an exclusive lock to prevent two controllers from opening the same persistent scope. Scope sharing is within a controller.

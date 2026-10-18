@@ -7,7 +7,7 @@ This directory describes the implemented architecture, based on the source as of
 
 - [[file:components.org][Components and communication]]: build products, runtime processes, transport, authority boundaries, scopes and storage.
 - [[file:daemon.org][Daemon internals]]: the controller event loop, workers, state ownership, approvals, terminal handling and shutdown.
-- [[file:workflows.org][Workflow sequences]]: server startup, root and child launches, package permissions, Docker activation, dev shell refresh, inbox messaging, terminal attachment and stopping a subtree.
+- [[file:workflows.org][Workflow sequences]]: server startup, root launches and running raid members, package permissions, Docker activation, dev shell refresh, inbox messaging, terminal attachment and stopping a goblin.
 
 * Diagrams
 
