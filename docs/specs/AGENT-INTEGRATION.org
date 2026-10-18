@@ -14,7 +14,7 @@ notification monitor remains unchanged. Ownership, grants and teardown rules in
 
 =mkCodexGoblin= takes the same options as =mkGoblin=, plus =codexConfigDir=
 (default =$HOME/.codex=), =codexSettings= and the native =pkg=. It shares the
-entire Codex directory with children. Generated hooks/configuration and the
+entire Codex directory with the goblins its raid owner runs alongside it. Generated hooks/configuration and the
 Goblins spawning, messaging and package-request skills are immutable mounts under
 =/etc/codex=; no host settings are
 rewritten. Native credential refresh retains the normal writable auth mount.
@@ -25,14 +25,14 @@ default description is =Codex running in a Goblins sandbox=.
 =mkClaudeGoblin= follows the same contract with =claudeConfigDir=,
 =claudeSettings= and =pkg=. Its immutable managed settings and enterprise
 skills live under =/etc/claude-code=, while the selected Claude state directory
-is writable and shared with children. Its default description is =Claude Code
+is writable and shared with the Claude goblins a raid owner runs. Its default description is =Claude Code
 running in a Goblins sandbox=.
 
 The trusted =mkGoblin.integration= setting selects the delivery profile; the
 supported values are ="codex"= and ="claude"=, with =null= for ordinary shells.
 The native package, mounted hooks and notifier are supplied by the matching
-builder. Children
-inherit the loaded configuration, not an agent-supplied manifest.
+builder. Goblins a raid owner runs use the daemon's current manifest, never an
+agent-supplied one.
 
 Codex requires version 0.162.1 or newer. The launcher creates the private
 =/tmp/goblins-codex= directory, starts App Server on its explicit Unix socket,
@@ -88,9 +88,9 @@ operation-notice eligibility.
 * Inbox contract
 
 All agent messages and replies pass through the host daemon. The authenticated
-sandbox endpoint supplies sender identity. An agent can send to its running or
-starting parent and descendants, and to members of its raid (see Raid routes
-below). It can reply to the sender of a claimed message while a send between
+sandbox endpoint supplies sender identity. An agent can send to running or
+starting members of its unpaused raid (see Raid routes below); there are no
+parent or descendant routes since [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]. It can reply to the sender of a claimed message while a send between
 them would still be authorized. Other branches remain unavailable. Host send
 always uses sender =host=.
 
@@ -136,12 +136,13 @@ A join or role change therefore authorizes nothing until it is in the log;
 removals apply even when their event cannot be written. =mailbox::Directory=
 carries no raid data.
 
-- A sandbox may send to a live member of its logged raid by name, full tree
-  path or ID; the existing ambiguity error covers name collisions. Roles are
-  never matched. =parent= and host routing are unchanged.
-- A reply is allowed when the original sender is the host, when replier and
-  sender are related in the tree in either direction, or when both are in the
-  same logged raid. Otherwise it fails with -32009 "not allowed: 'SENDER' is
+- A sandbox may send to a live member of its logged raid by agent name or ID;
+  the ambiguity error covers name collisions. Roles are never matched. There
+  is no =parent= alias; host routing is unchanged. A paused raid refuses with
+  a warning and a resume notice later (see DAEMON.org, raids replace the
+  ownership tree).
+- A reply is allowed when the original sender is the host, or when both are
+  in the same logged, unpaused raid. Otherwise it fails with -32009 "not allowed: 'SENDER' is
   no longer in this goblin's raid" and changes nothing: the claim stays
   outstanding for completion or requeue.
 - Delivered messages stay with their recipient. =messages.get=, inbox

@@ -15,13 +15,13 @@ This is a *recreate*, not a restore. The daemon keeps a small JSON record per go
 - Denied packages are recorded for information only. A recreated goblin can request them again and gets the normal approval prompt.
 - =mkGoblin= gets =resumeCommand=: the agent's argument list for a resumed launch, with ={key}= placeholders filled from variables the goblin recorded. It replaces =args=. =mkGoblin= makes no assumptions about the agent; each builder sets its own.
 - The agent session's id *and name* are recorded, so the right session is easy to find.
-- Only root goblins get records. Children are neither recorded nor recreated.
+- Every goblin gets a record, including those a raid owner runs (originally only root goblins; children were neither recorded nor recreated). A recreated goblin is in no raid.
 - The last 100 records are kept by default. A prune command, modelled on =nix-collect-garbage=, removes older ones by age, date or count.
 - One daemon owns the history store at a time.
 
 * Out of scope (v1)
 
-Children, raids, inbox contents, terminal and process state, Emacs UI. Goblins launched by a daemon running with =--workspace= (snapshot mode) are not recorded; =goblins resume= on such an id fails with an explicit error instead of starting in an empty workspace.
+Raids, inbox contents, terminal and process state, Emacs UI. Goblins launched by a daemon running with =--workspace= (snapshot mode) are not recorded; =goblins resume= on such an id fails with an explicit error instead of starting in an empty workspace.
 
 * Record
 
@@ -97,15 +97,15 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 
 =goblins resume= is =sessions.start= with a new =recreate: ID= parameter, using the caller's current manifest like =goblins run=.
 
-1. *Checks.* Read the record. Refuse in =--workspace= mode, with =--parent=, or if the recorded =cwd= no longer exists.
+1. *Checks.* Read the record. Refuse in =--workspace= mode, or if the recorded =cwd= no longer exists, or when its =auto_approve= list exceeds 256 names.
 2. *Reservation.* Each live goblin writes one record, its line: the record it was recreated from, otherwise its own. Before =Worker::start=, the controller refuses if a live session (=starting=, =running= or =stopping=) has this record as its line. The reservation ends when that session stops or fails to start. Since a line is one record, duplicate =goblins resume= calls with different operation keys cannot resume the same agent session twice. (Separate records per recreate, linked by =recreated_from= and later an =origin=, were the first two designs.)
 3. *Launch.* The recorded configuration name is launched with the recorded scope, dev shell reference and =cwd=. The agent name is reused if it is free, otherwise a new one is chosen. The dev shell reference is evaluated afresh, as on any launch.
 4. *Packages, before the agent starts.* The worker resolves each approved name against the current catalog (=Session::realize=, which works before =start=). =Session::start= then takes these outputs as a new =recreated= list:
    - their closures join the initial closure, so they are mounted with the initial store view and no helper call is needed;
    - after the empty =generation-0=, it stages one package generation per output in recorded order with the existing =profile= logic, pointing =packages/current= at each new generation and adding the output to =Session.packages= before staging the next (=profile= reads both), so the last generation holds every command with the usual earlier-wins priority;
-   - they are the session's own grants, not =Launch.initial_packages=, which same-configuration children copy.
+   - they are the session's own grants, not =Launch.initial_packages=, which no other goblin copies.
    Any failure for one name, whether it is missing, removed, broken, unfree, or fails to download, evaluate or build, puts it in =skipped= with the final Nix error as its reason; the others are still staged. Only cancellation aborts. Skipped names stay in =approved=, so the next recreate tries them again, which matters for temporary download failures. Mount failures still fail the start. The 128-package limit covers initial packages and recreated grants together; grants beyond it are skipped.
-5. *Docker.* If the record has Docker, the worker mirrors an inheriting child (=Session::child=): it adds the Docker client to the initial packages and sets =docker_inherit_enabled = Some(true)=, so =Session::start= attaches the engine before the agent starts. Without the client staged, =enable_docker= would try a live grant before the helper exists. If the configuration's scope does not enable Docker, or it runs without a scope, the goblin starts without Docker and =docker= goes to =skipped= with the reason. The new record keeps =docker_enabled=, so a later recreate tries again once the configuration allows it.
+5. *Docker.* If the record has Docker, the worker mirrors a member started attached (=Session::member=): it adds the Docker client to the initial packages and sets =docker_inherit_enabled = Some(true)=, so =Session::start= attaches the engine before the agent starts. Without the client staged, =enable_docker= would try a live grant before the helper exists. If the configuration's scope does not enable Docker, or it runs without a scope, the goblin starts without Docker and =docker= goes to =skipped= with the reason. The new record keeps =docker_enabled=, so a later recreate tries again once the configuration allows it.
 6. *Arguments.* =shell_args= is replaced by the resolved =resume_command= when possible.
 7. *Hand-over.* =Completed::Started= gains the recreated names, their outputs and the skipped items with their reasons. The controller puts them into =record.packages= and =Active.granted_outputs= before marking the session =running=, so children's requests for them are approved automatically, as for ordinary grants.
 8. *Record.* When the goblin reaches =running=, the record continues: the goblin is appended to =sessions=, its configuration, agent name, scope, dev shell and working directory are updated, =skipped= is replaced, =stopped= is cleared, and the package lists and variables carry on. A start that fails leaves the record as it was.

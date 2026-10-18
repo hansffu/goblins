@@ -3,6 +3,8 @@
 
 * Status
 
+Since [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]] (2026-10-18) there is no ownership tree: exec targets and TRAMP hosts are an agent name, unique among running goblins, or a session id; tree paths and the =.= separator are gone, and a stopped goblin stops only itself. The text below keeps its original wording.
+
 Implemented on branch =sandbox-access-spec= (2026-10-10). The user agreed the requirements and
 decisions below on 2026-10-09, after inspecting master at =acf476d=. How the open details were settled,
 and where the implementation differs from the first draft, is under [[*Implementation notes][Implementation notes]]; the
@@ -426,7 +428,7 @@ Open details, settled:
 |---+----------+----------+-----------------------|
 | 1 | Who owns an exec'd terminal | The client, with the PTY created on the host | Daemon-owned and detachable (needs multiplexing); a PTY created in the sandbox (init in the data path) |
 | 2 | Sandbox lifetime | Agent exit ends it | Stay up while shells are open (TRAMP would pin sandboxes); an explicit keep (deferred) |
-| 3 | TRAMP host | Name or tree path (=.= separator), ids also accepted; each connection pinned to (state dir, instance, session ID); buffers killed on stop | Ids only (unreadable); names plus ids (two spellings); marking buffers read-only (reverts and commands could reach a namesake) |
+| 3 | TRAMP host | Agent name (originally also a tree path with =.= separator), ids also accepted; each connection pinned to (state dir, instance, session ID); buffers killed on stop | Ids only (unreadable); names plus ids (two spellings); marking buffers read-only (reverts and commands could reach a namesake) |
 | 4 | Init position | Subreaper everywhere | =bwrap --as-pid-1= where possible (two modes) |
 | 5 | TRAMP tools and =EDITOR= | =editor.emacs.enable= on =mkGoblins=, global | Always mounting tools (weakens =allowedPackages=); busybox |
 | 6 | Agent exec into descendants | Host only for now | Allowed without approval (later); per-exec approval |

@@ -319,7 +319,7 @@ use it, and dev shell refresh does not support it.
   snapshot branch in =Session::new_in= and its overlap check.
 - Decide what remains of =SharedWorkspace= and the =/workspace= bind: with
   an explicit =cwd= it is only a scratch alias (see =enable_docker=). Keep
-  the ownership semantics that children share their parent's workspace.
+  the semantics that goblins a raid owner runs share its workspace.
 - Remove the refresh error "not supported with a daemon --workspace
   snapshot" in =Session::prepare_refresh=, and the deferral in ADR 0007.
 - Remove =test_cli_retains_explicit_daemon_snapshot= (=tests/test_workspace.py=)
@@ -328,7 +328,10 @@ use it, and dev shell refresh does not support it.
   (PLAN, DESIGN) and README wherever snapshots are described. Consider a
   short ADR for the removal.
 
-* TODO Recreate children with their root
+* DONE Recreate children with their root
+CLOSED: [2026-10-18 Sun 21:57]
+
+Obsolete: there are no children since [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]. Goblins a raid owner runs get their own records and can be resumed like any goblin; what remains is the raid membership item below.
 
 =goblins resume= starts only the recorded root goblin ([[file:../adr/0010-recreate-not-restore.md][ADR 0010]], [[file:SESSION-RECREATE.org][SESSION-RECREATE.org]]). Children are neither recorded nor recreated, so a coordinator comes back without the reviewers it had launched. Recording a child would need its parent's record id, its configuration name and its own package lists and variables; recreating it would need the parent's branch snapshot, which the recreated root takes from the current manifest. Decide whether children come back automatically, on request, or stay a manual =goblins run --parent=.
 
