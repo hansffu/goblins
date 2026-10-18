@@ -119,6 +119,11 @@ pub(super) enum Completed {
         detail: Option<String>,
         output: Option<PathBuf>,
     },
+    /// A host launch's manifest validated; `sequence` orders acceptances.
+    Manifest {
+        sequence: u64,
+        lease: std::sync::Arc<crate::config::ManifestLease>,
+    },
     Failed(String),
     Stopped {
         exit_code: Option<i32>,
@@ -142,12 +147,17 @@ pub(super) enum Source {
         /// The history store, protected like the daemon's state.
         history: Option<PathBuf>,
         recreate: Option<Recreate>,
+        /// Order of this acceptance, for the daemon's current manifest.
+        sequence: u64,
     },
-    /// A child of a running session, using a configuration from its branch.
-    Child {
-        inherited: Inheritance,
+    /// A goblin a raid owner runs, from the daemon's current manifest.
+    Member {
+        owner: Inheritance,
+        /// Held from acceptance, so the owner stopping cannot take it away.
+        scope: Option<std::sync::Arc<crate::scope::Shared>>,
+        manifest: std::sync::Arc<crate::config::ManifestLease>,
         configuration: String,
-        /// Approvals copied from the parent, by exact output.
+        /// Approvals copied from the owner, by exact output.
         auto: std::collections::BTreeMap<String, PathBuf>,
     },
 }
@@ -165,14 +175,28 @@ impl Worker {
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
                 let mut recreated: Option<Recreated> = None;
                 let mut copied = std::collections::BTreeMap::new();
+                // Held until the session rooted what it needs: the owner's
+                // directory keeps its grants, the lease the manifest.
+                let mut held = None;
                 let mut session = match source {
-                    Source::Child {
-                        inherited,
+                    Source::Member {
+                        owner,
+                        scope,
+                        manifest,
                         configuration,
                         auto,
                     } => {
                         copied = auto;
-                        Session::child(inherited, &configuration, token.clone(), directory)?
+                        let session = Session::member(
+                            owner.clone(),
+                            scope,
+                            &manifest.path,
+                            &configuration,
+                            token.clone(),
+                            directory,
+                        )?;
+                        held = Some((owner, manifest));
+                        session
                     }
                     Source::Host {
                         configuration,
@@ -184,10 +208,23 @@ impl Worker {
                         state,
                         history,
                         recreate,
+                        sequence,
                     } => {
+                        let lease = crate::config::ManifestLease::create(
+                            &configuration,
+                            &state.join("manifests"),
+                            sequence,
+                            &token,
+                        )?;
+                        results.try_send(Completed::Manifest {
+                            sequence,
+                            lease: std::sync::Arc::new(lease),
+                        })?;
                         let manifest = Manifest::read(&configuration)?;
                         let editor = manifest.editor()?;
-                        let (config, mut branch) = manifest.branch(&name, scope.as_deref())?;
+                        let run_targets: std::sync::Arc<[String]> =
+                            manifest.run_targets(&name).into();
+                        let config = manifest.select(&name, scope.as_deref())?;
                         token.check()?;
                         let mut launch = config.launch()?;
                         launch.editor = editor;
@@ -205,12 +242,9 @@ impl Worker {
                             token.clone(),
                             directory,
                         )?;
-                        // Children never reopen the manifest; retain what the
-                        // branch may launch against rebuilds and GC.
-                        branch.prepare(&session);
                         token.check()?;
                         session.configuration = name;
-                        session.branch = std::sync::Arc::new(branch);
+                        session.run_targets = run_targets;
                         if let Some(reference) = dev_shell {
                             let cwd = session.launch.cwd.clone().ok_or(
                                 "a dev shell needs a host working directory containing the flake",
@@ -265,6 +299,8 @@ impl Worker {
                         .read_to_end(&mut output);
                     return Err(format!("{error}: {}", String::from_utf8_lossy(&output)).into());
                 }
+                // Everything it mounts is rooted by now.
+                drop(held);
                 results.try_send(Completed::Started {
                     docker_enabled: session.docker_enabled(),
                     scope: session.scope_name(),

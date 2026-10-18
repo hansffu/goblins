@@ -131,31 +131,53 @@ impl Drop for SessionDirectory {
 }
 struct SharedWorkspace {
     file: File,
-    // Keep snapshot contents alive until every descendant has stopped.
+    // Keep snapshot contents alive until every goblin sharing it has stopped.
     _owner: Arc<SessionDirectory>,
 }
-/// Host-owned launch capability. Children reuse opened mounts, never re-resolve
-/// host paths or read a caller-selected manifest.
+/// Host-owned launch capability. Goblins a raid owner runs reuse its opened
+/// working directory, never re-resolve host paths or read a caller-selected
+/// manifest.
 #[derive(Clone)]
 pub(crate) struct Inheritance {
     launch: Arc<Launch>,
     binds: Arc<crate::binds::Plan>,
     workspace: Arc<SharedWorkspace>,
-    // Weak: a stopped parent's record must not keep its scope alive.
+    // Weak: a stopped session's record must not keep its scope alive.
     scope: Weak<crate::scope::Shared>,
     docker: Arc<AtomicBool>,
-    /// This session's configuration key and the root's branch snapshot.
+    /// This session's configuration key and the configurations it may run.
     configuration: String,
-    branch: Arc<crate::branch::Branch>,
+    run_targets: Arc<[String]>,
     _owner: Arc<SessionDirectory>,
 }
 impl Inheritance {
-    /// The configurations this session may launch as children.
+    /// The configurations this session may run as raid members.
     pub(crate) fn allowed_run_targets(&self) -> &[String] {
-        self.branch.allowed_run_targets(&self.configuration)
+        &self.run_targets
     }
-    pub(crate) fn permit(&self, child: &str) -> std::result::Result<(), String> {
-        self.branch.permit(&self.configuration, child)
+    pub(crate) fn permit(&self, target: &str) -> std::result::Result<(), String> {
+        let own = &self.configuration;
+        if self.run_targets.is_empty() {
+            return Err(format!("configuration '{own}' permits no run targets"));
+        }
+        if !self.run_targets.iter().any(|t| t == target) {
+            return Err(format!(
+                "configuration '{target}' is not an allowed run target of '{own}'; allowed: {}",
+                self.run_targets.join(", ")
+            ));
+        }
+        Ok(())
+    }
+    /// The live scope, held for a launch accepted while this session runs.
+    pub(crate) fn scope(&self) -> std::result::Result<Option<Arc<crate::scope::Shared>>, String> {
+        match &self.launch.scope {
+            None => Ok(None),
+            Some(_) => self
+                .scope
+                .upgrade()
+                .map(Some)
+                .ok_or_else(|| "the owner's scope has stopped".into()),
+        }
     }
     pub(crate) fn scope_name(&self) -> Option<&str> {
         self.launch.scope.as_ref().map(|s| s.name.as_str())
@@ -210,7 +232,7 @@ impl Inheritance {
 #[cfg(test)]
 impl Inheritance {
     /// A running session's capability without a sandbox, for controller tests.
-    pub(crate) fn fixture(configuration: &str, branch: Arc<crate::branch::Branch>) -> Self {
+    pub(crate) fn fixture(configuration: &str, run_targets: &[&str]) -> Self {
         let owner = Arc::new(SessionDirectory(unix::temp_directory().unwrap()));
         let launch: Launch = serde_json::from_value(serde_json::json!({
             "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
@@ -231,17 +253,17 @@ impl Inheritance {
             scope: Weak::new(),
             docker: Arc::default(),
             configuration: configuration.into(),
-            branch,
+            run_targets: run_targets.iter().map(|t| t.to_string()).collect(),
             _owner: owner,
         }
     }
     /// The same capability for a session launched with an agent integration.
     pub(crate) fn fixture_with_integration(
         configuration: &str,
-        branch: Arc<crate::branch::Branch>,
+        run_targets: &[&str],
         integration: &str,
     ) -> Self {
-        let mut fixture = Self::fixture(configuration, branch);
+        let mut fixture = Self::fixture(configuration, run_targets);
         let mut launch = (*fixture.launch).clone();
         launch.integration = Some(integration.into());
         fixture.launch = Arc::new(launch);
@@ -288,8 +310,8 @@ pub struct Session {
     network: Option<crate::network::Network>,
     scope: Option<Arc<crate::scope::Shared>>,
     docker: Option<crate::scope::Lease>,
-    // Shared with children's inheritance: they start with Docker attached
-    // when their parent had it at the time they were created.
+    // Shared through inheritance: goblins a raid owner runs start with Docker
+    // attached when the owner had it at the time they were created.
     docker_attached: Arc<AtomicBool>,
     docker_inherit_enabled: Option<bool>,
     docker_filesystem: Vec<String>,
@@ -299,18 +321,19 @@ pub struct Session {
     cancel: Cancellation,
     directory_owner: Arc<SessionDirectory>,
     binds: Option<Arc<crate::binds::Plan>>,
-    // A different-configuration child opens its own binds at start, sharing
-    // only its parent's pinned working directory.
-    parent_binds: Option<Arc<crate::binds::Plan>>,
+    // A goblin a raid owner runs opens its own binds at start, sharing only
+    // the owner's pinned working directory.
+    owner_binds: Option<Arc<crate::binds::Plan>>,
     workspace: Option<Arc<SharedWorkspace>>,
     candidate: Option<crate::devshell::Candidate>,
     pub(crate) configuration: String,
-    pub(crate) branch: Arc<crate::branch::Branch>,
+    /// What this session may run as raid members, from its configuration.
+    pub(crate) run_targets: Arc<[String]>,
     /// A recreated goblin's recorded grants, staged before the agent starts.
-    /// They are this session's own grants: children do not inherit them.
+    /// They are this session's own grants, not initial packages.
     pub(crate) recreated: Vec<(String, PathBuf)>,
     /// The agent's arguments for this sandbox only, instead of
-    /// `launch.shell_args` (a resumed conversation). Children use the latter.
+    /// `launch.shell_args` (a resumed conversation).
     pub(crate) arguments: Option<Vec<String>>,
 }
 impl Session {
@@ -353,11 +376,11 @@ impl Session {
             helper_output: None,
             cancel,
             binds: None,
-            parent_binds: None,
+            owner_binds: None,
             workspace: None,
             candidate: None,
             configuration: String::new(),
-            branch: Arc::default(),
+            run_targets: Arc::new([]),
             recreated: Vec::new(),
             arguments: None,
         };
@@ -382,74 +405,42 @@ impl Session {
         }
         Ok(session)
     }
-    pub(crate) fn child(
-        inherited: Inheritance,
+    /// A goblin a raid owner runs, using a configuration resolved from the
+    /// daemon's current manifest for the owner's scope. It shares the owner's
+    /// workspace, scope, working directory, dev shell and Docker attachment;
+    /// everything else comes from its own definition.
+    pub(crate) fn member(
+        owner: Inheritance,
+        scope: Option<Arc<crate::scope::Shared>>,
+        manifest: &Path,
         configuration: &str,
         cancel: Cancel,
         directory: PathBuf,
     ) -> Result<Self> {
-        if configuration != inherited.configuration {
-            return Self::child_configuration(inherited, configuration, cancel, directory);
-        }
-        let mut launch = (*inherited.launch).clone();
-        launch.cwd = None;
-        let mut session = Self::new_in(launch, None, cancel, directory)?;
-        // new_in canonicalizes cwd for root launches only. Preserve the pinned
-        // parent's namespace path even when its host pathname was renamed.
-        session.launch = (*inherited.launch).clone();
-        if session.launch.scope.is_some() {
-            session.scope = Some(
-                inherited
-                    .scope
-                    .upgrade()
-                    .ok_or("the parent's scope has stopped")?,
-            );
-        }
-        let enabled = inherited.docker.load(Ordering::SeqCst);
-        session.docker_inherit_enabled = Some(enabled);
-        if enabled
-            && let Some(client) = session
-                .launch
-                .docker
-                .as_ref()
-                .and_then(|d| d.client.clone())
-            && !session.launch.initial_packages.contains(&client)
-        {
-            session.launch.initial_packages.push(client);
-        }
-        session.binds = Some(inherited.binds);
-        session.workspace = Some(inherited.workspace);
-        session.configuration = inherited.configuration;
-        session.branch = inherited.branch;
-        Ok(session)
-    }
-    /// A child running another configuration from the branch snapshot. It
-    /// shares the parent's workspace, scope, working directory, dev shell and
-    /// Docker attachment; everything else comes from its own definition.
-    fn child_configuration(
-        inherited: Inheritance,
-        configuration: &str,
-        cancel: Cancel,
-        directory: PathBuf,
-    ) -> Result<Self> {
-        let mut launch = inherited.branch.configuration(configuration)?.launch()?;
+        let manifest = crate::config::Manifest::validate(manifest)?;
+        let editor = manifest.editor()?;
+        let run_targets: Arc<[String]> = manifest.run_targets(configuration).into();
+        let mut launch = manifest
+            .select_inherited(configuration, owner.scope_name())
+            .map_err(|e| format!("configuration '{configuration}' cannot be launched here: {e}"))?
+            .launch()?;
         if launch.initial_packages.len() > 128 {
             return Err("initial package limit is 128".into());
         }
-        launch.protected_paths = inherited.launch.protected_paths.clone();
+        launch.protected_paths = owner.launch.protected_paths.clone();
         let mut session = Self::new_in(launch, None, cancel, directory)?;
-        session.launch.cwd = inherited.launch.cwd.clone();
-        session.launch.dev_shell = inherited.launch.dev_shell.clone();
-        session.launch.editor = inherited.launch.editor.clone();
+        // new_in canonicalizes cwd for host launches only. Keep the owner's
+        // pinned namespace path even when its host pathname was renamed.
+        session.launch.cwd = owner.launch.cwd.clone();
+        session.launch.dev_shell = owner.launch.dev_shell.clone();
+        session.launch.editor = editor;
         if session.launch.scope.is_some() {
-            let scope = inherited
-                .scope
-                .upgrade()
-                .ok_or("the parent's scope has stopped")?;
+            let scope = scope.ok_or("the owner's scope has stopped")?;
+            // A newer definition must not create a different inherited scope.
             scope.compatible(&session.launch)?;
             session.scope = Some(scope);
         }
-        let enabled = inherited.docker.load(Ordering::SeqCst)
+        let enabled = owner.docker.load(Ordering::SeqCst)
             || session.launch.docker.as_ref().is_some_and(|d| d.enabled);
         session.docker_inherit_enabled = Some(enabled);
         if enabled
@@ -462,10 +453,10 @@ impl Session {
         {
             session.launch.initial_packages.push(client);
         }
-        session.parent_binds = Some(inherited.binds);
-        session.workspace = Some(inherited.workspace);
+        session.owner_binds = Some(owner.binds.clone());
+        session.workspace = Some(owner.workspace.clone());
         session.configuration = configuration.to_string();
-        session.branch = inherited.branch;
+        session.run_targets = run_targets;
         Ok(session)
     }
     pub(crate) fn inheritance(&self) -> Inheritance {
@@ -476,7 +467,7 @@ impl Session {
             scope: self.scope.as_ref().map(Arc::downgrade).unwrap_or_default(),
             docker: self.docker_attached.clone(),
             configuration: self.configuration.clone(),
-            branch: self.branch.clone(),
+            run_targets: self.run_targets.clone(),
             _owner: self.directory_owner.clone(),
         }
     }
@@ -554,8 +545,8 @@ impl Session {
         };
         if self.binds.is_none() {
             let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
-            if let Some(parent) = &self.parent_binds {
-                binds.share_working_directory(parent)?;
+            if let Some(owner) = &self.owner_binds {
+                binds.share_working_directory(owner)?;
             } else if let Some(cwd) = &self.launch.cwd {
                 binds.add_working_directory(cwd, &private)?;
             }

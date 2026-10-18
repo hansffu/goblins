@@ -176,7 +176,7 @@ fn run() -> Result<i32, String> {
                         Some(name) => format!(
                             "{name} (role: {}, owner: {})",
                             raid["role"].as_str().unwrap_or("none"),
-                            raid["owner_path"]
+                            raid["owner_name"]
                                 .as_str()
                                 .or(raid["owner"].as_str())
                                 .unwrap_or("unknown")
@@ -187,48 +187,20 @@ fn run() -> Result<i32, String> {
                 );
                 return Ok(0);
             }
-            cli::Command::Attach { session } => {
-                require_terminal()?;
-                let record = call("sessions.get", json!({"session":session}))?;
-                return attach(record["id"].as_str().ok_or("missing session ID")?);
-            }
-            cli::Command::Run {
-                config,
-                name,
-                parent,
-                detatched,
-                inherit_raid,
-            } => {
-                if !detatched {
-                    require_terminal()?;
-                }
-                let mut params = json!({"key":random_key()?,
-                    "name":config,"agent_name":name,"parent":parent,"detached":detatched});
-                // Omitted when unset, so an older daemon still accepts the launch.
-                if inherit_raid {
-                    params["inherit_raid"] = json!(true);
-                }
-                let launch = call("sessions.start", params)?;
-                if detatched {
-                    println!("{launch}");
-                    return Ok(0);
-                }
-                return attach(launch["session"].as_str().ok_or("missing session ID")?);
+            // Goblins do not attach to each other's terminals: a member always
+            // starts detached, and the host can attach to it.
+            cli::Command::Run { config, name, .. } => {
+                let params = json!({"key":random_key()?,
+                    "name":config,"agent_name":name,"detached":true});
+                println!("{}", call("sessions.start", params)?);
+                return Ok(0);
             }
             command => {
                 let (method, params) = match command {
                     cli::Command::List => ("sessions.list", json!({})),
-                    cli::Command::Kill {
-                        session,
-                        kill_children,
+                    cli::Command::Kill { session } | cli::Command::Stop { session } => {
+                        ("sessions.stop", json!({"session":session}))
                     }
-                    | cli::Command::Stop {
-                        session,
-                        kill_children,
-                    } => (
-                        "sessions.stop",
-                        json!({"session":session,"kill_children":kill_children}),
-                    ),
                     cli::Command::Detach => ("sessions.detach", json!({})),
                     _ => unreachable!(),
                 };
@@ -266,7 +238,6 @@ fn raid(command: cli::RaidCommand) -> Result<i32, String> {
     use cli::RaidCommand::*;
     let (method, params, json) = match command {
         Create { raid } => ("raids.create", json!({"raid":raid}), true),
-        Invite { children } => ("raids.invite", json!({"sessions":children}), true),
         Leave => ("raids.leave", json!({}), true),
         Members { json } => ("raids.members", json!({}), json),
         SetRole { role } => ("raids.set_role", json!({"role":role}), true),
@@ -368,7 +339,7 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
             println!(
                 "Dev shell generation {generation} is active. Running processes keep their \
                  old environment: run `source /run/goblins/devshell/env.sh` in Bash (or start \
-                 a new shell) to use it. New child sandboxes start in it."
+                 a new shell) to use it. Goblins this one runs start in it."
             );
             Ok(0)
         }
@@ -558,51 +529,6 @@ fn mailbox_command(method: &str, params: serde_json::Value) -> Result<i32, Strin
         goblins_protocol::messages::exchange(&mut socket, json!(1), method, params),
         key.as_deref(),
     ))
-}
-fn require_terminal() -> Result<(), String> {
-    if unsafe { libc::isatty(0) } != 1 {
-        return Err(
-            "attachment requires terminal input; use run --detatched for background launches"
-                .into(),
-        );
-    }
-    Ok(())
-}
-static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static RESIZE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-extern "C" fn interrupted(_: i32) {
-    STOP.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-extern "C" fn resized(_: i32) {
-    RESIZE.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-fn attach(session: &str) -> Result<i32, String> {
-    unsafe {
-        libc::signal(libc::SIGINT, interrupted as *const () as _);
-        libc::signal(libc::SIGTERM, interrupted as *const () as _);
-        libc::signal(libc::SIGHUP, interrupted as *const () as _);
-        libc::signal(libc::SIGWINCH, resized as *const () as _);
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
-    let (mut socket, _) = connect()?;
-    let reply = rpc::exchange(
-        &mut socket,
-        json!(1),
-        "sessions.attach",
-        json!({"session":session}),
-    )
-    .map_err(|e| e.to_string())?;
-    if reply["attached"] != true {
-        return Err("invalid terminal handshake".into());
-    }
-    goblins_protocol::terminal::relay(
-        socket,
-        session,
-        |method, params| call(method, params).map_err(Into::into),
-        &STOP,
-        &RESIZE,
-    )
-    .map_err(|e| e.to_string())
 }
 fn random_key() -> Result<String, String> {
     let mut random = [0; 16];

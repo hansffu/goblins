@@ -375,8 +375,7 @@ mod tests {
                 "child".into(),
                 Session {
                     id: "child".into(),
-                    path: "child".into(),
-                    parent: None,
+                    agent_name: "child".into(),
                     running: true,
                 },
             )]);
@@ -413,8 +412,7 @@ mod tests {
                 "child".into(),
                 Session {
                     id: "child".into(),
-                    path: "child".into(),
-                    parent: None,
+                    agent_name: "child".into(),
                     running: true,
                 },
             )])

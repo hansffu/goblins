@@ -126,6 +126,66 @@ fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+/// A validated manifest the daemon may launch goblins from, kept from
+/// garbage collection while anything holds the lease: the daemon while it is
+/// current, and every launch accepted against it until that launch started.
+#[derive(Debug)]
+pub(crate) struct ManifestLease {
+    pub path: PathBuf,
+    root: Option<PathBuf>,
+}
+impl ManifestLease {
+    /// Validate `path` and root the store output that holds it under
+    /// `directory`, named for `sequence` so leases never share a root.
+    pub(crate) fn create(
+        path: &Path,
+        directory: &Path,
+        sequence: u64,
+        cancel: &crate::process::Cancellation,
+    ) -> Result<Self> {
+        Manifest::validate(path)?;
+        let root = match crate::session::containing_store_output(path) {
+            None => None,
+            Some(output) => {
+                crate::unix::private_directory(directory)?;
+                let name = output.file_name().unwrap().to_string_lossy();
+                let link = directory.join(format!("{sequence}-{name}"));
+                crate::process::command(
+                    std::process::Command::new("nix-store")
+                        .arg("--realise")
+                        .arg(&output)
+                        .arg("--add-root")
+                        .arg(&link)
+                        .arg("--indirect"),
+                    directory,
+                    cancel,
+                )?;
+                Some(link)
+            }
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            root,
+        })
+    }
+}
+#[cfg(test)]
+impl ManifestLease {
+    /// A lease on a manifest that is not in the store, for tests.
+    pub(crate) fn unrooted(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            root: None,
+        }
+    }
+}
+impl Drop for ManifestLease {
+    fn drop(&mut self) {
+        if let Some(root) = &self.root {
+            let _ = std::fs::remove_file(root);
+        }
+    }
+}
 impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
         serde_json::from_slice(&read_regular(path, MAX_MANIFEST_BYTES)?)
@@ -154,28 +214,14 @@ impl Manifest {
         })?;
         self.resolve(name, config, scope)
     }
-    /// Select the root like `select`, then snapshot every configuration its
-    /// `allowed_run_targets` reach, resolved for the root's actual scope.
-    pub(crate) fn branch(
-        self,
-        name: &str,
-        scope: Option<&str>,
-    ) -> Result<(Configuration, crate::branch::Branch)> {
-        self.check()?;
-        let config = self.goblins.get(name).cloned().ok_or_else(|| {
-            format!(
-                "unknown goblin; available: {}",
-                self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
-            )
-        })?;
-        let root = self.resolve(name, config, scope)?;
-        let selected = root.selected_scope.as_ref().map(|s| s.name.clone());
-        let branch = crate::branch::Branch::snapshot(
-            name,
-            |key| self.children(key),
-            |key| self.select_inherited(key, selected.as_deref()),
-        );
-        Ok((root, branch))
+    /// Read a manifest and check everything about it that does not depend
+    /// on the goblin selected: versions, scope catalog, run-target bounds and
+    /// editor. A manifest that passes may become the daemon's current one.
+    pub fn validate(path: &Path) -> Result<Self> {
+        let manifest = Self::read(path)?;
+        manifest.check()?;
+        manifest.editor()?;
+        Ok(manifest)
     }
     fn check(&self) -> Result<()> {
         if self.api != 2 || self.helper_api != 5 {
@@ -204,16 +250,21 @@ impl Manifest {
         }
         Ok(())
     }
-    /// A top-level configuration's permitted children; unknown names have none.
-    fn children(&self, name: &str) -> Vec<String> {
+    /// The configurations a top-level configuration may run as raid
+    /// members; unknown names have none. Scope variants never carry the list.
+    pub(crate) fn run_targets(&self, name: &str) -> Vec<String> {
         match self.goblins.get(name) {
             Some(config) => config.allowed_run_targets.clone(),
             None => vec![],
         }
     }
-    /// Resolve a child configuration for the scope its branch runs in. A child
-    /// never selects a scope: a different default scope is ignored.
-    fn select_inherited(&self, name: &str, scope: Option<&str>) -> Result<Configuration> {
+    /// Resolve a run target for the scope its owner runs in. It never selects
+    /// a scope: a different default scope is ignored.
+    pub(crate) fn select_inherited(
+        &self,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Result<Configuration> {
         let config = self
             .goblins
             .get(name)
@@ -221,7 +272,7 @@ impl Manifest {
             .ok_or_else(|| format!("unknown goblin '{name}'"))?;
         match (scope, &config.scope) {
             (None, Some(required)) => {
-                Err(format!("'{name}' requires scope '{required}'; its parent has no scope").into())
+                Err(format!("'{name}' requires scope '{required}'; its owner has no scope").into())
             }
             (Some(scope), default)
                 if default.as_deref() != Some(scope)
@@ -506,6 +557,148 @@ pub fn resume_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
+    fn goblin(extra: Value) -> Value {
+        let mut value = json!({
+            "build_spec": "/nix/store/00000000000000000000000000000000-spec.json",
+            "args": [], "env": {}, "client_package": "/unused", "helper": "/unused",
+            "flake": "unused",
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        value
+    }
+    fn manifest(goblins: Value) -> Value {
+        json!({
+            "api": 2, "helper_api": 5, "goblins": goblins,
+            "scopes": {
+                "work": {"persistent": false, "pid": true},
+                "other": {"persistent": false, "pid": true},
+            },
+        })
+    }
+    fn parse(value: Value) -> Manifest {
+        serde_json::from_value(value).unwrap()
+    }
+    /// Validate a manifest written to a file, as the daemon reads it.
+    fn validated(value: &Value) -> Result<Manifest> {
+        let directory = crate::unix::temp_directory().unwrap();
+        let path = directory.join("manifest.json");
+        std::fs::write(&path, value.to_string()).unwrap();
+        let result = Manifest::validate(&path);
+        std::fs::remove_dir_all(directory).unwrap();
+        result
+    }
+
+    #[test]
+    fn run_targets_come_from_the_top_level_configuration() {
+        let m = parse(manifest(json!({
+            "coordinator": goblin(json!({
+                "allowed_run_targets": ["reviewer"], "scope": "work",
+                "scopes": {"work": goblin(json!({}))},
+            })),
+            "reviewer": goblin(json!({})),
+        })));
+        assert_eq!(m.run_targets("coordinator"), ["reviewer"]);
+        assert!(m.run_targets("reviewer").is_empty());
+        assert!(m.run_targets("unknown").is_empty());
+    }
+
+    #[test]
+    fn run_targets_resolve_for_the_owner_scope() {
+        let goblins = json!({
+            // A different default scope is ignored, never followed.
+            "member": goblin(json!({
+                "scope": "other", "allowed_scopes": ["work"],
+                "scopes": {
+                    "other": goblin(json!({"description": "member in other"})),
+                    "work": goblin(json!({"description": "member in work"})),
+                },
+            })),
+            "elsewhere": goblin(json!({
+                "scope": "other", "scopes": {"other": goblin(json!({}))},
+            })),
+            "unscoped": goblin(json!({})),
+            "required": goblin(json!({
+                "scope": "work", "scopes": {"work": goblin(json!({}))},
+            })),
+            "joins": goblin(json!({
+                "allowed_scopes": ["work"], "scopes": {"work": goblin(json!({}))},
+            })),
+        });
+        let m = parse(manifest(goblins));
+        let member = m.select_inherited("member", Some("work")).unwrap();
+        assert_eq!(member.description, "member in work");
+        assert_eq!(member.selected_scope.as_ref().unwrap().name, "work");
+        assert!(m.select_inherited("required", Some("work")).is_ok());
+        assert!(m.select_inherited("joins", Some("work")).is_ok());
+        assert!(
+            m.select_inherited("joins", None)
+                .unwrap()
+                .selected_scope
+                .is_none()
+        );
+        assert!(m.select_inherited("unscoped", None).is_ok());
+        for (name, scope, error) in [
+            (
+                "elsewhere",
+                Some("work"),
+                "'elsewhere' does not allow scope 'work'",
+            ),
+            (
+                "unscoped",
+                Some("work"),
+                "'unscoped' does not allow scope 'work'",
+            ),
+            (
+                "required",
+                None,
+                "'required' requires scope 'work'; its owner has no scope",
+            ),
+            ("absent", None, "unknown goblin 'absent'"),
+        ] {
+            assert_eq!(
+                m.select_inherited(name, scope).err().unwrap().to_string(),
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn validation_covers_versions_bounds_and_the_editor() {
+        let good = manifest(json!({"shell": goblin(json!({}))}));
+        assert!(validated(&good).is_ok());
+        let mut old = good.clone();
+        old["api"] = json!(1);
+        assert!(
+            validated(&old)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("incompatible")
+        );
+        let mut editor = good.clone();
+        editor["editor"] = json!({"kind": "vim", "command": "vim"});
+        assert!(
+            validated(&editor)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("editor")
+        );
+        let many: Vec<_> = (0..65).map(|i| format!("g{i}")).collect();
+        for targets in [json!(many), json!(["x".repeat(65)]), json!(["../bad"])] {
+            let bad = manifest(json!({"shell": goblin(json!({"allowed_run_targets": targets}))}));
+            let error = validated(&bad).err().unwrap().to_string();
+            assert!(error.contains("invalid allowed_run_targets"), "{error}");
+        }
+        let fits = manifest(json!({"shell": goblin(json!({"allowed_run_targets": many[..64]}))}));
+        assert!(validated(&fits).is_ok());
+        assert!(Manifest::validate(Path::new("/nonexistent/manifest.json")).is_err());
+    }
     #[test]
     fn resume_arguments_fill_placeholders_or_say_why_not() {
         let variables = BTreeMap::from([

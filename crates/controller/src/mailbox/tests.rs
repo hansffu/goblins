@@ -69,31 +69,44 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let directory = [
-            ("p", None, "chief"),
-            ("c", Some("p"), "chief/scout"),
-            ("g", Some("c"), "chief/scout/helper"),
-            ("s", Some("p"), "chief/sibling"),
-            ("x", None, "unrelated"),
-            ("y", Some("x"), "unrelated/scout"),
+            ("p", "chief"),
+            ("c", "scout"),
+            ("g", "helper"),
+            ("s", "sibling"),
+            ("x", "unrelated"),
+            ("y", "lookout"),
         ]
         .into_iter()
-        .map(|(id, parent, path)| {
+        .map(|(id, name)| {
             (
                 id.into(),
                 Session {
                     id: id.into(),
-                    parent: parent.map(Into::into),
-                    path: path.into(),
+                    agent_name: name.into(),
                     running: true,
                 },
             )
         })
         .collect();
-        Self {
+        let mut f = Self {
             mailbox: Mailbox::new(INSTANCE.into(), Limits::default()).unwrap(),
             directory,
             audit: MemoryAudit::default(),
+        };
+        // chief's crew shares a raid, as logged; unrelated and lookout do not.
+        for id in ["p", "c", "g", "s"] {
+            f.mailbox.raids.insert(
+                id.into(),
+                RaidView {
+                    id: "base".into(),
+                    name: "crew".into(),
+                    role: None,
+                    owner: Some("p".into()),
+                    paused: false,
+                },
+            );
         }
+        f
     }
     fn call(&mut self, actor: &str, method: &str, params: Value) -> Result<Value> {
         let command = Mutation::parse(method, params).map_err(|e| (-32602, e))?;
@@ -139,16 +152,19 @@ fn authenticated_routing_and_private_inboxes() {
     let first = f.send("p", "scout", "one", "pick a number");
     assert_eq!(first["recipient"], "c");
     assert_eq!(first["sender"], "p");
-    assert_eq!(f.send("c", "parent", "two", "ready")["recipient"], "p");
     assert_eq!(
-        f.send("p", "scout/helper", "three", "nested")["recipient"],
-        "g"
+        (&first["sender_name"], &first["recipient_name"]),
+        (&json!("chief"), &json!("scout"))
     );
+    assert_eq!(f.send("c", "chief", "two", "ready")["recipient"], "p");
+    assert_eq!(f.send("g", "s", "three", "by id")["recipient"], "s");
+    // Only the sender's raid: no tree, no parent alias, never itself.
     for (actor, to) in [
-        ("c", "s"),
         ("c", "x"),
-        ("c", "p/scout"),
-        ("g", "p"),
+        ("c", "lookout"),
+        ("x", "p"),
+        ("c", "parent"),
+        ("c", "scout"),
         ("c", "nonexistent"),
     ] {
         let error = f
@@ -158,7 +174,7 @@ fn authenticated_routing_and_private_inboxes() {
                 json!({"key":"denied","to":to,"body":"x"}),
             )
             .unwrap_err();
-        assert_eq!(error, absent());
+        assert_eq!(error, absent(), "{actor} -> {to}");
     }
     assert_eq!(
         f.mailbox
@@ -173,19 +189,15 @@ fn authenticated_routing_and_private_inboxes() {
             .body,
         "pick a number"
     );
-    assert_eq!(f.mailbox.status("s")["queued"], 0);
+    assert_eq!(f.mailbox.status("s")["queued"], 1);
+    // The host reaches every goblin.
+    let sent = f.send("host", "lookout", "host", "my message");
     assert_eq!(
-        f.call(
-            "host",
-            "messages.send",
-            json!({"key":"ambiguous","to":"scout","body":"x"})
-        )
-        .unwrap_err()
-        .0,
-        -32009
+        (&sent["sender"], &sent["recipient"]),
+        (&json!("host"), &json!("y"))
     );
     assert_eq!(
-        f.send("host", "chief/scout", "host", "my message")["sender"],
+        f.audit.events.last().unwrap().data["change"]["route"],
         "host"
     );
 }
@@ -227,11 +239,12 @@ fn duplicate_send_survives_name_reuse_and_changed_body_conflicts() {
         "replacement".into(),
         Session {
             id: "replacement".into(),
-            parent: Some("p".into()),
-            path: "chief/scout".into(),
+            agent_name: "scout".into(),
             running: true,
         },
     );
+    let crew = f.mailbox.raids["c"].clone();
+    f.mailbox.raids.insert("replacement".into(), crew);
     assert_eq!(f.send("p", "scout", "same", "original"), original);
     assert_eq!(f.audit.events.len(), 2);
     assert_eq!(f.audit.events[1].kind, "operation.retried");
@@ -417,12 +430,12 @@ fn conversation_ids_do_not_confer_routing_or_visibility() {
         f.call(
             "c",
             "messages.send",
-            json!({"key":"sibling","to":"s","body":"x","conversation":message["conversation"]})
+            json!({"key":"outside","to":"x","body":"x","conversation":message["conversation"]})
         )
         .unwrap_err(),
         absent()
     );
-    let result = f.call("c","messages.send",json!({"key":"allowed","to":"parent","body":"ready","conversation":message["conversation"]})).unwrap();
+    let result = f.call("c","messages.send",json!({"key":"allowed","to":"chief","body":"ready","conversation":message["conversation"]})).unwrap();
     assert_eq!(result["conversation"], message["conversation"]);
 }
 
@@ -457,7 +470,7 @@ fn raid_of(members: &[&str]) -> (crate::raid::Raids, Vec<crate::raid::Event>) {
 }
 
 #[test]
-fn logged_raid_membership_permits_cross_branch_sends_until_removed() {
+fn logged_raid_membership_permits_sends_until_removed() {
     use crate::raid::Reason;
     let mut f = Fixture::new();
     let (mut raids, events) = raid_of(&["c", "y"]);
@@ -472,16 +485,16 @@ fn logged_raid_membership_permits_cross_branch_sends_until_removed() {
         absent()
     );
     f.record(events);
-    let sent = f.send("c", "unrelated/scout", "path", "by path");
+    let sent = f.send("c", "lookout", "name", "by name");
     assert_eq!(sent["recipient"], "y");
     let accepted = f.audit.events.last().unwrap();
     assert_eq!(accepted.data["change"]["route"], "raid");
     assert_eq!(accepted.data["change"]["raid"], "r1");
     assert_eq!(f.send("y", "c", "id", "by id")["recipient"], "c");
-    // Raid routes add to the tree rules; tree routes stay "tree".
-    f.send("c", "parent", "tree", "up");
+    // The host's route needs no raid.
+    f.send("host", "c", "host", "from the host");
     let accepted = f.audit.events.last().unwrap();
-    assert_eq!(accepted.data["change"]["route"], "tree");
+    assert_eq!(accepted.data["change"]["route"], "host");
     assert_eq!(accepted.data["change"]["raid"], Value::Null);
     // Membership never lets one member read another's inbox or messages.
     assert_eq!(
@@ -490,7 +503,7 @@ fn logged_raid_membership_permits_cross_branch_sends_until_removed() {
             .unwrap_err(),
         absent()
     );
-    assert_eq!(f.mailbox.status("c")["queued"], 1);
+    assert_eq!(f.mailbox.status("c")["queued"], 2);
     f.record(raids.remove("y", Reason::Left));
     assert!(f.mailbox.raids().get("y").is_none());
     assert_eq!(
@@ -562,7 +575,7 @@ fn a_paused_raid_refuses_with_a_warning_and_notifies_on_resume() {
     );
     assert_eq!(
         notice["body"],
-        "Raid review has resumed with owner chief/sibling; messages to its members are allowed again."
+        "Raid review has resumed with owner sibling; messages to its members are allowed again."
     );
     assert_eq!(
         f2.reply("y", &notice, "r").unwrap_err().1,
@@ -576,22 +589,31 @@ fn a_paused_raid_refuses_with_a_warning_and_notifies_on_resume() {
 }
 
 #[test]
-fn raid_paths_and_ids_resolve_and_ambiguous_names_are_rejected() {
+fn raid_names_and_ids_resolve_and_ambiguous_names_are_rejected() {
     let mut f = Fixture::new();
     f.record(raid_of(&["p", "y"]).1);
-    // "scout" names both p's child and the raid member unrelated/scout.
+    assert_eq!(f.send("p", "lookout", "a", "x")["recipient"], "y");
+    assert_eq!(f.send("p", "y", "b", "x")["recipient"], "y");
+    // Live names are unique; should two match anyway, neither is chosen.
+    f.directory.insert(
+        "z".into(),
+        Session {
+            id: "z".into(),
+            agent_name: "lookout".into(),
+            running: true,
+        },
+    );
+    let view = f.mailbox.raids["y"].clone();
+    f.mailbox.raids.insert("z".into(), view);
     assert_eq!(
         f.call(
             "p",
             "messages.send",
-            json!({"key":"a","to":"scout","body":"x"})
+            json!({"key":"c","to":"lookout","body":"x"})
         )
         .unwrap_err(),
-        (-32009, "ambiguous recipient; use a path or ID".into())
+        (-32009, "ambiguous recipient; use its ID".into())
     );
-    assert_eq!(f.send("p", "unrelated/scout", "b", "x")["recipient"], "y");
-    assert_eq!(f.send("p", "y", "c", "x")["recipient"], "y");
-    assert_eq!(f.send("p", "chief/scout", "d", "x")["recipient"], "c");
     // Roles are never matched, and non-members gain nothing.
     assert_eq!(
         f.call("x", "messages.send", json!({"key":"e","to":"p","body":"x"}))
@@ -601,7 +623,7 @@ fn raid_paths_and_ids_resolve_and_ambiguous_names_are_rejected() {
 }
 
 #[test]
-fn replies_need_a_shared_raid_or_tree_relation() {
+fn replies_need_a_shared_raid() {
     use crate::raid::Reason;
     let mut f = Fixture::new();
     let (mut raids, events) = raid_of(&["x", "c"]);
@@ -613,21 +635,17 @@ fn replies_need_a_shared_raid_or_tree_relation() {
         f.reply("x", &claim, "reply").unwrap_err(),
         (
             -32009,
-            "not allowed: 'chief/scout' is no longer in this goblin's raid".into()
+            "not allowed: 'scout' is no longer in this goblin's raid".into()
         )
     );
     // The claim stays outstanding and can still be completed.
     assert_eq!(f.mailbox.status("x")["claim"], claim["id"]);
     assert_eq!(f.mailbox.status("c")["queued"], 0);
     f.complete("x", &claim, "complete").unwrap();
-    // Tree relatives, in either direction and across generations, and the
-    // host are unaffected.
-    f.send("p", "scout/helper", "down", "to grandchild");
+    // Members of a shared raid, and the host, are unaffected.
+    f.send("p", "helper", "down", "to a member");
     let claim = f.next("g", "g-fetch")["message"].clone();
     f.reply("g", &claim, "g-reply").unwrap();
-    f.send("c", "parent", "up", "to parent");
-    let claim = f.next("p", "p-fetch")["message"].clone();
-    f.reply("p", &claim, "p-reply").unwrap();
     f.send("host", "unrelated", "host", "from host");
     let claim = f.next("x", "x-fetch")["message"].clone();
     f.reply("x", &claim, "x-reply").unwrap();
@@ -662,7 +680,7 @@ fn raid_capacity_failure_closes_raid_routes_only_and_still_applies_removals() {
         unrecorded
     );
     assert_eq!(f.reply("y", &claim, "reply").unwrap_err(), unrecorded);
-    f.send("c", "parent", "tree", "still works");
+    f.send("host", "c", "host", "still works");
     // Removals apply although their event cannot be written.
     let count = f.audit.events.len();
     f.record(raids.remove("y", Reason::Stopped));
@@ -679,14 +697,15 @@ fn raid_write_failure_freezes_messaging() {
     let (mut raids, events) = raid_of(&["c", "y"]);
     f.audit.fail = true;
     f.record(events);
-    assert!(f.mailbox.raids().is_empty());
+    assert!(f.mailbox.raids().get("y").is_none());
+    assert_eq!(f.mailbox.raids()["c"].id, "base");
     assert_eq!(f.mailbox.status("c")["audit_failed"], true);
     f.audit.fail = false;
     assert_eq!(
         f.call(
             "c",
             "messages.send",
-            json!({"key":"tree","to":"parent","body":"x"})
+            json!({"key":"crew","to":"chief","body":"x"})
         )
         .unwrap_err(),
         (-32009, "mailbox audit unavailable".into())
@@ -707,7 +726,7 @@ fn raid_events_carry_actor_and_affected_sessions_in_order() {
     let mut f = Fixture::new();
     let mut raids = crate::raid::Raids::default();
     let mut events = raids.create("r1".into(), "review", "c", "c").unwrap();
-    events.extend(raids.join("r1".into(), "review", "g", false, "c").unwrap());
+    events.extend(raids.join("r1".into(), "review", "g", "c").unwrap());
     events.extend(
         raids
             .invite("r1".into(), "review", &["y".to_string()], "host")
@@ -750,7 +769,7 @@ fn raid_events_carry_actor_and_affected_sessions_in_order() {
             .collect::<Vec<_>>(),
         (1..=9).collect::<Vec<_>>()
     );
-    assert!(f.mailbox.raids().is_empty());
+    assert!(f.mailbox.raids().values().all(|v| v.id == "base"));
 }
 
 fn operation(

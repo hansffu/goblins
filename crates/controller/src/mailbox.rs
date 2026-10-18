@@ -30,8 +30,8 @@ fn capacity() -> Fault {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
-    pub parent: Option<String>,
-    pub path: String,
+    /// Unique among live goblins.
+    pub agent_name: String,
     /// True while starting/running and eligible to accept messages.
     pub running: bool,
 }
@@ -110,7 +110,7 @@ pub struct Mailbox {
     auxiliary_events: usize,
     raids: Logged,
     /// A raid event could not be recorded for lack of log capacity. Raid
-    /// routes stay closed from then on; tree routes are unaffected.
+    /// routes stay closed from then on; host routes are unaffected.
     raid_audit_failed: bool,
     /// Raid ID -> members refused because the raid was paused, notified
     /// once a new owner is logged. At most 16 raids of 16 members.
@@ -315,7 +315,7 @@ impl Mailbox {
             let owner = view.owner.clone().unwrap_or_default();
             let owner_name = directory
                 .get(&owner)
-                .map_or_else(|| owner.clone(), |s| s.path.clone());
+                .map_or_else(|| owner.clone(), |s| s.agent_name.clone());
             let sequence = self.sequence + 1;
             let mut notice = self.new_message(
                 NOTICE_SENDER,
@@ -703,7 +703,7 @@ impl Mailbox {
                 // A raid route is one only logged membership authorized.
                 Ok(Change {
                     result: json!(message),
-                    data: json!({"message":message,"route":if raid.is_some() {"raid"} else {"tree"},"raid":raid}),
+                    data: json!({"message":message,"route":if raid.is_some() {"raid"} else {"host"},"raid":raid}),
                     messages: vec![message],
                     kind: "message.accepted",
                 })
@@ -749,21 +749,17 @@ impl Mailbox {
                     ));
                 }
                 live(directory, &original.sender)?;
-                // A reply is authorized like a send. Tree relations never
-                // change, so only replies that relied on a raid can fail;
-                // the claim stays outstanding to be completed or requeued.
+                // A reply is authorized like a send: between goblins only by
+                // a shared, unpaused raid. When that is gone the claim stays
+                // outstanding to be completed or requeued.
                 let sender = original.sender.as_str();
-                if !(actor == "host"
-                    || sender == "host"
-                    || descendant(directory, actor, sender)
-                    || descendant(directory, sender, actor))
-                {
+                if !(actor == "host" || sender == "host") {
                     let Some(view) = shared_raid(&self.raids, actor, sender) else {
                         return Err((
                             -32009,
                             format!(
                                 "not allowed: '{}' is no longer in this goblin's raid",
-                                original.sender_path
+                                original.sender_name
                             ),
                         ));
                     };
@@ -838,9 +834,6 @@ impl Mailbox {
             Mutation::Send(p) => resolve(directory, &self.raids, actor, &p.to).ok()?.1?,
             Mutation::Reply(p) => {
                 let sender = &self.get(actor, &p.message).ok()?.sender;
-                if descendant(directory, actor, sender) || descendant(directory, sender, actor) {
-                    return None;
-                }
                 shared_raid(&self.raids, actor, sender)?
             }
             _ => return None,
@@ -871,18 +864,18 @@ impl Mailbox {
         sequence: u64,
         now: u64,
     ) -> Message {
-        let path = |id: &str| {
+        let name = |id: &str| {
             directory
                 .get(id)
-                .map_or_else(|| id.to_owned(), |s| s.path.clone())
+                .map_or_else(|| id.to_owned(), |s| s.agent_name.clone())
         };
         Message {
             id: format!("{}-m{sequence}", self.instance),
             conversation,
             sender: sender.into(),
             recipient: recipient.into(),
-            sender_path: path(sender),
-            recipient_path: path(recipient),
+            sender_name: name(sender),
+            recipient_name: name(recipient),
             in_reply_to,
             body: body.into(),
             created_sequence: sequence,
@@ -1007,21 +1000,6 @@ fn live<'a>(directory: &'a Directory, id: &'a str) -> Result<&'a str> {
     }
 }
 
-fn descendant(directory: &Directory, child: &str, ancestor: &str) -> bool {
-    let mut current = child;
-    // Trusted directory corruption must not produce an infinite parent walk.
-    for _ in 0..directory.len() {
-        let Some(parent) = directory.get(current).and_then(|s| s.parent.as_deref()) else {
-            return false;
-        };
-        if parent == ancestor {
-            return true;
-        }
-        current = parent;
-    }
-    false
-}
-
 fn raid_unrecorded() -> Fault {
     (-32009, "raid membership could not be recorded".into())
 }
@@ -1053,6 +1031,7 @@ fn apply_raid(logged: &mut Logged, change: &crate::raid::Change) {
             raid,
             session,
             role,
+            ..
         } => {
             // The raid is known once its creation is logged.
             if let Some(view) = logged.values().find(|v| v.id == *raid).cloned() {
@@ -1103,42 +1082,32 @@ fn shared_raid<'a>(logged: &'a Logged, a: &str, b: &str) -> Option<&'a RaidView>
         .map(|(a, _)| a)
 }
 
-/// The recipient, and the raid when logged raid membership was the only
-/// authorization. Roles are never matched. A paused raid still resolves, so
-/// the caller can explain why it may not send.
+/// The recipient, by ID or agent name, and the raid that authorized it; the
+/// host reaches every goblin, a goblin only members of its logged raid.
+/// Roles are never matched. A paused raid still resolves, so the caller can
+/// explain why it may not send.
 fn resolve<'a>(
     directory: &'a Directory,
     raids: &'a Logged,
     actor: &str,
     target: &str,
 ) -> Result<(&'a str, Option<&'a RaidView>)> {
-    let parent = directory.get(actor).and_then(|s| s.parent.as_deref());
-    if actor != "host" && target == "parent" {
-        return Ok((live(directory, parent.ok_or_else(absent)?)?, None));
-    }
-    let tree = |s: &Session| {
-        actor == "host" || parent == Some(s.id.as_str()) || descendant(directory, &s.id, actor)
-    };
     let allowed = |s: &&Session| {
-        s.running && s.id != actor && (tree(s) || shared_raid(raids, actor, &s.id).is_some())
+        s.running
+            && s.id != actor
+            && (actor == "host" || shared_raid(raids, actor, &s.id).is_some())
     };
-    let mut candidates = directory.values().filter(allowed).filter(|s| {
-        s.id == target
-            || s.path == target
-            || s.path.rsplit('/').next() == Some(target)
-            || directory
-                .get(actor)
-                .is_some_and(|a| s.path.strip_prefix(&format!("{}/", a.path)) == Some(target))
-    });
+    let mut candidates = directory
+        .values()
+        .filter(allowed)
+        .filter(|s| s.id == target || s.agent_name == target);
     let first = candidates.next().ok_or_else(absent)?;
     if candidates.next().is_some() {
-        return Err((-32009, "ambiguous recipient; use a path or ID".into()));
+        return Err((-32009, "ambiguous recipient; use its ID".into()));
     }
-    let raid = if tree(first) {
-        None
-    } else {
-        shared_raid(raids, actor, &first.id)
-    };
+    let raid = (actor != "host")
+        .then(|| shared_raid(raids, actor, &first.id))
+        .flatten();
     Ok((&first.id, raid))
 }
 

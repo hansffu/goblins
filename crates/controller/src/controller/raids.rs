@@ -1,5 +1,5 @@
-//! Raid wiring for the event loop: target resolution, tree restrictions,
-//! launch joins, reconciliation and the bounded event outbox. The rules
+//! Raid wiring for the event loop: target resolution, who may act, launch
+//! joins, reconciliation, prompts and the bounded event outbox. The rules
 //! themselves live in `crate::raid`.
 use super::{Controller, Fault, Start, params};
 use crate::raid::{self, Event, Raids, Reason};
@@ -47,14 +47,16 @@ pub struct RaidRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RaidMemberRecord {
     pub id: String,
+    /// Unique among live goblins, usable as a `send` recipient.
     pub agent_name: String,
-    /// Full tree path, usable as a `send` recipient by other members.
-    pub path: String,
     /// Configuration key.
     pub name: String,
     pub role: Option<String>,
     pub state: String,
     pub owner: bool,
+    /// Ran by an owner of this raid with `goblin run`, which may stop it.
+    #[serde(default)]
+    pub created_by: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,11 +108,6 @@ struct HostRole {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Children {
-    sessions: Vec<String>,
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Role {
     role: String,
 }
@@ -118,18 +115,18 @@ struct Role {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 
-/// A validated launch join, applied once the session is inserted.
-pub(super) struct Join {
-    name: String,
-    create: bool,
-    actor: String,
+/// A validated launch join, applied once the session is inserted: a host
+/// `--raid` join, or a member the owner runs.
+pub(super) enum Join {
+    Host(String),
+    Run(String),
 }
 
 impl Controller {
     fn path_of(&self, session: &str) -> String {
         self.sessions
             .get(session)
-            .map_or_else(|| session.to_owned(), |a| a.record.path.clone())
+            .map_or_else(|| session.to_owned(), |a| a.record.agent_name.clone())
     }
     fn raid_fault(&self, error: raid::Error) -> Fault {
         match error {
@@ -155,6 +152,10 @@ impl Controller {
                 -32009,
                 format!("goblin '{}' is not in a raid", self.path_of(&session)),
             ),
+            raid::Error::NotOwner(session) => (
+                -32009,
+                format!("goblin '{}' does not own its raid", self.path_of(&session)),
+            ),
         }
     }
     /// A new raid needs an ID; joining an existing one does not.
@@ -167,7 +168,7 @@ impl Controller {
     }
     /// Commit a mutation made on a copy. Additions are refused when the
     /// outbox or the daemon-wide event budget would overflow.
-    fn raid_commit(&mut self, next: Raids, events: Vec<Event>) -> Result<(), Fault> {
+    pub(super) fn raid_commit(&mut self, next: Raids, events: Vec<Event>) -> Result<(), Fault> {
         if events.iter().any(Event::addition)
             && (self.raid_events + events.len() > RAID_EVENTS
                 || self.raid_outbox.len() + events.len() > RAID_OUTBOX)
@@ -251,11 +252,12 @@ impl Controller {
         members.sort_by_key(|(_, m)| m.joined);
         let former = raid.paused.as_ref().map(|p| p.former_owner.as_str());
         json!({"raid":raid.id,"name":raid.name,"generation":raid.generation,
-            "former_owner":former.map(|id| json!({"id":id,"path":self.path_of(id)})),
+            "former_owner":former.map(|id| json!({"id":id,"agent_name":self.path_of(id)})),
             "members":members.into_iter().filter_map(|(id, m)| {
                 let record = &self.sessions.get(id)?.record;
-                Some(json!({"id":id,"agent_name":record.agent_name,"path":record.path,
-                    "name":record.name,"role":m.role,"state":record.state}))
+                Some(json!({"id":id,"agent_name":record.agent_name,
+                    "name":record.name,"role":m.role,"state":record.state,
+                    "created":m.created_by.is_some()}))
             }).collect::<Vec<_>>()})
     }
     fn finish_raid_prompt(&mut self, raid: &str, state: &str, message: String) {
@@ -380,11 +382,11 @@ impl Controller {
                     Some(RaidMemberRecord {
                         id: id.clone(),
                         agent_name: record.agent_name.clone(),
-                        path: record.path.clone(),
                         name: record.name.clone(),
                         role: member.role.clone(),
                         state: record.state.clone(),
                         owner: raid.owner.as_ref() == Some(id),
+                        created_by: member.created_by.clone(),
                     })
                 })
                 .collect(),
@@ -402,7 +404,10 @@ impl Controller {
         if a.worker.is_some() && matches!(a.record.state.as_str(), "starting" | "running") {
             Ok(())
         } else {
-            Err((-32009, format!("goblin '{}' is not running", a.record.path)))
+            Err((
+                -32009,
+                format!("goblin '{}' is not running", a.record.agent_name),
+            ))
         }
     }
     fn bounded_list(sessions: &[String]) -> Result<(), Fault> {
@@ -413,40 +418,25 @@ impl Controller {
     }
     /// Validate a launch's join after the launch-key lookup and before name
     /// allocation, so a refused join allocates nothing. The host may create
-    /// or join any raid; `inherit_raid` joins the selected parent's.
+    /// or join any raid; a raid owner's run joins the raid it owns.
     pub(super) fn launch_raid(
         &self,
         p: &Start,
-        parent: Option<&str>,
-        scope: Option<&str>,
+        owner: Option<&str>,
     ) -> Result<Option<Join>, Fault> {
-        let join = match (&p.raid, p.inherit_raid) {
-            (Some(name), _) => Join {
-                name: name.clone(),
-                create: true,
-                actor: "host".into(),
-            },
-            (None, true) => Join {
-                name: parent
-                    .and_then(|id| self.raids.of(id))
-                    .ok_or((-32009, "parent is not in a raid".to_string()))?
-                    .name
-                    .clone(),
-                create: false,
-                actor: scope.unwrap_or("host").into(),
-            },
-            (None, false) => return Ok(None),
-        };
         let mut next = self.raids.clone();
-        let events = next
-            .join(
-                String::new(),
-                &join.name,
-                LAUNCHING,
-                join.create,
-                &join.actor,
-            )
-            .map_err(|e| self.raid_fault(e))?;
+        let (join, events) = match (owner, &p.raid) {
+            (Some(owner), _) => (
+                Join::Run(owner.into()),
+                next.run(owner, LAUNCHING).map_err(|e| self.raid_fault(e))?,
+            ),
+            (None, Some(name)) => (
+                Join::Host(name.clone()),
+                next.join(String::new(), name, LAUNCHING, "host")
+                    .map_err(|e| self.raid_fault(e))?,
+            ),
+            (None, None) => return Ok(None),
+        };
         if self.raid_events + events.len() > RAID_EVENTS
             || self.raid_outbox.len() + events.len() > RAID_OUTBOX
         {
@@ -458,10 +448,14 @@ impl Controller {
     /// it is a member while starting.
     pub(super) fn apply_launch_raid(&mut self, session: &str, join: Join) -> Result<(), Fault> {
         let mut next = self.raids.clone();
-        let id = self.raid_id(&join.name);
-        let events = next
-            .join(id, &join.name, session, join.create, &join.actor)
-            .map_err(|e| self.raid_fault(e))?;
+        let events = match join {
+            Join::Host(name) => {
+                let id = self.raid_id(&name);
+                next.join(id, &name, session, "host")
+            }
+            Join::Run(owner) => next.run(&owner, session),
+        }
+        .map_err(|e| self.raid_fault(e))?;
         self.raid_commit(next, events)
     }
 
@@ -505,7 +499,7 @@ impl Controller {
                     let reason = format!("stopped because raid {} was closed by the host", p.raid);
                     for id in members {
                         if self.live(&id).is_ok() {
-                            self.stop_tree(&id, true, Some(reason.clone()))?;
+                            self.stop(&id, Some(reason.clone()))?;
                             stopped.push(id);
                         }
                     }
@@ -571,8 +565,8 @@ impl Controller {
         }
     }
 
-    /// The caller's identity selects its own raid. Invites reach only direct
-    /// children; membership grants no control over other branches.
+    /// The caller's identity selects its own raid. Membership grants no
+    /// control over other goblins; owners run and stop members elsewhere.
     pub(super) fn sandbox_raids(
         &mut self,
         scope: &str,
@@ -592,29 +586,17 @@ impl Controller {
                 self.raid_commit(next, events)?;
                 self.raid_value(&p.raid)
             }
-            "raids.invite" => {
-                let p: Children = params(value)?;
-                let name = current.ok_or_else(not_member)?;
-                Self::bounded_list(&p.sessions)?;
-                let mut targets = vec![];
-                for target in &p.sessions {
-                    let id = self.resolve_scoped(target, Some(scope))?;
-                    if self.sessions[&id].record.parent.as_deref() != Some(scope) {
-                        return Err((-32602, "only direct children can be invited".into()));
-                    }
-                    self.live(&id)?;
-                    targets.push(id);
-                }
-                let mut next = self.raids.clone();
-                let events = next
-                    .invite(String::new(), &name, &targets, scope)
-                    .map_err(|e| self.raid_fault(e))?;
-                self.raid_commit(next, events)?;
-                self.raid_value(&name)
-            }
             "raids.leave" => {
                 let _: Empty = params(value)?;
-                current.ok_or_else(not_member)?;
+                let name = current.ok_or_else(not_member)?;
+                let raid = self.raids.get(&name).expect("current raid");
+                if raid.owner.as_deref() != Some(scope) && raid.members[scope].created_by.is_some()
+                {
+                    return Err((
+                        -32009,
+                        "goblins created in a raid stay until stopped, kicked by the host or the raid dissolves".into(),
+                    ));
+                }
                 let events = self.raids.remove(scope, Reason::Left);
                 let (dissolved, paused) = outcome(&events);
                 self.raid_queue(events);

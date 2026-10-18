@@ -6,7 +6,7 @@ use serde_json::json;
 #[derive(Parser)]
 #[command(
     name = "goblin",
-    about = "Manage descendant sandboxes and request packages"
+    about = "Message goblins in this raid, run raid members and request packages"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -64,12 +64,7 @@ pub enum EditorCommand {
 pub enum RaidCommand {
     /// Create a raid and join it as its owner
     Create { raid: String },
-    /// Add direct children to this goblin's raid
-    Invite {
-        #[arg(required = true, value_name = "CHILD")]
-        children: Vec<String>,
-    },
-    /// Leave this goblin's raid; the owner leaving dissolves it
+    /// Leave this goblin's raid; the owner leaving pauses it
     Leave,
     /// List the raid's members, their roles and its owner
     Members {
@@ -154,7 +149,7 @@ pub enum Command {
         #[command(subcommand)]
         command: EditorCommand,
     },
-    /// Collaborate with goblins in other branches: find and message members
+    /// Collaborate with other goblins: find and message members
     Raid {
         #[command(subcommand)]
         command: RaidCommand,
@@ -164,39 +159,23 @@ pub enum Command {
         #[command(subcommand)]
         command: FlakeCommand,
     },
-    /// Launch a child using a configuration this sandbox may start
+    /// Run a raid member with a configuration this goblin may run (raid owners only)
     Run {
         config: String,
         #[arg(long)]
         name: Option<String>,
-        /// Parent within this subtree; defaults to this sandbox (.)
-        #[arg(long)]
-        parent: Option<String>,
-        /// Start without attaching
+        /// Return once it is starting (the only mode: goblins do not attach)
         #[arg(long, visible_alias = "detached")]
         detatched: bool,
-        /// Join the child to the parent's raid
-        #[arg(long)]
-        inherit_raid: bool,
     },
-    /// Attach to a descendant's terminal
-    Attach { session: String },
     /// Show the name and identity of this sandbox
     Status,
-    /// List only descendants of this sandbox
+    /// List the members created in the raid this goblin owns
     List,
-    /// Kill a descendant; requires --kill-children if it has live descendants
-    Kill {
-        session: String,
-        #[arg(long)]
-        kill_children: bool,
-    },
-    /// Stop a descendant (same subtree rules as kill)
-    Stop {
-        session: String,
-        #[arg(long)]
-        kill_children: bool,
-    },
+    /// Stop a member created in the raid this goblin owns
+    Kill { session: String },
+    /// Stop a member created in the raid this goblin owns (same as kill)
+    Stop { session: String },
     /// Detach this sandbox's terminal
     Detach,
     Completions {
@@ -233,33 +212,15 @@ fn slot(words: Vec<String>) -> Option<bool> {
     }
     match Cli::try_parse_from(normalized).ok()?.command {
         Command::Run { config, .. } if config == TARGET => Some(false),
-        Command::Run {
-            parent: Some(parent),
-            ..
-        } if parent == TARGET => Some(true),
-        Command::Kill { session, .. }
-        | Command::Stop { session, .. }
-        | Command::Attach { session }
-            if session == TARGET =>
-        {
-            Some(true)
-        }
-        Command::Raid {
-            command: RaidCommand::Invite { children },
-        } if children.last().is_some_and(|c| c == TARGET) => Some(true),
+        Command::Kill { session } | Command::Stop { session } if session == TARGET => Some(true),
         _ => None,
     }
 }
 pub fn complete(words: Vec<String>) -> Result<i32, String> {
-    let parent = words
-        .iter()
-        .rev()
-        .take(2)
-        .any(|w| w == "--parent" || w == "--parent=");
     let Some(names) = slot(words) else {
         return Ok(1);
     };
-    let Ok((mut socket, init)) = super::connect() else {
+    let Ok((mut socket, _)) = super::connect() else {
         return Ok(0);
     };
     if !names {
@@ -269,45 +230,32 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
         };
-        // The configurations this sandbox may start; an older daemon permits
-        // only its own configuration.
+        // The configurations this goblin may run.
         let status = rpc::exchange(&mut socket, json!(1), "sessions.status", json!({}))
             .map_err(|e| e.to_string())?;
-        match status["allowed_run_targets"].as_array() {
-            Some(names) => names
-                .iter()
-                .filter_map(|n| n.as_str())
-                .filter(|n| configuration(n))
-                .for_each(|n| println!("{n}")),
-            None => {
-                if let Some(name) = init["configuration"].as_str().filter(|n| configuration(n)) {
-                    println!("{name}");
-                }
-            }
-        }
+        status["allowed_run_targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.as_str())
+            .filter(|n| configuration(n))
+            .for_each(|n| println!("{n}"));
         return Ok(0);
-    }
-    if parent {
-        println!(".");
     }
     let records = rpc::exchange(&mut socket, json!(1), "sessions.list", json!({}))
         .map_err(|e| e.to_string())?;
     if let Some(records) = records.as_array() {
         for record in records {
-            if (if parent {
-                record["state"] == "running"
-            } else {
-                matches!(
-                    record["state"].as_str(),
-                    Some("starting" | "running" | "stopping")
-                )
-            }) && let Some(path) = record["path"].as_str()
-                && !path.is_empty()
-                && path
+            if matches!(
+                record["state"].as_str(),
+                Some("starting" | "running" | "stopping")
+            ) && let Some(name) = record["agent_name"].as_str()
+                && !name.is_empty()
+                && name
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-/".contains(&b))
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             {
-                println!("{path}");
+                println!("{name}");
             }
         }
     }
@@ -349,12 +297,11 @@ pub fn completions(shell: clap_complete::Shell) {
     if shell == clap_complete::Shell::Fish {
         println!(
             r#"
-function __fish_goblin_subtree_candidates
+function __fish_goblin_candidates
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblin -f -a '(__fish_goblin_subtree_candidates)'
-complete -c goblin -n '__fish_goblin_using_subcommand run' -l parent -r -f -a '(__fish_goblin_subtree_candidates)'
+complete -c goblin -f -a '(__fish_goblin_candidates)'
 "#
         );
     }
@@ -378,14 +325,6 @@ mod tests {
         );
         assert_eq!(
             slot(
-                ["goblin", "run", "shell", "--parent"]
-                    .map(String::from)
-                    .to_vec()
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            slot(
                 ["goblin", "run", "shell", "--name"]
                     .map(String::from)
                     .to_vec()
@@ -393,21 +332,18 @@ mod tests {
             None
         );
         assert!(Cli::try_parse_from(["goblin", "run", "shell", "--detatched"]).is_ok());
-        assert!(Cli::try_parse_from(["goblin", "attach", "child"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "attach", "member"]).is_err());
         assert!(Cli::try_parse_from(["goblin", "status"]).is_ok());
         assert!(Cli::try_parse_from(["goblin", "detach"]).is_ok());
         assert!(Cli::try_parse_from(["goblin", "detatch"]).is_err());
         assert_eq!(
-            slot(["goblin", "attach"].map(String::from).to_vec()),
+            slot(["goblin", "stop"].map(String::from).to_vec()),
             Some(true)
         );
-        assert_eq!(
-            slot(["goblin", "raid", "invite"].map(String::from).to_vec()),
-            Some(true)
-        );
-        assert!(Cli::try_parse_from(["goblin", "raid", "invite"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "raid", "invite", "x"]).is_err());
         assert!(Cli::try_parse_from(["goblin", "raid", "set-role"]).is_err());
-        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--inherit-raid"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--inherit-raid"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--parent", "."]).is_err());
         assert!(Cli::try_parse_from(["goblin", "variable", "set"]).is_err());
         assert!(
             Cli::try_parse_from(["goblin", "variable", "set", "a=1", "name=two words"]).is_ok()

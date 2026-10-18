@@ -36,6 +36,9 @@ pub struct Member {
     pub role: Option<String>,
     /// Join order, for listings.
     pub joined: u64,
+    /// The owner that ran this member with `goblin run`. Any owner of the
+    /// raid may stop it, and it cannot leave on its own.
+    pub created_by: Option<String>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Raids {
@@ -93,6 +96,7 @@ pub enum Change {
         raid: String,
         session: String,
         role: Option<String>,
+        created_by: Option<String>,
     },
     Role {
         raid: String,
@@ -177,7 +181,8 @@ impl Event {
                 raid,
                 session,
                 role,
-            } => json!({"raid":raid,"session":session,"role":role}),
+                created_by,
+            } => json!({"raid":raid,"session":session,"role":role,"created_by":created_by}),
             Change::Role {
                 raid,
                 session,
@@ -224,6 +229,8 @@ pub enum Error {
     },
     /// The session is in no raid, or not in the one named.
     NotMember(String),
+    /// The session does not own its raid.
+    NotOwner(String),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -281,6 +288,7 @@ impl Raids {
                     Member {
                         role: None,
                         joined: self.joined,
+                        created_by: None,
                     },
                 )]),
             },
@@ -336,6 +344,7 @@ impl Raids {
                 Member {
                     role: None,
                     joined: self.joined,
+                    created_by: None,
                 },
             );
             self.member_of.insert(session.clone(), name.into());
@@ -345,25 +354,60 @@ impl Raids {
                     raid: raid.id.clone(),
                     session: session.clone(),
                     role: None,
+                    created_by: None,
                 },
             });
         }
         Ok(events)
     }
 
-    /// A launch join. `--inherit-raid` never creates: the raid must exist.
+    /// A host launch join, creating the raid if absent.
     pub fn join(
         &mut self,
         id: String,
         name: &str,
         session: &str,
-        create: bool,
         actor: &str,
     ) -> Result<Vec<Event>> {
-        if !create && !self.raids.contains_key(name) {
-            return Err(Error::Absent(name.into()));
-        }
         self.invite(id, name, &[session.into()], actor)
+    }
+
+    /// A member the owner ran with `goblin run`, joining the raid it owns.
+    pub fn run(&mut self, owner: &str, session: &str) -> Result<Vec<Event>> {
+        let name = self
+            .member_of
+            .get(owner)
+            .cloned()
+            .ok_or_else(|| Error::NotMember(owner.into()))?;
+        if let Some(raid) = self.member_of.get(session) {
+            return Err(Error::Member {
+                session: session.into(),
+                raid: raid.clone(),
+            });
+        }
+        let raid = self.raids.get_mut(&name).expect("member of a live raid");
+        if raid.owner.as_deref() != Some(owner) {
+            return Err(Error::NotOwner(owner.into()));
+        }
+        self.joined += 1;
+        raid.members.insert(
+            session.into(),
+            Member {
+                role: None,
+                joined: self.joined,
+                created_by: Some(owner.into()),
+            },
+        );
+        self.member_of.insert(session.into(), name);
+        Ok(vec![Event {
+            actor: owner.into(),
+            change: Change::Joined {
+                raid: raid.id.clone(),
+                session: session.into(),
+                role: None,
+                created_by: Some(owner.into()),
+            },
+        }])
     }
 
     /// Leave, exit, stop or failed launch. Removing the owner pauses the
@@ -520,7 +564,7 @@ mod tests {
     fn the_host_kicks_members_and_pauses_on_the_owner() {
         let mut r = Raids::default();
         r.create("r1".into(), "review", "a", "a").unwrap();
-        r.join("r2".into(), "review", "b", false, "a").unwrap();
+        r.join("r2".into(), "review", "b", "a").unwrap();
         assert_eq!(
             r.kick("z", "host").unwrap_err(),
             Error::NotMember("z".into())
@@ -530,7 +574,7 @@ mod tests {
         assert_eq!(events[0].actor, "host");
         assert_eq!(events[0].data()["reason"], "kicked");
         assert!(r.of("b").is_none() && r.of("a").is_some());
-        r.join("r3".into(), "review", "c", false, "a").unwrap();
+        r.join("r3".into(), "review", "c", "a").unwrap();
         let events = r.kick("a", "host").unwrap();
         assert_eq!(kinds(&events), ["raid.left", "raid.paused"]);
         assert_eq!(events[1].data()["reason"], "kicked");
@@ -548,7 +592,7 @@ mod tests {
             events[0].data(),
             json!({"raid":"r1","name":"review","owner":"a"})
         );
-        let events = r.join("r2".into(), "review", "b", false, "a").unwrap();
+        let events = r.join("r2".into(), "review", "b", "a").unwrap();
         assert_eq!(kinds(&events), ["raid.joined"]);
         assert_eq!(
             (events[0].actor.as_str(), events[0].sessions()),
@@ -562,12 +606,27 @@ mod tests {
         assert!(r.of("b").is_none());
         assert_eq!(r.get("review").unwrap().members.len(), 1);
         assert!(r.remove("b", Reason::Left).is_empty());
-        // Launch joins never create for --inherit-raid.
+        // A run joins the raid its owner owns, marked as created by it.
+        let events = r.run("a", "d").unwrap();
         assert_eq!(
-            r.join("r3".into(), "absent", "c", false, "a").unwrap_err(),
-            Error::Absent("absent".into())
+            events[0].data(),
+            json!({"raid":"r1","session":"d","role":null,"created_by":"a"})
         );
-        assert!(r.get("absent").is_none());
+        assert_eq!(events[0].actor, "a");
+        assert_eq!(
+            r.get("review").unwrap().members["d"].created_by.as_deref(),
+            Some("a")
+        );
+        assert_eq!(r.run("d", "e").unwrap_err(), Error::NotOwner("d".into()));
+        assert_eq!(r.run("z", "e").unwrap_err(), Error::NotMember("z".into()));
+        assert_eq!(
+            r.run("a", "d").unwrap_err(),
+            Error::Member {
+                session: "d".into(),
+                raid: "review".into()
+            }
+        );
+        r.remove("d", Reason::Stopped);
         assert_eq!(
             r.create("r4".into(), "review", "c", "c").unwrap_err(),
             Error::Exists("review".into())
@@ -781,7 +840,7 @@ mod tests {
         let mut r = Raids::default();
         let mut log = vec![];
         log.extend(r.create("r1".into(), "quick", "a", "a").unwrap());
-        log.extend(r.join("r1".into(), "quick", "b", false, "a").unwrap());
+        log.extend(r.join("r1".into(), "quick", "b", "a").unwrap());
         log.extend(r.set_role("b", "builder", "b").unwrap());
         log.extend(r.set_role("b", "reviewer", "host").unwrap());
         log.extend(r.set_role("b", "builder", "b").unwrap());

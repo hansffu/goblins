@@ -13,7 +13,6 @@ pub struct Start {
     pub name: String,
     pub configuration: String,
     pub agent_name: Option<String>,
-    pub parent: Option<String>,
     pub scope: Option<String>,
     pub dev_shell: Option<String>,
     /// Omitted when unset, so an older daemon still accepts the launch.

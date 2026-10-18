@@ -124,11 +124,6 @@ pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
     Ok((files, wait))
 }
 
-/// The TRAMP host for a goblin's tree path: `/` is not allowed in hosts.
-pub fn tramp_host(path: &str) -> String {
-    path.replace('/', ".")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +172,5 @@ mod tests {
         assert!(open(vec![file("/a", None, Some(2))]).is_err());
         assert!(open(vec![]).is_err());
         assert!(open(vec![file("/a", None, None); 33]).is_err());
-        assert_eq!(tramp_host("gribble/snaga"), "gribble.snaga");
     }
 }

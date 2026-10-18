@@ -266,8 +266,12 @@ pub struct Message {
     pub conversation: String,
     pub sender: String,
     pub recipient: String,
-    pub sender_path: String,
-    pub recipient_path: String,
+    /// Agent names when the message was accepted; `host` and `goblins` for
+    /// those senders.
+    #[serde(alias = "sender_path")]
+    pub sender_name: String,
+    #[serde(alias = "recipient_path")]
+    pub recipient_name: String,
     pub in_reply_to: Option<String>,
     pub body: String,
     pub created_sequence: u64,

@@ -86,19 +86,11 @@ pub enum Command {
         /// Agent name; omitted names are chosen from the goblin name list
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Create a child of this running sandbox (name, tree path or ID)
-        #[arg(long, value_name = "PARENT", conflicts_with = "scope")]
-        parent: Option<String>,
-        /// Join this scope instead of the goblin's default (children inherit)
+        /// Join this scope instead of the goblin's default (goblins it runs share it)
         #[arg(long, value_name = "SCOPE")]
         scope: Option<String>,
-        /// Start in this flake's dev shell, like `nix develop` (children inherit)
-        #[arg(
-            long,
-            value_name = "FLAKE[#ATTR]",
-            conflicts_with = "parent",
-            value_hint = clap::ValueHint::DirPath
-        )]
+        /// Start in this flake's dev shell, like `nix develop` (goblins it runs share it)
+        #[arg(long, value_name = "FLAKE[#ATTR]", value_hint = clap::ValueHint::DirPath)]
         dev_shell: Option<String>,
         /// Start without attaching to its terminal
         #[arg(long, visible_alias = "detached")]
@@ -162,7 +154,7 @@ pub enum Command {
         /// Require this exact session ID; the name is never resolved again
         #[arg(long, value_name = "ID")]
         session: Option<String>,
-        /// Name, tree path (gribble/snaga or gribble.snaga) or session ID
+        /// Agent name or session ID
         goblin: String,
         /// Command and arguments, after --
         #[arg(last = true)]
@@ -173,19 +165,9 @@ pub enum Command {
     /// List agent names, session IDs, configurations and lifecycle state
     List,
     /// Stop one agent by live name or immutable session ID
-    Stop {
-        id_or_name: String,
-        /// Also kill all living descendants
-        #[arg(long)]
-        kill_children: bool,
-    },
+    Stop { id_or_name: String },
     /// Kill one sandbox by live name or immutable session ID
-    Kill {
-        id_or_name: String,
-        /// Also kill all living descendants
-        #[arg(long)]
-        kill_children: bool,
-    },
+    Kill { id_or_name: String },
     /// Call a trusted host JSON-RPC method
     Rpc { method: String, params_json: String },
     /// Print a shell completion script (Nix packages install Bash/Fish/Zsh scripts)
@@ -289,11 +271,6 @@ pub enum ServerCommand {
 // Return 1 outside a name argument so Bash/Zsh can retain their generated
 // option/path completion. A missing server is a valid, empty candidate list.
 pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
-    let words_are_parent = words
-        .iter()
-        .rev()
-        .take(2)
-        .any(|w| w == "--parent" || w == "--parent=");
     let Some((state, slot)) = completion_state(default_state, words) else {
         return 1;
     };
@@ -346,14 +323,11 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
             ) {
                 continue;
             }
-            if let Some(name) = record["path"]
-                .as_str()
-                .or_else(|| record["agent_name"].as_str())
+            if let Some(name) = record["agent_name"].as_str()
                 && !name.is_empty()
                 && name
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-/".contains(&b))
-                && (!words_are_parent || record["state"] == "running")
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             {
                 println!("{name}");
             }
@@ -420,10 +394,6 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
         {
             Slot::Goblin
         }
-        Command::Run {
-            parent: Some(parent),
-            ..
-        } if parent == TARGET => Slot::Goblin,
         Command::Run {
             raid: Some(raid), ..
         } if raid == TARGET => Slot::Raid,
@@ -542,7 +512,7 @@ function __fish_goblins_needs_positional
     argparse -s (__fish_goblins_global_optspecs) -- $words 2>/dev/null; or return 1
     test "$argv[1]" = "$subcommand"; or return 1
     set -e argv[1]
-    argparse (__fish_goblins_global_optspecs) name= parent= scope= dev-shell= raid= detatched detached -- $argv 2>/dev/null; or return 1
+    argparse (__fish_goblins_global_optspecs) name= scope= dev-shell= raid= detatched detached -- $argv 2>/dev/null; or return 1
     test (count $argv) -eq 0
 end
 complete -c goblins -n '__fish_goblins_needs_positional run' -f -a '{}'
@@ -559,9 +529,8 @@ function __fish_goblins_agent_names
     command $words[1] __complete-names -- $words 2>/dev/null
 end
 complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop resume' -f -a '(__fish_goblins_agent_names)'
-complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l raid -r -f -a '(__fish_goblins_agent_names)'
-complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role set-owner' -f -a '(__fish_goblins_agent_names)'
 "#
         );
     }
@@ -581,9 +550,6 @@ mod tests {
             vec!["goblins", "detach"],
             vec!["goblins", "kill"],
             vec!["goblins", "stop"],
-            vec!["goblins", "run", "shell", "--parent"],
-            vec!["goblins", "run", "shell", "--parent="],
-            vec!["goblins", "run", "shell", "--parent", "="],
         ] {
             assert_eq!(
                 completion_state(default, words.into_iter().map(String::from).collect()),

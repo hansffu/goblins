@@ -134,6 +134,24 @@ class Daemon:
             assert record["state"] == "running", record
         return result
 
+    def member(self, owner, name="shell", agent_name=None, key=None, wait=True):
+        """A goblin the raid owner `owner` runs with `goblin run`, sharing its
+        workspace, scope and dev shell. An owner in no raid creates one first.
+        Returns the launch with its host terminal path added."""
+        peer = RPC(self.state / owner / "resources/request.sock")
+        try:
+            if peer.call("sessions.status", {})["raid"] is None:
+                peer.call("raids.create", {"raid": f"crew-{uuid.uuid4().hex[:8]}"})
+            launch = peer.call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name,
+                                                  "agent_name": agent_name, "detached": True})
+        finally:
+            peer.close()
+        if wait:
+            record = self.wait(lambda: (r if (r := self.get(launch["session"]))["state"] != "starting" else None),
+                               timeout=60)
+            assert record["state"] == "running", record
+        return dict(launch, terminal=self.get(launch["session"])["terminal"])
+
     def get(self, id):
         return self.rpc.call("sessions.get", {"session": id})
 

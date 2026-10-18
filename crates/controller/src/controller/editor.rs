@@ -113,7 +113,8 @@ impl Controller {
         if self.edits.iter().filter(|e| e.session == session).count() >= EDITS {
             return Err(capacity());
         }
-        let host = editor::tramp_host(&a.record.path);
+        // The TRAMP host is the goblin's agent name, unique among live goblins.
+        let host = a.record.agent_name.clone();
         let directory = self.state.to_str().ok_or((
             -32009,
             "the daemon's state directory is not UTF-8".to_string(),

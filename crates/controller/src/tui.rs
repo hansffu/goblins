@@ -20,7 +20,6 @@ use ratatui::{
     widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use std::{
-    collections::BTreeSet,
     fs::{File, OpenOptions},
     path::PathBuf,
     sync::atomic::Ordering,
@@ -67,11 +66,7 @@ fn has_diff(request: &PermissionRecord) -> bool {
         .is_some_and(|d| !d.is_empty())
 }
 fn session_label(session: &SessionRecord) -> String {
-    safe(if session.path.is_empty() {
-        &session.agent_name
-    } else {
-        &session.path
-    })
+    safe(&session.agent_name)
 }
 fn request_label(snapshot: &Snapshot, request: &PermissionRecord) -> String {
     snapshot
@@ -86,78 +81,9 @@ enum Focus {
     Sandboxes,
     Requests,
 }
-struct TreeRow<'a> {
-    session: &'a SessionRecord,
-    prefix: String,
-    branch: bool,
-}
-fn session_tree<'a>(
-    sessions: &'a [SessionRecord],
-    collapsed: &BTreeSet<String>,
-) -> Vec<TreeRow<'a>> {
-    struct Tree<'a, 'b> {
-        sessions: &'a [SessionRecord],
-        collapsed: &'b BTreeSet<String>,
-        seen: BTreeSet<String>,
-        rows: Vec<TreeRow<'a>>,
-    }
-    impl<'a> Tree<'a, '_> {
-        fn visit(&mut self, session: &'a SessionRecord, prefix: &str, last: bool, visible: bool) {
-            if !self.seen.insert(session.id.clone()) {
-                return;
-            }
-            let children: Vec<_> = self
-                .sessions
-                .iter()
-                .filter(|s| s.parent.as_deref() == Some(&session.id) && !self.seen.contains(&s.id))
-                .collect();
-            if visible {
-                self.rows.push(TreeRow {
-                    session,
-                    prefix: format!("{prefix}{}", if last { "└─ " } else { "├─ " }),
-                    branch: !children.is_empty(),
-                });
-            }
-            let prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
-            for (i, child) in children.iter().enumerate() {
-                self.visit(
-                    child,
-                    &prefix,
-                    i + 1 == children.len(),
-                    visible && !self.collapsed.contains(&session.id),
-                );
-            }
-        }
-    }
-    let mut tree = Tree {
-        sessions,
-        collapsed,
-        seen: BTreeSet::new(),
-        rows: Vec::new(),
-    };
-    let roots: Vec<_> = sessions
-        .iter()
-        .filter(|s| {
-            s.parent
-                .as_ref()
-                .is_none_or(|p| !sessions.iter().any(|a| &a.id == p))
-        })
-        .collect();
-    for (i, root) in roots.iter().enumerate() {
-        tree.visit(root, "", i + 1 == roots.len(), true);
-    }
-    // A malformed or partial snapshot must neither loop nor hide records.
-    for session in sessions {
-        if !tree.seen.contains(&session.id) {
-            tree.visit(session, "", true, true);
-        }
-    }
-    tree.rows
-}
 struct View {
     sessions: TableState,
     selected_session: Option<String>,
-    collapsed: BTreeSet<String>,
     packages: TableState,
     requests: TableState,
     selected_request: Option<String>,
@@ -545,7 +471,6 @@ impl View {
         Self {
             sessions: TableState::default().with_selected(0),
             selected_session: None,
-            collapsed: BTreeSet::new(),
             packages: TableState::default().with_selected(0),
             requests: TableState::default(),
             selected_request: None,
@@ -562,13 +487,14 @@ impl View {
         }
     }
     fn sync(&mut self, snapshot: &Snapshot) {
-        let tree = session_tree(&snapshot.sessions, &self.collapsed);
+        let sessions = &snapshot.sessions;
         if self.selected_session.is_none() {
-            self.selected_session = tree.first().map(|r| r.session.id.clone());
+            self.selected_session = sessions.first().map(|s| s.id.clone());
         }
         self.sessions.select(
-            tree.iter()
-                .position(|r| Some(&r.session.id) == self.selected_session.as_ref()),
+            sessions
+                .iter()
+                .position(|s| Some(&s.id) == self.selected_session.as_ref()),
         );
         if self.selected_request.is_none() {
             self.selected_request = snapshot
@@ -713,25 +639,9 @@ impl View {
                 .row_highlight_style(Style::default().reversed());
             f.render_stateful_widget(table, areas[1], &mut self.packages);
         } else {
-            let tree = session_tree(&snapshot.sessions, &self.collapsed);
-            let rows = tree.iter().map(|r| {
-                let s = r.session;
+            let rows = snapshot.sessions.iter().map(|s| {
                 Row::new(vec![
-                    Cell::from(format!(
-                        "{}{}{} ({})",
-                        r.prefix,
-                        if r.branch {
-                            if self.collapsed.contains(&s.id) {
-                                "[+] "
-                            } else {
-                                "[-] "
-                            }
-                        } else {
-                            ""
-                        },
-                        safe(&s.agent_name),
-                        safe(&s.name)
-                    )),
+                    Cell::from(format!("{} ({})", safe(&s.agent_name), safe(&s.name))),
                     Cell::from(
                         s.identity
                             .as_ref()
@@ -902,7 +812,7 @@ impl View {
             }
         }
         f.render_widget(Paragraph::new(format!(
-            "Tab: focus · ↑/↓: select · ←/→: fold or No/Yes · Enter: details · y/n: decide{} · q: quit\n{}",
+            "Tab: focus · ↑/↓: select · ←/→: No/Yes · Enter: details · y/n: decide{} · q: quit\n{}",
             if self.presented.as_ref().is_some_and(has_diff) { " · d: diff" } else { "" },
             self.notice)), areas[4]);
     }
@@ -911,27 +821,6 @@ impl View {
             .sessions
             .iter()
             .find(|s| Some(&s.id) == self.selected_session.as_ref())
-    }
-    fn fold(&mut self, expand: bool, snapshot: &Snapshot) {
-        if self.details {
-            return;
-        }
-        let Some(session) = self.selected_session(snapshot) else {
-            return;
-        };
-        if expand {
-            self.collapsed.remove(&session.id);
-        } else if snapshot
-            .sessions
-            .iter()
-            .any(|s| s.parent.as_deref() == Some(&session.id))
-            && !self.collapsed.contains(&session.id)
-        {
-            self.collapsed.insert(session.id.clone());
-        } else if let Some(parent) = &session.parent {
-            self.selected_session = Some(parent.clone());
-        }
-        self.sync(snapshot);
     }
     fn move_selection(&mut self, delta: isize, snapshot: &Snapshot) {
         if self.focus == Focus::Requests {
@@ -955,7 +844,7 @@ impl View {
                 .map(|s| s.initial_packages.len() + s.packages.len())
                 .unwrap_or(0)
         } else {
-            session_tree(&snapshot.sessions, &self.collapsed).len()
+            snapshot.sessions.len()
         };
         let table = if self.details {
             &mut self.packages
@@ -970,9 +859,10 @@ impl View {
                 .min(count.saturating_sub(1)),
         ));
         if !self.details {
-            self.selected_session = session_tree(&snapshot.sessions, &self.collapsed)
+            self.selected_session = snapshot
+                .sessions
                 .get(self.sessions.selected().unwrap_or(0))
-                .map(|r| r.session.id.clone());
+                .map(|s| s.id.clone());
         }
         self.request_scroll = 0;
     }
@@ -1066,8 +956,6 @@ impl View {
                 KeyCode::Down => self.move_selection(1, snapshot),
                 KeyCode::Left if self.focus == Focus::Requests => self.yes = false,
                 KeyCode::Right if self.focus == Focus::Requests => self.yes = true,
-                KeyCode::Left => self.fold(false, snapshot),
-                KeyCode::Right => self.fold(true, snapshot),
                 KeyCode::Enter if self.focus == Focus::Requests => {
                     if self.popup_open {
                         self.decide(client, self.yes);
@@ -1173,9 +1061,9 @@ pub fn serve(state: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn session(id: &str, parent: Option<&str>) -> SessionRecord {
+    fn session(id: &str) -> SessionRecord {
         serde_json::from_value(serde_json::json!({
-            "id":id,"agent_name":id,"parent":parent,"name":"shell","configuration":"",
+            "id":id,"agent_name":id,"name":"shell","configuration":"",
             "state":"running","initial_packages":[],"packages":[],"terminal":"",
             "pty_eof":false,"terminal_complete":false,"terminal_interrupted":false
         }))
@@ -1266,66 +1154,25 @@ mod tests {
         }
     }
     #[test]
-    fn ownership_tree_preserves_identity_through_insertions_and_folding() {
+    fn selection_keeps_its_identity_through_insertions_and_removals() {
         let mut snapshot = Snapshot {
             instance: "test".into(),
             permissions: vec![],
             raids: vec![],
-            sessions: vec![
-                session("leaf", Some("kid")),
-                session("parent", None),
-                session("other", None),
-                session("kid", Some("parent")),
-                session("other-kid", Some("other")),
-            ],
+            sessions: vec![session("alpha"), session("beta"), session("gamma")],
         };
         let mut view = View::new();
         view.sync(&snapshot);
-        let tree = session_tree(&snapshot.sessions, &view.collapsed);
-        assert_eq!(
-            tree.iter()
-                .map(|r| (r.session.id.as_str(), r.prefix.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("parent", "├─ "),
-                ("kid", "│  └─ "),
-                ("leaf", "│     └─ "),
-                ("other", "└─ "),
-                ("other-kid", "   └─ ")
-            ]
-        );
+        assert_eq!(view.selected_session(&snapshot).unwrap().id, "alpha");
         view.move_selection(1, &snapshot);
-        assert_eq!(view.selected_session(&snapshot).unwrap().id, "kid");
-        view.fold(false, &snapshot);
-        assert_eq!(session_tree(&snapshot.sessions, &view.collapsed).len(), 4);
-        view.fold(true, &snapshot);
-        assert_eq!(session_tree(&snapshot.sessions, &view.collapsed).len(), 5);
-        view.move_selection(2, &snapshot);
-        assert_eq!(view.selected_session(&snapshot).unwrap().id, "other");
-        snapshot.sessions.insert(0, session("new", Some("parent")));
+        assert_eq!(view.selected_session(&snapshot).unwrap().id, "beta");
+        snapshot.sessions.insert(0, session("new"));
         view.sync(&snapshot);
-        assert_eq!(view.selected_session(&snapshot).unwrap().id, "other");
-        assert_eq!(view.sessions.selected(), Some(4));
-        snapshot.sessions.retain(|s| s.id != "other");
+        assert_eq!(view.selected_session(&snapshot).unwrap().id, "beta");
+        assert_eq!(view.sessions.selected(), Some(2));
+        snapshot.sessions.retain(|s| s.id != "beta");
         view.sync(&snapshot);
         assert!(view.selected_session(&snapshot).is_none());
         assert_eq!(view.sessions.selected(), None);
-    }
-    #[test]
-    fn incomplete_and_cyclic_trees_do_not_hide_sessions_or_loop() {
-        let sessions = vec![
-            session("orphan", Some("missing")),
-            session("a", Some("b")),
-            session("b", Some("a")),
-        ];
-        let tree = session_tree(&sessions, &BTreeSet::new());
-        assert_eq!(tree.len(), 3);
-        assert_eq!(
-            tree.iter()
-                .map(|r| &r.session.id)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            3
-        );
     }
 }

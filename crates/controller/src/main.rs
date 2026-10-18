@@ -205,10 +205,18 @@ fn execute(cli: Cli) -> Result<i32> {
                 foreground,
                 keep_sessions,
             } => {
+                // The manifest the wrapper passes is the first current one
+                // raid owners run members from.
+                let runtime = cli.runtime.as_deref().map(fs::canonicalize).transpose()?;
                 if foreground {
-                    server::foreground(&state, workspace, keep_sessions)?;
+                    server::foreground(&state, workspace, keep_sessions, runtime.as_deref())?;
                 } else {
-                    server::start(&state, workspace.as_deref(), keep_sessions)?;
+                    server::start(
+                        &state,
+                        workspace.as_deref(),
+                        keep_sessions,
+                        runtime.as_deref(),
+                    )?;
                 }
             }
             ServerCommand::Stop => server::stop(&state)?,
@@ -226,19 +234,10 @@ fn execute(cli: Cli) -> Result<i32> {
             "{}",
             Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
         ),
-        Command::Stop {
-            id_or_name,
-            kill_children,
-        }
-        | Command::Kill {
-            id_or_name,
-            kill_children,
-        } => println!(
+        Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
             "{}",
-            Client::connect(&state)?.call(
-                "sessions.stop",
-                serde_json::json!({"session":id_or_name,"kill_children":kill_children})
-            )?
+            Client::connect(&state)?
+                .call("sessions.stop", serde_json::json!({"session":id_or_name}))?
         ),
         Command::Detach { id_or_name } => println!(
             "{}",
@@ -255,7 +254,6 @@ fn execute(cli: Cli) -> Result<i32> {
         Command::Run {
             config,
             name,
-            parent,
             scope,
             dev_shell,
             detatched,
@@ -265,25 +263,21 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            // A child's configuration comes from its parent's branch snapshot,
-            // which may permit one this build no longer lists: the daemon decides.
-            if parent.is_none() {
-                let manifest = Manifest::read(&runtime)?;
-                if !manifest.goblins.contains_key(&config) {
-                    return Err(format!(
-                        "unknown configuration '{config}'; available: {}",
-                        manifest
-                            .goblins
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                    .into());
-                }
-                // Report an unknown or disallowed scope before starting.
-                manifest.select(&config, scope.as_deref())?;
+            let manifest = Manifest::read(&runtime)?;
+            if !manifest.goblins.contains_key(&config) {
+                return Err(format!(
+                    "unknown configuration '{config}'; available: {}",
+                    manifest
+                        .goblins
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .into());
             }
+            // Report an unknown or disallowed scope before starting.
+            manifest.select(&config, scope.as_deref())?;
             // Resolve a relative flake path against the caller's directory.
             let dev_shell = dev_shell
                 .map(|reference| -> goblins_controller::Result<String> {
@@ -306,7 +300,6 @@ fn execute(cli: Cli) -> Result<i32> {
                     name: config,
                     configuration,
                     agent_name: name,
-                    parent,
                     scope,
                     dev_shell,
                     raid,

@@ -44,16 +44,16 @@ pub struct SessionRecord {
     /// Flake reference of the host-launched dev shell, if any.
     #[serde(default)]
     pub dev_shell: Option<String>,
-    /// Working directory the sandbox was launched in (children inherit it).
+    /// Working directory the sandbox was launched in (goblins a raid owner
+    /// runs share it).
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     pub id: String,
+    /// Unique among live goblins: the address in messages, exec and TRAMP.
     pub agent_name: String,
-    /// None denotes the host root. Ownership always uses immutable IDs.
+    /// The raid owner that ran this goblin, for display only.
     #[serde(default)]
-    pub parent: Option<String>,
-    #[serde(default)]
-    pub path: String,
+    pub created_by: Option<CreatedBy>,
     /// Reusable Nix configuration key, distinct from the per-launch agent name.
     pub name: String,
     #[serde(default)]
@@ -114,6 +114,11 @@ impl SessionRecord {
         }
         changed
     }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedBy {
+    pub id: String,
+    pub agent_name: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRecord {
@@ -382,13 +387,11 @@ struct Start {
     name: String,
     agent_name: Option<String>,
     #[serde(default)]
-    parent: Option<String>,
-    #[serde(default)]
     cwd: Option<PathBuf>,
-    /// Scope for a root sandbox; children always inherit their parent's.
+    /// Scope for a host launch; goblins a raid owner runs share its scope.
     #[serde(default)]
     scope: Option<String>,
-    /// Absolute `PATH[#ATTR]` of a host flake dev shell; children inherit.
+    /// Absolute `PATH[#ATTR]` of a host flake dev shell; shared the same way.
     #[serde(default)]
     dev_shell: Option<String>,
     rows: u16,
@@ -398,9 +401,6 @@ struct Start {
     /// Join this raid, creating it with the new goblin as owner if absent.
     #[serde(default)]
     raid: Option<String>,
-    /// Sandbox launches only: join the selected parent's raid.
-    #[serde(skip)]
-    inherit_raid: bool,
     /// Recreate this recorded goblin (record id, unique id prefix or unique
     /// agent name) from the current configuration of the same name.
     #[serde(default)]
@@ -411,22 +411,17 @@ struct Start {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChildStart {
+struct MemberStart {
     key: String,
     name: String,
     agent_name: Option<String>,
-    parent: Option<String>,
     #[serde(default)]
     detached: bool,
-    #[serde(default)]
-    inherit_raid: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stop {
     session: String,
-    #[serde(default)]
-    kill_children: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -476,6 +471,13 @@ type Fault = (i32, String);
 /// Permission states the snapshot keeps whatever its size: the request still
 /// waits for, or is being carried out after, a decision.
 const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing", "running"];
+/// A raid owner running a member, checked and holding its live scope.
+#[derive(Clone)]
+struct Owner {
+    id: String,
+    inheritance: Inheritance,
+    scope: Option<std::sync::Arc<crate::scope::Shared>>,
+}
 /// Dev-shell generations an auto-approve set holds.
 const AUTO_DEV_SHELLS: usize = 32;
 /// Approvals copied to a goblin when it is started.
@@ -573,6 +575,13 @@ pub struct Controller {
     history_waiting: Option<std::sync::mpsc::Receiver<crate::history::Store>>,
     /// Ends the waiting thread with this server.
     history_token: std::sync::Arc<()>,
+    /// The last validated manifest the host used: what raid owners run
+    /// members from. Its root goes once nothing holds the lease.
+    current_manifest: Option<std::sync::Arc<crate::config::ManifestLease>>,
+    /// The order of the last accepted host launch, and of the published
+    /// manifest: a slower, older launch never replaces a newer manifest.
+    manifest_sequence: u64,
+    manifest_published: u64,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -593,6 +602,8 @@ impl Controller {
         File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         let instance: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let messaging = crate::messaging::Service::new(&state, &instance)?;
+        // Roots of manifests a previous server held.
+        let _ = fs::remove_dir_all(state.join("manifests"));
         Ok(Self {
             messaging,
             messaging_directory: BTreeMap::new(),
@@ -622,7 +633,26 @@ impl Controller {
             keep_sessions: crate::history::DEFAULT_KEEP,
             history_waiting: None,
             history_token: std::sync::Arc::new(()),
+            current_manifest: None,
+            manifest_sequence: 0,
+            manifest_published: 0,
         })
+    }
+    /// Start with the manifest the server was started with as current, once
+    /// it validates. Call before the first launch.
+    pub fn use_manifest(&mut self, path: &Path) {
+        match crate::config::ManifestLease::create(
+            path,
+            &self.state.join("manifests"),
+            0,
+            &Cancel::default(),
+        ) {
+            Ok(lease) => self.current_manifest = Some(std::sync::Arc::new(lease)),
+            Err(e) => eprintln!(
+                "goblins: no current configuration from {}: {e}",
+                path.display()
+            ),
+        }
     }
     /// Own the history store in `directory`. While another process holds
     /// it, run without history and take it over once it is released.
@@ -706,9 +736,9 @@ impl Controller {
             .map(|a| a.line.clone())
             .collect()
     }
-    /// Start the record of a root goblin that reached running.
+    /// Start the record of a goblin that reached running.
     fn record_started(&mut self, a: &Active) {
-        if a.record.parent.is_some() || self.workspace.is_some() {
+        if self.workspace.is_some() {
             return;
         }
         let mut running = self.live_lines();
@@ -722,8 +752,8 @@ impl Controller {
         store.write(record);
         store.retain(keep, &running);
     }
-    /// Records for root goblins that reached running before this server
-    /// owned the history store, so they can be recreated too.
+    /// Records for goblins that reached running before this server owned
+    /// the history store, so they can be recreated too.
     fn record_running(&mut self) {
         if self.workspace.is_some() {
             return;
@@ -734,8 +764,7 @@ impl Controller {
             return;
         };
         for a in self.sessions.values() {
-            if a.record.parent.is_none()
-                && a.record.state == "running"
+            if a.record.state == "running"
                 && a.worker.is_some()
                 && store
                     .records
@@ -751,12 +780,6 @@ impl Controller {
     /// Fill a recreate launch from its record, refusing what cannot be
     /// recreated now.
     fn prepare_recreate(&self, p: &mut Start, target: &str) -> std::result::Result<(), Fault> {
-        if p.parent.is_some() {
-            return Err((
-                -32602,
-                "resume cannot be combined with --parent: only root goblins are resumed".into(),
-            ));
-        }
         if !p.name.is_empty()
             || p.agent_name.is_some()
             || p.cwd.is_some()
@@ -804,8 +827,8 @@ impl Controller {
         }
         p.name = record.configuration.clone();
         // Its own name when that is free, otherwise a new one.
-        p.agent_name = Some(record.agent_name.clone())
-            .filter(|name| self.allocate_name(Some(name), None).is_ok());
+        p.agent_name =
+            Some(record.agent_name.clone()).filter(|name| self.allocate_name(Some(name)).is_ok());
         p.cwd = record.cwd.clone();
         p.scope = record.scope.clone();
         p.dev_shell = record.dev_shell.clone();
@@ -817,7 +840,7 @@ impl Controller {
     fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
         self.sessions
             .values()
-            .filter(|a| a.worker.is_some() && a.record.parent.is_none())
+            .filter(|a| a.worker.is_some())
             .find(|a| a.line == record.id)
             .map(|a| {
                 format!(
@@ -1038,14 +1061,7 @@ impl Controller {
             } else if let Some(id) = self
                 .sessions
                 .iter()
-                .filter(|(id, a)| {
-                    a.worker.is_none()
-                        && a.terminal.can_evict()
-                        && !self
-                            .sessions
-                            .values()
-                            .any(|child| child.record.parent.as_ref() == Some(id))
-                })
+                .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
             {
@@ -1094,24 +1110,14 @@ impl Controller {
         };
         self.operation(request, goblins_protocol::messages::NOTICE_SENDER, change);
     }
-    fn allocate_name(
-        &self,
-        requested: Option<&str>,
-        parent: Option<&str>,
-    ) -> std::result::Result<String, Fault> {
-        // Reserve ancestor names until the entire subtree finishes cleanup,
-        // so reusing a parent name cannot produce duplicate live tree paths.
-        // Allocation and insertion are serialized in this event loop.
+    fn allocate_name(&self, requested: Option<&str>) -> std::result::Result<String, Fault> {
+        // Names are unique among live goblins: they address messages, execs
+        // and TRAMP. Allocation and insertion are serialized in this loop.
         let available = |name: &str| {
-            !self.sessions.values().any(|a| {
-                a.record.parent.as_deref() == parent
-                    && a.record.agent_name == name
-                    && (a.worker.is_some()
-                        || self.sessions.values().any(|child| {
-                            child.worker.is_some()
-                                && self.descendant(&child.record.id, &a.record.id)
-                        }))
-            })
+            !self
+                .sessions
+                .values()
+                .any(|a| a.worker.is_some() && a.record.agent_name == name)
         };
         if let Some(name) = requested {
             if !valid_agent_name(name) {
@@ -1134,115 +1140,52 @@ impl Controller {
         })?;
         random_name(&available, &mut random).map(str::to_owned)
     }
-    fn descendant(&self, id: &str, ancestor: &str) -> bool {
-        let mut current = self
-            .sessions
-            .get(id)
-            .and_then(|a| a.record.parent.as_deref());
-        while let Some(parent) = current {
-            if parent == ancestor {
-                return true;
-            }
-            current = self
-                .sessions
-                .get(parent)
-                .and_then(|a| a.record.parent.as_deref());
-        }
-        false
-    }
-    fn relative_path<'a>(&'a self, record: &'a SessionRecord, scope: Option<&str>) -> &'a str {
-        if let Some(root) = scope.and_then(|id| self.sessions.get(id)) {
-            record
-                .path
-                .strip_prefix(&format!("{}/", root.record.path))
-                .unwrap_or(&record.path)
-        } else {
-            &record.path
-        }
-    }
-    fn resolve_scoped(
-        &self,
-        target: &str,
-        scope: Option<&str>,
-    ) -> std::result::Result<String, Fault> {
-        let visible = |a: &&Active| scope.is_none_or(|root| self.descendant(&a.record.id, root));
-        let records: Vec<_> = self.sessions.values().filter(visible).collect();
-        if let Some(a) = records.iter().find(|a| a.record.id == target) {
-            return Ok(a.record.id.clone());
-        }
-        if let Some(a) = records
-            .iter()
-            .find(|a| a.worker.is_some() && self.relative_path(&a.record, scope) == target)
-        {
-            return Ok(a.record.id.clone());
-        }
-        let mut matches = records
-            .iter()
-            .filter(|a| a.worker.is_some() && a.record.agent_name == target);
-        let first = matches.next().ok_or_else(missing)?;
-        if matches.next().is_some() {
-            return Err((
-                -32009,
-                "ambiguous agent name; use its tree path or session ID".into(),
-            ));
-        }
-        Ok(first.record.id.clone())
-    }
+    /// A session by ID, or a live goblin by its unique agent name.
     fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
-        self.resolve_scoped(target, None)
+        if let Some(a) = self.sessions.get(target) {
+            return Ok(a.record.id.clone());
+        }
+        self.sessions
+            .values()
+            .find(|a| a.worker.is_some() && a.record.agent_name == target)
+            .map(|a| a.record.id.clone())
+            .ok_or_else(missing)
     }
-    fn sandbox_record(&self, record: &SessionRecord, scope: &str) -> Value {
+    /// Whether `owner` now owns the raid `member` was created in. Evaluated
+    /// on every call, so losing ownership or the member revokes it at once.
+    fn controls(&self, owner: &str, member: &str) -> bool {
+        member != owner
+            && self.raids.of(owner).is_some_and(|r| {
+                r.owner.as_deref() == Some(owner)
+                    && r.members
+                        .get(member)
+                        .is_some_and(|m| m.created_by.is_some())
+            })
+    }
+    /// A created member of the raid `owner` owns; anything else is absent.
+    fn resolve_member(&self, target: &str, owner: &str) -> std::result::Result<String, Fault> {
+        let id = self.resolve_session(target)?;
+        if self.controls(owner, &id) {
+            Ok(id)
+        } else {
+            Err(missing())
+        }
+    }
+    fn sandbox_record(&self, record: &SessionRecord) -> Value {
         // No host paths, process IDs, terminal sockets or diagnostics cross the
-        // sandbox endpoint. Paths are relative to the caller's subtree.
-        json!({"id":record.id,"agent_name":record.agent_name,
-            "parent":record.parent.as_deref().filter(|p| *p != scope),
-            "path":self.relative_path(record, Some(scope)),"name":record.name,
+        // sandbox endpoint.
+        json!({"id":record.id,"agent_name":record.agent_name,"name":record.name,
+            "created_by":record.created_by,
             "description":record.description,"state":record.state,"agent_state":record.agent_state,
             "initial_packages":record.initial_packages,
-            "packages":record.packages,"scope":record.scope,"docker_enabled":record.docker_enabled,
+            "packages":record.packages,"auto_approve":record.auto_approve,
+            "scope":record.scope,"docker_enabled":record.docker_enabled,
             "exit_code":record.exit_code,
             "stop_reason":record.stop_reason,
             "terminal_complete":record.terminal_complete,
             "terminal_interrupted":record.terminal_interrupted,
             "terminal_detached":record.terminal_detached,
             "terminal_attached":record.terminal_attached})
-    }
-    fn owner_exited_reason(&self, id: &str) -> String {
-        format!(
-            "stopped because owner goblin {} ({id}) exited",
-            self.sessions[id].record.agent_name
-        )
-    }
-    fn stop_tree(
-        &mut self,
-        id: &str,
-        kill_children: bool,
-        reason: Option<String>,
-    ) -> std::result::Result<Value, Fault> {
-        let descendants: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|(child, a)| a.worker.is_some() && self.descendant(child, id))
-            .map(|(id, _)| id.clone())
-            .collect();
-        if !kill_children && !descendants.is_empty() {
-            return Err((
-                -32009,
-                format!(
-                    "warning: sandbox has {} live descendant(s); use --kill-children to kill the subtree",
-                    descendants.len()
-                ),
-            ));
-        }
-        // The event loop serializes this check with child creation. Stop the
-        // whole tree before accepting any more calls from its sockets.
-        let child_reason = reason
-            .clone()
-            .unwrap_or_else(|| self.owner_exited_reason(id));
-        for child in descendants {
-            self.stop(&child, Some(child_reason.clone()))?;
-        }
-        self.stop(id, reason)
     }
     /// A package granted without asking: the session's own grant, or one in
     /// its auto-approve set. Never resolved again, never mounted proactively.
@@ -1253,11 +1196,11 @@ impl Controller {
             .or_else(|| a.auto_approve.get(package))
             .cloned()
     }
-    /// What a goblin started by `parent` may be granted without asking: the
-    /// parent's approvals and its own auto-approve sets, copied now. Refused
+    /// What a goblin a raid owner runs may be granted without asking: the
+    /// owner's approvals and its own auto-approve sets, copied now. Refused
     /// rather than truncated beyond the bounds.
-    fn copied_approvals(&self, parent: &str) -> std::result::Result<AutoApprove, Fault> {
-        let a = &self.sessions[parent];
+    fn copied_approvals(&self, owner: &str) -> std::result::Result<AutoApprove, Fault> {
+        let a = &self.sessions[owner];
         let mut packages = a.auto_approve.clone();
         packages.extend(a.granted_outputs.clone());
         let mut dev_shells = a.auto_approve_dev_shells.clone();
@@ -1319,7 +1262,7 @@ impl Controller {
             w.cancel.cancel();
             self.reply_waiting(&call_key(w.serial), Err("session stopped".into()));
         }
-        let message = format!("goblin {} has stopped", self.sessions[id].record.path);
+        let message = format!("goblin {} has stopped", self.sessions[id].record.agent_name);
         self.end_execs(id, &message);
         self.end_edits(id);
         self.end_host_jobs(id);
@@ -1408,33 +1351,12 @@ impl Controller {
             }
             self.prepare_recreate(&mut p, &target)?;
         }
-        let parent = match (scope, p.parent.as_deref()) {
-            (Some(root), None | Some(".")) => Some(root.to_string()),
-            (_, Some(target)) => Some(self.resolve_scoped(target, scope)?),
-            (None, None) => None,
-        };
-        if parent.is_some() && p.scope.is_some() {
-            return Err((-32602, "children inherit their parent's scope".into()));
-        }
-        if parent.is_some() && p.dev_shell.is_some() {
-            return Err((-32602, "children inherit their parent's dev shell".into()));
-        }
-        let inherited = if let Some(id) = &parent {
-            let a = &self.sessions[id];
-            if a.record.state != "running" || a.worker.is_none() {
-                return Err(conflict());
-            }
-            // A host --parent launch uses the parent's branch snapshot rather
-            // than a newer manifest.
-            p.configuration = a.record.configuration.clone();
-            p.cwd = None;
-            Some(a.inheritance.clone().ok_or_else(conflict)?)
-        } else {
-            None
-        };
+        // A sandbox launch is a raid owner running a member: no tree, but
+        // the owner's workspace, scope, dev shell and approvals are shared.
+        let member = scope.is_some();
         if !goblins_protocol::identifier(&p.key)
             || !goblins_protocol::identifier(&p.name)
-            || !Path::new(&p.configuration).is_absolute()
+            || !(member || Path::new(&p.configuration).is_absolute())
             || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
             || p.scope
                 .as_deref()
@@ -1446,15 +1368,6 @@ impl Controller {
         {
             return Err((-32602, "invalid launch parameters".into()));
         }
-        // The selected parent's own list, also for --parent from the host or an
-        // ancestor: a caller's permissions are never substituted.
-        if let Some(inherited) = &inherited {
-            inherited.permit(&p.name).map_err(|e| (-32602, e))?;
-        }
-        let approvals = match &parent {
-            Some(id) => self.copied_approvals(id)?,
-            None => AutoApprove::default(),
-        };
         if let Some((old, result)) = self.launches.get(&key) {
             return if old == &p {
                 Ok(result.clone())
@@ -1462,8 +1375,25 @@ impl Controller {
                 Err(conflict())
             };
         }
-        let join = self.launch_raid(&p, parent.as_deref(), scope)?;
-        let agent_name = self.allocate_name(p.agent_name.as_deref(), parent.as_deref())?;
+        let owner = match scope {
+            Some(owner) => Some(self.member_owner(owner, &p.name)?),
+            None => None,
+        };
+        let approvals = match &owner {
+            Some(owner) => self.copied_approvals(&owner.id)?,
+            None => AutoApprove::default(),
+        };
+        let manifest = match &owner {
+            // Taken after the retry comparison: a newer current manifest
+            // never turns an identical retry into a conflict.
+            Some(_) => Some(self.current_manifest.clone().ok_or((
+                -32009,
+                "no configuration is known yet; start the server with the installed goblins or run a goblin from the host".to_string(),
+            ))?),
+            None => None,
+        };
+        let join = self.launch_raid(&p, owner.as_ref().map(|o| o.id.as_str()))?;
+        let agent_name = self.allocate_name(p.agent_name.as_deref())?;
         if self.launches.len() >= 4096
             || self
                 .sessions
@@ -1478,14 +1408,7 @@ impl Controller {
             let old = self
                 .sessions
                 .iter()
-                .filter(|(id, a)| {
-                    a.worker.is_none()
-                        && a.terminal.can_evict()
-                        && !self
-                            .sessions
-                            .values()
-                            .any(|child| child.record.parent.as_ref() == Some(id))
-                })
+                .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
                 .ok_or_else(capacity)?;
@@ -1515,13 +1438,16 @@ impl Controller {
                 .map_err(|e| (-32010, e.to_string()))?
             }
         };
-        let source = match inherited {
-            Some(inherited) => Source::Child {
-                inherited,
+        let sequence = self.manifest_sequence + 1;
+        let source = match (owner.clone(), manifest) {
+            (Some(owner), Some(manifest)) => Source::Member {
+                owner: owner.inheritance,
+                scope: owner.scope,
+                manifest,
                 configuration: p.name.clone(),
                 auto: approvals.packages.clone(),
             },
-            None => Source::Host {
+            _ => Source::Host {
                 configuration: p.configuration.clone().into(),
                 name: p.name.clone(),
                 scope: p.scope.clone(),
@@ -1536,11 +1462,23 @@ impl Controller {
                     docker: r.docker_enabled,
                     variables: r.variables.clone(),
                 }),
+                sequence,
             },
         };
-        let cwd = match &parent {
-            Some(id) => self.sessions[id].record.cwd.clone(),
+        if owner.is_none() {
+            self.manifest_sequence = sequence;
+        }
+        let cwd = match &owner {
+            Some(owner) => self.sessions[&owner.id].record.cwd.clone(),
             None => p.cwd.clone().filter(|_| self.workspace.is_none()),
+        };
+        let configuration = match &owner {
+            Some(_) => self
+                .current_manifest
+                .as_ref()
+                .map(|m| m.path.display().to_string())
+                .unwrap_or_default(),
+            None => p.configuration.clone(),
         };
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
@@ -1552,15 +1490,14 @@ impl Controller {
             dev_shell: None,
             cwd,
             id: id.clone(),
-            path: parent
-                .as_ref()
-                .map(|id| format!("{}/{}", self.sessions[id].record.path, agent_name))
-                .unwrap_or_else(|| agent_name.clone()),
-            parent,
             agent_name,
+            created_by: owner.as_ref().map(|o| CreatedBy {
+                id: o.id.clone(),
+                agent_name: self.sessions[&o.id].record.agent_name.clone(),
+            }),
             name: p.name.clone(),
             description: String::new(),
-            configuration: p.configuration.clone(),
+            configuration,
             state: "starting".into(),
             identity: None,
             initial_packages: vec![],
@@ -1581,7 +1518,7 @@ impl Controller {
             recreated_from: recorded.as_ref().map(|r| r.id.clone()),
             skipped: vec![],
         };
-        let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
+        let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal});
         self.sessions.insert(
             id.clone(),
             Active {
@@ -1617,6 +1554,30 @@ impl Controller {
         }
         Ok(result)
     }
+    /// The checks a raid owner's run passes before anything is allocated:
+    /// it owns an unpaused raid, runs, and its configuration permits the
+    /// target. Its live scope is held from here on.
+    fn member_owner(&self, owner: &str, target: &str) -> std::result::Result<Owner, Fault> {
+        let raid = self.raids.of(owner);
+        if raid.is_none_or(|r| r.owner.as_deref() != Some(owner)) {
+            return Err((
+                -32009,
+                "only a raid owner can run goblins; create one with goblin raid create NAME".into(),
+            ));
+        }
+        let a = &self.sessions[owner];
+        if a.record.state != "running" || a.worker.is_none() {
+            return Err(conflict());
+        }
+        let inheritance = a.inheritance.clone().ok_or_else(conflict)?;
+        inheritance.permit(target).map_err(|e| (-32602, e))?;
+        let scope = inheritance.scope().map_err(|e| (-32009, e))?;
+        Ok(Owner {
+            id: owner.into(),
+            inheritance,
+            scope,
+        })
+    }
     fn sandbox_control(
         &mut self,
         scope: &str,
@@ -1639,10 +1600,6 @@ impl Controller {
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
                 if a.record.state != "running" || a.worker.is_none() {
                     return Err(conflict());
-                }
-                if a.record.parent.is_some() {
-                    // Children are not recorded; their hooks need no special case.
-                    return Ok(json!({"accepted":true,"recorded":false}));
                 }
                 // Only the caller's own record. Without history the server
                 // keeps them, for a record created when it takes the store.
@@ -1679,7 +1636,8 @@ impl Controller {
                         .map_or(&[][..], |i| i.allowed_run_targets()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
                         "role":r.role,"owner":r.owner,"paused":r.paused,
-                        "owner_path":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.path)}))}))
+                        "owner_name":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.agent_name)})),
+                    "created_by":record.created_by}))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
@@ -1694,43 +1652,30 @@ impl Controller {
                 Ok(json!({"path":dev.path.join("flake.lock"),"lock":dev.lock,
                     "generation":dev.generation}))
             }
-            "sessions.resize" => {
-                let p: Resize = params(value)?;
-                let id = self.resolve_scoped(&p.session, Some(scope))?;
-                if !dimensions(p.rows, p.cols) {
-                    return Err((-32602, "invalid dimensions".into()));
-                }
-                self.sessions
-                    .get_mut(&id)
-                    .unwrap()
-                    .terminal
-                    .resize(p.rows, p.cols)
-                    .map_err(|_| conflict())?;
-                Ok(json!({"accepted":true}))
-            }
+            // A raid owner sees and stops only the members created in its
+            // raid, while it owns it. No goblin attaches to another's terminal.
             "sessions.list" => {
                 let _: Empty = params(value)?;
                 Ok(json!(
                     self.sessions
                         .values()
-                        .filter(|a| self.descendant(&a.record.id, scope))
-                        .map(|a| self.sandbox_record(&a.record, scope))
+                        .filter(|a| a.worker.is_some() && self.controls(scope, &a.record.id))
+                        .map(|a| self.sandbox_record(&a.record))
                         .collect::<Vec<_>>()
                 ))
             }
             "sessions.get" => {
                 let p: SessionId = params(value)?;
-                let id = self.resolve_scoped(&p.session, Some(scope))?;
-                Ok(self.sandbox_record(&self.sessions[&id].record, scope))
+                let id = self.resolve_member(&p.session, scope)?;
+                Ok(self.sandbox_record(&self.sessions[&id].record))
             }
             "sessions.start" => {
-                let p: ChildStart = params(value)?;
+                let p: MemberStart = params(value)?;
                 let result = self.start(
                     Start {
                         key: p.key,
                         name: p.name,
                         agent_name: p.agent_name,
-                        parent: p.parent,
                         configuration: String::new(),
                         cwd: None,
                         scope: None,
@@ -1739,29 +1684,24 @@ impl Controller {
                         cols: 80,
                         detached: p.detached,
                         raid: None,
-                        inherit_raid: p.inherit_raid,
                         recreate: None,
                         recorded: None,
                     },
                     Some(scope),
                 )?;
-                let path = result["path"].as_str().ok_or_else(missing)?;
-                let relative = path
-                    .strip_prefix(&format!("{}/", self.sessions[scope].record.path))
-                    .ok_or_else(missing)?;
                 Ok(
                     json!({"session":result["session"],"agent_name":result["agent_name"],
-                    "path":relative,"state":result["state"]}),
+                    "state":result["state"]}),
                 )
             }
             "sessions.stop" => {
                 let p: Stop = params(value)?;
-                let id = self.resolve_scoped(&p.session, Some(scope))?;
+                let id = self.resolve_member(&p.session, scope)?;
                 let reason = format!(
-                    "stopped by goblin {} ({scope})",
+                    "stopped by raid owner {} ({scope})",
                     self.sessions[scope].record.agent_name
                 );
-                self.stop_tree(&id, p.kill_children, Some(reason))
+                self.stop(&id, Some(reason))
             }
             m if m.starts_with("raids.") => self.sandbox_raids(scope, m, value),
             "host.status" | "host.list" | "host.cancel" => {
@@ -1932,7 +1872,8 @@ impl Controller {
             "server.status" => {
                 let _: Empty = params(value)?;
                 Ok(
-                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count(),"history":self.history_status()}),
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count(),"history":self.history_status(),
+                        "manifest":self.current_manifest.as_ref().map(|m| &m.path)}),
                 )
             }
             "server.stop" => {
@@ -1962,7 +1903,7 @@ impl Controller {
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;
-                self.stop_tree(&id, p.kill_children, Some("stopped by host".into()))
+                self.stop(&id, Some("stopped by host".into()))
             }
             "sessions.detach" => {
                 let p: SessionId = params(value)?;
@@ -2082,7 +2023,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2183,23 +2124,11 @@ impl Controller {
                         return Ok(Some(result));
                     }
                     if call.method == "sessions.attach" {
-                        let p: SessionId = params(call.params)?;
-                        let target = self.resolve_scoped(&p.session, Some(&session))?;
-                        // Upgrade only after initialize has drained. Reject
-                        // pipelined frames instead of interpreting them as keys.
-                        if !c.input.is_empty() || !c.output.is_empty() {
-                            return Err((-32600, "unexpected pipelined input".into()));
-                        }
-                        let peer = c.peer.try_clone().map_err(|_| conflict())?;
-                        self.sessions
-                            .get_mut(&target)
-                            .unwrap()
-                            .terminal
-                            .attach(peer, id.clone())
-                            .map_err(|e| (-32009, e.to_string()))?;
-                        c.dead = true;
-                        self.dirty = true;
-                        return Ok(None);
+                        // Attachments outlive any check of who may hold them.
+                        return Err((
+                            -32601,
+                            "goblins do not attach to other goblins' terminals; the host can, with goblins attach NAME".into(),
+                        ));
                     }
                     if call.method == "editor.open" {
                         if !c.input.is_empty() {
@@ -2441,7 +2370,7 @@ impl Controller {
                         reason: p.reason,
                         state: if auto_approve { "realizing" } else { "pending" }.into(),
                         approved: if auto_approve { Some(true) } else { None },
-                        preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Children inherit the attachment.")}))),
+                        preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
                         message: None,
                     });
                     let r = self.permissions.back().unwrap();
@@ -2489,8 +2418,7 @@ impl Controller {
                     id.clone(),
                     crate::mailbox::Session {
                         id: id.clone(),
-                        parent: a.record.parent.clone(),
-                        path: a.record.path.clone(),
+                        agent_name: a.record.agent_name.clone(),
                         running: matches!(a.record.state.as_str(), "starting" | "running"),
                     },
                 )
@@ -2703,6 +2631,12 @@ impl Controller {
                             self.record_started(&a);
                         }
                         self.dirty = true;
+                    }
+                    Completed::Manifest { sequence, lease } => {
+                        if sequence > self.manifest_published {
+                            self.manifest_published = sequence;
+                            self.current_manifest = Some(lease);
+                        }
                     }
                     Completed::Preview { approval, result } => {
                         if let Some(p) = &mut a.pending
@@ -2964,29 +2898,20 @@ impl Controller {
                     }
                 });
             }
+            // Stopping stops only this goblin: raid members it ran keep
+            // running, and its raid pauses.
             if exited {
-                let _ = self.stop_tree(&id, true, None);
+                let _ = self.stop(&id, None);
             } else if stopped {
                 if self.execs.values().any(|e| e.session() == id) {
-                    let message = format!("goblin {} has stopped", self.sessions[&id].record.path);
+                    let message = format!(
+                        "goblin {} has stopped",
+                        self.sessions[&id].record.agent_name
+                    );
                     self.end_execs(&id, &message);
                 }
                 self.end_edits(&id);
                 self.end_host_jobs(&id);
-                let children: Vec<_> = self
-                    .sessions
-                    .iter()
-                    .filter(|(child, a)| {
-                        a.worker.is_some()
-                            && !["stopped", "failed", "stopping"].contains(&a.record.state.as_str())
-                            && self.descendant(child, &id)
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for child in children {
-                    let reason = self.owner_exited_reason(&id);
-                    let _ = self.stop(&child, Some(reason));
-                }
             }
         }
         self.reconcile_raids();
@@ -3202,8 +3127,7 @@ mod tests {
                     cwd: None,
                     id: id.clone(),
                     agent_name: "snikk".into(),
-                    parent: None,
-                    path: "snikk".into(),
+                    created_by: None,
                     name: "shell".into(),
                     description: "Test shell running in a Goblins sandbox".into(),
                     configuration: "test".into(),
@@ -3307,103 +3231,210 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn child_configurations_follow_the_selected_parents_list() {
-        let mut d = daemon();
-        let goblin = |children: Value| {
-            json!({"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
-                "client_package": "/unused", "helper": "/unused", "flake": "unused",
-                "allowed_run_targets": children})
-        };
-        let manifest: crate::config::Manifest = serde_json::from_value(json!({
-            "api": 2, "helper_api": 5,
-            "goblins": {
-                "coordinator": goblin(json!(["coordinator", "reviewer", "scoped"])),
-                "reviewer": goblin(json!(["shell"])),
-                "shell": goblin(json!([])),
-                "scoped": {"scope": "work", "scopes": {"work": goblin(json!([]))},
-                    "build_spec": "/unused", "args": [], "env": {}, "client_package": "/unused",
-                    "helper": "/unused", "flake": "unused"},
-            },
-            "scopes": {"work": {"persistent": false, "pid": true}},
-        }))
-        .unwrap();
-        let branch = std::sync::Arc::new(manifest.branch("coordinator", None).unwrap().1);
-        let root = session_with_results_id(&mut d, "root", vec![]);
-        let child = session_with_results_id(&mut d, "child", vec![]);
-        let leaf = session_with_results_id(&mut d, "leaf", vec![]);
-        for (id, parent, name) in [
-            (&root, None, "coordinator"),
-            (&child, Some(&root), "reviewer"),
-            (&leaf, Some(&child), "shell"),
-        ] {
-            let a = d.sessions.get_mut(id).unwrap();
-            a.record.parent = parent.cloned();
-            a.record.name = name.into();
-            a.record.agent_name = id.clone();
-            a.record.configuration = "/loaded.json".into();
-            a.inheritance = Some(Inheritance::fixture(name, branch.clone()));
-        }
-        let keys = std::cell::Cell::new(0);
-        let start = |name: &str, parent: &str| -> Start {
-            keys.set(keys.get() + 1);
-            serde_json::from_value(json!({"key": format!("k{}", keys.get()),
-                "configuration": "/newer.json", "name": name, "agent_name": null,
-                "parent": parent, "rows": 24, "cols": 80}))
-            .unwrap()
-        };
-        let refused = |d: &mut Controller, p: Start, scope: Option<&str>| {
-            let error = d.start(p, scope).unwrap_err();
-            assert_eq!(error.0, -32602);
-            error.1
-        };
-        // The host selecting a descendant uses that descendant's list.
-        assert_eq!(
-            refused(&mut d, start("coordinator", "child"), None),
-            "configuration 'coordinator' is not an allowed run target of 'reviewer'; allowed: shell"
-        );
-        assert_eq!(
-            refused(&mut d, start("reviewer", "leaf"), None),
-            "configuration 'shell' permits no run targets"
-        );
-        // So does a sandbox selecting its descendant with --parent.
-        assert_eq!(
-            refused(&mut d, start("reviewer", "child"), Some(&root)),
-            "configuration 'reviewer' is not an allowed run target of 'reviewer'; allowed: shell"
-        );
-        assert_eq!(
-            refused(&mut d, start("scoped", "."), Some(&root)),
-            "configuration 'scoped' cannot be launched here: 'scoped' requires scope 'work'; its parent has no scope"
-        );
-        // Nothing was recorded or allocated for a refused launch.
-        assert!(d.launches.is_empty());
-        assert_eq!(d.sessions.len(), 3);
-        let accepted = d.start(start("shell", "child"), None).unwrap();
-        let record = &d.sessions[accepted["session"].as_str().unwrap()].record;
-        assert_eq!(record.name, "shell");
-        assert_eq!(record.parent.as_deref(), Some(child.as_str()));
-        // The record keeps the parent's manifest, the snapshot's origin.
-        assert_eq!(record.configuration, "/loaded.json");
-    }
-    #[test]
-    fn parent_name_stays_reserved_until_descendant_cleanup_finishes() {
+    fn raid_owners_run_their_own_targets_from_the_current_manifest() {
         let mut d = daemon();
         let path = d.state.clone();
         let root = session_with_results_id(&mut d, "root", vec![]);
-        let child = session_with_results_id(&mut d, "child", vec![]);
-        let a = d.sessions.get_mut(&child).unwrap();
-        a.record.parent = Some(root.clone());
-        a.record.agent_name = "kid".into();
-        a.record.path = "snikk/kid".into();
-        a.record.state = "stopping".into();
-        d.sessions.get_mut(&root).unwrap().worker.take();
-        assert_eq!(d.allocate_name(Some("snikk"), None).unwrap_err().0, -32009);
-        // The same name in a different sibling group remains independent.
-        assert_eq!(
-            d.allocate_name(Some("snikk"), Some(&root)).unwrap(),
-            "snikk"
+        let member = session_with_results_id(&mut d, "member", vec![]);
+        for (id, name, targets) in [
+            (&root, "coordinator", &["reviewer", "shell"][..]),
+            (&member, "reviewer", &["shell"][..]),
+        ] {
+            let a = d.sessions.get_mut(id).unwrap();
+            a.record.name = name.into();
+            a.record.agent_name = id.clone();
+            a.record.cwd = Some("/project".into());
+            a.inheritance = Some(Inheritance::fixture(name, targets));
+        }
+        let keys = std::cell::Cell::new(0);
+        let start = |name: &str| {
+            keys.set(keys.get() + 1);
+            json!({"key": format!("k{}", keys.get()), "name": name, "agent_name": null})
+        };
+        let refused = |d: &mut Controller, scope: &str, p: Value| {
+            d.sandbox_control(scope, "sessions.start", p).unwrap_err()
+        };
+        // Only the owner of an unpaused raid runs goblins.
+        let not_owner = (
+            -32009,
+            "only a raid owner can run goblins; create one with goblin raid create NAME"
+                .to_string(),
         );
-        d.sessions.get_mut(&child).unwrap().worker.take();
-        assert_eq!(d.allocate_name(Some("snikk"), None).unwrap(), "snikk");
+        assert_eq!(refused(&mut d, &root, start("shell")), not_owner);
+        d.sandbox_control(&root, "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let (mut host, _peer) = host_connection();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":[member]}),
+        )
+        .unwrap();
+        assert_eq!(refused(&mut d, &member, start("shell")), not_owner);
+        // The owner's own configuration decides what it may run.
+        assert_eq!(
+            refused(&mut d, &root, start("coordinator")),
+            (
+                -32602,
+                "configuration 'coordinator' is not an allowed run target of 'coordinator'; allowed: reviewer, shell".into()
+            )
+        );
+        // Without a current manifest there is nothing to run from.
+        assert_eq!(refused(&mut d, &root, start("shell")).0, -32009);
+        assert!(d.launches.is_empty());
+        assert_eq!(d.sessions.len(), 2);
+        let manifest = path.join("current.json");
+        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
+            &manifest,
+        )));
+        d.sessions
+            .get_mut(&root)
+            .unwrap()
+            .granted_outputs
+            .insert("jq".into(), "/nix/store/x-jq".into());
+        let accepted = d
+            .sandbox_control(&root, "sessions.start", start("shell"))
+            .unwrap();
+        assert_eq!(accepted.as_object().unwrap().len(), 3);
+        let id = accepted["session"].as_str().unwrap();
+        let a = &d.sessions[id];
+        assert_eq!(a.record.name, "shell");
+        assert_eq!(a.record.configuration, manifest.display().to_string());
+        assert_eq!(a.record.cwd.as_deref(), Some(Path::new("/project")));
+        assert_eq!(
+            a.record.created_by,
+            Some(CreatedBy {
+                id: root.clone(),
+                agent_name: root.clone()
+            })
+        );
+        assert_eq!(a.record.auto_approve, ["jq"]);
+        let raid = d.raids.get("crew").unwrap();
+        assert_eq!(raid.members[id].created_by.as_deref(), Some(root.as_str()));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn owners_list_and_stop_only_members_created_in_the_raid_they_own() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["owner", "made", "invited", "other"] {
+            live(&mut d, id);
+        }
+        d.sandbox_control("owner", "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let mut next = d.raids.clone();
+        let events = next.run("owner", "made").unwrap();
+        d.raid_commit(next, events).unwrap();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":["invited"]}),
+        )
+        .unwrap();
+        let listed = d
+            .sandbox_control("owner", "sessions.list", json!({}))
+            .unwrap();
+        assert_eq!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["made"]
+        );
+        for target in ["invited", "other", "owner"] {
+            for method in ["sessions.get", "sessions.stop"] {
+                assert_eq!(
+                    d.sandbox_control("owner", method, json!({"session":target}))
+                        .unwrap_err()
+                        .0,
+                    -32004,
+                    "{method} {target}"
+                );
+            }
+        }
+        // A created member cannot leave; host-invited ones can.
+        assert_eq!(
+            d.sandbox_control("made", "raids.leave", json!({}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        // A new owner takes over control; the old one loses it at once.
+        d.host(
+            &mut host,
+            "raids.set_owner",
+            json!({"raid":"crew","session":"invited"}),
+        )
+        .unwrap();
+        assert_eq!(
+            d.sandbox_control("owner", "sessions.get", json!({"session":"made"}))
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        d.sandbox_control("invited", "sessions.stop", json!({"session":"made"}))
+            .unwrap();
+        assert_eq!(d.sessions["made"].record.state, "stopping");
+        assert_eq!(
+            d.sessions["made"].record.stop_reason.as_deref(),
+            Some("stopped by raid owner invited (invited)")
+        );
+        assert_eq!(d.sessions["owner"].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_current_manifest_follows_host_acceptance_order() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let lease = |name: &str| {
+            std::sync::Arc::new(crate::config::ManifestLease::unrooted(&path.join(name)))
+        };
+        d.manifest_sequence = 3;
+        // The newest acceptance reports first; an older one reporting later
+        // must not replace it. A failed launch never reports one.
+        session_with_results_id(
+            &mut d,
+            "newer",
+            vec![Completed::Manifest {
+                sequence: 3,
+                lease: lease("newer.json"),
+            }],
+        );
+        d.tick().unwrap();
+        session_with_results_id(
+            &mut d,
+            "older",
+            vec![Completed::Manifest {
+                sequence: 2,
+                lease: lease("older.json"),
+            }],
+        );
+        session_with_results_id(&mut d, "failed", vec![Completed::Failed("bad".into())]);
+        d.tick().unwrap();
+        assert_eq!(
+            d.current_manifest.as_ref().unwrap().path,
+            path.join("newer.json")
+        );
+        assert_eq!(d.manifest_published, 3);
+        drop(d);
+        fs::remove_dir_all(&path).unwrap();
+    }
+    #[test]
+    fn names_stay_reserved_while_their_goblin_is_live() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let goblin = session_with_results_id(&mut d, "goblin", vec![]);
+        let a = d.sessions.get_mut(&goblin).unwrap();
+        a.record.agent_name = "kid".into();
+        a.record.state = "stopping".into();
+        assert_eq!(d.allocate_name(Some("kid")).unwrap_err().0, -32009);
+        d.sessions.get_mut(&goblin).unwrap().worker.take();
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -3548,7 +3579,7 @@ mod tests {
             .unwrap();
         for state in ["starting", "running", "stopping", "stopped", "failed"] {
             d.sessions.get_mut(id).unwrap().record.state = state.into();
-            assert_eq!(d.allocate_name(Some("shell"), None).unwrap_err().0, -32009);
+            assert_eq!(d.allocate_name(Some("shell")).unwrap_err().0, -32009);
         }
         d.sessions.get_mut(id).unwrap().worker.take();
         assert!(d.resolve_session("shell").is_err());
@@ -3647,14 +3678,6 @@ mod tests {
         use goblins_protocol::AgentState;
         let mut d = daemon();
         let path = d.state.clone();
-        let manifest: crate::config::Manifest = serde_json::from_value(json!({
-            "api": 2, "helper_api": 5,
-            "goblins": {"shell": {"build_spec": "/unused", "args": [], "env": {},
-                "client_package": "/unused", "helper": "/unused", "flake": "unused"}},
-            "scopes": {},
-        }))
-        .unwrap();
-        let branch = std::sync::Arc::new(manifest.branch("shell", None).unwrap().1);
         let id = session_with_results(&mut d, vec![]);
         let response = |result: Value| crate::messaging::Completed {
             connection: 0,
@@ -3663,7 +3686,7 @@ mod tests {
             actor: id.clone(),
         };
         let a = d.sessions.get_mut(&id).unwrap();
-        a.inheritance = Some(Inheritance::fixture("shell", branch.clone()));
+        a.inheritance = Some(Inheritance::fixture("shell", &[]));
         d.dirty = false;
         // Only a Claude-integrated session takes activity from its integration.
         d.claude_activity(&response(json!({"agent_state":"working"})));
@@ -3671,7 +3694,9 @@ mod tests {
         assert!(d.sessions[&id].activity_at.is_none());
         let a = d.sessions.get_mut(&id).unwrap();
         a.inheritance = Some(Inheritance::fixture_with_integration(
-            "shell", branch, "claude",
+            "shell",
+            &[],
+            "claude",
         ));
         d.claude_activity(&response(json!({"notify":false})));
         assert!(d.sessions[&id].activity_at.is_none());
@@ -4110,8 +4135,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         d.open_history(Ok(path.join("history")), 100);
-        let _results = live(&mut d, "a", None);
-        let _child = live(&mut d, "kid", Some("a"));
+        let _results = live(&mut d, "a");
+        let _other = live(&mut d, "kid");
         let record = |d: &Controller| d.history.as_ref().unwrap().records["a"].clone();
         d.history.as_mut().unwrap().write({
             let mut record = crate::history::Record::new("a", "shell", "a", 1);
@@ -4139,6 +4164,7 @@ mod tests {
             true
         );
         assert!(!record(&d).variables.contains_key("session_name"));
+        // A goblin whose record is not written yet records nothing.
         assert_eq!(
             set(&mut d, "kid", json!({"session_id":"other"})).unwrap(),
             json!({"accepted":true,"recorded":false})
@@ -4314,13 +4340,14 @@ mod tests {
                 "rows":24,"cols":80})
         };
         let mut start = |d: &mut Controller, p: Value| d.host(&mut host, "sessions.start", p);
+        // There is no tree to resume a goblin into.
         let mut with_parent = recreate("k0", "r0");
         with_parent["parent"] = json!("r0");
         assert!(
             start(&mut d, with_parent)
                 .unwrap_err()
                 .1
-                .contains("--parent")
+                .contains("unknown field `parent`")
         );
         let mut with_name = recreate("k0", "r0");
         with_name["name"] = json!("shell");
@@ -4377,11 +4404,11 @@ mod tests {
         // Released when that session ends.
         d.sessions.get_mut(&id).unwrap().worker.take();
         // The original goblin running its own record refuses too.
-        let _a3 = live(&mut d, "a3", None);
+        let _a3 = live(&mut d, "a3");
         assert!(refused(&mut d, &mut start, "k7", "a3").contains("goblin a3 (a3)"));
         d.sessions.get_mut("a3").unwrap().worker.take();
         // A goblin already using the name leaves a new name.
-        let _morb = live(&mut d, "morb", None);
+        let _morb = live(&mut d, "morb");
         let again = start(&mut d, recreate("k4", "r0")).unwrap();
         assert_ne!(again["agent_name"], "morb");
         drop(d);
@@ -4422,8 +4449,8 @@ mod tests {
             Some(fs::canonicalize(&shared).unwrap().as_path())
         );
         // A goblin running meanwhile keeps its variables in the server.
-        let _g = live(&mut second, "g", None);
-        let _kid = live(&mut second, "kid", Some("g"));
+        let _g = live(&mut second, "g");
+        let _kid = live(&mut second, "kid");
         second.sessions.get_mut("g").unwrap().record.packages = vec!["hello".into()];
         for id in ["g", "kid"] {
             assert_eq!(
@@ -4437,8 +4464,8 @@ mod tests {
                 false
             );
         }
-        // Released, the store is taken over without a restart, and the
-        // running root goblin gets its record.
+        // Released, the store is taken over without a restart, and every
+        // running goblin gets its record.
         let paths = [first.state.clone(), second.state.clone()];
         drop(first);
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
@@ -4448,7 +4475,7 @@ mod tests {
         }
         assert_eq!(second.history_status()["owner"], true);
         let store = second.history.as_ref().unwrap();
-        assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g"]);
+        assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g", "kid"]);
         let record = &store.records["g"];
         assert_eq!(record.packages.approved, ["hello"]);
         assert_eq!(record.variables["session_id"], "c819");
@@ -4464,7 +4491,7 @@ mod tests {
         let path = d.state.clone();
         let (service, queue) = crate::messaging::Service::detached(1);
         d.messaging = service;
-        let _results = live(&mut d, "a", None);
+        let _results = live(&mut d, "a");
         let (worker, _results, _commands) = Worker::listening();
         d.sessions.get_mut("a").unwrap().worker = Some(worker);
         d.tick().unwrap();
@@ -4541,23 +4568,13 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
-    fn live(
-        d: &mut Controller,
-        id: &str,
-        parent: Option<&str>,
-    ) -> std::sync::mpsc::SyncSender<Completed> {
-        let path = match parent {
-            Some(p) => format!("{}/{id}", d.sessions[p].record.path),
-            None => id.into(),
-        };
+    fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Completed> {
         session_with_results_id(d, id, vec![]);
         let (worker, results) = Worker::idle();
         let a = d.sessions.get_mut(id).unwrap();
         a.worker = Some(worker);
         a.pending = None;
         a.record.agent_name = id.into();
-        a.record.parent = parent.map(Into::into);
-        a.record.path = path;
         results
     }
     fn host_connection() -> (Connection, UnixStream) {
@@ -4584,11 +4601,11 @@ mod tests {
         let (service, queue) = crate::messaging::Service::detached(64);
         d.messaging = service;
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let exits = live(&mut d, "b", None);
-        let _c = live(&mut d, "c", None);
-        let fails = live(&mut d, "e", None);
-        let _f = live(&mut d, "f", None);
+        let _a = live(&mut d, "a");
+        let exits = live(&mut d, "b");
+        let _c = live(&mut d, "c");
+        let fails = live(&mut d, "e");
+        let _f = live(&mut d, "f");
         session_with_results_id(&mut d, "w", vec![]);
         d.sessions.get_mut("w").unwrap().pending = None;
         let record = d
@@ -4671,8 +4688,8 @@ mod tests {
     fn approvals_are_copied_once_within_bounds() {
         let mut d = daemon();
         let path = d.state.clone();
-        live(&mut d, "a", None);
-        live(&mut d, "b", None);
+        live(&mut d, "a");
+        live(&mut d, "b");
         let output = |name: &str| PathBuf::from(format!("/nix/store/{}-{name}", "0".repeat(32)));
         let a = d.sessions.get_mut("a").unwrap();
         a.granted_outputs.insert("jq".into(), output("jq"));
@@ -4722,7 +4739,7 @@ mod tests {
         let path = d.state.clone();
         let (mut host, _peer) = host_connection();
         for id in ["a", "b", "c"] {
-            live(&mut d, id, None);
+            live(&mut d, id);
         }
         d.host(
             &mut host,
@@ -4835,7 +4852,7 @@ mod tests {
         let path = d.state.clone();
         let (mut host, _peer) = host_connection();
         for id in ["a", "b"] {
-            live(&mut d, id, None);
+            live(&mut d, id);
         }
         d.host(
             &mut host,
@@ -4873,8 +4890,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let _b = live(&mut d, "b", None);
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
         d.host(
             &mut host,
             "raids.invite",
@@ -4914,39 +4931,24 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn launch_joins_follow_the_parent_and_retries_do_not_join_again() {
+    fn launch_joins_follow_the_owner_and_retries_do_not_join_again() {
         let mut d = daemon();
         let path = d.state.clone();
-        let manifest: crate::config::Manifest = serde_json::from_value(json!({
-            "api": 2, "helper_api": 5,
-            "goblins": {"shell": {"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
-                "client_package": "/unused", "helper": "/unused", "flake": "unused",
-                "allowed_run_targets": ["shell"]}},
-            "scopes": {},
-        }))
-        .unwrap();
-        let branch = std::sync::Arc::new(manifest.branch("shell", None).unwrap().1);
-        let _root = live(&mut d, "root", None);
-        let _kid = live(&mut d, "kid", Some("root"));
-        let _grandkid = live(&mut d, "grandkid", Some("kid"));
-        let _other = live(&mut d, "other", None);
-        for id in ["root", "kid", "grandkid", "other"] {
+        live(&mut d, "root");
+        live(&mut d, "other");
+        for id in ["root", "other"] {
             let a = d.sessions.get_mut(id).unwrap();
-            a.inheritance = Some(Inheritance::fixture("shell", branch.clone()));
-            a.record.configuration = "/loaded.json".into();
+            a.inheritance = Some(Inheritance::fixture("shell", &["shell"]));
         }
-        let child = |key: &str| json!({"key":key,"name":"shell","agent_name":null,"parent":null,"inherit_raid":true});
-        assert_eq!(
-            d.sandbox_control("root", "sessions.start", child("k1"))
-                .unwrap_err(),
-            (-32009, "parent is not in a raid".into())
-        );
-        assert!(d.launches.is_empty());
+        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
+            &path.join("current.json"),
+        )));
+        let member = |key: &str| json!({"key":key,"name":"shell","agent_name":null});
         d.sandbox_control("root", "raids.create", json!({"raid":"review"}))
             .unwrap();
         let before = d.raid_outbox.len();
         let accepted = d
-            .sandbox_control("root", "sessions.start", child("k1"))
+            .sandbox_control("root", "sessions.start", member("k1"))
             .unwrap();
         let id = accepted["session"].as_str().unwrap().to_string();
         assert_eq!(d.sessions[&id].record.state, "starting");
@@ -4963,34 +4965,18 @@ mod tests {
         assert_eq!(d.raid_outbox.len(), before + 1);
         // An identical retry returns the original acceptance without joining.
         assert_eq!(
-            d.sandbox_control("root", "sessions.start", child("k1"))
+            d.sandbox_control("root", "sessions.start", member("k1"))
                 .unwrap(),
             accepted
         );
         assert_eq!(d.raid_outbox.len(), before + 1);
-        // Direct children only; other branches are not even visible.
-        assert_eq!(
-            d.sandbox_control("root", "raids.invite", json!({"sessions":["kid/grandkid"]}))
-                .unwrap_err(),
-            (-32602, "only direct children can be invited".into())
-        );
+        // Sandboxes invite nobody: the host invites, owners run members.
         assert_eq!(
             d.sandbox_control("root", "raids.invite", json!({"sessions":["other"]}))
                 .unwrap_err()
                 .0,
-            -32004
+            -32601
         );
-        assert_eq!(
-            d.sandbox_control("root", "raids.invite", json!({"sessions":["kid"]}))
-                .unwrap()["owner"],
-            "root"
-        );
-        // The invited child may invite its own child; ownership is unchanged.
-        let record = d
-            .sandbox_control("kid", "raids.invite", json!({"sessions":["grandkid"]}))
-            .unwrap();
-        assert_eq!(record["owner"], "root");
-        assert_eq!(record["members"].as_array().unwrap().len(), 4);
         // A goblin in another raid cannot be moved.
         d.sandbox_control("other", "raids.create", json!({"raid":"elsewhere"}))
             .unwrap();
@@ -5038,8 +5024,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let _b = live(&mut d, "b", None);
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
         session_with_results_id(&mut d, "dead", vec![]);
         d.sessions.get_mut("dead").unwrap().record.state = "stopped".into();
         for (sessions, code) in [
@@ -5126,8 +5112,8 @@ mod tests {
         let (service, queue) = crate::messaging::Service::detached(1);
         d.messaging = service;
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let _b = live(&mut d, "b", None);
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
         d.tick().unwrap();
         assert!(sent(&queue).is_empty());
         // Sent even though the directory is unchanged.
