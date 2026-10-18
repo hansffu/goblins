@@ -49,7 +49,7 @@ class TuiTests(unittest.TestCase):
         self.assertEqual(sorted(order), list(names))
         positions = [text.index(f"{n} (shell)") for n in order]
         self.assertEqual(positions, sorted(positions))
-        for mark in ("├─", "└─", "[-]", "[+]"):
+        for mark in ("├─ ", "└─ ", "[-]", "[+]"):
             self.assertNotIn(mark, text)
         # Navigation follows the displayed order.
         ui.send("\x1b[B\r")

@@ -196,7 +196,11 @@ class RaidTests(unittest.TestCase):
         self.assertEqual(self.sandbox(x, "messages.get", {"message": question["id"]})["body"], "question")
         self.sandbox(x, "inbox.complete", {"key": "complete", "message": question["id"],
                                            "claim_generation": claim["claim_generation"]})
-        self.assertEqual(self.send(x, "z")["recipient"], z)
+        hello = self.send(x, "z")
+        self.assertEqual(hello["recipient"], z)
+        claimed = self.sandbox(z, "inbox.next", {"key": "hello"})["message"]
+        self.sandbox(z, "inbox.complete", {"key": "hello-done", "message": hello["id"],
+                                           "claim_generation": claimed["claim_generation"]})
         # The owner exiting pauses the raid and stops nobody else.
         launch = dict(owner, terminal=self.d.get(owner["session"])["terminal"])
         peer = self.d.terminal(launch)

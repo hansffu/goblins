@@ -96,9 +96,12 @@ class DevShellTests(unittest.TestCase):
     def test_members_cannot_choose_a_dev_shell(self):
         # A member runs in its owner's dev shell; a run request names none.
         owner = self.d.start()["session"]
+        # A sandbox connection answers one call after initialize.
+        peer = RPC(self.d.state / owner / "resources/request.sock")
+        peer.call("raids.create", {"raid": "crew"})
+        peer.close()
         peer = RPC(self.d.state / owner / "resources/request.sock")
         self.addCleanup(peer.close)
-        peer.call("raids.create", {"raid": "crew"})
         with self.assertRaisesRegex(Exception, "unknown field `dev_shell`"):
             peer.call("sessions.start", {"key": uuid.uuid4().hex, "name": "shell",
                                          "dev_shell": str(self.project), "detached": True})
