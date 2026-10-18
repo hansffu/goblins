@@ -51,16 +51,26 @@ pub(super) enum Work {
 pub(super) struct Recreate {
     /// Approved package names, in grant order.
     pub packages: Vec<String>,
+    /// Auto-approved names, resolved again but not mounted.
+    pub auto_approve: Vec<String>,
     pub docker: bool,
     pub variables: std::collections::BTreeMap<String, String>,
 }
 /// What recreating staged, for the controller's hand-over.
 pub(super) struct Recreated {
     pub packages: Vec<(String, PathBuf)>,
+    /// Recorded auto-approved names, resolved and rooted.
+    pub auto_approve: Vec<(String, PathBuf)>,
     /// What could not be restored, and why.
     pub skipped: Vec<crate::history::Skipped>,
     /// Why the agent starts a fresh conversation despite a resume command.
     pub fresh: Option<String>,
+}
+/// The auto-approve set a session rooted for itself before it started.
+#[derive(Default)]
+pub(super) struct Auto {
+    pub rooted: Vec<(String, PathBuf)>,
+    pub skipped: Vec<crate::history::Skipped>,
 }
 pub(super) enum Completed {
     Preview {
@@ -80,7 +90,8 @@ pub(super) enum Completed {
         identity: Identity,
         inheritance: Inheritance,
         exit_watch: OwnedFd,
-        recreated: Option<Recreated>,
+        recreated: Option<Box<Recreated>>,
+        auto: Box<Auto>,
     },
     Progress {
         request: String,
@@ -136,6 +147,8 @@ pub(super) enum Source {
     Child {
         inherited: Inheritance,
         configuration: String,
+        /// Approvals copied from the parent, by exact output.
+        auto: std::collections::BTreeMap<String, PathBuf>,
     },
 }
 impl Worker {
@@ -150,12 +163,17 @@ impl Worker {
                 // Disk reads and launch adaptation stay off the event pump.
                 token.check()?;
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
-                let mut recreated = None;
+                let mut recreated: Option<Recreated> = None;
+                let mut copied = std::collections::BTreeMap::new();
                 let mut session = match source {
                     Source::Child {
                         inherited,
                         configuration,
-                    } => Session::child(inherited, &configuration, token.clone(), directory)?,
+                        auto,
+                    } => {
+                        copied = auto;
+                        Session::child(inherited, &configuration, token.clone(), directory)?
+                    }
                     Source::Host {
                         configuration,
                         name,
@@ -219,6 +237,22 @@ impl Worker {
                         session
                     }
                 };
+                // Root copied outputs here, while the source still holds the
+                // directory whose roots kept them, so they outlive it.
+                let mut auto = Auto::default();
+                for (name, output) in copied {
+                    token.check()?;
+                    match session.root(&output) {
+                        Ok(output) => auto.rooted.push((name, output)),
+                        Err(error) => auto.skipped.push(crate::history::Skipped::new(
+                            &format!("auto-approve {name}"),
+                            &error.to_string(),
+                        )),
+                    }
+                }
+                if let Some(recreated) = &mut recreated {
+                    auto.rooted.append(&mut recreated.auto_approve);
+                }
                 if let Err(error) = session.start(Some(slave)) {
                     // Bubblewrap writes setup errors to the payload terminal,
                     // which is not handed to the event pump until Started.
@@ -252,7 +286,8 @@ impl Worker {
                     identity: session.identity.clone().unwrap(),
                     inheritance: session.inheritance(),
                     exit_watch: session.exit_watch()?,
-                    recreated,
+                    recreated: recreated.map(Box::new),
+                    auto: Box::new(auto),
                 })?;
                 loop {
                     if token.check().is_err() || !session.alive() {
@@ -474,6 +509,9 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     }
     let (mut packages, unresolved) = session.resolve_recorded(&recreate.packages)?;
     skipped.extend(unresolved);
+    // Resolved and rooted like grants, but only mounted once requested.
+    let (auto_approve, unresolved) = session.resolve_recorded(&recreate.auto_approve)?;
+    skipped.extend(unresolved);
     let room = 128usize.saturating_sub(session.launch.initial_packages.len());
     if packages.len() > room {
         for (name, _) in packages.split_off(room) {
@@ -500,6 +538,7 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     );
     Ok(Recreated {
         packages,
+        auto_approve,
         skipped,
         fresh,
     })

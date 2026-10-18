@@ -13,7 +13,7 @@ use goblins_protocol::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
     io::{self, Read, Write},
     os::fd::{AsRawFd, OwnedFd},
@@ -72,6 +72,10 @@ pub struct SessionRecord {
     pub identity: Option<Identity>,
     pub initial_packages: Vec<String>,
     pub packages: Vec<String>,
+    /// Packages granted on request without asking the host, copied from the
+    /// goblin that started this one.
+    #[serde(default)]
+    pub auto_approve: Vec<String>,
     pub terminal: String,
     pub pty_eof: bool,
     pub terminal_complete: bool,
@@ -177,6 +181,10 @@ struct Active {
     /// The private channel to the sandbox's goblins-init.
     init: Option<OwnedFd>,
     granted_outputs: BTreeMap<String, PathBuf>,
+    /// Auto-approved packages, by exact output, rooted by the session itself.
+    auto_approve: BTreeMap<String, PathBuf>,
+    /// Dev-shell generations a refresh may move to without asking.
+    auto_approve_dev_shells: BTreeSet<String>,
     /// Identity of the current trusted dev shell generation.
     dev_identity: Option<String>,
     call: Option<Call>,
@@ -468,6 +476,14 @@ type Fault = (i32, String);
 /// Permission states the snapshot keeps whatever its size: the request still
 /// waits for, or is being carried out after, a decision.
 const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing", "running"];
+/// Dev-shell generations an auto-approve set holds.
+const AUTO_DEV_SHELLS: usize = 32;
+/// Approvals copied to a goblin when it is started.
+#[derive(Clone, Debug, Default)]
+struct AutoApprove {
+    packages: BTreeMap<String, PathBuf>,
+    dev_shells: BTreeSet<String>,
+}
 fn params<T: DeserializeOwned>(v: Value) -> std::result::Result<T, Fault> {
     serde_json::from_value(v).map_err(|e| (-32602, e.to_string()))
 }
@@ -855,6 +871,12 @@ impl Controller {
                     let _ = merged.approve(package);
                 }
             }
+            // Never over the merged record's own decisions.
+            for package in &other.packages.auto_approve {
+                if !merged.packages.denied.contains(package) {
+                    let _ = merged.auto(package);
+                }
+            }
             merged.created = merged.created.min(other.created);
         }
         merged.updated = crate::messaging::now();
@@ -1222,20 +1244,45 @@ impl Controller {
         }
         self.stop(id, reason)
     }
-    /// Approval inheritance is deliberately isolated here: it applies downward
-    /// on request, never mounts packages proactively or grants them upward.
-    fn inherits_package(&self, session: &str, package: &str) -> Option<PathBuf> {
-        let mut current = Some(session);
-        while let Some(id) = current {
-            let a = self.sessions.get(id)?;
-            if let Some(output) = a.granted_outputs.get(package) {
-                // Reuse the exact granted store output; approval inheritance
-                // must not resolve a possibly changed attribute a second time.
-                return Some(output.clone());
-            }
-            current = a.record.parent.as_deref();
+    /// A package granted without asking: the session's own grant, or one in
+    /// its auto-approve set. Never resolved again, never mounted proactively.
+    fn auto_output(&self, session: &str, package: &str) -> Option<PathBuf> {
+        let a = self.sessions.get(session)?;
+        a.granted_outputs
+            .get(package)
+            .or_else(|| a.auto_approve.get(package))
+            .cloned()
+    }
+    /// What a goblin started by `parent` may be granted without asking: the
+    /// parent's approvals and its own auto-approve sets, copied now. Refused
+    /// rather than truncated beyond the bounds.
+    fn copied_approvals(&self, parent: &str) -> std::result::Result<AutoApprove, Fault> {
+        let a = &self.sessions[parent];
+        let mut packages = a.auto_approve.clone();
+        packages.extend(a.granted_outputs.clone());
+        let mut dev_shells = a.auto_approve_dev_shells.clone();
+        dev_shells.extend(a.dev_identity.clone());
+        if packages.len() > crate::history::MAX_NAMES {
+            return Err((
+                -32010,
+                format!(
+                    "the owner's approvals exceed the auto-approve limit of {} packages",
+                    crate::history::MAX_NAMES
+                ),
+            ));
         }
-        None
+        if dev_shells.len() > AUTO_DEV_SHELLS {
+            return Err((
+                -32010,
+                format!(
+                    "the owner's approvals exceed the auto-approve limit of {AUTO_DEV_SHELLS} dev shells"
+                ),
+            ));
+        }
+        Ok(AutoApprove {
+            packages,
+            dev_shells,
+        })
     }
     fn detach(&mut self, id: &str) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
@@ -1404,6 +1451,10 @@ impl Controller {
         if let Some(inherited) = &inherited {
             inherited.permit(&p.name).map_err(|e| (-32602, e))?;
         }
+        let approvals = match &parent {
+            Some(id) => self.copied_approvals(id)?,
+            None => AutoApprove::default(),
+        };
         if let Some((old, result)) = self.launches.get(&key) {
             return if old == &p {
                 Ok(result.clone())
@@ -1468,6 +1519,7 @@ impl Controller {
             Some(inherited) => Source::Child {
                 inherited,
                 configuration: p.name.clone(),
+                auto: approvals.packages.clone(),
             },
             None => Source::Host {
                 configuration: p.configuration.clone().into(),
@@ -1480,6 +1532,7 @@ impl Controller {
                 history: self.history_directory.clone(),
                 recreate: recorded.as_ref().map(|r| crate::worker::Recreate {
                     packages: r.packages.approved.clone(),
+                    auto_approve: r.packages.auto_approve.clone(),
                     docker: r.docker_enabled,
                     variables: r.variables.clone(),
                 }),
@@ -1512,6 +1565,7 @@ impl Controller {
             identity: None,
             initial_packages: vec![],
             packages: vec![],
+            auto_approve: approvals.packages.keys().cloned().collect(),
             terminal: path.display().to_string(),
             pty_eof: false,
             terminal_complete: false,
@@ -1536,6 +1590,8 @@ impl Controller {
                 exit_watch: None,
                 init: None,
                 granted_outputs: BTreeMap::new(),
+                auto_approve: approvals.packages,
+                auto_approve_dev_shells: approvals.dev_shells,
                 dev_identity: None,
                 call: None,
                 variables: recorded
@@ -1769,7 +1825,7 @@ impl Controller {
         }
         let request = self.permissions.iter().find(|r| r.id == p.request).unwrap();
         let inherited = if request.kind == "package" {
-            self.inherits_package(&p.session, &request.package)
+            self.auto_output(&p.session, &request.package)
         } else {
             None
         };
@@ -1824,20 +1880,13 @@ impl Controller {
         self.dirty = true;
         Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
     }
-    /// A refresh to a generation this sandbox or an ancestor already has
-    /// grants no new trust: the host launched or approved that generation.
-    fn inherits_dev_shell(&self, session: &str, identity: &str) -> bool {
-        let mut current = Some(session);
-        while let Some(id) = current {
-            let Some(a) = self.sessions.get(id) else {
-                return false;
-            };
-            if a.dev_identity.as_deref() == Some(identity) {
-                return true;
-            }
-            current = a.record.parent.as_deref();
-        }
-        false
+    /// A refresh to this sandbox's current generation, or to one in its
+    /// auto-approve set, grants no new trust: the host launched or approved it.
+    fn auto_dev_shell(&self, session: &str, identity: &str) -> bool {
+        self.sessions.get(session).is_some_and(|a| {
+            a.dev_identity.as_deref() == Some(identity)
+                || a.auto_approve_dev_shells.contains(identity)
+        })
     }
     fn approve_inherited_requests(&mut self) {
         let decisions: Vec<_> = self
@@ -1852,10 +1901,10 @@ impl Controller {
                                 return p
                                     .dev_identity
                                     .as_deref()
-                                    .is_some_and(|i| self.inherits_dev_shell(&r.session, i));
+                                    .is_some_and(|i| self.auto_dev_shell(&r.session, i));
                             }
                             p.initial_output.is_some()
-                                || self.inherits_package(&r.session, &r.package).is_some()
+                                || self.auto_output(&r.session, &r.package).is_some()
                         })
                 })
             })
@@ -2323,7 +2372,7 @@ impl Controller {
                     let request = format!("{}-r{serial}", self.instance);
                     let approval = format!("{}-a{serial}", self.instance);
                     let inherited_output = if p.kind == "package" {
-                        self.inherits_package(&session, &p.package)
+                        self.auto_output(&session, &p.package)
                     } else {
                         None
                     };
@@ -2616,6 +2665,7 @@ impl Controller {
                         inheritance,
                         exit_watch,
                         recreated,
+                        auto,
                     } => {
                         a.init = Some(control);
                         // Recreated grants are this goblin's own: children
@@ -2632,6 +2682,11 @@ impl Controller {
                                 bounded(&format!("resumed in a fresh conversation: {reason}"))
                             });
                         }
+                        // Only outputs the session rooted itself stay
+                        // auto-approved; the others are skipped.
+                        a.auto_approve = auto.rooted.into_iter().collect();
+                        a.record.auto_approve = a.auto_approve.keys().cloned().collect();
+                        a.record.skipped.extend(auto.skipped);
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = scope;
                         a.record.dev_shell = dev_shell;
@@ -2994,6 +3049,7 @@ fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::
         Some(record) => record.clone(),
         None => crate::history::Record::new(&a.line, &a.record.name, &a.record.agent_name, now),
     };
+    record.version = crate::history::VERSION;
     record.ran_as(&a.record.id);
     record.configuration = a.record.name.clone();
     record.agent_name = a.record.agent_name.clone();
@@ -3009,6 +3065,9 @@ fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::
     for package in &a.record.packages {
         // A full record keeps what fits, as a live grant would.
         let _ = record.approve(package);
+    }
+    for package in &a.record.auto_approve {
+        let _ = record.auto(package);
     }
     record
 }
@@ -3125,6 +3184,8 @@ mod tests {
                 exit_watch: None,
                 init: None,
                 granted_outputs: BTreeMap::new(),
+                auto_approve: BTreeMap::new(),
+                auto_approve_dev_shells: BTreeSet::new(),
                 dev_identity: None,
                 call: None,
                 recreated_from: None,
@@ -3150,6 +3211,7 @@ mod tests {
                     identity: None,
                     initial_packages: vec![],
                     packages: vec![],
+                    auto_approve: vec![],
                     terminal: String::new(),
                     pty_eof: false,
                     terminal_complete: false,
@@ -4602,6 +4664,55 @@ mod tests {
         assert_eq!(events.last().unwrap().1["reason"], "empty");
         assert_eq!(d.permission_mut(&prompt.id).unwrap().state, "cancelled");
         assert!(d.snapshot().raids.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn approvals_are_copied_once_within_bounds() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a", None);
+        live(&mut d, "b", None);
+        let output = |name: &str| PathBuf::from(format!("/nix/store/{}-{name}", "0".repeat(32)));
+        let a = d.sessions.get_mut("a").unwrap();
+        a.granted_outputs.insert("jq".into(), output("jq"));
+        a.auto_approve.insert("rg".into(), output("rg"));
+        a.dev_identity = Some("dev-1".into());
+        let copied = d.copied_approvals("a").unwrap();
+        assert_eq!(copied.packages.keys().collect::<Vec<_>>(), ["jq", "rg"]);
+        assert_eq!(copied.dev_shells, BTreeSet::from(["dev-1".to_string()]));
+        let b = d.sessions.get_mut("b").unwrap();
+        b.auto_approve = copied.packages;
+        b.auto_approve_dev_shells = copied.dev_shells;
+        b.granted_outputs.insert("own".into(), output("own"));
+        assert_eq!(d.auto_output("b", "jq"), Some(output("jq")));
+        assert_eq!(d.auto_output("b", "own"), Some(output("own")));
+        assert!(d.auto_dev_shell("b", "dev-1"));
+        // Copied once: a later grant to the owner does not reach it.
+        d.sessions
+            .get_mut("a")
+            .unwrap()
+            .granted_outputs
+            .insert("htop".into(), output("htop"));
+        assert_eq!(d.auto_output("b", "htop"), None);
+        assert!(!d.auto_dev_shell("b", "dev-2"));
+        // Beyond the bounds a launch is refused, never truncated.
+        let a = d.sessions.get_mut("a").unwrap();
+        for i in 0..crate::history::MAX_NAMES {
+            a.auto_approve
+                .insert(format!("p{i}"), output(&format!("p{i}")));
+        }
+        assert_eq!(d.copied_approvals("a").err().unwrap().0, -32010);
+        let a = d.sessions.get_mut("a").unwrap();
+        a.auto_approve.clear();
+        a.auto_approve_dev_shells = (0..AUTO_DEV_SHELLS).map(|i| format!("old-{i}")).collect();
+        assert!(
+            d.copied_approvals("a")
+                .err()
+                .unwrap()
+                .1
+                .contains("32 dev shells")
+        );
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

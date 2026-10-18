@@ -321,23 +321,23 @@ class OwnershipTests(unittest.TestCase):
                 "parent": parent["session"], "rows": 24, "cols": 80,
             })
 
-    def test_package_approvals_flow_downward_only_on_request(self):
+    def test_approvals_are_copied_to_goblins_started_later(self):
         root = self.d.start()
         child = self.child(root)
         sibling = self.child(root, "sibling")
-        leaf = self.child(child, "leaf")
         request, permission = self.d.pending(child["session"])
         self.addCleanup(request.close)
         self.d.decide(permission, True)
         request.peer.settimeout(120)
         self.assertEqual(receive(request.peer)["result"]["status"], "ready")
         self.assertEqual(self.d.get(root["session"])["packages"], [])
-        self.assertEqual(self.d.get(sibling["session"])["packages"], [])
-        self.assertEqual(self.d.get(leaf["session"])["packages"], [])
-        # A deeper descendant can use the approval even before its immediate
-        # parent has requested (and mounted) that package.
+        # Goblins it starts afterwards get the approval as auto-approve, and
+        # pass it on; nothing is mounted until they ask.
+        leaf = self.child(child, "leaf")
         deeper = self.child(leaf, "deeper")
         for descendant in (deeper, leaf):
+            record = self.d.get(descendant["session"])
+            self.assertEqual((record["packages"], record["auto_approve"]), ([], ["hello"]))
             peer = RPC(self.d.state / descendant["session"] / "resources/request.sock")
             self.addCleanup(peer.close)
             peer.peer.settimeout(120)
@@ -345,23 +345,31 @@ class OwnershipTests(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             record = self.d.rpc.call("permissions.get", {"request": result["request"]})
             self.assertTrue(record["approved"])
+        # A repeated request is the goblin's own grant.
+        peer = RPC(self.d.state / leaf["session"] / "resources/request.sock")
+        self.addCleanup(peer.close)
+        peer.peer.settimeout(120)
+        self.assertEqual(peer.call("permissions.request", {"kind": "package", "package": "hello",
+                                                           "reason": "again"})["status"], "ready")
+        # Goblins started before, and the one that started it, still ask.
         for unapproved in (root, sibling):
             peer, record = self.d.pending(unapproved["session"])
             self.addCleanup(peer.close)
             self.assertIsNone(record["approved"])
             self.d.decide(record, False)
             self.assertEqual(receive(peer.peer)["result"]["status"], "denied")
-        # Existing pending requests become eligible when an ancestor gains it.
-        pending, waiting = self.d.pending(leaf["session"], "cowsay")
-        self.addCleanup(pending.close)
-        parent_request, parent_permission = self.d.pending(root["session"], "cowsay")
+        # Copied once: a later grant to an owner does not reach existing goblins.
+        parent_request, parent_permission = self.d.pending(child["session"], "cowsay")
         self.addCleanup(parent_request.close)
         self.d.decide(parent_permission, True)
         parent_request.peer.settimeout(120)
-        pending.peer.settimeout(120)
         self.assertEqual(receive(parent_request.peer)["result"]["status"], "ready")
-        self.assertEqual(receive(pending.peer)["result"]["status"], "ready")
-        self.assertEqual(self.d.get(child["session"])["packages"], ["hello"])
+        pending, waiting = self.d.pending(leaf["session"], "cowsay")
+        self.addCleanup(pending.close)
+        self.assertIsNone(waiting["approved"])
+        self.d.decide(waiting, False)
+        self.assertEqual(receive(pending.peer)["result"]["status"], "denied")
+        self.assertEqual(self.d.get(child["session"])["packages"], ["hello", "cowsay"])
 
 
 def build(root, check):
@@ -544,12 +552,12 @@ class AllowedChildrenTests(ChildrenFixture):
 
     def test_parent_approvals_reach_a_different_configuration_on_request(self):
         root = self.start_root()
-        child = self.launch(root, "reviewer")
         request, permission = self.d.pending(root["session"])
         self.addCleanup(request.close)
         self.d.decide(permission, True)
         request.peer.settimeout(120)
         self.assertEqual(receive(request.peer)["result"]["status"], "ready")
+        child = self.launch(root, "reviewer")
         self.assertEqual(self.d.get(child["session"])["packages"], [])
         peer = RPC(self.d.state / child["session"] / "resources/request.sock")
         self.addCleanup(peer.close)

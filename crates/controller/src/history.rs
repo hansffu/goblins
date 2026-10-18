@@ -15,7 +15,9 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+/// Older versions read as the current one, which they are a subset of.
+const READABLE: &[u32] = &[1, VERSION];
 /// Records kept by default; `goblins server start --keep-sessions N`.
 pub const DEFAULT_KEEP: usize = 100;
 /// Names per package list.
@@ -30,6 +32,10 @@ pub struct Packages {
     pub approved: Vec<String>,
     /// Names the host explicitly denied; information only.
     pub denied: Vec<String>,
+    /// Names granted on request without asking, copied from the goblin that
+    /// started this one. Disjoint from the other lists.
+    #[serde(default)]
+    pub auto_approve: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -190,7 +196,10 @@ impl Record {
         if next == *self {
             return Ok(false);
         }
-        if next.packages.approved.len() > MAX_NAMES || next.packages.denied.len() > MAX_NAMES {
+        if next.packages.approved.len() > MAX_NAMES
+            || next.packages.denied.len() > MAX_NAMES
+            || next.packages.auto_approve.len() > MAX_NAMES
+        {
             return Err(format!(
                 "the record holds at most {MAX_NAMES} package names per list"
             ));
@@ -208,21 +217,36 @@ impl Record {
         Ok(true)
     }
     /// A grant that reached `ready`. Its latest final outcome decides the
-    /// list, so a denied name moves to `approved`.
+    /// list, so a denied or auto-approved name moves to `approved`.
     pub fn approve(&mut self, name: &str) -> std::result::Result<bool, String> {
         self.update(|r| {
             r.packages.denied.retain(|n| n != name);
+            r.packages.auto_approve.retain(|n| n != name);
             if !r.packages.approved.iter().any(|n| n == name) {
                 r.packages.approved.push(name.into());
             }
         })
     }
-    /// An explicit host denial.
+    /// An explicit host denial, the latest final outcome for that name.
     pub fn deny(&mut self, name: &str) -> std::result::Result<bool, String> {
         self.update(|r| {
             r.packages.approved.retain(|n| n != name);
+            r.packages.auto_approve.retain(|n| n != name);
             if !r.packages.denied.iter().any(|n| n == name) {
                 r.packages.denied.push(name.into());
+            }
+        })
+    }
+    /// Authority copied when the goblin was started: kept unless the name is
+    /// already approved, and it clears an older denial.
+    pub fn auto(&mut self, name: &str) -> std::result::Result<bool, String> {
+        self.update(|r| {
+            if r.packages.approved.iter().any(|n| n == name) {
+                return;
+            }
+            r.packages.denied.retain(|n| n != name);
+            if !r.packages.auto_approve.iter().any(|n| n == name) {
+                r.packages.auto_approve.push(name.into());
             }
         })
     }
@@ -699,7 +723,9 @@ pub fn load(directory: &Path) -> Result<BTreeMap<String, Record>> {
             continue;
         }
         match read(&entry.path()) {
-            Ok(record) if record.id == id && record.version == VERSION => {
+            Ok(mut record) if record.id == id && READABLE.contains(&record.version) => {
+                // Written back as the current version.
+                record.version = VERSION;
                 records.insert(id.to_string(), record);
             }
             Ok(_) => eprintln!("goblins: ignoring session record {name}: unexpected id or version"),
@@ -832,6 +858,52 @@ mod tests {
         assert_eq!(r.approve("jq"), Ok(true));
         assert_eq!(r.packages.approved, ["ripgrep", "jq"]);
         assert_eq!(r.packages.denied, ["nmap"]);
+    }
+    #[test]
+    fn auto_approve_yields_to_explicit_outcomes_and_v1_records_read_as_v2() {
+        let mut r = record("a", 1);
+        r.deny("nmap").unwrap();
+        r.approve("jq").unwrap();
+        // Copied authority clears an older denial but never an approval.
+        assert_eq!(r.auto("nmap"), Ok(true));
+        assert_eq!(r.auto("jq"), Ok(false));
+        assert_eq!(r.auto("htop"), Ok(true));
+        assert_eq!(r.packages.auto_approve, ["nmap", "htop"]);
+        assert!(r.packages.denied.is_empty());
+        // Explicit outcomes move a name out of auto_approve.
+        r.approve("htop").unwrap();
+        r.deny("nmap").unwrap();
+        assert_eq!(r.packages.approved, ["jq", "htop"]);
+        assert_eq!(r.packages.denied, ["nmap"]);
+        assert!(r.packages.auto_approve.is_empty());
+        // An approved name that failed to restore stays approved; a host
+        // denial of its new request removes it, so it is not restored again.
+        r.deny("jq").unwrap();
+        assert_eq!(r.packages.approved, ["htop"]);
+        assert_eq!(r.packages.denied, ["nmap", "jq"]);
+        // A version 1 record has no auto_approve and is read as version 2.
+        let (_store, root) = store();
+        let directory = root.join("v1");
+        fs::create_dir(&directory).unwrap();
+        let mut v1 = serde_json::to_value(record("old", 1)).unwrap();
+        v1["version"] = 1.into();
+        v1["packages"]
+            .as_object_mut()
+            .unwrap()
+            .remove("auto_approve");
+        fs::write(directory.join("old.json"), v1.to_string()).unwrap();
+        let mut v3 = v1.clone();
+        v3["version"] = 3.into();
+        fs::write(
+            directory.join("new.json"),
+            v3.to_string().replace("\"old\"", "\"new\""),
+        )
+        .unwrap();
+        let loaded = load(&directory).unwrap();
+        assert_eq!(loaded.keys().collect::<Vec<_>>(), ["old"]);
+        assert_eq!(loaded["old"].version, VERSION);
+        assert!(loaded["old"].packages.auto_approve.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn limits_leave_the_record_unchanged() {
