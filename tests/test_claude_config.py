@@ -9,7 +9,7 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT, RPC
+from daemon_support import Daemon, ROOT
 from support import FLAKE, command
 from terminal_support import Terminal
 
@@ -56,13 +56,6 @@ class ClaudeConfigTests(unittest.TestCase):
         self.addCleanup(terminal.close)
         return terminal
 
-    def sandbox(self, session, method, params):
-        peer = RPC(self.d.state / session / "resources/request.sock")
-        try:
-            return peer.call(method, params)
-        finally:
-            peer.close()
-
     def hook(self, terminal, event, **extra):
         handler = self.settings["hooks"][event][0]["hooks"][0]["command"]
         payload = json.dumps({"hook_event_name": event, **extra})
@@ -105,11 +98,11 @@ class ClaudeConfigTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)SECRET=1\n")
         terminal.send("goblin status\n")
         terminal.expect("Agent permission bypass: not requested")
-        parent = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
-        integration = self.d.rpc.call("integration.status", {"session": parent})
+        owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        integration = self.d.rpc.call("integration.status", {"session": owner})
         self.assertEqual(integration["driver"], "claude")
         self.assertEqual(integration["state"], "starting")
-        activity = lambda: self.d.get(parent)["agent_state"]
+        activity = lambda: self.d.get(owner)["agent_state"]
         self.assertEqual(self.hook(terminal, "SessionStart"), {})
         self.assertEqual(activity(), "idle")
         self.assertEqual(
@@ -138,21 +131,15 @@ class ClaudeConfigTests(unittest.TestCase):
         self.assertEqual(self.hook(terminal, "Stop"), {})
         self.assertEqual(activity(), "idle")
         self.assertEqual(
-            self.d.rpc.call("integration.status", {"session": parent})["activity"], "idle"
+            self.d.rpc.call("integration.status", {"session": owner})["activity"], "idle"
         )
-        self.d.rpc.call("messages.send", {"key": "task", "to": parent, "body": "private body"})
+        self.d.rpc.call("messages.send", {"key": "task", "to": owner, "body": "private body"})
         continuation = self.hook(terminal, "Stop")
         self.assertEqual(continuation["decision"], "block")
         self.assertNotIn("private body", json.dumps(continuation))
         self.assertEqual(self.hook(terminal, "Stop", stop_hook_active=True), {})
-        child = self.sandbox(parent, "sessions.start", {
-            "key": uuid.uuid4().hex,
-            "name": "claude",
-            "agent_name": "scout",
-            "detached": True,
-        })["session"]
-        self.d.wait(lambda: self.d.get(child)["state"] == "running")
-        attached = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        member = self.d.member(owner, "claude", agent_name="scout")["session"]
+        attached = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(attached.close)
         attached.expect("CLAUDE_DIR=" + re.escape(str(self.claude)))
         replacement = self.claude / "replacement"

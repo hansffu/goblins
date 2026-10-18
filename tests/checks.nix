@@ -525,7 +525,7 @@ in
           ];
           scope = default;
           allowedScopes = allowedScopes.${name} or [ ];
-          # Children of their own kind (tests/test_docker.py).
+          # Members of their own kind (tests/test_docker.py).
           allowedRunTargets = [ name ];
           allowedPackages = [
             pkgs.coreutils
@@ -594,7 +594,7 @@ in
         );
         allowedDomains = [ ];
         allowedPackages = [ pkgs.python3 ];
-        # A child of its own kind (test_parent_and_child_servers_have_independent_bindings).
+        # A member of its own kind (test_owner_and_member_servers_have_independent_bindings).
         allowedRunTargets = [ "notifier" ];
       };
       profile = mkCodexGoblin {
@@ -926,8 +926,8 @@ in
         plain = member { env.PS1 = "nix-test> "; };
       };
     };
-  # Different child configurations (tests/test_ownership.py).
-  children-goblins =
+  # Raid members with other configurations (tests/test_run_targets.py).
+  run-target-goblins =
     let
       member =
         name: options:
@@ -940,14 +940,14 @@ in
               "--norc"
               "-i"
             ];
-            description = "${name} child configuration";
+            description = "${name} run target";
             allowedPackages = [ pkgs.coreutils ];
             allowedScopes = [ "work" ];
             env = {
-              CHILD_MARKER = name;
-              PS1 = "children-test> ";
+              TARGET_MARKER = name;
+              PS1 = "run-target-test> ";
             };
-            injectedFiles."children-test.conf" = "${name}\n";
+            injectedFiles."run-target-test.conf" = "${name}\n";
           }
           // options
         );
@@ -982,24 +982,18 @@ in
         reviewer = member "reviewer" {
           allowedRunTargets = [ ];
           rwDirs = [ "$GOBLINS_TEST_ROOT/reviewer" ];
-          # Only the reviewer's closure has cowsay, which shows that the
-          # branch retained it rather than the root's own roots.
-          allowedPackages = [
-            pkgs.coreutils
-            pkgs.cowsay
-          ];
         };
         shell = member "shell" { allowedRunTargets = [ "reviewer" ]; };
         unlisted = member "unlisted" { };
         broken = member "broken" { roDirs = [ "$GOBLINS_TEST_ROOT/missing" ]; };
         unscoped = member "unscoped" { allowedScopes = [ ]; };
-        # Attached at start; its "plain" children attach through it.
+        # Attached at start; the "plain" members it runs attach through it.
         attached = member "attached" (docker {
           docker.enable = true;
           allowedRunTargets = [ "plain" ];
         });
         plain = member "plain" (docker { });
-        # Not attached; its "eager" children attach through their own option.
+        # Not attached; the "eager" members it runs attach through their own option.
         detached = member "detached" (docker {
           allowedRunTargets = [ "eager" ];
         });
@@ -1009,12 +1003,12 @@ in
       };
     };
   # A rebuild that removed every configuration but the coordinator.
-  children-goblins-updated = mkGoblins {
+  run-target-goblins-updated = mkGoblins {
     goblins.coordinator = mkGoblin (
       base
       // {
         allowedRunTargets = [ ];
-        env.CHILD_MARKER = "updated";
+        env.TARGET_MARKER = "updated";
       }
     );
   };

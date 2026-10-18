@@ -218,40 +218,31 @@ class DockerTests(unittest.TestCase):
         self.enable(session, terminal)
         self.run_ok(terminal, 'case "$(goblin status)" in *"Docker: enabled"*) true;; *) false;; esac')
 
-    def test_children_inherit_scope_and_activation(self):
+    def test_members_inherit_scope_and_activation(self):
         self.named_storage = True
-        parent, terminal = self.shell("scoped")
-        self.enable(parent, terminal)
+        owner, terminal = self.shell("scoped")
+        self.enable(owner, terminal)
         self.load(terminal)
-        peer = RPC(self.d.state / parent / "resources/request.sock")
-        try:
-            child = peer.call("sessions.start", {"key": "docker-child", "name": "scoped",
-                              "agent_name": "child", "detached": True})["session"]
-        finally:
-            peer.close()
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        member = self.d.member(owner, "scoped", agent_name="helper")["session"]
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
-        self.assertTrue(self.d.get(child)["docker_enabled"])
-        self.assertEqual(self.d.get(child)["scope"], "work")
-        self.assertFalse(self.d.permissions(session=child, state="pending"))
+        self.assertTrue(self.d.get(member)["docker_enabled"])
+        self.assertEqual(self.d.get(member)["scope"], "work")
+        self.assertFalse(self.d.permissions(session=member, state="pending"))
         self.run_ok(other, "docker image inspect goblins-test >/dev/null")
 
-    def test_inactive_parent_joins_child_started_engine(self):
-        parent, terminal = self.shell("plain")
-        peer = RPC(self.d.state / parent / "resources/request.sock")
-        try:
-            child = peer.call("sessions.start", {"key": "lazy-child", "name": "plain", "detached": True})["session"]
-        finally:
-            peer.close()
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+    def test_inactive_owner_joins_member_started_engine(self):
+        owner, terminal = self.shell("plain")
+        member = self.d.member(owner, "plain")["session"]
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
-        self.assertFalse(self.d.get(child)["docker_enabled"])
-        self.enable(child, other); self.load(other)
-        self.assertFalse(self.d.get(parent)["docker_enabled"])
+        self.assertFalse(self.d.get(member)["docker_enabled"])
+        self.enable(member, other); self.load(other)
+        self.assertFalse(self.d.get(owner)["docker_enabled"])
         self.run_ok(terminal, "test ! -S /run/goblins/docker-socket/docker.sock")
-        self.enable(parent, terminal)
+        self.enable(owner, terminal)
         self.assertEqual(len(self.engines()), 1)
         self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
 
@@ -336,16 +327,13 @@ class DockerTests(unittest.TestCase):
         self.enable(second, two)
         self.run_ok(one, "docker run -d --name shared-web -p 18082:8080 goblins-test httpd -f -p 8080 -h /bin")
         self.run_ok(two, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18082/sh -o /dev/null")
-        peer = RPC(self.d.state / second / "resources/request.sock")
-        try:
-            child = peer.call("sessions.start", {"key": "inherited-work", "name": "member", "detached": True})["session"]
-        finally:
-            peer.close()
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        # A goblin it runs inherits the selected scope and its attachment.
+        created = self.d.member(second, "member", key="inherited-work")["session"]
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", created])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
-        self.assertEqual(self.d.get(child)["scope"], "work")
-        self.assertTrue(self.d.get(child)["docker_enabled"])
+        self.assertEqual(self.d.get(created)["scope"], "work")
+        self.assertTrue(self.d.get(created)["docker_enabled"])
         self.run_ok(other, "docker image inspect goblins-test >/dev/null; curl --fail http://127.0.0.1:18082/sh -o /dev/null")
         # The member's default scope has its own engine and network.
         third, three = self.shell("member", cwd=self.rw)

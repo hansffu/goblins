@@ -101,7 +101,7 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         d.wait(lambda: not (d.state / a["session"] / "resources").exists(), timeout=2)
         print("EVIDENCE slow approved build A leaves B responsive; explicit stop reaps only A's owned work", flush=True)
 
-    def test_normal_exit_kills_children_while_package_work_is_blocked(self):
+    def test_normal_exit_while_package_work_is_blocked_leaves_members_running(self):
         for kind in ("preview", "build"):
             with self.subTest(kind=kind):
                 d, marker = self.slow_daemon(kind)
@@ -114,23 +114,22 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
                 ]
                 manifest = marker.parent / "normal-exit.json"
                 manifest.write_text(json.dumps(config))
-                parent = d.start(manifest=manifest)
-                child = d.rpc.call("sessions.start", {
-                    "key": "child", "configuration": d.manifest, "name": "shell",
-                    "parent": parent["session"], "rows": 24, "cols": 80,
-                })
-                d.wait(lambda: d.get(child["session"])["state"] == "running")
-                peer, record = d.pending(parent["session"])
+                owner = d.start(manifest=manifest)
+                # The member runs the same payload, waiting on a terminal
+                # nobody writes to.
+                member = d.member(owner["session"])
+                peer, record = d.pending(owner["session"])
                 self.addCleanup(peer.close)
                 if kind == "build":
                     d.decide(record, True)
                 d.wait(marker.exists)
-                with d.terminal(parent) as terminal:
+                with d.terminal(owner) as terminal:
                     terminal.sendall(b"go\n")
-                    d.wait(lambda: d.get(parent["session"])["state"] == "stopped", timeout=5)
-                d.wait(lambda: d.get(child["session"])["state"] == "stopped", timeout=2)
-                self.assertEqual(d.get(parent["session"])["exit_code"], 7)
+                    d.wait(lambda: d.get(owner["session"])["state"] == "stopped", timeout=5)
+                self.assertEqual(d.get(owner["session"])["exit_code"], 7)
                 self.assert_reaped(d, marker)
+                # Nothing cascades: the owner's exit stops none of its members.
+                self.assertEqual(d.get(member["session"])["state"], "running")
 
     def test_slow_subscriber_disconnects_and_fresh_snapshot_resynchronizes(self):
         d = Daemon(); self.addCleanup(d.close); a = d.start()

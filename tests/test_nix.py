@@ -11,7 +11,7 @@ import threading
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT, RPC
+from daemon_support import Daemon, ROOT
 from support import command
 from terminal_support import Terminal
 
@@ -133,16 +133,13 @@ class NixTests(unittest.TestCase):
         self.assertNotEqual(code, 0, output)
         self.assertIn("nix develop", output)
 
-    def test_a_child_with_another_configuration_has_no_nix(self):
+    def test_a_member_with_another_configuration_has_no_nix(self):
         d = self.daemon()
-        parent = self.launch(d)
-        nixpkgs = self.run_ok(self.attach(d, parent), "printf '%s\\n' \"$NIXPKGS\"").split()[-1]
+        owner = self.launch(d)
+        nixpkgs = self.run_ok(self.attach(d, owner), "printf '%s\\n' \"$NIXPKGS\"").split()[-1]
         self.assertTrue(nixpkgs.startswith("/nix/store/"), nixpkgs)
-        peer = RPC(d.state / parent / "resources/request.sock")
-        self.addCleanup(peer.close)
-        child = peer.call("sessions.start", {"key": "child", "name": "plain", "agent_name": "kid", "detached": True})["session"]
-        d.wait(lambda: d.get(child)["state"] == "running", timeout=60)
-        terminal = self.attach(d, child)
+        member = d.member(owner, "plain", agent_name="kid", key="kid")["session"]
+        terminal = self.attach(d, member)
         self.assertIn("Nix: none", self.run_ok(terminal, "goblin status"))
         self.run_ok(terminal, f"! command -v nix && ! test -e {DEFAULT_SOCKET} && ! test -e {nixpkgs}")
 

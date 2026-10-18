@@ -74,13 +74,6 @@ class HostCommandTests(unittest.TestCase):
     def record(self, request):
         return next(r for r in self.d.permissions() if r["id"] == request)
 
-    def sandbox(self, session, method, params):
-        peer = RPC(self.d.state / session / "resources/request.sock")
-        try:
-            return peer.call(method, params)
-        finally:
-            peer.close()
-
     def test_an_approved_command_runs_on_the_host_and_streams_its_output(self):
         session, terminal = self.launch()
         self.assertIn("Host commands: available after approval", self.run_in(terminal, "goblin status")[0])
@@ -219,12 +212,11 @@ class HostCommandTests(unittest.TestCase):
         self.assertEqual(self.d.get(session)["state"], "running")
 
     def test_requests_are_shown_whole_or_refused_and_views_stay_healthy(self):
-        parent, _ = self.launch()
-        sessions = [parent]
+        owner, _ = self.launch()
+        sessions = [owner]
         for i in range(12):
-            # The request socket answers one call per connection.
-            sessions.append(self.sandbox(parent, "sessions.start", {
-                "key": f"c{i}", "name": "host", "agent_name": f"kid{i}", "detached": True})["session"])
+            # Raid members the owner runs, each asking on its own socket.
+            sessions.append(self.d.member(owner, "host", agent_name=f"kid{i}", key=f"c{i}", wait=False)["session"])
         self.d.wait(lambda: all(self.d.get(s)["state"] == "running" for s in sessions), timeout=120)
 
         def request(session, quotes):

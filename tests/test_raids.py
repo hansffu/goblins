@@ -1,6 +1,7 @@
 """Raids through real daemon sockets, sandboxes and CLIs.
 
-A raid only lets members find and message each other; it grants nothing else.
+A raid lets members find and message each other, and its owner run and stop
+the members it creates; it grants nothing else.
 No coding agents, model calls, or subscription credentials are used here.
 """
 import json
@@ -38,14 +39,8 @@ class RaidTests(unittest.TestCase):
         return subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), *args],
                               capture_output=True, text=True, timeout=20)
 
-    def child(self, parent, name, **extra):
-        launch = self.sandbox(parent, "sessions.start", {
-            "key": uuid.uuid4().hex, "name": "shell", "agent_name": name, "detached": True, **extra,
-        })
-        record = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
-                             timeout=60)
-        self.assertEqual(record["state"], "running", record)
-        return launch["session"]
+    def member(self, owner, name):
+        return self.d.member(owner, agent_name=name)["session"]
 
     def send(self, sender, to, body="hello"):
         return self.sandbox(sender, "messages.send", {"key": uuid.uuid4().hex, "to": to, "body": body})
@@ -68,17 +63,17 @@ class RaidTests(unittest.TestCase):
         self.assertEqual(invited.returncode, 0, invited.stderr)
         record = json.loads(invited.stdout)
         self.assertEqual(record["owner"], alpha)
-        self.assertEqual([m["path"] for m in record["members"]], ["alpha", "beta"])
+        self.assertEqual([m["agent_name"] for m in record["members"]], ["alpha", "beta"])
         members = self.cli("raid", "members", "crew")
         self.assertEqual(members.returncode, 0, members.stderr)
         lines = members.stdout.splitlines()
-        self.assertEqual(lines[1].split()[:3], ["NAME", "ROLE", "PATH"])
-        self.assertEqual(lines[2].split()[:3], ["alpha", "-", "alpha"])
+        self.assertEqual(lines[1].split()[:3], ["NAME", "ROLE", "CONFIGURATION"])
+        self.assertEqual(lines[2].split()[:3], ["alpha", "-", "shell"])
         self.assertIn("owner", lines[2].split())
         listed = {r["id"]: r for r in json.loads(self.cli("list").stdout)}
         self.assertEqual(listed[beta]["raid"]["name"], "crew")
         self.assertEqual(listed[beta]["raid"]["owner"], alpha)
-        # Both branches can now address each other, by name, path or ID.
+        # Both can now address each other, by name or ID.
         sent = self.send(alpha, "beta")
         self.assertEqual(sent["recipient"], beta)
         self.assertEqual(self.send(beta, alpha)["recipient"], alpha)
@@ -86,7 +81,7 @@ class RaidTests(unittest.TestCase):
         self.assertEqual(claim["message"]["id"], sent["id"])
         self.sandbox(beta, "messages.reply", {"key": "reply", "message": sent["id"],
                                               "claim_generation": claim["claim_generation"], "body": "ok"})
-        # Membership grants no control over, or view into, the other branch.
+        # Membership grants no control over, or view into, another member.
         for method, params in [("sessions.get", {"session": beta}),
                                ("sessions.stop", {"session": beta})]:
             self.assertEqual(self.refused(alpha, method, params)["code"], -32004)
@@ -104,7 +99,7 @@ class RaidTests(unittest.TestCase):
         text = output.group(1).decode(errors="replace")
         self.assertEqual(output.group(2), b"0", text)
         self.assertIn("Raid: crew (role: none, owner: alpha)", text)
-        self.assertRegex(text, r"beta\s+-\s+beta\s+shell\s+running")
+        self.assertRegex(text, r"beta\s+-\s+shell\s+running")
         bodies = []
         for n in range(2):
             item = self.sandbox(beta, "inbox.next", {"key": f"fetch-{n}"})["message"]
@@ -116,7 +111,7 @@ class RaidTests(unittest.TestCase):
         routes = {(e["actor"], e["data"]["change"]["route"], e["data"]["change"]["raid"])
                   for e in events if e["kind"] == "message.accepted"}
         self.assertEqual(routes, {(alpha, "raid", record["id"]), (beta, "raid", record["id"]),
-                                  ("host", "tree", None)})
+                                  ("host", "host", None)})
         # An invited member's filtered log shows the host invitation.
         joined = [e for e in self.filtered("beta") if e["kind"] == "raid.joined"]
         self.assertEqual([(e["actor"], e["sessions"], e["data"]["session"]) for e in joined],
@@ -145,7 +140,7 @@ class RaidTests(unittest.TestCase):
         record = self.d.rpc.call("raids.members", {"raid": "crew"})
         self.assertEqual((record["paused"], record["owner"], record["former_owner"]), (True, None, alpha))
 
-    def test_members_recruit_direct_children_only_and_never_take_ownership(self):
+    def test_owners_run_members_and_roles_never_take_ownership(self):
         root = self.d.start(agent_name="root")["session"]
         other = self.d.start(agent_name="other")["session"]
         created = self.sandbox(root, "raids.create", {"raid": "crew"})
@@ -153,24 +148,16 @@ class RaidTests(unittest.TestCase):
         self.assertEqual(self.refused(root, "raids.create", {"raid": "second"})["code"], -32009)
         self.assertEqual(self.refused(other, "raids.create", {"raid": "crew"})["message"],
                          "raid 'crew' already exists")
-        kid = self.child(root, "kid")
-        sibling = self.child(root, "sib")
-        grandkid = self.child(kid, "grand")
-        self.assertEqual(len(self.sandbox(root, "raids.invite", {"sessions": ["kid"]})["members"]), 2)
-        # Grandchildren and siblings cannot be recruited.
-        self.assertEqual(self.refused(root, "raids.invite", {"sessions": ["kid/grand"]})["message"],
-                         "only direct children can be invited")
-        self.assertEqual(self.refused(kid, "raids.invite", {"sessions": [sibling]})["code"], -32004)
-        # Any member may invite its own child, or launch one into the raid.
-        self.sandbox(kid, "raids.invite", {"sessions": ["grand"]})
-        helper = self.child(root, "helper", inherit_raid=True)
+        kid = self.member(root, "kid")
+        helper = self.member(root, "helper")
         record = self.sandbox(helper, "raids.members", {})
         self.assertEqual(record["owner"], root)
-        self.assertEqual({m["path"] for m in record["members"]},
-                         {"root", "root/kid", "root/kid/grand", "root/helper"})
-        # --inherit-raid needs a parent in a raid.
-        refused = self.refused(sibling, "sessions.start", {"key": "k", "name": "shell", "inherit_raid": True})
-        self.assertEqual(refused["message"], "parent is not in a raid")
+        self.assertEqual({m["agent_name"]: m["created_by"] for m in record["members"]},
+                         {"root": None, "kid": root, "helper": root})
+        # Sandboxes invite nobody; only the owner runs members.
+        self.assertEqual(self.refused(root, "raids.invite", {"sessions": [other]})["code"], -32601)
+        refused = self.refused(kid, "sessions.start", {"key": "k", "name": "shell"})
+        self.assertEqual(refused["message"], "only a raid owner can run goblins; create one with goblin raid create NAME")
         # A goblin in another raid is never moved.
         self.sandbox(other, "raids.create", {"raid": "elsewhere"})
         moved = self.cli("raid", "invite", "crew", "other")
@@ -182,10 +169,10 @@ class RaidTests(unittest.TestCase):
         self.assertEqual(self.sandbox(kid, "sessions.status", {})["raid"]["role"], "owner")
         for role in ["", None]:
             self.assertEqual(self.refused(kid, "raids.set_role", {"role": role})["code"], -32602)
-        record = json.loads(self.cli("raid", "set-role", "crew", "root/kid/grand", "reviewer").stdout)
-        self.assertEqual({m["path"]: m["role"] for m in record["members"]}["root/kid/grand"], "reviewer")
-        # Raid siblings message each other directly.
-        self.assertEqual(self.send(grandkid, "helper")["recipient"], helper)
+        record = json.loads(self.cli("raid", "set-role", "crew", "helper", "reviewer").stdout)
+        self.assertEqual({m["agent_name"]: m["role"] for m in record["members"]}["helper"], "reviewer")
+        # Members message each other directly.
+        self.assertEqual(self.send(kid, "helper")["recipient"], helper)
 
     def test_leaving_and_owner_exit_remove_raid_routes_but_not_messages(self):
         owner = self.d.start(agent_name="owner")

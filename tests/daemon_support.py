@@ -138,14 +138,17 @@ class Daemon:
         """A goblin the raid owner `owner` runs with `goblin run`, sharing its
         workspace, scope and dev shell. An owner in no raid creates one first.
         Returns the launch with its host terminal path added."""
-        peer = RPC(self.state / owner / "resources/request.sock")
-        try:
-            if peer.call("sessions.status", {})["raid"] is None:
-                peer.call("raids.create", {"raid": f"crew-{uuid.uuid4().hex[:8]}"})
-            launch = peer.call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name,
-                                                  "agent_name": agent_name, "detached": True})
-        finally:
-            peer.close()
+        def call(method, params):
+            # A sandbox connection answers one call after initialize.
+            peer = RPC(self.state / owner / "resources/request.sock")
+            try:
+                return peer.call(method, params)
+            finally:
+                peer.close()
+        if call("sessions.status", {})["raid"] is None:
+            call("raids.create", {"raid": f"crew-{uuid.uuid4().hex[:8]}"})
+        launch = call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name,
+                                         "agent_name": agent_name, "detached": True})
         if wait:
             record = self.wait(lambda: (r if (r := self.get(launch["session"]))["state"] != "starting" else None),
                                timeout=60)

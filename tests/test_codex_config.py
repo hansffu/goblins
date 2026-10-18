@@ -64,7 +64,7 @@ class CodexConfigTests(unittest.TestCase):
         terminal.send(f"printf '%s' {shlex.quote(payload)} | {shlex.quote(handler)} > /tmp/hook-output; printf 'HOOK_RESULT=%s\\n' \"$(cat /tmp/hook-output)\"\n")
         return json.loads(terminal.expect(r"(?:^|\n)HOOK_RESULT=(.*)\n").group(1))
 
-    def test_mounts_hooks_and_child_inheritance(self):
+    def test_mounts_hooks_and_member_inheritance(self):
         terminal = self.terminal()
         terminal.expect("CODEX_DIR=" + re.escape(str(self.codex)))
         terminal.expect(r"CODEX_ARG=literal \$\(false\) argument")
@@ -74,25 +74,22 @@ class CodexConfigTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)READONLY=1\n")
         terminal.expect(r"(?:^|\n)SECRET=1\n")
         terminal.expect(r"(?:^|\n)sandbox-only\n")
-        parent = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
-        self.assertEqual(self.d.get(parent)["agent_state"], "unknown")
+        owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        self.assertEqual(self.d.get(owner)["agent_state"], "unknown")
         self.assertNotIn("Stop", self.settings["hooks"])
         thread = str(uuid.uuid4())
         self.assertEqual(self.hook(terminal, "SessionStart", session_id=thread), {})
         terminal.send("printf 'BOUND=%s\\n' \"$(cat /tmp/goblins-codex/thread.json)\"\n")
         terminal.expect("BOUND=" + re.escape(json.dumps(thread)))
-        self.d.rpc.call("messages.send", {"key":"task", "to":parent, "body":"private message body"})
-        self.assertEqual(self.sandbox(parent, "inbox.status", {})["queued"],1)
-        self.assertIsNone(self.sandbox(parent, "inbox.status", {})["claim"])
-        child = self.sandbox(parent, "sessions.start", {
-            "key": uuid.uuid4().hex, "name": "codex", "agent_name": "scout", "detached": True,
-        })["session"]
-        self.d.wait(lambda: self.d.get(child)["state"] == "running")
-        attached = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        self.d.rpc.call("messages.send", {"key":"task", "to":owner, "body":"private message body"})
+        self.assertEqual(self.sandbox(owner, "inbox.status", {})["queued"],1)
+        self.assertIsNone(self.sandbox(owner, "inbox.status", {})["claim"])
+        member = self.d.member(owner, "codex", agent_name="scout")["session"]
+        attached = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(attached.close)
         attached.expect("CODEX_DIR=" + re.escape(str(self.codex)))
         attached.expect("codex-probe>")
-        # Rotation by replacing a file must be observed by parent and child.
+        # Rotation by replacing a file must be observed by owner and member.
         replacement = self.codex / "replacement"
         replacement.write_text('{"marker":"rotated"}')
         replacement.replace(self.codex / "auth.json")
@@ -330,28 +327,28 @@ class CodexConfigTests(unittest.TestCase):
         self.assertNotIn('--profile', args)
         self.assertEqual(path.read_text(), profile)
 
-    def test_parent_and_child_servers_have_independent_bindings(self):
-        parent = self.d.start('notifier', agent_name='parent')['session']
-        self.d.wait(lambda: self.d.get(parent)['agent_state'] == 'idle')
-        parent_thread = self.d.wait(lambda: self.local(parent, 'status')['thread_id'])
-        child = self.sandbox(parent, 'sessions.start', {
-            'key': uuid.uuid4().hex, 'name': 'notifier', 'agent_name': 'child', 'detached': True,
-        })['session']
-        record = self.d.wait(lambda: (r if (r := self.d.get(child))['agent_state'] == 'idle' or r['state'] in ('stopped', 'failed') else None), timeout=60)
+    def test_owner_and_member_servers_have_independent_bindings(self):
+        owner = self.d.start('notifier', agent_name='owner')['session']
+        self.d.wait(lambda: self.d.get(owner)['agent_state'] == 'idle')
+        owner_thread = self.d.wait(lambda: self.local(owner, 'status')['thread_id'])
+        member = self.d.member(owner, 'notifier', agent_name='member', wait=False)['session']
+        record = self.d.wait(lambda: (r if (r := self.d.get(member))['agent_state'] == 'idle' or r['state'] in ('stopped', 'failed') else None), timeout=60)
         self.assertEqual(record['agent_state'], 'idle', record)
-        child_thread = self.d.wait(lambda: self.local(child, 'status')['thread_id'])
-        self.assertNotEqual(parent_thread, child_thread)
-        self.local(parent, 'pause')
-        self.d.rpc.call('messages.send', {'key': 'child-message', 'to': child, 'body': 'child only'})
+        member_thread = self.d.wait(lambda: self.local(member, 'status')['thread_id'])
+        self.assertNotEqual(owner_thread, member_thread)
+        self.local(owner, 'pause')
+        self.d.rpc.call('messages.send', {'key': 'member-message', 'to': member, 'body': 'member only'})
         self.d.wait(lambda: self.d.rpc.call('inbox.status', {})['queued'] == 1)
-        reply = self.d.rpc.call('inbox.next', {'key': 'child-reply'})['message']
-        self.assertEqual(reply['sender'], child)
-        self.assertEqual(reply['body'], 'processed: child only')
-        self.assertEqual(self.local(parent, 'status')['thread_id'], parent_thread)
-        self.assertEqual(self.sandbox(parent, 'inbox.status', {})['queued'], 0)
-        self.d.rpc.call('sessions.stop', {'session': parent, 'kill_children': True})
-        self.d.wait(lambda: all(self.d.get(s)['state'] == 'stopped' for s in (parent, child)))
-        self.assertTrue(all(self.d.get(s)['agent_state'] == 'unknown' for s in (parent, child)))
+        reply = self.d.rpc.call('inbox.next', {'key': 'member-reply'})['message']
+        self.assertEqual(reply['sender'], member)
+        self.assertEqual(reply['body'], 'processed: member only')
+        self.assertEqual(self.local(owner, 'status')['thread_id'], owner_thread)
+        self.assertEqual(self.sandbox(owner, 'inbox.status', {})['queued'], 0)
+        # Nothing cascades: each goblin is stopped on its own.
+        for session in (member, owner):
+            self.d.rpc.call('sessions.stop', {'session': session})
+        self.d.wait(lambda: all(self.d.get(s)['state'] == 'stopped' for s in (owner, member)))
+        self.assertTrue(all(self.d.get(s)['agent_state'] == 'unknown' for s in (owner, member)))
 
 
 

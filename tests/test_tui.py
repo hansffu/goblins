@@ -4,7 +4,6 @@ import select
 import termios
 import time
 import unittest
-import uuid
 from daemon_support import Daemon, receive
 from terminal_support import Terminal, screen_wait
 
@@ -34,51 +33,47 @@ class TuiTests(unittest.TestCase):
         self.assertNotIn("see request details", text)
         ui.send("q"); self.assertEqual(ui.wait(), 0)
 
-    def test_ownership_tree_navigation_folding_and_request_paths(self):
+    def test_flat_list_navigation_and_member_request_labels(self):
         d = Daemon(); self.addCleanup(d.close)
-        parent = d.start(agent_name="parent")
-        other = d.start(agent_name="other")
-        def child(owner, name):
-            launch = d.rpc.call("sessions.start", {
-                "key":uuid.uuid4().hex,"name":"shell","agent_name":name,
-                "configuration":d.manifest,"parent":owner["session"],"rows":24,"cols":100,
-            })
-            d.wait(lambda: d.get(launch["session"])["state"] == "running")
-            return launch
-        kid = child(parent, "kid")
-        leaf = child(kid, "leaf")
-        child(other, "kid")
+        owner = d.start(agent_name="chief")
+        d.start(agent_name="other")
+        kid = d.member(owner["session"], agent_name="kid")
         ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui"])
         self.addCleanup(ui.close)
-        text = screen_wait(ui, lambda text: "leaf (shell)" in text and text.count("kid (shell)") == 2)
+        names = ("chief", "kid", "other")
+        text = screen_wait(ui, lambda text: all(f"{n} (shell)" in text for n in names))
         self.assertIn("host", text)
-        self.assertIn("├─ [-] parent (shell)", text)
-        self.assertIn("│  └─ [-] kid (shell)", text)
-        self.assertIn("│     └─ leaf (shell)", text)
-        self.assertLess(text.index("parent (shell)"), text.index("leaf (shell)"))
-        self.assertLess(text.index("leaf (shell)"), text.index("other (shell)"))
-        # Navigation follows displayed tree order rather than raw snapshot order.
+        # One row per goblin in snapshot order: a member is not nested under
+        # the goblin that runs it.
+        order = [s["agent_name"] for s in d.rpc.call("sessions.list", {})]
+        self.assertEqual(sorted(order), list(names))
+        positions = [text.index(f"{n} (shell)") for n in order]
+        self.assertEqual(positions, sorted(positions))
+        for mark in ("├─", "└─", "[-]", "[+]"):
+            self.assertNotIn(mark, text)
+        # Navigation follows the displayed order.
         ui.send("\x1b[B\r")
-        screen_wait(ui, lambda text: "Packages [focused] · parent/kid (shell)" in text)
-        ui.send("\x7f\x1b[D")
-        screen_wait(ui, lambda text: "[+] kid (shell)" in text and "leaf (shell)" not in text)
-        ui.send("\x1b[C")
-        screen_wait(ui, lambda text: "leaf (shell)" in text)
-        pending, request = d.pending(leaf["session"])
+        screen_wait(ui, lambda text: f"Packages [focused] · {order[1]} (shell)" in text)
+        # Left and Right fold nothing and keep the selection.
+        ui.send("\x7f\x1b[D\x1b[C")
+        screen_wait(ui, lambda text: "Sandboxes [focused]" in text and all(f"{n} (shell)" in text for n in names))
+        ui.send("\r")
+        screen_wait(ui, lambda text: f"Packages [focused] · {order[1]} (shell)" in text)
+        ui.send("\x7f")
+        # A member's request names it by its agent name.
+        pending, request = d.pending(kid["session"])
         self.addCleanup(pending.close)
-        text = screen_wait(ui, lambda text: "Sandbox: parent/kid/leaf" in text)
-        self.assertIn("parent/kid/leaf", text)
+        text = screen_wait(ui, lambda text: "Sandbox: kid" in text)
+        self.assertNotIn("chief/kid", text)
         ui.send("\tn")
         self.assertEqual(receive(pending.peer)["result"]["status"], "denied")
-        ui.send("\t\x1b[A\x1b[D")
-        screen_wait(ui, lambda text: "[+] parent (shell)" in text and text.count("kid (shell)") == 1)
-        # State updates preserve collapsed branches.
-        d.rpc.call("sessions.stop", {"session":leaf["session"]})
-        d.wait(lambda: d.get(leaf["session"])["state"] == "stopped")
-        text = screen_wait(ui, lambda text: "[+] parent (shell)" in text)
-        self.assertNotIn("leaf (shell)", text)
-        ui.send("\x1b[C")
-        screen_wait(ui, lambda text: "leaf (shell)" in text and "stopped" in text)
+        # State updates keep the selection and a stopped member's row.
+        ui.send("\t")
+        d.rpc.call("sessions.stop", {"session": kid["session"]})
+        d.wait(lambda: d.get(kid["session"])["state"] == "stopped")
+        screen_wait(ui, lambda text: "kid (shell)" in text and "stopped" in text)
+        ui.send("\r")
+        screen_wait(ui, lambda text: f"Packages [focused] · {order[1]} (shell)" in text)
         ui.send("q"); self.assertEqual(ui.wait(), 0)
 
     def test_popup_list_focus_buttons_and_tty_restoration(self):

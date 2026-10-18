@@ -8,7 +8,7 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT
+from daemon_support import Daemon, ROOT, RPC
 from support import FLAKE, command
 from terminal_support import Terminal
 # A module import, so its DockerTests are not collected here as well.
@@ -33,6 +33,9 @@ TEMPLATE = """{
 
 
 class DevShellTests(unittest.TestCase):
+    # The configuration a dev shell goblin of this suite runs as a raid member.
+    MEMBER = "shell"
+
     @classmethod
     def setUpClass(cls):
         cls.nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
@@ -60,7 +63,15 @@ class DevShellTests(unittest.TestCase):
         self.addCleanup(terminal.close)
         return terminal
 
-    def test_launch_exports_environment_and_children_inherit_the_snapshot(self):
+    def run_member(self, owner, agent_name=None):
+        """A goblin the raid owner `owner` (an agent name) runs, attached
+        through the host CLI; it shares the owner's dev shell and directory."""
+        launch = self.d.member(self.d.get(owner)["id"], self.MEMBER, agent_name=agent_name)
+        terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", launch["session"]])
+        self.addCleanup(terminal.close)
+        return launch["session"], terminal
+
+    def test_launch_exports_environment_and_members_inherit_the_snapshot(self):
         terminal = self.run_cli("--dev-shell", ".", "--name", "dev")
         terminal.expect(rf"(?:^|\n)hook-ran in {self.project}\n")
         terminal.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR; hello; printf 'R=%s\\n' $GOBLINS_DEV_SHELL\n")
@@ -74,21 +85,23 @@ class DevShellTests(unittest.TestCase):
         self.assertEqual(record["dev_shell"], str(self.project))
         self.assertEqual(record["cwd"], str(self.project))
 
-        # Later workspace edits never reach the running generation or children.
+        # Later workspace edits never reach the running generation or members.
         self.write_flake("edited")
-        child = self.run_cli("--parent", "dev")
-        child.expect(r"(?:^|\n)hook-ran in ")
-        child_record = next(r for r in self.d.rpc.call("sessions.list", {}) if r.get("parent") == record["id"])
-        self.assertEqual(child_record["cwd"], str(self.project))
-        child.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR\n")
-        child.expect(r"(?:^|\n)M=original H=from-hook-original\n")
+        member, terminal = self.run_member("dev")
+        terminal.expect(r"(?:^|\n)hook-ran in ")
+        self.assertEqual(self.d.get(member)["cwd"], str(self.project))
+        terminal.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR\n")
+        terminal.expect(r"(?:^|\n)M=original H=from-hook-original\n")
 
-    def test_children_cannot_choose_a_dev_shell(self):
-        parent = self.d.start()
-        with self.assertRaisesRegex(Exception, "inherit their parent's dev shell"):
-            self.d.rpc.call("sessions.start", {
-                "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
-                "parent": parent["session"], "dev_shell": str(self.project), "rows": 24, "cols": 80})
+    def test_members_cannot_choose_a_dev_shell(self):
+        # A member runs in its owner's dev shell; a run request names none.
+        owner = self.d.start()["session"]
+        peer = RPC(self.d.state / owner / "resources/request.sock")
+        self.addCleanup(peer.close)
+        peer.call("raids.create", {"raid": "crew"})
+        with self.assertRaisesRegex(Exception, "unknown field `dev_shell`"):
+            peer.call("sessions.start", {"key": uuid.uuid4().hex, "name": "shell",
+                                         "dev_shell": str(self.project), "detached": True})
 
     def test_launch_requires_a_lock_file(self):
         command(["git", "-C", str(self.project), "rm", "-qf", "flake.lock"])
@@ -150,6 +163,7 @@ class DevShellTests(unittest.TestCase):
 class DevShellSkillTests(DevShellTests):
     """The goblins-devshell skill is mounted only in dev shell sandboxes."""
     SKILL = "/etc/claude-code/.claude/skills/goblins-devshell/SKILL.md"
+    MEMBER = "claude"
 
     @classmethod
     def setUpClass(cls):
@@ -180,11 +194,13 @@ class DevShellSkillTests(DevShellTests):
     def test_skill_follows_the_dev_shell(self):
         self.assertFalse(self.skill_mounted(self.run_cli("--name", "plain")))
         self.assertTrue(self.skill_mounted(self.run_cli("--dev-shell", ".", "--name", "dev")))
-        self.assertTrue(self.skill_mounted(self.run_cli("--parent", "dev")))
+        _, member = self.run_member("dev")
+        member.expect("claude-probe>", timeout=120)
+        self.assertTrue(self.skill_mounted(member))
 
     # The launch tests use the plain shell configuration and ran above.
-    test_launch_exports_environment_and_children_inherit_the_snapshot = None
-    test_children_cannot_choose_a_dev_shell = None
+    test_launch_exports_environment_and_members_inherit_the_snapshot = None
+    test_members_cannot_choose_a_dev_shell = None
     test_launch_requires_a_lock_file = None
     test_evaluation_cannot_reach_host_files_outside_the_flake = None
     test_launch_requires_a_working_directory = None
@@ -195,8 +211,8 @@ class DevShellRefreshTests(DevShellTests):
     """Refresh through the in-sandbox CLI with host approval (ADR 0007)."""
 
     # Inherited launch tests already ran in DevShellTests.
-    test_launch_exports_environment_and_children_inherit_the_snapshot = None
-    test_children_cannot_choose_a_dev_shell = None
+    test_launch_exports_environment_and_members_inherit_the_snapshot = None
+    test_members_cannot_choose_a_dev_shell = None
     test_launch_requires_a_lock_file = None
     test_evaluation_cannot_reach_host_files_outside_the_flake = None
     test_launch_requires_a_working_directory = None
@@ -269,16 +285,16 @@ class DevShellRefreshTests(DevShellTests):
         output, _ = self.run_in("printf 'M=%s\\n' $DEV_MARKER; bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         self.assertIn("M=original", output)
         self.assertIn("N=edited", output)
-        # New children start in the new generation.
-        child = self.run_cli("--parent", "dev")
-        child.expect(r"(?:^|\n)hook-ran in ")
-        output, _ = self.run_in("printf 'C=%s\\n' $DEV_MARKER", terminal=child)
+        # New members start in the new generation.
+        _, member = self.run_member("dev")
+        member.expect(r"(?:^|\n)hook-ran in ")
+        output, _ = self.run_in("printf 'C=%s\\n' $DEV_MARKER", terminal=member)
         self.assertIn("C=edited", output)
 
-    def test_child_refresh_to_an_inherited_generation_needs_no_approval(self):
-        child = self.run_cli("--parent", "dev", "--name", "kid")
-        child.expect(r"(?:^|\n)hook-ran in ")
-        output, code = self.run_in("goblin devshell refresh", terminal=child)
+    def test_member_refresh_to_an_inherited_generation_needs_no_approval(self):
+        _, member = self.run_member("dev", agent_name="kid")
+        member.expect(r"(?:^|\n)hook-ran in ")
+        output, code = self.run_in("goblin devshell refresh", terminal=member)
         self.assertEqual(code, 0, output)
         self.assertIn("Dev shell generation 2 is active", output)
         records = [r for r in self.d.permissions() if r["kind"] == "devshell"]
@@ -417,7 +433,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
     """A flake in a subdirectory of its Git repository keeps the repository as source."""
 
     test_approved_refresh_enters_the_edited_flake_and_keeps_running_environment = None
-    test_child_refresh_to_an_inherited_generation_needs_no_approval = None
+    test_member_refresh_to_an_inherited_generation_needs_no_approval = None
     test_hand_edited_lock_is_rejected_until_restored = None
     test_lock_adds_new_inputs_and_writes_the_approved_lock = None
     test_denied_refresh_changes_nothing = None
