@@ -195,7 +195,7 @@
     (let ((owner (equal (plist-get raid :owner) (plist-get session :id))))
       (when (y-or-n-p (format "Kick %s out of raid %s%s? "
                               (goblins--session-path session) goblins--view-session
-                              (if owner " (the owner: this dissolves the raid)" "")))
+                              (if owner " (the owner: this pauses the raid until you select a new owner)" "")))
         (goblins--host-call goblins--view-source 'raids.kick
                             (list :raid goblins--view-session :session (plist-get session :id)))
         (message "Kicked %s out of raid %s" (goblins--session-path session) goblins--view-session)))))
@@ -237,7 +237,7 @@ Roles can be changed but not cleared."
    "Goblins raid page"
    '(("Move" ("j / k" . "next / previous goblin"))
      ("Members" ("RET" . "show or attach the goblin's terminal")
-                ("x" . "kick the member (kicking the owner dissolves the raid)")
+                ("x" . "kick the member (kicking the owner pauses the raid)")
                 ("R" . "set the member's role"))
      ("Raid" ("i" . "invite the goblin at point, or choose one")
              ("D" . "dissolve the raid; its goblins keep running"))

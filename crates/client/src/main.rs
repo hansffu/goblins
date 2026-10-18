@@ -169,6 +169,10 @@ fn run() -> Result<i32, String> {
                     },
                     record["dev_shell"].as_str().unwrap_or("none"),
                     match raid["name"].as_str() {
+                        Some(name) if raid["paused"] == true => format!(
+                            "{name} (role: {}, paused until the host selects a new owner)",
+                            raid["role"].as_str().unwrap_or("none"),
+                        ),
                         Some(name) => format!(
                             "{name} (role: {}, owner: {})",
                             raid["role"].as_str().unwrap_or("none"),

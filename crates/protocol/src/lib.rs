@@ -175,6 +175,12 @@ pub fn raid_members(record: &serde_json::Value) -> String {
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
     let mut out = format!("Raid {} ({})\n", text(&record["name"]), text(&record["id"]));
+    if record["paused"] == true {
+        out.push_str(&format!(
+            "Paused: the owner {} left; waiting for the host to select a new owner\n",
+            text(&record["former_owner"])
+        ));
+    }
     for row in rows {
         let line: Vec<_> = row
             .iter()

@@ -1010,6 +1010,8 @@ Otherwise its details open instead."
       (user-error "Disconnected; use M-x goblins-refresh to reconnect"))
     (unless (equal (plist-get record :state) "pending")
       (user-error "Place point on a pending request"))
+    (when (equal (plist-get record :kind) "raid-owner")
+      (user-error "A paused raid takes a new owner or dissolves: use goblins raid set-owner or goblins raid destroy"))
     (when (and approved (equal (plist-get record :kind) "host-command") (not shown))
       (when (fboundp 'goblins--review-request)
         (goblins--review-request (current-buffer) record))

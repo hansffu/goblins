@@ -999,6 +999,7 @@ impl Controller {
     fn publish(&mut self) {
         // A stop dispatched just before must not publish the old membership.
         self.reconcile_raids();
+        self.refresh_raid_prompts();
         if !self.dirty {
             return;
         }
@@ -1621,8 +1622,8 @@ impl Controller {
                     "allowed_run_targets":self.sessions[scope].inheritance.as_ref()
                         .map_or(&[][..], |i| i.allowed_run_targets()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
-                        "role":r.role,"owner":r.owner,
-                        "owner_path":self.sessions.get(&r.owner).map(|a| &a.record.path)}))}))
+                        "role":r.role,"owner":r.owner,"paused":r.paused,
+                        "owner_path":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.path)}))}))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
@@ -1721,6 +1722,13 @@ impl Controller {
             .iter()
             .find(|r| r.id == p.request)
             .ok_or_else(missing)?;
+        if r.kind == raids::RAID_OWNER {
+            return Err((
+                -32602,
+                "use goblins raid set-owner or goblins raid destroy to resolve a paused raid"
+                    .into(),
+            ));
+        }
         if r.session != p.session || r.approval != p.approval || r.state != "pending" {
             return Err(conflict());
         }
@@ -2295,7 +2303,14 @@ impl Controller {
                     if self.operation_outbox.len() >= 1024 {
                         return Err(capacity());
                     }
-                    if self.permissions.len() >= 256 {
+                    // Raid-owner prompts (one per raid) never take a slot.
+                    if self
+                        .permissions
+                        .iter()
+                        .filter(|r| r.kind != raids::RAID_OWNER)
+                        .count()
+                        >= 256
+                    {
                         let index = self
                             .permissions
                             .iter()
@@ -4522,7 +4537,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(record["owner"], "a");
-        assert_eq!(d.sessions["f"].record.raid.as_ref().unwrap().owner, "a");
+        assert_eq!(
+            d.sessions["f"]
+                .record
+                .raid
+                .as_ref()
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("a")
+        );
         d.tick().unwrap();
         let events = sent(&queue);
         assert_eq!(events[0].0, "raid.created");
@@ -4549,15 +4573,187 @@ mod tests {
                 ("raid.left".into(), json!("e"), json!("launch-failed")),
             ]
         );
-        // The owner stopping dissolves the raid; the other member keeps running.
+        // The owner stopping pauses the raid and asks the host to resolve it;
+        // the other member keeps running.
         d.stop("a", None).unwrap();
         d.tick().unwrap();
         let events = sent(&queue);
-        assert_eq!(events.last().unwrap().0, "raid.dissolved");
-        assert_eq!(events.last().unwrap().1["reason"], "owner-left");
+        assert_eq!(events.last().unwrap().0, "raid.paused");
+        assert_eq!(events.last().unwrap().1["former_owner"], "a");
         assert_eq!(d.sessions["f"].record.state, "running");
-        assert!(d.sessions["f"].record.raid.is_none());
+        let membership = d.sessions["f"].record.raid.clone().unwrap();
+        assert!(membership.paused && membership.owner.is_none());
+        let prompt = d
+            .permissions
+            .iter()
+            .find(|r| r.kind == raids::RAID_OWNER)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (prompt.state.as_str(), prompt.session.as_str()),
+            ("pending", "a")
+        );
+        assert_eq!(prompt.preview.as_ref().unwrap()["members"][0]["id"], "f");
+        // The last member leaving dissolves it and cancels the prompt.
+        d.stop("f", None).unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.last().unwrap().0, "raid.dissolved");
+        assert_eq!(events.last().unwrap().1["reason"], "empty");
+        assert_eq!(d.permission_mut(&prompt.id).unwrap().state, "cancelled");
         assert!(d.snapshot().raids.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_host_resolves_a_paused_raid_only_as_it_saw_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["a", "b", "c"] {
+            live(&mut d, id, None);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b","c"]}),
+        )
+        .unwrap();
+        // An active raid's ownership can move; the record names the owner.
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"b"}),
+            )
+            .unwrap();
+        assert_eq!(
+            (record["owner"].as_str(), &record["generation"]),
+            (Some("b"), &json!(1))
+        );
+        assert!(!d.permissions.iter().any(|r| r.kind == raids::RAID_OWNER));
+        // Kicking the owner pauses the raid and opens a prompt.
+        let kicked = d
+            .host(
+                &mut host,
+                "raids.kick",
+                json!({"raid":"review","session":"b"}),
+            )
+            .unwrap();
+        assert_eq!(
+            kicked,
+            json!({"accepted":true,"dissolved":false,"paused":true})
+        );
+        let prompt = d.permissions.back().unwrap().clone();
+        assert_eq!(prompt.kind, raids::RAID_OWNER);
+        let preview = prompt.preview.clone().unwrap();
+        assert_eq!(
+            (&preview["generation"], &preview["former_owner"]["id"]),
+            (&json!(2), &json!("b"))
+        );
+        // A plain decision is refused; a decision for another generation too.
+        let decision =
+            json!({"session":"b","request":prompt.id,"approval":prompt.approval,"approved":true});
+        assert_eq!(
+            d.host(&mut host, "permissions.decide", decision)
+                .unwrap_err()
+                .0,
+            -32602
+        );
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","generation":1})
+            )
+            .unwrap_err(),
+            (-32009, "the raid changed; reload the prompt".into())
+        );
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","id":"other","generation":2})
+            )
+            .unwrap_err()
+            .0,
+            -32009
+        );
+        // Selecting an owner resumes the raid and approves the prompt.
+        let id = preview["raid"].clone();
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","id":id,"generation":2}),
+            )
+            .unwrap();
+        assert_eq!(
+            (record["owner"].as_str(), &record["paused"]),
+            (Some("c"), &json!(false))
+        );
+        let resolved = d.permission_mut(&prompt.id).unwrap().clone();
+        assert_eq!(
+            (resolved.state.as_str(), resolved.approved),
+            ("approved", Some(true))
+        );
+        // A new pause is a new prompt; dissolving with stop_members stops
+        // every live member and denies it.
+        d.stop("c", None).unwrap();
+        d.reconcile_raids();
+        let second = d.permissions.back().unwrap().clone();
+        assert_ne!(second.id, prompt.id);
+        assert_eq!(second.state, "pending");
+        let destroyed = d
+            .host(
+                &mut host,
+                "raids.destroy",
+                json!({"raid":"review","generation":4,"stop_members":true}),
+            )
+            .unwrap();
+        assert_eq!(destroyed, json!({"accepted":true,"stopped":["a"]}));
+        assert_eq!(d.sessions["a"].record.state, "stopping");
+        assert_eq!(d.permission_mut(&second.id).unwrap().state, "denied");
+        assert!(d.raids.get("review").is_none());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn raid_prompts_never_take_a_permission_slot() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["a", "b"] {
+            live(&mut d, id, None);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let existing = d.permissions.len();
+        for n in existing..256 {
+            d.permissions.push_back(PermissionRecord {
+                kind: "package".into(),
+                id: format!("p{n}"),
+                session: "b".into(),
+                agent_name: "b".into(),
+                approval: format!("a{n}"),
+                package: "hello".into(),
+                reason: String::new(),
+                state: "pending".into(),
+                approved: None,
+                preview: None,
+                message: None,
+            });
+        }
+        d.stop("a", None).unwrap();
+        d.reconcile_raids();
+        assert_eq!(d.permissions.len(), 257);
+        assert_eq!(d.permissions.back().unwrap().kind, raids::RAID_OWNER);
+        assert_eq!(d.permissions.back().unwrap().state, "pending");
+        assert!(d.raids.get("review").unwrap().paused.is_some());
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4645,7 +4841,7 @@ mod tests {
         assert_eq!(d.sessions[&id].record.state, "starting");
         let raid = d.sessions[&id].record.raid.clone().unwrap();
         assert_eq!(
-            (raid.name.as_str(), raid.owner.as_str()),
+            (raid.name.as_str(), raid.owner.as_deref().unwrap()),
             ("review", "root")
         );
         let joined = d.raid_outbox.back().unwrap();
@@ -4706,7 +4902,10 @@ mod tests {
         start["raid"] = json!("brand-new");
         let accepted = d.host(&mut host, "sessions.start", start.clone()).unwrap();
         let fresh = accepted["session"].as_str().unwrap();
-        assert_eq!(d.raids.get("brand-new").unwrap().owner, fresh);
+        assert_eq!(
+            d.raids.get("brand-new").unwrap().owner.as_deref(),
+            Some(fresh)
+        );
         d.host(&mut host, "raids.destroy", json!({"raid":"brand-new"}))
             .unwrap();
         assert_eq!(
@@ -4793,7 +4992,7 @@ mod tests {
         );
         assert_eq!(
             d.sandbox_control("b", "raids.leave", json!({})).unwrap(),
-            json!({"accepted":true,"dissolved":false})
+            json!({"accepted":true,"dissolved":false,"paused":false})
         );
         assert_eq!(
             d.sandbox_control("b", "raids.members", json!({}))
@@ -4803,7 +5002,7 @@ mod tests {
         );
         assert_eq!(
             d.sandbox_control("a", "raids.leave", json!({})).unwrap(),
-            json!({"accepted":true,"dissolved":true})
+            json!({"accepted":true,"dissolved":true,"paused":false})
         );
         assert_eq!(d.sessions["b"].record.state, "running");
         drop(d);

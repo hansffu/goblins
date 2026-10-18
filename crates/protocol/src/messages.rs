@@ -279,6 +279,9 @@ pub struct Message {
     /// Set only on daemon-authored operation completion notices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<Operation>,
+    /// Set only on daemon-authored raid notices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raid: Option<RaidNotice>,
 }
 
 /// Sender of operation completion notices. Not a session or the host.
@@ -297,6 +300,18 @@ pub struct Operation {
     pub status: String,
     /// The sandbox-facing explanation, never a host diagnostic.
     pub message: Option<String>,
+}
+
+/// A raid change a member asked to hear about, such as a paused raid it
+/// could not message resuming.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaidNotice {
+    pub id: String,
+    pub name: String,
+    /// `resumed`.
+    pub event: String,
+    /// Session ID of the new owner.
+    pub owner: String,
 }
 
 #[cfg(test)]

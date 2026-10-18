@@ -273,7 +273,7 @@ impl<L: Log> State<L> {
         }
         // Membership is recorded before the call it arrived with, so a
         // message is always logged after the membership that allowed it.
-        mailbox.record_raid(raids, now(), journal);
+        mailbox.record_raid(raids, directory, now(), journal);
         // Outcomes are recorded before the call too: an inbox fetch that
         // arrives with a completion sees its notice.
         mailbox.record_operations(operations, directory, now(), journal);

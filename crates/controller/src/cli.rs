@@ -208,8 +208,15 @@ pub enum RaidCommand {
         #[arg(required = true, value_name = "GOBLIN")]
         goblins: Vec<String>,
     },
-    /// Dissolve the raid without stopping its goblins
-    Destroy { raid: String },
+    /// Dissolve the raid; its goblins keep running unless --stop-members
+    Destroy {
+        raid: String,
+        /// Also stop every running member
+        #[arg(long)]
+        stop_members: bool,
+    },
+    /// Make a member the owner, resuming a paused raid
+    SetOwner { raid: String, goblin: String },
     /// List the raid's members, their roles and its owner
     Members {
         raid: String,
@@ -315,7 +322,7 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
         return 0;
     };
     if slot == Slot::Raid {
-        // Every raid has a live owner, so the records name them all.
+        // Every raid has a live member, so the records name them all.
         let names: std::collections::BTreeSet<_> = records
             .as_array()
             .into_iter()
@@ -428,10 +435,12 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
             RaidCommand::SetRole { goblin, role, .. } if goblin == TARGET && role != TARGET => {
                 Slot::Goblin
             }
+            RaidCommand::SetOwner { goblin, .. } if goblin == TARGET => Slot::Goblin,
             RaidCommand::Invite { raid, .. }
-            | RaidCommand::Destroy { raid }
+            | RaidCommand::Destroy { raid, .. }
             | RaidCommand::Members { raid, .. }
             | RaidCommand::SetRole { raid, .. }
+            | RaidCommand::SetOwner { raid, .. }
                 if raid == TARGET =>
             {
                 Slot::Raid
@@ -591,6 +600,8 @@ mod tests {
             (vec!["goblins", "raid", "set-role"], Slot::Raid),
             (vec!["goblins", "raid", "set-role", "review"], Slot::Goblin),
             (vec!["goblins", "raid", "destroy"], Slot::Raid),
+            (vec!["goblins", "raid", "set-owner"], Slot::Raid),
+            (vec!["goblins", "raid", "set-owner", "review"], Slot::Goblin),
             (vec!["goblins", "raid", "members"], Slot::Raid),
             (vec!["goblins", "run", "shell", "--raid"], Slot::Raid),
             (vec!["goblins", "resume"], Slot::Record),

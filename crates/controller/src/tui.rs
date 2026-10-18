@@ -254,6 +254,33 @@ fn nix_file(path: &str) -> bool {
     path.ends_with(".nix")
 }
 /// A dev shell refresh can be approved only once its preview is shown.
+/// Kind of the request asking the host to resolve a paused raid.
+const RAID_OWNER: &str = "raid-owner";
+/// The members a paused raid can take as owner.
+fn raid_owner_summary(v: &serde_json::Value) -> String {
+    let members: Vec<_> = v["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|m| {
+            format!(
+                "{} ({}, {})",
+                m["path"].as_str().unwrap_or("?"),
+                m["role"].as_str().unwrap_or("no role"),
+                m["state"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    format!(
+        "Raid {} is paused. Members: {}",
+        v["name"].as_str().unwrap_or("?"),
+        if members.is_empty() {
+            "none".into()
+        } else {
+            members.join(", ")
+        }
+    )
+}
 fn awaiting_preview(p: &PermissionRecord) -> bool {
     p.kind == "devshell" && p.preview.is_none()
 }
@@ -772,6 +799,7 @@ impl View {
             let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             if let Some(p) = &self.presented {
                 let preview = match &p.preview {
+                    Some(v) if p.kind == RAID_OWNER => raid_owner_summary(v),
                     Some(v) if v["description"].is_string() => {
                         v["description"].as_str().unwrap().into()
                     }
@@ -838,7 +866,15 @@ impl View {
                     Constraint::Min(0),
                 ])
                 .split(parts[1]);
-                if p.state == "pending" {
+                if p.state == "pending" && p.kind == RAID_OWNER {
+                    f.render_widget(
+                        Paragraph::new(format!(
+                            "Resolve with goblins raid set-owner {0} GOBLIN, or goblins raid destroy {0} [--stop-members]",
+                            safe(&p.package)
+                        )),
+                        parts[1],
+                    );
+                } else if p.state == "pending" {
                     self.buttons = [buttons[0], buttons[1]];
                     for (i, label) in ["[ No ]", "[ Yes ]"].iter().enumerate() {
                         let mut style = Style::default();
@@ -951,6 +987,10 @@ impl View {
         else {
             return;
         };
+        if p.kind == RAID_OWNER {
+            self.notice = "A paused raid takes a new owner or dissolves: use goblins raid set-owner or goblins raid destroy".into();
+            return;
+        }
         if yes && awaiting_preview(p) {
             self.notice =
                 "The refresh is still being evaluated; decide once its preview is shown".into();

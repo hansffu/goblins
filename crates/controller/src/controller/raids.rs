@@ -12,6 +12,8 @@ pub(super) const RAID_OUTBOX: usize = 256;
 const RAID_EVENTS: usize = 4096;
 /// Stands in for a launch's session ID while validating its join.
 const LAUNCHING: &str = "";
+/// The permission kind asking the host to resolve a paused raid.
+pub(super) const RAID_OWNER: &str = "raid-owner";
 
 /// A session record's raid, as the controller currently has it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,14 +21,25 @@ pub struct RaidMembership {
     pub id: String,
     pub name: String,
     pub role: Option<String>,
-    /// Session ID of the owner.
-    pub owner: String,
+    /// Session ID of the owner; None while paused.
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub paused: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RaidRecord {
     pub id: String,
     pub name: String,
-    pub owner: String,
+    /// None while paused.
+    pub owner: Option<String>,
+    /// Session ID of the owner whose leaving paused the raid.
+    #[serde(default)]
+    pub former_owner: Option<String>,
+    #[serde(default)]
+    pub paused: bool,
+    /// Changes on every pause and owner change; a host decision names it.
+    #[serde(default)]
+    pub generation: u64,
     pub members: Vec<RaidMemberRecord>,
 }
 /// No host paths, process identities, terminal endpoints or diagnostics:
@@ -54,6 +67,29 @@ struct Invite {
 #[serde(deny_unknown_fields)]
 struct Name {
     raid: String,
+}
+/// `id` and `generation`, when given, must still name the raid as the
+/// caller saw it, such as in a raid-owner prompt.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetOwner {
+    raid: String,
+    session: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    generation: Option<u64>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Destroy {
+    raid: String,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    generation: Option<u64>,
+    #[serde(default)]
+    stop_members: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -149,8 +185,132 @@ impl Controller {
             return;
         }
         self.raid_events += events.len();
+        self.raid_prompts(&events);
         self.raid_outbox.extend(events);
         self.sync_raid_records();
+    }
+    /// A pause asks the host to resolve the raid; a new owner or dissolution
+    /// finishes that request. A request is never reused for a later pause.
+    fn raid_prompts(&mut self, events: &[Event]) {
+        for event in events {
+            match &event.change {
+                raid::Change::Paused { raid, reason, .. } => {
+                    self.finish_raid_prompt(raid, "cancelled", "the raid paused again".into());
+                    self.raid_prompt(raid, *reason);
+                }
+                raid::Change::Owner { raid, owner, .. } => {
+                    let message = format!("{} is the new owner", self.path_of(owner));
+                    self.finish_raid_prompt(raid, "approved", message);
+                }
+                raid::Change::Dissolved { raid, reason, .. } => match reason {
+                    raid::Dissolution::Destroyed => self.finish_raid_prompt(
+                        raid,
+                        "denied",
+                        "the host dissolved the raid".into(),
+                    ),
+                    raid::Dissolution::Empty => {
+                        self.finish_raid_prompt(raid, "cancelled", "every member left".into())
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+    fn raid_prompt(&mut self, id: &str, reason: Reason) {
+        let Some(raid) = self.raids.iter().find(|r| r.id == id) else {
+            return;
+        };
+        let Some(paused) = &raid.paused else {
+            return;
+        };
+        let former = paused.former_owner.clone();
+        let name = raid.name.clone();
+        let preview = self.raid_prompt_preview(raid);
+        let serial = self.number();
+        let agent_name = self
+            .sessions
+            .get(&former)
+            .map_or_else(|| former.clone(), |a| a.record.agent_name.clone());
+        self.permissions.push_back(super::PermissionRecord {
+            kind: RAID_OWNER.into(),
+            id: format!("{}-r{serial}", self.instance),
+            session: former,
+            agent_name,
+            approval: format!("{}-a{serial}", self.instance),
+            package: name,
+            reason: format!("the owner {}", reason.description()),
+            state: "pending".into(),
+            approved: None,
+            preview: Some(preview),
+            message: None,
+        });
+        self.dirty = true;
+    }
+    fn raid_prompt_preview(&self, raid: &raid::Raid) -> Value {
+        let mut members: Vec<_> = raid.members.iter().collect();
+        members.sort_by_key(|(_, m)| m.joined);
+        let former = raid.paused.as_ref().map(|p| p.former_owner.as_str());
+        json!({"raid":raid.id,"name":raid.name,"generation":raid.generation,
+            "former_owner":former.map(|id| json!({"id":id,"path":self.path_of(id)})),
+            "members":members.into_iter().filter_map(|(id, m)| {
+                let record = &self.sessions.get(id)?.record;
+                Some(json!({"id":id,"agent_name":record.agent_name,"path":record.path,
+                    "name":record.name,"role":m.role,"state":record.state}))
+            }).collect::<Vec<_>>()})
+    }
+    fn finish_raid_prompt(&mut self, raid: &str, state: &str, message: String) {
+        for r in self.permissions.iter_mut().filter(|r| {
+            r.kind == RAID_OWNER
+                && r.state == "pending"
+                && r.preview.as_ref().is_some_and(|p| p["raid"] == raid)
+        }) {
+            r.state = state.into();
+            r.approved = match state {
+                "approved" => Some(true),
+                "denied" => Some(false),
+                _ => None,
+            };
+            r.message = Some(message.clone());
+            self.dirty = true;
+        }
+    }
+    /// Keep pending raid-owner previews current as members join, leave and
+    /// change state.
+    pub(super) fn refresh_raid_prompts(&mut self) {
+        let previews: Vec<_> = self
+            .permissions
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.kind == RAID_OWNER && r.state == "pending")
+            .filter_map(|(index, r)| {
+                let id = r.preview.as_ref()?["raid"].as_str()?;
+                let raid = self.raids.iter().find(|raid| raid.id == id)?;
+                Some((index, self.raid_prompt_preview(raid)))
+            })
+            .collect();
+        for (index, preview) in previews {
+            let r = &mut self.permissions[index];
+            if r.preview.as_ref() != Some(&preview) {
+                r.preview = Some(preview);
+                self.dirty = true;
+            }
+        }
+    }
+    /// A host decision taken from a prompt must still name the raid it saw.
+    fn same_raid(
+        &self,
+        name: &str,
+        id: Option<&str>,
+        generation: Option<u64>,
+    ) -> Result<(), Fault> {
+        let raid = self
+            .raids
+            .get(name)
+            .ok_or_else(|| self.raid_fault(raid::Error::Absent(name.into())))?;
+        if id.is_some_and(|id| id != raid.id) || generation.is_some_and(|g| g != raid.generation) {
+            return Err((-32009, "the raid changed; reload the prompt".into()));
+        }
+        Ok(())
     }
     fn sync_raid_records(&mut self) {
         let memberships: Vec<_> = self
@@ -162,6 +322,7 @@ impl Controller {
                     name: r.name.clone(),
                     role: r.members[id].role.clone(),
                     owner: r.owner.clone(),
+                    paused: r.paused.is_some(),
                 });
                 (id.clone(), raid)
             })
@@ -175,7 +336,7 @@ impl Controller {
         }
     }
     /// Remove every member that is absent or no longer starting/running;
-    /// an owner leaving dissolves its raid. Idempotent, and it never stops
+    /// an owner leaving pauses its raid. Idempotent, and it never stops
     /// anyone, so state transitions need no raid code of their own.
     pub(super) fn reconcile_raids(&mut self) {
         let gone: Vec<_> = self
@@ -209,6 +370,9 @@ impl Controller {
             id: raid.id.clone(),
             name: raid.name.clone(),
             owner: raid.owner.clone(),
+            former_owner: raid.paused.as_ref().map(|p| p.former_owner.clone()),
+            paused: raid.paused.is_some(),
+            generation: raid.generation,
             members: members
                 .into_iter()
                 .filter_map(|(id, member)| {
@@ -220,7 +384,7 @@ impl Controller {
                         name: record.name.clone(),
                         role: member.role.clone(),
                         state: record.state.clone(),
-                        owner: *id == raid.owner,
+                        owner: raid.owner.as_ref() == Some(id),
                     })
                 })
                 .collect(),
@@ -325,13 +489,46 @@ impl Controller {
                 self.raid_value(&p.raid)
             }
             "raids.destroy" => {
-                let p: Name = params(value)?;
+                let p: Destroy = params(value)?;
+                self.same_raid(&p.raid, p.id.as_deref(), p.generation)?;
+                let members: Vec<_> = self
+                    .raids
+                    .get(&p.raid)
+                    .map_or_else(Vec::new, |r| r.members.keys().cloned().collect());
                 let events = self
                     .raids
                     .destroy(&p.raid, "host")
                     .map_err(|e| self.raid_fault(e))?;
                 self.raid_queue(events);
-                Ok(json!({"accepted":true}))
+                let mut stopped = vec![];
+                if p.stop_members {
+                    let reason = format!("stopped because raid {} was closed by the host", p.raid);
+                    for id in members {
+                        if self.live(&id).is_ok() {
+                            self.stop_tree(&id, true, Some(reason.clone()))?;
+                            stopped.push(id);
+                        }
+                    }
+                }
+                Ok(json!({"accepted":true,"stopped":stopped}))
+            }
+            "raids.set_owner" => {
+                let p: SetOwner = params(value)?;
+                self.same_raid(&p.raid, p.id.as_deref(), p.generation)?;
+                let id = self.resolve_session(&p.session)?;
+                if self.raids.of(&id).is_none_or(|r| r.name != p.raid) {
+                    return Err((
+                        -32009,
+                        format!("goblin '{}' is not in raid '{}'", self.path_of(&id), p.raid),
+                    ));
+                }
+                self.live(&id)?;
+                let mut next = self.raids.clone();
+                let events = next
+                    .set_owner(&p.raid, &id, "host")
+                    .map_err(|e| self.raid_fault(e))?;
+                self.raid_commit(next, events)?;
+                self.raid_value(&p.raid)
             }
             "raids.members" => {
                 let p: Name = params(value)?;
@@ -349,11 +546,9 @@ impl Controller {
                 }
                 let mut next = self.raids.clone();
                 let events = next.kick(&id, "host").map_err(|e| self.raid_fault(e))?;
-                let dissolved = events
-                    .iter()
-                    .any(|e| matches!(e.change, raid::Change::Dissolved { .. }));
+                let (dissolved, paused) = outcome(&events);
                 self.raid_commit(next, events)?;
-                Ok(json!({"accepted":true,"dissolved":dissolved}))
+                Ok(json!({"accepted":true,"dissolved":dissolved,"paused":paused}))
             }
             "raids.set_role" => {
                 let p: HostRole = params(value)?;
@@ -421,11 +616,9 @@ impl Controller {
                 let _: Empty = params(value)?;
                 current.ok_or_else(not_member)?;
                 let events = self.raids.remove(scope, Reason::Left);
-                let dissolved = events
-                    .iter()
-                    .any(|e| matches!(e.change, raid::Change::Dissolved { .. }));
+                let (dissolved, paused) = outcome(&events);
                 self.raid_queue(events);
-                Ok(json!({"accepted":true,"dissolved":dissolved}))
+                Ok(json!({"accepted":true,"dissolved":dissolved,"paused":paused}))
             }
             "raids.members" => {
                 let _: Empty = params(value)?;
@@ -445,4 +638,13 @@ impl Controller {
             _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
         }
     }
+}
+
+/// Whether removing a member dissolved or paused its raid.
+fn outcome(events: &[Event]) -> (bool, bool) {
+    let any = |f: fn(&raid::Change) -> bool| events.iter().any(|e| f(&e.change));
+    (
+        any(|c| matches!(c, raid::Change::Dissolved { .. })),
+        any(|c| matches!(c, raid::Change::Paused { .. })),
+    )
 }

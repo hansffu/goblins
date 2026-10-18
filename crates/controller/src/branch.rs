@@ -266,10 +266,11 @@ mod tests {
     fn list_bounds_are_enforced_when_reading_the_manifest() {
         let many: Vec<_> = (0..65).map(|i| format!("g{i}")).collect();
         for children in [json!(many), json!(["x".repeat(65)]), json!(["../bad"])] {
-            let error = manifest(json!({"shell": goblin(json!({"allowed_run_targets": children}))}))
-                .branch("shell", None)
-                .err()
-                .unwrap();
+            let error =
+                manifest(json!({"shell": goblin(json!({"allowed_run_targets": children}))}))
+                    .branch("shell", None)
+                    .err()
+                    .unwrap();
             assert!(
                 error.to_string().contains("invalid allowed_run_targets"),
                 "{error}"

@@ -106,9 +106,19 @@ fn execute(cli: Cli) -> Result<i32> {
                         serde_json::json!({"raid":raid,"sessions":goblins})
                     )?
                 ),
-                Destroy { raid } => println!(
+                Destroy { raid, stop_members } => println!(
                     "{}",
-                    client.call("raids.destroy", serde_json::json!({"raid":raid}))?
+                    client.call(
+                        "raids.destroy",
+                        serde_json::json!({"raid":raid,"stop_members":stop_members})
+                    )?
+                ),
+                SetOwner { raid, goblin } => println!(
+                    "{}",
+                    client.call(
+                        "raids.set_owner",
+                        serde_json::json!({"raid":raid,"session":goblin})
+                    )?
                 ),
                 Members { raid, json } => {
                     let record = client.call("raids.members", serde_json::json!({"raid":raid}))?;

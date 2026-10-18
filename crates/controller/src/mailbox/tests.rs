@@ -112,7 +112,8 @@ impl Fixture {
         self.call(actor, "inbox.next", json!({"key":key})).unwrap()
     }
     fn record(&mut self, events: Vec<crate::raid::Event>) {
-        self.mailbox.record_raid(&events, 1000, &mut self.audit);
+        self.mailbox
+            .record_raid(&events, &self.directory, 1000, &mut self.audit);
     }
     fn reply(&mut self, actor: &str, claim: &Value, key: &str) -> Result<Value> {
         self.call(
@@ -507,6 +508,74 @@ fn logged_raid_membership_permits_cross_branch_sends_until_removed() {
 }
 
 #[test]
+fn a_paused_raid_refuses_with_a_warning_and_notifies_on_resume() {
+    use crate::raid::Reason;
+    let mut f = Fixture::new();
+    let (mut raids, events) = raid_of(&["g", "y", "s"]);
+    f.record(events);
+    f.send("y", "s", "before", "question");
+    let claim = f.next("s", "fetch")["message"].clone();
+    // The owner leaving pauses the raid: sends and replies between members
+    // are refused with a warning, and the claim stays outstanding.
+    f.record(raids.remove("g", Reason::Stopped));
+    let paused = (
+        -32009,
+        "raid 'review' is paused until the host selects a new owner; you will get a notice when it resumes"
+            .to_string(),
+    );
+    assert_eq!(
+        f.call("y", "messages.send", json!({"key":"k","to":"s","body":"x"}))
+            .unwrap_err(),
+        paused
+    );
+    assert_eq!(f.reply("s", &claim, "reply").unwrap_err(), paused);
+    assert_eq!(f.mailbox.status("s")["claim"], claim["id"]);
+    // A refused send stores no receipt, so it can be retried with its key.
+    // A new owner authorizes nothing until it is recorded.
+    f.audit.raid_full = true;
+    let mut failed = raids.clone();
+    f.record(failed.set_owner("review", "y", "host").unwrap());
+    assert!(f.mailbox.raids()["y"].paused);
+    assert_eq!(f.mailbox.status("y")["queued"], 0);
+    f.audit.raid_full = false;
+    let mut f2 = Fixture::new();
+    let (mut raids2, events) = raid_of(&["g", "y", "s"]);
+    f2.record(events);
+    f2.record(raids2.remove("g", Reason::Left));
+    let _ = f2.call("y", "messages.send", json!({"key":"k","to":"s","body":"x"}));
+    let _ = f2.call(
+        "y",
+        "messages.send",
+        json!({"key":"k2","to":"s","body":"x"}),
+    );
+    f2.record(raids2.set_owner("review", "s", "host").unwrap());
+    let view = &f2.mailbox.raids()["y"];
+    assert_eq!((view.owner.as_deref(), view.paused), (Some("s"), false));
+    // One notice for the warned sender, none for the others.
+    assert_eq!(f2.mailbox.status("y")["queued"], 1);
+    assert_eq!(f2.mailbox.status("s")["queued"], 0);
+    let notice = f2.next("y", "notice")["message"].clone();
+    assert_eq!(notice["sender"], "goblins");
+    assert_eq!(
+        notice["raid"],
+        json!({"id":"r1","name":"review","event":"resumed","owner":"s"})
+    );
+    assert_eq!(
+        notice["body"],
+        "Raid review has resumed with owner chief/sibling; messages to its members are allowed again."
+    );
+    assert_eq!(
+        f2.reply("y", &notice, "r").unwrap_err().1,
+        "notices take no reply; complete the claim with goblin inbox complete"
+    );
+    f2.complete("y", &notice, "done").unwrap();
+    assert_eq!(f2.send("y", "s", "k3", "again")["recipient"], "s");
+    // A later resume notifies nobody new.
+    f2.record(raids2.set_owner("review", "y", "host").unwrap());
+    assert_eq!(f2.mailbox.status("y")["queued"], 0);
+}
+
+#[test]
 fn raid_paths_and_ids_resolve_and_ambiguous_names_are_rejected() {
     let mut f = Fixture::new();
     f.record(raid_of(&["p", "y"]).1);
@@ -627,7 +696,9 @@ fn raid_write_failure_freezes_messaging() {
     f2.record(raid_of(&["c", "y"]).1);
     f2.audit.fail = true;
     f2.record(raids.remove("c", Reason::Left));
-    assert!(f2.mailbox.raids().is_empty());
+    assert!(f2.mailbox.raids().get("c").is_none());
+    assert!(f2.mailbox.raids()["y"].paused);
+    assert_eq!(f2.mailbox.raids()["y"].owner, None);
 }
 
 #[test]
@@ -645,6 +716,7 @@ fn raid_events_carry_actor_and_affected_sessions_in_order() {
     events.extend(raids.set_role("y", "builder", "host").unwrap());
     events.extend(raids.remove("g", Reason::LaunchFailed));
     events.extend(raids.remove("c", Reason::Left));
+    events.extend(raids.remove("y", Reason::Stopped));
     f.record(events);
     let logged: Vec<_> = f
         .audit
@@ -662,18 +734,21 @@ fn raid_events_carry_actor_and_affected_sessions_in_order() {
             ("raid.role", "host", s(&["y"])),
             ("raid.left", "g", s(&["g"])),
             ("raid.left", "c", s(&["c"])),
-            ("raid.dissolved", "c", s(&["c", "y"])),
+            ("raid.paused", "c", s(&["c", "y"])),
+            ("raid.left", "y", s(&["y"])),
+            ("raid.dissolved", "y", s(&["y"])),
         ]
     );
     assert_eq!(f.audit.events[4].data["reason"], "launch-failed");
-    assert_eq!(f.audit.events[6].data["reason"], "owner-left");
+    assert_eq!(f.audit.events[6].data["reason"], "left");
+    assert_eq!(f.audit.events[8].data["reason"], "empty");
     assert_eq!(
         f.audit
             .events
             .iter()
             .map(|e| e.sequence)
             .collect::<Vec<_>>(),
-        (1..=7).collect::<Vec<_>>()
+        (1..=9).collect::<Vec<_>>()
     );
     assert!(f.mailbox.raids().is_empty());
 }
@@ -909,6 +984,7 @@ fn other_events_leave_queued_messages_room_to_be_fetched_and_completed() {
             &crate::raid::Raids::default()
                 .invite(format!("raid{n}"), "review", &["c".into()], "host")
                 .unwrap(),
+            &f.directory,
             1000,
             &mut f.audit,
         );
