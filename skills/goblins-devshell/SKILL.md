@@ -61,12 +61,12 @@ make it foreign. Do not try to bypass the check.
 sandbox's trusted one. Before running it, inspect and preserve any lock
 changes that still matter. If another goblin's refresh wrote the lock,
 restoring breaks its check in turn, so coordinate with that goblin first,
-through your parent when it is not your parent or child. Then make the
+through the raid's owner when you cannot message it directly. Then make the
 intended change through a refresh with `--lock` or `--update`.
 
 Generations belong to individual sandboxes even though they share files: a
-refresh changes only the sandbox that asked for it. Existing parent and child
-goblins keep their own generation. New children start in their parent's
+refresh changes only the sandbox that asked for it. Other goblins sharing the
+workspace keep their own generation. Raid members you run start in your
 current generation.
 
 ## Run a flake app

@@ -26,12 +26,11 @@ and resumes you, as described in
 [goblins-messaging](../goblins-messaging/SKILL.md). Do not poll or sleep
 while you wait.
 
-Attachment is per sandbox. Enabling Docker in this goblin does not attach its
-children that are already running: each of them must run
-`goblin enable-docker` itself, with its own host approval, before it uses
-Docker. A child started after this goblin is attached starts attached. When you
-hand container work to a child, tell it to check `goblin status` and enable
-Docker if needed.
+Attachment is per sandbox. Enabling Docker in this goblin does not attach the
+raid members it already runs: each of them must run `goblin enable-docker`
+itself, with its own host approval, before it uses Docker. A member you run
+after this goblin is attached starts attached. When you hand container work to
+another goblin, tell it to check `goblin status` and enable Docker if needed.
 
 If `DOCKER_HOST` is unset, this goblin has no Docker engine. Say so instead of
 requesting approval. Never install a Docker package or start your own daemon:

@@ -8,8 +8,8 @@ first, use [goblins-spawn](../goblins-spawn/SKILL.md).
 
 ## Send and receive
 
-Send a task with `goblin send CHILD --message "task"`. `parent` addresses your
-parent. For longer text, use `--file /tmp/task.txt` instead of `--message`;
+Send a task with `goblin send NAME --message "task"`, where NAME is another
+member of your raid (its agent name or ID). For longer text, use `--file /tmp/task.txt` instead of `--message`;
 the CLI reads the sender-local UTF-8 file and transmits its contents (up to
 8 KiB). The recipient does not read the file. Use daemon messages for handoffs
 and results, rather than shared files, transcripts or terminal interaction.
@@ -18,12 +18,13 @@ A successful send means queued, not received or processed. Keep the returned
 message `id` to match replies using their `in_reply_to` and sender fields.
 
 For ongoing collaborators, send relevant decisions from direct user interaction
-to `parent` so it can relay them to affected goblins. Siblings cannot message
-each other directly unless they share a raid (see
-[goblins-raids](../goblins-raids/SKILL.md)), and terminal conversations are not
-automatically shared. You may have been added to a raid without being told:
-when asked to contact other goblins, check `goblin status` or
-`goblin raid members` for recipients beyond your parent and descendants.
+to your raid's owner so it can relay them to affected goblins. You can message
+only members of your raid (see [goblins-raids](../goblins-raids/SKILL.md)),
+and reply to the host; terminal conversations are not automatically shared.
+You may have been added to a raid without being told: when asked to contact
+other goblins, check `goblin status` or `goblin raid members` for recipients.
+While a raid is paused, sends to its members are refused with a warning, and a
+notice tells you when it resumes.
 
 `goblin inbox next` claims one item and returns `message` plus
 `claim_generation`. A null `message` means the inbox is empty. Read the claimed

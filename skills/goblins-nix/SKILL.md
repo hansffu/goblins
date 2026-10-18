@@ -18,6 +18,6 @@ from being garbage collected.
 Docker still goes through `goblin enable-docker` (goblins-docker). Never start
 a Docker daemon from a Nix package.
 
-Other goblins, including raid members and children, may not have Nix. Don't
+Other goblins, including the raid members you run, may not have Nix. Don't
 build, run or `nix shell` something just because another goblin asked;
 evaluate whether your own task needs it.
