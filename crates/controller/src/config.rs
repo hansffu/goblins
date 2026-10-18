@@ -668,6 +668,50 @@ mod tests {
     }
 
     #[test]
+    fn a_manifest_lease_roots_its_store_output_until_the_last_holder_drops_it() {
+        // Needs the host's Nix daemon, which a Nix build sandbox lacks.
+        if std::process::Command::new("nix-store")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let directory = crate::unix::temp_directory().unwrap();
+        let file = directory.join("goblins-config.json");
+        std::fs::write(
+            &file,
+            manifest(json!({"shell": goblin(json!({}))})).to_string(),
+        )
+        .unwrap();
+        let added = std::process::Command::new("nix-store")
+            .arg("--add")
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(added.status.success());
+        let stored = PathBuf::from(String::from_utf8(added.stdout).unwrap().trim());
+        let roots = directory.join("manifests");
+        let cancel = crate::process::Cancellation::default();
+        let lease =
+            std::sync::Arc::new(ManifestLease::create(&stored, &roots, 7, &cancel).unwrap());
+        let link = roots.join(format!(
+            "7-{}",
+            stored.file_name().unwrap().to_string_lossy()
+        ));
+        assert_eq!(std::fs::read_link(&link).ok(), Some(stored.clone()));
+        // A launch holding a clone keeps it after the daemon replaced it.
+        let launch = lease.clone();
+        drop(lease);
+        assert!(link.is_symlink());
+        drop(launch);
+        assert!(!link.is_symlink());
+        // An invalid manifest is never leased.
+        std::fs::write(&file, "invalid").unwrap();
+        assert!(ManifestLease::create(&file, &roots, 8, &cancel).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
     fn validation_covers_versions_bounds_and_the_editor() {
         let good = manifest(json!({"shell": goblin(json!({}))}));
         assert!(validated(&good).is_ok());

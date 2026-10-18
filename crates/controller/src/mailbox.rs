@@ -32,6 +32,9 @@ pub struct Session {
     pub id: String,
     /// Unique among live goblins.
     pub agent_name: String,
+    /// Who or what stopped it, as the controller recorded it; logged with
+    /// its exit so the log alone attributes an owner's stop.
+    pub stop_reason: Option<String>,
     /// True while starting/running and eligible to accept messages.
     pub running: bool,
 }

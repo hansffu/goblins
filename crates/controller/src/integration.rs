@@ -376,6 +376,7 @@ mod tests {
                 Session {
                     id: "child".into(),
                     agent_name: "child".into(),
+                    stop_reason: None,
                     running: true,
                 },
             )]);
@@ -413,6 +414,7 @@ mod tests {
                 Session {
                     id: "child".into(),
                     agent_name: "child".into(),
+                    stop_reason: None,
                     running: true,
                 },
             )])

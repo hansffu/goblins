@@ -178,6 +178,7 @@ impl Worker {
                 // Held until the session rooted what it needs: the owner's
                 // directory keeps its grants, the lease the manifest.
                 let mut held = None;
+                let mut held_lease = None;
                 let mut session = match source {
                     Source::Member {
                         owner,
@@ -210,16 +211,19 @@ impl Worker {
                         recreate,
                         sequence,
                     } => {
-                        let lease = crate::config::ManifestLease::create(
+                        let lease = std::sync::Arc::new(crate::config::ManifestLease::create(
                             &configuration,
                             &state.join("manifests"),
                             sequence,
                             &token,
-                        )?;
+                        )?);
                         results.try_send(Completed::Manifest {
                             sequence,
-                            lease: std::sync::Arc::new(lease),
+                            lease: lease.clone(),
                         })?;
+                        // Kept until it started, even once a newer manifest
+                        // replaces it as the daemon's current one.
+                        held_lease = Some(lease);
                         let manifest = Manifest::read(&configuration)?;
                         let editor = manifest.editor()?;
                         let run_targets: std::sync::Arc<[String]> =
@@ -301,6 +305,7 @@ impl Worker {
                 }
                 // Everything it mounts is rooted by now.
                 drop(held);
+                drop(held_lease);
                 results.try_send(Completed::Started {
                     docker_enabled: session.docker_enabled(),
                     scope: session.scope_name(),

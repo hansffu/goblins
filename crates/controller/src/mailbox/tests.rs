@@ -83,6 +83,7 @@ impl Fixture {
                 Session {
                     id: id.into(),
                     agent_name: name.into(),
+                    stop_reason: None,
                     running: true,
                 },
             )
@@ -240,6 +241,7 @@ fn duplicate_send_survives_name_reuse_and_changed_body_conflicts() {
         Session {
             id: "replacement".into(),
             agent_name: "scout".into(),
+            stop_reason: None,
             running: true,
         },
     );
@@ -600,6 +602,7 @@ fn raid_names_and_ids_resolve_and_ambiguous_names_are_rejected() {
         Session {
             id: "z".into(),
             agent_name: "lookout".into(),
+            stop_reason: None,
             running: true,
         },
     );

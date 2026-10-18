@@ -850,6 +850,9 @@ impl View {
                 self.yes = false;
                 self.popup_open = true;
                 self.request_scroll = 0;
+                // A raid choice or confirmation belongs to the request shown.
+                self.owner_choice = 0;
+                self.confirm_stop = None;
             }
             return;
         }
@@ -915,15 +918,44 @@ impl View {
         // No second event in the same input batch can submit this interaction.
         self.presented = None;
     }
-    /// Resolve a paused raid as its prompt showed it: the stable raid ID and
-    /// generation travel with the call, so a changed raid is refused.
+    /// The pending raid-owner request on screen, only while it is still the
+    /// selected one: keys queued behind a navigation never act on it.
+    fn raid_prompt(&self) -> Option<PermissionRecord> {
+        self.presented.clone().filter(|p| {
+            p.kind == RAID_OWNER
+                && p.state == "pending"
+                && Some(&p.id) == self.selected_request.as_ref()
+        })
+    }
     fn raid_input(&mut self, key: KeyCode, p: &PermissionRecord, client: &mut Client) -> bool {
-        let Some(preview) = &p.preview else {
+        let Some(action) = self.raid_action(key, p) else {
             return false;
         };
+        if let Some((method, params, done)) = action {
+            self.notice = match client.call(method, params) {
+                Ok(_) => done,
+                Err(e) => safe(&e.to_string()),
+            };
+            self.owner_choice = 0;
+            self.presented = None;
+        }
+        true
+    }
+    /// What a key does to a paused raid's prompt: None when it is not one
+    /// of its keys, Some(None) when it only changes the view. A call names
+    /// the raid ID and generation the prompt showed, so a changed raid is
+    /// refused.
+    #[allow(clippy::type_complexity)]
+    fn raid_action(
+        &mut self,
+        key: KeyCode,
+        p: &PermissionRecord,
+    ) -> Option<Option<(&'static str, serde_json::Value, String)>> {
+        let preview = p.preview.as_ref()?;
         let members = raid_members(preview);
-        let same = serde_json::json!({"raid":p.package,"id":preview["raid"],"generation":preview["generation"]});
-        let (method, mut params, done) = match key {
+        let mut params = serde_json::json!({"raid":p.package,"id":preview["raid"],
+            "generation":preview["generation"]});
+        let (method, done) = match key {
             KeyCode::Left | KeyCode::Right if !members.is_empty() => {
                 let n = members.len();
                 self.owner_choice = if key == KeyCode::Left {
@@ -931,49 +963,34 @@ impl View {
                 } else {
                     (self.owner_choice + 1) % n
                 };
-                return true;
+                return Some(None);
             }
             KeyCode::Char('o') => {
-                let Some(member) = members.get(self.owner_choice) else {
-                    return true;
-                };
-                let name = member["agent_name"].as_str().unwrap_or("?").to_string();
-                let mut params = same;
+                let member = members.get(self.owner_choice)?;
                 params["session"] = member["id"].clone();
+                let name = member["agent_name"].as_str().unwrap_or("?");
                 (
                     "raids.set_owner",
-                    params,
-                    format!("{} is the new owner", safe(&name)),
+                    format!("{} is the new owner", safe(name)),
                 )
             }
             KeyCode::Char('x') => (
                 "raids.destroy",
-                same,
                 "Dissolved; its goblins keep running".into(),
             ),
             KeyCode::Char('k') if self.confirm_stop.as_ref() != Some(&p.id) => {
                 self.confirm_stop = Some(p.id.clone());
                 self.notice = "Press k again to stop every member and dissolve the raid".into();
-                return true;
+                return Some(None);
             }
-            KeyCode::Char('k') => (
-                "raids.destroy",
-                same,
-                "Stopped every member and dissolved".into(),
-            ),
-            _ => return false,
+            KeyCode::Char('k') => {
+                params["stop_members"] = serde_json::json!(true);
+                ("raids.destroy", "Stopped every member and dissolved".into())
+            }
+            _ => return None,
         };
-        if key == KeyCode::Char('k') {
-            params["stop_members"] = serde_json::json!(true);
-        }
         self.confirm_stop = None;
-        self.notice = match client.call(method, params) {
-            Ok(_) => done,
-            Err(e) => safe(&e.to_string()),
-        };
-        self.owner_choice = 0;
-        self.presented = None;
-        true
+        Some(Some((method, params, done)))
     }
     fn diff_input(&mut self, key: KeyCode, client: &mut Client) {
         let Some(view) = &mut self.diff else {
@@ -1015,10 +1032,7 @@ impl View {
         if let Event::Key(key) = &input
             && key.kind == KeyEventKind::Press
             && self.focus == Focus::Requests
-            && let Some(p) = self
-                .presented
-                .clone()
-                .filter(|p| p.kind == RAID_OWNER && p.state == "pending")
+            && let Some(p) = self.raid_prompt()
             && self.raid_input(key.code, &p, client)
         {
             return true;
@@ -1237,6 +1251,74 @@ mod tests {
             assert_eq!(color("1.89.0"), Some(Color::Red));
             assert_eq!(color("1.90.1"), Some(Color::Green));
         }
+    }
+    #[test]
+    fn raid_prompt_keys_act_only_on_the_selected_request() {
+        let prompt = |id: &str| PermissionRecord {
+            kind: RAID_OWNER.into(),
+            id: id.into(),
+            session: "owner".into(),
+            agent_name: "owner".into(),
+            approval: format!("{id}-a"),
+            package: id.into(),
+            reason: String::new(),
+            state: "pending".into(),
+            approved: None,
+            preview: Some(
+                serde_json::json!({"raid":format!("{id}-raid"),"name":id,"generation":1,
+                "members":[{"id":"m1","agent_name":"kid"},{"id":"m2","agent_name":"other"}]}),
+            ),
+            message: None,
+        };
+        let snapshot = Snapshot {
+            instance: "test".into(),
+            permissions: vec![prompt("alpha"), prompt("beta")],
+            raids: vec![],
+            sessions: vec![],
+        };
+        let mut view = View::new();
+        view.focus = Focus::Requests;
+        view.selected_request = Some("alpha".into());
+        view.presented = Some(prompt("alpha"));
+        assert_eq!(view.raid_prompt().unwrap().id, "alpha");
+        // k once only asks to confirm; Right chooses the next member.
+        assert_eq!(
+            view.raid_action(KeyCode::Char('k'), &prompt("alpha")),
+            Some(None)
+        );
+        assert_eq!(
+            view.raid_action(KeyCode::Right, &prompt("alpha")),
+            Some(None)
+        );
+        // Navigating forgets both, and keys queued behind it find no prompt.
+        view.requests.select(Some(0));
+        view.move_selection(1, &snapshot);
+        assert_eq!(view.selected_request.as_deref(), Some("beta"));
+        assert!(view.raid_prompt().is_none());
+        assert_eq!((view.owner_choice, &view.confirm_stop), (0, &None));
+        // On the prompt actually shown, the calls name its raid as shown.
+        view.presented = Some(prompt("beta"));
+        let call = view
+            .raid_action(KeyCode::Char('o'), &prompt("beta"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (call.0, call.1),
+            (
+                "raids.set_owner",
+                serde_json::json!({"raid":"beta","id":"beta-raid","generation":1,"session":"m1"})
+            )
+        );
+        assert_eq!(
+            view.raid_action(KeyCode::Char('k'), &prompt("beta")),
+            Some(None)
+        );
+        let call = view
+            .raid_action(KeyCode::Char('k'), &prompt("beta"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(call.1["stop_members"], true);
+        assert_eq!(view.raid_action(KeyCode::Char('y'), &prompt("beta")), None);
     }
     #[test]
     fn a_paused_raid_prompt_marks_the_chosen_member() {

@@ -278,7 +278,14 @@ impl<L: Log> State<L> {
         // arrives with a completion sees its notice.
         mailbox.record_operations(operations, directory, now(), journal);
         for id in stopped {
-            let _ = mailbox.record(&id, "session.exited", json!({}), now(), journal);
+            let reason = directory.get(&id).and_then(|s| s.stop_reason.clone());
+            let _ = mailbox.record(
+                &id,
+                "session.exited",
+                json!({"reason":reason}),
+                now(),
+                journal,
+            );
             let _ = mailbox.stop_recipient(&id, now(), journal);
         }
         let Work::Call {
@@ -431,6 +438,7 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
                 mailbox::Session {
                     id: event.actor.clone(),
                     agent_name: name.into(),
+                    stop_reason: None,
                     running: true,
                 },
             );
@@ -512,6 +520,7 @@ mod tests {
                     mailbox::Session {
                         id: id.into(),
                         agent_name: name.into(),
+                        stop_reason: None,
                         running: true,
                     },
                 )
@@ -584,6 +593,31 @@ mod tests {
         assert_eq!(w.journal.events.last().unwrap().kind, "raid.left");
         let refused = w.handle(send("x", "scout", "late", vec![])).unwrap();
         assert_eq!(refused.result.unwrap_err().0, -32004);
+    }
+
+    #[test]
+    fn an_exit_is_logged_with_who_stopped_it() {
+        let mut w = state();
+        w.handle(Work::Sync {
+            directory: directory(),
+            raids: vec![],
+            operations: vec![],
+        });
+        let mut stopped = directory();
+        let b = stopped.get_mut("b").unwrap();
+        b.running = false;
+        b.stop_reason = Some("stopped by raid owner chief (a)".into());
+        w.handle(Work::Sync {
+            directory: stopped,
+            raids: vec![],
+            operations: vec![],
+        });
+        let exited = w.journal.events.last().unwrap();
+        assert_eq!(
+            (exited.kind.as_str(), exited.actor.as_str()),
+            ("session.exited", "b")
+        );
+        assert_eq!(exited.data["reason"], "stopped by raid owner chief (a)");
     }
 
     #[test]

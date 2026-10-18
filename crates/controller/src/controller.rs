@@ -819,6 +819,17 @@ impl Controller {
                 ),
             ));
         }
+        // A record from disk is bounded like an owner's copied approvals.
+        if record.packages.auto_approve.len() > crate::history::MAX_NAMES {
+            return Err((
+                -32010,
+                format!(
+                    "record {} exceeds the auto-approve limit of {} packages",
+                    record.id,
+                    crate::history::MAX_NAMES
+                ),
+            ));
+        }
         if let Some(reason) = self.recreate_conflict(record) {
             return Err((
                 -32009,
@@ -2419,6 +2430,7 @@ impl Controller {
                     crate::mailbox::Session {
                         id: id.clone(),
                         agent_name: a.record.agent_name.clone(),
+                        stop_reason: a.record.stop_reason.clone(),
                         running: matches!(a.record.state.as_str(), "starting" | "running"),
                     },
                 )
@@ -4309,6 +4321,37 @@ mod tests {
         assert_eq!(r0.created, 0);
         assert!(d.history.as_ref().unwrap().deleting.contains("o1"));
         assert_eq!(d.history.as_ref().unwrap().resolve("g1").unwrap().id, "r0");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_resumed_record_is_bounded_like_copied_approvals() {
+        use crate::history::{MAX_NAMES, Record};
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let store = d.history.as_mut().unwrap();
+        for (id, count) in [("fits", MAX_NAMES), ("oversize", MAX_NAMES + 1)] {
+            let mut record = Record::new(id, "shell", id, 1);
+            record.ran_as(id);
+            // As read from disk, past Record::update's own bound.
+            record.packages.auto_approve = (0..count).map(|i| format!("p{i}")).collect();
+            store.write(record);
+        }
+        let (mut host, _peer) = host_connection();
+        let recreate = |target: &str| {
+            json!({"key":target,"configuration":"/missing-goblins-test-manifest",
+                "recreate":target,"rows":24,"cols":80})
+        };
+        let refused = d
+            .host(&mut host, "sessions.start", recreate("oversize"))
+            .unwrap_err();
+        assert_eq!(refused.0, -32010);
+        assert!(refused.1.contains("auto-approve limit of 256"));
+        let sessions = d.sessions.len();
+        d.host(&mut host, "sessions.start", recreate("fits"))
+            .unwrap();
+        assert_eq!(d.sessions.len(), sessions + 1);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
