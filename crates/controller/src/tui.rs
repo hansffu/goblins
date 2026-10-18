@@ -99,6 +99,10 @@ struct View {
     /// Full-screen source diff of one request: its ID, scroll offset and
     /// whether non-Nix files are shown.
     diff: Option<DiffView>,
+    /// The member a paused raid's prompt would make owner.
+    owner_choice: usize,
+    /// A raid-owner request whose "stop all" waits for a second press.
+    confirm_stop: Option<String>,
 }
 struct DiffView {
     request: String,
@@ -182,28 +186,37 @@ fn nix_file(path: &str) -> bool {
 /// A dev shell refresh can be approved only once its preview is shown.
 /// Kind of the request asking the host to resolve a paused raid.
 const RAID_OWNER: &str = "raid-owner";
-/// The members a paused raid can take as owner.
-fn raid_owner_summary(v: &serde_json::Value) -> String {
-    let members: Vec<_> = v["members"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|m| {
+fn raid_members(v: &serde_json::Value) -> &[serde_json::Value] {
+    v["members"].as_array().map_or(&[], Vec::as_slice)
+}
+/// The members a paused raid can take as owner, the chosen one marked.
+fn raid_owner_summary(v: &serde_json::Value, choice: usize) -> String {
+    let members: Vec<_> = raid_members(v)
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
             format!(
-                "{} ({}, {})",
-                m["path"].as_str().unwrap_or("?"),
-                m["role"].as_str().unwrap_or("no role"),
-                m["state"].as_str().unwrap_or("?")
+                "{} {} ({}, {}{})",
+                if i == choice { ">" } else { " " },
+                safe(m["agent_name"].as_str().unwrap_or("?")),
+                safe(m["role"].as_str().unwrap_or("no role")),
+                safe(m["state"].as_str().unwrap_or("?")),
+                if m["created"] == true {
+                    ", created"
+                } else {
+                    ""
+                }
             )
         })
         .collect();
     format!(
-        "Raid {} is paused. Members: {}",
-        v["name"].as_str().unwrap_or("?"),
+        "Raid {} is paused: its owner {} left.\nMembers:\n{}",
+        safe(v["name"].as_str().unwrap_or("?")),
+        safe(v["former_owner"]["agent_name"].as_str().unwrap_or("?")),
         if members.is_empty() {
-            "none".into()
+            "  none".into()
         } else {
-            members.join(", ")
+            members.join("\n")
         }
     )
 }
@@ -484,6 +497,8 @@ impl View {
             buttons: [Rect::default(); 2],
             pressed: None,
             diff: None,
+            owner_choice: 0,
+            confirm_stop: None,
         }
     }
     fn sync(&mut self, snapshot: &Snapshot) {
@@ -709,7 +724,7 @@ impl View {
             let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             if let Some(p) = &self.presented {
                 let preview = match &p.preview {
-                    Some(v) if p.kind == RAID_OWNER => raid_owner_summary(v),
+                    Some(v) if p.kind == RAID_OWNER => raid_owner_summary(v, self.owner_choice),
                     Some(v) if v["description"].is_string() => {
                         v["description"].as_str().unwrap().into()
                     }
@@ -778,10 +793,9 @@ impl View {
                 .split(parts[1]);
                 if p.state == "pending" && p.kind == RAID_OWNER {
                     f.render_widget(
-                        Paragraph::new(format!(
-                            "Resolve with goblins raid set-owner {0} GOBLIN, or goblins raid destroy {0} [--stop-members]",
-                            safe(&p.package)
-                        )),
+                        Paragraph::new(
+                            "←/→: choose · o: make owner · x: dissolve · k: stop all and dissolve",
+                        ),
                         parts[1],
                     );
                 } else if p.state == "pending" {
@@ -878,7 +892,7 @@ impl View {
             return;
         };
         if p.kind == RAID_OWNER {
-            self.notice = "A paused raid takes a new owner or dissolves: use goblins raid set-owner or goblins raid destroy".into();
+            self.notice = "A paused raid takes a new owner or dissolves: o, x or k".into();
             return;
         }
         if yes && awaiting_preview(p) {
@@ -900,6 +914,66 @@ impl View {
         };
         // No second event in the same input batch can submit this interaction.
         self.presented = None;
+    }
+    /// Resolve a paused raid as its prompt showed it: the stable raid ID and
+    /// generation travel with the call, so a changed raid is refused.
+    fn raid_input(&mut self, key: KeyCode, p: &PermissionRecord, client: &mut Client) -> bool {
+        let Some(preview) = &p.preview else {
+            return false;
+        };
+        let members = raid_members(preview);
+        let same = serde_json::json!({"raid":p.package,"id":preview["raid"],"generation":preview["generation"]});
+        let (method, mut params, done) = match key {
+            KeyCode::Left | KeyCode::Right if !members.is_empty() => {
+                let n = members.len();
+                self.owner_choice = if key == KeyCode::Left {
+                    (self.owner_choice + n - 1) % n
+                } else {
+                    (self.owner_choice + 1) % n
+                };
+                return true;
+            }
+            KeyCode::Char('o') => {
+                let Some(member) = members.get(self.owner_choice) else {
+                    return true;
+                };
+                let name = member["agent_name"].as_str().unwrap_or("?").to_string();
+                let mut params = same;
+                params["session"] = member["id"].clone();
+                (
+                    "raids.set_owner",
+                    params,
+                    format!("{} is the new owner", safe(&name)),
+                )
+            }
+            KeyCode::Char('x') => (
+                "raids.destroy",
+                same,
+                "Dissolved; its goblins keep running".into(),
+            ),
+            KeyCode::Char('k') if self.confirm_stop.as_ref() != Some(&p.id) => {
+                self.confirm_stop = Some(p.id.clone());
+                self.notice = "Press k again to stop every member and dissolve the raid".into();
+                return true;
+            }
+            KeyCode::Char('k') => (
+                "raids.destroy",
+                same,
+                "Stopped every member and dissolved".into(),
+            ),
+            _ => return false,
+        };
+        if key == KeyCode::Char('k') {
+            params["stop_members"] = serde_json::json!(true);
+        }
+        self.confirm_stop = None;
+        self.notice = match client.call(method, params) {
+            Ok(_) => done,
+            Err(e) => safe(&e.to_string()),
+        };
+        self.owner_choice = 0;
+        self.presented = None;
+        true
     }
     fn diff_input(&mut self, key: KeyCode, client: &mut Client) {
         let Some(view) = &mut self.diff else {
@@ -936,6 +1010,17 @@ impl View {
                 return false;
             }
             self.diff_input(key.code, client);
+            return true;
+        }
+        if let Event::Key(key) = &input
+            && key.kind == KeyEventKind::Press
+            && self.focus == Focus::Requests
+            && let Some(p) = self
+                .presented
+                .clone()
+                .filter(|p| p.kind == RAID_OWNER && p.state == "pending")
+            && self.raid_input(key.code, &p, client)
+        {
             return true;
         }
         match input {
@@ -1152,6 +1237,16 @@ mod tests {
             assert_eq!(color("1.89.0"), Some(Color::Red));
             assert_eq!(color("1.90.1"), Some(Color::Green));
         }
+    }
+    #[test]
+    fn a_paused_raid_prompt_marks_the_chosen_member() {
+        let preview = serde_json::json!({"name":"crew","former_owner":{"agent_name":"chief"},
+            "members":[{"agent_name":"kid","role":null,"state":"running","created":true},
+                {"agent_name":"other\u{1b}[2J","role":"reviewer","state":"running","created":false}]});
+        assert_eq!(
+            raid_owner_summary(&preview, 1),
+            "Raid crew is paused: its owner chief left.\nMembers:\n  kid (no role, running, created)\n> other\\u001b[2J (reviewer, running)"
+        );
     }
     #[test]
     fn selection_keeps_its_identity_through_insertions_and_removals() {
