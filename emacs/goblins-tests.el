@@ -1951,6 +1951,29 @@ keeps the parameters of windows that live on."
               (should-error (goblins-raid-kick) :type 'user-error))
           (kill-buffer page))))))
 
+(ert-deftest goblins-raid-page-and-status-warn-when-the-log-fails ()
+  (should-not (goblins--messaging-warning '(:messaging (:audit_failed :false
+                                                        :raid_audit_failed :false))))
+  (should-not (goblins--messaging-warning '(:sessions [])))
+  (should (string-prefix-p "Messaging stopped"
+                           (goblins--messaging-warning
+                            '(:messaging (:audit_failed t :raid_audit_failed t)))))
+  (goblins-test--raid-sidebar
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :messaging '(:audit_failed :false
+                                                      :raid_audit_failed t))))
+    (let ((page (goblins-raid-buffer source "crew")))
+      (unwind-protect
+          (with-current-buffer page
+            (should (string-match-p "^Raid messages stopped: raid events could not be logged"
+                                    (buffer-string))))
+        (kill-buffer page)))
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (goblins--insert-messaging-warning (buffer-local-value 'goblins--snapshot source)))
+      (should (eq (get-text-property (point-min) 'face) 'goblins-attention)))))
+
 (ert-deftest goblins-raid-page-makes-the-member-at-point-owner ()
   (goblins-test--raid-sidebar
     (goblins-test--raid-calls calls

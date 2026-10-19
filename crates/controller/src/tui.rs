@@ -186,6 +186,31 @@ fn nix_file(path: &str) -> bool {
 /// A dev shell refresh can be approved only once its preview is shown.
 /// Kind of the request asking the host to resolve a paused raid.
 const RAID_OWNER: &str = "raid-owner";
+/// A goblin's packages as listed in its details: startup, granted, and the
+/// names it would be granted on request without asking, unless granted.
+fn package_rows(s: &SessionRecord) -> Vec<(&str, &'static str)> {
+    s.initial_packages
+        .iter()
+        .map(|p| (p.as_str(), "Startup"))
+        .chain(s.packages.iter().map(|p| (p.as_str(), "Granted")))
+        .chain(
+            s.auto_approve
+                .iter()
+                .filter(|p| !s.packages.contains(p))
+                .map(|p| (p.as_str(), "Auto")),
+        )
+        .collect()
+}
+/// What the host must know when the communications log fails.
+fn messaging_warning(snapshot: &Snapshot) -> Option<&'static str> {
+    if snapshot.messaging.audit_failed {
+        Some("Messaging stopped: the communications log cannot be written")
+    } else if snapshot.messaging.raid_audit_failed {
+        Some("Raid messages stopped: raid events could not be logged (log full)")
+    } else {
+        None
+    }
+}
 fn raid_members(v: &serde_json::Value) -> &[serde_json::Value] {
     v["members"].as_array().map_or(&[], Vec::as_slice)
 }
@@ -621,18 +646,21 @@ impl View {
                 .title(title.to_string())
                 .border_style(style)
         };
-        f.render_widget(
-            Paragraph::new(" Goblins · daemon approvals · sessions survive frontend closure"),
-            areas[0],
-        );
+        let header = match messaging_warning(snapshot) {
+            Some(warning) => {
+                Paragraph::new(format!(" Goblins · {warning}")).style(tone("attention"))
+            }
+            None => {
+                Paragraph::new(" Goblins · daemon approvals · sessions survive frontend closure")
+            }
+        };
+        f.render_widget(header, areas[0]);
         let selected = self.selected_session(snapshot);
         if self.details {
             let rows: Vec<Row> = selected
                 .map(|s| {
-                    s.initial_packages
-                        .iter()
-                        .map(|p| (p, "Startup"))
-                        .chain(s.packages.iter().map(|p| (p, "Granted")))
+                    package_rows(s)
+                        .into_iter()
                         .map(|(package, access)| {
                             Row::new(vec![Cell::from(safe(package)), Cell::from(access)])
                         })
@@ -858,7 +886,7 @@ impl View {
         }
         let count = if self.details {
             self.selected_session(snapshot)
-                .map(|s| s.initial_packages.len() + s.packages.len())
+                .map(|s| package_rows(s).len())
                 .unwrap_or(0)
         } else {
             snapshot.sessions.len()
@@ -1275,6 +1303,7 @@ mod tests {
             permissions: vec![prompt("alpha"), prompt("beta")],
             raids: vec![],
             sessions: vec![],
+            messaging: Default::default(),
         };
         let mut view = View::new();
         view.focus = Focus::Requests;
@@ -1331,12 +1360,54 @@ mod tests {
         );
     }
     #[test]
+    fn details_list_auto_approved_packages_not_yet_granted() {
+        let mut s = session("member");
+        s.initial_packages = vec!["coreutils-9.11".into()];
+        s.packages = vec!["hello".into()];
+        s.auto_approve = vec!["hello".into(), "cowsay".into()];
+        assert_eq!(
+            package_rows(&s),
+            [
+                ("coreutils-9.11", "Startup"),
+                ("hello", "Granted"),
+                ("cowsay", "Auto")
+            ]
+        );
+        let mut snapshot = Snapshot {
+            instance: "test".into(),
+            permissions: vec![],
+            raids: vec![],
+            sessions: vec![s],
+            messaging: Default::default(),
+        };
+        // Navigation counts the auto-only row too.
+        let mut view = View::new();
+        view.sync(&snapshot);
+        view.details = true;
+        view.move_selection(5, &snapshot);
+        assert_eq!(view.packages.selected(), Some(2));
+        assert_eq!(messaging_warning(&snapshot), None);
+        snapshot.messaging.raid_audit_failed = true;
+        assert!(
+            messaging_warning(&snapshot)
+                .unwrap()
+                .starts_with("Raid messages stopped")
+        );
+        snapshot.messaging.audit_failed = true;
+        assert!(
+            messaging_warning(&snapshot)
+                .unwrap()
+                .starts_with("Messaging stopped")
+        );
+    }
+    #[test]
     fn selection_keeps_its_identity_through_insertions_and_removals() {
         let mut snapshot = Snapshot {
             instance: "test".into(),
             permissions: vec![],
             raids: vec![],
             sessions: vec![session("alpha"), session("beta"), session("gamma")],
+            messaging: Default::default(),
         };
         let mut view = View::new();
         view.sync(&snapshot);

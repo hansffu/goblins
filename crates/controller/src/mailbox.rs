@@ -26,6 +26,14 @@ fn capacity() -> Fault {
     (-32010, "mailbox capacity reached".into())
 }
 
+/// Messaging that stopped because its log could not be written: every
+/// message (`audit_failed`), or only raid routes (`raid_audit_failed`, raid
+/// events over capacity, while control rights still change).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Health {
+    pub audit_failed: bool,
+    pub raid_audit_failed: bool,
+}
 /// Host metadata, never deserialized from an agent request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
@@ -562,6 +570,14 @@ impl Mailbox {
         self.sequence += 1;
         self.auxiliary_events += usize::from(counted);
         Ok(())
+    }
+
+    /// Whether the log can still be written, for the host to see.
+    pub fn health(&self) -> Health {
+        Health {
+            audit_failed: self.audit_failed,
+            raid_audit_failed: self.raid_audit_failed,
+        }
     }
 
     /// Queued messages per recipient; recipients with none are absent.

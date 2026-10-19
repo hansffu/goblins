@@ -238,9 +238,9 @@ impl Manifest {
             }
         }
         for (name, config) in &self.goblins {
-            let children = &config.allowed_run_targets;
-            if children.len() > MAX_RUN_TARGETS
-                || !children.iter().all(|c| goblins_protocol::identifier(c))
+            let targets = &config.allowed_run_targets;
+            if targets.len() > MAX_RUN_TARGETS
+                || !targets.iter().all(|c| goblins_protocol::identifier(c))
             {
                 return Err(format!(
                     "invalid allowed_run_targets for '{name}': at most {MAX_RUN_TARGETS} names of at most 64 characters"
@@ -383,10 +383,10 @@ pub struct Launch {
     pub docker: Option<Docker>,
     #[serde(skip)]
     pub scope: Option<Scope>,
-    /// Host-evaluated flake dev shell; children inherit this generation.
+    /// Host-evaluated flake dev shell; members a raid owner runs start in this generation.
     #[serde(skip)]
     pub dev_shell: Option<crate::devshell::DevShell>,
-    /// The manifest's host editor; children inherit it.
+    /// The manifest's host editor; members take the current manifest's.
     #[serde(skip)]
     pub editor: Option<Editor>,
 }

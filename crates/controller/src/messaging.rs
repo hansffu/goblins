@@ -72,11 +72,17 @@ pub struct Completed {
     pub result: mailbox::Result<Value>,
     pub actor: String,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    pub queued: BTreeMap<String, u64>,
+    pub health: mailbox::Health,
+}
 pub struct Service {
     pub commands: SyncSender<Work>,
     pub results: Receiver<Completed>,
-    /// Queued inbox counts per recipient, sent whenever they change.
-    pub inbox: Receiver<BTreeMap<String, u64>>,
+    /// Queued inbox counts per recipient and the log's health, sent
+    /// whenever either changes.
+    pub inbox: Receiver<Report>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -136,8 +142,8 @@ impl Service {
                 );
                 while let Ok(work) = input.recv() {
                     let completed = worker.handle(work);
-                    if let Some(queued) = worker.changed_counts() {
-                        let _ = counts.send(queued);
+                    if let Some(report) = worker.changed_report() {
+                        let _ = counts.send(report);
                     }
                     if let Some(completed) = completed
                         && output.send(completed).is_err()
@@ -191,7 +197,7 @@ struct State<L> {
     integrations: crate::integration::Integrations,
     known: Directory,
     /// Queued inbox counts as last reported to the controller.
-    counts: BTreeMap<String, u64>,
+    reported: Report,
 }
 impl<L: Log> State<L> {
     fn new(mailbox: Mailbox, journal: L) -> Self {
@@ -200,16 +206,23 @@ impl<L: Log> State<L> {
             journal,
             integrations: crate::integration::Integrations::default(),
             known: BTreeMap::new(),
-            counts: BTreeMap::new(),
+            reported: Report {
+                queued: BTreeMap::new(),
+                health: mailbox::Health::default(),
+            },
         }
     }
 
-    /// The queued inbox counts, when they differ from those last reported.
-    fn changed_counts(&mut self) -> Option<BTreeMap<String, u64>> {
-        let counts = self.mailbox.queued();
-        (counts != self.counts).then(|| {
-            self.counts = counts.clone();
-            counts
+    /// The queued inbox counts and health, when either differs from what
+    /// was last reported.
+    fn changed_report(&mut self) -> Option<Report> {
+        let report = Report {
+            queued: self.mailbox.queued(),
+            health: self.mailbox.health(),
+        };
+        (report != self.reported).then(|| {
+            self.reported = report.clone();
+            report
         })
     }
 
@@ -623,11 +636,12 @@ mod tests {
     #[test]
     fn queued_counts_are_reported_only_when_they_change() {
         let mut w = state();
-        assert_eq!(w.changed_counts(), None);
+        let queued = |w: &mut State<Faulty>| w.changed_report().map(|r| r.queued);
+        assert_eq!(queued(&mut w), None);
         w.handle(send("host", "scout", "one", vec![])).unwrap();
         w.handle(send("host", "scout", "two", vec![])).unwrap();
-        assert_eq!(w.changed_counts(), Some([("b".into(), 2)].into()));
-        assert_eq!(w.changed_counts(), None);
+        assert_eq!(queued(&mut w), Some([("b".into(), 2)].into()));
+        assert_eq!(queued(&mut w), None);
         // A stopped recipient's queued messages fail, emptying its inbox.
         let mut running = directory();
         running.remove("b");
@@ -636,7 +650,7 @@ mod tests {
             raids: vec![],
             operations: vec![],
         });
-        assert_eq!(w.changed_counts(), Some(BTreeMap::new()));
+        assert_eq!(queued(&mut w), Some(BTreeMap::new()));
     }
 
     #[test]
@@ -663,6 +677,8 @@ mod tests {
             .unwrap()
             .result
             .unwrap();
+        let before = w.changed_report().unwrap();
+        assert_eq!(before.health, mailbox::Health::default());
         w.journal.raid = Some(|| AuditError::Capacity);
         let role = raids.set_role("x", "builder", "x").unwrap();
         let done = w.handle(send("x", "scout", "second", role)).unwrap();
@@ -670,6 +686,11 @@ mod tests {
             done.result.unwrap_err(),
             (-32009, "raid membership could not be recorded".into())
         );
+        // The host hears of it although no inbox count changed.
+        let report = w.changed_report().unwrap();
+        assert_eq!(report.queued, before.queued);
+        assert!(report.health.raid_audit_failed && !report.health.audit_failed);
+        assert_eq!(w.changed_report(), None);
         assert_eq!(w.mailbox.raids()["x"].role, None);
         let status = w
             .handle(call("x", "inbox.status", json!({}), vec![]))

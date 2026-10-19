@@ -557,8 +557,9 @@ summary or diff section, which also fold in the details view."
     (erase-buffer)
     (magit-insert-section (goblins-section 'details-root)
       (insert (propertize "Goblins details\n" 'font-lock-face 'magit-section-heading)
-              (goblins--safe goblins--notice) "\n"
-              "b / q: back to overview    t: terminal    a / d: decide request\n\n")
+              (goblins--safe goblins--notice) "\n")
+      (goblins--insert-messaging-warning goblins--snapshot)
+      (insert "b / q: back to overview    t: terminal    a / d: decide request\n\n")
       (cond
        ((null record) (insert "This entry is no longer retained. Return to the overview with b.\n"))
        ((eq kind 'agent)
@@ -575,6 +576,21 @@ summary or diff section, which also fold in the details view."
       (when-let* ((section (car (oref magit-root-section children))))
         (goto-char (oref section start))))
     (set-buffer-modified-p nil)))
+
+(defun goblins--messaging-warning (snapshot)
+  "What the host must know when SNAPSHOT's communications log fails, or nil.
+Messages stop then, while goblins keep running and raids keep their owners."
+  (let ((health (plist-get snapshot :messaging)))
+    (cond ((eq (plist-get health :audit_failed) t)
+           "Messaging stopped: the communications log cannot be written")
+          ((eq (plist-get health :raid_audit_failed) t)
+           "Raid messages stopped: raid events could not be logged (log full)"))))
+
+(defun goblins--insert-messaging-warning (snapshot)
+  "Insert SNAPSHOT's messaging warning on a line of its own, if any."
+  (when-let* ((warning (goblins--messaging-warning snapshot)))
+    (insert (propertize warning 'font-lock-face 'goblins-attention 'face 'goblins-attention)
+            "\n")))
 
 (defun goblins--update-header ()
   (setq-local header-line-format
@@ -605,7 +621,9 @@ summary or diff section, which also fold in the details view."
     (magit-insert-section (goblins-section 'root)
       (insert (propertize "Goblins\n" 'font-lock-face 'magit-section-heading)
               (goblins--safe goblins--directory) "\n"
-              (goblins--safe goblins--notice) "\n\n")
+              (goblins--safe goblins--notice) "\n")
+      (goblins--insert-messaging-warning goblins--snapshot)
+      (insert "\n")
       (magit-insert-section (goblins-section 'agents)
         (magit-insert-heading (format "Agents (%d)" (length active)))
         (unless active (insert "  No active agents\n"))

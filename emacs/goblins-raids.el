@@ -143,7 +143,9 @@ CREATOR names the owner that ran it, if one did."
                 (propertize (format "owner %s" (goblins--raid-member-name
                                                 raid snapshot (plist-get raid :owner)))
                             'face 'goblins-dim))
-              "\n\n")
+              "\n")
+      (goblins--insert-messaging-warning snapshot)
+      (insert "\n")
       (insert (propertize (format "Members (%d)" (length members)) 'face 'goblins-heading) "\n")
       (dolist (member members)
         (goblins--raid-member-line

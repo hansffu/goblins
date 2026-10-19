@@ -61,7 +61,7 @@ pkgs.writeShellScriptBin binName ''
       esac
     done
   fi
-  # /tmp is private to this sandbox, including for parent and child goblins.
+  # /tmp is private to this sandbox, also from the goblins it shares a workspace with.
   # Keep the server socket outside the mounted/shared Codex configuration.
   export GOBLINS_CODEX_RUNTIME=/tmp/goblins-codex
   ${pkgs.coreutils}/bin/mkdir -m 700 "$GOBLINS_CODEX_RUNTIME"

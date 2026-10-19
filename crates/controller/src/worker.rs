@@ -109,7 +109,7 @@ pub(super) enum Completed {
         serial: u64,
         result: std::result::Result<serde_json::Value, String>,
     },
-    /// A refresh became the current generation; children inherit it.
+    /// A refresh became the current generation; members it runs later start in it.
     DevShell {
         identity: String,
         inheritance: Inheritance,

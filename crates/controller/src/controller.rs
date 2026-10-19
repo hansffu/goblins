@@ -143,6 +143,9 @@ pub struct Snapshot {
     pub permissions: Vec<PermissionRecord>,
     #[serde(default)]
     pub raids: Vec<RaidRecord>,
+    /// The communications log's health: messaging stops while it fails.
+    #[serde(default)]
+    pub messaging: crate::mailbox::Health,
 }
 struct Pending {
     initial_output: Option<PathBuf>,
@@ -536,6 +539,8 @@ fn random_name<'a>(
 }
 pub struct Controller {
     messaging: crate::messaging::Service,
+    /// As the messaging worker last reported it.
+    messaging_health: crate::mailbox::Health,
     messaging_directory: crate::mailbox::Directory,
     state: PathBuf,
     workspace: Option<PathBuf>,
@@ -606,6 +611,7 @@ impl Controller {
         let _ = fs::remove_dir_all(state.join("manifests"));
         Ok(Self {
             messaging,
+            messaging_health: Default::default(),
             messaging_directory: BTreeMap::new(),
             state,
             workspace,
@@ -1041,6 +1047,7 @@ impl Controller {
             sessions: self.sessions.values().map(|s| s.record.clone()).collect(),
             permissions: self.permissions.iter().cloned().collect(),
             raids: self.raid_records(),
+            messaging: self.messaging_health,
         }
     }
     pub fn shutdown_ready(&self) -> bool {
@@ -2462,6 +2469,14 @@ impl Controller {
             self.dirty |= a.report_activity(state);
         }
     }
+    /// The messaging worker's latest report: inbox counts and log health.
+    fn messaging_report(&mut self, report: &crate::messaging::Report) {
+        self.inbox_counts(&report.queued);
+        if self.messaging_health != report.health {
+            self.messaging_health = report.health;
+            self.dirty = true;
+        }
+    }
     /// Each goblin's queued inbox count, as the messaging worker reported it.
     fn inbox_counts(&mut self, counts: &BTreeMap<String, u64>) {
         for (id, a) in &mut self.sessions {
@@ -2495,8 +2510,8 @@ impl Controller {
                 a.terminal.interrupted = true;
             }
         }
-        if let Some(counts) = self.messaging.inbox.try_iter().last() {
-            self.inbox_counts(&counts);
+        if let Some(report) = self.messaging.inbox.try_iter().last() {
+            self.messaging_report(&report);
         }
         let responses: Vec<_> = self.messaging.results.try_iter().collect();
         for mut response in responses {
@@ -3763,6 +3778,18 @@ mod tests {
         d.inbox_counts(&BTreeMap::new());
         assert!(d.dirty);
         assert_eq!(d.sessions[&id].record.inbox, 0);
+        // A log failure reaches the host's snapshot without a count change.
+        d.dirty = false;
+        let health = crate::mailbox::Health {
+            audit_failed: false,
+            raid_audit_failed: true,
+        };
+        d.messaging_report(&crate::messaging::Report {
+            queued: BTreeMap::new(),
+            health,
+        });
+        assert!(d.dirty);
+        assert_eq!(d.snapshot().messaging, health);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
