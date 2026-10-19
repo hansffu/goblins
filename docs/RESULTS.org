@@ -1,6 +1,34 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-10-19
 
+* Feature tasks and shared agent instructions (2026-10-19)
+
+=tests/features.toml= defines overlapping feature selections and conservative
+source mappings. =just test-feature FEATURE...= runs the union through one
+Python invocation and adds the matching Rust/ERT/Nix/packaged checks. Python
+selectors are deduplicated by test ID and regrouped by class, preserving
+fixtures in serial as well as parallel mode. Full validation still discovers
+every test directly, with a separate check that the feature union is complete.
+
+=just test-plan= previews commands and unique test counts without builds or
+cache changes. It supports explicit paths or branch changes since a Git
+merge-base, including staged, unstaged, untracked and renamed paths. Shared
+authority/lifecycle/protocol/fixture changes and unknown files recommend full
+validation. Agents may justify a narrower selection for review and state that
+the full gate is pending. Root =AGENTS.md= provides the policy; =CLAUDE.md=
+imports it. =just test-merge= is required before merging and includes feature
+coverage, Rust, all Python, ERT, Nix checks and packaged smoke, with Codex
+configuration tests enabled and existing external opt-ins reported separately.
+
+Review validation: all 214 Rust tests and the 28 Python cases selected by
+=infrastructure exec= passed; Python took 27.814 seconds. The mapping covers
+all 236 discovered cases, retaining the previous 226 and adding nine feature
+checks plus an overlap regression. Checks cover missing/stale mappings,
+cross-feature deduplication, class setup, conservative routing, Git change
+coverage, no-build planning and stopping after a failed stage. Full merge-gate
+commands were previewed but the full gate has not been run for this change;
+review is permitted before that pass. Python compilation and diff checks pass.
+
 * Test startup, GC roots and bounded workers (2026-10-19)
 
 Session startup now retains the Nix initial-closure listing once, queries its

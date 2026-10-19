@@ -57,6 +57,11 @@ just test-python test_exec         # or a module, class, or individual method
 just test-python -j 1 test_exec    # serial execution with live per-test output
 just test-python -j 4              # opt in to four integration-test workers
 just test-python --failfast        # stop at the first failing case while editing
+just test-features                # list feature tasks
+just test-plan exec history        # preview a union without builds or test execution
+just test-feature exec history     # run matching integrations and language checks
+just test-feature-check            # verify every discovered test has a feature
+just test-merge                    # required full validation before merging
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 just test-nix                     # full Nix/package checks, outside the edit loop
@@ -64,6 +69,34 @@ just test-packaged test_server    # optionally exercise every case with Nix cont
 just test-cache-clean             # release cached fixture roots and logs, after tests stop
 just test-roots-clean             # prune stale Nix root links; keep all store outputs/live roots
 #+end_src
+
+The shared agent workflow is in [[file:../AGENTS.md][AGENTS.md]], imported by [[file:../CLAUDE.md][CLAUDE.md]] for Claude.
+This uses the documented [[https://learn.chatgpt.com/docs/agent-configuration/agents-md][Codex discovery]] and [[https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools][Claude import]] entry points. Run relevant
+feature tasks before presenting work for review; the full suite may still be
+pending at that point. Report the exact checks, failures/skips and outstanding
+merge validation. A full successful =just test-merge= is required on the final
+candidate before merge: feature-map coverage, Rust, every Python test, all ERT,
+Nix checks and packaged server/exec/root smoke tests. It enables local Codex
+configuration checks. Host-Docker and external Testcontainers retain their
+opt-ins; report skips and run affected opt-in integrations before merge.
+
+Feature definitions and source mappings live in [[file:../tests/features.toml][tests/features.toml]]. Multiple
+features form one selection: overlapping modules/classes/methods run each test
+ID once, with class fixtures kept together. =just test-plan --paths PATH...=
+recommends tasks from concrete paths; =just test-plan --changed BASE= includes
+committed branch changes since the merge-base with BASE, staged/unstaged edits
+and untracked files. Use the actual target branch for BASE. Shared code and
+unknown paths conservatively recommend =full=. Recommendations are not a
+dependency proof: include cross-feature effects, or explain a narrower review
+selection and leave the full merge gate pending. Documentation-only review
+does not need runtime tests. The =docs= task records that selection.
+
+=test-plan= and =test-features= do not build or start daemons; =test-feature-check=
+only discovers tests and checks the mapping for omissions and stale selectors.
+These commands use the dev shell's Python/pyte. =just test-feature -j 4 exec=
+and =just test-merge -j 4= opt in to four Python workers while retaining the
+existing Cargo/Nix limits. =just test= continues to run Rust/Python/ERT;
+=test-merge= adds the complete packaging checks.
 
 Use the Git-backed flake (=nix develop=), not =nix develop path:.=:
 the latter imports ignored files too, including =target/=, into the Nix store.

@@ -52,6 +52,16 @@ def cases(suite):
             yield test
 
 
+def unique_suite(suite):
+    """Run overlapping selections once, retaining contiguous class fixtures."""
+    seen, classes = set(), {}
+    for test in cases(suite):
+        if test.id() not in seen:
+            seen.add(test.id())
+            classes.setdefault(type(test), []).append(test)
+    return unittest.TestSuite(test for group in classes.values() for test in group)
+
+
 def run_group(group, names, log_path, failfast):
     """Executed in a spawned process; native child output goes to its log too."""
     fixture_timings.clear()
@@ -199,6 +209,7 @@ def main():
         loader = unittest.defaultTestLoader
         suite = (loader.loadTestsFromNames(args.tests) if args.tests else
                  loader.discover(str(HERE / "tests")))
+        suite = unique_suite(suite)
         if args.jobs > 1 and not loader.errors:
             # Build the ignored Session test driver before workers start, so
             # they neither contend for Cargo nor each launch another build.

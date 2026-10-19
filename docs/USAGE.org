@@ -1239,6 +1239,10 @@ just test                         # Rust, Python integration and Emacs ERT, seri
 just test-python test_exec         # or a module, class, or individual method
 just test-python -j 1 test_exec    # serial execution with live output
 just test-python -j 4              # opt in to four integration-test workers
+just test-features                # list named feature tasks
+just test-plan exec history        # preview relevant checks without builds
+just test-feature exec history     # one union, with matching language checks
+just test-merge                    # full pass required before merging
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 just test-nix                     # full Nix/package checks, outside the edit loop

@@ -102,3 +102,11 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(outside.read_text(), "keep")
         self.assertEqual(lock.stat().st_ino, inode)
         self.assertTrue(all(not (self.cache / name).exists() for name in ("roots", "apps", "last-run")))
+
+    def test_overlapping_selectors_execute_each_case_once(self):
+        for jobs in (1, 4):
+            with self.subTest(jobs=jobs):
+                name = f"probe_once_{jobs}"
+                self.module(name, f"marker=root/'ran_{jobs}'\nself.assertFalse(marker.exists())\nmarker.touch()")
+                result = self.run_runner("--jobs", str(jobs), name, name + ".Probe.test_probe")
+                self.assertIn("Ran 1 test", result.stdout + result.stderr)

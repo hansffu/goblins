@@ -23,6 +23,26 @@ test-rust:
 test-python *args:
     python3 tests/run.py "$@"
 
+# List named tasks, preview selections, or run a union of features.
+test-features:
+    python3 tests/tasks.py --list
+
+[positional-arguments]
+test-plan *args:
+    python3 tests/tasks.py --plan "$@"
+
+[positional-arguments]
+test-feature *args:
+    python3 tests/tasks.py "$@"
+
+test-feature-check:
+    python3 tests/tasks.py --check
+
+# Required on the final candidate before merging, not before requesting review.
+[positional-arguments]
+test-merge *args:
+    python3 tests/tasks.py full "$@"
+
 # Release retained test fixtures after all tests/standalone test daemons stop.
 test-cache-clean:
     python3 tests/run.py --clean-cache
