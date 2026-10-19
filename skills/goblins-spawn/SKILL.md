@@ -45,8 +45,8 @@ task and handle its replies through the daemon. You and your members share the
 raid, so you message each other by agent name. Provide the role, relevant
 context, repository paths and expected coordination; a launch alone does not
 assign work or transfer your conversation. Goblins never attach to each
-other's terminals: give the user the session ID for `goblins attach SESSION_ID`
-(on the host) when direct interaction is useful.
+other's terminals. For direct interaction, give the user the session ID for
+`goblins attach SESSION_ID` on the host.
 
 User conversations in one goblin do not automatically reach the others. Relay
 relevant task decisions through daemon messaging. See
