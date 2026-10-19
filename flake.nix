@@ -84,9 +84,12 @@
           pkgs.cargo
           pkgs.rustfmt
           pkgs.clippy
+          pkgs.just
+          pkgs.git
           (pkgs.python3.withPackages (p: [ p.pyte ]))
           pkgs.bubblewrap
           pkgs.nix
+          pkgs.nixfmt
           pkgs.jq
           pkgs.bashInteractive
           pkgs.fish

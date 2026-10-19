@@ -16,18 +16,16 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from build_support import fixture_app, fixture_path
 from daemon_support import Daemon, ROOT, RPC, receive
-from support import command
 from terminal_support import Terminal
 
 
 class DockerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.docker-goblins"])) / "bin/goblins"
-        cls.image = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                 f"git+file://{ROOT}#checks.x86_64-linux.docker-test-image"]))
+        cls.app = fixture_app("docker-goblins")
+        cls.image = fixture_path(f"git+file://{ROOT}#checks.x86_64-linux.docker-test-image")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="goblins-docker-test-")

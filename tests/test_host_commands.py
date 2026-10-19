@@ -13,8 +13,8 @@ import time
 import unittest
 import uuid
 
+from build_support import fixture_app
 from daemon_support import Daemon, ROOT, RPC
-from support import command
 from terminal_support import Terminal
 
 PROMPT = "host-test>"
@@ -32,8 +32,7 @@ def alive(pid):
 class HostCommandTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.host-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("host-goblins")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="goblins-host-test-")
@@ -265,8 +264,7 @@ class HostDockerAcceptance(unittest.TestCase):
     """
 
     def test_the_docker_suite_passes_through_a_host_command(self):
-        app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                            f"git+file://{ROOT}#checks.x86_64-linux.host-goblins"])) / "bin/goblins"
+        app = fixture_app("host-goblins")
         d = Daemon(app)
         self.addCleanup(d.close)
         session = d.rpc.call("sessions.start", {"name": "host", "configuration": d.manifest, "key": uuid.uuid4().hex,

@@ -10,15 +10,14 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT, RPC, receive
-from support import command
+from build_support import fixture_app
+from daemon_support import Daemon, RPC, receive
 
 
 class EditorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                f"git+file://{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("editor-goblins")
 
     def setUp(self):
         self.d = Daemon(self.app)

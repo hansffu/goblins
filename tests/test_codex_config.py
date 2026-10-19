@@ -13,6 +13,7 @@ import tomllib
 import unittest
 import uuid
 
+from build_support import fixture_app
 from daemon_support import Daemon, ROOT, RPC
 from support import command
 from terminal_support import Terminal, screen_wait
@@ -23,8 +24,7 @@ from terminal_support import Terminal, screen_wait
 class CodexConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                "git+" + ROOT.as_uri() + "#checks.x86_64-linux.codex-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("codex-goblins")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="gcodex-")

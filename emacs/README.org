@@ -380,14 +380,17 @@ the daemon of =goblins-state-directory=.
 
 * Checks
 
-Run with an Emacs that already has =magit-section= on its load path:
+Enter =nix develop= once, using your configured Emacs with =magit-section=,
+Transient and optional Ghostel on its load path. =just test-emacs= runs the ERT suite;
+=just test-python test_emacs= runs the integration tests with the incremental
+Cargo controller. The direct commands are:
 
 #+begin_src sh
 emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
   emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
   emacs/goblins-tramp.el emacs/goblins-completion.el emacs/goblins-messages.el
-emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
+emacs --batch -Q -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
 

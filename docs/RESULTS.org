@@ -1,6 +1,55 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-09-13
 
+* Test suite build and fixture optimization (2026-10-19)
+
+The =optimize-test-suite= branch adds =just test= and a Python runner using
+Cargo's incremental host controller. Sandbox executables and closures remain
+Nix-built, with fixture lookups cached once per Python process and indirect GC
+roots retained in =target/test-fixtures/=. The installed CLI/completion check
+still uses the actual Nix package; =just test-packaged= retains the original
+packaged-controller path. Builds are bounded to two Cargo jobs and one Nix job
+with two cores; the runner prevents overlapping runs in one fixture cache.
+
+A controller-only source edit now changes only the controller's Nix derivation.
+A protocol edit still changes the controller, client and Codex adapter, while
+the mount helper stays unchanged. This was checked with controlled source edits
+in a temporary copy and comparisons of all four derivation hashes. Controlled
+Rust, Python and Emacs source edits also left the dev-shell derivation identical.
+
+The checkout had 3.9 MiB of tracked source and an 8.8 GB ignored =target/=.
+Active instructions now use the Git-backed flake instead of =path:.=, which can
+import ignored build output into the store. Neither Rust nor Python/Emacs
+source edits change the development shell's dependencies. Emacs keeps the
+existing configured host installation: the current frontend uses Emacs 31 APIs
+that the root nixpkgs pin's Emacs 30 does not provide. A source-only temporary
+load path avoids stale local .elc files while retaining compiled dependencies.
+
+Validation:
+
+- 211 Rust tests passed; the existing host integration driver remains ignored
+  by Cargo and is exercised by Python's sandbox probes.
+- All 133 ERT tests passed against current source in Emacs 31, including the
+  installed optional frontend integrations.
+- All 219 original Python test IDs and assertion expressions are retained.
+  The full pass exercised all cases with 12 existing optional skips. Its seven
+  exec cleanup failures were corrected and all seven cases passed on rerun;
+  both terminal Emacs failures were resolved by using current source with the
+  configured Emacs. All eight live Emacs integrations then passed, including
+  Ghostel, the workspace, TRAMP and editor approval. Thus 207 distinct Python
+  cases passed across the full pass and focused correction runs.
+- Full Nix checks, including production-only construction and the runtime
+  closure without mandatory Python, passed.
+- Concurrent-run rejection and fail-fast/error exit status were checked.
+
+Warm Cargo workspace startup reported 0.04 seconds in the final live Emacs run;
+its demo/editor manifest resolution took 2.02/1.22 seconds. These are local
+measurements, not a controlled whole-suite speedup comparison. The largest
+remaining startup cost is rooting the demo shell's 136 initial store paths via
+individual =nix-store= invocations; session rooting and sandbox lifecycle
+semantics are unchanged. Exec tests share a daemon with fresh sessions, while
+lifecycle, crash, history and environment-sensitive tests retain isolated ones.
+
 * Shared Docker trust groups (2026-09-22)
 
 =mkGoblins.docker.scopes= declares named scopes; goblins select

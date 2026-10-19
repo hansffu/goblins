@@ -9,18 +9,15 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT
-from support import FLAKE, command
+from build_support import fixture_app
+from daemon_support import Daemon
 from terminal_support import Terminal
 
 
 class ClaudeConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command([
-            "nix", "build", "--no-link", "--print-out-paths",
-            FLAKE + "#checks.x86_64-linux.claude-goblins",
-        ])) / "bin/goblins"
+        cls.app = fixture_app("claude-goblins")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="gclaude-")

@@ -2828,6 +2828,9 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
           (should (eq (key-binding (kbd "C-c g v")) #'goblin-paste-image))
           (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) terminal))
                     ((symbol-function 'goblins--pinned-terminal-host) (lambda () "gribble"))
+                    ;; Batch/nox Emacs need not have image decoders. The test
+                    ;; passes clipboard bytes through; it never renders them.
+                    ((symbol-function 'image-type-available-p) (lambda (type) (eq type 'png)))
                     ((symbol-function 'gui-get-selection)
                      (lambda (_selection type)
                        (pcase type
@@ -3030,7 +3033,10 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   (with-temp-buffer
     (let ((code (call-process
                  (expand-file-name invocation-name invocation-directory) nil t nil
-                 "--batch" "-Q" "-L" (file-name-directory (locate-library "goblins"))
+                 "--batch" "-Q" "-l"
+                 (expand-file-name "../tests/emacs-init.el"
+                                   (file-name-directory (file-truename (locate-library "goblins"))))
+                 "-L" (file-name-directory (locate-library "goblins"))
                  "--eval" "(require 'goblins)"
                  "--eval" (concat "(kill-emacs (if (and (commandp 'goblins-workspace)"
                                   " (not (featurep 'goblins-workspace))) 0 1))"))))
@@ -3041,7 +3047,10 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   (with-temp-buffer
     (let ((code (call-process
                  (expand-file-name invocation-name invocation-directory) nil t nil
-                 "--batch" "-Q" "-L" (file-name-directory (locate-library "goblins"))
+                 "--batch" "-Q" "-l"
+                 (expand-file-name "../tests/emacs-init.el"
+                                   (file-name-directory (file-truename (locate-library "goblins"))))
+                 "-L" (file-name-directory (locate-library "goblins"))
                  "--eval" "(progn (require 'goblins) (require 'server))"
                  "--eval" (concat "(let ((client (start-process \"client\" nil \"sleep\" \"10\")))"
                                   " (server-execute client '((\"/goblins:g:/x\")) nil nil nil nil nil nil)"

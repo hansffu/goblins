@@ -12,16 +12,15 @@ import unittest
 import uuid
 import zipfile
 
+from build_support import fixture_app
 from daemon_support import Daemon, ROOT
-from support import command
 from terminal_support import Terminal
 
 
 class ScopeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.scope-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("scope-goblins")
 
     def setUp(self):
         cache = tempfile.TemporaryDirectory(prefix="goblins-scope-cache-", dir=Path.home() / ".cache")

@@ -5,7 +5,7 @@
 Install a =goblins= built with =mkGoblins= (see [[file:../README.org::*Install][Install]]), or, from a checkout, use the =dev-goblins= package, whose =goblins= has the demo configurations:
 
 #+begin_src sh
-nix shell path:.#dev-goblins
+nix shell .#dev-goblins
 goblins server start
 #+end_src
 
@@ -1234,12 +1234,13 @@ These are protocol resource bounds, not payload CPU/process/memory/disk quotas.
 * Reproducible checks
 
 #+begin_src sh
-nix develop path:.
-cargo test --workspace --locked
+nix develop                       # enter once; pinned Rust and Python/pyte, your configured Emacs
+just test                         # Rust, Python integration and Emacs ERT, serially
+just test-python test_exec         # or a module, class, or individual method
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-nix flake check path:.
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+just test-nix                     # full Nix/package checks, outside the edit loop
+just test-packaged test_server    # optionally exercise every case with Nix controllers
 #+end_src
 
 Tests require host Nix, Unix sockets and ordinary-user namespace access. An outer
@@ -1248,7 +1249,10 @@ approval mechanism. The Codex tests (=tests/test_codex_config.py=) run the real
 Codex, so they are skipped unless =GOBLINS_TEST_CODEX=1= is set; set it when
 changing the Codex integration. No production Python is used: Python is a test driver only.
 The ignored Rust Session harness supports fault-injected mount and namespace
-probes; production API/terminal tests use the Nix-built executables.
+probes; production API/terminal tests use Cargo's incremental host controller and
+Nix-built sandbox executables. The package installation regression and
+=just test-packaged= also exercise the Nix-built controller. See
+[[file:README.org::*Test][the test workflow]] for fixture caching and resource limits.
 
 * Scope and requirements
 

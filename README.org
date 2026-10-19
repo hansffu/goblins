@@ -132,7 +132,7 @@ cowsay hello
 
 The directory you start a goblin in is shared with it read-write, at the same path, so the goblin's edits are your files. In the TUI, Tab switches between sandboxes and requests, =y= / =n= approve or deny the selected request, and =q= closes the TUI while goblins keep running.
 
-To try Goblins from a checkout without configuring anything, =nix shell path:.#dev-goblins= puts a =goblins= with demo configurations on =PATH= (see [[file:docs/README.org][the developer docs]]).
+To try Goblins from a checkout without configuring anything, =nix shell .#dev-goblins= puts a =goblins= with demo configurations on =PATH= (see [[file:docs/README.org][the developer docs]]).
 
 * Configuring goblins
 

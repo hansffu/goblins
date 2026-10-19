@@ -8,7 +8,8 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT, RPC
+from build_support import fixture_app
+from daemon_support import Daemon, RPC
 from support import FLAKE, command
 from terminal_support import Terminal
 # A module import, so its DockerTests are not collected here as well.
@@ -50,8 +51,11 @@ class DevShellTests(unittest.TestCase):
         # A Git flake is the common case: only tracked files reach the store.
         command(["git", "-C", str(self.project), "init", "-q"])
         command(["git", "-C", str(self.project), "add", "flake.nix", "flake.lock"])
-        self.d = Daemon()
+        self.d = self.make_daemon()
         self.addCleanup(self.d.close)
+
+    def make_daemon(self):
+        return Daemon()
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
@@ -171,17 +175,14 @@ class DevShellSkillTests(DevShellTests):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                FLAKE + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("claude-goblins")
 
-    def setUp(self):
-        super().setUp()
+    def make_daemon(self):
         temp = tempfile.TemporaryDirectory(prefix="goblin-devshell-home-")
         self.addCleanup(temp.cleanup)
         home = Path(temp.name)
         (home / ".claude").mkdir()
-        self.d = Daemon(self.app, env={**os.environ, "HOME": str(home)})
-        self.addCleanup(self.d.close)
+        return Daemon(self.app, env={**os.environ, "HOME": str(home)})
 
     def run_cli(self, *args):
         terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "run", "claude", *args],

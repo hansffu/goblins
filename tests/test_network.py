@@ -7,8 +7,8 @@ from pathlib import Path
 import socket
 import unittest
 
-from daemon_support import Daemon, ROOT
-from support import command
+from build_support import fixture_app
+from daemon_support import Daemon
 from terminal_support import Terminal
 
 
@@ -25,8 +25,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class NetworkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.network-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("network-goblins")
 
     def setUp(self):
         self.d = Daemon(self.app)

@@ -31,10 +31,23 @@ def host_processes(marker):
 
 
 class ExecTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Exec cases change sessions, not daemon configuration or history.
+        # Keep the server and give each case fresh sandbox state.
+        cls.d = Daemon()
+        cls.addClassCleanup(cls.d.close)
+
     def setUp(self):
-        self.d = Daemon()
-        self.addCleanup(self.d.close)
+        self.addCleanup(self.stop_sessions)
         self.agent = self.d.start(agent_name="gribble")
+
+    def stop_sessions(self):
+        sessions = self.d.rpc.call("sessions.list", {})
+        for session in sessions:
+            if session["state"] in ("starting", "running"):
+                self.d.rpc.call("sessions.stop", {"session": session["id"]})
+        self.d.wait(lambda: all(not (self.d.state / s["id"] / "resources").exists() for s in sessions))
 
     def command(self, *args):
         return [str(self.d.app), "--state-dir", str(self.d.state), "exec", *args]

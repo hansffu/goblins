@@ -16,9 +16,8 @@ import time
 import unittest
 import uuid
 
+from build_support import fixture_app
 from daemon_support import Daemon, RPC, receive
-from support import FLAKE, command
-from daemon_support import ROOT
 
 FRESH = ["--no-config", "-c", "printf 'ARGS=fresh\\n'; exec sleep 600"]
 RESUME = ["--no-config", "-c",
@@ -36,8 +35,7 @@ def record(id, configuration="shell", agent_name="morb", **extra):
 
 
 def checks_manifest(name):
-    app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                        f"{FLAKE}#checks.x86_64-linux.{name}"])) / "bin/goblins"
+    app = fixture_app(name)
     return re.search(r'exec \S+ --runtime (\S+)', app.read_text()).group(1)
 
 

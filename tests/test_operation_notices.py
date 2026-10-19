@@ -6,7 +6,8 @@ import tempfile
 import time
 import unittest
 
-from daemon_support import Daemon, ROOT, RPC, receive
+from build_support import fixture_app
+from daemon_support import Daemon, RPC, receive
 from support import command
 from terminal_support import Terminal
 
@@ -22,10 +23,7 @@ class Notices:
 
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command([
-            "nix", "build", "--no-link", "--print-out-paths",
-            "git+" + ROOT.as_uri() + "#checks.x86_64-linux." + cls.check,
-        ])) / "bin/goblins"
+        cls.app = fixture_app(cls.check)
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="gnotice-")
@@ -153,8 +151,7 @@ class HostCommandNotices(unittest.TestCase):
     one whose client went away, gets a notice."""
 
     def setUp(self):
-        app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                            "git+" + ROOT.as_uri() + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
+        app = fixture_app("claude-goblins")
         temp = tempfile.TemporaryDirectory(prefix="gnotice-")
         self.addCleanup(temp.cleanup)
         home = Path(temp.name) / "home"

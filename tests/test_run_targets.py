@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import uuid
 
+from build_support import fixture_app
 from daemon_support import Daemon, RPC, frame, receive
 from support import FLAKE, command
 from terminal_support import Terminal
@@ -270,22 +271,12 @@ class RaidMemberTests(unittest.TestCase):
         self.assertEqual(self.d.get(after["session"])["packages"], ["hello", "cowsay"])
 
 
-def build(root, check):
-    return Path(command(["nix", "build", "--print-out-paths", "--out-link", root / check,
-                         f"{FLAKE}#checks.x86_64-linux.{check}"])) / "bin/goblins"
-
-
 class RunTargetFixture(unittest.TestCase):
     """Members using other configurations (checks.nix run-target-goblins)."""
 
     @classmethod
     def setUpClass(cls):
-        cls.builds = tempfile.TemporaryDirectory(prefix="goblins-run-target-build-")
-        cls.app = build(Path(cls.builds.name), "run-target-goblins")
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.builds.cleanup()
+        cls.app = fixture_app("run-target-goblins")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="goblins-run-targets-")
@@ -471,7 +462,7 @@ class RunTargetTests(RunTargetFixture):
 
     def test_members_follow_the_build_the_host_last_used(self):
         root = self.start_root()
-        updated = build(Path(self.builds.name), "run-target-goblins-updated")
+        updated = fixture_app("run-target-goblins-updated")
         cli = lambda *args: subprocess.run([str(updated), "--state-dir", str(self.d.state), *args],
                                            text=True, capture_output=True)
         # A launch from the new build makes its manifest current, which no

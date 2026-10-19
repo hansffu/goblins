@@ -37,29 +37,64 @@ Accepted decisions:
 The root flake provides the builders (=lib=) and a development shell for x86_64-linux, with nixpkgs, agent-sandbox.nix and llm-agents.nix pinned in =flake.lock=. Its =dev-goblins= package is a =goblins= with demo configurations for trying and testing the checkout; users build theirs with =mkGoblins= and their own configurations.
 
 #+begin_src sh
-nix shell path:.#dev-goblins
+nix shell .#dev-goblins
 goblins server start
 goblins tui
 # In another terminal, also in that shell:
 goblins run shell
 #+end_src
 
-=nix shell path:.#dev-goblins= puts a =goblins= built from the checkout on =PATH=. The development shell (=nix develop=) has only the build tools: inside a goblin, a =goblins= there would shadow the sandbox's own CLI. The package's configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex= (with Fish among their tools, for =goblins-shell-program=), and =goblins-dev=, a Claude Code goblin with =allowNix= and host commands for developing Goblins itself, in a =goblins-dev= scope whose storage keeps Cargo and Nix fetcher caches. Each may start =claude= and =codex= children, and none may start =goblins-dev=; =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. The Python tests' daemon uses the same demo goblins without Docker or the editor, and with a =shell= that starts =shell= children, built as =checks.x86_64-linux.demo-goblins=. The explicit =path:.= also includes uncommitted source files. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
+=nix shell .#dev-goblins= puts a =goblins= built from the checkout on =PATH=. The development shell (=nix develop=) has only the build tools: inside a goblin, a =goblins= there would shadow the sandbox's own CLI. The package's configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex= (with Fish among their tools, for =goblins-shell-program=), and =goblins-dev=, a Claude Code goblin with =allowNix= and host commands for developing Goblins itself, in a =goblins-dev= scope whose storage keeps Cargo and Nix fetcher caches. Each may start =claude= and =codex= children, and none may start =goblins-dev=; =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. The Python tests' daemon uses the same demo goblins without Docker or the editor, and with a =shell= that starts =shell= children, built as =checks.x86_64-linux.demo-goblins=. The Git-backed flake includes edits to tracked files; stage new files before building. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
 
 =just emacs= opens Emacs from the dev shell with this checkout's =emacs/= on the load path and =goblins-executable= set to the =dev-goblins= package.
 
 * Test
 
 #+begin_src sh
-nix develop path:.
-cargo test --workspace --locked
+nix develop                       # enter once; pinned Rust and Python/pyte, your configured Emacs
+just test                         # Rust, Python integration and Emacs ERT, serially
+just test-python test_exec         # or a module, class, or individual method
+just test-python --failfast        # stop at the first failing case while editing
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
-nix flake check path:.
-python3 -m unittest discover -s tests -p 'test_*.py' -v
+just test-nix                     # full Nix/package checks, outside the edit loop
+just test-packaged test_server    # optionally exercise every case with Nix controllers
 #+end_src
 
-The development shell includes pyte for fullscreen terminal regression tests. Tests need host Nix, Unix sockets and ordinary-user namespace access. Run one Python suite at a time; concurrent runs interfere. The Codex tests run the real Codex and are skipped unless =GOBLINS_TEST_CODEX=1= is set. The Emacs checks are described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
+Use the Git-backed flake (=nix develop=), not =nix develop path:.=:
+the latter imports ignored files too, including =target/=, into the Nix store.
+New Nix files must be staged before the flake can see them. The shell's dependencies
+are independent of Rust, Python and Emacs source edits; keep it open while editing.
+Emacs tests use your configured Emacs and its packages, including Ghostel's
+native module when installed. The current frontend uses Emacs 31 APIs; the root
+nixpkgs pin supplies Emacs 30, so the shell deliberately keeps the host Emacs.
+The test bootstrap loads checkout source from a temporary directory containing
+only .el symlinks, preventing stale .elc files from hiding source changes or
+mixing bytecode from different Emacs versions. Installed dependencies retain
+their compiled load paths.
+
+=just test-python= builds the Rust workspace incrementally with Cargo, including
+the adapter used by native Codex tests. Sandbox clients, the mount helper and
+their closures remain Nix-built. Each fixture is resolved once per Python
+process and retained under =target/test-fixtures/roots/= so GC between runs cannot evict it. Unrelated Rust packages now have separate
+source inputs: a controller edit does not rebuild the helper, client or Codex
+adapter. The installation/completion regression still tests the real Nix package;
+=just test-packaged= runs all selected cases with packaged controllers, and
+=just test-nix= retains all existing flake checks. Direct =python3 -m unittest=
+commands continue to use Nix packages.
+
+The runner reports slow tests and Nix fixture resolution times, and refuses
+simultaneous runs in the same fixture cache. Fixture builds use one Nix job with
+two cores; the runner defaults to two Cargo build jobs unless =CARGO_BUILD_JOBS=
+is already set. =just test-rust= limits test threads to two. To release the retained GC roots, remove =target/test-fixtures/= after
+all tests and test daemons have stopped, then use your normal Nix GC policy.
+=GOBLINS_TEST_CACHE= selects a different cache directory.
+
+Exec tests share one daemon per class with fresh sandbox sessions per test.
+Tests of crashes, startup, history, environment and Docker lifetime retain their
+own daemons. Existing tests and assertions are retained.
+
+The development shell includes pyte for fullscreen terminal regression tests. Tests need host Nix, Unix sockets and ordinary-user namespace access. Run one Python suite at a time; concurrent runs interfere. The Codex configuration tests require =GOBLINS_TEST_CODEX=1=; the native protocol tests use a local mock provider whenever =codex= is installed. The Emacs checks are described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
 
 * Repository layout
 
