@@ -294,7 +294,9 @@ class CodexConfigTests(unittest.TestCase):
         native.send("/hooks")
         screen_wait(native, lambda text: "› /hooks" in text, timeout=10)
         native.send("\r")
-        screen = screen_wait(native, lambda text: "SessionStart" in text, timeout=30)
+        # A PTY read may end after the label, before either count is painted.
+        # Wait for the complete row while retaining the same hook assertions.
+        screen = screen_wait(native, lambda text: re.search(r"SessionStart\s+1\s+1", text), timeout=30)
         self.assertRegex(screen, r"SessionStart\s+1\s+1")
         # Native discovery proves the managed hook is active; exact binding is
         # independently verified by the native protocol/SessionStart smoke test.
