@@ -10,13 +10,14 @@ import tempfile
 import time
 import unittest
 from daemon_support import Daemon, RPC, receive
+from build_support import nix_bin
 
 class ResponsiveTests(unittest.TestCase):
     def slow_daemon(self, kind):
         root = tempfile.TemporaryDirectory(prefix="gs-"); self.addCleanup(root.cleanup)
         root = Path(root.name); bindir = root / "bin"; bindir.mkdir(); marker = root / "owned"
         tool = "nix-store" if kind == "startup" else "nix"
-        real = shutil.which(tool)
+        real = str(nix_bin() / tool)
         # Manifest leases also realise roots during daemon initialization. Only
         # pause a session's roots: otherwise setUp sleeps for a minute before
         # the test even launches A, and the supposed startup race is missed.
@@ -34,7 +35,7 @@ if {condition} and not os.path.exists({str(marker)!r}):
   time.sleep(.01)
 os.execv({real!r},[{real!r},*sys.argv[1:]])
 '''); script.chmod(0o700)
-        d = Daemon(env={**os.environ, "PATH": str(bindir) + ":" + os.environ["PATH"]}); self.addCleanup(d.close)
+        d = Daemon(tool_path=bindir); self.addCleanup(d.close)
         return d, marker
 
     def assert_reaped(self, d, marker):

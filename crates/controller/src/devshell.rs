@@ -1382,23 +1382,29 @@ fn preview(
 /// Nix prints trace frames before the actual error; lead with the latter so
 /// bounded diagnostics keep it.
 pub(crate) fn cause(message: &str) -> String {
-    // Nix can put warnings before the unindented trace header and indent the
-    // final cause. Choose the last error line regardless of indentation; an
-    // earlier unindented header must not hide the cause when replies are bound.
-    message
-        .rmatch_indices("error:")
-        .find(|(at, _)| {
-            message[..*at]
-                .rsplit('\n')
+    // Ignore empty trace headers. Prefer the least-indented meaningful error,
+    // then the last at that level: nested tool output or a multiline throw must
+    // not replace its enclosing error. Nix also indents genuine final causes.
+    let mut selected = None;
+    for (at, _) in message.match_indices("error:") {
+        let prefix = message[..at].rsplit('\n').next().unwrap();
+        if !prefix.trim().is_empty()
+            || message[at + "error:".len()..]
+                .lines()
                 .next()
-                .unwrap()
-                .trim()
-                .is_empty()
-        })
-        .map_or_else(
-            || message.to_string(),
-            |(at, _)| message[at..].trim().to_string(),
-        )
+                .is_none_or(|line| line.trim().is_empty())
+        {
+            continue;
+        }
+        let indent = prefix.len();
+        if selected.is_none_or(|(level, _)| indent <= level) {
+            selected = Some((indent, at));
+        }
+    }
+    selected.map_or_else(
+        || message.to_string(),
+        |(_, at)| message[at..].trim().to_string(),
+    )
 }
 
 fn variable_name(name: &str) -> bool {
@@ -1674,6 +1680,27 @@ mod tests {
                 cause(&message),
                 "error: cannot build during evaluation: allow-import-from-derivation is disabled"
             );
+        }
+    }
+
+    #[test]
+    fn cause_keeps_the_enclosing_error_before_nested_output() {
+        for (message, expected) in [
+            (
+                "error: builder failed\n  error: misleading tool diagnostic\n",
+                "error: builder failed\n  error: misleading tool diagnostic",
+            ),
+            // Reproduced with nix eval --show-trace and a multiline throw.
+            (
+                "error:\n       … while calling the 'throw' builtin\n\n       error: outer failure\n         error: inner tool log\n",
+                "error: outer failure\n         error: inner tool log",
+            ),
+            (
+                "error: first failure\nerror: final failure\n  error: nested detail\n",
+                "error: final failure\n  error: nested detail",
+            ),
+        ] {
+            assert_eq!(cause(message), expected);
         }
     }
 

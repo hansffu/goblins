@@ -11,6 +11,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import unittest
 
 HERE = Path(__file__).resolve().parents[1]
 # The repository as a flake: tracked files only (untracked ones need git add),
@@ -18,15 +19,27 @@ HERE = Path(__file__).resolve().parents[1]
 FLAKE = "git+file://" + str(HERE)
 
 
+def cases(suite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from cases(test)
+        else:
+            yield test
+
+
+def cargo_artifacts(*args):
+    # Keep machine-readable artifact paths on stdout and compiler diagnostics
+    # on inherited stderr, including when check_output raises on a failed build.
+    output = subprocess.check_output([
+        os.environ.get("CARGO", "cargo"), *args, "--message-format=json-render-diagnostics",
+    ], cwd=HERE, text=True)
+    return [json.loads(line) for line in output.splitlines()]
+
+
 def rust_driver():
     if "GOBLINS_TEST_DRIVER" not in os.environ:
-        build = subprocess.check_output([
-            # Match test-rust's workspace feature selection, so Cargo reuses
-            # its artifacts instead of building a second controller test lib.
-            os.environ.get("CARGO", "cargo"), "test", "--locked", "--workspace",
-            "--no-run", "--message-format=json",
-        ], cwd=HERE, text=True)
-        for artifact in map(json.loads, build.splitlines()):
+        # Match test-rust's workspace feature selection so Cargo reuses artifacts.
+        for artifact in cargo_artifacts("test", "--locked", "--workspace", "--no-run"):
             if (artifact.get("reason") == "compiler-artifact" and artifact.get("executable")
                     and artifact["target"]["name"] == "goblins_controller"):
                 os.environ["GOBLINS_TEST_DRIVER"] = artifact["executable"]

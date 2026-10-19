@@ -1,33 +1,27 @@
 #+title: Goblins implementation and verification results
 #+date: 2026-10-19
 
+* Test-runner review follow-up (2026-10-19)
+
+Both incremental Cargo entry points now use one artifact reader with =json-render-diagnostics=: executable paths remain machine-readable while compiler errors reach stderr. A regression compiles an invalid dependency-free crate through both entry points and checks the actual rustc diagnostics. Suite traversal also has one shared implementation.
+
+The opt-in =HostDockerAcceptance= class gets a separate exclusive scheduling group, alongside the existing engine/frontend exclusions. A four-worker regression verifies that both the ordinary Docker group and this class wait for all ordinary work to finish. The actual host acceptance test passed with its opt-in enabled.
+
+Native launchers and directly started test daemons now use the pinned Nix executable output, selected explicitly as =.#nix^out=. A real-package regression checks that =nix= and =nix-store= cannot silently fall back to ambient tools; synthetic launchers also verify default precedence and the explicit =Daemon(tool_path=...)= override. Bind-race, responsiveness and recreation barriers use that override and delegate to the same pinned tools. Fixture resolution rejects multiple outputs rather than constructing a newline-containing path. The regression run caught that multi-output case during implementation; selecting =^out= fixed it, and all affected cases passed on rerun.
+
+Nix error selection now ignores empty trace headers and retains the least-indented meaningful error, choosing the last at that level. A real =nix eval --show-trace= with =throw "outer failure\n  error: inner tool log"= reproduced the previous loss of the outer cause. Unit tests cover this shape, nested tool output and the existing indented final causes; the import-from-derivation integration assertion still passes. The initial-closure GC ownership optimization is unchanged: its listing root and retained references already have regression assertions.
+
+A controlled warm probe resolved the same two configuration fixtures in four fresh processes (eight Nix calls total). Wall time was 1.127 seconds; individual workers took 0.684–1.087 seconds including lock waits. This is a warm microbenchmark, not a full-suite or cold-build total. Per-process memoization and serialized builds remain in place; a shared per-run cache is deferred pending broader evidence that its benefit warrants added invalidation/lifetime handling.
+
+Review validation: 215 Rust tests passed. The =infrastructure exec host-tools= selection passed all 44 Python cases in 95.119 seconds with four workers and =GOBLINS_TEST_HOST_DOCKER=1=; the exclusive acceptance case took 69.84 seconds. Another 25 wrapper/race/root/server/Session/error regressions passed in 33.888 seconds. All 14 packaged server/exec/root cases passed in 133.505 seconds, including the Nix release rebuild. These selections had no skips; the external Testcontainers opt-in was not enabled. The feature map covers all 238 discovered Python cases. Rust/Nix formatting, Clippy, Python compilation and diff checks passed. Full =just test-merge= validation remains pending before merge.
+
 * Feature tasks and shared agent instructions (2026-10-19)
 
-=tests/features.toml= defines overlapping feature selections and conservative
-source mappings. =just test-feature FEATURE...= runs the union through one
-Python invocation and adds the matching Rust/ERT/Nix/packaged checks. Python
-selectors are deduplicated by test ID and regrouped by class, preserving
-fixtures in serial as well as parallel mode. Full validation still discovers
-every test directly, with a separate check that the feature union is complete.
+=tests/features.toml= defines overlapping feature selections and conservative source mappings. =just test-feature FEATURE...= runs the union through one Python invocation and adds the matching Rust/ERT/Nix/packaged checks. Python selectors are deduplicated by test ID and regrouped by class, preserving fixtures in serial as well as parallel mode. Full validation still discovers every test directly, with a separate check that the feature union is complete.
 
-=just test-plan= previews commands and unique test counts without builds or
-cache changes. It supports explicit paths or branch changes since a Git
-merge-base, including staged, unstaged, untracked and renamed paths. Shared
-authority/lifecycle/protocol/fixture changes and unknown files recommend full
-validation. Agents may justify a narrower selection for review and state that
-the full gate is pending. Root =AGENTS.md= provides the policy; =CLAUDE.md=
-imports it. =just test-merge= is required before merging and includes feature
-coverage, Rust, all Python, ERT, Nix checks and packaged smoke, with Codex
-configuration tests enabled and existing external opt-ins reported separately.
+=just test-plan= previews commands and unique test counts without builds or cache changes. It supports explicit paths or branch changes since a Git merge-base, including staged, unstaged, untracked and renamed paths. Shared authority/lifecycle/protocol/fixture changes and unknown files recommend full validation. Agents may justify a narrower selection for review and state that the full gate is pending. Root =AGENTS.md= provides the policy; =CLAUDE.md= imports it. =just test-merge= is required before merging and includes feature coverage, Rust, all Python, ERT, Nix checks and packaged smoke, with Codex configuration tests enabled and existing external opt-ins reported separately.
 
-Review validation: all 214 Rust tests and the 28 Python cases selected by
-=infrastructure exec= passed; Python took 27.814 seconds. The mapping covers
-all 236 discovered cases, retaining the previous 226 and adding nine feature
-checks plus an overlap regression. Checks cover missing/stale mappings,
-cross-feature deduplication, class setup, conservative routing, Git change
-coverage, no-build planning and stopping after a failed stage. Full merge-gate
-commands were previewed but the full gate has not been run for this change;
-review is permitted before that pass. Python compilation and diff checks pass.
+Review validation: all 214 Rust tests and the 28 Python cases selected by =infrastructure exec= passed; Python took 27.814 seconds. The mapping covers all 236 discovered cases, retaining the previous 226 and adding nine feature checks plus an overlap regression. Checks cover missing/stale mappings, cross-feature deduplication, class setup, conservative routing, Git change coverage, no-build planning and stopping after a failed stage. Full merge-gate commands were previewed but the full gate has not been run for this change; review is permitted before that pass. Python compilation and diff checks pass.
 
 * Test startup, GC roots and bounded workers (2026-10-19)
 

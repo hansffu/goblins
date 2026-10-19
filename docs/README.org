@@ -44,7 +44,7 @@ goblins tui
 goblins run shell
 #+end_src
 
-=nix shell .#dev-goblins= puts a =goblins= built from the checkout on =PATH=. The development shell (=nix develop=) has only the build tools: inside a goblin, a =goblins= there would shadow the sandbox's own CLI. The package's configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex= (with Fish among their tools, for =goblins-shell-program=), and =goblins-dev=, a Claude Code goblin with =allowNix= and host commands for developing Goblins itself, in a =goblins-dev= scope whose storage keeps Cargo and Nix fetcher caches. Each may start =claude= and =codex= children, and none may start =goblins-dev=; =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. The Python tests' daemon uses the same demo goblins without Docker or the editor, and with a =shell= that starts =shell= children, built as =checks.x86_64-linux.demo-goblins=. The Git-backed flake includes edits to tracked files; stage new files before building. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
+=nix shell .#dev-goblins= puts a =goblins= built from the checkout on =PATH=. The development shell (=nix develop=) has only the build tools: inside a goblin, a =goblins= there would shadow the sandbox's own CLI. The package's configurations are the demo goblins in =nix/demo-goblins/=, which exist only for development: =shell= (Fish, with Docker enabled in a temporary =dev= scope), =claude= and =codex= (with Fish among their tools, for =goblins-shell-program=), and =goblins-dev=, a Claude Code goblin with =allowNix= and host commands for developing Goblins itself, in a =goblins-dev= scope whose storage keeps Cargo and Nix fetcher caches. Each may start =claude= and =codex= children, and none may start =goblins-dev=; =editor.emacs.enable= is set. The agents come from [[https://github.com/numtide/llm-agents.nix][numtide/llm-agents.nix]] (=nix flake update llm-agents=), whose prebuilt packages are on =https://cache.numtide.com=. Ordinary Python tests use the minimal offline Fish =checks.x86_64-linux.shell-goblins= fixture; exec tests use minimal Bash. The complete =demo-goblins= fixture remains covered by connected-shell, GC-retention and packaging checks. The Git-backed flake includes edits to tracked files; stage new files before building. Restart a server started from an older build before using a new one: an already-running daemon keeps its old executable.
 
 =just emacs= opens Emacs from the dev shell with this checkout's =emacs/= on the load path and =goblins-executable= set to the =dev-goblins= package.
 
@@ -70,104 +70,29 @@ just test-cache-clean             # release cached fixture roots and logs, after
 just test-roots-clean             # prune stale Nix root links; keep all store outputs/live roots
 #+end_src
 
-The shared agent workflow is in [[file:../AGENTS.md][AGENTS.md]], imported by [[file:../CLAUDE.md][CLAUDE.md]] for Claude.
-This uses the documented [[https://learn.chatgpt.com/docs/agent-configuration/agents-md][Codex discovery]] and [[https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools][Claude import]] entry points. Run relevant
-feature tasks before presenting work for review; the full suite may still be
-pending at that point. Report the exact checks, failures/skips and outstanding
-merge validation. A full successful =just test-merge= is required on the final
-candidate before merge: feature-map coverage, Rust, every Python test, all ERT,
-Nix checks and packaged server/exec/root smoke tests. It enables local Codex
-configuration checks. Host-Docker and external Testcontainers retain their
-opt-ins; report skips and run affected opt-in integrations before merge.
+The shared agent workflow is in [[file:../AGENTS.md][AGENTS.md]], imported by [[file:../CLAUDE.md][CLAUDE.md]] for Claude. This uses the documented [[https://learn.chatgpt.com/docs/agent-configuration/agents-md][Codex discovery]] and [[https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools][Claude import]] entry points. Run relevant feature tasks before presenting work for review; the full suite may still be pending at that point. Report the exact checks, failures/skips and outstanding merge validation. A full successful =just test-merge= is required on the final candidate before merge: feature-map coverage, Rust, every Python test, all ERT, Nix checks and packaged server/exec/root smoke tests. It enables local Codex configuration checks. Host-Docker and external Testcontainers retain their opt-ins; report skips and run affected opt-in integrations before merge.
 
-Feature definitions and source mappings live in [[file:../tests/features.toml][tests/features.toml]]. Multiple
-features form one selection: overlapping modules/classes/methods run each test
-ID once, with class fixtures kept together. =just test-plan --paths PATH...=
-recommends tasks from concrete paths; =just test-plan --changed BASE= includes
-committed branch changes since the merge-base with BASE, staged/unstaged edits
-and untracked files. Use the actual target branch for BASE. Shared code and
-unknown paths conservatively recommend =full=. Recommendations are not a
-dependency proof: include cross-feature effects, or explain a narrower review
-selection and leave the full merge gate pending. Documentation-only review
-does not need runtime tests. The =docs= task records that selection.
+Feature definitions and source mappings live in [[file:../tests/features.toml][tests/features.toml]]. Multiple features form one selection: overlapping modules/classes/methods run each test ID once, with class fixtures kept together. =just test-plan --paths PATH...= recommends tasks from concrete paths; =just test-plan --changed BASE= includes committed branch changes since the merge-base with BASE, staged/unstaged edits and untracked files. Use the actual target branch for BASE. Shared code and unknown paths conservatively recommend =full=. Recommendations are not a dependency proof: include cross-feature effects, or explain a narrower review selection and leave the full merge gate pending. Documentation-only review does not need runtime tests. The =docs= task records that selection.
 
-=test-plan= and =test-features= do not build or start daemons; =test-feature-check=
-only discovers tests and checks the mapping for omissions and stale selectors.
-These commands use the dev shell's Python/pyte. =just test-feature -j 4 exec=
-and =just test-merge -j 4= opt in to four Python workers while retaining the
-existing Cargo/Nix limits. =just test= continues to run Rust/Python/ERT;
-=test-merge= adds the complete packaging checks.
+=test-plan= and =test-features= do not build or start daemons; =test-feature-check= only discovers tests and checks the mapping for omissions and stale selectors. These commands use the dev shell's Python/pyte. =just test-feature -j 4 exec= and =just test-merge -j 4= opt in to four Python workers while retaining the existing Cargo/Nix limits. =just test= continues to run Rust/Python/ERT; =test-merge= adds the complete packaging checks.
 
-Use the Git-backed flake (=nix develop=), not =nix develop path:.=:
-the latter imports ignored files too, including =target/=, into the Nix store.
-New Nix files must be staged before the flake can see them. The shell's dependencies
-are independent of Rust, Python and Emacs source edits; keep it open while editing.
-Emacs tests use your configured Emacs and its packages, including Ghostel's
-native module when installed. The current frontend uses Emacs 31 APIs; the root
-nixpkgs pin supplies Emacs 30, so the shell deliberately keeps the host Emacs.
-The test bootstrap loads checkout source from a temporary directory containing
-only .el symlinks, preventing stale .elc files from hiding source changes or
-mixing bytecode from different Emacs versions. Installed dependencies retain
-their compiled load paths.
+Use the Git-backed flake (=nix develop=), not =nix develop path:.=: the latter imports ignored files too, including =target/=, into the Nix store. New Nix files must be staged before the flake can see them. The shell's dependencies are independent of Rust, Python and Emacs source edits; keep it open while editing. Emacs tests use your configured Emacs and its packages, including Ghostel's native module when installed. The current frontend uses Emacs 31 APIs; the root nixpkgs pin supplies Emacs 30, so the shell deliberately keeps the host Emacs. The test bootstrap loads checkout source from a temporary directory containing only .el symlinks, preventing stale .elc files from hiding source changes or mixing bytecode from different Emacs versions. Installed dependencies retain their compiled load paths.
 
-=just test-python= builds the Rust workspace incrementally with Cargo, including
-the adapter used by native Codex tests. Sandbox clients, the mount helper and
-their closures remain Nix-built. Each fixture is resolved once per Python
-process and retained under =target/test-fixtures/roots/= so GC between runs cannot evict it. Unrelated Rust packages now have separate
-source inputs: a controller edit does not rebuild the helper, client or Codex
-adapter. Native mode tests Cargo's launcher and generated completions without
-building a Nix controller on every edit. =just test-packaged= runs the same
-assertions with packaged controllers, including the actual installed scripts.
-=just test-nix= retains all existing flake checks and compares all three
-installed completion scripts byte-for-byte with the packaged generator's
-output. Direct =python3 -m unittest= commands continue to use Nix packages.
+Both native launchers and directly started test daemons use the pinned Nix tools from =.#nix= ahead of the caller's =PATH=. Tests that deliberately inject Nix barriers use =Daemon(tool_path=...)=; this is explicit and also works with packaged fixtures.
 
-The runner defaults to two spawned worker processes; =-j 4= opts in to four.
-Ordinary modules stay together; independent dev-shell classes with private
-projects and daemons may overlap. Each class fixture stays in one worker.
-Docker, scope, run-target and native frontend suites, including the dev-shell
-Docker class, run exclusively.
-=-j 1= retains serial execution and live
-per-test output. With multiple workers, module progress appears on completion;
-complete output, including subprocess output, is saved under
-=target/test-fixtures/last-run/=. Logs are replaced on the next parallel run.
-Fail-fast stops scheduling modules after a failure and lets an already-running
-module finish its cleanup. The runner reports slow tests and fixture resolution
-times, and refuses simultaneous runs in the same cache.
+=just test-python= builds the Rust workspace incrementally with Cargo, including the adapter used by native Codex tests. Sandbox clients, the mount helper and their closures remain Nix-built. Each fixture is resolved once per Python process and retained under =target/test-fixtures/roots/= so GC between runs cannot evict it. Unrelated Rust packages now have separate source inputs: a controller edit does not rebuild the helper, client or Codex adapter. Native mode tests Cargo's launcher and generated completions without building a Nix controller on every edit. =just test-packaged= runs the same assertions with packaged controllers, including the actual installed scripts. =just test-nix= retains all existing flake checks and compares all three installed completion scripts byte-for-byte with the packaged generator's output. Direct =python3 -m unittest= commands continue to use Nix packages.
 
-Fixture builds are serialized across workers, using one Nix job with two cores.
-The Rust workspace and ignored Session test driver are built once before
-parallel execution, sharing the Rust suite's Cargo feature selection and
-artifacts. The runner defaults to two Cargo build jobs unless
-=CARGO_BUILD_JOBS= is already set; =just test-rust= limits test threads to two.
+The runner defaults to two spawned worker processes; =-j 4= opts in to four. Ordinary modules stay together; independent dev-shell classes with private projects and daemons may overlap. Each class fixture stays in one worker. Docker, scope, run-target and native frontend suites, including the dev-shell Docker class and the opt-in host Docker acceptance class, run exclusively. =-j 1= retains serial execution and live per-test output. With multiple workers, module progress appears on completion; complete output, including subprocess output, is saved under =target/test-fixtures/last-run/=. Logs are replaced on the next parallel run. Fail-fast stops scheduling modules after a failure and lets an already-running module finish its cleanup. The runner reports slow tests and fixture resolution times, and refuses simultaneous runs in the same cache.
 
-Ordinary API and terminal tests use an offline Fish fixture with only core
-utilities, grep and sed. Exec tests use an offline Bash fixture. Three exec
-cases that only run independent commands share a goblin; cases that stop or
-replace agents retain fresh sessions. The real connected-shell and packaging
-checks still use the complete demo. Existing tests and assertions are retained.
+Fixture builds are serialized across workers, using one Nix job with two cores. The Rust workspace and ignored Session test driver are built once before parallel execution, sharing the Rust suite's Cargo feature selection and artifacts. The runner defaults to two Cargo build jobs unless =CARGO_BUILD_JOBS= is already set; =just test-rust= limits test threads to two.
 
-Session startup roots the initial closure listing once and uses its registered
-Nix references to avoid redundant per-path roots. This only protects outputs
-from GC: the sandbox's visible paths are still computed from its declared
-packages, and later grants and unrelated binds keep their own roots. Host
-command waits wake on process exit/output while keeping bounded cancellation.
+Ordinary API and terminal tests use an offline Fish fixture with only core utilities, grep and sed. Exec tests use an offline Bash fixture. Three exec cases that only run independent commands share a goblin; cases that stop or replace agents retain fresh sessions. The real connected-shell and packaging checks still use the complete demo. Existing tests and assertions are retained.
 
-After all tests and standalone test daemons stop, =just test-cache-clean=
-releases retained fixture roots and removes launchers/logs. It leaves the runner
-lock in place and does not delete store data. =GOBLINS_TEST_CACHE= selects a
-different cache directory. =just test-roots-clean= asks Nix to enumerate roots,
-which also prunes dangling automatic-root links across the store; live roots
-and store outputs remain. Reclaim unreferenced store data separately through
-your normal Nix GC policy.
+Session startup roots the initial closure listing once and uses its registered Nix references to avoid redundant per-path roots. This only protects outputs from GC: the sandbox's visible paths are still computed from its declared packages, and later grants and unrelated binds keep their own roots. Host command waits wake on process exit/output while keeping bounded cancellation.
 
-The development shell includes pyte for fullscreen terminal regression tests.
-Tests need host Nix, Unix sockets and ordinary-user namespace access. Use one
-runner per checkout/cache so its scheduler controls concurrency. The Codex
-configuration tests require =GOBLINS_TEST_CODEX=1=; the native protocol tests use
-a local mock provider whenever =codex= is installed. The Emacs checks are
-described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests
-in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
+After all tests and standalone test daemons stop, =just test-cache-clean= releases retained fixture roots and removes launchers/logs. It leaves the runner lock in place and does not delete store data. =GOBLINS_TEST_CACHE= selects a different cache directory. =just test-roots-clean= asks Nix to enumerate roots, which also prunes dangling automatic-root links across the store; live roots and store outputs remain. Reclaim unreferenced store data separately through your normal Nix GC policy.
+
+The development shell includes pyte for fullscreen terminal regression tests. Tests need host Nix, Unix sockets and ordinary-user namespace access. Use one runner per checkout/cache so its scheduler controls concurrency. The Codex configuration tests require =GOBLINS_TEST_CODEX=1=; the native protocol tests use a local mock provider whenever =codex= is installed. The Emacs checks are described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
 
 * Repository layout
 

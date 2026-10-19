@@ -3,18 +3,16 @@
 import argparse
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 import fcntl
-import json
 import multiprocessing
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import time
 import unittest
 
 from build_support import cache_directory, fixture_timings
-from support import HERE, rust_driver
+from support import HERE, cargo_artifacts, cases, rust_driver
 
 # Keep engines/native frontends exclusive. Ordinary modules stay intact;
 # dev-shell classes use private projects/daemons and may overlap, while their
@@ -23,7 +21,7 @@ EXCLUSIVE_MODULES = {
     "test_docker", "test_scopes", "test_run_targets",
     "test_emacs", "test_codex_config", "test_codex_native",
 }
-EXCLUSIVE_CLASSES = {"test_devshell.DevShellDockerTests"}
+EXCLUSIVE_CLASSES = {"test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance"}
 
 
 def exclusive(group):
@@ -42,14 +40,6 @@ class TimedResult(unittest.TextTestResult):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.timings = []
-
-
-def cases(suite):
-    for test in suite:
-        if isinstance(test, unittest.TestSuite):
-            yield from cases(test)
-        else:
-            yield test
 
 
 def unique_suite(suite):
@@ -87,7 +77,8 @@ def parallel_suite(suite, jobs, cache, failfast):
     groups = {}
     for test in cases(suite):
         module = type(test).__module__
-        group = module + "." + type(test).__qualname__ if module == "test_devshell" else module
+        name = module + "." + type(test).__qualname__
+        group = name if module == "test_devshell" or name in EXCLUSIVE_CLASSES else module
         groups.setdefault(group, []).append(test.id())
     logs = cache / "last-run"
     if logs.exists():
@@ -195,11 +186,7 @@ def main():
             os.environ.pop("GOBLINS_LOCAL_CONTROLLER", None)
         else:
             print("Building the Rust workspace incrementally with Cargo...", flush=True)
-            build = subprocess.check_output([
-                os.environ.get("CARGO", "cargo"), "build", "--locked", "--workspace",
-                "--message-format=json",
-            ], text=True)
-            artifacts = [json.loads(line) for line in build.splitlines()]
+            artifacts = cargo_artifacts("build", "--locked", "--workspace")
             executable = next(a["executable"] for a in artifacts
                               if a.get("reason") == "compiler-artifact" and a.get("executable")
                               and a["target"]["name"] == "goblins")

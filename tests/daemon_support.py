@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from build_support import fixture_app
+from build_support import daemon_environment, fixture_app
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,7 +68,8 @@ def app():
 
 
 class Daemon:
-    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None, state_home=None, keep=None):
+    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None, state_home=None, keep=None,
+                 tool_path=None):
         self.temp = tempfile.TemporaryDirectory(prefix="gd-")
         self.state = Path(self.temp.name) / "state"
         self.app = application or app()
@@ -77,7 +78,7 @@ class Daemon:
         # unless a test shares one between daemons.
         self.state_home = Path(state_home or Path(self.temp.name) / "xdg-state")
         self.history = self.state_home / "goblins/sessions"
-        self.env = {**(os.environ if env is None else env), "XDG_STATE_HOME": str(self.state_home)}
+        self.env = {**daemon_environment(env, tool_path=tool_path), "XDG_STATE_HOME": str(self.state_home)}
         argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "server", "start", "--foreground"]
         if workspace:
             argv += ["--workspace", str(workspace)]

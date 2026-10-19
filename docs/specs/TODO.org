@@ -36,13 +36,8 @@ Where the code lives:
 
 Development notes:
 
-- The project dev shell builds Goblins itself, so =nix develop= fails while
-  the tree does not compile. Keep a profile of the last good commit:
-  =nix develop "git+file://$PWD?rev=$(git rev-parse HEAD)" --profile /tmp/devprof=
-  and use =nix develop /tmp/devprof -c cargo …=.
-- Python tests build the app from =path:.= automatically; run them from
-  =tests/= (for example =python3 -m unittest test_devshell -v=). TUI and
-  Emacs tests need =pyte=, which the dev shell provides.
+- Enter the Git-backed =nix develop= once; its tools do not depend on Goblins compiling. Keep it open while editing.
+- =just test-feature devshell= runs the incremental Cargo controller against Nix-built fixtures. Direct unittest runs use packaged controllers. TUI and Emacs tests need =pyte=, which the dev shell provides. Avoid =path:.=, which copies ignored build artifacts into the store.
 - Test Emacs rendering with =emacs -nw= or =--batch= only. The host Emacs is
   pgtk and opens windows on the user's session even under Xvfb.
 - Host polling in tests: a host RPC connection allows 4096 calls; poll slowly
@@ -54,16 +49,9 @@ Development notes:
 * DONE Feature-based test tasks for targeted agent validation
 CLOSED: [2026-10-19 Mon]
 
-Implemented in =tests/tasks.py= and =tests/features.toml= without moving test
-files. =just test-feature FEATURE...= runs a deduplicated union with matching
-language checks and preserved fixtures/exclusivity. =test-plan= recommends
-tasks from paths or branch/worktree changes; unknown/shared paths recommend
-full validation. =test-feature-check= checks complete discovery coverage.
+Implemented in =tests/tasks.py= and =tests/features.toml= without moving test files. =just test-feature FEATURE...= runs a deduplicated union with matching language checks and preserved fixtures/exclusivity. =test-plan= recommends tasks from paths or branch/worktree changes; unknown/shared paths recommend full validation. =test-feature-check= checks complete discovery coverage.
 
-=AGENTS.md= and the =CLAUDE.md= import share the selection policy. Relevant
-checks are sufficient to present work for review with the full gate pending;
-=just test-merge= must pass on the final candidate before merging. See
-[[file:../README.org::*Test][the developer workflow]] and [[file:../RESULTS.org][validation results]].
+=AGENTS.md= and the =CLAUDE.md= import share the selection policy. Relevant checks are sufficient to present work for review with the full gate pending; =just test-merge= must pass on the final candidate before merging. See [[file:../README.org::*Test][the developer workflow]] and [[file:../RESULTS.org][validation results]].
 
 * TODO Intermittently blank Codex terminal after launch or attachment
 

@@ -16,7 +16,7 @@ import time
 import unittest
 import uuid
 
-from build_support import fixture_app
+from build_support import fixture_app, nix_bin
 from daemon_support import Daemon, RPC, receive
 
 FRESH = ["--no-config", "-c", "printf 'ARGS=fresh\\n'; exec sleep 600"]
@@ -140,7 +140,7 @@ class RecreateTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, bindir)
         offline = bindir / "offline"
         offline.touch()
-        real = shutil.which("nix")
+        real = str(nix_bin() / "nix")
         # While 'offline' exists, evaluating 'cowsay' fails like a download.
         (bindir / "nix").write_text(f"""#!{sys.executable}
 import os, sys
@@ -152,8 +152,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         (bindir / "nix").chmod(0o700)
         # unrar is unfree, which the pinned catalog refuses to evaluate.
         approved = ["unrar", "hello", "cowsay"]
-        d = self.daemon(record("rec-best", packages={"approved": approved, "denied": []}),
-                        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"})
+        d = self.daemon(record("rec-best", packages={"approved": approved, "denied": []}), tool_path=bindir)
         session = self.recreate(d, "rec-best")["session"]
         r = d.get(session)
         self.assertEqual(r["packages"], ["hello"])

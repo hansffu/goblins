@@ -41,6 +41,20 @@ def cache_directory():
     return Path(os.environ.get("GOBLINS_TEST_CACHE", HERE / "target/test-fixtures")).resolve()
 
 
+def nix_bin():
+    # pkgs.nix also installs its manual output by default. This caller needs
+    # exactly the executable output, not newline-separated paths from nix build.
+    return fixture_path(FLAKE + "#nix^out") / "bin"
+
+
+def daemon_environment(env=None, *, tool_path=None):
+    """Match packaged Nix selection; only explicit test barriers precede it."""
+    env = dict(os.environ if env is None else env)
+    env["PATH"] = os.pathsep.join(str(path) for path in
+                                 (tool_path, nix_bin(), env.get("PATH")) if path)
+    return env
+
+
 @cache
 def fixture_path(installable):
     """Build once per process, retaining an indirect GC root between runs."""
@@ -52,6 +66,8 @@ def fixture_path(installable):
     with fixture_lock(cache_directory() / "fixture-build.lock"):
         output = command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
                           "--max-jobs", "1", "--cores", "2", "--out-link", root, installable])
+    if len(output.splitlines()) != 1:
+        raise RuntimeError(f"expected one fixture output for {installable}; select an explicit output with ^out")
     fixture_timings.append((time.monotonic() - started, installable))
     return Path(output)
 
@@ -75,7 +91,8 @@ def fixture_app(check="demo-goblins", *, packaged=False):
         # Another worker may execute this launcher while we prepare it. Replace
         # files atomically rather than truncating executable/readable files.
         atomic_write(application,
-                     f'#!/bin/sh\nexec {shlex.quote(controller)} --runtime {shlex.quote(str(manifest))} "$@"\n',
+                     f'#!/bin/sh\nexport PATH={shlex.quote(str(nix_bin()))}:"$PATH"\n'
+                     f'exec {shlex.quote(controller)} --runtime {shlex.quote(str(manifest))} "$@"\n',
                      executable=True)
         # Keep the actual generator and exact installed completion contents.
         for shell, relative in {

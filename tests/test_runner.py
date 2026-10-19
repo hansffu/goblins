@@ -1,11 +1,15 @@
 """Exercise scheduling, failure propagation and cache ownership in subprocesses."""
+import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
+from build_support import daemon_environment, fixture_app, nix_bin
 from support import HERE
 
 
@@ -22,8 +26,8 @@ class RunnerTests(unittest.TestCase):
         self.env = {**os.environ, "GOBLINS_TEST_CACHE": str(self.cache),
                     "PYTHONPATH": str(self.directory) + os.pathsep + str(HERE / "tests"),
                     "PROBE_DIRECTORY": str(self.directory)}
-        # These tests exercise the scheduler, not compilation or Goblins. No
-        # Nix fixtures are used and no nested runner touches the outer cache.
+        # Nested scheduler probes use synthetic Cargo output and private caches.
+        # The diagnostic regression below deliberately compiles an invalid crate.
         cargo = self.directory / "cargo"
         cargo.write_text("#!" + sys.executable + "\nimport json\nprint(json.dumps(" + repr({
             "reason": "compiler-artifact", "target": {"name": "goblins"},
@@ -84,9 +88,13 @@ class RunnerTests(unittest.TestCase):
         # This synthetic module is classified as exclusive without using an
         # engine. Selecting it first verifies scheduling, not selector order.
         self.module("test_docker", "self.assertEqual(len(list(root.glob('finished_*'))),4)")
-        result = self.run_runner("--jobs", "4", "test_docker", *names)
-        self.assertIn("Ran 5 tests", result.stdout)
+        self.module("test_host_commands", "self.assertEqual(len(list(root.glob('finished_*'))),4)")
+        host = self.directory / "test_host_commands.py"
+        host.write_text(host.read_text().replace("class Probe(", "class HostDockerAcceptance("))
+        result = self.run_runner("--jobs", "4", "test_docker", "test_host_commands", *names)
+        self.assertIn("Ran 6 tests", result.stdout)
         self.assertIn("[PASS] test_docker", result.stdout)
+        self.assertIn("[PASS] test_host_commands.HostDockerAcceptance", result.stdout)
 
     def test_cleanup_releases_only_fixture_cache_and_keeps_lock_inode(self):
         for name in ("roots", "apps", "last-run"):
@@ -110,3 +118,61 @@ class RunnerTests(unittest.TestCase):
                 self.module(name, f"marker=root/'ran_{jobs}'\nself.assertFalse(marker.exists())\nmarker.touch()")
                 result = self.run_runner("--jobs", str(jobs), name, name + ".Probe.test_probe")
                 self.assertIn("Ran 1 test", result.stdout + result.stderr)
+
+    def test_compile_failures_show_rust_diagnostics_in_both_build_entry_points(self):
+        crate = self.directory / "broken"
+        (crate / "src").mkdir(parents=True)
+        (crate / "Cargo.toml").write_text(
+            '[package]\nname="diagnostic-probe"\nversion="0.0.0"\nedition="2021"\n')
+        (crate / "src/main.rs").write_text('fn main() { missing_diagnostic_probe(); }\n')
+        subprocess.run([shutil.which("cargo"), "generate-lockfile", "--offline", "--manifest-path",
+                        str(crate / "Cargo.toml")], check=True, capture_output=True, text=True)
+        cargo = Path(self.env["CARGO"])
+        cargo.write_text("#!" + sys.executable + "\nimport os,sys\n" +
+                         f"os.execv({shutil.which('cargo')!r}, [{shutil.which('cargo')!r}, *sys.argv[1:], "
+                         f"'--manifest-path', {str(crate / 'Cargo.toml')!r}, '--offline', "
+                         f"'--target-dir', {str(crate / 'target')!r}])\n")
+        # The production entry points both consume JSON artifact paths. Compile
+        # a real, dependency-free invalid crate through each, not a fake error.
+        self.env.pop("GOBLINS_TEST_DRIVER", None)
+        for args in ([str(self.runner), "-j", "1", "probe_unused"],
+                     ["-c", "from support import rust_driver; rust_driver()"]):
+            with self.subTest(args=args):
+                result = subprocess.run([sys.executable, *args], env=self.env,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("error[E0425]", result.stderr)
+                self.assertIn("cannot find function `missing_diagnostic_probe`", result.stderr)
+
+    def test_launcher_and_direct_daemon_pin_nix_with_an_explicit_wrapper_override(self):
+        pinned, ambient, barrier = [self.directory / name for name in ("pinned/bin", "ambient", "barrier")]
+        for directory in (pinned, ambient, barrier):
+            directory.mkdir(parents=True)
+            for tool in ("nix", "nix-store"):
+                (directory / tool).write_text("#!/bin/sh\nexit 0\n")
+                (directory / tool).chmod(0o755)
+        controller = self.directory / "controller"
+        controller.write_text("#!" + sys.executable + "\nimport json,shutil\n"
+                              "print(json.dumps([shutil.which('nix'),shutil.which('nix-store')]))\n")
+        controller.chmod(0o755)
+        env = {**self.env, "GOBLINS_LOCAL_CONTROLLER": str(controller), "PATH": str(ambient)}
+        fixture_app.cache_clear()
+        self.addCleanup(fixture_app.cache_clear)
+        with patch.dict(os.environ, env), patch("build_support.fixture_path", side_effect=lambda ref:
+                pinned.parent if ref.endswith("#nix^out") else self.directory / "manifest.json"):
+            app = fixture_app("pin-probe")
+            expected = [str(pinned / tool) for tool in ("nix", "nix-store")]
+            self.assertEqual(json.loads(subprocess.check_output([app], env=env, text=True)), expected)
+            default = daemon_environment(env)
+            self.assertEqual([shutil.which(tool, path=default["PATH"]) for tool in ("nix", "nix-store")], expected)
+            injected = daemon_environment(env, tool_path=barrier)
+            self.assertEqual(shutil.which("nix", path=injected["PATH"]), str(barrier / "nix"))
+            self.assertEqual(env["PATH"], str(ambient))
+        # Also resolve the real package: a multi-output derivation must not
+        # turn into a newline-containing PATH that silently uses ambient tools.
+        real = nix_bin()
+        isolated = daemon_environment({**os.environ, "PATH": str(ambient)})
+        for tool in ("nix", "nix-store"):
+            self.assertTrue((real / tool).is_file(), real / tool)
+            self.assertEqual(shutil.which(tool, path=isolated["PATH"]), str(real / tool))
+            self.assertIn("(Nix)", subprocess.check_output([tool, "--version"], env=isolated, text=True))

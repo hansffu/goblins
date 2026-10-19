@@ -12,6 +12,8 @@ import time
 import tomllib
 import unittest
 
+from support import cases
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = Path(__file__).with_name("features.toml")
 CHECKS = ("rust", "emacs", "nix", "packaged")
@@ -29,14 +31,6 @@ def load_manifest(path=MANIFEST):
         if set(feature["checks"]) - set(CHECKS):
             raise ValueError(f"unknown checks in {name}")
     return data
-
-
-def cases(suite):
-    for test in suite:
-        if isinstance(test, unittest.TestSuite):
-            yield from cases(test)
-        else:
-            yield test
 
 
 def load_suite(selectors=None):
