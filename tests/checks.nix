@@ -300,18 +300,60 @@ in
       scopes = import "${source}/nix/demo-goblins/scopes.nix" { inherit (api.builders) mkScope; };
     };
   demo-goblins = demo;
+  # Ordinary API/terminal tests need Fish semantics, not the demo's agent and
+  # developer tool closures. Keep the complete demo above for packaging and
+  # connected-shell coverage. Exec tests only need Bash and core utilities.
+  shell-goblins = mkGoblins {
+    goblins.shell = mkGoblin {
+      pkg = pkgs.fish;
+      binName = "fish";
+      args = [
+        "--no-config"
+        "--interactive"
+      ];
+      allowedPackages = [
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gnused
+      ];
+      allowedDomains = [ ];
+      allowedRunTargets = [ "shell" ];
+    };
+  };
+  exec-goblins = mkGoblins {
+    goblins.shell = mkGoblin {
+      pkg = pkgs.bashInteractive;
+      binName = "bash";
+      args = [
+        "--noprofile"
+        "--norc"
+        "-i"
+      ];
+      allowedPackages = [ pkgs.coreutils ];
+      allowedDomains = [ ];
+    };
+  };
+  # This output references jq without listing it in the sandbox's closure.
+  # GC coverage of an output must not grant visibility to every reference.
+  root-reference-fixture = pkgs.runCommand "goblins-root-reference-fixture" { } ''
+    mkdir $out
+    printf '%s\n' ${pkgs.coreutils} > $out/paths
+    printf '%s\n' ${pkgs.jq} > $out/unlisted
+  '';
   # Every demo goblin may start the agents, also the dev package's shell in
   # its dev scope, and no goblin may start goblins-dev.
-  demo-run-targets = pkgs.runCommand "goblins-demo-run-targets" { nativeBuildInputs = [ pkgs.jq ]; } ''
-    jq -e '.goblins as $g
-      | ($g | keys) == ["claude", "codex", "goblins-dev", "shell"]
-      and all($g[]; .allowed_run_targets == ["claude", "codex"])
-      and $g.shell.scope == "dev"
-      and ($g.claude.scopes | has("dev")) and ($g.codex.scopes | has("dev"))
-      and ($g.claude.host_commands | not) and ($g.codex.host_commands | not)
-      and $g["goblins-dev"].host_commands' ${devGoblins.config}
-    touch $out
-  '';
+  demo-run-targets =
+    pkgs.runCommand "goblins-demo-run-targets" { nativeBuildInputs = [ pkgs.jq ]; }
+      ''
+        jq -e '.goblins as $g
+          | ($g | keys) == ["claude", "codex", "goblins-dev", "shell"]
+          and all($g[]; .allowed_run_targets == ["claude", "codex"])
+          and $g.shell.scope == "dev"
+          and ($g.claude.scopes | has("dev")) and ($g.codex.scopes | has("dev"))
+          and ($g.claude.host_commands | not) and ($g.codex.host_commands | not)
+          and $g["goblins-dev"].host_commands' ${devGoblins.config}
+        touch $out
+      '';
   # The launchers ask the agent to skip its own prompts only with
   # bypassPermissions; Codex keeps full access either way (Goblins is the
   # sandbox) and gets "never" only when bypassing.
@@ -1050,9 +1092,20 @@ in
           pkgs.fish
           pkgs.zsh
           pkgs.gnugrep
+          pkgs.diffutils
         ];
       }
       ''
+        # Keep installation verification outside the incremental Cargo loop.
+        # Check exact installed contents for all three shells, not just syntax.
+        for entry in \
+          'bash share/bash-completion/completions/goblins' \
+          'fish share/fish/vendor_completions.d/goblins.fish' \
+          'zsh share/zsh/site-functions/_goblins'; do
+          read -r shell relative <<< "$entry"
+          ${configured}/bin/goblins completions "$shell" > generated
+          cmp generated "${configured}/$relative"
+        done
         bash -n ${configured}/share/bash-completion/completions/goblins
         zsh -n ${configured}/share/zsh/site-functions/_goblins
         fish --no-config -c 'source ${configured}/share/fish/vendor_completions.d/goblins.fish; complete -C "goblins run "' > candidates
@@ -1182,12 +1235,13 @@ in
         "--resume"
         "{session_id}"
       ];
-    assert (mkClaudeGoblin { allowedRunTargets = [ "codex" ]; }).goblin.allowed_run_targets == [ "codex" ];
+    assert
+      (mkClaudeGoblin { allowedRunTargets = [ "codex" ]; }).goblin.allowed_run_targets == [ "codex" ];
     assert (mkCodexGoblin { allowedRunTargets = [ ]; }).goblin.allowed_run_targets == [ ];
     # Not a scope default: a scope variant keeps the goblin's own value.
     assert
-      ((mkGoblin (base // { allowedRunTargets = [ "x" ]; })).withScopeDefaults { }).goblin.allowed_run_targets
-      == [ "x" ];
+      ((mkGoblin (base // { allowedRunTargets = [ "x" ]; })).withScopeDefaults { })
+      .goblin.allowed_run_targets == [ "x" ];
     assert
       let
         merged =

@@ -1,4 +1,4 @@
-"""Packaged server lifecycle, help and real shell completion scripts."""
+"""Server lifecycle, help and shell scripts, native or Nix-packaged."""
 from pathlib import Path
 import json
 import os
@@ -9,7 +9,6 @@ import subprocess
 import tempfile
 import time
 import unittest
-from build_support import fixture_app
 from daemon_support import RPC, app
 
 
@@ -72,8 +71,9 @@ class ServerTests(unittest.TestCase):
         print("EVIDENCE background server survives launching CLI, stops both agents, retains output and restarts with fresh identity", flush=True)
 
     def test_help_removed_aliases_and_completion_installation(self):
-        # Keep coverage of the actual Nix installation in the native suite too.
-        self.app = fixture_app(packaged=True)
+        # Run identical assertions against Cargo's generated launcher/scripts
+        # in native mode and the actual Nix installation under --packaged.
+        # Nix checks also compare installed scripts with generator output.
         for args in [(), ("--help",), ("help",)]:
             text = self.cli(*args)
             for command in ("server", "tui", "run", "stop", "completions"):

@@ -1,7 +1,106 @@
 #+title: Goblins implementation and verification results
-#+date: 2026-09-13
+#+date: 2026-10-19
+
+* Test startup, GC roots and bounded workers (2026-10-19)
+
+Session startup now retains the Nix initial-closure listing once, queries its
+registered references, and skips individual roots for paths that listing
+protects. Paths outside that set, including later grants, keep their own roots.
+GC references never add sandbox mounts: a regression fixture references an
+unlisted package and checks that it remains invisible. Direct Session callers
+without a store-backed listing retain the original per-path behavior.
+
+Host command waits use pidfd/output readiness instead of sleeping after every
+short command. Cancellation checks remain bounded by 20 ms, with the existing
+waitid/WNOWAIT process-group cleanup and output limits preserved. Tests cover
+closed streams, timeouts, output limits and background writers. A Nix error
+formatter exposed by the integration run was also corrected to select the
+final error line after warnings and trace headers, preserving the existing
+import-from-derivation refusal assertion.
+
+Controlled warm measurements, using the same fixture and three startups per
+variant (build/fixture preparation excluded):
+
+| Measurement                         | Before | After |
+|-------------------------------------+--------+-------|
+| Demo goblin startup, median          | 5.25 s | 0.20 s |
+| Demo session GC roots               |    138 |      3 |
+| Demo visible store paths            |    136 |    136 |
+| Minimal Fish startup, median        | 2.19 s | 0.16 s |
+| Minimal Bash startup, median        | 0.91 s | 0.15 s |
+| Minimal Bash session GC roots       |     21 |      2 |
+| Same 13 representative Python cases | 120.14 s | 39.33 s |
+| Their waited child CPU time         | 47.86 s | 7.87 s |
+| Their child output block operations | 21,440 | 4,904 |
+
+The child write accounting fell by about 77%; it excludes the shared Nix daemon
+and is not a measurement of all system I/O. Cache state differed for some
+reads. The representative cases include all seven exec checks, two editor
+checks, dev-shell launch/refresh, and Docker activation/bind permissions.
+The earlier 40m58s full pass included cold builds and failures, so it is not a
+controlled baseline for the new full-suite runtime.
+
+Ordinary integration tests now use an offline Fish fixture with core utilities,
+grep and sed. Exec and POSIX raw-socket bind-race probes use minimal Bash.
+Three independent exec cases share a goblin; lifecycle/identity cases keep fresh
+sessions. The complete demo remains covered by the connected-shell and Nix
+packaging checks. Startup-race barriers now pause session roots rather than
+blocking daemon initialization for a minute, and explicitly assert that the
+session is still starting. Bash also avoids Fish negotiation timeouts in raw
+bind-race sockets. The nine race/responsiveness cases passed in 15.88 seconds.
+
+Python runs with at most two spawned workers, retaining class fixtures. Private
+dev-shell classes may overlap; Docker, scope, run-target and native frontend
+groups, including the dev-shell Docker class, run exclusively. Fixture builds
+remain serialized, launcher/script writes are atomic, and logs are replaced
+under =target/test-fixtures/last-run/= rather than accumulating per-run files.
+Fail-fast stops scheduling new groups while an active group finishes cleanup.
+The ignored Rust test driver now shares workspace feature selection/artifacts;
+its warm preparation fell from a second 7.75-second compile to 0.05 seconds.
+
+The native edit loop no longer forces a Nix controller build for completion
+installation tests. It keeps all CLI/completion assertions against Cargo's
+generated launcher/scripts. Nix checks compare all three installed scripts
+byte-for-byte with the packaged generator; =just test-packaged= runs the same
+Python assertions against the actual Nix installation.
+
+Final validation:
+
+- A clean Python pass ran all 224 cases in 601.364 seconds (601.629 seconds
+  including runner startup): 222 passed, two existing opt-in skips. The ten
+  Codex configuration checks were enabled with =GOBLINS_TEST_CODEX=1= and use
+  synthetic/local fixtures. Host-Docker and external Testcontainers opt-ins
+  remain skipped. All 219 original IDs/assertion expressions are retained;
+  two root-retention and three runner cases were added.
+- 214 Rust tests passed, with the existing ignored Session driver exercised
+  through Python. All 133 source-loaded Emacs ERT tests passed (3.69 seconds).
+- All Nix checks passed, including exact installed completion contents,
+  production-only construction and the runtime without mandatory Python.
+- Packaged server/exec/root checks: 13 passed in 17.083 seconds.
+- Cargo Clippy, Rust/Nix formatting, Python compilation and diff checks passed.
+
+Disk measurements distinguished retained packages from root metadata. The
+automatic-root directory initially occupied about 169 MiB with 41,924 dangling
+entries; 41,303 pointed at deleted test-session resources. Root enumeration
+during validation and final cleanup reduced it to 4.97 MiB, with zero readable
+dangling entries. Final cleanup preserved all 50 live roots and left one
+unreadable entry untouched. No store outputs were collected. Nix removes
+stale indirect links while [[https://github.com/NixOS/nix/blob/master/src/libstore/gc.cc][finding roots]]; =just test-roots-clean= requests only
+[[https://nix.dev/manual/nix/2.31/command-ref/nix-store/gc][root enumeration]], not deletion of store outputs.
+
+One root retaining the same closure does not reduce retained package bytes.
+Before these changes, the 25 cached fixture roots had a 3.52 GiB combined NAR
+closure (shared paths counted once); minimal Bash's initial closure was 67 MiB
+versus the demo's 478 MiB. Other checks still require their larger dependencies.
+NAR size is not allocated/reclaimable filesystem space. =just test-cache-clean=
+releases fixture roots and removes cached launchers/logs without collecting
+store data; subsequent reclamation follows the user's normal Nix GC policy.
+The local 8.8 GiB Cargo target remains available for incremental builds.
 
 * Test suite build and fixture optimization (2026-10-19)
+
+Historical first iteration; the startup/root counts and validation below are
+superseded by the clean run and controlled measurements above.
 
 The =optimize-test-suite= branch adds =just test= and a Python runner using
 Cargo's incremental host controller. Sandbox executables and closures remain

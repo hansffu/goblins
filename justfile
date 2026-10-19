@@ -13,7 +13,7 @@ emacs *args:
     exec nix develop -c emacs --eval "$setup" "$@"
 
 # Enter `nix develop` once, then run these commands directly.
-# Keep suites serial: they exercise namespaces, Docker engines and process death.
+# Rust/Python/Emacs suites are serial; Python schedules at most two workers.
 test: test-rust test-python test-emacs
 
 test-rust:
@@ -22,6 +22,15 @@ test-rust:
 [positional-arguments]
 test-python *args:
     python3 tests/run.py "$@"
+
+# Release retained test fixtures after all tests/standalone test daemons stop.
+test-cache-clean:
+    python3 tests/run.py --clean-cache
+
+# Nix removes dangling indirect-root metadata while finding roots. This does
+# not collect store outputs or remove live roots; applies to all stale links.
+test-roots-clean:
+    nix-store --gc --print-roots --quiet > /dev/null
 
 test-emacs:
     emacs --batch -Q -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit

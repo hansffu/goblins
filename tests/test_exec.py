@@ -11,6 +11,7 @@ import uuid
 
 from daemon_support import Daemon
 from terminal_support import Terminal
+from build_support import fixture_app
 
 
 def host_processes(marker):
@@ -31,14 +32,34 @@ def host_processes(marker):
 
 
 class ExecTests(unittest.TestCase):
+    SHARED_CASES = {
+        "test_streams_exit_codes_environment_and_errors",
+        "test_control_channel_is_invisible_to_the_goblin",
+        "test_editor_open_is_refused_without_an_editor",
+    }
+
     @classmethod
     def setUpClass(cls):
-        # Exec cases change sessions, not daemon configuration or history.
-        # Keep the server and give each case fresh sandbox state.
-        cls.d = Daemon()
+        cls.application = fixture_app("exec-goblins")
+        cls.d = Daemon(cls.application)
         cls.addClassCleanup(cls.d.close)
+        cls.shared_daemon = None
 
     def setUp(self):
+        # These cases only run isolated execs and inspect/refuse requests;
+        # nothing changes the agent's files, grants, shell state or identity.
+        # Keep a separate shared sandbox so lifecycle tests can still stop,
+        # replace and inspect their own fresh sessions in any test order.
+        if self._testMethodName in self.SHARED_CASES:
+            cls = type(self)
+            if cls.shared_daemon is None:
+                cls.shared_daemon = Daemon(cls.application)
+                cls.addClassCleanup(cls.shared_daemon.close)
+                cls.shared_agent = cls.shared_daemon.start(agent_name="gribble")
+            self.d = cls.shared_daemon
+            self.agent = cls.shared_agent
+            self.d.wait(lambda: self.d.get(self.agent["session"])["execs"] == 0)
+            return
         self.addCleanup(self.stop_sessions)
         self.agent = self.d.start(agent_name="gribble")
 
@@ -167,7 +188,7 @@ class ExecTests(unittest.TestCase):
         # background jobs in groups of their own) or outlived their command. The agent and what it started keep running.
         agent = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", "gribble"])
         self.addCleanup(agent.close)
-        # The terminal answers fish's queries only while it is read.
+        # Read until the persistent shell has started its background job.
         agent.send(f"sleep {marker}5 &\n")
         agent.send("echo AGENT_STARTED\n")
         agent.expect(r"\nAGENT_STARTED\n")

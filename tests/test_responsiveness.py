@@ -17,7 +17,12 @@ class ResponsiveTests(unittest.TestCase):
         root = Path(root.name); bindir = root / "bin"; bindir.mkdir(); marker = root / "owned"
         tool = "nix-store" if kind == "startup" else "nix"
         real = shutil.which(tool)
-        condition = '"eval" in sys.argv and any(".hello" in a for a in sys.argv)' if kind == "preview" else ('"build" in sys.argv and "--dry-run" not in sys.argv' if kind == "build" else '"--realise" in sys.argv')
+        # Manifest leases also realise roots during daemon initialization. Only
+        # pause a session's roots: otherwise setUp sleeps for a minute before
+        # the test even launches A, and the supposed startup race is missed.
+        condition = ('"eval" in sys.argv and any(".hello" in a for a in sys.argv)' if kind == "preview" else
+                     ('"build" in sys.argv and "--dry-run" not in sys.argv' if kind == "build" else
+                      '"--realise" in sys.argv and any("/resources/roots/" in a for a in sys.argv)'))
         script = bindir / tool
         script.write_text(f'''#!{sys.executable}
 import json,os,subprocess,sys,time
@@ -42,6 +47,7 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
     def test_slow_startup_does_not_block_other_session(self):
         d, marker = self.slow_daemon("startup")
         a = d.start(wait=False); d.wait(marker.exists)
+        self.assertEqual(d.get(a["session"])["state"], "starting")
         b = d.start()
         peer, record = d.pending(b["session"], "tree"); self.addCleanup(peer.close)
         start = time.monotonic(); d.decide(record, False)
@@ -61,6 +67,7 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         manifest = marker.parent / "resize.json"
         manifest.write_text(json.dumps(config))
         a = d.start(manifest=manifest, wait=False); d.wait(marker.exists)
+        self.assertEqual(d.get(a["session"])["state"], "starting")
         self.assertTrue(d.rpc.call("sessions.resize", {"session":a["session"],"rows":40,"cols":110})["accepted"])
         marker.with_suffix(".release").touch()
         d.wait(lambda: d.get(a["session"])["state"] == "running")

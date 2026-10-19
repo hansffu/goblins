@@ -6,10 +6,11 @@ import signal
 import unittest
 from daemon_support import Daemon
 from terminal_support import Terminal
+from build_support import fixture_app
 
 class ConnectedTests(unittest.TestCase):
     def test_connected_fish_live_grants_and_terminal_behavior(self):
-        d = Daemon(); self.addCleanup(d.close)
+        d = Daemon(fixture_app("demo-goblins")); self.addCleanup(d.close)
         ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui", "--plain"]); self.addCleanup(ui.close)
         ui.expect("approval frontend")
         client = Terminal([str(d.app), "--state-dir", str(d.state), "run", "shell"]); self.addCleanup(client.close)

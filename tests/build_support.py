@@ -4,6 +4,8 @@ Only the host executable may come from Cargo. Sandbox executables and their
 closures remain real, immutable Nix outputs, including in local-controller mode.
 """
 from functools import cache
+from contextlib import contextmanager
+import fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -16,6 +18,25 @@ from support import FLAKE, HERE, command
 fixture_timings = []
 
 
+@contextmanager
+def fixture_lock(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def atomic_write(path, text, executable=False):
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    try:
+        temporary.write_text(text)
+        if executable:
+            temporary.chmod(0o755)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def cache_directory():
     return Path(os.environ.get("GOBLINS_TEST_CACHE", HERE / "target/test-fixtures")).resolve()
 
@@ -26,8 +47,11 @@ def fixture_path(installable):
     root = cache_directory() / "roots" / hashlib.sha256(installable.encode()).hexdigest()[:20]
     root.parent.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    output = command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
-                      "--max-jobs", "1", "--cores", "2", "--out-link", root, installable])
+    # Worker processes share roots. Keep fixture builds serial even when test
+    # execution overlaps, to bound Nix work and avoid competing out-link writes.
+    with fixture_lock(cache_directory() / "fixture-build.lock"):
+        output = command(["nix", "build", "--no-write-lock-file", "--print-out-paths",
+                          "--max-jobs", "1", "--cores", "2", "--out-link", root, installable])
     fixture_timings.append((time.monotonic() - started, installable))
     return Path(output)
 
@@ -47,16 +71,19 @@ def fixture_app(check="demo-goblins", *, packaged=False):
     root = cache_directory() / "apps" / hashlib.sha256(installable.encode()).hexdigest()[:20]
     application = root / "bin/goblins"
     application.parent.mkdir(parents=True, exist_ok=True)
-    application.write_text(f'#!/bin/sh\nexec {shlex.quote(controller)} --runtime {shlex.quote(str(manifest))} "$@"\n')
-    application.chmod(0o755)
-    # Use the same completion generator as the Nix package. The installation
-    # test requests packaged=True separately to verify Nix's install phase too.
-    for shell, relative in {
-        "bash": "share/bash-completion/completions/goblins",
-        "fish": "share/fish/vendor_completions.d/goblins.fish",
-        "zsh": "share/zsh/site-functions/_goblins",
-    }.items():
-        path = root / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(subprocess.check_output([application, "completions", shell], text=True))
+    with fixture_lock(root / "prepare.lock"):
+        # Another worker may execute this launcher while we prepare it. Replace
+        # files atomically rather than truncating executable/readable files.
+        atomic_write(application,
+                     f'#!/bin/sh\nexec {shlex.quote(controller)} --runtime {shlex.quote(str(manifest))} "$@"\n',
+                     executable=True)
+        # Keep the actual generator and exact installed completion contents.
+        for shell, relative in {
+            "bash": "share/bash-completion/completions/goblins",
+            "fish": "share/fish/vendor_completions.d/goblins.fish",
+            "zsh": "share/zsh/site-functions/_goblins",
+        }.items():
+            path = root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(path, subprocess.check_output([application, "completions", shell], text=True))
     return application

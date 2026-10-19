@@ -54,11 +54,14 @@ goblins run shell
 nix develop                       # enter once; pinned Rust and Python/pyte, your configured Emacs
 just test                         # Rust, Python integration and Emacs ERT, serially
 just test-python test_exec         # or a module, class, or individual method
+just test-python -j 1 test_exec    # serial execution with live per-test output
 just test-python --failfast        # stop at the first failing case while editing
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 just test-nix                     # full Nix/package checks, outside the edit loop
 just test-packaged test_server    # optionally exercise every case with Nix controllers
+just test-cache-clean             # release cached fixture roots and logs, after tests stop
+just test-roots-clean             # prune stale Nix root links; keep all store outputs/live roots
 #+end_src
 
 Use the Git-backed flake (=nix develop=), not =nix develop path:.=:
@@ -78,23 +81,58 @@ the adapter used by native Codex tests. Sandbox clients, the mount helper and
 their closures remain Nix-built. Each fixture is resolved once per Python
 process and retained under =target/test-fixtures/roots/= so GC between runs cannot evict it. Unrelated Rust packages now have separate
 source inputs: a controller edit does not rebuild the helper, client or Codex
-adapter. The installation/completion regression still tests the real Nix package;
-=just test-packaged= runs all selected cases with packaged controllers, and
-=just test-nix= retains all existing flake checks. Direct =python3 -m unittest=
-commands continue to use Nix packages.
+adapter. Native mode tests Cargo's launcher and generated completions without
+building a Nix controller on every edit. =just test-packaged= runs the same
+assertions with packaged controllers, including the actual installed scripts.
+=just test-nix= retains all existing flake checks and compares all three
+installed completion scripts byte-for-byte with the packaged generator's
+output. Direct =python3 -m unittest= commands continue to use Nix packages.
 
-The runner reports slow tests and Nix fixture resolution times, and refuses
-simultaneous runs in the same fixture cache. Fixture builds use one Nix job with
-two cores; the runner defaults to two Cargo build jobs unless =CARGO_BUILD_JOBS=
-is already set. =just test-rust= limits test threads to two. To release the retained GC roots, remove =target/test-fixtures/= after
-all tests and test daemons have stopped, then use your normal Nix GC policy.
-=GOBLINS_TEST_CACHE= selects a different cache directory.
+The runner uses at most two spawned worker processes. Ordinary modules stay
+together; independent dev-shell classes with private projects and daemons may
+overlap. Each class fixture stays in one worker. Docker, scope, run-target and
+native frontend suites, including the dev-shell Docker class, run exclusively.
+=-j 1= retains serial execution and live
+per-test output. With two workers, module progress appears on completion;
+complete output, including subprocess output, is saved under
+=target/test-fixtures/last-run/=. Logs are replaced on the next parallel run.
+Fail-fast stops scheduling modules after a failure and lets an already-running
+module finish its cleanup. The runner reports slow tests and fixture resolution
+times, and refuses simultaneous runs in the same cache.
 
-Exec tests share one daemon per class with fresh sandbox sessions per test.
-Tests of crashes, startup, history, environment and Docker lifetime retain their
-own daemons. Existing tests and assertions are retained.
+Fixture builds are serialized across workers, using one Nix job with two cores.
+The Rust workspace and ignored Session test driver are built once before
+parallel execution, sharing the Rust suite's Cargo feature selection and
+artifacts. The runner defaults to two Cargo build jobs unless
+=CARGO_BUILD_JOBS= is already set; =just test-rust= limits test threads to two.
 
-The development shell includes pyte for fullscreen terminal regression tests. Tests need host Nix, Unix sockets and ordinary-user namespace access. Run one Python suite at a time; concurrent runs interfere. The Codex configuration tests require =GOBLINS_TEST_CODEX=1=; the native protocol tests use a local mock provider whenever =codex= is installed. The Emacs checks are described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
+Ordinary API and terminal tests use an offline Fish fixture with only core
+utilities, grep and sed. Exec tests use an offline Bash fixture. Three exec
+cases that only run independent commands share a goblin; cases that stop or
+replace agents retain fresh sessions. The real connected-shell and packaging
+checks still use the complete demo. Existing tests and assertions are retained.
+
+Session startup roots the initial closure listing once and uses its registered
+Nix references to avoid redundant per-path roots. This only protects outputs
+from GC: the sandbox's visible paths are still computed from its declared
+packages, and later grants and unrelated binds keep their own roots. Host
+command waits wake on process exit/output while keeping bounded cancellation.
+
+After all tests and standalone test daemons stop, =just test-cache-clean=
+releases retained fixture roots and removes launchers/logs. It leaves the runner
+lock in place and does not delete store data. =GOBLINS_TEST_CACHE= selects a
+different cache directory. =just test-roots-clean= asks Nix to enumerate roots,
+which also prunes dangling automatic-root links across the store; live roots
+and store outputs remain. Reclaim unreferenced store data separately through
+your normal Nix GC policy.
+
+The development shell includes pyte for fullscreen terminal regression tests.
+Tests need host Nix, Unix sockets and ordinary-user namespace access. Use one
+runner per checkout/cache so its scheduler controls concurrency. The Codex
+configuration tests require =GOBLINS_TEST_CODEX=1=; the native protocol tests use
+a local mock provider whenever =codex= is installed. The Emacs checks are
+described in [[file:../emacs/README.org::*Checks][emacs/README.org]]; the Docker tests
+in [[file:USAGE.org::*Docker in a scope][USAGE.org]].
 
 * Repository layout
 

@@ -367,6 +367,10 @@ pub struct Launch {
     pub initial_packages: Vec<PathBuf>,
     #[serde(default)]
     pub initial_closure: Vec<PathBuf>,
+    /// Registered references of this file may retain initial paths together.
+    /// This is GC protection only; it never widens the sandbox's store view.
+    #[serde(default)]
+    pub initial_closure_file: Option<PathBuf>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -478,6 +482,7 @@ impl Configuration {
             .lines()
             .map(PathBuf::from)
             .collect(),
+            initial_closure_file: Some(string("closure_paths_file")?.into()),
             env,
             protected_paths: vec![],
             sandbox_etc: self.sandbox_etc.clone(),

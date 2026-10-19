@@ -1237,10 +1237,13 @@ These are protocol resource bounds, not payload CPU/process/memory/disk quotas.
 nix develop                       # enter once; pinned Rust and Python/pyte, your configured Emacs
 just test                         # Rust, Python integration and Emacs ERT, serially
 just test-python test_exec         # or a module, class, or individual method
+just test-python -j 1 test_exec    # serial execution with live output
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 just test-nix                     # full Nix/package checks, outside the edit loop
 just test-packaged test_server    # optionally exercise every case with Nix controllers
+just test-cache-clean             # release fixture cache roots after tests stop
+just test-roots-clean             # prune dangling root links; keep store outputs
 #+end_src
 
 Tests require host Nix, Unix sockets and ordinary-user namespace access. An outer
@@ -1250,8 +1253,9 @@ Codex, so they are skipped unless =GOBLINS_TEST_CODEX=1= is set; set it when
 changing the Codex integration. No production Python is used: Python is a test driver only.
 The ignored Rust Session harness supports fault-injected mount and namespace
 probes; production API/terminal tests use Cargo's incremental host controller and
-Nix-built sandbox executables. The package installation regression and
-=just test-packaged= also exercise the Nix-built controller. See
+Nix-built sandbox executables. =just test-packaged= exercises the same assertions
+with Nix-built controllers and installed scripts; =just test-nix= also verifies
+the packaged completion scripts byte-for-byte. See
 [[file:README.org::*Test][the test workflow]] for fixture caching and resource limits.
 
 * Scope and requirements

@@ -299,6 +299,9 @@ pub struct Session {
     pub directory: PathBuf,
     pub launch: Launch,
     pub mounted: BTreeSet<PathBuf>,
+    // References protected by the retained initial closure file. Grants and
+    // declarations outside this set still acquire their own roots.
+    rooted_closure: BTreeSet<PathBuf>,
     pub packages: BTreeMap<String, PathBuf>,
     pub identity: Option<Identity>,
     pub input: Option<File>,
@@ -358,6 +361,7 @@ impl Session {
             directory,
             launch,
             mounted: BTreeSet::new(),
+            rooted_closure: BTreeSet::new(),
             packages: BTreeMap::new(),
             identity: None,
             input: None,
@@ -479,6 +483,9 @@ impl Session {
     }
     pub fn root(&self, path: &Path) -> Result<PathBuf> {
         let path = store_path(path)?;
+        if self.rooted_closure.contains(&path) {
+            return Ok(path);
+        }
         let link = self.directory.join("roots").join(path.file_name().unwrap());
         if !link.is_symlink() {
             self.command(
@@ -560,6 +567,16 @@ impl Session {
             }));
         }
         let workspace_fd = self.workspace.as_ref().unwrap().file.as_raw_fd();
+        // A Nix-generated closure listing already references its dependencies.
+        // Retain that output once, rather than invoking nix-store for every
+        // listed path. Query registered references, not the file's assertions:
+        // unreferenced paths still need individual roots. Non-store listings
+        // (including direct Session callers) keep the original behavior.
+        if let Some(file) = &self.launch.initial_closure_file
+            && let Some(output) = containing_store_output(file)
+        {
+            self.rooted_closure = self.closure(&[output])?;
+        }
         // Root selected store-backed config without exposing the full output or
         // its closure. Only the precise declared/linked targets are mounted.
         for root in binds.store_roots()? {

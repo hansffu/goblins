@@ -63,7 +63,7 @@ class RPC:
 
 def app():
     if "GOBLINS_APP" not in os.environ:
-        os.environ["GOBLINS_APP"] = str(fixture_app("demo-goblins"))
+        os.environ["GOBLINS_APP"] = str(fixture_app("shell-goblins"))
     return Path(os.environ["GOBLINS_APP"])
 
 

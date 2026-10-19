@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from daemon_support import Daemon
+from build_support import fixture_app
 
 
 class BindRaceTests(unittest.TestCase):
@@ -29,7 +30,11 @@ if "--realise" in sys.argv and os.path.exists({str(armed)!r}) and not os.path.ex
  else: sys.exit("bind-race barrier timed out")
 os.execv({real!r},[{real!r},*sys.argv[1:]])
 '''); wrapper.chmod(0o700)
-            d = Daemon(env={**os.environ, "PATH": str(bindir) + ":" + os.environ["PATH"]})
+            # The attacker only executes POSIX commands over a raw socket.
+            # Bash avoids waiting for Fish terminal-query replies from a
+            # deliberately non-emulating reader on every race variant.
+            d = Daemon(fixture_app("exec-goblins"),
+                       env={**os.environ, "PATH": str(bindir) + ":" + os.environ["PATH"]})
             try:
                 (d.state / "sentinel").write_text("PRIVATE-CONTROL-DATA")
                 if ancestor:

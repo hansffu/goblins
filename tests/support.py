@@ -21,11 +21,14 @@ FLAKE = "git+file://" + str(HERE)
 def rust_driver():
     if "GOBLINS_TEST_DRIVER" not in os.environ:
         build = subprocess.check_output([
-            os.environ.get("CARGO", "cargo"), "test", "--locked", "-p", "goblins-controller",
-            "--lib", "--no-run", "--message-format=json",
+            # Match test-rust's workspace feature selection, so Cargo reuses
+            # its artifacts instead of building a second controller test lib.
+            os.environ.get("CARGO", "cargo"), "test", "--locked", "--workspace",
+            "--no-run", "--message-format=json",
         ], cwd=HERE, text=True)
         for artifact in map(json.loads, build.splitlines()):
-            if artifact.get("reason") == "compiler-artifact" and artifact.get("executable"):
+            if (artifact.get("reason") == "compiler-artifact" and artifact.get("executable")
+                    and artifact["target"]["name"] == "goblins_controller"):
                 os.environ["GOBLINS_TEST_DRIVER"] = artifact["executable"]
         if "GOBLINS_TEST_DRIVER" not in os.environ:
             raise RuntimeError("Cargo did not produce the Rust host test driver")

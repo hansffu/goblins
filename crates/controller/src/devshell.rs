@@ -1382,13 +1382,23 @@ fn preview(
 /// Nix prints trace frames before the actual error; lead with the latter so
 /// bounded diagnostics keep it.
 pub(crate) fn cause(message: &str) -> String {
-    match message
-        .rfind("\nerror:")
-        .or_else(|| message.rfind("       error:"))
-    {
-        Some(at) => message[at..].trim().to_string(),
-        None => message.to_string(),
-    }
+    // Nix can put warnings before the unindented trace header and indent the
+    // final cause. Choose the last error line regardless of indentation; an
+    // earlier unindented header must not hide the cause when replies are bound.
+    message
+        .rmatch_indices("error:")
+        .find(|(at, _)| {
+            message[..*at]
+                .rsplit('\n')
+                .next()
+                .unwrap()
+                .trim()
+                .is_empty()
+        })
+        .map_or_else(
+            || message.to_string(),
+            |(at, _)| message[at..].trim().to_string(),
+        )
 }
 
 fn variable_name(name: &str) -> bool {
@@ -1655,6 +1665,16 @@ mod tests {
         let message = "host command failed (exit status: 1): error:\n       … while x\n\n       error: path '/tmp/x' does not exist\n";
         assert_eq!(cause(message), "error: path '/tmp/x' does not exist");
         assert_eq!(cause("plain"), "plain");
+        for indentation in ["", "  ", "       "] {
+            let message = format!(
+                "host command failed: warning: ignored setting\nerror:\n{}\n{indentation}error: cannot build during evaluation: allow-import-from-derivation is disabled\n",
+                "trace context ".repeat(60)
+            );
+            assert_eq!(
+                cause(&message),
+                "error: cannot build during evaluation: allow-import-from-derivation is disabled"
+            );
+        }
     }
 
     #[test]
