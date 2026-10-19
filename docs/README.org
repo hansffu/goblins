@@ -55,6 +55,7 @@ nix develop                       # enter once; pinned Rust and Python/pyte, you
 just test                         # Rust, Python integration and Emacs ERT, serially
 just test-python test_exec         # or a module, class, or individual method
 just test-python -j 1 test_exec    # serial execution with live per-test output
+just test-python -j 4              # opt in to four integration-test workers
 just test-python --failfast        # stop at the first failing case while editing
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -88,12 +89,13 @@ assertions with packaged controllers, including the actual installed scripts.
 installed completion scripts byte-for-byte with the packaged generator's
 output. Direct =python3 -m unittest= commands continue to use Nix packages.
 
-The runner uses at most two spawned worker processes. Ordinary modules stay
-together; independent dev-shell classes with private projects and daemons may
-overlap. Each class fixture stays in one worker. Docker, scope, run-target and
-native frontend suites, including the dev-shell Docker class, run exclusively.
+The runner defaults to two spawned worker processes; =-j 4= opts in to four.
+Ordinary modules stay together; independent dev-shell classes with private
+projects and daemons may overlap. Each class fixture stays in one worker.
+Docker, scope, run-target and native frontend suites, including the dev-shell
+Docker class, run exclusively.
 =-j 1= retains serial execution and live
-per-test output. With two workers, module progress appears on completion;
+per-test output. With multiple workers, module progress appears on completion;
 complete output, including subprocess output, is saved under
 =target/test-fixtures/last-run/=. Logs are replaced on the next parallel run.
 Fail-fast stops scheduling modules after a failure and lets an already-running

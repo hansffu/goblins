@@ -49,7 +49,7 @@ blocking daemon initialization for a minute, and explicitly assert that the
 session is still starting. Bash also avoids Fish negotiation timeouts in raw
 bind-race sockets. The nine race/responsiveness cases passed in 15.88 seconds.
 
-Python runs with at most two spawned workers, retaining class fixtures. Private
+Python defaults to two spawned workers, retaining class fixtures. Private
 dev-shell classes may overlap; Docker, scope, run-target and native frontend
 groups, including the dev-shell Docker class, run exclusively. Fixture builds
 remain serialized, launcher/script writes are atomic, and logs are replaced
@@ -138,6 +138,72 @@ checks were enabled with =GOBLINS_TEST_CODEX=1=. Both previously failing groups
 passed in the full run. Formatting, Clippy and Python compilation passed.
 All pre-existing assertions and test methods in the changed Python files
 remain; one shutdown regression and additional CLI checks were added.
+
+** Four-worker opt-in and I/O investigation
+
+=just test-python -j 4= opts in to four workers; two remains the default.
+Engine/frontend exclusivity, class fixtures, serialized fixture builds and
+the two-job Cargo build limit are retained. Runner checks verify four-way
+overlap, the exclusive-group barrier and fail-fast with both worker counts.
+
+Compared the same 37 integration cases (the earlier selection plus the new
+shutdown regression), in worker-count order 2, 4, 4, 2. All 148 case executions
+passed:
+
+| Workers | First suite time | Second suite time | Sampled peak processes | Sampled peak FDs |
+|---------+------------------+-------------------+------------------------+------------------|
+|       2 |          39.15 s |           36.73 s |                  28-29 |          174-193 |
+|       4 |          27.95 s |           28.49 s |                  40-42 |          272-280 |
+
+The first full four-worker pass attempted all 226 cases in 485.000 seconds,
+but failed one CLI recreation case; it is not a successful full-suite timing.
+That test waited on an asynchronously written history file, which could still
+contain its original stopped record while the previous session was alive.
+The daemon correctly refused to resume the same live conversation. Resume
+tests now also wait for the daemon's =history.list= to report that the record
+has been released, including worker cleanup. Existing filesystem checks and
+assertions remain. The affected CLI case then passed 20 repetitions. The same
+wait is used before the adjacent package and Emacs resume checks.
+
+Live system-wide disk samples during the first run showed write-heavy bursts:
+41-106 MiB/s written with negligible reads, mean NVMe write latency 2.1-5.3 ms
+and mean request queue length 4.7-26.8. In three ten-second windows, I/O PSI
+=some= was 50.7-61.0% and =full= was 47.2-53.0%, while CPU PSI =some= was
+0.3-0.6% and memory PSI =some= was at most 0.09%. These are stall-time shares,
+as described by the [[https://docs.kernel.org/accounting/psi.html][kernel PSI documentation]], not disk bandwidth utilization.
+The counters support storage waiting as a bottleneck during those windows;
+they do not attribute all traffic to the tests or the Nix store. A later
+cgroup sample saw only 1.15 MiB/s of total writes, confirming phase variation.
+
+Process/FD samples cover observable descendants, excluding the shared Nix
+daemon and reparented processes. Summed RSS includes shared pages. Trial logs,
+resource samples and full-run I/O samples are under
+=/tmp/goblins-four-workers-20261019/=.
+
+After correcting the live-session wait, the full four-worker rerun passed all
+226 cases in 498.919 seconds: 224 passed and the same two opt-in cases skipped,
+with Codex configuration checks enabled. This is 16.4% shorter than the earlier
+596.981-second two-worker Python run; that earlier run had one fewer scheduler
+test, and system load/cache state differed. The matched 37-case trials above
+provide the narrower controlled comparison. Sampled full-run peaks were 77
+observable descendant processes, 1,174 total FDs and 1.55 GiB summed RSS.
+All existing assertions in the changed test modules remain.
+
+Ten-second samples throughout the successful rerun averaged about 60% I/O PSI
+=some= and 51% =full=, versus 0.63% CPU PSI =some= and 0.03% memory PSI =some=.
+Some windows had mean write latency above 150 ms and queues above 500 requests.
+Most write bytes in aligned cgroup samples were charged at the root cgroup,
+so the samples do not identify a single application as the cause. Reducing
+temporary-state and filesystem metadata writes is a useful next experiment;
+four-worker execution remains opt-in. Dangling GC-root metadata was pruned
+after the runs without collecting store outputs or releasing fixture roots.
+
+A ten-second sample after completion still reported 77.5% I/O PSI =some= and
+73.5% =full=, while writes fell to 0.63 MiB/s. Thus these system-wide counters
+cannot isolate the suite's contribution or distinguish remaining writeback
+from other activity. The user reported that the machine felt substantially
+more responsive than before the optimizations; pressure readings alone should
+not be treated as a direct measure of interactive responsiveness.
 
 * Test suite build and fixture optimization (2026-10-19)
 

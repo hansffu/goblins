@@ -150,7 +150,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-f", "--failfast", action="store_true", help="stop on the first failure")
     parser.add_argument("--packaged", action="store_true", help="use Nix-built controllers too")
-    parser.add_argument("-j", "--jobs", type=int, choices=(1, 2), default=2,
+    parser.add_argument("-j", "--jobs", type=int, choices=(1, 2, 4), default=2,
                         help="test workers (default: 2); use 1 for serial verbose execution")
     parser.add_argument("--clean-cache", action="store_true",
                         help="release fixture roots and remove cached launchers/logs; never run Nix GC")

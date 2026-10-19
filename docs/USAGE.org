@@ -1238,6 +1238,7 @@ nix develop                       # enter once; pinned Rust and Python/pyte, you
 just test                         # Rust, Python integration and Emacs ERT, serially
 just test-python test_exec         # or a module, class, or individual method
 just test-python -j 1 test_exec    # serial execution with live output
+just test-python -j 4              # opt in to four integration-test workers
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 just test-nix                     # full Nix/package checks, outside the edit loop

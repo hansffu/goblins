@@ -13,7 +13,7 @@ emacs *args:
     exec nix develop -c emacs --eval "$setup" "$@"
 
 # Enter `nix develop` once, then run these commands directly.
-# Rust/Python/Emacs suites are serial; Python schedules at most two workers.
+# Rust/Python/Emacs suites are serial; Python defaults to two workers (-j 4 opts in).
 test: test-rust test-python test-emacs
 
 test-rust:

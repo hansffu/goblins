@@ -168,6 +168,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertEqual(own["skipped"], r["skipped"])
         d.rpc.call("sessions.stop", {"session": session})
         d.wait(lambda: d.record("rec-best")["stopped"])
+        d.wait_record_released("rec-best")
         offline.unlink()
         again = d.get(self.recreate(d, session)["session"])
         self.assertEqual(again["packages"], ["hello", "cowsay"])
@@ -267,6 +268,10 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         # Attached, by the goblin's own id.
         d.rpc.call("sessions.stop", {"session": launch["session"]})
         d.wait(lambda: d.record("rec-cli")["stopped"])
+        # Disk history is asynchronous and can still contain the original
+        # stopped record. Wait for the daemon to release the live conversation
+        # before attempting another resume, including worker cleanup.
+        d.wait_record_released("rec-cli")
         from terminal_support import Terminal
         attached = Terminal([d.binary, "--runtime", d.manifest, "--state-dir", str(d.state), "resume",
                              launch["session"]], env=d.env)

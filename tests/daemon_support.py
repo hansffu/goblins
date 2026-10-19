@@ -112,6 +112,11 @@ class Daemon:
             raise AssertionError(f"goblins {' '.join(map(str, args))} failed ({result.returncode}): {result.stderr}")
         return result
 
+    def wait_record_released(self, record_id):
+        """Wait for live-session cleanup; persisted history can lag or be stale."""
+        return self.wait(lambda: next((r for r in self.rpc.call("history.list", {})["records"]
+                                       if r["id"] == record_id and r["running"] is False), None))
+
     def host(self):
         return RPC(self.state / "host.sock")
 

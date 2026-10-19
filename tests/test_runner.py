@@ -14,6 +14,10 @@ class RunnerTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="goblins-runner-")
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
+        # Put the runner beside synthetic modules so its script directory
+        # cannot shadow stand-ins such as the exclusive test_docker group.
+        self.runner = self.directory / "run.py"
+        self.runner.write_text((HERE / "tests/run.py").read_text())
         self.cache = self.directory / "cache"
         self.env = {**os.environ, "GOBLINS_TEST_CACHE": str(self.cache),
                     "PYTHONPATH": str(self.directory) + os.pathsep + str(HERE / "tests"),
@@ -36,7 +40,7 @@ class RunnerTests(unittest.TestCase):
             "\n".join("        " + line for line in body.splitlines()) + "\n")
 
     def run_runner(self, *args, code=0):
-        result = subprocess.run([sys.executable, str(HERE / "tests/run.py"), "--durations", "0", *args],
+        result = subprocess.run([sys.executable, str(self.runner), "--durations", "0", *args],
                                 env=self.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, code, result.stdout + result.stderr)
         return result
@@ -57,13 +61,32 @@ class RunnerTests(unittest.TestCase):
 
     def test_parallel_failfast_does_not_schedule_another_module(self):
         self.module("probe_fail", "os.write(1,b'\\xff')\nself.fail('deliberate-worker-failure')")
-        self.module("probe_wait", "time.sleep(1)\nself.assertTrue(True)")
         self.module("probe_later", "(root/'unexpected').touch()")
-        result = self.run_runner("--jobs", "2", "--failfast", "probe_fail", "probe_wait",
-                                 "probe_later", code=1)
-        self.assertIn("deliberate-worker-failure", result.stderr)
-        self.assertFalse((self.directory / "unexpected").exists())
-        self.assertIn("FAILED", result.stdout)
+        for jobs in (2, 4):
+            with self.subTest(jobs=jobs):
+                waiting = [f"probe_wait_{i}" for i in range(jobs - 1)]
+                for name in waiting:
+                    self.module(name, "time.sleep(1)\nself.assertTrue(True)")
+                result = self.run_runner("--jobs", str(jobs), "--failfast", "probe_fail",
+                                         *waiting, "probe_later", code=1)
+                self.assertIn("deliberate-worker-failure", result.stderr)
+                self.assertFalse((self.directory / "unexpected").exists())
+                self.assertIn("FAILED", result.stdout)
+
+    def test_four_workers_overlap_before_exclusive_groups_run(self):
+        names = [f"probe_{i}" for i in range(4)]
+        for name in names:
+            self.module(name, f"(root/'started_{name}').touch()\n"
+                        "deadline=time.monotonic()+10\n"
+                        "while len(list(root.glob('started_*'))) < 4 and time.monotonic()<deadline: time.sleep(.01)\n"
+                        "self.assertEqual(len(list(root.glob('started_*'))),4)\n"
+                        f"(root/'finished_{name}').touch()")
+        # This synthetic module is classified as exclusive without using an
+        # engine. Selecting it first verifies scheduling, not selector order.
+        self.module("test_docker", "self.assertEqual(len(list(root.glob('finished_*'))),4)")
+        result = self.run_runner("--jobs", "4", "test_docker", *names)
+        self.assertIn("Ran 5 tests", result.stdout)
+        self.assertIn("[PASS] test_docker", result.stdout)
 
     def test_cleanup_releases_only_fixture_cache_and_keeps_lock_inode(self):
         for name in ("roots", "apps", "last-run"):

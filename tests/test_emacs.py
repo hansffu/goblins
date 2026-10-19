@@ -178,6 +178,7 @@ class EmacsTests(unittest.TestCase):
         record = daemon.wait(lambda: (r if (r := daemon.record(session))["variables"] else None))
         daemon.rpc.call("sessions.stop", {"session": session})
         daemon.wait(lambda: daemon.record(session)["stopped"])
+        daemon.wait_record_released(record["id"])
         result = subprocess.run(
             ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
             env={**os.environ, "GOBLINS_APP": str(daemon.app), "GOBLINS_TEST_STATE": str(daemon.state),
