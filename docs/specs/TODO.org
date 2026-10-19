@@ -51,6 +51,47 @@ Development notes:
   =--no-update-lock-file=; any new flake command must keep the completeness
   check in =snapshot= (=metadata.locks= must equal the file).
 
+* TODO Feature-based test tasks for targeted agent validation
+
+Deferred on 2026-10-19. Keep the full suite as the merge check; let agents run
+the relevant feature tasks during an edit loop without losing test coverage.
+Start with declarative selections over existing tests and shared fixtures,
+rather than moving files or splitting class setup across workers.
+
+Proposed groups (Python module names omit the =test_= prefix):
+
+| Feature                  | Integration selections                                      |
+|--------------------------+-------------------------------------------------------------|
+| Sandbox/filesystem/roots | integration, binds, bind_race, workspace, roots               |
+| Daemon/session lifecycle | daemon, server, configuration, agent_names, responsiveness    |
+| Execution/attachment     | exec, attachment, connected                                 |
+| Scopes/network           | scopes, network                                             |
+| Docker                   | docker; Docker classes in devshell and run_targets           |
+| Nix/devshell/flake       | nix; non-Docker devshell classes                             |
+| Raids/spawning           | raids; non-Docker run_targets classes                        |
+| Messaging/activity       | mailbox, activity, operation_notices                         |
+| History/resume           | history, recreate                                           |
+| Codex                    | codex_native, codex_config, Codex operation notices           |
+| Claude                   | claude_config, Claude operation notices                      |
+| Host commands/editor     | host_commands, editor, host-command notices                  |
+| Frontends                | separate tui and emacs tasks, corresponding ERT selections   |
+| Infrastructure/packaging | runner, Nix checks, packaged-controller checks                |
+
+- Add named feature tasks accepting multiple features. Resolve their union,
+  deduplicate test IDs and submit one runner invocation, retaining class
+  fixtures, the cache lock, bounded workers and exclusive engine/frontend runs.
+- Allow tests to belong to multiple features, especially cross-feature
+  integrations. Selecting either feature must include the shared test.
+- Document source-path-to-feature mappings for agents. Shared protocol,
+  permissions, mount helper, session teardown, fixtures and scheduler changes
+  need broader selections; unmapped changes fall back to the full suite.
+- Initially keep the complete Rust suite for Rust changes and complete ERT
+  suite for Lisp changes: prioritize selecting expensive Python integrations.
+- Preserve all discovered tests, assertions and opt-in coverage. Check that
+  the feature union covers the full suite and record timings per feature.
+- Document the task-selection rules for agents and keep full-suite validation
+  before merge. Physical test-file reorganization can follow separately.
+
 * TODO Intermittently blank Codex terminal after launch or attachment
 
 Observed during manual testing on 2026-10-14 with Codex 0.162.1, the

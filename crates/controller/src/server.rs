@@ -4,7 +4,7 @@ use goblins_controller::{Result, controller::Controller, host::Client, unix};
 use serde_json::json;
 use std::{
     fs::{File, OpenOptions},
-    io,
+    io::{self, Write},
     os::{
         fd::AsRawFd,
         unix::{
@@ -50,8 +50,9 @@ pub fn foreground(
         thread::sleep(Duration::from_millis(5));
     }
     println!("Goblins server stopping; cleaning up agents");
-    drop(daemon);
+    let _shutdown = daemon.shutdown()?;
     println!("Goblins server stopped");
+    io::stdout().flush()?;
     Ok(())
 }
 

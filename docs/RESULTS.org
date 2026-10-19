@@ -97,6 +97,48 @@ releases fixture roots and removes cached launchers/logs without collecting
 store data; subsequent reclamation follows the user's normal Nix GC policy.
 The local 8.8 GiB Cargo target remains available for incremental builds.
 
+** Parallel execution trial and shutdown follow-up
+
+Compared the same 36 integration cases in =daemon=, =exec=, =attachment=,
+=history=, =binds=, =editor=, =server= and =roots= in one fresh dev shell.
+Worker counts ran in order 1, 2, 2, 1; all 144 case executions passed.
+
+| Workers | First suite time | Second suite time | Sampled peak processes | Sampled peak FDs |
+|---------+------------------+-------------------+------------------------+------------------|
+|       1 |          66.03 s |           57.37 s |                     14 |            80-90 |
+|       2 |          33.37 s |           33.30 s |                  29-31 |          177-179 |
+
+The warm comparison is about 1.72 times faster (42% less elapsed time).
+These are selected ordinary integration groups, not a full-suite speedup:
+engine/frontend groups still run exclusively. Fixture resolution was slower
+in the first serial run. Resource samples cover the runner and observable
+descendants once per second, excluding the shared Nix daemon and reparented
+processes. Summed RSS varied with cache state and shared pages, so it is not
+evidence of a memory reduction. Raw trial logs are under
+=/tmp/goblins-parallel-trial-20261019/=.
+
+A reported missing final shutdown log exposed a real synchronization gap:
+the daemon lock was released before the foreground entry point wrote
+=Goblins server stopped=. A new regression fills an output pipe so the final
+line blocks; the old implementation lets =server stop= return early and
+fails the check. Shutdown now retains the lock through controller field
+destruction and final output flushing; the regression passes.
+
+The other reported failure, empty CLI status output in a run-target test,
+did not reproduce in a fresh-shell run of all 18 original server/run-target
+cases or 20 repetitions of the reported case. Its CLI helper now uses the
+daemon's private environment, enforces a timeout and reports nonzero exit
+codes with stdout/stderr. No retry or assertion relaxation was added.
+
+Follow-up validation in one fresh =nix develop= completed =just test= in
+615.78 seconds, including the incremental Rust test rebuild: 214 Rust tests
+passed, Python ran 225 cases in 596.981 seconds (223 passed, two existing
+opt-in skips), and all 133 ERT tests passed in 3.87 seconds. Codex configuration
+checks were enabled with =GOBLINS_TEST_CODEX=1=. Both previously failing groups
+passed in the full run. Formatting, Clippy and Python compilation passed.
+All pre-existing assertions and test methods in the changed Python files
+remain; one shutdown regression and additional CLI checks were added.
+
 * Test suite build and fixture optimization (2026-10-19)
 
 Historical first iteration; the startup/root counts and validation below are

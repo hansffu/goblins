@@ -1,5 +1,6 @@
 """Server lifecycle, help and shell scripts, native or Nix-packaged."""
 from pathlib import Path
+import fcntl
 import json
 import os
 import re
@@ -69,6 +70,54 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(second.call("sessions.list", {}), [])
         self.assertEqual(self.cli("server", "logs").count("daemon ready"), 2)
         print("EVIDENCE background server survives launching CLI, stops both agents, retains output and restarts with fresh identity", flush=True)
+
+    def test_stop_waits_for_final_output_before_releasing_the_server(self):
+        # Leave room for the stopping line, then block the final stopped line.
+        # This exposes the lock-release/logging race without relying on load.
+        reader, writer = os.pipe()
+        output = os.fdopen(reader, "rb", buffering=0)
+        self.addCleanup(output.close)
+
+        def reap(process):
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            for stream in (process.stdout, process.stderr):
+                if stream:
+                    stream.close()
+
+        try:
+            foreground = subprocess.Popen(
+                [str(self.app), "--state-dir", str(self.state), "server", "start", "--foreground"],
+                env=self.env, stdout=writer, stderr=subprocess.PIPE)
+            self.addCleanup(reap, foreground)
+            self.assertIn(b"daemon ready", output.readline())
+            self.assertIn(b"Session history", output.readline())
+            capacity = fcntl.fcntl(writer, fcntl.F_GETPIPE_SZ)
+            stopping = b"Goblins server stopping; cleaning up agents\n"
+            os.write(writer, b"x" * (capacity - len(stopping)))
+        finally:
+            os.close(writer)
+        stopper = subprocess.Popen(
+            [str(self.app), "--state-dir", str(self.state), "server", "stop"],
+            env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(reap, stopper)
+        deadline = time.monotonic() + 5
+        while (self.state / "host.sock").exists():
+            self.assertLess(time.monotonic(), deadline, "daemon did not reach final cleanup")
+            time.sleep(.005)
+        self.assertIsNone(foreground.poll(), "final output should still be blocked")
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                stopper.wait(timeout=.2)
+        finally:
+            # Unblock final logging even when the assertion exposes the race.
+            os.read(reader, capacity)
+        foreground.wait(timeout=5)
+        self.assertIn(b"Goblins server stopped\n", output.read())
+        stdout, stderr = stopper.communicate(timeout=5)
+        self.assertEqual(stopper.returncode, 0, stdout + stderr)
+        self.assertIn(b"Server stopped", stdout)
 
     def test_help_removed_aliases_and_completion_installation(self):
         # Run identical assertions against Cargo's generated launcher/scripts

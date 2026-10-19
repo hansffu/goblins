@@ -43,8 +43,11 @@ class RaidMemberTests(unittest.TestCase):
         return peer
 
     def cli(self, *args, **kwargs):
-        return subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), *args],
-                              text=True, capture_output=True, **kwargs)
+        result = subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), *args],
+                                env=self.d.env, timeout=60, text=True, capture_output=True, **kwargs)
+        self.assertEqual(result.returncode, 0,
+                         f"goblins {args}: {result.stdout}\n{result.stderr}")
+        return result
 
     def wait_json(self, path):
         def read():

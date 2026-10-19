@@ -544,7 +544,6 @@ pub struct Controller {
     messaging_directory: crate::mailbox::Directory,
     state: PathBuf,
     workspace: Option<PathBuf>,
-    _lock: File,
     listener: UnixListener,
     instance: String,
     next: u64,
@@ -587,6 +586,9 @@ pub struct Controller {
     /// manifest: a slower, older launch never replaces a newer manifest.
     manifest_sequence: u64,
     manifest_published: u64,
+    // Fields drop in declaration order. Keep ownership through every worker,
+    // history store and manifest lease being released, including on errors.
+    _lock: File,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -643,6 +645,13 @@ impl Controller {
             manifest_sequence: 0,
             manifest_published: 0,
         })
+    }
+    /// Finish cleanup while retaining the daemon lock for the caller's final
+    /// output. A stop command must not return before that output is flushed.
+    pub fn shutdown(self) -> Result<File> {
+        let lock = self._lock.try_clone()?;
+        drop(self);
+        Ok(lock)
     }
     /// Start with the manifest the server was started with as current, once
     /// it validates. Call before the first launch.
