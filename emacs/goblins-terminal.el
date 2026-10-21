@@ -1,18 +1,18 @@
-;;; goblins-terminal.el --- goblin-mode for Goblins terminal buffers -*- lexical-binding: t; -*-
+;;; goblins-terminal.el --- goblins-goblin-mode for Goblins terminal buffers -*- lexical-binding: t; -*-
 
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "28.1") (magit-section "4.0.0"))
 ;; Keywords: tools, processes
 
 ;;; Commentary:
-;; `goblin-mode' is a minor mode that Goblins turns on in every Ghostel
-;; buffer attached to a goblin, so you can give those buffers keys of your
-;; own:
+;; `goblins-goblin-mode' is a minor mode that Goblins turns on in every
+;; Ghostel buffer attached to a goblin, so you can give those buffers keys of
+;; your own:
 ;;
-;;   (define-key goblin-mode-map (kbd "C-c C-g") #'goblins-workspace)
-;;   (define-key goblin-mode-map (kbd "C-v") #'goblin-paste-image)
+;;   (define-key goblins-goblin-mode-map (kbd "C-c C-g") #'goblins-workspace)
+;;   (define-key goblins-goblin-mode-map (kbd "C-v") #'goblin-paste-image)
 ;;   (with-eval-after-load 'evil
-;;     (evil-define-key 'normal goblin-mode-map (kbd "SPC g") #'goblin-info))
+;;     (evil-define-key 'normal goblins-goblin-mode-map (kbd "SPC g") #'goblin-info))
 ;;
 ;; It is a minor mode rather than a mode derived from `ghostel-mode':
 ;; `ghostel-exec' always puts the buffer in `ghostel-mode' itself, and Ghostel
@@ -112,7 +112,7 @@ The image is written inside the goblin and its path pasted, see
   (goblins--terminal-goblin)
   (yank-media))
 
-(defvar goblin-mode-command-map
+(defvar goblins-goblin-mode-command-map
   (let ((map (make-sparse-keymap)))
     (define-key map "w" #'goblins-workspace)
     (define-key map "s" #'goblins-switch)
@@ -126,24 +126,24 @@ The image is written inside the goblin and its path pasted, see
     (define-key map "f" #'goblins-find-file)
     (define-key map "v" #'goblin-paste-image)
     map)
-  "Goblin commands, on \\`C-c g' in `goblin-mode-map'.")
+  "Goblin commands, on \\`C-c g' in `goblins-goblin-mode-map'.")
 
-(defvar goblin-mode-map
+(defvar goblins-goblin-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c g") goblin-mode-command-map)
+    (define-key map (kbd "C-c g") goblins-goblin-mode-command-map)
     map)
-  "Keymap of `goblin-mode'.  Add your own goblin terminal keys here.")
+  "Keymap of `goblins-goblin-mode'.  Add your own goblin terminal keys here.")
 
 ;;;###autoload
-(define-minor-mode goblin-mode
+(define-minor-mode goblins-goblin-mode
   "Minor mode of Ghostel buffers attached to a goblin.
 Goblins turns it on in every terminal it opens; bind your own keys in
-`goblin-mode-map', and run code in `goblin-mode-hook'.
+`goblins-goblin-mode-map', and run code in `goblins-goblin-mode-hook'.
 
-\\{goblin-mode-map}"
+\\{goblins-goblin-mode-map}"
   :lighter " Goblin"
-  :keymap goblin-mode-map
-  (when (and goblin-mode (fboundp 'yank-media-handler))
+  :keymap goblins-goblin-mode-map
+  (when (and goblins-goblin-mode (fboundp 'yank-media-handler))
     (yank-media-handler "image/.*" #'goblins--yank-media-image))
   ;; Evil's state maps for minor modes need refreshing when one turns on.
   (when (fboundp 'evil-normalize-keymaps)

@@ -2790,15 +2790,15 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (should (equal goblins--seen-approvals '("s" "t")))
         (should (equal goblins--seen-requests '("a" "b")))))))
 
-;;; goblin-mode
+;;; goblins-goblin-mode
 
-(ert-deftest goblin-mode-gives-goblin-terminals-their-own-keys ()
+(ert-deftest goblins-goblin-mode-gives-goblin-terminals-their-own-keys ()
   (goblins-test--raid-sidebar
     (let ((terminal (generate-new-buffer " *goblins test terminal*")) shown)
       (unwind-protect
           (with-current-buffer terminal
             (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
-            (goblin-mode 1)
+            (goblins-goblin-mode 1)
             (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions))
             (should (eq (key-binding (kbd "C-c g i")) #'goblin-info))
             (should (eq (key-binding (kbd "C-c g r")) #'goblins-raid))
@@ -2806,7 +2806,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
                       ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
               (goblin-info)
               (should (equal (buffer-local-value 'goblins--view-session shown) "session-c"))
-              (should (derived-mode-p 'goblin-mode 'fundamental-mode))
+              (should (derived-mode-p 'goblins-goblin-mode 'fundamental-mode))
               (goblin-permissions)
               (should (eq (buffer-local-value 'major-mode shown) 'goblins-permissions-mode))))
         (kill-buffer terminal)
@@ -2824,7 +2824,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (unwind-protect
         (with-current-buffer terminal
           (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
-          (goblin-mode 1)
+          (goblins-goblin-mode 1)
           (should (eq (key-binding (kbd "C-c g v")) #'goblin-paste-image))
           (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) terminal))
                     ((symbol-function 'goblins--pinned-terminal-host) (lambda () "gribble"))
@@ -2992,7 +2992,8 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (should (string-match-p "reconnecting" (buffer-local-value 'goblins--notice source)))
     (goblins-test--wait (lambda () (equal (buffer-local-value 'goblins--notice source) "Connected")))
     (goblins-test--wait (lambda () (string-match-p "alpha" (goblins-test--sidebar-text))))
-    ;; Switching attaches a terminal in goblin-mode, shown in the main window.
+    ;; Switching attaches a terminal in goblins-goblin-mode, shown in the main
+    ;; window.
     (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
       (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "alpha")))
         (let ((goblins-switch-use-consult nil)) (goblins-switch)))
@@ -3001,7 +3002,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list terminal)))
         (with-current-buffer terminal
           (should (derived-mode-p 'ghostel-mode))
-          (should goblin-mode)
+          (should goblins-goblin-mode)
           (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions)))
         (goblins-test--in-sidebar "^  alpha")
         (should (overlays-at (point)))
@@ -3185,7 +3186,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (kill-buffer file))
       (should (eq (key-binding "f") #'goblins-sidebar-find-file)))
     (with-temp-buffer
-      (goblin-mode 1)
+      (goblins-goblin-mode 1)
       (should (eq (key-binding (kbd "C-c g f")) #'goblins-find-file)))))
 
 (ert-deftest goblins-exec-summary-counts-shells-and-tramp ()
@@ -3302,7 +3303,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (should (eq (key-binding (kbd (car binding))) (cdr binding))))
     (should (memq (key-binding (kbd "S")) '(nil undefined))))
   (with-temp-buffer
-    (goblin-mode 1)
+    (goblins-goblin-mode 1)
     (dolist (binding '(("C-c g t" . goblins-shell) ("C-c g e" . goblins-eshell)
                        ("C-c g d" . goblins-dired)))
       (should (eq (key-binding (kbd (car binding))) (cdr binding)))))

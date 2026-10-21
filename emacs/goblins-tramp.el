@@ -29,7 +29,7 @@
 (require 'goblins)
 
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
-(declare-function goblin-mode "goblins-terminal" (&optional arg))
+(declare-function goblins-goblin-mode "goblins-terminal" (&optional arg))
 (declare-function goblins--sidebar-render-all "goblins-workspace" ())
 (defvar server-window)
 (declare-function server-send-string "server" (proc string))

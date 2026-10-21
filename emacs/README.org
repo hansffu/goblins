@@ -277,13 +277,13 @@ None of them is required; each part below takes effect once its package loads.
 
 ** Goblin terminals
 
-Every Ghostel buffer attached to a goblin turns on the minor mode =goblin-mode=,
+Every Ghostel buffer attached to a goblin turns on the minor mode =goblins-goblin-mode=,
 so you can give those buffers keys of your own:
 
 #+begin_src emacs-lisp
-(define-key goblin-mode-map (kbd "C-c C-w") #'goblins-workspace)
+(define-key goblins-goblin-mode-map (kbd "C-c C-w") #'goblins-workspace)
 (with-eval-after-load 'evil
-  (evil-define-key 'normal goblin-mode-map (kbd "g i") #'goblin-info))
+  (evil-define-key 'normal goblins-goblin-mode-map (kbd "g i") #'goblin-info))
 #+end_src
 
 Its own keys are under =C-c g=: =w= workspace (in the workspace, its menu: Ghostel passes most other keys to the terminal), =s= switch, =i= info, =p=
@@ -297,7 +297,7 @@ reach Emacs in every input mode.
 Also under =C-c g=: =t= opens a shell terminal inside the goblin, =e= Eshell,
 =d= Dired, and =f= visits a file inside it (=goblins-find-file=).
 
-=C-c g v= (=goblin-paste-image=, or =M-x yank-media=) pastes the image on the clipboard into the agent. The agents' own =Ctrl+V= can't work in a goblin: Claude Code and Codex read the clipboard themselves, through X11 or Wayland, and the sandbox has no display. Instead Emacs writes the image to =/tmp/goblins-clipboard/= inside the goblin and pastes its path, which both agents attach as an image. The goblin only ever sees the images you paste, never the clipboard, and they go away with it. Bind it to =C-v= in =goblin-mode-map= if you want the agents' usual key.
+=C-c g v= (=goblin-paste-image=, or =M-x yank-media=) pastes the image on the clipboard into the agent. The agents' own =Ctrl+V= can't work in a goblin: Claude Code and Codex read the clipboard themselves, through X11 or Wayland, and the sandbox has no display. Instead Emacs writes the image to =/tmp/goblins-clipboard/= inside the goblin and pastes its path, which both agents attach as an image. The goblin only ever sees the images you paste, never the clipboard, and they go away with it. Bind it to =C-v= in =goblins-goblin-mode-map= if you want the agents' usual key.
 
 An agent terminal's =default-directory= is its goblin's working directory on
 the host, the project bound at the same path inside the sandbox, so

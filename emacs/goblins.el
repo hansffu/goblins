@@ -25,7 +25,7 @@
 (declare-function goblins--session-label "goblins-views" (snapshot id))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
-(declare-function goblin-mode "goblins-terminal" (&optional arg))
+(declare-function goblins-goblin-mode "goblins-terminal" (&optional arg))
 
 (defgroup goblins nil "Goblins agent status and approvals." :group 'tools)
 
@@ -1352,7 +1352,7 @@ On failure the buffer is killed and the error re-signalled."
             (setq-local ghostel-kill-buffer-on-exit nil)
             (when goblins-remove-nobreak-underline
               (face-remap-add-relative 'nobreak-space :underline nil))
-            (goblin-mode 1)
+            (goblins-goblin-mode 1)
             (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
           (puthash key buffer goblins--terminal-buffers)
           (goblins--note-selected (cons (car key) session))
@@ -1554,7 +1554,8 @@ With a prefix argument, prompt for the daemon state directory."
 (with-eval-after-load 'server
   (advice-add 'server-execute :around #'goblins--server-execute))
 
-;; Terminals turn on `goblin-mode'; loaded last since it builds on this file.
+;; Terminals turn on `goblins-goblin-mode'; loaded last since it builds on this
+;; file.
 (require 'goblins-terminal)
 ;; Commands on a chosen goblin, and what Consult, Embark and Marginalia make
 ;; of goblins once they load.
