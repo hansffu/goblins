@@ -1308,13 +1308,15 @@ buffer called NAME, or nil."
 
 (defun goblins--goblin-table (source candidates)
   "A completion table of goblin CANDIDATES of SOURCE's server, in the
-`goblin' category.  The name of a candidate's agent terminal buffer matches
-too, unlisted, so an Embark action on that buffer can choose its goblin."
+`goblins-goblin' category.  The name of a candidate's agent terminal buffer
+matches too, unlisted, so an Embark action on that buffer can choose its
+goblin."
   (let ((annotate (goblins--goblin-annotation source))
         (ids (mapcar (lambda (c) (cdr (get-text-property 0 'goblins-goblin c))) candidates)))
     (lambda (string predicate action)
       (cond ((eq action 'metadata)
-             `(metadata (category . goblin) (annotation-function . ,annotate)))
+             `(metadata (category . goblins-goblin)
+                        (annotation-function . ,annotate)))
             ((and (memq action '(nil lambda))
                   (goblins--terminal-session-named source string ids))
              t)

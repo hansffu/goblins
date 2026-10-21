@@ -2544,7 +2544,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 (ert-deftest goblins-embark-acts-on-goblins-and-their-terminals ()
   (skip-unless (require 'embark nil t))
   (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
-    (should (equal (alist-get 'goblin embark-keymap-alist) '(goblins-embark-goblin-map)))
+    (should (equal (alist-get 'goblins-goblin embark-keymap-alist) '(goblins-embark-goblin-map)))
     (should (equal (alist-get 'goblins-terminal embark-keymap-alist)
                    '(goblins-embark-terminal-map)))
     ;; A goblin's terminal among buffers is a goblins-terminal target, in
@@ -2605,7 +2605,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
           (funcall (plist-get terminals :action) terminal)
           (should (equal opened (list source "session-a")))
           ;; Running goblins without a terminal, in the goblin category.
-          (should (eq (plist-get others :category) 'goblin))
+          (should (eq (plist-get others :category) 'goblins-goblin))
           (let ((items (funcall (plist-get others :items))))
             (should (equal items '("session-b")))
             (funcall (plist-get others :action) (car items)))
@@ -2641,7 +2641,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                    "session-a")))
         (goblins-switch))
       (should (equal (sort offered #'string<) '("session-a" "session-b" "session-c")))
-      (should (eq category 'goblin))
+      (should (eq category 'goblins-goblin))
       (should (string-match-p "shell.*raid crew.*/p/one !1" annotation))
       (should (equal opened (list source "session-a"))))))
 
@@ -2661,7 +2661,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                        (lambda (_prompt table &rest _)
                          (let* ((metadata (completion-metadata "" table nil))
                                 (annotate (completion-metadata-get metadata 'annotation-function)))
-                           (should (eq (completion-metadata-get metadata 'category) 'goblin))
+                           (should (eq (completion-metadata-get metadata 'category) 'goblins-goblin))
                            (should (equal (goblins-test--choices table) '("session-a" "session-b")))
                            (should (string-match-p
                                     "claude +◆ needs input +raid crew +/p !1 ✉2 \\[term\\]"
@@ -3992,7 +3992,7 @@ m2, and m3, which failed when beta stopped."
       (goto-char (point-min))
       (search-forward "alpha")
       (should (equal (goblins--messages-embark-target)
-                     `(goblin "alpha" ,(- (point) 5) . ,(point))))
+                     `(goblins-goblin "alpha" ,(- (point) 5) . ,(point))))
       (search-forward "c1")
       (should (equal (car (goblins--messages-embark-target)) 'goblins-thread))
       (should (equal (cadr (goblins--messages-embark-target)) "c1"))
@@ -4148,7 +4148,7 @@ m2, and m3, which failed when beta stopped."
     (with-current-buffer goblins--message-buffer-name
       (goto-char (point-min))
       (search-forward "alpha")
-      (should (equal (car (goblins--messages-embark-target)) 'goblin))
+      (should (equal (car (goblins--messages-embark-target)) 'goblins-goblin))
       ;; alpha stopped, and a new goblin took its name: alpha's own target
       ;; offers only its messages, by its session.
       (with-current-buffer goblins--view-source

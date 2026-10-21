@@ -1305,7 +1305,7 @@ took, only its messages, by its session ID."
     (let* ((running (goblins--running-sessions (goblins--view-snapshot)))
            (session (cl-find id running :key (lambda (s) (plist-get s :id)) :test #'equal)))
       (if session
-          (list 'goblin (plist-get session :agent_name))
+          (list 'goblins-goblin (plist-get session :agent_name))
         (list 'goblins-participant (goblins--messages-goblin-label id))))))
 
 (defun goblins--messages-embark-target ()
