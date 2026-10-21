@@ -1611,13 +1611,23 @@ impl Session {
     }
     pub fn stop(&mut self) {
         self.network.take();
-        // SIGKILL is intentional: helper parent-death/PID namespace teardown
-        // ends all sandbox descendants, even while a mount command is pending.
+        // EOF lets the helper kill the sandbox and wait for Bubblewrap to reap
+        // it. Bound this handshake: a stuck mount must not block shutdown.
+        self.helper_input.take();
         if let Some(mut helper) = self.helper.take() {
             if let Ok(Some(status)) = helper.try_wait() {
                 self.exit_code = status.code();
             } else {
-                let _ = helper.kill();
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while matches!(helper.try_wait(), Ok(None)) {
+                    if std::time::Instant::now() >= deadline {
+                        // Parent-death teardown remains the fallback for a
+                        // helper that cannot finish its current operation.
+                        let _ = helper.kill();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 let _ = helper.wait();
             }
         }
@@ -1629,7 +1639,6 @@ impl Session {
         self.docker.take();
         self.scope.take();
         self.docker_attached.store(false, Ordering::SeqCst);
-        self.helper_input.take();
         self.helper_output.take();
         self.event("stopped", serde_json::json!({}));
     }

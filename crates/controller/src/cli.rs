@@ -298,9 +298,14 @@ pub enum ServerCommand {
 
 // Return 1 outside a name argument so Bash/Zsh can retain their generated
 // option/path completion. A missing server is a valid, empty candidate list.
-pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
-    let Some((state, slot)) = completion_state(default_state, words) else {
+pub fn complete_names(default_state: Option<&Path>, words: Vec<String>) -> i32 {
+    let Some((state, slot)) = completion_target(words) else {
         return 1;
+    };
+    // Host jobs may complete an explicitly selected server, but must never
+    // query the default server that owns the job. An empty list is successful.
+    let Some(state) = state.or_else(|| default_state.map(Path::to_path_buf)) else {
+        return 0;
     };
     if slot == Slot::Record {
         // Record ids, described by agent name, chat name and last update:
@@ -372,7 +377,7 @@ enum Slot {
     Raid,
 }
 
-fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf, Slot)> {
+fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
     // Bash may split --option=value at '='. Restore it without evaluating any
     // shell text, then let the actual CLI parser identify the argument slot.
     const TARGET: &str = "__goblins_completion_target__";
@@ -447,7 +452,7 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
         },
         _ => return None,
     };
-    Some((cli.state_dir.unwrap_or_else(|| default_state.into()), slot))
+    Some((cli.state_dir, slot))
 }
 
 pub fn completions(shell: clap_complete::Shell, runtime: Option<&Path>) -> Result<()> {
@@ -570,7 +575,6 @@ mod tests {
     use super::*;
     #[test]
     fn completion_uses_cli_argument_positions_and_state_directory() {
-        let default = Path::new("/tmp/default");
         for words in [
             vec!["goblins", "attach"],
             vec!["goblins", "exec"],
@@ -580,8 +584,8 @@ mod tests {
             vec!["goblins", "stop"],
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
-                Some((default.into(), Slot::Goblin))
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((None, Slot::Goblin))
             );
         }
         for (words, slot) in [
@@ -602,13 +606,12 @@ mod tests {
             (vec!["goblins", "resume", "--detached"], Slot::Record),
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
-                Some((default.into(), slot))
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((None, slot))
             );
         }
         assert_eq!(
-            completion_state(
-                default,
+            completion_target(
                 ["goblins", "raid", "set-role", "review", "a"]
                     .map(String::from)
                     .to_vec()
@@ -621,8 +624,8 @@ mod tests {
             vec!["goblins", "--state-dir", "=", "/tmp/custom state", "detach"],
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
-                Some(("/tmp/custom state".into(), Slot::Goblin))
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((Some("/tmp/custom state".into()), Slot::Goblin))
             );
         }
         for words in [
@@ -636,7 +639,7 @@ mod tests {
             vec!["goblins", "attach", "--instance", "exact-daemon"],
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
+                completion_target(words.into_iter().map(String::from).collect()),
                 None
             );
         }

@@ -229,6 +229,8 @@ When a job ends, whether its command exits, it is cancelled or times out, or its
 
 Inside a host command, the host =goblins= CLI refuses to use its default server without =--state-dir=, since that server runs the goblin that asked. Tests that start their own server with =--state-dir=, as the Python test helpers do, work. Codex and Claude Code goblins with host commands get a =goblins-host= skill; =goblin status= shows =Host commands: available after approval=.
 
+Shell name completion inside a host command also requires an explicit =--state-dir=; otherwise it returns no names without contacting the default server. The selection can appear in the command being completed or on the completion lookup itself.
+
 * Scopes (Linux, no VM)
 
 A scope is a named trust group. Its members share a network namespace, by

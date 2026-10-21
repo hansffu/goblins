@@ -109,6 +109,8 @@ Host =goblins exec= uses the private init-control channel to create a process in
 
 Session cleanup kills remaining member processes, stops its helper and releases roots, mounts, workspace references and scope/Docker leases. Reference-counted shared resources remain while another member needs them. The last scope member releases namespace/network infrastructure; temporary storage is removed, while persistent scope/Docker data remains.
 
+The worker closes the helper's command pipe for orderly teardown. The helper kills the sandbox init through a pinned pidfd while its Bubblewrap monitor is still alive to reap it, then waits for that monitor before exiting. Shutdown therefore does not depend on an external subreaper's next polling cycle. If the helper cannot finish within two seconds, the worker kills it and falls back to parent-death teardown so a stuck mount cannot indefinitely block shutdown.
+
 Stopping a session stops only it: there is no tree to cascade through. A raid owner leaving pauses its raid while members remain, and the host resolves it with a new owner or dissolution. Control rights over created members are checked against the controller's raid state on every call, so a pause or ownership change revokes them at once.
 
 =server.stop= requests orderly daemon shutdown over the host API; server management uses locks and the live connection rather than killing a recorded PID. Controller destruction cancels outstanding operations, transfers queued audit events while draining results, cancels and joins session workers, cleans session directories and removes =host.sock=. The messaging worker finishes remaining mailbox cleanup before it is joined. This is orderly cleanup, not persistence/recovery of running sandboxes after a crash.

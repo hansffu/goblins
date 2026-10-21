@@ -50,6 +50,12 @@ class NativeProtocol(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.env = {k:v for k,v in os.environ.items() if k not in ('OPENAI_API_KEY','CODEX_API_KEY','ACCESS_TOKEN','CODEX_AUTH_JSON')}
         self.env['CODEX_HOME'] = str(self.root)
+        # Terminal supplies a PTY and emulates ANSI/xterm responses. Do not
+        # inherit TERM=dumb from a headless runner and trigger Codex's prompt.
+        self.env['TERM'] = 'xterm-256color'
+        target = Path(os.environ.get('CARGO_TARGET_DIR', 'target'))
+        self.adapter = Path(os.environ.get('GOBLINS_CODEX_ADAPTER',
+            Path(__file__).resolve().parents[1]/target/'debug/goblins-codex')).resolve()
         self.scripts = queue.Queue()
         self.inputs = []
         scripts, inputs = self.scripts, self.inputs
@@ -112,7 +118,7 @@ requires_openai_auth=false
         self.addCleanup(c.wire.close)
         return c
     def start_adapter(self, request_socket=None, bypass=False, name='adapter'):
-        binary = Path(__file__).resolve().parents[1]/'target/debug/goblins-codex'
+        binary = self.adapter
         self.assertTrue(binary.exists(), 'build goblins-codex before native proxy smoke tests')
         runtime = self.root/name
         runtime.mkdir(mode=0o700)
@@ -191,7 +197,7 @@ requires_openai_auth=false
         hook = self.owner.call('hooks/list', {'cwds':[str(self.root)]})['data'][0]['hooks'][0]
         key = str(profile)+':'+hook['key'].split(':', 1)[1]
         self.owner.call('config/batchWrite', {'edits':[{'keyPath':'hooks.state.'+json.dumps(key)+'.trusted_hash','value':hook['currentHash'],'mergeStrategy':'replace'}],'reloadUserConfig':True})
-        binary = Path(__file__).resolve().parents[1]/'target/debug/goblins-codex'
+        binary = self.adapter
         for changed in (False, True):
             if changed:
                 profile.write_text('[hooks]\nSessionStart=[{hooks=[{type="command",command="/bin/false",timeout=5}]}]\n')

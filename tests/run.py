@@ -191,6 +191,9 @@ def main():
                               if a.get("reason") == "compiler-artifact" and a.get("executable")
                               and a["target"]["name"] == "goblins")
             os.environ["GOBLINS_LOCAL_CONTROLLER"] = executable
+            os.environ["GOBLINS_CODEX_ADAPTER"] = next(a["executable"] for a in artifacts
+                if a.get("reason") == "compiler-artifact" and a.get("executable")
+                and a["target"]["name"] == "goblins-codex")
             # A launcher inherited from an older run must not hide new code.
             os.environ.pop("GOBLINS_APP", None)
         loader = unittest.defaultTestLoader

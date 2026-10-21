@@ -179,6 +179,34 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "unchanged")
         self.assertFalse((self.state / "host.sock").exists())
 
+    def test_host_job_completion_only_queries_an_explicitly_selected_server(self):
+        self.state = Path(self.temp.name) / "goblins"
+        self.cli("server", "start")
+        client = RPC(self.state / "host.sock")
+        self.addCleanup(client.close)
+        _, manifest = re.search(r'exec (\S+) --runtime (\S+)', self.app.read_text()).groups()
+        client.call("sessions.start", dict(key="completion", name="shell", agent_name="scout",
+                    configuration=manifest, rows=24, cols=100))
+        env = {**self.env, "GOBLINS_HOST_JOB": "completion-test", "XDG_RUNTIME_DIR": self.temp.name}
+
+        def lookup(outer, words):
+            result = subprocess.run([str(self.app), *outer, "__complete-names", "--", *words],
+                                    env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            return result.stdout.splitlines()
+
+        # A live sentinel in the default server proves that implicit lookup is
+        # suppressed, rather than accidentally succeeding against an empty one.
+        self.assertEqual(lookup([], ["goblins", "attach"]), [])
+        self.assertEqual(lookup([], ["goblins", "--state-dir", str(self.state), "attach"]), ["scout"])
+        self.assertEqual(lookup([], ["goblins", "attach", "--state-dir=" + str(self.state)]), ["scout"])
+        self.assertEqual(lookup(["--state-dir", str(self.state)], ["goblins", "attach"]), ["scout"])
+        refused = subprocess.run([str(self.app), "server", "status"], env=env,
+                                 text=True, capture_output=True, timeout=10)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("pass --state-dir", refused.stderr)
+
     def test_live_names_in_bash_fish_and_zsh_completions(self):
         from terminal_support import Terminal
         self.state = Path(self.temp.name) / "goblins"
@@ -188,6 +216,9 @@ class ServerTests(unittest.TestCase):
                    "zsh": root / "share/zsh/site-functions/_goblins"}
         env = {**self.env, "PATH": str(self.app.parent) + ":" + os.environ["PATH"],
                "XDG_RUNTIME_DIR": self.temp.name}
+        # This fixture owns an isolated default server. Exercise that default
+        # outside the host-job guard; its explicit-state rules have a separate test.
+        env.pop("GOBLINS_HOST_JOB", None)
 
         def complete(shell, words):
             source = "source " + shlex.quote(str(scripts[shell])) + "; "

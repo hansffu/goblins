@@ -29,10 +29,15 @@ class RunnerTests(unittest.TestCase):
         # Nested scheduler probes use synthetic Cargo output and private caches.
         # The diagnostic regression below deliberately compiles an invalid crate.
         cargo = self.directory / "cargo"
-        cargo.write_text("#!" + sys.executable + "\nimport json\nprint(json.dumps(" + repr({
+        artifacts = [{
             "reason": "compiler-artifact", "target": {"name": "goblins"},
             "executable": "/bin/true",
-        }) + "))\n")
+        }, {
+            "reason": "compiler-artifact", "target": {"name": "goblins-codex"},
+            "executable": str(self.directory / "built-adapter"),
+        }]
+        cargo.write_text("#!" + sys.executable + "\nimport json\nfor artifact in " +
+                         repr(artifacts) + ":\n    print(json.dumps(artifact))\n")
         cargo.chmod(0o755)
         self.env["CARGO"] = str(cargo)
 
@@ -62,6 +67,13 @@ class RunnerTests(unittest.TestCase):
             log = (self.cache / "last-run" / (name + ".log")).read_text()
             self.assertIn(name + "-child-output", log)
             self.assertIn("OK", log)
+
+    def test_workers_use_the_adapter_reported_by_cargo(self):
+        self.env["GOBLINS_CODEX_ADAPTER"] = "/stale/adapter"
+        self.module("probe_adapter", "self.assertEqual(os.environ['GOBLINS_CODEX_ADAPTER'],str(root/'built-adapter'))")
+        for jobs in (1, 2):
+            with self.subTest(jobs=jobs):
+                self.run_runner("--jobs", str(jobs), "probe_adapter")
 
     def test_parallel_failfast_does_not_schedule_another_module(self):
         self.module("probe_fail", "os.write(1,b'\\xff')\nself.fail('deliberate-worker-failure')")

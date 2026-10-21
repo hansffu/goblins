@@ -43,7 +43,12 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         d.wait(lambda: not Path(f"/proc/{pids[0]}").exists(), timeout=2)
         for pid in pids:
             stat = Path(f"/proc/{pid}/stat")
-            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+            try:
+                state = stat.read_text().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                # Reaping between lookup and read is the desired outcome.
+                state = None
+            self.assertIn(state, (None, "Z"), f"owned process {pid} is still running")
 
     def test_slow_startup_does_not_block_other_session(self):
         d, marker = self.slow_daemon("startup")
