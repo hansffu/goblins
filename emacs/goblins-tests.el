@@ -2799,25 +2799,25 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
           (with-current-buffer terminal
             (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
             (goblins-goblin-mode 1)
-            (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions))
-            (should (eq (key-binding (kbd "C-c g i")) #'goblin-info))
+            (should (eq (key-binding (kbd "C-c g p")) #'goblins-permissions))
+            (should (eq (key-binding (kbd "C-c g i")) #'goblins-info))
             (should (eq (key-binding (kbd "C-c g r")) #'goblins-raid))
             (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) source))
                       ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
-              (goblin-info)
+              (goblins-info)
               (should (equal (buffer-local-value 'goblins--view-session shown) "session-c"))
               (should (derived-mode-p 'goblins-goblin-mode 'fundamental-mode))
-              (goblin-permissions)
+              (goblins-permissions)
               (should (eq (buffer-local-value 'major-mode shown) 'goblins-permissions-mode))))
         (kill-buffer terminal)
         (dolist (name (list goblins--info-buffer-name goblins--permissions-buffer-name))
           (when (get-buffer name) (kill-buffer name))))))
   (with-temp-buffer
-    (should-error (goblin-info) :type 'user-error)))
+    (should-error (goblins-info) :type 'user-error)))
 
 ;; The sandbox has no display, so the agents' own Ctrl+V cannot reach the
 ;; clipboard; Emacs writes the image into the goblin and pastes its path.
-(ert-deftest goblin-paste-image-writes-into-the-goblin-and-pastes-its-path ()
+(ert-deftest goblins-paste-image-writes-into-the-goblin-and-pastes-its-path ()
   (let ((terminal (generate-new-buffer " *goblins test terminal*"))
         (png (unibyte-string #x89 ?P ?N ?G #x0d #x0a #x1a #x0a #x00 #xff))
         directories written pasted redraws)
@@ -2825,7 +2825,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (with-current-buffer terminal
           (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
           (goblins-goblin-mode 1)
-          (should (eq (key-binding (kbd "C-c g v")) #'goblin-paste-image))
+          (should (eq (key-binding (kbd "C-c g v")) #'goblins-paste-image))
           (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) terminal))
                     ((symbol-function 'goblins--pinned-terminal-host) (lambda () "gribble"))
                     ;; Batch/nox Emacs need not have image decoders. The test
@@ -2846,7 +2846,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
                     ((symbol-function 'ghostel-paste-string) (lambda (s) (push s pasted)))
                     ((symbol-function 'run-with-timer)
                      (lambda (delay &rest _) (push delay redraws))))
-            (goblin-paste-image))
+            (goblins-paste-image))
           (should (equal (sort redraws #'<) '(0.2 1)))
           (should (equal directories '("/goblins:gribble:/tmp/goblins-clipboard/")))
           (pcase-let ((`((,file ,bytes ,multibyte ,coding)) written))
@@ -2860,7 +2860,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   (should (equal (goblins--image-extension 'image/svg+xml) "svg"))
   (should (equal (goblins--image-extension 'image/webp) "webp"))
   (with-temp-buffer
-    (should-error (goblin-paste-image) :type 'user-error)))
+    (should-error (goblins-paste-image) :type 'user-error)))
 
 ;;; Live workspace, from tests/test_emacs.py in a terminal Emacs (emacs -nw)
 
@@ -3003,7 +3003,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (with-current-buffer terminal
           (should (derived-mode-p 'ghostel-mode))
           (should goblins-goblin-mode)
-          (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions)))
+          (should (eq (key-binding (kbd "C-c g p")) #'goblins-permissions)))
         (goblins-test--in-sidebar "^  alpha")
         (should (overlays-at (point)))
         (kill-buffer terminal)

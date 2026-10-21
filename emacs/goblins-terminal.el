@@ -10,9 +10,9 @@
 ;; your own:
 ;;
 ;;   (define-key goblins-goblin-mode-map (kbd "C-c C-g") #'goblins-workspace)
-;;   (define-key goblins-goblin-mode-map (kbd "C-v") #'goblin-paste-image)
+;;   (define-key goblins-goblin-mode-map (kbd "C-v") #'goblins-paste-image)
 ;;   (with-eval-after-load 'evil
-;;     (evil-define-key 'normal goblins-goblin-mode-map (kbd "SPC g") #'goblin-info))
+;;     (evil-define-key 'normal goblins-goblin-mode-map (kbd "SPC g") #'goblins-info))
 ;;
 ;; It is a minor mode rather than a mode derived from `ghostel-mode':
 ;; `ghostel-exec' always puts the buffer in `ghostel-mode' itself, and Ghostel
@@ -42,19 +42,19 @@
   (cons (goblins--status-buffer (car goblins--session-key))
         (nth 2 goblins--session-key)))
 
-(defun goblin-info ()
+(defun goblins-info ()
   "Show what the daemon knows about this goblin."
   (interactive)
   (let ((goblin (goblins--terminal-goblin)))
     (goblins--display-main (goblins-info-buffer (car goblin) (cdr goblin)))))
 
-(defun goblin-permissions ()
+(defun goblins-permissions ()
   "Show this goblin's permission requests, the current one focused."
   (interactive)
   (let ((goblin (goblins--terminal-goblin)))
     (goblins--display-main (goblins-permissions-buffer (car goblin) (cdr goblin)))))
 
-(defun goblin-stop ()
+(defun goblins-stop ()
   "Stop this goblin after confirming."
   (interactive)
   (let ((goblin (goblins--terminal-goblin)))
@@ -104,7 +104,7 @@ path unrendered until the next key, though `ghostel-force-redraw' shows it."
                         (with-current-buffer buffer
                           (ghostel-force-redraw)))))))
 
-(defun goblin-paste-image ()
+(defun goblins-paste-image ()
   "Paste the clipboard's image into this goblin's agent.
 The image is written inside the goblin and its path pasted, see
 `goblins--yank-media-image'.  \[yank-media] does the same."
@@ -116,15 +116,15 @@ The image is written inside the goblin and its path pasted, see
   (let ((map (make-sparse-keymap)))
     (define-key map "w" #'goblins-workspace)
     (define-key map "s" #'goblins-switch)
-    (define-key map "i" #'goblin-info)
-    (define-key map "p" #'goblin-permissions)
+    (define-key map "i" #'goblins-info)
+    (define-key map "p" #'goblins-permissions)
     (define-key map "r" #'goblins-raid)
-    (define-key map "K" #'goblin-stop)
+    (define-key map "K" #'goblins-stop)
     (define-key map "t" #'goblins-shell)
     (define-key map "e" #'goblins-eshell)
     (define-key map "d" #'goblins-dired)
     (define-key map "f" #'goblins-find-file)
-    (define-key map "v" #'goblin-paste-image)
+    (define-key map "v" #'goblins-paste-image)
     map)
   "Goblin commands, on \\`C-c g' in `goblins-goblin-mode-map'.")
 
