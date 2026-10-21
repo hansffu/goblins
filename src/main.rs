@@ -284,10 +284,14 @@ impl Drop for Session {
         let _ = self.0.wait();
     }
 }
+mod cleanup;
 mod docker;
 mod hostjob;
 mod scope;
 fn run() -> io::Result<i32> {
+    if env::args().nth(1).as_deref() == Some("--clean-storage") {
+        return cleanup::run();
+    }
     if env::args().nth(1).as_deref() == Some("--host-job") {
         return hostjob::run();
     }

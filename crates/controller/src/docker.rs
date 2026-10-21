@@ -35,9 +35,11 @@ struct Storage {
     parent: File,
     directory: File,
     lock: Option<File>,
+    persistent: bool,
 }
 impl Storage {
     fn new(root: &Path, name: Option<&str>) -> Result<Self> {
+        let _gate = crate::cleanup::storage_gate()?;
         let parent = File::open(root)?;
         let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
         unix::cvt(unsafe { libc::fstatfs(parent.as_raw_fd(), &mut stat) })?;
@@ -83,6 +85,7 @@ impl Storage {
                 parent,
                 directory,
                 lock: Some(lock),
+                persistent: true,
             });
         }
         let mut template =
@@ -93,17 +96,19 @@ impl Storage {
         template.pop();
         let path = PathBuf::from(std::ffi::OsString::from_vec(template));
         let directory = File::open(&path)?;
+        let lease = crate::cleanup::temporary_lease("docker", &path)?;
         Ok(Self {
             path,
             parent,
             directory,
-            lock: None,
+            lock: Some(lease),
+            persistent: false,
         })
     }
 }
 impl Drop for Storage {
     fn drop(&mut self) {
-        if self.lock.is_some() {
+        if self.persistent {
             return;
         }
         // Only an EMPTY directory may be removed by the unmapped host user.
@@ -302,6 +307,14 @@ impl Engine {
                 "--ro-bind",
                 &directory.join("docker.json").display().to_string(),
                 "/run/docker/config.json",
+                "--ro-bind",
+                &directory
+                    .parent()
+                    .ok_or("missing Docker resource directory")?
+                    .join(".gc-lease")
+                    .display()
+                    .to_string(),
+                "/run/goblins/storage-lease",
                 "--setenv",
                 "XDG_RUNTIME_DIR",
                 "/run/docker",

@@ -336,9 +336,15 @@ goblins kill NAME                    # stop a goblin
 goblins send NAME --message TEXT     # message a goblin
 goblins raid invite|members|set-role|set-owner|destroy ...
 goblins communications-log [--session NAME] [--follow]
+
+goblins scope clear NAME [--dry-run] # delete scope storage and all its Docker data
+goblins scope clear --all           # clear every stored scope, including retired ones
+goblins gc [--dry-run]              # collect abandoned temporary stores and server resources
 #+end_src
 
 A goblin is addressed by its name, unique among running goblins, or its session ID. Names are lowercase letters, digits and hyphens. Without =--name=, the server picks a free fantasy goblin name.
+
+=scope clear= requires the selected scopes to be unused. =gc= preserves persistent scopes, resume history and logs; it skips live temporary stores and running-server resources. Both leave host-mounted files and the Nix store alone. See [[file:docs/USAGE.org::*Clearing scopes and collecting abandoned data][Clearing scopes and collecting abandoned data]].
 
 ** Inside a goblin
 

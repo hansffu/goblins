@@ -33,6 +33,7 @@ impl Namespaces {
         launch: &Launch,
         directory: &Path,
         share_pid: bool,
+        storage_lease: Option<&File>,
         cancel: &Cancellation,
     ) -> Result<Self> {
         let uid = unsafe { libc::getuid() };
@@ -48,48 +49,67 @@ impl Namespaces {
         let (gate_r, gate_w) = unix::pipe()?;
         let (life_r, life_w) = unix::pipe()?;
         let mut command = Command::new(&launch.bwrap);
+        command.args([
+            "--unshare-all",
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--cap-add",
+            "ALL",
+            "--die-with-parent",
+            "--new-session",
+            "--clearenv",
+            "--info-fd",
+            &info_w.as_raw_fd().to_string(),
+            "--userns-block-fd",
+            &gate_r.as_raw_fd().to_string(),
+            "--ro-bind",
+            "/nix/store",
+            "/nix/store",
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--bind",
+            &state.display().to_string(),
+            "/run/goblins-scope",
+            "--ro-bind",
+            &directory
+                .parent()
+                .ok_or("missing scope resource directory")?
+                .join(".gc-lease")
+                .display()
+                .to_string(),
+            "/run/goblins-scope/lease",
+        ]);
+        if let Some(lease) = storage_lease {
+            command.args([
+                "--ro-bind-fd",
+                &lease.as_raw_fd().to_string(),
+                "/run/goblins-scope/storage-lease",
+            ]);
+        }
         command
-            .args([
-                "--unshare-all",
-                "--unshare-user",
-                "--uid",
-                "0",
-                "--gid",
-                "0",
-                "--cap-add",
-                "ALL",
-                "--die-with-parent",
-                "--new-session",
-                "--clearenv",
-                "--info-fd",
-                &info_w.as_raw_fd().to_string(),
-                "--userns-block-fd",
-                &gate_r.as_raw_fd().to_string(),
-                "--ro-bind",
-                "/nix/store",
-                "/nix/store",
-                "--proc",
-                "/proc",
-                "--dev",
-                "/dev",
-                "--bind",
-                &state.display().to_string(),
-                "/run/goblins-scope",
-                "--remount-ro",
-                "/",
-                "--",
-            ])
+            .args(["--remount-ro", "/", "--"])
             .arg(&launch.helper)
             .arg("--scope-keeper")
-            .args(share_pid.then_some("pid"))
+            .arg(if share_pid { "pid" } else { "private" })
+            .arg(if storage_lease.is_some() {
+                "temporary"
+            } else {
+                "persistent"
+            })
             .stdin(Stdio::from(life_r))
             .stdout(Stdio::null())
             .stderr(File::create(directory.join("scope-keeper.log"))?);
-        let keep = [info_w.as_raw_fd(), gate_r.as_raw_fd()];
+        let mut keep = vec![info_w.as_raw_fd(), gate_r.as_raw_fd()];
+        keep.extend(storage_lease.map(AsRawFd::as_raw_fd));
         unsafe {
             command.pre_exec(move || {
                 unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
-                for fd in keep {
+                for &fd in &keep {
                     unix::cvt(libc::fcntl(fd, libc::F_SETFD, 0))?;
                 }
                 Ok(())

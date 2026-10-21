@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import tempfile
 import socket
 import threading
@@ -313,6 +314,42 @@ class DockerTests(unittest.TestCase):
         fresh, four = self.shell("scoped", cwd=self.rw)
         self.enable(fresh, four)
         self.run_ok(four, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
+
+    def test_scope_clear_removes_subordinate_owned_volumes_and_restarts_empty(self):
+        self.named_storage = True
+        session, terminal = self.shell("scoped", cwd=self.rw)
+        self.enable(session, terminal)
+        self.load(terminal)
+        self.run_ok(terminal, "docker run --rm -v database:/data goblins-test sh -c 'mkdir /data/private; echo database > /data/private/value; chown -R 1234:1234 /data/private; chmod 000 /data/private'")
+        (self.rw / "keep").write_text("host-side effect")
+        refused = self.d.cli("scope", "clear", "work", check=False)
+        self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+        self.assertIn("in use", refused.stderr)
+        self.d.cli("gc")
+        self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
+        terminal.send("exit\n")
+        self.d.wait(lambda: not (self.d.state / session / "resources").exists())
+        self.assertTrue((self.storage / "scope-work").exists())
+        self.d.cli("scope", "clear", "work")
+        self.assertFalse((self.storage / "scope-work").exists())
+        self.assertEqual((self.rw / "keep").read_text(), "host-side effect")
+        fresh, other = self.shell("scoped", cwd=self.rw)
+        self.enable(fresh, other)
+        self.run_ok(other, 'test -z "$(docker image ls -q)"; test -z "$(docker volume ls -q)"')
+        other.send("exit\n")
+        self.d.wait(lambda: not (self.d.state / fresh / "resources").exists())
+        self.d.process.terminate()
+        self.d.process.wait(timeout=10)
+        self.assertTrue(all(not (self.d.state / sid).exists() for sid in (session, fresh)))
+
+    def test_gc_keeps_a_running_temporary_engine_and_its_storage(self):
+        session, terminal = self.shell()
+        self.load(terminal)
+        stores = list(self.storage.glob("session-*"))
+        self.assertEqual(len(stores), 1)
+        self.d.cli("gc")
+        self.assertTrue(stores[0].exists())
+        self.run_ok(terminal, "docker run --rm goblins-test true")
 
     def test_scope_selection_inheritance_and_published_ports(self):
         self.named_storage = True
@@ -656,7 +693,7 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, f"{compose} down", timeout=60)
 
     def test_server_death_reaps_containers(self):
-        _, terminal = self.shell()
+        session, terminal = self.shell()
         self.load(terminal)
         self.run_ok(terminal, "docker run --rm --network none -v crash-data:/data goblins-test sh -c 'mkdir /data/locked; echo saved > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked'")
         self.run_ok(terminal, "docker run -d --network none goblins-test sleep 300")
@@ -676,8 +713,33 @@ class DockerTests(unittest.TestCase):
         children(self.d.process.pid)
         self.assertTrue(any(Path(f"/proc/{pid}/comm").read_text().strip() == "dockerd" for pid in descendants))
         identities = {pid: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19] for pid in descendants}
-        self.d.process.kill()
-        self.d.process.wait(timeout=5)
+        bootstraps = {pid for pid in descendants
+                      if Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[1:2] == [b"--docker-init"]}
+        # The bootstrap's forked namespace supervisors retain its argv. The
+        # outermost one alone retains cleanup authority and the lifetime leases.
+        guardians = [pid for pid in bootstraps
+                     if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1] not in bootstraps]
+        self.assertEqual(len(guardians), 1)
+        guardian = guardians[0]
+        guardian_fd = os.pidfd_open(int(guardian))
+        try:
+            # Hold teardown in place so GC runs after daemon death while the
+            # real guardian still owns both storage and session-resource leases.
+            signal.pidfd_send_signal(guardian_fd, signal.SIGSTOP)
+            self.d.wait(lambda: Path(f"/proc/{guardian}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T")
+            self.d.process.kill()
+            self.d.process.wait(timeout=5)
+            result = self.d.cli("gc")
+            self.assertIn("Keeping active storage", result.stdout)
+            self.assertIn("Keeping active session resources", result.stdout)
+            self.assertTrue((self.d.state / session / "resources").exists())
+            self.assertTrue(list(self.storage.glob("session-*")))
+        finally:
+            try:
+                signal.pidfd_send_signal(guardian_fd, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            os.close(guardian_fd)
 
         def dead(pid, start):
             try:
@@ -688,6 +750,8 @@ class DockerTests(unittest.TestCase):
 
         self.d.wait(lambda: all(dead(pid, start) for pid, start in identities.items()))
         self.d.wait(lambda: not list(self.storage.iterdir()))
+        self.d.cli("gc")
+        self.assertFalse((self.d.state / session).exists())
 
 
 if __name__ == "__main__":

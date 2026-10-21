@@ -1077,7 +1077,7 @@ in
     pkgs.runCommand "goblins-run-targets-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
       # Resolved on top-level configurations (omitted means none) and never
       # carried by scope variants.
-      jq -e '.api == 2 and .helper_api == 5
+      jq -e '.api == 2 and .helper_api == 6
         and .goblins.claude.allowed_run_targets == ["claude", "codex"]
         and .goblins.codex.allowed_run_targets == []
         and .goblins.shell.allowed_run_targets == []

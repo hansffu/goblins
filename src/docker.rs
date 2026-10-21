@@ -148,10 +148,8 @@ pub fn run() -> io::Result<i32> {
         .ok_or_else(|| io::Error::other("missing lock descriptor"))?
         .parse()
         .map_err(io::Error::other)?;
-    let lock = if keep && lock_fd >= 3 {
+    let lock = if lock_fd >= 3 {
         Some(unsafe { OwnedFd::from_raw_fd(lock_fd) })
-    } else if !keep && lock_fd == -1 {
-        None
     } else {
         return Err(io::Error::other("invalid storage lock"));
     };
@@ -164,6 +162,8 @@ pub fn run() -> io::Result<i32> {
         return Err(io::Error::other("invalid readiness descriptor"));
     }
     let ready = unsafe { OwnedFd::from_raw_fd(ready_fd) };
+    let resource_lease = fs::File::open("/run/goblins/storage-lease")?;
+    cvt(unsafe { libc::flock(resource_lease.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) })?;
     let storage = Path::new("/run/goblins/docker-storage-parent").join(name);
     use std::os::unix::fs::MetadataExt;
     let expected = fs::metadata("/run/docker/data")?;
@@ -184,7 +184,7 @@ pub fn run() -> io::Result<i32> {
     drop(engine_parent);
     let child = cvt(unsafe { libc::fork() })?;
     if child == 0 {
-        drop((ready, lock));
+        drop((ready, lock, resource_lease));
         // Hide the cleanup authority BEFORE entering the less-privileged user
         // namespace that locks inherited mounts. The guardian alone retains it.
         cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
@@ -194,6 +194,7 @@ pub fn run() -> io::Result<i32> {
                 libc::MNT_DETACH,
             )
         })?;
+        cvt(unsafe { libc::umount2(c("/run/goblins/storage-lease").as_ptr(), libc::MNT_DETACH) })?;
         let null = fs::File::open("/dev/null")?;
         cvt(unsafe { libc::dup2(null.as_raw_fd(), 0) })?;
         drop(null);

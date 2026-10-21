@@ -628,6 +628,31 @@ Page Up/Down scroll request details; Ctrl-C also closes the frontend. Preview es
 may be Unknown. Colors use the terminal palette; =NO_COLOR= suppresses colors.
 The plain view additionally accepts =status= to print current state.
 
+* Clearing scopes and collecting abandoned data
+
+These host CLI commands remove Goblins-managed data. Host workspaces and other mounted host directories, including the agent's configuration and conversation files, are outside their scope. Nix store outputs are reclaimed separately by Nix garbage collection after their GC roots are released.
+
+#+begin_src sh
+goblins scope clear work --dry-run  # preview one scope's stored data
+goblins scope clear work            # remove its storage and complete Docker store
+goblins scope clear --all           # all stored scopes, including ones removed from configuration
+goblins gc --dry-run                # preview abandoned temporary data and server resources
+goblins gc                         # collect that data
+goblins --state-dir /path/to/state gc # collect resources for another server
+#+end_src
+
+=scope clear= deletes the scope's managed storage under =$XDG_CACHE_HOME/goblins/scopes/scope-NAME= and its Docker data under =$XDG_CACHE_HOME/goblins/docker/scope-NAME= (default =~/.cache/goblins=). This includes images, containers, build cache and volumes, including databases stored in those volumes. Select a name or =--all=; omitting both removes nothing. Names are taken from stored directories, so retired scopes can be cleared without adding them back to the configuration. Clearing acquires every selected scope's storage and engine locks before deleting anything, and refuses if any selected scope is in use by any server. Stop those members first. Lock files remain so concurrent controllers continue to use the same lock inodes.
+
+=gc= collects abandoned =scopes/temporary-*= and =docker/session-*= directories, together with unused temporary-store lease files. Active temporary stores retain lifetime leases; the Docker cleanup guardian retains its lease through engine teardown even after a server crash. GC skips leased stores. Persistent =scope-*= directories remain until explicitly cleared, even when no current configuration names them.
+
+Temporary stores created by older builds have no lifetime lease. GC reports and preserves those directories because it cannot prove another server is not using them; remove such legacy leftovers manually only after stopping every server that shares the cache. Interrupted maintenance scratch directories under =$XDG_CACHE_HOME/goblins/locks/cleanup-*= are collected automatically.
+
+For the selected server's state directory, GC removes session resource directories and obsolete manifest roots only when the server and its launcher are stopped. It retains resources still leased by a cleanup guardian. These resources can include disposable workspace copies, package profiles, evaluator caches, helper diagnostics and GC roots left by a crash. The default state directory is =$XDG_RUNTIME_DIR/goblins=, falling back to =/tmp/goblins-control-UID=; use =--state-dir= for a server elsewhere. GC does not search arbitrary host directories for other servers.
+
+Both commands support =--dry-run= and print the paths they would remove. Cleanup uses descriptor-relative traversal, does not follow links out of the selected tree and refuses mounted subtrees. Scope and temporary-store deletion uses the scope's subordinate UID/GID mapping, so Docker-owned files do not require =sudo=. An interrupted or failed deletion may leave a partially removed tree; rerun cleanup after resolving the reported problem.
+
+Resume records, =server.log= and =communications-INSTANCE.jsonl= are retained. Use =goblins history prune= for resume-record retention. Repository build outputs and the development test-fixture cache are separate: =just test-cache-clean= releases cached fixture roots and logs after tests stop. Neither command runs Nix GC or removes shared Nix store outputs.
+
 * Resuming conversations
 
 A goblin that stopped, crashed or lost its server, also through a host reboot, can be resumed: a new goblin starts in the same environment, with the access it had, and its agent picks up the conversation where it left off. The environment is recreated, not restored: the goblin starts from the *current* configuration of the same name, and the packages it was granted are resolved again. Nothing pins store paths, so a record costs a few hundred bytes and no disk space in the store.

@@ -33,9 +33,9 @@ paths = ["crates/controller/src/binds.rs", "crates/controller/src/snapshot.rs", 
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
-python = ["test_daemon", "test_server", "test_configuration", "test_agent_names", "test_responsiveness"]
+python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness"]
 checks = ["rust"]
-paths = ["crates/controller/src/server.rs", "crates/controller/src/goblin-names.txt"]
+paths = ["crates/controller/src/server.rs", "crates/controller/src/cleanup.rs", "crates/controller/src/goblin-names.txt"]
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
@@ -45,15 +45,15 @@ paths = ["crates/controller/src/exec.rs", "crates/controller/src/controller/exec
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"
-python = ["test_scopes", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
+python = ["test_scopes", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
 checks = ["rust"]
-paths = ["crates/controller/src/scope*.rs", "crates/controller/src/network.rs", "crates/controller/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
+paths = ["crates/controller/src/scope*.rs", "crates/controller/src/cleanup.rs", "crates/controller/src/network.rs", "crates/controller/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
 [features.docker]
 description = "Sandbox Docker engines and their cross-feature integrations"
-python = ["test_docker", "test_devshell.DevShellDockerTests", "test_run_targets.RunTargetDockerTests", "test_host_commands.HostDockerAcceptance"]
+python = ["test_docker", "test_cleanup", "test_devshell.DevShellDockerTests", "test_run_targets.RunTargetDockerTests", "test_host_commands.HostDockerAcceptance"]
 checks = ["rust"]
-paths = ["crates/controller/src/docker.rs", "crates/controller/src/scope*.rs", "nix/packages/docker*", "skills/goblins-docker/*"]
+paths = ["crates/controller/src/docker.rs", "crates/controller/src/cleanup.rs", "crates/controller/src/scope*.rs", "nix/packages/docker*", "skills/goblins-docker/*"]
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"

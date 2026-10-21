@@ -18,7 +18,7 @@ from support import HERE, cargo_artifacts, cases, rust_driver
 # dev-shell classes use private projects/daemons and may overlap, while their
 # Docker class remains exclusive. Class fixtures always stay in one worker.
 EXCLUSIVE_MODULES = {
-    "test_docker", "test_scopes", "test_run_targets",
+    "test_docker", "test_scopes", "test_cleanup", "test_run_targets",
     "test_emacs", "test_codex_config", "test_codex_native",
 }
 EXCLUSIVE_CLASSES = {"test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance"}

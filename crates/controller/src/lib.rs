@@ -1,6 +1,7 @@
 //! Host-only lifecycle and policy. No code here opens or reads /dev/tty.
 pub mod binds;
 pub mod catalog;
+pub mod cleanup;
 pub mod config;
 pub mod controller;
 pub mod devshell;

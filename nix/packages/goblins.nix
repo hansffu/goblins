@@ -33,7 +33,7 @@ let
   config = pkgs.writeText "goblins-config.json" (
     builtins.toJSON {
       api = 2;
-      helper_api = 5;
+      helper_api = 6;
       inherit scopes editor;
       goblins = lib.mapAttrs (
         _: configuration:

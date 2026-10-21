@@ -125,7 +125,7 @@ class ServerTests(unittest.TestCase):
         # Nix checks also compare installed scripts with generator output.
         for args in [(), ("--help",), ("help",)]:
             text = self.cli(*args)
-            for command in ("server", "tui", "run", "stop", "completions"):
+            for command in ("server", "tui", "run", "stop", "scope", "gc", "completions"):
                 self.assertIn(command, text)
             self.assertNotRegex(text, r"(?m)^  (shell|daemon|serve)\s")
         self.assertIn("--name", self.cli("help", "run"))

@@ -22,6 +22,17 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Clear persistent scope storage and Docker data
+    Scope {
+        #[command(subcommand)]
+        command: ScopeCommand,
+    },
+    /// Remove abandoned temporary storage and stopped-server resources
+    Gc {
+        /// List unused data without deleting it
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Inspect, pause or resume an agent's inbox notifications
     Integration {
         #[command(subcommand)]
@@ -179,6 +190,23 @@ pub enum Command {
     CompleteNames {
         #[arg(last = true)]
         words: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScopeCommand {
+    /// Delete a scope's managed storage and its complete Docker store
+    #[command(group = clap::ArgGroup::new("selection").required(true))]
+    Clear {
+        /// Stored scope name, including scopes no longer configured
+        #[arg(group = "selection")]
+        name: Option<String>,
+        /// Clear every stored scope; refuses if any selected scope is in use
+        #[arg(long, group = "selection")]
+        all: bool,
+        /// List data without deleting it
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

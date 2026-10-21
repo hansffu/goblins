@@ -35,10 +35,21 @@ pub fn enter() -> io::Result<i32> {
 }
 
 pub fn run() -> io::Result<i32> {
+    let lease = fs::File::open("/run/goblins-scope/lease")?;
+    cvt(unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) })?;
     let pid = match env::args().nth(2).as_deref() {
-        None => false,
+        Some("private") => false,
         Some("pid") => true,
-        Some(_) => return Err(io::Error::other("invalid scope keeper arguments")),
+        _ => return Err(io::Error::other("invalid scope keeper arguments")),
+    };
+    let storage_lease = match env::args().nth(3).as_deref() {
+        Some("temporary") => {
+            let file = fs::File::open("/run/goblins-scope/storage-lease")?;
+            cvt(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) })?;
+            Some(file)
+        }
+        Some("persistent") => None,
+        _ => return Err(io::Error::other("invalid scope storage lease arguments")),
     };
     let (ready_r, ready_w) = pipe()?;
     let (go_r, go_w) = pipe()?;
@@ -116,5 +127,6 @@ pub fn run() -> io::Result<i32> {
         libc::waitpid(child, std::ptr::null_mut(), 0);
     }
     result?;
+    drop(storage_lease);
     Ok(0)
 }

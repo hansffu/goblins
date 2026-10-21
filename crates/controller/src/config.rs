@@ -224,7 +224,7 @@ impl Manifest {
         Ok(manifest)
     }
     fn check(&self) -> Result<()> {
-        if self.api != 2 || self.helper_api != 5 {
+        if self.api != 2 || self.helper_api != 6 {
             return Err("incompatible manifest/helper API".into());
         }
         for (scope, definition) in &self.scopes {
@@ -578,7 +578,7 @@ mod tests {
     }
     fn manifest(goblins: Value) -> Value {
         json!({
-            "api": 2, "helper_api": 5, "goblins": goblins,
+            "api": 2, "helper_api": 6, "goblins": goblins,
             "scopes": {
                 "work": {"persistent": false, "pid": true},
                 "other": {"persistent": false, "pid": true},

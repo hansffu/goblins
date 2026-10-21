@@ -40,6 +40,7 @@ impl Storage {
         if !goblins_protocol::scope_name(name) {
             return Err("invalid scope name".into());
         }
+        let _gate = crate::cleanup::storage_gate()?;
         let root = root(true)?;
         let (path, lock) = if definition.persistent {
             let locks = root.join("locks");
@@ -61,7 +62,9 @@ impl Storage {
                 return Err(std::io::Error::last_os_error().into());
             }
             template.pop();
-            (PathBuf::from(OsString::from_vec(template)), None)
+            let path = PathBuf::from(OsString::from_vec(template));
+            let lease = crate::cleanup::temporary_lease("scopes", &path)?;
+            (path, Some(lease))
         };
         let mut storage = Self {
             name: name.to_string(),
@@ -100,6 +103,9 @@ impl Storage {
         self.directories
             .get(name)
             .ok_or_else(|| format!("scope has no storage named '{name}'").into())
+    }
+    pub fn temporary_lease(&self) -> Option<&File> {
+        self.temporary.then(|| self.lock.as_ref()).flatten()
     }
 }
 impl Drop for Storage {

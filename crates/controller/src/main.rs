@@ -62,6 +62,22 @@ fn execute(cli: Cli) -> Result<i32> {
         }
     });
     match command {
+        Command::Scope { command } => match command {
+            cli::ScopeCommand::Clear {
+                name,
+                all: _,
+                dry_run,
+            } => {
+                goblins_controller::cleanup::clear_scope(
+                    cli.runtime.as_deref(),
+                    name.as_deref(),
+                    dry_run,
+                )?;
+            }
+        },
+        Command::Gc { dry_run } => {
+            goblins_controller::cleanup::gc(cli.runtime.as_deref(), &state, dry_run)?;
+        }
         Command::Send {
             recipient,
             source,

@@ -118,7 +118,13 @@ pub struct Identity {
     pub source_mountns: u64,
     pub mountns: u64,
 }
-struct SessionDirectory(PathBuf);
+struct SessionDirectory(PathBuf, File);
+impl SessionDirectory {
+    fn new(path: PathBuf) -> Result<Self> {
+        let lease = crate::cleanup::resource_lease(&path)?;
+        Ok(Self(path, lease))
+    }
+}
 impl Drop for SessionDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -233,7 +239,7 @@ impl Inheritance {
 impl Inheritance {
     /// A running session's capability without a sandbox, for controller tests.
     pub(crate) fn fixture(configuration: &str, run_targets: &[&str]) -> Self {
-        let owner = Arc::new(SessionDirectory(unix::temp_directory().unwrap()));
+        let owner = Arc::new(SessionDirectory::new(unix::temp_directory().unwrap()).unwrap());
         let launch: Launch = serde_json::from_value(serde_json::json!({
             "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
             "bwrap": "/unused", "flake": "unused", "client_package": "/unused",
@@ -357,7 +363,7 @@ impl Session {
         };
         unix::private_directory(&directory)?;
         let session = Self {
-            directory_owner: Arc::new(SessionDirectory(directory.clone())),
+            directory_owner: Arc::new(SessionDirectory::new(directory.clone())?),
             directory,
             launch,
             mounted: BTreeSet::new(),
@@ -982,6 +988,7 @@ impl Session {
         let parent = unsafe { libc::getpid() };
         let payload_limit = unix::payload_descriptor_limit();
         let mut keep = vec![
+            self.directory_owner.1.as_raw_fd(),
             input.as_raw_fd(),
             output.as_raw_fd(),
             filter.as_raw_fd(),

@@ -147,9 +147,16 @@ impl Shared {
         let setup_path = path.clone();
         let setup_cancel = cancel.clone();
         let pid = selected.definition.pid;
+        let storage_lease = storage.temporary_lease().map(File::try_clone).transpose()?;
         let thread = std::thread::spawn(move || {
             let setup = || -> Result<(Namespaces, Option<Network>)> {
-                let namespaces = Namespaces::start(&setup_launch, &setup_path, pid, &setup_cancel)?;
+                let namespaces = Namespaces::start(
+                    &setup_launch,
+                    &setup_path,
+                    pid,
+                    storage_lease.as_ref(),
+                    &setup_cancel,
+                )?;
                 let network = setup_launch
                     .pasta
                     .as_ref()
