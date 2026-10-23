@@ -51,3 +51,7 @@ Submit multiple features in one invocation. Keep class fixtures together and let
 Useful complete commands: `just test` runs Rust/Python/ERT; `just test-merge` is the complete required merge gate. `just test-merge -j 4` uses four Python workers while retaining the existing Cargo/Nix limits.
 
 Write documentation prose with one line per paragraph; preserve the structure of lists, tables and code blocks.
+
+# RPC API documentation
+
+`docs/API.org` documents every JSON-RPC method on the host and sandbox endpoints, with its input, output and the records it returns. When a change adds, removes or renames a method, or changes its parameters, result, notifications, errors or a snapshot/record field, update `docs/API.org` in the same change. Reviewers should treat a missing update as a defect.

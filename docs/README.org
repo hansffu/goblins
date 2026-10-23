@@ -7,6 +7,7 @@ The [[file:../README.org][top-level README]] is for users. This directory holds 
 | Document                     | Contents                                                                |
 |------------------------------+-------------------------------------------------------------------------|
 | [[file:USAGE.org][USAGE.org]]                    | Detailed command, configuration and runtime reference, including limits |
+| [[file:API.org][API.org]]                      | JSON-RPC methods, parameters, results and records                       |
 | [[file:RESULTS.org][RESULTS.org]]                  | Implementation and verification results, newest first                   |
 | [[file:architecture/README.org][architecture/]]                | Components, daemon internals and main workflows, with diagrams          |
 | [[file:specs/PLAN.org][specs/PLAN.org]]               | Project goals and milestones                                            |
