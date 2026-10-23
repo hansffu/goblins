@@ -1,57 +1,45 @@
-# Testing and review workflow
+# Agent instructions
 
-These instructions apply to both Codex and Claude Code (`CLAUDE.md` imports this file). The feature definitions and source mappings live in `tests/features.toml`; keep that file current when adding tests or features.
+These instructions apply to both Codex and Claude Code (`CLAUDE.md` imports this file).
 
-## Review and merge are separate checkpoints
+## Testing
 
-- Before presenting work for review, run the relevant feature tasks and any focused regression checks. You may present a result before the full suite has run. State exactly what passed, what failed or skipped, and that the full merge gate is pending when it has not passed.
-- **A full test-suite pass is required before merge.** Run `just test-merge` on the final candidate. It checks feature coverage, the complete Rust and Python suites, all Emacs ERT tests, Nix checks and packaged smoke tests. Targeted passes do not satisfy this requirement. Changes after validation must be covered before merging; do not claim an earlier pass covers changed executable code, tests or configuration.
-- Codex configuration tests are enabled automatically by the `codex` and `full` tasks. Host-Docker and external Testcontainers checks retain their existing opt-ins. Report skips; when changing those integrations, arrange the required environment and run them before merge, or report the blocker.
-- Do not remove assertions, disable cases or add retries to obtain a pass. Preserve isolation for lifecycle, authority and cleanup checks.
+Work inside `nix develop`. Use the Git-backed flake, not `path:.`, so ignored build artifacts are not copied into the Nix store.
 
-## Pick the checks
+Pick the feature tasks a change touches with `just test-plan --changed BASE`, using the branch you will merge into, or `just test-plan --paths FILE...`. Unknown paths and shared protocol, lifecycle or fixture code recommend `full`; include every affected feature. `just test-features` lists the tasks.
 
-Enter `nix develop` once and run commands inside it. Use the Git-backed flake, not `path:.`, so ignored build artifacts are not copied into the Nix store.
+Before presenting work, run those tasks in one invocation with `just test-feature FEATURE...`, and state what passed, what failed or was skipped, and whether the merge gate has passed, failed or is still pending.
 
-```sh
-just test-features                           # available feature tasks
-just test-plan exec history                  # preview commands and test count
-just test-feature exec history               # one union, no duplicate tests
-just test-plan --paths crates/controller/src/exec.rs
-just test-plan --changed BASE                # merge-base, worktree and untracked files
-just test-feature -j 4 exec                   # optional four workers; default is two
-just test-feature-check                      # no unmapped tests or stale selectors
-```
+Before merge, run `just test-merge` on the final candidate. It is required and runs every Rust, Python and Emacs test, the Nix checks and the packaged smoke tests. Targeted passes do not count, and any change after the run needs a new run.
 
-Use `--changed` with the actual branch you will merge into, not just `HEAD`, when you need to cover already committed branch changes. Path recommendations are conservative, not a dependency proof: include every affected feature and cross-feature behavior. Unknown paths and shared authority/protocol/lifecycle or fixture code recommend `full`. For review of such a change, a justified targeted selection is still allowed; explain its limits and leave the full gate pending. Documentation-only review needs no runtime tests.
+Documentation-only changes are exempt from both: a change that touches only documentation (the `docs` paths in `tests/features.toml`, such as `docs/`, `README.org`, `AGENTS.md` and `CLAUDE.md`) needs no feature tasks before review and no `just test-merge` before merge. Say that no tests were run because the change is documentation only. This exception takes precedence over the older wording in the `docs` task description and `just test-plan` output, which still say the full gate is required before merge.
 
-| Changed behavior | Feature tasks |
-| --- | --- |
-| Filesystem, binds, snapshot, GC retention | `sandbox` |
-| Daemon management, configuration, names, responsiveness | `lifecycle` |
-| Exec, signals, terminal attachment | `exec` |
-| Shared namespaces, networking, storage | `scopes`; add `docker` for engine behavior |
-| Sandbox engines and Docker integrations | `docker` |
-| Nix access, devshell launch/refresh/diff, flake run | `devshell` |
-| Raids, ownership, members, run targets | `raids` |
-| Mailbox, activity, completion notices | `messaging`; add the affected agent integration |
-| History, recreation and resume | `history` |
-| Codex adapter, configuration and hooks | `codex` |
-| Claude configuration and hooks | `claude` |
-| Host commands and editor requests | `host-tools` |
-| Terminal UI | `tui` |
-| Emacs Lisp and live frontend integration | `emacs` |
-| Runner, selection and test harness | `infrastructure`, plus affected integration smoke checks |
-| Nix packaging, installed launchers and completions | `packaging`, plus affected runtime features |
+Never fake a pass: do not remove assertions, disable cases or add retries, and preserve isolation for lifecycle, authority and cleanup checks. Report skipped Docker or Testcontainers checks; when you change those integrations, run them before merge or report the blocker.
 
-Feature tasks run their matching Python integration tests and language checks. Rust features use the complete fast Rust suite; `emacs` also runs all ERT tests. During edits, individual Python modules/classes/methods and `just test-emacs` remain useful. Before review, expand to the relevant feature tasks when a change crosses those narrower boundaries.
+Run one test runner at a time per checkout and cache. This applies across the whole raid: members share the checkout and cache, so coordinate through daemon messages before starting a runner. Other agents using the same checkout count too. Do not raise Nix build concurrency to match test workers.
 
-Submit multiple features in one invocation. Keep class fixtures together and let the runner manage exclusive engine/frontend groups. Do not launch separate runners concurrently against the same checkout/cache. Nix fixture builds stay serialized; do not increase their concurrency to match test worker count.
+Keep `tests/features.toml` current when adding tests or features; `just test-feature-check` finds unmapped tests and stale selectors.
 
-Useful complete commands: `just test` runs Rust/Python/ERT; `just test-merge` is the complete required merge gate. `just test-merge -j 4` uses four Python workers while retaining the existing Cargo/Nix limits.
+## Documentation
 
 Write documentation prose with one line per paragraph; preserve the structure of lists, tables and code blocks.
 
-# RPC API documentation
+`docs/API.org` documents every JSON-RPC method, parameter, result, notification, error and record field. Update it in the same change as any RPC API change, and treat a missing update as a review defect.
 
-`docs/API.org` documents every JSON-RPC method on the host and sandbox endpoints, with its input, output and the records it returns. When a change adds, removes or renames a method, or changes its parameters, result, notifications, errors or a snapshot/record field, update `docs/API.org` in the same change. Reviewers should treat a missing update as a defect.
+## Review
+
+Every change is reviewed by a goblin running a different model: Claude is reviewed by a `goblins-codex` goblin, and Codex by a `goblins-claude` goblin. Configuration keys differ between setups (for example `codex` and `claude`): run the other agent's key from the run targets `goblin status` lists, and identify members by the `CONFIGURATION` column of `goblin raid members`.
+
+Reuse a raid member of the other model whose role is `reviewer`. If there is none, run one as raid owner and have it set its role with `goblin raid set-role reviewer`; if you are not the owner, ask the owner.
+
+Send the reviewer the commit or diff, the intent and the files to check against. Verify each finding before acting on it, and send fixes back until the reviewer has no remaining findings.
+
+## Commits
+
+Commit each logical change once. Fold review fixes into the commit they correct instead of adding a commit per review round, so the history shows the change, not how it was reviewed.
+
+## Responses to the user
+
+The user reads the latest response and should not need to scroll back. Every response, including one started by an inbox message such as a review reply, stands on its own: it describes the work the user asked for as it now is, with what changed, why, the test results and what is still pending.
+
+Report the change, not the review. After a review round, do not answer with "the reviewer found issues and they have been fixed"; present the reviewed change itself, as if presenting it for the first time. Mention review only as its outcome (reviewed by whom, whether anything remains open), and raise individual findings only when they need the user's decision or were not resolved.
