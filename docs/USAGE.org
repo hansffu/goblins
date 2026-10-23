@@ -1014,7 +1014,7 @@ After upgrading the daemon implementation, restart it before launching this
 configuration. An already-running daemon continues using its old executable.
 
 It accepts normal =mkGoblin= arguments and defaults =pkg= / =binName= to Codex.
-The package must support the managed hook setup (Codex 0.146.0 or later).
+The package must support the managed hook setup and remote terminal client (Codex 0.162.1 or later).
 The baseline tools and access match =shell=, plus Fish, the hook executable,
 and a writable mount of =codexConfigDir=. That directory must already exist.
 Use an absolute runtime string, =$HOME/=, =${HOME}/= or =~/=; no credentials
@@ -1029,9 +1029,9 @@ credentials are not exposed by this mount. Normal native writes to the shared
 directory remain visible to the host; Goblins does not copy or rewrite its
 configuration to install hooks.
 
-The launcher runs Codex with =--sandbox danger-full-access= inside Goblins' existing sandbox: Codex's own command sandbox needs namespaces, which a goblin does not have. Codex can use the same files and commands as the shell goblin; Goblins still owns isolation and package approvals. =args= are passed unchanged after these defaults.
+The launcher and adapter give Codex full access inside Goblins' existing sandbox: Codex's own command sandbox needs namespaces, which a goblin does not have. Codex can use the same files and commands as the shell goblin; Goblins still owns isolation and package approvals. Utility subcommands receive =--sandbox danger-full-access=. The remote terminal receives no injected permission flags so that its =/resume= picker remains usable; the adapter applies the policy when starting, resuming or forking a thread. =args= are passed unchanged.
 
-The approval policy is Codex's own unless the configuration sets =bypassPermissions = true;=, which adds =--ask-for-approval never= (and =approval_policy = "never"= on the App Server). Without it, the policy comes from your =~/.codex/config.toml=, a profile or =-c= in =args=, or =codexSettings.approval_policy=, and defaults to Codex's =on-request=. With full access, =on-request= leaves asking to the model, so Codex rarely prompts; it is not a per-command check. A thread keeps the approval policy it was saved with, so when the terminal resumes or forks a thread, the adapter sets the policy the configuration gives now (=never= when bypassing, else the configured one for that directory) and full access. A thread that is still loaded in the App Server keeps its live policy, including a change made with =/permissions=.
+The approval policy is Codex's own unless the configuration sets =bypassPermissions = true;=, which selects =never= through the App Server and adapter, and adds =--ask-for-approval never= to utility subcommands. Without it, the policy comes from your =~/.codex/config.toml=, a profile or =-c= in =args=, or =codexSettings.approval_policy=, and defaults to Codex's =on-request=. With full access, =on-request= leaves asking to the model, so Codex rarely prompts; it is not a per-command check. When the terminal starts, resumes or forks a thread, the adapter applies and verifies the configured approval policy and full access, including for a thread already loaded in the App Server. If the server keeps different live settings, the adapter updates and verifies them without submitting a turn or interrupting running work. If that fails, the terminal receives an explicit error and the previous foreground binding remains selected. Changes made with =/permissions= remain effective until another start, resume or fork applies the configured policy again.
 
 =codexSettings= generates sandbox-only =/etc/codex/config.toml=. These are
 system defaults below Codex's user/project/CLI layers. Native hooks from

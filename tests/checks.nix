@@ -385,11 +385,17 @@ in
       if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
       grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
       for launcher in ${own.codex}/bin/codex ${bypass.codex}/bin/codex; do
-        grep -q -- 'permission_args=(--sandbox danger-full-access' $launcher
+        grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher
         grep -q -- "-c 'sandbox_mode=\"danger-full-access\"'" $launcher
+        # The remote TUI must remain able to open /resume. Permission defaults
+        # belong to the server/adapter; utility subcommands still use CLI flags.
+        native=$(sed -n '/"\$codex_executable" --remote /,/native_pid=\$!/p' "$launcher")
+        printf '%s\n' "$native" | grep -Fq -- '--enable hooks'
+        printf '%s\n' "$native" | grep -Fq -- '"''${mcp_overrides[@]}" "$@"'
+        if printf '%s\n' "$native" | grep -Eq -- 'permission_args|--sandbox|--ask-for-approval'; then exit 1; fi
       done
       if grep -q -e 'approval_policy=' -e '--ask-for-approval never' -e --bypass-permissions ${own.codex}/bin/codex; then exit 1; fi
-      grep -q -- 'permission_args=(--sandbox danger-full-access --ask-for-approval never)' ${bypass.codex}/bin/codex
+      grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access --ask-for-approval never --enable hooks' ${bypass.codex}/bin/codex
       grep -q -- "-c 'approval_policy=\"never\"'" ${bypass.codex}/bin/codex
       grep -q -- '--native-socket "$native_socket" --bypass-permissions' ${bypass.codex}/bin/codex
       touch $out

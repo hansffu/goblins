@@ -167,7 +167,7 @@ The =goblins-dev= demo goblin (=nix/demo-goblins/=) is set up for working on Gob
 
 - =bypassPermissions = true;= to run the agent without its own permission prompts: Claude Code with =--dangerously-skip-permissions=, Codex with the approval policy =never=. It is off by default, and then Goblins asks for no bypass: the agent's own settings decide, such as =permissions.defaultMode= in your Claude settings or =claudeSettings=, or =approval_policy= in your Codex config or =codexSettings=.
 
-Goblins is the sandbox either way, so Codex always runs with =--sandbox danger-full-access= (its own sandbox cannot run inside a goblin). That makes Codex's default approval policy, =on-request=, leave asking to the model: without bypass, Codex rarely prompts, while Claude Code's default mode asks before each tool that changes something. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
+Goblins is the sandbox either way, so Codex always runs with full access inside it (its own sandbox cannot run inside a goblin). That makes Codex's default approval policy, =on-request=, leave asking to the model: without bypass, Codex rarely prompts, while Claude Code's default mode asks before each tool that changes something. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
 
 Until this option, the agents always bypassed their prompts; a configuration that wants that now sets =bypassPermissions = true;=.
 
