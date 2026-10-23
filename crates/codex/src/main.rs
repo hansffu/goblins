@@ -16,7 +16,10 @@ use std::{
         },
     },
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver, Sender},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
@@ -424,21 +427,77 @@ impl Server {
         Ok(())
     }
 }
-/// The terminal alone owns this connection. Forward every payload unchanged;
-/// only successful foreground start/resume/fork responses select a thread.
+#[derive(Default)]
+struct NativeForeground {
+    next_request: u64,
+    selected_request: u64,
+    owner: Option<(u64, String)>,
+}
+
+/// Connections used only for pickers/catalogs never own the foreground.
+/// Serialize selection, renames and disconnect cleanup across connections so
+/// an old connection cannot erase or rename a newer connection's selection.
+struct NativeConnection {
+    id: u64,
+    dir: PathBuf,
+    conversation: Sender<(String, String)>,
+    foreground: Arc<Mutex<NativeForeground>>,
+}
+impl NativeConnection {
+    fn requested(&self) -> u64 {
+        let mut state = self.foreground.lock().unwrap();
+        state.next_request += 1;
+        state.next_request
+    }
+    fn selected(&self, request: u64, thread: &str, name: &str) -> Result<()> {
+        let mut state = self.foreground.lock().unwrap();
+        if request <= state.selected_request {
+            return Ok(());
+        }
+        atomic(&self.dir.join("native-thread.json"), &thread)?;
+        atomic(&self.dir.join("thread.json"), &thread)?;
+        state.selected_request = request;
+        state.owner = Some((self.id, thread.to_owned()));
+        let _ = self.conversation.send((thread.to_owned(), name.to_owned()));
+        Ok(())
+    }
+    fn renamed(&self, thread: &str, name: &str) {
+        let state = self.foreground.lock().unwrap();
+        if state
+            .owner
+            .as_ref()
+            .is_some_and(|(id, selected)| *id == self.id && selected == thread)
+        {
+            let _ = self.conversation.send((thread.to_owned(), name.to_owned()));
+        }
+    }
+}
+impl Drop for NativeConnection {
+    fn drop(&mut self) {
+        let mut state = self.foreground.lock().unwrap();
+        if state.owner.as_ref().is_none_or(|(id, _)| *id == self.id) {
+            // A picker closing must not suspend delivery to the main terminal.
+            // Clear only our binding, or unowned startup hooks left before a
+            // successful foreground response. Tombstone delayed hooks too.
+            let _ = fs::remove_file(self.dir.join("thread.json"));
+            let _ = atomic(&self.dir.join("native-thread.json"), &"");
+            state.owner = None;
+        }
+    }
+}
+
+/// Forward native connections, including temporary pickers. Only successful
+/// foreground start/resume/fork responses select the terminal's thread.
 /// Codex defers SessionStart until the first turn, so this also binds an empty
-/// terminal and immediately guards against late compaction hooks after a switch.
-/// The one change: resume and fork requests get this goblin's permissions
-/// (`thread_permissions`).
+/// terminal and guards against late compaction hooks after a switch. Resume
+/// and fork requests get this goblin's permissions (`thread_permissions`).
 #[allow(clippy::result_large_err)] // Tungstenite callback requires an unboxed HTTP error response.
 fn native_proxy(
-    listener: &UnixListener,
+    native_stream: UnixStream,
     upstream: &Path,
-    dir: &Path,
-    conversation: &Sender<(String, String)>,
+    connection: &NativeConnection,
     bypass: bool,
 ) -> Result<()> {
-    let (native_stream, _) = listener.accept()?;
     native_stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     native_stream.set_write_timeout(Some(Duration::from_secs(3)))?;
     let stream = UnixStream::connect(upstream)?;
@@ -472,8 +531,7 @@ fn native_proxy(
     server
         .get_ref()
         .set_read_timeout(Some(Duration::from_millis(10)))?;
-    let mut pending = std::collections::BTreeSet::new();
-    let mut foreground: Option<String> = None;
+    let mut pending = BTreeMap::new();
     fn receive(ws: &mut WebSocket<UnixStream>) -> Result<Option<Message>> {
         match ws.read() {
             Ok(message) => Ok(Some(message)),
@@ -499,11 +557,19 @@ fn native_proxy(
                     if pending.len() >= 64 {
                         return Err("too many pending native thread requests".into());
                     }
-                    pending.insert(id.to_string());
+                    pending.insert(id.to_string(), connection.requested());
                 }
-                if matches!(v["method"].as_str(), Some("thread/resume" | "thread/fork"))
-                    && v["params"].is_object()
+                if matches!(
+                    v["method"].as_str(),
+                    Some("thread/start" | "thread/resume" | "thread/fork")
+                ) && v["params"].is_object()
                 {
+                    if v["method"] == "thread/start" {
+                        // Keep launcher-injected permission flags off the TUI:
+                        // they prevent a later in-app remote resume. Goblins is
+                        // the command sandbox for fresh threads too.
+                        v["params"]["sandbox"] = json!("danger-full-access");
+                    }
                     match thread_permissions(&mut v["params"], bypass, |params| {
                         configured_approval(upstream, params)
                     }) {
@@ -539,21 +605,16 @@ fn native_proxy(
             {
                 if v.get("method").is_none()
                     && let Some(id) = v.get("id")
-                    && pending.remove(&id.to_string())
+                    && let Some(request) = pending.remove(&id.to_string())
                     && let Some(thread) = v["result"]["thread"]["id"].as_str()
                 {
-                    atomic(&dir.join("native-thread.json"), &thread)?;
-                    atomic(&dir.join("thread.json"), &thread)?;
-                    // A foreground switch replaces both values at once.
-                    foreground = Some(thread.to_owned());
                     let name = v["result"]["thread"]["name"].as_str().unwrap_or_default();
-                    let _ = conversation.send((thread.to_owned(), name.to_owned()));
+                    connection.selected(request, thread, name)?;
                 } else if v["method"] == "thread/name/updated"
-                    && let Some(thread) = &foreground
-                    && v["params"]["threadId"].as_str() == Some(thread)
+                    && let Some(thread) = v["params"]["threadId"].as_str()
                 {
                     let name = v["params"]["threadName"].as_str().unwrap_or_default();
-                    let _ = conversation.send((thread.clone(), name.to_owned()));
+                    connection.renamed(thread, name);
                 }
             }
             let closing = matches!(message, Message::Close(_));
@@ -616,25 +677,31 @@ fn thread_permissions(
     Ok(())
 }
 
-/// The approval policy Codex's configuration gives the directory a resume or
-/// fork request runs in: its cwd, else the directory the thread was saved
-/// with, which Codex restores. On a connection of its own.
+/// The configured approval policy for a request's cwd, the resumed thread's
+/// saved directory, or the server's default directory for a fresh thread.
+/// Use a separate connection, without selecting the terminal's foreground.
 fn configured_approval(upstream: &Path, params: &Value) -> Result<Value> {
     let (transitions, _) = mpsc::channel();
     let mut server = Server::connect(upstream, transitions)?;
     let result = (|| -> Result<Value> {
+        let resuming = params["threadId"].is_string();
         let cwd = match &params["cwd"] {
-            Value::Null => server.call(
+            Value::Null if resuming => server.call(
                 "thread/read",
                 json!({"threadId":params["threadId"],"includeTurns":false}),
             )?["thread"]["cwd"]
                 .clone(),
             cwd => cwd.clone(),
         };
-        if !cwd.is_string() {
+        if !cwd.is_string() && (resuming || !cwd.is_null()) {
             return Err("no working directory for the thread".into());
         }
-        let read = server.call("config/read", json!({"cwd":cwd}))?;
+        let params = if cwd.is_null() {
+            json!({})
+        } else {
+            json!({"cwd":cwd})
+        };
+        let read = server.call("config/read", params)?;
         match read.get("config") {
             Some(config) => Ok(config["approval_policy"].clone()),
             None => Err("config/read returned no config".into()),
@@ -675,18 +742,35 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
         let runtime = dir.to_owned();
         let conversation = conversation_reporter();
         std::thread::spawn(move || {
-            loop {
-                if let Err(e) = native_proxy(&listener, &upstream, &runtime, &conversation, bypass)
-                {
-                    eprintln!("native proxy: {e}");
+            let foreground = Arc::new(Mutex::new(NativeForeground::default()));
+            let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
+            for (id, stream) in listener.incoming().enumerate() {
+                let stream = match stream {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        eprintln!("native proxy accept: {e}");
+                        continue;
+                    }
+                };
+                workers.retain(|worker| !worker.is_finished());
+                // Native pickers open additional connections while the main
+                // terminal stays connected. Bound helpers and handshake stalls.
+                if workers.len() >= 16 {
+                    eprintln!("native proxy: too many connections");
+                    continue;
                 }
-                // The terminal has disconnected; do not deliver to its old thread.
-                let _ = fs::remove_file(runtime.join("thread.json"));
-                // A tombstone also rejects delayed hooks from the disconnected
-                // thread while the terminal reconnects and selects its next one.
-                let _ = atomic(&runtime.join("native-thread.json"), &"");
-                // Keep accepting the terminal's reconnects. It still selects the
-                // thread explicitly; the adapter never retries a human task.
+                let connection = NativeConnection {
+                    id: id as u64,
+                    dir: runtime.clone(),
+                    conversation: conversation.clone(),
+                    foreground: foreground.clone(),
+                };
+                let upstream = upstream.clone();
+                workers.push(std::thread::spawn(move || {
+                    if let Err(e) = native_proxy(stream, &upstream, &connection, bypass) {
+                        eprintln!("native proxy: {e}");
+                    }
+                }));
             }
         });
     }
@@ -976,6 +1060,92 @@ fn profile_arguments(input: &str, path: &Path, base: &toml::Table) -> Result<Vec
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
+    fn proxy_once(
+        listener: &UnixListener,
+        upstream: &Path,
+        dir: &Path,
+        conversation: &Sender<(String, String)>,
+        bypass: bool,
+    ) -> Result<()> {
+        let connection = NativeConnection {
+            id: 0,
+            dir: dir.to_owned(),
+            conversation: conversation.clone(),
+            foreground: Arc::default(),
+        };
+        native_proxy(listener.accept()?.0, upstream, &connection, bypass)
+    }
+
+    #[test]
+    fn picker_and_old_connections_cannot_erase_or_rename_the_foreground() {
+        let root = std::env::temp_dir().join(format!(
+            "gf-{}",
+            goblins_protocol::messages::operation_key(None).unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let (conversation, reports) = mpsc::channel();
+        let foreground = Arc::default();
+        let connection = |id| NativeConnection {
+            id,
+            dir: root.clone(),
+            conversation: conversation.clone(),
+            foreground: Arc::clone(&foreground),
+        };
+        atomic(&root.join("thread.json"), &"unowned startup hook").unwrap();
+        drop(connection(99));
+        assert!(!root.join("thread.json").exists());
+        assert_eq!(
+            read::<String>(&root.join("native-thread.json")).unwrap(),
+            ""
+        );
+        let original = connection(0);
+        original
+            .selected(original.requested(), "original", "Original")
+            .unwrap();
+        assert_eq!(
+            reports.recv().unwrap(),
+            ("original".into(), "Original".into())
+        );
+        let picker = connection(1);
+        picker.renamed("original", "Not selected");
+        drop(picker);
+        assert_eq!(
+            read::<String>(&root.join("thread.json")).unwrap(),
+            "original"
+        );
+        assert!(reports.try_recv().is_err());
+
+        let late = original.requested();
+        let replacement = connection(2);
+        replacement
+            .selected(replacement.requested(), "replacement", "New")
+            .unwrap();
+        assert_eq!(
+            reports.recv().unwrap(),
+            ("replacement".into(), "New".into())
+        );
+        // A response to an older pending request must not undo a newer switch.
+        original.selected(late, "late", "Late").unwrap();
+        original.renamed("replacement", "Obsolete connection");
+        drop(original);
+        for file in ["thread.json", "native-thread.json"] {
+            assert_eq!(read::<String>(&root.join(file)).unwrap(), "replacement");
+        }
+        assert!(reports.try_recv().is_err());
+        replacement.renamed("replacement", "Renamed");
+        assert_eq!(
+            reports.recv().unwrap(),
+            ("replacement".into(), "Renamed".into())
+        );
+        drop(replacement);
+        assert!(!root.join("thread.json").exists());
+        assert_eq!(
+            read::<String>(&root.join("native-thread.json")).unwrap(),
+            ""
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn resumed_threads_get_the_goblins_permissions_not_their_saved_ones() {
         let apply = |params: Value, bypass: bool, configured: Value| {
@@ -1225,7 +1395,7 @@ mod tests {
         let runtime = root.clone();
         let (conversation, _reported) = mpsc::channel();
         let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime, &conversation, false).unwrap()
+            proxy_once(&native_listener, &upstream, &runtime, &conversation, false).unwrap()
         });
         let stream = UnixStream::connect(&endpoint).unwrap();
         stream
@@ -1365,7 +1535,7 @@ mod tests {
         let runtime = root.clone();
         let (conversation, _reported) = mpsc::channel();
         let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime, &conversation, false).unwrap()
+            proxy_once(&native_listener, &upstream, &runtime, &conversation, false).unwrap()
         });
         let stream = UnixStream::connect(&endpoint).unwrap();
         let (mut native, handshake) = tungstenite::client("ws://localhost/", stream).unwrap();
@@ -1373,7 +1543,7 @@ mod tests {
             handshake.headers()["x-codex-websocket-max-unfragmented-message-bytes"],
             "16777216"
         );
-        native.send(Message::text(json!({"id":7,"method":"thread/start","params":{"input":[{"type":"localImage","path":"input.png"}]}}).to_string())).unwrap();
+        native.send(Message::text(json!({"id":7,"method":"thread/start","params":{"approvalPolicy":"on-request","input":[{"type":"localImage","path":"input.png"}]}}).to_string())).unwrap();
         native.read().unwrap(); // Foreign notifications do not bind.
         assert!(!root.join("thread.json").exists());
         notice_tx.send(()).unwrap();
@@ -1420,6 +1590,8 @@ mod tests {
             let mut ws = tungstenite::accept(peer).unwrap();
             let answer = |ws: &mut WebSocket<UnixStream>, thread: Value| {
                 let v: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(v["params"]["sandbox"], "danger-full-access");
+                assert_eq!(v["params"]["approvalPolicy"], "never");
                 ws.send(Message::text(
                     json!({"id":v["id"],"result":{"thread":thread}}).to_string(),
                 ))
@@ -1442,7 +1614,7 @@ mod tests {
         let (conversation, reported) = mpsc::channel();
         let proxy = std::thread::spawn(move || {
             // Bypassing: the resume below needs no config/read connection.
-            native_proxy(&native_listener, &upstream, &runtime, &conversation, true).unwrap()
+            proxy_once(&native_listener, &upstream, &runtime, &conversation, true).unwrap()
         });
         let stream = UnixStream::connect(&endpoint).unwrap();
         let (mut native, _) = tungstenite::client("ws://localhost/", stream).unwrap();

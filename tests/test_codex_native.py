@@ -239,6 +239,79 @@ requires_openai_auth=false
         switched = native.call('thread/start', {'cwd':str(self.root),'sessionStartSource':'clear'})['thread']['id']
         self.assertEqual(json.loads((runtime/'thread.json').read_text()), switched)
 
+    def test_resume_picker_connects_while_the_foreground_stays_open(self):
+        from terminal_support import Terminal, screen_wait
+        self.script()
+        self.owner.call('turn/start', {'threadId':self.thread, 'input':[{'type':'text','text':'saved picker conversation'}]})
+        self.owner.event('turn/completed')
+        self.owner.call('thread/name/set', {'threadId':self.thread, 'name':'Picker target'})
+        # Resume a historical conversation, not another client's still-loaded
+        # task (whose live permissions Codex deliberately preserves).
+        self.owner.call('thread/unsubscribe', {'threadId':self.thread})
+        deadline = time.monotonic() + 5
+        while self.thread in (loaded := self.owner.call('thread/loaded/list', {})['data']) and time.monotonic() < deadline:
+            time.sleep(.025)
+        self.assertNotIn(self.thread, loaded)
+        request_socket, reports = self.fake_daemon()
+        runtime = self.start_adapter(request_socket)
+        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(runtime/'native.sock'),
+            '--dangerously-bypass-hook-trust'],
+            cwd=self.root, env=self.env)
+        self.addCleanup(terminal.close)
+        screen_wait(terminal, lambda text: 'fixture-model' in text, timeout=30)
+        deadline = time.monotonic() + 10
+        while not (runtime/'thread.json').exists() and time.monotonic() < deadline:
+            time.sleep(.025)
+        visible = json.loads((runtime/'thread.json').read_text())
+        self.reported(reports, {'session_id':visible, 'session_name':''})
+        # Materialize the fresh thread before subscribing: an empty native
+        # thread has no saved rollout yet. Hold its response until subscribed.
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        self.script(gate)
+        terminal.send('fresh picker conversation')
+        screen_wait(terminal, lambda text: 'fresh picker conversation' in text)
+        terminal.send('\r')
+        saved = self.thread
+        self.thread = visible
+        started = self.subscribe()
+        self.thread = saved
+        gate.set()
+        self.observer.event('turn/completed', lambda p:p['threadId']==visible)
+        screen_wait(terminal, lambda text: 'Worked for' in text)
+        calls = len(self.inputs)
+        self.assertEqual((started['sandbox']['type'], started['approvalPolicy']), ('dangerFullAccess', 'on-request'))
+        for _ in range(2):
+            terminal.send('/resume')
+            screen_wait(terminal, lambda text: '/resume' in text)
+            terminal.send('\r')
+            screen_wait(terminal, lambda text: 'Resume a previous session' in text, timeout=20)
+            for file in ('thread.json', 'native-thread.json'):
+                self.assertEqual(json.loads((runtime/file).read_text()), visible)
+            terminal.send('\x1b')
+            screen_wait(terminal, lambda text: 'Resume a previous session' not in text)
+            # Closing the picker must not clear the still-open terminal's
+            # binding or allow a late SessionStart hook to replace it.
+            hook = {'hook_event_name':'SessionStart', 'session_id':self.thread}
+            subprocess.run([str(self.adapter), '--runtime-dir', str(runtime), 'hook'],
+                input=json.dumps(hook), text=True, check=True)
+            for file in ('thread.json', 'native-thread.json'):
+                self.assertEqual(json.loads((runtime/file).read_text()), visible)
+        terminal.send('/resume')
+        screen_wait(terminal, lambda text: '/resume' in text)
+        terminal.send('\r')
+        screen_wait(terminal, lambda text: 'Resume a previous session' in text and 'Picker target' in text)
+        terminal.send('Picker target')
+        screen_wait(terminal, lambda text: 'Search: Picker target' in text)
+        terminal.send('\r')
+        screen_wait(terminal, lambda text: 'Resume a previous session' not in text and 'saved picker conversation' in text)
+        self.reported(reports, {'session_id':self.thread, 'session_name':'Picker target'})
+        for file in ('thread.json', 'native-thread.json'):
+            self.assertEqual(json.loads((runtime/file).read_text()), self.thread)
+        resumed = self.observer.call('thread/resume', {'threadId':self.thread, 'excludeTurns':True})
+        self.assertEqual((resumed['sandbox']['type'], resumed['approvalPolicy']), ('dangerFullAccess', 'on-request'))
+        self.assertEqual(len(self.inputs), calls, 'opening, cancelling and resuming must not call the model')
+
     def test_native_draft_and_image_survive_queue_arrival(self):
         from terminal_support import Terminal, screen_wait
         image = self.root/'input.png'

@@ -46,12 +46,10 @@ pkgs.writeShellScriptBin binName ''
       *) break ;;
     esac
   done
-  # Codex refuses permission overrides when resuming a remote thread. The
-  # adapter sets the resumed thread's sandbox and approval policy instead,
-  # since a thread keeps the policy it was saved with.
-  permission_args=(--sandbox danger-full-access${approval})
+  # Keep injected permission flags off the native TUI, including fresh starts:
+  # Codex also rejects them when /resume later selects a remote thread. The
+  # adapter applies this goblin's policy to fresh and resumed threads instead.
   if [[ "$resume" == true ]]; then
-    permission_args=()
     for argument in "$@"; do
       case "$argument" in
         --) break ;;
@@ -156,7 +154,7 @@ pkgs.writeShellScriptBin binName ''
     exit 1
   fi
   "$codex_executable" --remote "unix://$native_socket" \
-    "''${permission_args[@]}" --enable hooks \
+    --enable hooks \
     "''${mcp_overrides[@]}" "$@" <&9 9<&- &
   native_pid=$!
   # Preserve native exit status; EXIT tears down both sandbox-local helpers.

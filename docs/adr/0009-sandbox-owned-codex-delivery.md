@@ -32,6 +32,8 @@ switching replace the binding; compaction repeats it. Observe loaded
 threads without changing configuration. The native terminal answers approvals
 and user-input requests. The controller has no Codex protocol dependencies.
 
+Accept concurrent native connections because the in-app resume picker connects while the main terminal stays open. Picker connections do not select or clear the foreground thread. Serialize successful foreground selections, renames and disconnect cleanup across connections; an older response or a disconnected former owner must not overwrite a newer selection. Apply Goblins' sandbox and approval policy in the adapter for fresh threads as well as resumes, keeping injected permission flags off the terminal so a later in-app remote resume remains available.
+
 Poll inbox metadata every 500 ms. Submit the fixed inbox reminder using
 experimental `thread/queue/add`, starting an idle queued reminder where required.
 Never steer a live turn or write reminder text into the terminal. Delivery occurs

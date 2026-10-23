@@ -83,6 +83,7 @@ def serve(path):
                     error = None
                     if method == 'initialize': result = {'userAgent': 'fake-codex/0.162.1'}
                     elif method == 'thread/start':
+                        Path('/tmp/goblins-codex/start-params.json').write_text(json.dumps(params))
                         subprocess.run(['/run/goblins/bin/goblins-codex', 'hook'], input=json.dumps({'hook_event_name': 'SessionStart', 'session_id': state['thread']}).encode(), stdout=subprocess.DEVNULL, check=True)
                         result = {'thread': {'id': state['thread'], 'status': state['status']}}
                     elif method == 'config/read': result = {'config': {'approval_policy': None}}

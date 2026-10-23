@@ -242,6 +242,15 @@ class CodexConfigTests(unittest.TestCase):
         # The adapter reports the foreground thread the native terminal chose.
         thread = self.d.wait(lambda: (self.d.record(receiver) or {}).get("variables", {}).get("session_id"))
         self.assertNotIn("session_name", self.d.record(receiver)["variables"])
+        import subprocess
+        def recorded(file):
+            return json.loads(subprocess.check_output([str(self.app), "--state-dir", str(self.d.state),
+                "exec", receiver, "--", "python3", "-c", "print(open('/tmp/goblins-codex/"+file+".json').read())"]))
+        args = recorded("native-args")
+        self.assertNotIn("--sandbox", args)
+        self.assertNotIn("--ask-for-approval", args)
+        params = recorded("start-params")
+        self.assertEqual((params["sandbox"], params["approvalPolicy"]), ("danger-full-access", "on-request"))
         self.d.rpc.call("sessions.stop", {"session": receiver})
         self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
         launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
