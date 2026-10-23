@@ -19,7 +19,17 @@ use std::{
     sync::mpsc::{self, Receiver, Sender},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tungstenite::{Message, WebSocket};
+use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
+
+/// Match Codex's remote client receive limits. The handshake's advertised
+/// 16 MiB cap limits client uploads; server model/configuration responses can
+/// be larger. Tungstenite's default 16 MiB frame / 64 MiB message limits would
+/// disconnect the terminal before it receives those responses.
+fn websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_frame_size(Some(128 << 20))
+        .max_message_size(Some(128 << 20))
+}
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Parser)]
@@ -225,7 +235,11 @@ impl Server {
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         stream.set_write_timeout(Some(Duration::from_secs(3)))?;
         // Codex's explicit Unix transport is RFC6455, unlike its NDJSON stdio.
-        let (ws, _) = tungstenite::client("ws://localhost/", stream)?;
+        let (ws, _) = tungstenite::client::client_with_config(
+            "ws://localhost/",
+            stream,
+            Some(websocket_config()),
+        )?;
         ws.get_ref()
             .set_read_timeout(Some(Duration::from_millis(50)))?;
         let mut server = Self {
@@ -430,12 +444,16 @@ fn native_proxy(
     let stream = UnixStream::connect(upstream)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    let (mut server, handshake) = tungstenite::client("ws://localhost/", stream)?;
+    let (mut server, handshake) = tungstenite::client::client_with_config(
+        "ws://localhost/",
+        stream,
+        Some(websocket_config()),
+    )?;
     let cap = handshake
         .headers()
         .get("x-codex-websocket-max-unfragmented-message-bytes")
         .cloned();
-    let mut native = tungstenite::accept_hdr(
+    let mut native = tungstenite::accept_hdr_with_config(
         native_stream,
         move |_: &tungstenite::handshake::server::Request,
               mut response: tungstenite::handshake::server::Response| {
@@ -446,6 +464,7 @@ fn native_proxy(
             }
             Ok(response)
         },
+        Some(websocket_config()),
     )?;
     native
         .get_ref()
@@ -1165,6 +1184,103 @@ mod tests {
         assert!(bind_hook(&root,&json!({"hook_event_name":"SessionStart","session_id":"------------------------------------"})).is_err());
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn native_proxy_forwards_large_frames_in_both_directions() {
+        let root = std::env::temp_dir().join(format!(
+            "gl-{}",
+            goblins_protocol::messages::operation_key(None).unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let upstream = root.join("upstream.sock");
+        let endpoint = root.join("native.sock");
+        let listener = UnixListener::bind(&upstream).unwrap();
+        let native_listener = UnixListener::bind(&endpoint).unwrap();
+        // Cross both Tungstenite defaults: 16 MiB per frame, 64 MiB per
+        // message. Real Codex model/configuration responses exceed 16 MiB.
+        let payload = Message::text(
+            json!({"method":"large","params":{"text":"x".repeat((64 << 20) + 1)}}).to_string(),
+        );
+        let expected = payload.clone();
+        let remote = std::thread::spawn(move || {
+            let (peer, _) = listener.accept().unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut ws = tungstenite::accept_with_config(
+                peer,
+                Some(
+                    tungstenite::protocol::WebSocketConfig::default()
+                        .max_frame_size(Some(128 << 20))
+                        .max_message_size(Some(128 << 20)),
+                ),
+            )
+            .unwrap();
+            let message = ws.read().unwrap();
+            assert!(
+                message == expected,
+                "upstream received the complete message"
+            );
+            ws.send(message).unwrap();
+            let _ = ws.read();
+        });
+        let runtime = root.clone();
+        let (conversation, _reported) = mpsc::channel();
+        let proxy = std::thread::spawn(move || {
+            native_proxy(&native_listener, &upstream, &runtime, &conversation, false).unwrap()
+        });
+        let stream = UnixStream::connect(&endpoint).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let (mut native, _) = tungstenite::client::client_with_config(
+            "ws://localhost/",
+            stream,
+            Some(
+                tungstenite::protocol::WebSocketConfig::default()
+                    .max_frame_size(Some(128 << 20))
+                    .max_message_size(Some(128 << 20)),
+            ),
+        )
+        .unwrap();
+        native.send(payload.clone()).unwrap();
+        assert!(
+            native.read().unwrap() == payload,
+            "native received the complete message"
+        );
+        native.close(None).unwrap();
+        proxy.join().unwrap();
+        remote.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn observer_accepts_large_server_frames() {
+        let root = std::env::temp_dir().join(format!(
+            "go-{}",
+            goblins_protocol::messages::operation_key(None).unwrap()
+        ));
+        fs::create_dir(&root).unwrap();
+        let endpoint = root.join("server.sock");
+        let listener = UnixListener::bind(&endpoint).unwrap();
+        let remote = std::thread::spawn(move || {
+            let (peer, _) = listener.accept().unwrap();
+            let mut ws = tungstenite::accept(peer).unwrap();
+            let request: Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            ws.send(Message::text(
+                json!({"id":request["id"],"result":{"padding":"x".repeat((64 << 20) + 1)}})
+                    .to_string(),
+            ))
+            .unwrap();
+            let initialized: Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(initialized["method"], "initialized");
+        });
+        let (transitions, _states) = mpsc::channel();
+        let _server = Server::connect(&endpoint, transitions).unwrap();
+        remote.join().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     #[allow(clippy::result_large_err)] // Required by Tungstenite's handshake callback.
     fn native_proxy_binds_only_owned_responses_and_preserves_requests() {
