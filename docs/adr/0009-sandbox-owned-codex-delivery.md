@@ -34,6 +34,10 @@ and user-input requests. The controller has no Codex protocol dependencies.
 
 Accept concurrent native connections because the in-app resume picker connects while the main terminal stays open. Picker connections do not select or clear the foreground thread. Serialize successful foreground selections, renames and disconnect cleanup across connections; an older response or a disconnected former owner must not overwrite a newer selection. Apply Goblins' sandbox and approval policy in the adapter for fresh threads as well as resumes, keeping injected permission flags off the terminal so a later in-app remote resume remains available.
 
+Forward WebSocket traffic with nonblocking readiness polling, bounded write buffers and backpressure in each direction. A slow reader must not throttle reverse traffic, truncate a partial frame or disconnect solely because a write deadline elapsed. Fatal forwarding errors carry a WebSocket close reason to the native UI and remain visible in adapter status until a successful foreground selection recovers it.
+
+Verify lifecycle response permissions before selecting the thread. An already-loaded thread can ignore resume overrides; apply supported changes through `thread/settings/update` and re-read the effective settings before accepting it. Reject an unverified policy explicitly while preserving the previous selection. If an unfamiliar native request identity makes foreground ownership ambiguous, leave the native operation usable, warn through `configWarning`, and suspend automatic inbox delivery rather than continuing to route to the previous thread.
+
 Poll inbox metadata every 500 ms. Submit the fixed inbox reminder using
 experimental `thread/queue/add`, starting an idle queued reminder where required.
 Never steer a live turn or write reminder text into the terminal. Delivery occurs

@@ -32,7 +32,10 @@ fn websocket_config() -> WebSocketConfig {
     WebSocketConfig::default()
         .max_frame_size(Some(128 << 20))
         .max_message_size(Some(128 << 20))
+        .max_write_buffer_size((128 << 20) + (128 << 10))
 }
+
+mod transport;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Parser)]
@@ -432,6 +435,18 @@ struct NativeForeground {
     next_request: u64,
     selected_request: u64,
     owner: Option<(u64, String)>,
+    diagnostic: Option<String>,
+}
+impl NativeForeground {
+    fn allows(&self, thread: Option<&str>) -> bool {
+        // Hook-only launchers have no proxied selections. Once the native
+        // protocol has selected (or suspended), it owns delivery authority.
+        self.next_request == 0
+            || self
+                .owner
+                .as_ref()
+                .is_some_and(|(_, selected)| Some(selected.as_str()) == thread)
+    }
 }
 
 /// Connections used only for pickers/catalogs never own the foreground.
@@ -444,6 +459,21 @@ struct NativeConnection {
     foreground: Arc<Mutex<NativeForeground>>,
 }
 impl NativeConnection {
+    fn failed(&self, reason: &str) {
+        self.foreground.lock().unwrap().diagnostic = Some(variable_text(&format!(
+            "native connection {}: {reason}",
+            self.id
+        )));
+    }
+    fn suspend(&self, reason: &str) -> Result<()> {
+        let mut state = self.foreground.lock().unwrap();
+        state.next_request += 1;
+        state.selected_request = state.next_request;
+        state.owner = None;
+        state.diagnostic = Some(variable_text(reason));
+        let _ = fs::remove_file(self.dir.join("thread.json"));
+        atomic(&self.dir.join("native-thread.json"), &"")
+    }
     fn requested(&self) -> u64 {
         let mut state = self.foreground.lock().unwrap();
         state.next_request += 1;
@@ -458,6 +488,7 @@ impl NativeConnection {
         atomic(&self.dir.join("thread.json"), &thread)?;
         state.selected_request = request;
         state.owner = Some((self.id, thread.to_owned()));
+        state.diagnostic = None;
         let _ = self.conversation.send((thread.to_owned(), name.to_owned()));
         Ok(())
     }
@@ -503,7 +534,7 @@ fn native_proxy(
     let stream = UnixStream::connect(upstream)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
     stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    let (mut server, handshake) = tungstenite::client::client_with_config(
+    let (server, handshake) = tungstenite::client::client_with_config(
         "ws://localhost/",
         stream,
         Some(websocket_config()),
@@ -512,7 +543,7 @@ fn native_proxy(
         .headers()
         .get("x-codex-websocket-max-unfragmented-message-bytes")
         .cloned();
-    let mut native = tungstenite::accept_hdr_with_config(
+    let native = tungstenite::accept_hdr_with_config(
         native_stream,
         move |_: &tungstenite::handshake::server::Request,
               mut response: tungstenite::handshake::server::Response| {
@@ -525,110 +556,156 @@ fn native_proxy(
         },
         Some(websocket_config()),
     )?;
-    native
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_millis(10)))?;
-    server
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_millis(10)))?;
-    let mut pending = BTreeMap::new();
-    fn receive(ws: &mut WebSocket<UnixStream>) -> Result<Option<Message>> {
-        match ws.read() {
-            Ok(message) => Ok(Some(message)),
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-    loop {
-        if let Some(mut message) = receive(&mut native)? {
-            if let Message::Text(text) = &message
-                && let Ok(mut v) = serde_json::from_str::<Value>(text)
-            {
-                if foreground_thread_request(&v)
-                    && let Some(id) = v.get("id")
-                {
-                    if pending.len() >= 64 {
-                        return Err("too many pending native thread requests".into());
-                    }
-                    pending.insert(id.to_string(), connection.requested());
-                }
-                if matches!(
-                    v["method"].as_str(),
-                    Some("thread/start" | "thread/resume" | "thread/fork")
-                ) && v["params"].is_object()
-                {
-                    if v["method"] == "thread/start" {
-                        // Keep launcher-injected permission flags off the TUI:
-                        // they prevent a later in-app remote resume. Goblins is
-                        // the command sandbox for fresh threads too.
-                        v["params"]["sandbox"] = json!("danger-full-access");
-                    }
-                    match thread_permissions(&mut v["params"], bypass, |params| {
-                        configured_approval(upstream, params)
-                    }) {
-                        Ok(()) => message = Message::text(v.to_string()),
-                        // Never forward it unchanged: the thread would keep
-                        // the policy it was saved with.
-                        Err(e) => {
-                            let id = v["id"].clone();
-                            pending.remove(&id.to_string());
-                            native.send(Message::text(
-                                json!({"id":id,"error":{"code":-32603,"message":format!("Goblins could not apply this goblin's approval policy: {e}")}})
-                                    .to_string(),
-                            ))?;
-                            continue;
-                        }
-                    }
-                }
-            }
-            let closing = matches!(message, Message::Close(_));
+    let mut pending: BTreeMap<String, PendingThread> = BTreeMap::new();
+    transport::relay(native, server, |direction, message| {
+        let Message::Text(text) = &message else {
+            return Ok(transport::Action::forward(message));
+        };
+        let Ok(mut v) = serde_json::from_str::<Value>(text) else {
+            return Ok(transport::Action::forward(message));
+        };
+        if direction == transport::Direction::Native {
             if matches!(
-                message,
-                Message::Text(_) | Message::Binary(_) | Message::Close(_)
-            ) {
-                server.send(message)?;
-            }
-            if closing {
-                return Ok(());
-            }
-        }
-        if let Some(message) = receive(&mut server)? {
-            if let Message::Text(text) = &message
-                && let Ok(v) = serde_json::from_str::<Value>(text)
+                v["method"].as_str(),
+                Some("thread/start" | "thread/resume" | "thread/fork")
+            ) && v["params"].is_object()
+                && v.get("id").is_some()
             {
-                if v.get("method").is_none()
-                    && let Some(id) = v.get("id")
-                    && let Some(request) = pending.remove(&id.to_string())
-                    && let Some(thread) = v["result"]["thread"]["id"].as_str()
+                if pending.len() >= 64 {
+                    return Err("too many pending native thread requests".into());
+                }
+                let selection = foreground_thread_request(&v).then(|| connection.requested());
+                let ambiguous = selection.is_none() && !background_thread_request(&v);
+                if v["method"] == "thread/start" {
+                    v["params"]["sandbox"] = json!("danger-full-access");
+                }
+                if let Err(error) = thread_permissions(&mut v["params"], bypass, |params| {
+                    configured_approval(upstream, params)
+                }) {
+                    let diagnostic =
+                        format!("Goblins could not apply this goblin's approval policy: {error}");
+                    connection.failed(&diagnostic);
+                    return Ok(transport::Action::reply(rpc_failure(&v["id"], &diagnostic)));
+                }
+                let request = PendingThread {
+                    selection,
+                    approval: v["params"]["approvalPolicy"].clone(),
+                    sandbox: v["params"]["sandbox"].clone(),
+                };
+                pending.insert(v["id"].to_string(), request);
+                let reply = if ambiguous {
+                    let reason = "Goblins cannot identify the foreground request from this Codex version; automatic inbox delivery is suspended until a recognized conversation selection.";
+                    connection.suspend(reason)?;
+                    Some(Message::text(json!({"method":"configWarning","params":{"summary":reason,"details":null,"path":null,"range":null}}).to_string()))
+                } else {
+                    None
+                };
+                return Ok(transport::Action {
+                    forward: Some(Message::text(v.to_string())),
+                    reply,
+                });
+            }
+        } else if v.get("method").is_none() {
+            if let Some(request) = v.get("id").and_then(|id| pending.remove(&id.to_string()))
+                && v.get("result").is_some()
+            {
+                if let Err(error) = verify_thread_permissions(upstream, &request, &mut v["result"])
                 {
+                    let diagnostic =
+                        format!("Goblins could not verify this thread's permissions: {error}");
+                    connection.failed(&diagnostic);
+                    return Ok(transport::Action::forward(rpc_failure(
+                        &v["id"],
+                        &diagnostic,
+                    )));
+                }
+                if let Some(selection) = request.selection {
+                    let thread = v["result"]["thread"]["id"]
+                        .as_str()
+                        .ok_or("thread response has no id")?;
                     let name = v["result"]["thread"]["name"].as_str().unwrap_or_default();
-                    connection.selected(request, thread, name)?;
-                } else if v["method"] == "thread/name/updated"
-                    && let Some(thread) = v["params"]["threadId"].as_str()
-                {
-                    let name = v["params"]["threadName"].as_str().unwrap_or_default();
-                    connection.renamed(thread, name);
+                    connection.selected(selection, thread, name)?;
                 }
+                return Ok(transport::Action::forward(Message::text(v.to_string())));
             }
-            let closing = matches!(message, Message::Close(_));
-            if matches!(
-                message,
-                Message::Text(_) | Message::Binary(_) | Message::Close(_)
-            ) {
-                native.send(message)?;
-            }
-            if closing {
-                return Ok(());
-            }
+        } else if v["method"] == "thread/name/updated"
+            && let Some(thread) = v["params"]["threadId"].as_str()
+        {
+            connection.renamed(
+                thread,
+                v["params"]["threadName"].as_str().unwrap_or_default(),
+            );
+        }
+        Ok(transport::Action::forward(message))
+    })
+}
+
+struct PendingThread {
+    selection: Option<u64>,
+    approval: Value,
+    sandbox: Value,
+}
+fn rpc_failure(id: &Value, diagnostic: &str) -> Message {
+    Message::text(json!({"id":id,"error":{"code":-32603,"message":diagnostic}}).to_string())
+}
+fn sandbox_type(mode: &Value) -> Result<&'static str> {
+    match mode.as_str() {
+        Some("danger-full-access") => Ok("dangerFullAccess"),
+        Some("read-only") => Ok("readOnly"),
+        Some("workspace-write") => Ok("workspaceWrite"),
+        _ => Err("unsupported sandbox mode".into()),
+    }
+}
+fn verify_thread_permissions(
+    upstream: &Path,
+    request: &PendingThread,
+    result: &mut Value,
+) -> Result<()> {
+    let expected = sandbox_type(&request.sandbox)?;
+    if result["approvalPolicy"] == request.approval && result["sandbox"]["type"] == expected {
+        return Ok(());
+    }
+    let thread = result["thread"]["id"]
+        .as_str()
+        .ok_or("thread response has no id")?;
+    let policy = match expected {
+        "dangerFullAccess" => json!({"type":"dangerFullAccess"}),
+        "readOnly" => json!({"type":"readOnly"}),
+        _ => return Err("cannot safely repair a workspace sandbox without its full policy".into()),
+    };
+    let (transitions, _) = mpsc::channel();
+    let mut server = Server::connect(upstream, transitions)?;
+    let repaired = (|| -> Result<Value> {
+        server.call(
+            "thread/settings/update",
+            json!({"threadId":thread,"approvalPolicy":request.approval,"sandboxPolicy":policy}),
+        )?;
+        let verified = server.call(
+            "thread/resume",
+            json!({"threadId":thread,"excludeTurns":true}),
+        )?;
+        if verified["approvalPolicy"] != request.approval || verified["sandbox"]["type"] != expected
+        {
+            return Err("Codex did not apply the requested approval and sandbox policy".into());
+        }
+        Ok(verified)
+    })();
+    let _ = server.ws.close(None);
+    let verified = repaired?;
+    for key in ["approvalPolicy", "sandbox", "activePermissionProfile"] {
+        if let Some(value) = verified.get(key) {
+            result[key] = value.clone();
         }
     }
+    Ok(())
+}
+fn background_thread_request(v: &Value) -> bool {
+    v["params"]["threadSource"]
+        .as_str()
+        .is_some_and(|source| source != "user")
+        || v["id"].as_str().is_some_and(|id| {
+            id.starts_with("tui-dynamic-") || id.starts_with("temporary-structured-")
+        })
 }
 
 /// In native Codex 0.162.1, foreground requests use integer IDs (or these
@@ -721,6 +798,7 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("adapter already running".into());
     }
+    let proxy_state = Arc::new(Mutex::new(NativeForeground::default()));
     if let Some(path) = native_socket {
         if path.parent() != Some(dir) {
             return Err("native socket must be inside the private runtime directory".into());
@@ -741,14 +819,16 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
         let upstream = socket.to_owned();
         let runtime = dir.to_owned();
         let conversation = conversation_reporter();
+        let foreground = proxy_state.clone();
         std::thread::spawn(move || {
-            let foreground = Arc::new(Mutex::new(NativeForeground::default()));
             let mut workers: Vec<std::thread::JoinHandle<()>> = Vec::new();
             for (id, stream) in listener.incoming().enumerate() {
                 let stream = match stream {
                     Ok(stream) => stream,
                     Err(e) => {
                         eprintln!("native proxy accept: {e}");
+                        foreground.lock().unwrap().diagnostic =
+                            Some(format!("native proxy accept: {e}"));
                         continue;
                     }
                 };
@@ -757,6 +837,8 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
                 // terminal stays connected. Bound helpers and handshake stalls.
                 if workers.len() >= 16 {
                     eprintln!("native proxy: too many connections");
+                    foreground.lock().unwrap().diagnostic =
+                        Some("native proxy: too many connections".into());
                     continue;
                 }
                 let connection = NativeConnection {
@@ -769,6 +851,7 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
                 workers.push(std::thread::spawn(move || {
                     if let Err(e) = native_proxy(stream, &upstream, &connection, bypass) {
                         eprintln!("native proxy: {e}");
+                        connection.failed(&e.to_string());
                     }
                 }));
             }
@@ -838,6 +921,11 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
             let d = ledger.threads.entry(thread.to_owned()).or_default();
             d.progress(&inbox["head"]);
             s.reconcile(thread, d)?;
+            let foreground = proxy_state.lock().unwrap();
+            if native_socket.is_some() && !foreground.allows(Some(thread)) {
+                report = AgentState::Unknown;
+                return Ok(());
+            }
             if d.eligible(now_ms(), paused, &inbox) {
                 let id = goblins_protocol::messages::operation_key(None)?;
                 d.begin(id.clone(), now_ms());
@@ -852,6 +940,7 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
                     Err(e) => { d.uncertain=true;return Err(e); }
                 }
             }
+            drop(foreground);
             let d = ledger.threads.get(thread).unwrap();
             if d.uncertain {
                 diagnostic = Some(
@@ -877,17 +966,29 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>, bypass: bool) ->
             server = None;
         }
         atomic(&dir.join("ledger.json"), &ledger)?;
-        let _ = reporter.transitions.send(report);
         for error in reporter.errors.try_iter() {
             report_error = error;
         }
         if report_error.is_some() {
             diagnostic = report_error.clone();
         }
+        let foreground = proxy_state.lock().unwrap();
+        if native_socket.is_some() && !foreground.allows(bound.as_deref()) {
+            bound = None;
+            report = AgentState::Unknown;
+        }
+        if let Some(proxy_error) = &foreground.diagnostic {
+            diagnostic = Some(match diagnostic {
+                Some(other) => format!("{proxy_error}; {other}"),
+                None => proxy_error.clone(),
+            });
+        }
+        let _ = reporter.transitions.send(report);
         atomic(
             &dir.join("status.json"),
             &json!({"thread_id":bound,"agent_state":report,"paused":paused,"diagnostic":diagnostic,"updated_at_ms":now_ms(),"threads":ledger.threads}),
         )?;
+        drop(foreground);
         std::thread::sleep(Duration::from_millis(500).saturating_sub(tick.elapsed()));
     }
 }
@@ -1512,7 +1613,7 @@ mod tests {
             notice_rx.recv().unwrap();
             ws.send(Message::text(json!({"id":v["id"],"method":"item/tool/requestUserInput","params":{"threadId":"exact"}}).to_string())).unwrap();
             ws.send(Message::text(
-                json!({"id":v["id"],"result":{"thread":{"id":"exact"}}}).to_string(),
+                json!({"id":v["id"],"result":{"thread":{"id":"exact"},"approvalPolicy":"on-request","sandbox":{"type":"dangerFullAccess"}}}).to_string(),
             ))
             .unwrap();
             let reply: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
@@ -1527,7 +1628,7 @@ mod tests {
             // Without a cwd, the directory the thread was saved with.
             assert_eq!(config.join().unwrap(), Some(json!({"cwd":"/saved"})));
             ws.send(Message::text(
-                json!({"id":resume["id"],"result":{"thread":{"id":"switched"}}}).to_string(),
+                json!({"id":resume["id"],"result":{"thread":{"id":"switched"},"approvalPolicy":"on-request","sandbox":{"type":"dangerFullAccess"}}}).to_string(),
             ))
             .unwrap();
             let _ = ws.read();
@@ -1593,7 +1694,7 @@ mod tests {
                 assert_eq!(v["params"]["sandbox"], "danger-full-access");
                 assert_eq!(v["params"]["approvalPolicy"], "never");
                 ws.send(Message::text(
-                    json!({"id":v["id"],"result":{"thread":thread}}).to_string(),
+                    json!({"id":v["id"],"result":{"thread":thread,"approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}).to_string(),
                 ))
                 .unwrap();
             };

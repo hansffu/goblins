@@ -75,13 +75,13 @@ paths = ["crates/controller/src/mailbox*", "crates/controller/src/messaging.rs",
 
 [features.history]
 description = "Persistence, recreation and CLI/native/Emacs resume"
-python = ["test_history", "test_recreate", "test_codex_native.NativeProtocol.test_remote_resume_reports_the_conversation_through_rename_and_switch", "test_codex_native.NativeProtocol.test_resume_picker_connects_while_the_foreground_stays_open", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
+python = ["test_history", "test_recreate", "test_codex_native.NativeProtocol.test_remote_resume_reports_the_conversation_through_rename_and_switch", "test_codex_native.NativeProtocol.test_resume_picker_connects_while_the_foreground_stays_open", "test_codex_native.NativeProtocol.test_loaded_resume_repairs_and_verifies_effective_permissions", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
 checks = ["rust"]
 paths = ["crates/controller/src/history.rs", "crates/controller/src/records.rs"]
 
 [features.codex]
 description = "Codex configuration, native adapter and operation notices"
-python = ["test_codex_native", "test_codex_config", "test_operation_notices.CodexNotices"]
+python = ["test_codex_native", "test_codex_proxy", "test_codex_config", "test_operation_notices.CodexNotices"]
 checks = ["rust"]
 paths = ["crates/codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix"]
 env = { GOBLINS_TEST_CODEX = "1" }

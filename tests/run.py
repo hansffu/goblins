@@ -19,7 +19,7 @@ from support import HERE, cargo_artifacts, cases, rust_driver
 # Docker class remains exclusive. Class fixtures always stay in one worker.
 EXCLUSIVE_MODULES = {
     "test_docker", "test_scopes", "test_cleanup", "test_run_targets",
-    "test_emacs", "test_codex_config", "test_codex_native",
+    "test_emacs", "test_codex_config", "test_codex_native", "test_codex_proxy",
 }
 EXCLUSIVE_CLASSES = {"test_devshell.DevShellDockerTests", "test_host_commands.HostDockerAcceptance"}
 

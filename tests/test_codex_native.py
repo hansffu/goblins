@@ -239,6 +239,64 @@ requires_openai_auth=false
         switched = native.call('thread/start', {'cwd':str(self.root),'sessionStartSource':'clear'})['thread']['id']
         self.assertEqual(json.loads((runtime/'thread.json').read_text()), switched)
 
+    def test_loaded_resume_repairs_and_verifies_effective_permissions(self):
+        for bypass, saved_policy, saved_sandbox, expected, busy in (
+            (True, 'on-request', 'read-only', 'never', False),
+            (False, 'never', 'danger-full-access', 'on-request', False),
+            (True, 'on-request', 'read-only', 'never', True),
+        ):
+            with self.subTest(bypass=bypass, busy=busy):
+                thread = self.owner.call('thread/start', {'cwd':str(self.root),
+                    'approvalPolicy':saved_policy, 'sandbox':saved_sandbox})['thread']['id']
+                gate = threading.Event()
+                self.addCleanup(gate.set)
+                self.script(*([gate] if busy else []))
+                calls = len(self.inputs)+1
+                self.owner.call('turn/start', {'threadId':thread,
+                    'input':[{'type':'text','text':'materialize a still-loaded conversation'}]})
+                self.owner.event('turn/started' if busy else 'turn/completed', lambda p:p['threadId']==thread)
+                runtime = self.start_adapter(bypass=bypass, name='loaded-'+str(bypass)+'-'+str(busy))
+                native = Client(runtime/'native.sock', 'native-terminal')
+                self.addCleanup(native.wire.close)
+                resumed = native.call('thread/resume', {'threadId':thread})
+                self.assertEqual(resumed['approvalPolicy'], expected)
+                self.assertEqual(resumed['sandbox']['type'], 'dangerFullAccess')
+                # Check the server's live state too, rather than trusting a
+                # proxy-rewritten response that could hide the old settings.
+                actual = self.observer.call('thread/resume', {'threadId':thread, 'excludeTurns':True})
+                self.assertEqual(actual['approvalPolicy'], expected)
+                self.assertEqual(actual['sandbox']['type'], 'dangerFullAccess')
+                self.assertEqual(json.loads((runtime/'thread.json').read_text()), thread)
+                if busy:
+                    self.assertEqual(actual['thread']['status']['type'], 'active')
+                    gate.set()
+                    self.owner.event('turn/completed', lambda p:p['threadId']==thread)
+                self.assertEqual(len(self.inputs), calls, 'policy repair must not submit a turn')
+
+    def test_unrecognized_selection_suspends_delivery_and_warns_without_guessing(self):
+        request_socket, reports = self.fake_daemon()
+        runtime = self.start_adapter(request_socket)
+        native = Client(runtime/'native.sock', 'native-terminal')
+        self.addCleanup(native.wire.close)
+        visible = native.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.reported(reports, {'session_id':visible, 'session_name':''})
+        unknown = native.call('thread/start', {'cwd':str(self.root)}, request_id='future-foreground-id')['thread']['id']
+        self.assertNotEqual(visible, unknown)
+        self.assertFalse((runtime/'thread.json').exists())
+        self.assertEqual(json.loads((runtime/'native-thread.json').read_text()), '')
+        warning = native.event('configWarning')
+        self.assertIn('automatic inbox delivery is suspended', warning['summary'])
+        deadline = time.monotonic()+5
+        while time.monotonic()<deadline:
+            status = json.loads((runtime/'status.json').read_text())
+            if 'cannot identify' in (status.get('diagnostic') or ''): break
+            time.sleep(.025)
+        self.assertIn('cannot identify', status['diagnostic'])
+        self.assertIsNone(status['thread_id'])
+        switched = native.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.reported(reports, {'session_id':switched, 'session_name':''})
+        self.assertEqual(json.loads((runtime/'thread.json').read_text()), switched)
+
     def test_resume_picker_connects_while_the_foreground_stays_open(self):
         from terminal_support import Terminal, screen_wait
         self.script()

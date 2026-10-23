@@ -28,7 +28,7 @@ def serve(path):
     listener.listen()
     clients = []
     lock = threading.RLock()
-    state = {'thread': str(uuid.uuid4()), 'status': {'type': 'idle'}, 'queue': [], 'items': []}
+    state = {'approval': 'on-request', 'sandbox': {'type':'dangerFullAccess'}, 'thread': str(uuid.uuid4()), 'status': {'type': 'idle'}, 'queue': [], 'items': []}
     def send(c, value):
         wire, write_lock = c
         try:
@@ -85,15 +85,21 @@ def serve(path):
                     elif method == 'thread/start':
                         Path('/tmp/goblins-codex/start-params.json').write_text(json.dumps(params))
                         subprocess.run(['/run/goblins/bin/goblins-codex', 'hook'], input=json.dumps({'hook_event_name': 'SessionStart', 'session_id': state['thread']}).encode(), stdout=subprocess.DEVNULL, check=True)
-                        result = {'thread': {'id': state['thread'], 'status': state['status']}}
+                        state['approval'] = params['approvalPolicy']
+                        result = {'thread': {'id': state['thread'], 'status': state['status']}, 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
                     elif method == 'config/read': result = {'config': {'approval_policy': None}}
                     elif method == 'thread/resume' and params.get('threadId') != state['thread'] and not state['items']:
                         # The native terminal resuming a recorded thread, with
                         # the permissions the adapter set.
                         Path('/tmp/goblins-codex/resume-params.json').write_text(json.dumps(params))
                         state['thread'] = params['threadId']
-                        result = {'thread': {'id': state['thread'], 'status': state['status'], 'name': 'Resumed thread'}}
-                    elif method in ('thread/read', 'thread/resume'): result = {'thread': {'id': state['thread'], 'status': state['status'], 'cwd': os.getcwd()}}
+                        state['approval'] = params['approvalPolicy']
+                        result = {'thread': {'id': state['thread'], 'status': state['status'], 'name': 'Resumed thread'}, 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
+                    elif method in ('thread/read', 'thread/resume'): result = {'thread': {'id': state['thread'], 'status': state['status'], 'cwd': os.getcwd()}, 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
+                    elif method == 'thread/settings/update':
+                        state['approval'] = params['approvalPolicy']
+                        state['sandbox'] = params['sandboxPolicy']
+                        result = {}
                     elif method == 'thread/unsubscribe': result = {}
                     elif method == 'thread/items/list': result = {'data': list(reversed(state['items'])), 'nextCursor': None}
                     elif method == 'thread/queue/list': result = {'data': state['queue'][:], 'nextCursor': None}
