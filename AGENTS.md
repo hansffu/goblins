@@ -32,11 +32,11 @@ Every change is reviewed by a goblin running a different model: Claude is review
 
 Reuse a raid member of the other model whose role is `reviewer`. If there is none, run one as raid owner and have it set its role with `goblin raid set-role reviewer`; if you are not the owner, ask the owner.
 
-Send the reviewer the commit or diff, the intent and the files to check against. Verify each finding before acting on it, and send fixes back until the reviewer has no remaining findings.
+Send the reviewer the uncommitted diff, the intent and the files to check against. Verify each finding before acting on it, and send fixes back until the reviewer has no remaining findings.
 
 ## Commits
 
-Commit each logical change once. Fold review fixes into the commit they correct instead of adding a commit per review round, so the history shows the change, not how it was reviewed.
+Commit a change only after its reviewer has no remaining findings. Until then, keep the change and its review fixes uncommitted, so review rounds never add commits and the history shows the change, not how it was reviewed. Commit each logical change on its own; a change the user asks for after review is a new change, with its own review and commit.
 
 ## Responses to the user
 
