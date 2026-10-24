@@ -132,6 +132,8 @@ Launches a goblin from a configuration, or recreates a recorded one. Returns onc
   - =recreate= (optional): history record ID, unique prefix or unique agent name to recreate.
 - Output :: ={"session", "agent_name", "state": "starting", "terminal"}=. =terminal= is the path of the session's raw terminal stream socket.
 
+After the framed attachment result, the terminal stream restores active application-keypad, application-cursor, bracketed-paste and xterm mouse modes before delivering buffered payload output. This also applies after a detach, connection loss or detached launch, even when the payload does not redraw or its original mode-setting bytes have left the retained output tail.
+
 *** =sessions.stop=
 
 Requests teardown. Acceptance does not mean cleanup has finished.

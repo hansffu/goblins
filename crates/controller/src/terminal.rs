@@ -233,8 +233,21 @@ impl Terminal {
             id,
             serde_json::json!({"attached":true}),
         ))?;
-        // Keep framing separate from raw output: an abandoned handshake must
-        // never become terminal text when a later client attaches.
+        // A new consumer has its own terminal input modes. The payload may
+        // have enabled mouse reporting only once, long before this attach;
+        // those bytes may already be consumed or evicted from the output tail.
+        let screen = self.screen.screen();
+        if screen.application_keypad()
+            || screen.application_cursor()
+            || screen.bracketed_paste()
+            || screen.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+            || screen.mouse_protocol_encoding() != vt100::MouseProtocolEncoding::Default
+        {
+            self.hello.extend(screen.input_mode_formatted());
+        }
+        // Keep this consumer's acceptance and mode restore separate from the
+        // retained payload output: an abandoned handshake must never become
+        // terminal text when a later client attaches.
         self.peer = Some(peer);
         self.connected = true;
         self.detached = false;
@@ -685,6 +698,75 @@ mod tests {
         f.terminal.tick().unwrap();
         assert_eq!(second.read(&mut bytes).unwrap(), 0);
         assert!(f.terminal.complete);
+    }
+
+    #[test]
+    fn attachment_restores_active_input_modes_without_payload_redraw() {
+        let modes = b"\x1b=\x1b[?1h\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+        let marker = b"new consumer ready";
+        let wheel = b"\x1b[<64;12;8M";
+        for attachment in ["detach", "disconnect", "detached launch"] {
+            for overflow in [false, true] {
+                let mut f = Fixture::new();
+                if attachment == "detached launch" {
+                    f.terminal.detached = true;
+                    f.payload.write_all(modes).unwrap();
+                    f.terminal.tick().unwrap();
+                } else {
+                    let mut first = f.connect();
+                    f.payload.write_all(modes).unwrap();
+                    f.terminal.tick().unwrap();
+                    let mut received = vec![0; modes.len()];
+                    first.read_exact(&mut received).unwrap();
+                    assert_eq!(received, modes);
+                    if attachment == "detach" {
+                        f.terminal.detach().unwrap();
+                        assert_eq!(first.read(&mut [0]).unwrap(), 0);
+                    }
+                    drop(first);
+                    f.terminal.tick().unwrap();
+                }
+                if overflow {
+                    for _ in 0..16 {
+                        f.payload.write_all(&[b'x'; 8192]).unwrap();
+                        f.terminal.tick().unwrap();
+                        assert!(f.terminal.to_peer.len() <= CAP);
+                    }
+                }
+                f.payload.write_all(marker).unwrap();
+                let mut second = f.connect();
+                let mut received = Vec::new();
+                while !received.ends_with(marker) {
+                    f.terminal.tick().unwrap();
+                    let mut bytes = [0; 8192];
+                    let count = second.read(&mut bytes).unwrap();
+                    assert_ne!(count, 0);
+                    received.extend_from_slice(&bytes[..count]);
+                }
+                // A fresh terminal has none of the previous consumer's modes.
+                let mut consumer = vt100::Parser::new(24, 80, 0);
+                consumer.process(&received);
+                let screen = consumer.screen();
+                assert_eq!(
+                    screen.mouse_protocol_mode(),
+                    vt100::MouseProtocolMode::AnyMotion,
+                    "{attachment}, overflow={overflow}"
+                );
+                assert_eq!(
+                    screen.mouse_protocol_encoding(),
+                    vt100::MouseProtocolEncoding::Sgr
+                );
+                assert!(screen.application_keypad());
+                assert!(screen.application_cursor());
+                assert!(screen.bracketed_paste());
+                // Restoration is output only; wheel input still reaches the payload unchanged.
+                second.write_all(wheel).unwrap();
+                f.terminal.tick().unwrap();
+                let mut received = vec![0; wheel.len()];
+                f.payload.read_exact(&mut received).unwrap();
+                assert_eq!(received, wheel);
+            }
+        }
     }
 
     #[test]
