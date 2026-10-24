@@ -2,7 +2,7 @@
 use crate::{RESIZE, STOP};
 use goblins_controller::host::Client;
 use goblins_controller::{Result, unix};
-use goblins_protocol::terminal::size;
+use goblins_protocol::terminal::{PaletteProbe, size};
 use serde::Serialize;
 use serde_json::json;
 use std::{os::fd::AsRawFd, path::PathBuf, sync::atomic::Ordering};
@@ -36,6 +36,7 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
     } else {
         size(0)?
     };
+    let mut probe = launch_palette(&control, detatched)?;
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
@@ -47,6 +48,7 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
         ("rows".into(), json!(dimensions.ws_row.max(1))),
         ("cols".into(), json!(dimensions.ws_col.max(1))),
     ]);
+    add_palette(&mut params, probe.as_ref());
     let launch = control.call("sessions.start", params)?;
     if detatched {
         println!("{launch}");
@@ -57,6 +59,10 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
         control,
         session,
         launch["terminal"].as_str().ok_or("missing terminal path")?,
+        probe
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.input))
+            .unwrap_or_default(),
     )
 }
 
@@ -78,14 +84,14 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
     } else {
         size(0)?
     };
+    let mut probe = launch_palette(&control, detached)?;
     let mut random = [0; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
     let key: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let launch = control.call(
-        "sessions.start",
-        json!({"key":key,"configuration":configuration,"recreate":id,"detached":detached,
-            "rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)}),
-    )?;
+    let mut params = json!({"key":key,"configuration":configuration,"recreate":id,"detached":detached,
+            "rows":dimensions.ws_row.max(1),"cols":dimensions.ws_col.max(1)});
+    add_palette(&mut params, probe.as_ref());
+    let launch = control.call("sessions.start", params)?;
     if detached {
         println!("{launch}");
         return Ok(0);
@@ -129,6 +135,10 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
         control,
         session,
         record["terminal"].as_str().ok_or("missing terminal path")?,
+        probe
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.input))
+            .unwrap_or_default(),
     )
 }
 
@@ -155,10 +165,31 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
         control,
         session,
         record["terminal"].as_str().ok_or("missing terminal path")?,
+        Vec::new(),
     )
 }
 
-fn relay(mut control: Client, session: &str, path: &str) -> Result<i32> {
+fn launch_palette(control: &Client, detached: bool) -> Result<Option<PaletteProbe>> {
+    if detached
+        || !control.features.iter().any(|f| f == "terminal-palette")
+        || unsafe { libc::isatty(1) != 1 }
+    {
+        return Ok(None);
+    }
+    let probe = PaletteProbe::new()?;
+    if STOP.load(Ordering::Relaxed) {
+        return Err("terminal probe interrupted".into());
+    }
+    Ok(Some(probe))
+}
+fn add_palette(params: &mut serde_json::Value, probe: Option<&PaletteProbe>) {
+    if let Some(probe) = probe
+        && !probe.palette.is_empty()
+    {
+        params["terminal_palette"] = json!(probe.palette);
+    }
+}
+fn relay(mut control: Client, session: &str, path: &str, input: Vec<u8>) -> Result<i32> {
     use std::os::unix::net::UnixStream;
     let mut terminal = UnixStream::connect(path)?;
     // rpc::read allows an unlimited idle wait for permission replies. Bound
@@ -180,11 +211,12 @@ fn relay(mut control: Client, session: &str, path: &str) -> Result<i32> {
     if hello["result"]["attached"] != true {
         return Err("invalid terminal handshake".into());
     }
-    goblins_protocol::terminal::relay(
+    goblins_protocol::terminal::relay_with_input(
         terminal,
         session,
         |method, params| control.call(method, params),
         &STOP,
         &RESIZE,
+        input,
     )
 }

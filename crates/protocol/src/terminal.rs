@@ -1,5 +1,6 @@
 //! Bounded raw terminal relay shared by host and sandbox clients.
 //! Control calls and the authenticated stream are supplied by the caller.
+pub mod palette;
 use serde_json::{Value, json};
 use std::{
     io,
@@ -20,11 +21,23 @@ fn cvt(n: i32) -> io::Result<i32> {
 struct TerminalMode(libc::termios);
 impl TerminalMode {
     fn raw() -> Result<Self> {
+        Self::configure(false)
+    }
+    fn probe() -> Result<Self> {
+        Self::configure(true)
+    }
+    fn configure(probe: bool) -> Result<Self> {
         let mut previous = unsafe { std::mem::zeroed() };
         cvt(unsafe { libc::tcgetattr(0, &mut previous) })?;
         let mut raw = previous;
         unsafe {
             libc::cfmakeraw(&mut raw);
+        }
+        if probe {
+            // Keyboard interrupts and normal diagnostic line endings remain
+            // usable while probing. Only the relay needs fully raw mode.
+            raw.c_lflag |= previous.c_lflag & libc::ISIG;
+            raw.c_oflag = previous.c_oflag;
         }
         cvt(unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw) })?;
         Ok(Self(previous))
@@ -59,12 +72,68 @@ pub fn size(fd: RawFd) -> Result<libc::winsize> {
     cvt(unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut s) })?;
     Ok(s)
 }
+/// Probe only for an immediately attached launch, preserving typeahead.
+/// Restore termios before launch; detached launches must not read shell input.
+pub struct PaletteProbe {
+    pub palette: palette::Palette,
+    pub input: Vec<u8>,
+}
+impl PaletteProbe {
+    pub fn new() -> Result<Self> {
+        use std::{
+            io::Write,
+            time::{Duration, Instant},
+        };
+        let _mode = TerminalMode::probe()?;
+        std::io::stdout().write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b[c")?;
+        std::io::stdout().flush()?;
+        let until = Instant::now() + Duration::from_secs(1);
+        let mut bytes = Vec::new();
+        while Instant::now() < until && bytes.len() < 65536 {
+            let mut fd = libc::pollfd {
+                fd: 0,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout = until
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .min(1000) as i32;
+            if unsafe { libc::poll(&mut fd, 1, timeout) } <= 0 {
+                break;
+            }
+            let mut buf = [0u8; 1024];
+            let room = buf.len().min(65536 - bytes.len());
+            let n = unsafe { libc::read(0, buf.as_mut_ptr().cast(), room) };
+            if n <= 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buf[..n as usize]);
+            let (_, _, boundary) = palette::probe_replies(&bytes);
+            if boundary {
+                break;
+            }
+        }
+        let (palette, input, _) = palette::probe_replies(&bytes);
+        Ok(Self { palette, input })
+    }
+}
 pub fn relay(
+    terminal: UnixStream,
+    session: &str,
+    control: impl FnMut(&str, Value) -> Result<Value>,
+    stop: &AtomicBool,
+    resize: &AtomicBool,
+) -> Result<i32> {
+    relay_with_input(terminal, session, control, stop, resize, Vec::new())
+}
+pub fn relay_with_input(
     mut terminal: UnixStream,
     session: &str,
     mut control: impl FnMut(&str, Value) -> Result<Value>,
     stop: &AtomicBool,
     resize: &AtomicBool,
+    input: Vec<u8>,
 ) -> Result<i32> {
     use std::io::{Read, Write};
     terminal.set_read_timeout(None)?;
@@ -72,7 +141,7 @@ pub fn relay(
     let _mode = TerminalMode::raw()?;
     let _output_flags = NonblockingOutput::new()?;
     let mut to_terminal = Vec::<u8>::new();
-    let mut to_shell = Vec::<u8>::new();
+    let mut to_shell = input;
     let mut eof = false;
     loop {
         if stop.load(Ordering::Relaxed) {

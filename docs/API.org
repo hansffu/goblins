@@ -61,7 +61,7 @@ Session parameters named =session= accept a session ID or the agent name of a li
 Negotiates the API version and identifies the daemon.
 
 - Input :: ={"api": 1}=
-- Output :: ={"api": 1, "instance", "role": "host"|"sandbox", "configuration", "features": [...], "limits": {...}}=. =instance= identifies this daemon run. =configuration= is the caller's configuration name on the sandbox endpoint, null on the host endpoint. =features= lists capability strings (for example =state-subscribe=, =raids=, =exec=, =host-commands=). =limits= has =header=, =body=, =frame_seconds=, =depth=, =response_body=, =calls=, =connections=, =sessions=, =output_queue=, =snapshot= and =terminal_buffer=.
+- Output :: ={"api": 1, "instance", "role": "host"|"sandbox", "configuration", "features": [...], "limits": {...}}=. =instance= identifies this daemon run. =configuration= is the caller's configuration name on the sandbox endpoint, null on the host endpoint. =features= lists capability strings (for example =state-subscribe=, =raids=, =exec=, =host-commands= and =terminal-palette=). =terminal-palette= advertises optional launch-time RGB16 terminal colors. =limits= has =header=, =body=, =frame_seconds=, =depth=, =response_body=, =calls=, =connections=, =sessions=, =output_queue=, =snapshot= and =terminal_buffer=.
 
 * Host endpoint
 
@@ -120,19 +120,24 @@ Returns one session record.
 
 Launches a goblin from a configuration, or recreates a recorded one. Returns once the launch is accepted; follow its state through =sessions.get= or the subscription.
 
-- Input :: ={"key", "configuration", "name", "agent_name", "cwd", "scope", "dev_shell", "rows", "cols", "detached", "raid", "recreate"}=
+- Input :: ={"key", "configuration", "name", "agent_name", "cwd", "scope", "dev_shell", "rows", "cols", "terminal_palette", "detached", "raid", "recreate"}=
   - =key= (required): a retry key, 1–64 of =[A-Za-z0-9_-]=. Repeating a start with the same key and parameters returns the original acceptance; different parameters conflict.
   - =configuration= (required): absolute path of the runtime manifest directory.
   - =name=: the configuration key (for example =shell=), 1–64 of =[A-Za-z0-9_-]=. Omitted or empty for a recreate.
   - =agent_name= (optional, may be null): the goblin's name, matching =[a-z][a-z0-9-]{0,31}= and unique among live goblins; omitted or null picks one from the name list.
   - =cwd=, =scope=, =dev_shell= (optional): absolute launch directory; scope to join, matching =[A-Za-z_][A-Za-z0-9_-]{0,63}=; absolute =PATH[#ATTR]= of a host flake dev shell.
   - =rows=, =cols= (required): initial terminal size, 1–1000 each.
+  - =terminal_palette= (optional, may be null): known default terminal colors, ={"foreground": [R,G,B], "background": [R,G,B]}=. Each color is optional and may be null; components are integers from 0 to 65535. Unknown fields, invalid components and non-triplets are rejected. Colors belong to this terminal, not the daemon globally; they are not persisted in history.
   - =detached= (optional): start without a terminal consumer.
   - =raid= (optional): join this raid, creating it with the new goblin as owner. Raid names match =[a-z][a-z0-9-]{0,31}=.
   - =recreate= (optional): history record ID, unique prefix or unique agent name to recreate.
 - Output :: ={"session", "agent_name", "state": "starting", "terminal"}=. =terminal= is the path of the session's raw terminal stream socket.
 
 After the framed attachment result, the terminal stream restores active application-keypad, application-cursor, bracketed-paste and xterm mouse modes before delivering buffered payload output. This also applies after a detach, connection loss or detached launch, even when the payload does not redraw or its original mode-setting bytes have left the retained output tail.
+
+While no consumer is attached (including before the first attachment), known colors answer standard OSC 10/11 queries locally. Answered queries are omitted from the retained output, preventing duplicate replies on a later attachment; other bytes pass through. A combined OSC 10 query for both colors is answered locally only when both are known. Attached queries reach the real terminal, and valid OSC 10/11 RGB reports refresh the cache without counting as human input. Unknown colors are never guessed. This applies to every configuration, independently of its payload program.
+
+The CLI probes both colors before an immediately attached launch or resume, using a following primary device-attributes (DA1) response as the ordered boundary and a one-second fallback deadline. It consumes probe reports, preserves other input for the relay and restores normal terminal settings before launching. Detached CLI launches do not read shell input and provide no palette. The Emacs frontend supplies known colors from its graphical frame, including on resume. Headless clients can omit the palette; members inherit the caller's current palette at launch. Applications which cache their startup theme do not automatically change it when moved to a differently themed terminal.
 
 *** =sessions.stop=
 
@@ -434,7 +439,7 @@ A raid owner sees and stops only the goblins it ran in its raid, while it owns i
 
 *** =sessions.start=
 
-Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals.
+Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals. Its terminal inherits the caller's known foreground/background palette at launch, for all configuration types.
 
 - Input :: ={"key", "name", "agent_name", "detached"?}=
 - Output :: ={"session", "agent_name", "state"}=

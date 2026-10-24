@@ -400,6 +400,8 @@ struct Start {
     rows: u16,
     cols: u16,
     #[serde(default)]
+    terminal_palette: Option<goblins_protocol::terminal::palette::Palette>,
+    #[serde(default)]
     detached: bool,
     /// Join this raid, creating it with the new goblin as owner if absent.
     #[serde(default)]
@@ -1451,6 +1453,13 @@ impl Controller {
         let path = directory.join("terminal.sock");
         let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
         terminal.detached = p.detached;
+        terminal.set_palette(
+            owner
+                .as_ref()
+                .map(|o| self.sessions[&o.id].terminal.palette())
+                .or(p.terminal_palette)
+                .unwrap_or_default(),
+        );
         let recorded = p.recorded.take();
         // A recreated goblin continues its record; a new root goblin gets a
         // short record id of its own, used once it reaches running.
@@ -1709,6 +1718,7 @@ impl Controller {
                         dev_shell: None,
                         rows: 24,
                         cols: 80,
+                        terminal_palette: None,
                         detached: p.detached,
                         raid: None,
                         recreate: None,
@@ -2050,7 +2060,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate","terminal-palette"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -3328,6 +3338,15 @@ mod tests {
             .unwrap()
             .granted_outputs
             .insert("jq".into(), "/nix/store/x-jq".into());
+        let palette = goblins_protocol::terminal::palette::Palette {
+            foreground: Some([0xffff; 3]),
+            background: Some([0x2020, 0x2424, 0x2a2a]),
+        };
+        d.sessions
+            .get_mut(&root)
+            .unwrap()
+            .terminal
+            .set_palette(palette);
         let accepted = d
             .sandbox_control(&root, "sessions.start", start("shell"))
             .unwrap();
@@ -3335,6 +3354,7 @@ mod tests {
         let id = accepted["session"].as_str().unwrap();
         let a = &d.sessions[id];
         assert_eq!(a.record.name, "shell");
+        assert_eq!(a.terminal.palette(), palette);
         assert_eq!(a.record.configuration, manifest.display().to_string());
         assert_eq!(a.record.cwd.as_deref(), Some(Path::new("/project")));
         assert_eq!(

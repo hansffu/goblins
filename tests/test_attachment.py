@@ -8,6 +8,34 @@ from terminal_support import Terminal
 
 
 class AttachmentTests(unittest.TestCase):
+    def test_startup_color_probe_preserves_typeahead_and_restores_the_terminal(self):
+        d = Daemon()
+        self.addCleanup(d.close)
+        client = Terminal([str(d.app), "--state-dir", str(d.state),
+                           "run", "shell", "--name", "color-probe"],
+                          colors={10: "dddd/dddd/dddd", 11: "2020/2424/2a2a"}, probe_delay=.35)
+        self.addCleanup(client.close)
+        # Deliberately type before replying to the probe, not after Fish starts.
+        client.send("printf 'PRESERVED=%s\\n' draft\n")
+        client.expect(r"(?:^|\n)PRESERVED=draft\n")
+        # The inherited probe cache must answer while detached, with no real
+        # terminal to respond. The next attachment emulates no OSC colors.
+        client.send("goblin detach; stty raw -echo; printf '\\033]11;?\\007'; "
+                    "set -g color_reply (timeout --foreground 3 head -c 25 | base64 -w0); stty sane; "
+                    "printf 'COLOR=%s\\n' $color_reply\n")
+        self.assertEqual(client.wait(), 0)
+        import termios
+        flags = termios.tcgetattr(client.fd)[3]
+        self.assertTrue(flags & termios.ICANON)
+        self.assertTrue(flags & termios.ECHO)
+        again = Terminal([str(d.app), "--state-dir", str(d.state), "attach", "color-probe"])
+        self.addCleanup(again.close)
+        import base64
+        expected = base64.b64encode(b"\x1b]11;rgb:2020/2424/2a2a\x1b\\").decode()
+        again.expect(r"(?:^|\n)COLOR=" + expected + r"\n")
+        again.send("exit 0\n")
+        self.assertEqual(again.wait(), 0)
+
     def test_host_detach_by_name_and_id_leave_processes_running(self):
         d = Daemon()
         self.addCleanup(d.close)

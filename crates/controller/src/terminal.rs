@@ -1,6 +1,7 @@
 //! Daemon-owned PTY with one terminal consumer at a time.
 //! A framed acceptance precedes raw bytes; detach half-closes that stream.
 use crate::{Result, unix};
+use goblins_protocol::terminal::palette::Palette;
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
@@ -24,6 +25,10 @@ const INPUT_ESCAPE_TIMEOUT: Duration = Duration::from_millis(100);
 struct InputEvents {
     pending: Vec<u8>,
     since: Option<Instant>,
+    palette: Palette,
+    paste: bool,
+    string: Option<bool>,
+    string_escape: bool,
 }
 impl InputEvents {
     // None means only terminal reports; Some records human input/interruption.
@@ -33,11 +38,23 @@ impl InputEvents {
             .since
             .is_some_and(|t| now.duration_since(t) >= INPUT_ESCAPE_TIMEOUT)
         {
-            human = Some(self.pending == b"\x1b");
+            human = Some(self.pending == b"\x1b" || self.pending.contains(&3));
+            if !self.paste && self.pending.starts_with(b"\x1b]") {
+                self.string = Some(true);
+                self.string_escape = self.pending.last() == Some(&0x1b);
+            }
             self.pending.clear();
             self.since = None;
         }
         for &byte in bytes {
+            if let Some(osc) = self.string {
+                human = Some(human.unwrap_or(false) || byte == 3);
+                if (osc && byte == 7) || (self.string_escape && byte == b'\\') {
+                    self.string = None;
+                }
+                self.string_escape = byte == 0x1b;
+                continue;
+            }
             if self.pending.is_empty() {
                 if byte == 0x1b {
                     self.pending.push(byte);
@@ -49,15 +66,27 @@ impl InputEvents {
             }
             self.pending.push(byte);
             let p = &self.pending;
-            let report = p == b"\x1b[I"
-                || p == b"\x1b[O"
-                || (p.starts_with(b"\x1b[")
-                    && p.len() > 3
-                    && matches!(p.last(), Some(b'R' | b'c'))
-                    && p[2..p.len() - 1]
-                        .iter()
-                        .all(|b| b.is_ascii_digit() || b";?>".contains(b)));
-            let prefix = p == b"\x1b["
+            let osc = p.starts_with(b"\x1b]");
+            let osc_end = osc && (p.ends_with(b"\x07") || p.ends_with(b"\x1b\\"));
+            let color = osc_end && !self.paste && self.palette.observe(p);
+            let report = color
+                || (!self.paste
+                    && (p == b"\x1b[I"
+                        || p == b"\x1b[O"
+                        || (p.starts_with(b"\x1b[")
+                            && p.len() > 3
+                            && matches!(p.last(), Some(b'R' | b'c'))
+                            && p[2..p.len() - 1]
+                                .iter()
+                                .all(|b| b.is_ascii_digit() || b";?>".contains(b)))));
+            if p == b"\x1b[200~" {
+                self.paste = true;
+            }
+            if p == b"\x1b[201~" {
+                self.paste = false;
+            }
+            let prefix = (osc && !self.paste && !osc_end && p.len() < 128)
+                || p == b"\x1b["
                 || (p.starts_with(b"\x1b[")
                     && p.len() < 64
                     && p[2..]
@@ -65,13 +94,103 @@ impl InputEvents {
                         .all(|b| b.is_ascii_digit() || b";?>".contains(b)));
             if report || !prefix {
                 if !report {
-                    human = Some(human.unwrap_or(false) || byte == 3);
+                    human = Some(human.unwrap_or(false) || self.pending.contains(&3));
+                    if !self.paste && osc && !osc_end {
+                        self.string = Some(true);
+                    } else if !self.paste && p.len() == 2 && p[0] == 0x1b && b"P_^X".contains(&byte)
+                    {
+                        self.string = Some(false);
+                    }
+                    self.string_escape = byte == 0x1b;
                 }
                 self.pending.clear();
                 self.since = None;
             }
         }
         human
+    }
+}
+/// Hold only a possible short color query. Other control strings pass through
+/// untouched, including strings which contain bytes resembling a color query.
+#[derive(Default)]
+struct ColorQueries {
+    pending: Vec<u8>,
+    string: Option<bool>, // OSC accepts BEL as well as ST; DCS/APC/PM do not.
+    escape: bool,
+    since: Option<Instant>,
+}
+impl ColorQueries {
+    fn flush(&mut self, output: &mut Vec<u8>) {
+        output.append(&mut self.pending);
+        self.since = None;
+    }
+    fn process(
+        &mut self,
+        bytes: &[u8],
+        palette: Option<Palette>,
+        output: &mut Vec<u8>,
+        replies: &mut Vec<u8>,
+    ) {
+        const QUERIES: &[(&[u8], &[u8])] = &[
+            (b"\x1b]10;?\x07", &[10]),
+            (b"\x1b]10;?\x1b\\", &[10]),
+            (b"\x1b]11;?\x07", &[11]),
+            (b"\x1b]11;?\x1b\\", &[11]),
+            (b"\x1b]10;?;?\x07", &[10, 11]),
+            (b"\x1b]10;?;?\x1b\\", &[10, 11]),
+        ];
+        for &byte in bytes {
+            if let Some(osc) = self.string {
+                output.push(byte);
+                if (osc && byte == 7) || (self.escape && byte == b'\\') {
+                    self.string = None;
+                }
+                self.escape = byte == 0x1b;
+                continue;
+            }
+            if self.pending.is_empty() {
+                if byte == 0x1b {
+                    self.pending.push(byte);
+                    self.since = Some(Instant::now());
+                } else {
+                    output.push(byte);
+                }
+                continue;
+            }
+            self.pending.push(byte);
+            if let Some((_, codes)) = QUERIES.iter().find(|(query, _)| *query == self.pending) {
+                let answer: Option<Vec<Vec<u8>>> =
+                    palette.and_then(|p| codes.iter().map(|c| p.reply(*c)).collect());
+                if let Some(answer) = answer {
+                    for reply in answer {
+                        replies.extend(reply);
+                    }
+                    self.pending.clear();
+                    self.since = None;
+                } else {
+                    self.flush(output);
+                }
+            } else if !QUERIES
+                .iter()
+                .any(|(query, _)| query.starts_with(&self.pending))
+            {
+                self.string = if self.pending.starts_with(b"\x1b]") && byte != 7 {
+                    Some(true)
+                } else if self.pending.len() == 2 && b"P_^X".contains(&byte) {
+                    Some(false)
+                } else {
+                    None
+                };
+                self.escape = byte == 0x1b;
+                self.flush(output);
+                // A second Escape can start another sequence.
+                if self.string.is_none() && byte == 0x1b {
+                    output.pop();
+                    self.pending.push(byte);
+                    self.since = Some(Instant::now());
+                }
+            }
+        }
     }
 }
 pub struct Terminal {
@@ -89,6 +208,8 @@ pub struct Terminal {
     to_peer: Vec<u8>,
     to_pty: Vec<u8>,
     screen: vt100::Parser,
+    color_queries: ColorQueries,
+    color_replies: Vec<u8>,
     revision: u64,
     input_revision: u64,
     input_interrupted: bool,
@@ -162,12 +283,20 @@ impl Terminal {
             to_peer: vec![],
             to_pty: vec![],
             screen: vt100::Parser::new(24, 80, 0),
+            color_queries: ColorQueries::default(),
+            color_replies: Vec::new(),
             revision: 0,
             input_revision: 0,
             input_interrupted: false,
             input_events: InputEvents::default(),
             last_output: std::time::Instant::now(),
         })
+    }
+    pub fn palette(&self) -> Palette {
+        self.input_events.palette
+    }
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.input_events.palette = palette;
     }
     pub fn master(&mut self, fd: OwnedFd) -> Result<()> {
         unix::nonblocking(fd.as_raw_fd())?;
@@ -285,6 +414,7 @@ impl Terminal {
             && !text.contains("esc to interrupt")
             && self.last_output.elapsed() >= std::time::Duration::from_millis(300)
             && self.to_pty.is_empty()
+            && self.color_replies.is_empty()
             && self.input_events.pending.is_empty()
             && !self.eof;
         crate::integration::View {
@@ -380,6 +510,22 @@ impl Terminal {
                 Err(e) => return Err(e.into()),
             }
         }
+        let palette = if self.attached() {
+            None
+        } else {
+            Some(self.palette())
+        };
+        if self
+            .color_queries
+            .since
+            .is_some_and(|t| t.elapsed() >= INPUT_ESCAPE_TIMEOUT)
+        {
+            if self.color_queries.pending.starts_with(b"\x1b]") {
+                self.color_queries.string = Some(true);
+                self.color_queries.escape = self.color_queries.pending.last() == Some(&0x1b);
+            }
+            self.color_queries.flush(&mut self.to_peer);
+        }
         if let Some(master) = &mut self.master
             && !self.eof
         {
@@ -388,14 +534,18 @@ impl Terminal {
             // bounded tail, making room for the next read when necessary.
             let mut newest = Vec::new();
             let tail = self.detached || (self.connected && self.peer.is_none());
-            let result = if tail || self.to_peer.len() < CAP {
+            let result = if self.color_replies.len() <= CAP - 8192
+                && (tail || self.to_peer.len() + self.color_queries.pending.len() < CAP)
+            {
                 // Preserve backpressure by limiting the read to remaining room.
                 let mut buf = [0; 8192];
                 let room = if tail {
                     buf.len()
                 } else {
-                    buf.len().min(CAP - self.to_peer.len())
-                };
+                    buf.len()
+                        .min(CAP - self.to_peer.len() - self.color_queries.pending.len())
+                }
+                .min((CAP - self.color_replies.len()) / 8);
                 match master.read(&mut buf[..room]) {
                     Ok(n) => {
                         newest.extend_from_slice(&buf[..n]);
@@ -418,9 +568,14 @@ impl Terminal {
                 self.screen.process(&newest);
                 self.revision += 1;
                 self.last_output = std::time::Instant::now();
-                let overflow = (self.to_peer.len() + newest.len()).saturating_sub(CAP);
+                let mut output = Vec::new();
+                self.color_queries
+                    .process(&newest, palette, &mut output, &mut self.color_replies);
+                let overflow =
+                    (self.to_peer.len() + output.len() + self.color_queries.pending.len())
+                        .saturating_sub(CAP);
                 self.to_peer.drain(..overflow);
-                self.to_peer.extend(newest);
+                self.to_peer.extend(output);
             }
             match result {
                 Ok(eof) => self.eof = eof,
@@ -430,7 +585,16 @@ impl Terminal {
                     self.interrupted = true;
                 }
             }
-            if !self.eof && write(master, &mut self.to_pty).is_err() {
+            if self.eof {
+                self.color_queries.flush(&mut self.to_peer);
+            }
+            if !self.eof && write(master, &mut self.color_replies).is_err() {
+                self.color_replies.clear();
+            }
+            if !self.eof
+                && self.color_replies.is_empty()
+                && write(master, &mut self.to_pty).is_err()
+            {
                 self.to_pty.clear();
             }
         }
@@ -504,6 +668,220 @@ mod tests {
         }
     }
 
+    #[test]
+    fn detached_color_queries_use_only_known_colors_without_claiming_human_input() {
+        for state in ["pre-attach", "detached", "disconnected"] {
+            let mut f = Fixture::new();
+            if state != "pre-attach" {
+                let peer = f.connect();
+                if state == "detached" {
+                    f.terminal.detach().unwrap();
+                }
+                drop(peer);
+                f.terminal.tick().unwrap();
+            }
+            let palette = Palette {
+                foreground: Some([0xdddd; 3]),
+                background: Some([0x2020, 0x2424, 0x2a2a]),
+            };
+            f.terminal.set_palette(palette);
+            for part in [b"\x1b]1".as_slice(), b"0;?;?\x1b", b"\\"] {
+                f.payload.write_all(part).unwrap();
+                f.terminal.tick().unwrap();
+            }
+            f.payload
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let mut expected = palette.reply(10).unwrap();
+            expected.extend(palette.reply(11).unwrap());
+            let mut actual = vec![0; expected.len()];
+            f.payload.read_exact(&mut actual).unwrap();
+            assert_eq!(actual, expected, "{state}");
+            assert_eq!(f.terminal.input_revision, 0);
+            assert!(!f.terminal.input_interrupted);
+            assert!(f.terminal.input_events.pending.is_empty());
+        }
+        let mut f = Fixture::new();
+        f.terminal.set_palette(Palette {
+            background: Some([0; 3]),
+            ..Palette::default()
+        });
+        f.payload
+            .write_all(b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07")
+            .unwrap();
+        f.terminal.tick().unwrap();
+        f.payload.set_nonblocking(true).unwrap();
+        let mut reply = [0; 128];
+        let n = f.payload.read(&mut reply).unwrap();
+        assert_eq!(&reply[..n], b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+        assert!(
+            matches!(f.payload.read(&mut reply), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+        );
+    }
+    #[test]
+    fn attached_colors_pass_through_and_refresh_the_detached_palette() {
+        let mut f = Fixture::new();
+        let mut peer = f.connect();
+        f.payload.write_all(b"\x1b]11;?\x07").unwrap();
+        f.terminal.tick().unwrap();
+        let mut query = [0; 7];
+        peer.read_exact(&mut query).unwrap();
+        assert_eq!(&query, b"\x1b]11;?\x07");
+        f.payload.set_nonblocking(true).unwrap();
+        let mut bytes = [0; 128];
+        assert!(
+            matches!(f.payload.read(&mut bytes), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+        );
+        let report = b"\x1b]11;rgb:12/34/56\x1b\\";
+        for byte in report {
+            peer.write_all(&[*byte]).unwrap();
+            f.terminal.tick().unwrap();
+        }
+        let n = f.payload.read(&mut bytes).unwrap();
+        assert_eq!(&bytes[..n], report);
+        assert_eq!(
+            f.terminal.palette().background,
+            Some([0x1212, 0x3434, 0x5656])
+        );
+        assert_eq!(f.terminal.input_revision, 0);
+        f.terminal.detach().unwrap();
+        drop(peer);
+        f.terminal.tick().unwrap();
+        f.payload.write_all(b"\x1b]11;?\x07").unwrap();
+        f.terminal.tick().unwrap();
+        let n = f.payload.read(&mut bytes).unwrap();
+        assert_eq!(&bytes[..n], b"\x1b]11;rgb:1212/3434/5656\x1b\\");
+    }
+    #[test]
+    fn color_report_fragments_validate_without_swallowing_pasted_or_malformed_input() {
+        let report = b"\x1b]11;rgb:f/12/abc\x07";
+        let now = Instant::now();
+        for split in 0..=report.len() {
+            let mut input = InputEvents::default();
+            assert_eq!(input.observe(&report[..split], now), None);
+            assert_eq!(input.observe(&report[split..], now), None);
+            assert_eq!(input.palette.background, Some([65535, 0x1212, 0xabca]));
+            assert!(input.pending.is_empty());
+        }
+        let mut input = InputEvents::default();
+        assert_eq!(
+            input.observe(b"\x1b[200~\x1b]11;rgb:0/0/0\x07\x1b[201~", now),
+            Some(false)
+        );
+        assert!(input.palette.is_empty());
+        assert_eq!(input.observe(b"\x1b]11;rgb:invalid\x07", now), Some(false));
+        assert!(input.palette.is_empty());
+        assert_eq!(input.observe(b"\x1b]11;\x03\x07", now), Some(true));
+        input.observe(b"\x1b]11;rgb:", now);
+        assert_eq!(input.observe(&[], now + INPUT_ESCAPE_TIMEOUT), Some(false));
+        assert!(input.pending.is_empty());
+        input.observe(&[b'\x1b', b']'], now);
+        input.observe(&[b'x'; 1024], now);
+        assert!(input.pending.len() < 128);
+    }
+
+    #[test]
+    fn answered_queries_are_not_replayed_and_other_output_stays_byte_exact() {
+        let palette = Palette {
+            foreground: Some([0xffff; 3]),
+            background: Some([0x2020, 0x2424, 0x2a2a]),
+        };
+        for query in [
+            b"\x1b]10;?\x07".as_slice(),
+            b"\x1b]11;?\x1b\\",
+            b"\x1b]10;?;?\x07",
+            b"\x1b]10;?;?\x1b\\",
+        ] {
+            for split in 0..=query.len() {
+                let mut scanner = ColorQueries::default();
+                let mut output = Vec::new();
+                let mut replies = Vec::new();
+                scanner.process(b"before", Some(palette), &mut output, &mut replies);
+                scanner.process(&query[..split], Some(palette), &mut output, &mut replies);
+                scanner.process(&query[split..], Some(palette), &mut output, &mut replies);
+                scanner.process(b"after", Some(palette), &mut output, &mut replies);
+                assert_eq!(output, b"beforeafter");
+                let expected = if query.starts_with(b"\x1b]11") {
+                    palette.reply(11).unwrap()
+                } else if query.contains(&b';') && query.iter().filter(|b| **b == b'?').count() == 2
+                {
+                    [palette.reply(10).unwrap(), palette.reply(11).unwrap()].concat()
+                } else {
+                    palette.reply(10).unwrap()
+                };
+                assert_eq!(replies, expected);
+                for known in [None, Some(Palette::default())] {
+                    let mut s = ColorQueries::default();
+                    let mut o = Vec::new();
+                    let mut r = Vec::new();
+                    s.process(query, known, &mut o, &mut r);
+                    assert_eq!(o, query);
+                    assert!(r.is_empty());
+                }
+            }
+        }
+        for bytes in [
+            b"\x1b]10;rgb:1/2/3\x07".as_slice(),
+            b"\x1b]12;?\x07",
+            b"\x1b]11;??\x07",
+            b"\x1bPignored\x1b]11;?\x07\x1b\\",
+            b"\x1b]52;ignored\x1b]11;?\x07",
+        ] {
+            let mut scanner = ColorQueries::default();
+            let mut output = Vec::new();
+            let mut replies = Vec::new();
+            for byte in bytes {
+                scanner.process(&[*byte], Some(palette), &mut output, &mut replies);
+            }
+            scanner.flush(&mut output);
+            assert_eq!(output, bytes);
+            assert!(replies.is_empty());
+        }
+        let mut f = Fixture::new();
+        f.terminal.set_palette(palette);
+        f.payload.write_all(b"before\x1b]11;?\x07after").unwrap();
+        f.terminal.tick().unwrap();
+        let mut peer = f.connect();
+        let mut output = [0; 11];
+        peer.read_exact(&mut output).unwrap();
+        assert_eq!(&output, b"beforeafter");
+        // EOF must release a held incomplete prefix without losing bytes.
+        f.payload.write_all(b"\x1b]11;").unwrap();
+        f.terminal.tick().unwrap();
+        f.payload.shutdown(Shutdown::Write).unwrap();
+        f.terminal.tick().unwrap();
+        let mut output = Vec::new();
+        peer.read_to_end(&mut output).unwrap();
+        assert_eq!(output, b"\x1b]11;");
+    }
+    #[test]
+    fn malformed_osc_does_not_hide_later_queries_or_the_end_of_paste() {
+        let p = Palette {
+            background: Some([0; 3]),
+            ..Palette::default()
+        };
+        for malformed in [b"\x1b]1\x07".as_slice(), b"\x1b]10;\x07", b"\x1b]10;?;\x07"] {
+            let mut scanner = ColorQueries::default();
+            let mut output = Vec::new();
+            let mut replies = Vec::new();
+            scanner.process(malformed, Some(p), &mut output, &mut replies);
+            scanner.process(b"\x1b]11;?\x07", Some(p), &mut output, &mut replies);
+            assert_eq!(output, malformed);
+            assert_eq!(replies, p.reply(11).unwrap());
+        }
+        let now = Instant::now();
+        let mut input = InputEvents::default();
+        input.observe(b"\x1b[200~\x1b]unterminated", now);
+        input.observe(&[], now + INPUT_ESCAPE_TIMEOUT);
+        input.observe(b"\x1b[201~", now + INPUT_ESCAPE_TIMEOUT);
+        assert!(!input.paste);
+        assert!(input.string.is_none());
+        assert_eq!(
+            input.observe(b"\x1b]11;rgb:0/0/0\x07", now + INPUT_ESCAPE_TIMEOUT),
+            None
+        );
+        assert_eq!(input.palette, p);
+    }
     #[test]
     fn a_tiny_window_never_breaks_the_screen_model() {
         // A client in a one-line window (or a terminal reporting 0x0, sent

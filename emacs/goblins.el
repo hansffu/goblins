@@ -43,6 +43,7 @@ Set this to the directory passed to `goblins --state-dir'."
 (defvar-local goblins--connection nil)
 (defvar-local goblins--server-process nil)
 (defvar-local goblins--instance nil)
+(defvar-local goblins--features nil)
 (defvar-local goblins--subscription nil)
 (defvar-local goblins--sequence nil)
 (defvar-local goblins--snapshot nil)
@@ -914,7 +915,8 @@ reports in the echo area, so it suits init files and hooks."
                            (equal (plist-get result :role) "host")
                            (stringp (plist-get result :instance))))
                  (goblins--fail "Incompatible Goblins daemon")
-               (setq goblins--instance (plist-get result :instance))
+               (setq goblins--instance (plist-get result :instance)
+                     goblins--features (plist-get result :features))
                (goblins--request
                 'state.subscribe (make-hash-table)
                 (lambda (state)
@@ -1366,6 +1368,23 @@ On failure the buffer is killed and the error re-signalled."
   "A fresh idempotency key for `sessions.start'."
   (concat "emacs-" (md5 (format "%s%s%s" (float-time) (random) (emacs-pid)))))
 
+(defun goblins--terminal-palette ()
+  "Return known default foreground/background as RGB16 terminal metadata.
+Unspecified colors are omitted; a headless frame has no guessed palette."
+  (when (display-graphic-p)
+    (let (palette)
+      (dolist (entry '((:foreground . foreground-color)
+                       (:background . background-color)))
+        (when-let* ((name (frame-parameter nil (cdr entry)))
+                    (rgb (and (stringp name) (ignore-errors (color-values name)))))
+          (setq palette (append palette (list (car entry) (vconcat rgb))))))
+      palette)))
+
+(defun goblins--palette-params (palette)
+  "Wrap PALETTE for a daemon advertising terminal palette support."
+  (and palette (member "terminal-palette" (append goblins--features nil))
+       (list :terminal_palette palette)))
+
 (defun goblins-run (&optional directory display)
   "Choose a configured goblin and launch it in a new Ghostel buffer.
 Launch from the current project's root, or the current directory outside a
@@ -1391,6 +1410,7 @@ Only launches made here are linked by the terminal command."
                       (member name (plist-get configs :nix))))
            (cwd (car location))
            (dev-shell (cdr location))
+           (palette (goblins--terminal-palette))
            (status (goblins--connect state-directory)))
       (with-current-buffer status
         (let* ((connection goblins--connection)
@@ -1400,7 +1420,8 @@ Only launches made here are linked by the terminal command."
                          (list :key (goblins--launch-key)
                                :name name :configuration (plist-get configs :configuration)
                                :cwd cwd :rows 24 :cols 80)
-                         (and dev-shell (list :dev_shell dev-shell)))
+                         (and dev-shell (list :dev_shell dev-shell))
+                         (goblins--palette-params palette))
                         :timeout 3))
                (session (plist-get launch :session)))
           (condition-case err

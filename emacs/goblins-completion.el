@@ -368,9 +368,12 @@ directory."
                     (goblins--configurations)))
          (launch (goblins--host-call
                   source 'sessions.start
-                  (list :key (goblins--launch-key)
-                        :configuration (plist-get configs :configuration)
-                        :recreate (plist-get record :id) :rows 24 :cols 80)))
+                  (append
+                   (list :key (goblins--launch-key)
+                         :configuration (plist-get configs :configuration)
+                         :recreate (plist-get record :id) :rows 24 :cols 80)
+                   (let ((palette (goblins--terminal-palette)))
+                     (with-current-buffer source (goblins--palette-params palette))))))
          (session (plist-get launch :session))
          (cwd (plist-get record :cwd)))
     (with-current-buffer source

@@ -22,7 +22,7 @@ ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1bP
 
 
 class Terminal:
-    def __init__(self, argv, env=None, output=None, cwd=None):
+    def __init__(self, argv, env=None, output=None, cwd=None, colors=None, probe_delay=0):
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
             if cwd is not None:
@@ -32,6 +32,8 @@ class Terminal:
             os.execve(argv[0], argv, env or os.environ)
         self.buffer = b""
         self.query_tail = b""
+        self.colors = colors
+        self.probe_delay = probe_delay
         self.reaped = False
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
 
@@ -65,10 +67,24 @@ class Terminal:
         # Fish queries device attributes and cursor position before prompts.
         # Respond like a terminal, including queries split across reads.
         queries = self.query_tail + chunk
-        for query, reply in ((b"\x1b[0c", b"\x1b[?1;2c"), (b"\x1b[6n", b"\x1b[1;1R")):
-            for _ in range(queries.count(query)):
-                os.write(self.fd, reply)
-        self.query_tail = queries[-3:]
+        responses = [(b"\x1b[0c", b"\x1b[?1;2c"), (b"\x1b[6n", b"\x1b[1;1R")]
+        for code, color in (self.colors or {}).items():
+            reply = f"\x1b]{code};rgb:{color}\x1b\\".encode()
+            responses.extend((f"\x1b]{code};?{end}".encode(), reply) for end in ("\x07", "\x1b\\"))
+        responses.append((b"\x1b[c", b"\x1b[?1;2c"))
+        if self.probe_delay and b"\x1b]10;?" in queries:
+            time.sleep(self.probe_delay)
+            self.probe_delay = 0
+        # A DA1 reply is an ordered boundary for startup probes. Reply in
+        # request order, including when one read contains several query types.
+        pending = []
+        for query, reply in responses:
+            for match in re.finditer(re.escape(query), queries):
+                if match.end() > len(self.query_tail):
+                    pending.append((match.start(), reply))
+        for _, reply in sorted(pending):
+            os.write(self.fd, reply)
+        self.query_tail = queries[-7:]
         self.buffer += chunk
         return True
 

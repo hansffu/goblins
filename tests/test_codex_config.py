@@ -290,6 +290,36 @@ class CodexConfigTests(unittest.TestCase):
         self.d.wait(lambda: self.d.get(launch["session"])["state"] == "stopped")
         self.assertEqual(self.d.get(launch["session"])["exit_code"], 2)
 
+    def test_detached_native_composer_uses_supplied_terminal_background(self):
+        # No model request: a local UI draft proves the startup palette was
+        # available before a terminal consumer existed.
+        (self.codex / "config.toml").write_text(
+            'model = "gpt-5.3-codex"\n'
+            f'[projects.{json.dumps(str(ROOT))}]\ntrust_level = "trusted"\n'
+        )
+        launch = self.d.rpc.call("sessions.start", {
+            "key": uuid.uuid4().hex, "configuration": self.d.manifest,
+            "name": "native-ui", "agent_name": "colors", "rows": 24, "cols": 100,
+            "detached": True, "terminal_palette": {
+                "foreground": [0xdddd] * 3, "background": [0x2020, 0x2424, 0x2a2a],
+            },
+        })
+        session = launch["session"]
+        self.d.wait(lambda: self.d.get(session)["agent_state"] == "idle", timeout=60)
+        native = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", session])
+        self.addCleanup(native.close)
+        screen_wait(native, lambda text: "OpenAI Codex" in text, timeout=60)
+        native.send("PALETTE_DRAFT")
+        screen_wait(native, lambda text: "PALETTE_DRAFT" in text)
+        # The sandbox advertises xterm-256color. Codex quantizes the RGB
+        # blend 3a3e43 to ANSI index 237 (3a3a3a) without COLORTERM=truecolor.
+        row, text = next((row, text) for row, text in enumerate(native.screen.display)
+                         if "PALETTE_DRAFT" in text)
+        column = text.index("PALETTE_DRAFT")
+        self.assertEqual({native.screen.buffer[row][column + offset].bg
+                          for offset in range(len("PALETTE_DRAFT"))}, {"3a3a3a"})
+        self.assertNotIn("]11;rgb", "\n".join(native.screen.display))
+
     def test_native_ui_discovers_managed_hooks(self):
         # Trust only this test workspace in the synthetic native configuration.
         # /hooks is local UI, not a prompt sent to a model.
