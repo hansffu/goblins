@@ -121,7 +121,7 @@ class CodexConfigTests(unittest.TestCase):
         (self.codex / "config.toml").write_bytes(config)
         native = self.terminal("native", "native")
         native.expect("skipping MCP server missing_fixture")
-        native.expect("Logged in using an API key")
+        native.expect(r"(?:Logged in using an API key|API key configured) - goblins-\*{3}l-key")
         self.assertEqual(native.wait(), 0)
         self.assertEqual((self.codex / "config.toml").read_bytes(), config)
 
