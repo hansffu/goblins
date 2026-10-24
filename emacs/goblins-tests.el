@@ -3672,6 +3672,9 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (should (string-match-p "gribble wants to open in Emacs\n +/tmp/r1" (buffer-string)))
         (goblins-request-popup-deny))
       (goblins-test--wait (lambda () (not (process-live-p editor))))
+      ;; Process exit can precede delivery of buffered output (elisp's
+      ;; Accepting Output node). Drain the connection before inspecting it.
+      (while (accept-process-output editor 0.02))
       (should-not (eq (process-exit-status editor) 0))
       (should (string-match-p "refused" (with-current-buffer (process-buffer editor) (buffer-string))))
       (should-not (get-file-buffer "/goblins:gribble:/tmp/r1"))
