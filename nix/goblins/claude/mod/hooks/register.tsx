@@ -23,10 +23,8 @@ const messages = atom({ plugin: 'goblins-daemon', key: 'messages' } as const, {}
 const wakes = atom({ plugin: 'goblins-daemon', key: 'wakes' } as const, {}, { shape: 'wakes-2' })
 const selected = atom({ plugin: 'goblins-daemon', key: 'selected' } as const, null)
 
-// Module state: a reload starts these over, which costs at most one toast.
+// Module state: a reload starts these over.
 let isPolling = false
-let isTurnRunning = false
-let heads: Set<string> | undefined
 // The pane's message as last read, at the inbox revision of that read.
 let refreshed: { id: string; revision: number } | undefined
 const fetching = new Set<string>()
@@ -140,14 +138,6 @@ async function poll($: EngineInterface): Promise<void> {
     const shown = await read($, selected)
     if (token !== undefined && shown && (refreshed?.id !== shown || refreshed.revision !== next.revision)) {
       await refresh($, shown, token)
-    }
-    const first = heads === undefined
-    heads ??= new Set()
-    if (next.head && !heads.has(next.head)) {
-      heads.add(next.head)
-      // While Claude works, the message waits for the turn to end: say so once.
-      const arrived = (await read($, messages))[next.head]
-      if (!first && isTurnRunning && arrived) $.ui.toast(`✉ ${describe(arrived).title}`)
     }
   } finally {
     isPolling = false
@@ -392,11 +382,6 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('turn.start', async ($, e, next) => {
-    if (e.agentId === undefined) isTurnRunning = true
-    return next(e)
-  }).catch(($, e, next) => next(e))
-
   // Each wake row names its own message: a monitor is one task for all its
   // lines, so the row's ID (the UserMessage requestId) is the key.
   on('session.append', { door: 'prompt', origin: { kind: 'task-notification' } }, async ($, e, next) => {
@@ -410,11 +395,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('turn.complete', async ($, e, next) => {
-    if (e.agentId === undefined) {
-      isTurnRunning = false
-      // Claude runs no settings hook when a person interrupts a turn.
-      if (e.isAborted) await reportInterrupt($)
-    }
+    // Claude runs no settings hook when a person interrupts a turn.
+    if (e.agentId === undefined && e.isAborted) await reportInterrupt($)
     return next(e)
   }).catch(($, e, next) => next(e))
 

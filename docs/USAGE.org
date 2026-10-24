@@ -1167,7 +1167,7 @@ The plugin also holds a Claude Code [[https://code.claude.com/docs/en/plugins/mo
 
 - A notification row shows the message instead of the prompt, as =✉ scout replied · first words=, =✉ Message from scout= or =✉ Goblins: docker dev ready=. ctrl+o shows the row as Claude read it.
 - Pressing the row, where the terminal reports clicks (fullscreen), or the =/inbox= command opens a pane with the message, its state and earlier messages of the conversation. Esc closes it. The pane only reads: the agent still claims and answers each message itself.
-- The prompt footer shows =✉ N= while N messages wait, and =✉ paused= or =✉ stalled= when delivery is held. A message that arrives while Claude works raises a toast.
+- The prompt footer shows =✉ N= while N messages wait, and =✉ paused= or =✉ stalled= when delivery is held.
 - An interrupted turn shows the goblin idle at once. Claude Code runs no hook then, so without the mod it shows working until Claude's idle reminder a minute later.
 
 The mod reads message metadata and bodies with the sandbox's own read-only =messages.get=, and keeps each conversation's row labels and message previews in its plugin store under =claudeConfigDir=, so a resumed conversation keeps its labels (also after =/resume= inside a session) and other conversations sharing the directory never see them. The oldest conversations are dropped to keep the store within Claude Code's limit. Without the mod, for example under =--safe-mode=, delivery works as described above and the rows show the monitor's own text.

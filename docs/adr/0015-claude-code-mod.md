@@ -21,7 +21,7 @@ The managed hooks stay authoritative for every lifecycle and activity report, an
 
 - The monitor names the message each wake is about (`[goblins-inbox-wake ID]`), and records its PID. While that process runs, the Stop hook reports `active`: the daemon settles `ready`, and its notifier delivers and retries through the monitor. Without the monitor, Stop blocks as before. Delivery never depends on the mod.
 - On an interrupted main-loop turn the mod reports Claude's idle reminder at once (activity only), awaiting it before the turn's completion passes on so a late report cannot overwrite the next turn.
-- The mod redraws each wake row as the message it names, opens a pane on it (a press, or `/inbox`), counts waiting messages in the prompt footer and toasts arrivals during a turn. It reads messages with `messages.get` through a read-only helper, since the CLI has none, and never claims or completes them.
+- The mod redraws each wake row as the message it names, opens a pane on it (a press, or `/inbox`), and counts waiting messages in the prompt footer. It reads messages with `messages.get` through a read-only helper, since the CLI has none, and never claims or completes them.
 - Row labels and message previews persist in the plugin store per Claude conversation, so a resumed conversation keeps them and other conversations sharing the directory never read them. The views switch with the conversation in force (including a resume or branch inside the process), work started for one conversation never lands in another, and the oldest conversations are evicted to stay within the store's 4 MiB.
 
 ## Consequences
