@@ -66,6 +66,18 @@ case "$event" in
     exit 0
     ;;
 esac
+# While the plugin monitor runs, a turn never continues from its Stop: the
+# daemon settles ready and its notifier delivers what is pending (and retries
+# it) as the monitor's notification, which starts the next turn. Without the
+# monitor, Stop blocks the turn into the inbox as before.
+monitor_alive() {
+  local pid
+  pid=$(cat "$runtime/monitor.pid" 2>/dev/null) && [[ $pid =~ ^[0-9]+$ ]] &&
+    tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q goblins-claude-monitor
+}
+if [[ "$event" == Stop && " ${args[*]} " != *" --active "* ]] && monitor_alive; then
+  args+=(--active)
+fi
 # The hook itself only hands over its input: the inbox decision below must
 # reach Claude within the hook's timeout, whatever the transcript or daemon.
 if { [[ -d "$runtime" ]] || mkdir -m 700 "$runtime"; } && printf '%s' "$raw" > "$runtime/latest.json.$$" &&

@@ -28,9 +28,9 @@ TRANSCRIPT = Path("/tmp/fake-claude-transcript.jsonl")
 TRANSCRIPT.write_text(json.dumps({"type": "ai-title", "aiTitle": "Resumed task" if RESUMED else "Fake task",
                                   "sessionId": SESSION}) + "\n")
 
-def hook(event):
+def hook(event, **extra):
     command = SETTINGS["hooks"][event][0]["hooks"][0]["command"]
-    payload = {"hook_event_name": event, "session_id": SESSION, "transcript_path": str(TRANSCRIPT)}
+    payload = {"hook_event_name": event, "session_id": SESSION, "transcript_path": str(TRANSCRIPT), **extra}
     return json.loads(subprocess.check_output([command], input=json.dumps(payload).encode(), stderr=subprocess.DEVNULL))
 
 def ready():
@@ -43,9 +43,11 @@ monitor = None
 try:
     hook("SessionStart")
     if "--plugin-dir" in sys.argv:
+        # The plugin's own monitor, as Claude Code runs it.
+        plugin = Path(sys.argv[sys.argv.index("--plugin-dir") + 1])
+        [spec] = json.loads((plugin / "monitors/monitors.json").read_text())
         monitor = subprocess.Popen(
-            [CLI, "integration", "watch", "--epoch", os.environ["GOBLINS_INTEGRATION_EPOCH"],
-             "--delivery", "notification"],
+            [spec["command"]],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -75,7 +77,12 @@ try:
             submitted = submitted.replace(b"\x1b[200~", b"").replace(b"\x1b[201~", b"").decode()
         if submitted == "exit":
             break
-        if not from_monitor:
+        if from_monitor:
+            # Claude Code hands a monitor line to the turn as a task notification.
+            hook("UserPromptSubmit", prompt=f"<task-notification>\n<task-id>monitor</task-id>\n"
+                 f"<summary>Monitor event: \"{spec['description']}\"</summary>\n"
+                 f"<event>{submitted}</event>\n</task-notification>")
+        else:
             hook("UserPromptSubmit")
         sys.stdout.write("\x1b[2J\x1b[HWorking (esc to interrupt)\x1b[?25l")
         sys.stdout.flush()
@@ -90,10 +97,15 @@ try:
                         os.kill(int(path.parent.name), signal.SIGTERM)
                 except (OSError, ValueError):
                     pass
-        elif submitted != PROMPT:
+        elif not (from_monitor and submitted.startswith(PROMPT + " [goblins-inbox-wake")):
             raise RuntimeError("unexpected injected input: " + repr(submitted))
+        # The wake line names the message it is about: the one fetched first.
+        named = submitted.removeprefix(PROMPT + " [goblins-inbox-wake").rstrip("]").strip() if from_monitor else ""
         while True:
             item = cli("inbox", "next")
+            if named and item["message"] is not None and item["message"]["id"] != named:
+                raise RuntimeError(f"wake named {named}, fetched {item['message']['id']}")
+            named = ""
             if item["message"] is None:
                 if hook("Stop").get("decision") == "block":
                     continue

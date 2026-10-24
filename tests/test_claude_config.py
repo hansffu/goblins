@@ -147,6 +147,53 @@ class ClaudeConfigTests(unittest.TestCase):
             peer.expect(r"(?:^|\n)AUTH=rotated\n")
         self.assertEqual((self.claude / "settings.json").read_text(), '{"model":"host-model"}')
 
+    def test_stop_leaves_pending_messages_to_a_running_monitor(self):
+        terminal = self.terminal()
+        plugin = terminal.expect(
+            r"CLAUDE_ARG=(/nix/store/[^\n]+-goblins-claude-plugin)", timeout=60
+        ).group(1).decode()
+        terminal.expect("claude-probe>")
+        owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        state = lambda: self.d.rpc.call("integration.status", {"session": owner})["state"]
+        self.assertEqual(self.hook(terminal, "SessionStart"), {})
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="task"), {})
+        body = "private body: héllo ✉\nsecond line"
+        sent = self.d.rpc.call("messages.send", {"key": "pending", "to": owner, "body": body})
+        # The mod's read-only helper reads it whole, without claiming it.
+        helper = shlex.quote(plugin + "/bin/goblins-claude-message")
+        terminal.send(
+            f"{helper} {sent['id']} | jq -e --arg body {shlex.quote(body)} "
+            "'.body == $body and .state == \"queued\"' >/dev/null; printf 'HELPER=%s\\n' \"$?\"; "
+            f"{helper} unknown-id 2>/dev/null; printf 'UNKNOWN=%s\\n' \"$?\"\n"
+        )
+        terminal.expect(r"(?:^|\n)HELPER=0\n")
+        terminal.expect(r"(?:^|\n)UNKNOWN=1\n")
+        # A script under the monitor's name stands in for the plugin monitor
+        # (not exec -a: a multi-call coreutils reads its applet from argv[0]).
+        terminal.send(
+            "printf '#!%s\\nsleep 300 &\\nwait\\n' \"$(command -v bash)\" > /tmp/goblins-claude-monitor && "
+            "chmod +x /tmp/goblins-claude-monitor && { /tmp/goblins-claude-monitor & "
+            "printf '%s\\n' \"$!\" > /tmp/goblins-claude/monitor.pid; }; printf 'MONITOR=%s\\n' \"$?\"\n"
+        )
+        terminal.expect(r"(?:^|\n)MONITOR=0\n")
+        # The turn ends without a Stop-hook continuation; the daemon settles
+        # ready, so its notifier (the monitor) delivers the message.
+        self.assertEqual(self.hook(terminal, "Stop"), {})
+        self.assertEqual(state(), "ready")
+        self.assertEqual(self.d.get(owner)["agent_state"], "idle")
+        # A stale PID, or another process under it, is no monitor.
+        terminal.send("kill \"$(cat /tmp/goblins-claude/monitor.pid)\"; printf 'KILLED=%s\\n' \"$?\"\n")
+        terminal.expect(r"(?:^|\n)KILLED=0\n")
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="again"), {})
+        continuation = self.hook(terminal, "Stop")
+        self.assertEqual(continuation["decision"], "block")
+        self.assertNotIn("private body", json.dumps(continuation))
+        self.assertEqual(state(), "working")
+        terminal.send("printf '%s\\n' $$ > /tmp/goblins-claude/monitor.pid; printf 'SELF=%s\\n' \"$?\"\n")
+        terminal.expect(r"(?:^|\n)SELF=0\n")
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="third"), {})
+        self.assertEqual(self.hook(terminal, "Stop")["decision"], "block")
+
     def test_hooks_record_the_conversation_and_recreate_resumes_it(self):
         self.assertEqual(self.manifest["goblins"]["claude"]["resume_command"],
                          ["literal $(false) argument", "--resume", "{session_id}"])
