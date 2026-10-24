@@ -77,10 +77,7 @@ including failed/interrupted turns. =thread/queue/start= handles an idle queued
 reminder when automatic scheduling has not started it. The agent uses the same
 Goblins messaging skill and CLI to fetch, reply and complete work.
 
-Claude still registers its driver before launch, exports the epoch to its hooks,
-and runs =goblins integration watch --delivery notification=. Its native plugin
-monitor consumes the fixed notification without editing the composer. Claude's
-hook, retry, daemon control and communications-log behavior is unchanged.
+Claude still registers its driver before launch, exports the epoch to its hooks, and runs =goblins integration watch --delivery notification= in its native plugin monitor, which turns each notification into a turn without editing the composer. The monitor appends a wake marker naming the inbox head (or claim) to the fixed prompt, =[goblins-inbox-wake ID]=, so the Goblins mod can label the row; it never carries a body. While the monitor process runs, the Stop hook reports =active=, so the daemon settles =ready= and its notifier, not a Stop continuation, delivers and retries what is pending; without the monitor, Stop continues as before. Claude's daemon control and communications-log behavior is unchanged ([[file:../adr/0015-claude-code-mod.md][ADR 0015]]).
 Codex does not register, tick, or invoke the daemon terminal-delivery path.
 The trusted =integration="codex"= configuration marker remains solely for
 operation-notice eligibility.
@@ -213,7 +210,7 @@ independently of provider RPC delays. App Server idle maps to idle; active work
 to working; native waiting flags map to waiting states, with user input taking
 precedence over approval. Unbound/unavailable/error states map to unknown.
 
-Claude has no App Server to observe, so the daemon derives its activity from the integration hooks it already receives, kept beside (never inside) the wakeup lifecycle. SessionStart reports idle and UserPromptSubmit working; Stop reports working when it continues into the inbox and idle otherwise; StopFailure (an API error) reports idle. PreToolUse for AskUserQuestion or ExitPlanMode, Elicitation, and elicitation notifications report waiting-input; PermissionRequest and the permission_prompt notification report waiting-approval. PostToolUse, PostToolUseFailure and ElicitationResult return to working only from a waiting state, so a late tool end never revives a settled turn. Claude fires no hook when a person interrupts a turn; its idle_prompt notification, about 60 seconds later, settles it to idle. Activity-only hooks change no wakeup state and write no communications-log event. Each =integration.check= and the plugin monitor's =integration.tick= return =agent_state= for Claude, and the controller applies it as a report: the 500 ms monitor ticks are its freshness heartbeat, so activity expires once Claude and its monitor exit.
+Claude has no App Server to observe, so the daemon derives its activity from the integration hooks it already receives, kept beside (never inside) the wakeup lifecycle. SessionStart reports idle and UserPromptSubmit working; Stop reports working when it continues into the inbox and idle otherwise; StopFailure (an API error) reports idle. PreToolUse for AskUserQuestion or ExitPlanMode, Elicitation, and elicitation notifications report waiting-input; PermissionRequest and the permission_prompt notification report waiting-approval. PostToolUse, PostToolUseFailure and ElicitationResult return to working only from a waiting state, so a late tool end never revives a settled turn. Claude fires no hook when a person interrupts a turn; the Goblins mod reports the interrupted turn's end as an idle_prompt notification at once, and without the mod Claude's own idle_prompt, about 60 seconds later, settles it to idle. Activity-only hooks change no wakeup state and write no communications-log event. Each =integration.check= and the plugin monitor's =integration.tick= return =agent_state= for Claude, and the controller applies it as a report: the 500 ms monitor ticks are its freshness heartbeat, so activity expires once Claude and its monitor exit.
 
 =goblins status= and Emacs overview, sidebar and details show this activity.
 Older snapshots display unknown. Goblins permission badges remain separate from
@@ -247,7 +244,7 @@ including arbitrary shell processes, get no notice; nor do =flake.run= and
   daemon cannot tell whether the model read the CLI output, and suppressing
   the notice for an active agent would lose exactly the backgrounded case at
   its next idle boundary. Codex queues a reminder after the current turn;
-  Claude uses its existing Stop/monitor notification flow. An agent that already handled the result
+  Claude uses its monitor notification flow (a Stop continuation only while its monitor is not running). An agent that already handled the result
   just completes it. =messages.reply= to a notice fails with -32009 and leaves
   the claim outstanding; complete or requeue it instead.
 - Eligibility :: notices go only to sessions whose trusted configuration has

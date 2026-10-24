@@ -32,6 +32,7 @@ Accepted decisions:
 - [[file:adr/0011-nix-in-a-goblin.md][ADR 0011]]: allowNix gives a goblin the host store and Nix daemon
 - [[file:adr/0012-host-commands.md][ADR 0012]]: approved host commands under a subreaper supervisor
 - [[file:adr/0013-agent-permission-bypass.md][ADR 0013]]: agents keep their own permission prompts unless a configuration bypasses them
+- [[file:adr/0015-claude-code-mod.md][ADR 0015]]: a Claude Code mod presents the inbox while managed hooks keep the lifecycle
 
 * Build and run from a checkout
 

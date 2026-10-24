@@ -1161,17 +1161,16 @@ native state. Managed =skillOverrides= keep all the integration skills =on=
 for both model and direct user invocation. The shared descriptions name exact
 Goblins trigger terms and the native tools they replace.
 
-The hooks use Claude Code's native =stop_hook_active= guard and block an
-eligible Stop only long enough to tell Claude to fetch the pending daemon inbox
-item. They exchange lifecycle metadata only and never expose a message body.
-Messages queued during startup and idle arrivals are delivered through a
-session-scoped Claude plugin monitor. Claude turns each watcher output line into
-a native notification, so delivery does not inject editor keystrokes, alter a
-draft, or depend on ordinary versus Vim INSERT/NORMAL/VISUAL mode. The monitor
-emits only the fixed check-inbox prompt; message bodies remain daemon-owned.
-=UserPromptSubmit= reports lifecycle state only and does not add context to the
-user's turn. Explicit Goblins routing is described in the managed skill metadata
-that Claude sees during skill selection.
+Messages are delivered through a session-scoped Claude plugin monitor that runs the daemon's notifier. Claude turns each line it prints into a native notification that starts a turn at the next idle point, so delivery does not inject editor keystrokes, alter a draft, or depend on ordinary versus Vim INSERT/NORMAL/VISUAL mode. Each line is the fixed check-inbox prompt plus a marker naming the message it is about, never a body. While the monitor runs, the =Stop= hook never continues a turn: it reports the turn's end as settled, and the notifier delivers what is pending, and retries it, as the monitor's next line. Without the monitor, the hook uses Claude Code's native =stop_hook_active= guard and blocks an eligible =Stop= only long enough to tell Claude to fetch the pending item. The hooks exchange lifecycle metadata only. =UserPromptSubmit= reports lifecycle state only and does not add context to the user's turn. Explicit Goblins routing is described in the managed skill metadata that Claude sees during skill selection.
+
+The plugin also holds a Claude Code [[https://code.claude.com/docs/en/plugins/mods/overview][mod]], code that runs inside Claude Code (2.1.287 or later). The managed hooks stay authoritative, because Claude Code passes classic hook events past a user's mod wherever managed settings exist, which is always the case in a goblin; the mod adds what hooks cannot see or draw:
+
+- A notification row shows the message instead of the prompt, as =✉ scout replied · first words=, =✉ Message from scout= or =✉ Goblins: docker dev ready=. ctrl+o shows the row as Claude read it.
+- Pressing the row, where the terminal reports clicks (fullscreen), or the =/inbox= command opens a pane with the message, its state and earlier messages of the conversation. Esc closes it. The pane only reads: the agent still claims and answers each message itself.
+- The prompt footer shows =✉ N= while N messages wait, and =✉ paused= or =✉ stalled= when delivery is held. A message that arrives while Claude works raises a toast.
+- An interrupted turn shows the goblin idle at once. Claude Code runs no hook then, so without the mod it shows working until Claude's idle reminder a minute later.
+
+The mod reads message metadata and bodies with the sandbox's own read-only =messages.get=, and keeps each conversation's row labels and message previews in its plugin store under =claudeConfigDir=, so a resumed conversation keeps its labels (also after =/resume= inside a session) and other conversations sharing the directory never see them. The oldest conversations are dropped to keep the store within Claude Code's limit. Without the mod, for example under =--safe-mode=, delivery works as described above and the rows show the monitor's own text.
 
 * Manual inbox messaging
 

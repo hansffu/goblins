@@ -400,6 +400,30 @@ in
       grep -q -- '--native-socket "$native_socket" --bypass-permissions' ${bypass.codex}/bin/codex
       touch $out
     '';
+  # The Claude mod as Claude Code loads it: its manifest and hooks module
+  # validate, and its tests (kept out of the plugin) pass against the engine.
+  claude-mod =
+    let
+      inherit (import ../nix/goblins/claude { inherit pkgs; }) plugin;
+    in
+    pkgs.runCommand "goblins-claude-mod"
+      {
+        nativeBuildInputs = [ agents.claude-code ];
+      }
+      ''
+        export HOME=$TMPDIR/home DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1
+        mkdir -p $HOME
+        cp -r ${plugin} $TMPDIR/plugin
+        chmod -R u+w $TMPDIR/plugin
+        cp ${plugin.source}/hooks/*.test.tsx $TMPDIR/plugin/hooks/
+        test -x $TMPDIR/plugin/bin/goblins-claude-message
+        claude plugin validate $TMPDIR/plugin > validate.log 2>&1 || { cat validate.log; exit 1; }
+        grep -F 'hooks: session.start' validate.log
+        claude plugin test $TMPDIR/plugin 2>&1 | tee test.log
+        grep -Eq '^ *[1-9][0-9]* pass$' test.log
+        grep -Eq '^ *0 fail$' test.log
+        touch $out
+      '';
   # Each feature set gets its own skills, and none of them presents a
   # workflow the sandbox doesn't have (tests/test_*_config.py check the mounts).
   skill-selection =
