@@ -68,6 +68,9 @@ Both host and sandbox expose a command named =goblins=, but they execute differe
 | =goblins-mount-helper=  | Namespace setup and live mount operations                           | [[file:../../src/main.rs][src/main.rs]]            |
 | Emacs frontend        | Status/approval buffer, terminal integration and TRAMP access       | [[file:../../emacs/][emacs/]]                 |
 | Agent launchers/hooks | Sandbox-only Codex and Claude configuration and integration         | [[file:../../nix/goblins/][nix/goblins/]]           |
+| =goblins-codex=         | Codex adapter: owns the goblin's conversation, follows the attached terminal, delivers reminders | [[file:../../crates/codex/src/][crates/codex/src/]]      |
+
+A Codex goblin runs the App Server and =goblins-codex= as its main command, without a terminal; each attach starts Codex's own terminal as a client of that server ([[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]).
 
 The protocol crate has no Nix, launch or approval authority. The sandbox client depends on that protocol rather than the controller/helper. Nix builders adapt =agent-sandbox.nix= specifications for the Rust runtime; the runtime uses Bubblewrap and pasta rather than its static Python launcher.
 

@@ -1,4 +1,6 @@
-# Offline App Server/native terminal fixture; this executes inside Bubblewrap.
+# Offline App Server and native terminal fixture; this executes inside
+# Bubblewrap. As the server, it serves one conversation at a time; as the
+# terminal (--remote ... resume ID), it is a client of that server.
 import json
 import os
 import select
@@ -28,7 +30,7 @@ def serve(path):
     listener.listen()
     clients = []
     lock = threading.RLock()
-    state = {'approval': 'on-request', 'sandbox': {'type':'dangerFullAccess'}, 'thread': str(uuid.uuid4()), 'status': {'type': 'idle'}, 'queue': [], 'items': []}
+    state = {'approval': 'on-request', 'sandbox': {'type':'dangerFullAccess'}, 'thread': str(uuid.uuid4()), 'name': None, 'status': {'type': 'idle'}, 'queue': [], 'items': []}
     def send(c, value):
         wire, write_lock = c
         try:
@@ -42,8 +44,9 @@ def serve(path):
     def start(text, client_id):
         status({'type': 'active', 'activeFlags': []})
         item = {'type': 'userMessage', 'id': str(uuid.uuid4()), 'clientId': client_id, 'content': [{'type': 'text', 'text': text}]}
-        state['items'].append({'item': item})
-        event('item/started', {'threadId': state['thread'], 'item': item})
+        turn, started = str(uuid.uuid4()), int(time.time() * 1000)
+        state['items'].append({'item': item, 'turnId': turn, 'startedAtMs': started, 'completedAtMs': None})
+        event('item/started', {'threadId': state['thread'], 'turnId': turn, 'item': item, 'startedAtMs': started})
         def work():
             outcome = 'completed'
             if text in ('busy', 'long-busy'): time.sleep(2 if text == 'busy' else 8)
@@ -81,27 +84,32 @@ def serve(path):
                 if 'id' not in request: continue
                 with lock:
                     error = None
-                    if method == 'initialize': result = {'userAgent': 'fake-codex/0.162.1'}
+                    thread = lambda: {'id': state['thread'], 'status': state['status'], 'cwd': os.getcwd(), 'name': state['name'], 'ephemeral': False}
+                    if method == 'initialize': result = {'userAgent': 'fake-codex/0.163.0'}
                     elif method == 'thread/start':
                         Path('/tmp/goblins-codex/start-params.json').write_text(json.dumps(params))
-                        subprocess.run(['/run/goblins/bin/goblins-codex', 'hook'], input=json.dumps({'hook_event_name': 'SessionStart', 'session_id': state['thread']}).encode(), stdout=subprocess.DEVNULL, check=True)
                         state['approval'] = params['approvalPolicy']
-                        result = {'thread': {'id': state['thread'], 'status': state['status']}, 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
+                        result = {'thread': thread(), 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
+                    elif method == 'thread/name/set':
+                        state['name'] = params['name']
+                        result = {}
+                    elif method == 'thread/loaded/list': result = {'data': [state['thread']], 'nextCursor': None}
                     elif method == 'config/read': result = {'config': {'approval_policy': None}}
                     elif method == 'thread/resume' and params.get('threadId') != state['thread'] and not state['items']:
-                        # The native terminal resuming a recorded thread, with
-                        # the permissions the adapter set.
+                        # The adapter loading a recorded thread, with this
+                        # goblin's permissions.
                         Path('/tmp/goblins-codex/resume-params.json').write_text(json.dumps(params))
                         state['thread'] = params['threadId']
+                        state['name'] = 'Resumed thread'
                         state['approval'] = params['approvalPolicy']
-                        result = {'thread': {'id': state['thread'], 'status': state['status'], 'name': 'Resumed thread'}, 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
-                    elif method in ('thread/read', 'thread/resume'): result = {'thread': {'id': state['thread'], 'status': state['status'], 'cwd': os.getcwd()}, 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
+                        result = {'thread': thread(), 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
+                    elif method in ('thread/read', 'thread/resume'): result = {'thread': thread(), 'approvalPolicy':state['approval'], 'sandbox':state['sandbox']}
                     elif method == 'thread/settings/update':
                         state['approval'] = params['approvalPolicy']
                         state['sandbox'] = params['sandboxPolicy']
                         result = {}
                     elif method == 'thread/unsubscribe': result = {}
-                    elif method == 'thread/items/list': result = {'data': list(reversed(state['items'])), 'nextCursor': None}
+                    elif method == 'thread/items/list': result = {'data': list(reversed(state['items'])), 'nextCursor': None, 'backwardsCursor': None}
                     elif method == 'thread/queue/list': result = {'data': state['queue'][:], 'nextCursor': None}
                     elif method == 'thread/queue/add':
                         q = {'id': str(uuid.uuid4()), 'clientUserMessageId': params['clientUserMessageId'], 'input': params['input']}
@@ -123,7 +131,7 @@ def serve(path):
         threading.Thread(target=client, args=(peer,), daemon=True).start()
 
 if '--version' in sys.argv:
-    print('codex-cli 0.162.1')
+    print('codex-cli 0.163.0')
     sys.exit(0)
 if sys.argv[1:2] == ['app-server']:
     serve(sys.argv[sys.argv.index('--listen') + 1].removeprefix('unix://'))
@@ -134,10 +142,7 @@ wire.send({'id': 1, 'method': 'initialize', 'params': {'clientInfo': {'name': 'n
 while wire.receive().get('id') != 1: pass
 wire.send({'method': 'initialized'})
 Path('/tmp/goblins-codex/native-args.json').write_text(json.dumps(sys.argv[1:]))
-if 'resume' in sys.argv:
-    wire.send({'id': 2, 'method': 'thread/resume', 'params': {'threadId': sys.argv[sys.argv.index('resume') + 1]}})
-else:
-    wire.send({'id': 2, 'method': 'thread/start', 'params': {}})
+wire.send({'id': 2, 'method': 'thread/resume', 'params': {'threadId': sys.argv[sys.argv.index('resume') + 1]}})
 while (result := wire.receive()).get('id') != 2: pass
 thread = result['result']['thread']['id']
 draft = b''

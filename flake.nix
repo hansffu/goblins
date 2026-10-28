@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/21a67dc470149f337cecafbe965d8d252a390518";
     # Agent packages for the demo goblins, updated daily. Not following
     # nixpkgs: this is the combination numtide builds and caches.
-    llm-agents.url = "github:numtide/llm-agents.nix/493c34b1bed086861b0e968a40d00bd06522f003";
+    llm-agents.url = "github:numtide/llm-agents.nix/69d1f4621804d13b9658ff9ac9b2a151815132cb";
     agent-sandbox = {
       url = "github:archie-judd/agent-sandbox.nix/566defa1560051c4e48049389f942a6c1a53aee9";
       inputs.nixpkgs.follows = "nixpkgs";

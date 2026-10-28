@@ -6,7 +6,7 @@
 [[file:../adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]] defines the architecture: daemon-owned inboxes with notify-then-fetch
 communication, native agent terminals, inherited authentication, and sandbox-only
 integration configuration. [[file:../adr/0009-sandbox-owned-codex-delivery.md][ADR 0009]] supersedes the Codex terminal
-wakeup driver with a sandbox-local App Server adapter. Claude's existing native
+wakeup driver with a sandbox-local App Server adapter, and [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]] makes Codex a server goblin whose terminal is a client of that server, without a relay. Claude's existing native
 notification monitor remains unchanged. Ownership, grants and teardown rules in
 [[file:DAEMON.org][DAEMON.org]] continue to apply.
 
@@ -34,35 +34,11 @@ The native package, mounted hooks and notifier are supplied by the matching
 builder. Goblins a raid owner runs use the daemon's current manifest, never an
 agent-supplied one.
 
-Codex requires version 0.162.1 or newer. The launcher creates the private
-=/tmp/goblins-codex= directory, starts App Server on its explicit Unix socket,
-starts =goblins-codex run=, and connects the native TUI through the adapter's
-local pass-through socket with =--remote=.
-The socket is outside shared =CODEX_HOME=. Native utility subcommands retain
-normal argument handling. Authentication mounts, managed skills, user hooks,
-MCP filtering, images, attachment and Goblins' outer policy remain native.
-The launcher also applies CLI configuration and the selected native profile to
-App Server, since remote thread creation forwards only selected config fields.
-Profile values are parsed as TOML and passed as arguments without shell evaluation.
-Native exit preserves its exit code and terminates both helpers.
+Codex requires version 0.163.0 or newer. A Codex goblin has attach handlers. Its main command, the server launcher, creates the private =/tmp/goblins-codex= directory, starts App Server on its explicit Unix socket with the goblin's options and policy, starts =goblins-codex run= on its own connection, and ends the goblin when either exits. The socket is outside shared =CODEX_HOME=. The launcher applies CLI configuration and the selected native profile to App Server; profile values are parsed as TOML and passed as arguments without shell evaluation. =onAttach= starts the native TUI with =--remote= on that socket, resuming the goblin's conversation, so it talks to the real terminal; quitting it detaches. =codex= on =PATH= runs its own engine with the goblin's sandbox and approval settings and never connects to the server. Authentication mounts, managed skills, user hooks, MCP filtering, images and Goblins' outer policy remain native.
 
-Only the managed SessionStart hook is installed for Codex. It reports the exact
-=session_id= without blocking a turn or consuming inbox work. Codex 0.162.1
-runs this hook when the first turn starts. The adapter therefore also passes
-through the native WebSocket connection unchanged and captures thread IDs only
-from successful native =thread/start=, =thread/resume= and =thread/fork=
-responses for foreground requests. Codex's hidden title/recap threads and
-background-task requests share that connection but never replace the binding.
-Foreground request identities follow the pinned native protocol; unfamiliar
-string identities do not authorize a switch. This binds empty terminals and switches before an inbox arrival,
-without selecting threads by name or recency. The active native ID guards
-against a late compaction hook from the previously selected thread. Repeated
-compaction hooks keep the same binding. SubagentStart does not rebind the native terminal. The
-adapter subscribes by resuming only a proven loaded thread, without overrides,
-and ignores other threads. Native approval and user-input requests are never
-answered by the adapter. A newly created thread can temporarily lack persisted
-history; observer binding retries while native global status events remain
-available.
+The adapter owns the goblin's conversation: it creates one with =thread/start= and names it after the goblin with =thread/name/set=, which saves it so the terminal can resume it before its first turn, or loads the recorded one with =thread/resume= (=--thread ID=). It sets the goblin's approval policy and full access on that request, verifies them and repairs them with =thread/settings/update= when a loaded thread kept its own. A conversation that cannot be loaded stops the adapter, and so the goblin. It records =session_id= and =session_name= with =sessions.set-variables= each run, which makes attach ready.
+
+Reminders follow the attached terminal from the person's first message in a conversation. The adapter joins every user thread (not ephemeral, not a subagent's) with =thread/resume= without overrides, discovering them through =thread/started=, =thread/status/changed= and =thread/loaded/list= at each poll. A user message item whose =startedAtMs= is at or after the attachment's =attached_since= (=sessions.status=) and whose =clientId= is not one of the adapter's own reminders (the ledger keeps the newest 64 per thread) moves the binding to its thread; the newest such message wins. On joining a thread, and after reconnecting, the adapter reads its recent items with =thread/items/list= to catch up on messages it could not see, such as a first turn that ended before the thread was saved; items are considered once by ID. Discovery alone never rebinds, so switching without a message keeps the binding, and messages from before the attachment or while detached never count. An interrupted first turn keeps no message, so it does not move the binding. After a rebind the adapter applies and verifies the policy on the new thread and records it. =goblins-codex bind THREAD= rebinds a loaded conversation by hand. Native approval and user-input requests are never answered by the adapter; a pending one reaches a terminal that attaches later.
 
 The adapter polls =inbox.status= every 500 ms, including outstanding claims.
 It neither fetches nor acknowledges messages. It submits only:
@@ -187,8 +163,7 @@ goblins exec chief -- /run/goblins/bin/goblins-codex resume
 #+end_src
 
 The status file includes binding, activity, pause, ledger and diagnostic fields.
-Adapter failure preserves manual inbox commands; stale activity expires at the
-daemon. Claude retains =goblins integration status/pause/resume NAME= and its
+The adapter ending stops the goblin; while paused, manual inbox commands remain available. Stale activity expires at the daemon. Claude retains =goblins integration status/pause/resume NAME= and its
 existing turn-boundary hooks.
 
 * Provider-neutral activity
@@ -318,8 +293,8 @@ profile and the caller's own sandbox. Host controls resolve explicit sessions.
 Claude's turn-boundary hook events are SessionStart, UserPromptSubmit and Stop;
 StopFailure, PreToolUse (AskUserQuestion/ExitPlanMode), PostToolUse,
 PostToolUseFailure, Elicitation, ElicitationResult, PermissionRequest and
-Notification only report activity. Codex uses only
-SessionStart for exact thread binding. No message body or
+Notification only report activity. Codex installs no hooks; its adapter binds
+from the App Server's own events. No message body or
 arbitrary PTY input is accepted by integration methods. Terminal evidence is
 supplied privately by the controller, not trusted from the sandbox. Epochs
 reject stale reports; a second registration cannot steal a running driver.
@@ -373,7 +348,7 @@ failed/interrupted turns, thread identity and API/audit failures. Sandbox tests
 cover drafts, native images, parent/child isolation, detached processing, native
 exit and teardown. Activity tests include real daemon state subscriptions.
 
-Build the adapter before running the native proxy smoke tests:
+Build the adapter before running the native smoke tests, which run App Server, the adapter and Codex's own terminal against a fake sandbox endpoint:
 
 #+begin_src sh
 cargo build -p goblins-codex

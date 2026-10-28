@@ -691,9 +691,9 @@ A goblin records its own variables with =goblin variable set KEY=VALUE…= insid
 =resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 
 - =mkClaudeGoblin= records Claude's =session_id= and the session's name (=session_name=) from its hooks. The name is the one Claude reports, else the latest custom (=/rename=) or generated title in the transcript. Its default is =resumeCommand = args ++ [ "--resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =--mcp-config= JSON).
-- =mkCodexGoblin= records the terminal's foreground thread and its name through the Codex adapter, including renames and switches. Its default is =resumeCommand = args ++ [ "resume" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =-c= inline tables). Options before =resume=, such as =-p= and =-c=, still reach the App Server; =--sandbox= and =--ask-for-approval= cannot be combined with =resume= and are refused, since Codex refuses them when resuming and Goblins sets the resumed thread's sandbox and approval policy itself (see [[*Codex configuration][Codex configuration]]).
+- =mkCodexGoblin= records the conversation its adapter created or loaded, named after the goblin, and from then on the conversation reminders follow, with its name and renames. Its default is =resumeCommand = args ++ [ "--thread" "{session_id}" ]=, with braces in =args= escaped so they stay literal (such as =-c= inline tables): the adapter loads that conversation with the goblin's approval and sandbox policy, and the goblin stops when it no longer exists (see [[*Codex configuration][Codex configuration]]).
 
-Both defaults append to =args=, so they suit =args= made of options only. A goblin whose =args= contain a prompt, a subcommand or =--= sets its own =resumeCommand=, or =null= to always start afresh.
+Both defaults append to =args=. For Claude they suit =args= made of options only: a Claude goblin whose =args= contain a prompt, a subcommand or =--= sets its own =resumeCommand=, or =null= to always start afresh. A Codex goblin's =args= are always options.
 
 ** Keeping records
 
@@ -1013,7 +1013,7 @@ mkCodexGoblin {
   # pkg = pkgs.codex;             # override the pinned Codex package
   # allowedPackages = commonTools ++ [ pkgs.ripgrep ];
   # rwDirs = [ "/path/to/extra/workspace" ];
-  # args = [ "--no-alt-screen" ];
+  # args = [ "-p" "work" "-c" "model_reasoning_effort=\"high\"" ];
   codexSettings.model_reasoning_effort = "high";
 }
 #+end_src
@@ -1021,48 +1021,24 @@ mkCodexGoblin {
 After upgrading the daemon implementation, restart it before launching this
 configuration. An already-running daemon continues using its old executable.
 
-It accepts normal =mkGoblin= arguments and defaults =pkg= / =binName= to Codex.
-The package must support the managed hook setup and remote terminal client (Codex 0.162.1 or later).
-The baseline tools and access match =shell=, plus Fish, the hook executable,
-and a writable mount of =codexConfigDir=. That directory must already exist.
-Use an absolute runtime string, =$HOME/=, =${HOME}/= or =~/=; no credentials
-are read during Nix evaluation/build. The helper sets =CODEX_HOME= to the
-expanded directory and enables native hooks. Use =codexConfigDir= rather than
-=env.CODEX_HOME= to change it.
+It accepts normal =mkGoblin= arguments and defaults =pkg= to Codex, which must be version 0.163.0 or later. The baseline tools and access match =shell=, plus Fish, =codex= and a writable mount of =codexConfigDir=. That directory must already exist. Use an absolute runtime string, =$HOME/=, =${HOME}/= or =~/=; no credentials are read during Nix evaluation/build. The helper sets =CODEX_HOME= to the expanded directory and enables native hooks. Use =codexConfigDir= rather than =env.CODEX_HOME= to change it.
+
+A Codex goblin is a server goblin (see [[*Goblins that start a client at each attach][Goblins that start a client at each attach]]). Its main command runs the Codex App Server and Goblins' =goblins-codex= adapter in the background for the goblin's whole life; their output is the goblin's server log. The adapter creates the goblin's conversation, named after the goblin, or on =goblins resume= loads the recorded one, and records it with =goblin variable set=. Each attach then starts Codex's own terminal as a client of that server, resuming that conversation (=codex --remote … resume ID=). Quitting Codex detaches; the server, the conversation and inbox delivery keep running, and the next attach starts a fresh terminal on the same server. Stop the goblin with =goblins kill= or the frontends' stop actions. An unsent draft in the terminal does not survive a detach. If the recorded conversation no longer exists, the adapter cannot load it and the goblin stops; its server log says why.
+
+=args= are options for the App Server only: =-c=/=--config=, =--enable=, =--disable= and =-p=/=--profile=, each with its value. A profile and =-c= apply to the server, which creates the threads. Prompts, subcommands and permission flags are rejected when the configuration is built. The default =resumeCommand= is =args= plus =--thread {session_id}=.
 
 A raid owner and the Codex goblins it runs use the same mounted directory, including file-based native
 auth and refreshes. This also shares native history/configuration; private
 history for the anti-cheating live fixture remains separate work. Keyring-only
 credentials are not exposed by this mount. Normal native writes to the shared
 directory remain visible to the host; Goblins does not copy or rewrite its
-configuration to install hooks.
+configuration.
 
-The launcher and adapter give Codex full access inside Goblins' existing sandbox: Codex's own command sandbox needs namespaces, which a goblin does not have. Codex can use the same files and commands as the shell goblin; Goblins still owns isolation and package approvals. Utility subcommands receive =--sandbox danger-full-access=. The remote terminal receives no injected permission flags so that its =/resume= picker remains usable; the adapter applies the policy when starting, resuming or forking a thread. =args= are passed unchanged.
+Codex gets full access inside Goblins' existing sandbox: Codex's own command sandbox needs namespaces, which a goblin does not have. Codex can use the same files and commands as the shell goblin; Goblins still owns isolation and package approvals. =codex= on the sandbox's =PATH= runs its own engine with =--sandbox danger-full-access=, so =codex exec= or =codex login status= through =goblins exec= works with the goblin's settings and never connects to, or rebinds, the goblin's server.
 
-The approval policy is Codex's own unless the configuration sets =bypassPermissions = true;=, which selects =never= through the App Server and adapter, and adds =--ask-for-approval never= to utility subcommands. Without it, the policy comes from your =~/.codex/config.toml=, a profile or =-c= in =args=, or =codexSettings.approval_policy=, and defaults to Codex's =on-request=. With full access, =on-request= leaves asking to the model, so Codex rarely prompts; it is not a per-command check. When the terminal starts, resumes or forks a thread, the adapter applies and verifies the configured approval policy and full access, including for a thread already loaded in the App Server. If the server keeps different live settings, the adapter updates and verifies them without submitting a turn or interrupting running work. If that fails, the terminal receives an explicit error and the previous foreground binding remains selected. Changes made with =/permissions= remain effective until another start, resume or fork applies the configured policy again.
+The approval policy is Codex's own unless the configuration sets =bypassPermissions = true;=, which selects =never= on the App Server and adds =--ask-for-approval never= to =codex= on =PATH=. Without it, the policy comes from your =~/.codex/config.toml= for the thread's directory, a profile or =-c= in =args=, or =codexSettings.approval_policy=, and defaults to Codex's =on-request=. With full access, =on-request= leaves asking to the model, so Codex rarely prompts; it is not a per-command check. The adapter applies and verifies that policy and full access on the goblin's conversation when it creates or loads it, and on each conversation it follows. If the server keeps different live settings, the adapter updates them without submitting a turn or interrupting running work. Changes made with =/permissions= stay until the adapter next applies the policy to that conversation. A pending approval reaches a terminal that attaches after it was raised.
 
-=codexSettings= generates sandbox-only =/etc/codex/config.toml=. These are
-system defaults below Codex's user/project/CLI layers. Native hooks from
-=codexSettings.hooks= are appended to Goblins' SessionStart/UserPromptSubmit/Stop handlers.
-Codex treats this system source as managed; no host hook-trust changes or
-blanket hook-trust bypass is needed. The =goblins-spawn=, =goblins-messaging=,
-=goblins-packages= and =goblins-docker= skills are mounted at
-=/etc/codex/skills/NAME/SKILL.md=, and =goblins-devshell= too in a sandbox
-launched with a dev shell (and the goblins it runs). Running creates the member; messaging assigns
-its work and handles replies. Reply-dependent work waits for the matching reply
-before proceeding. When none is available, the agent yields its turn for the
-hook or notifier to resume it.
-
-SessionStart reports that the native UI is starting; it adds no instructions to
-Codex and does not falsely mark the initial empty composer as a working turn.
-Codex discovers the mounted skills through its normal skill discovery.
-The current user request remains primary. Stop queries inbox metadata and, when
-work remains, requests a continuation telling the agent to fetch it.
-The hook never claims an item or pastes its contents. It respects
-=stop_hook_active= to prevent endless continuation loops; the skill instructs
-the agent to process items sequentially until empty. A failed status check
-produces a diagnostic. Native user hooks keep their usual trust requirements.
-See [[https://learn.chatgpt.com/docs/hooks][Codex's hook contract]].
+=codexSettings= generates sandbox-only =/etc/codex/config.toml=. These are system defaults below Codex's user/project/CLI layers. Goblins adds no hooks of its own; native hooks from =codexSettings.hooks= and your own configuration keep their usual trust requirements. The =goblins-spawn=, =goblins-messaging=, =goblins-packages= and =goblins-docker= skills are mounted at =/etc/codex/skills/NAME/SKILL.md=, and =goblins-devshell= too in a sandbox launched with a dev shell (and the goblins it runs). Codex discovers them through its normal skill discovery. Running creates the member; messaging assigns its work and handles replies.
 
 Networking defaults to open internet, matching agent-sandbox's =allowedDomains = null= behavior. Each goblin gets its own network namespace connected by =pasta=,
 with DNS forwarding and no domain allowlist, HTTP proxy or TLS interception.
@@ -1089,11 +1065,9 @@ mkCodexGoblin {
 }
 #+end_src
 
-Codex requires version 0.162.1 or newer. Its sandbox-local adapter watches inbox
-metadata and queues the fixed reminder through App Server after the current
-turn. It works attached or detached and never fetches message bodies. Native
-drafts and images remain in the native terminal. Failed or interrupted turns
-can still be followed by inbox work; the previous human task is not retried.
+The adapter watches inbox metadata and queues the fixed reminder through the App Server after the current turn, into the conversation it follows. It works attached or detached and never fetches message bodies. Native drafts and images remain in the terminal. Failed or interrupted turns can still be followed by inbox work; the previous human task is not retried.
+
+Reminders follow the attached terminal from your first message in a conversation: the adapter joins every conversation you open in the terminal, and the newest message you send while attached, typed or from Codex's queue, moves reminders to its conversation. Switching to or resuming a conversation without sending a message does not move them, nor do the adapter's own reminders, messages sent while detached or old history. While nobody is attached, reminders stay where they were. A second client connected by hand to the App Server socket while you are attached is not supported; =goblins-codex bind THREAD= moves reminders by hand.
 
 Inspect or pause new reminders locally, including from the host:
 
@@ -1101,6 +1075,7 @@ Inspect or pause new reminders locally, including from the host:
 goblins exec chief -- /run/goblins/bin/goblins-codex status
 goblins exec chief -- /run/goblins/bin/goblins-codex pause
 goblins exec chief -- /run/goblins/bin/goblins-codex resume
+goblins exec chief -- /run/goblins/bin/goblins-codex bind THREAD
 #+end_src
 
 Three reminders without inbox progress exhaust the retry limit; resume resets

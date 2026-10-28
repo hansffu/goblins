@@ -412,20 +412,17 @@ in
       # `! grep` would not stop the build under set -e.
       if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
       grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
-      for launcher in ${own.codex}/bin/codex ${bypass.codex}/bin/codex; do
-        grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher
-        grep -q -- "-c 'sandbox_mode=\"danger-full-access\"'" $launcher
-        # The remote TUI must remain able to open /resume. Permission defaults
-        # belong to the server/adapter; utility subcommands still use CLI flags.
-        native=$(sed -n '/"\$codex_executable" --remote /,/native_pid=\$!/p' "$launcher")
-        printf '%s\n' "$native" | grep -Fq -- '--enable hooks'
-        printf '%s\n' "$native" | grep -Fq -- '"''${mcp_overrides[@]}" "$@"'
-        if printf '%s\n' "$native" | grep -Eq -- 'permission_args|--sandbox|--ask-for-approval'; then exit 1; fi
+      for launcher in ${own.codex} ${bypass.codex}; do
+        # `codex` on PATH runs its own engine with full access.
+        grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher/bin/codex
+        grep -q -- "-c 'sandbox_mode=\"danger-full-access\"'" $launcher/bin/goblins-codex-server
+        # The terminal joins the conversation as it is; the adapter set its policy.
+        if grep -Eq -- '--sandbox|--ask-for-approval' $launcher/bin/goblins-codex-attach; then exit 1; fi
       done
-      if grep -q -e 'approval_policy=' -e '--ask-for-approval never' -e --bypass-permissions ${own.codex}/bin/codex; then exit 1; fi
+      if grep -q -e 'approval_policy=' -e '--ask-for-approval never' -e --bypass-permissions ${own.codex}/bin/codex ${own.codex}/bin/goblins-codex-server; then exit 1; fi
       grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access --ask-for-approval never --enable hooks' ${bypass.codex}/bin/codex
-      grep -q -- "-c 'approval_policy=\"never\"'" ${bypass.codex}/bin/codex
-      grep -q -- '--native-socket "$native_socket" --bypass-permissions' ${bypass.codex}/bin/codex
+      grep -q -- "-c 'approval_policy=\"never\"'" ${bypass.codex}/bin/goblins-codex-server
+      grep -Fq -- '"''${thread[@]}" --bypass-permissions' ${bypass.codex}/bin/goblins-codex-server
       touch $out
     '';
   # The Claude mod as Claude Code loads it: its manifest and hooks module
@@ -676,7 +673,10 @@ in
       codex = mkCodexGoblin {
         pkg = codexProbe;
         filterUnavailableMcp = false;
-        args = [ "literal $(false) argument" ];
+        args = [
+          "-c"
+          ''model="literal $(false) {model}"''
+        ];
         allowedRunTargets = [ "codex" ];
         allowedPackages = [
           pkgs.coreutils
@@ -736,26 +736,8 @@ in
       native = mkCodexGoblin {
         filterUnavailableMcp = true;
         allowedDomains = [ ];
-        args = [
-          "login"
-          "status"
-        ];
-        allowedPackages = [ ];
-      };
-      native-ui = mkCodexGoblin {
-        allowedDomains = [ ];
-        args = [ "--no-alt-screen" ];
-        allowedPackages = [ ];
-      };
-      native-mcp = mkCodexGoblin {
-        filterUnavailableMcp = true;
-        allowedDomains = [ ];
-        args = [
-          "mcp"
-          "list"
-          "--json"
-        ];
-        allowedPackages = [ ];
+        # The scripted model for `codex exec` (test_codex_config.py).
+        allowedPackages = [ pkgs.python3 ];
       };
     };
   };
@@ -1314,9 +1296,44 @@ in
       }).goblin.resume_command == [
         "-c"
         "mcp_servers.x={{command=\"y\"}}"
-        "resume"
+        "--thread"
         "{session_id}"
       ];
+    # A Codex goblin's args are App Server options, and it starts a client at
+    # each attach on the conversation its adapter recorded.
+    assert
+      builtins.all
+        (args: !(builtins.tryEval (mkCodexGoblin { inherit args; }).goblin.build_spec.drvPath).success)
+        [
+          [ "prompt" ]
+          [ "resume" ]
+          [ "-c" ]
+          [ "--sandbox" "read-only" ]
+          [ "--ask-for-approval" "never" ]
+          [ "--no-alt-screen" ]
+        ];
+    assert
+      (mkCodexGoblin {
+        args = [
+          "-p"
+          "work"
+          "--enable=plugins"
+          "-cmodel=\"x\""
+        ];
+      }).goblin.args == [
+        "-p"
+        "work"
+        "--enable=plugins"
+        "-cmodel=\"x\""
+      ];
+    assert
+      (
+        let
+          command = (mkCodexGoblin { }).goblin.on_attach.command;
+        in
+        pkgs.lib.hasSuffix "/bin/goblins-codex-attach" (builtins.head command)
+        && builtins.tail command == [ "{session_id}" ]
+      );
     assert
       (mkClaudeGoblin {
         args = [
