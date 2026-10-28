@@ -1,6 +1,6 @@
 #+title: Server and client goblins: attach handlers, and Codex without the relay
 
-Status: plan, not implemented. Drafted 2026-10-27 on branch =codex-server-client=, based on =master=. When accepted, step 1 records the decision as ADR 0016, which supersedes the relay parts of [[file:../adr/0009-sandbox-owned-codex-delivery.md][ADR 0009]].
+Status: accepted 2026-10-28 and recorded as [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]], which supersedes the relay parts of [[file:../adr/0009-sandbox-owned-codex-delivery.md][ADR 0009]]. Not yet implemented. Drafted on branch =codex-server-client=, based on =master=.
 
 * Problem
 
@@ -25,6 +25,7 @@ Agreed with the user on 2026-10-27:
 7. Inbox reminders should follow conversation switches made in the attached Codex terminal.
 8. Whether a late-attaching client receives a pending approval request is checked during implementation; it does not gate the plan.
 9. (2026-10-28) Following a conversation from the person's first message in it is enough; switching to a conversation without sending a message does not move reminders.
+10. (2026-10-28) Only the newest installed Codex is supported. Older versions, including the current 0.162.1 floor, are not tested; =mkCodexGoblin='s version floor rises to the installed version.
 
 * Design: generic attach handlers
 
@@ -159,12 +160,11 @@ Each step is its own reviewed commit with its documentation, following AGENTS.md
 
 - A pending approval or user-input request reaches a client that attaches after it was raised (decision 8). If not, the plan needs a way to surface it before relying on detached turns.
 - =goblins-codex= receives user message items, with their =clientId=, for threads it joined with =thread/resume=, and joining a thread the terminal has loaded does not change it.
-- =thread/items/list= entries carry =startedAtMs= and stable item IDs on the supported versions (0.164.0 schema: =ThreadItemEntry= has =startedAtMs=, =completedAtMs=, =turnId=).
-- =thread/name/set= saves a fresh conversation on 0.162.1 too, and a remote client resuming it shows an empty conversation normally.
+- =thread/items/list= entries carry =startedAtMs= and stable item IDs on the installed Codex (0.164.0 schema: =ThreadItemEntry= has =startedAtMs=, =completedAtMs=, =turnId=).
+- =thread/name/set= saves a fresh conversation on the installed Codex, and a remote client resuming it shows an empty conversation normally.
 - A remote client exiting or being hung up leaves the server and its loaded thread untouched.
 - A remote =resume= client draws the conversation's full history.
 - Whether Codex keeps an unsent composer draft across a client restart. If not, detach loses it; document that.
-- Codex 0.162.1 and the current nixpkgs version both behave as above; the version floor may need to rise.
 
 * Risks
 

@@ -2,7 +2,7 @@
 
 Date: 2026-10-13
 
-Status: Accepted; supersedes ADR 0001's Codex hook/terminal wakeup driver.
+Status: Accepted; supersedes ADR 0001's Codex hook/terminal wakeup driver. The native relay, the foreground detection from native request IDs and the SessionStart binding are superseded by [ADR 0016](0016-server-and-client-goblins.md).
 
 ## Context
 
