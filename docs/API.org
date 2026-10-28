@@ -361,7 +361,7 @@ Reports the agent's activity, shown as =agent_state=.
 
 *** =sessions.set-variables=
 
-Stores variables in the caller's history record (for example the agent's =session_id=). All given keys change together; an empty value removes a key.
+Stores variables in the caller's history record (for example the agent's =session_id=). All given keys change together; an empty value removes a key. A key set to a value is ready for the current run; values a recreated goblin starts with from its record are not ready until it sets them again, and removing a key makes it not ready.
 
 - Input :: ={"variables": {name: value}}= with 1–16 entries. Names match =[a-z][a-z0-9_]{0,31}=; values are at most 256 bytes without control characters.
 - Output :: ={"accepted": true, "recorded"}=

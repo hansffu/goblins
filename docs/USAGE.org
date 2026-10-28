@@ -680,7 +680,7 @@ A conversation cannot be resumed while a goblin runs it, so two goblins never re
 
 ** Keeping the conversation
 
-A goblin records its own variables with =goblin variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16.
+A goblin records its own variables with =goblin variable set KEY=VALUE…= inside the sandbox; all given keys change together and an empty value removes a key. Keys are a lowercase letter followed by up to 31 lowercase letters, digits or =_=; values are one line of at most 256 bytes; a record holds at most 16. A recreated goblin starts with its record's values, but a variable counts as ready for the current run only once the goblin sets it to a value again in that run; removing it makes it not ready.
 
 =resumeCommand= on =mkGoblin= is the agent's argument list for a resumed goblin, used instead of =args=. ={key}= is replaced by the recorded variable =key= and ={{= and =}}= are literal braces; each element stays one argument and no shell is involved. When a placeholder has no recorded value, or its value starts with =-=, the goblin starts with its normal =args= and a fresh conversation, and its session detail says why. If the agent no longer has the recorded conversation, its own error is what you see.
 

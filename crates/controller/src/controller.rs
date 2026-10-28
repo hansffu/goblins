@@ -202,6 +202,9 @@ struct Active {
     /// A root goblin's recorded variables, kept also while this server has
     /// no history, for a record created when it takes the store over.
     variables: BTreeMap<String, String>,
+    /// Names `sessions.set-variables` has set to a value since this launch.
+    /// Values seeded from the history record are not in it.
+    fresh: BTreeSet<String>,
     /// The history record this goblin writes: the record it was recreated
     /// from, otherwise its own id.
     line: String,
@@ -1562,6 +1565,7 @@ impl Controller {
                     .as_ref()
                     .map(|r| r.variables.clone())
                     .unwrap_or_default(),
+                fresh: BTreeSet::new(),
                 line,
                 recreated_from: recorded,
                 created: self.next,
@@ -1643,7 +1647,15 @@ impl Controller {
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
                 self.update_record(&line, |r| r.set_variables(&p.variables))
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
-                self.sessions.get_mut(scope).unwrap().variables = scratch.variables;
+                let a = self.sessions.get_mut(scope).unwrap();
+                a.variables = scratch.variables;
+                for (name, value) in &p.variables {
+                    if value.is_empty() {
+                        a.fresh.remove(name);
+                    } else {
+                        a.fresh.insert(name.clone());
+                    }
+                }
                 if recorded && p.variables.contains_key("session_id") {
                     self.merge_conversation(&line);
                 }
@@ -3151,6 +3163,7 @@ mod tests {
                 call: None,
                 recreated_from: None,
                 variables: BTreeMap::new(),
+                fresh: BTreeSet::new(),
                 line: id.clone(),
                 created: 0,
                 record: SessionRecord {
@@ -4644,6 +4657,63 @@ mod tests {
             )["error"]["code"],
             -32010
         );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn only_variables_set_in_this_run_are_fresh() {
+        let fresh = |d: &Controller, id: &str| {
+            let a = &d.sessions[id];
+            (
+                a.fresh.iter().cloned().collect::<Vec<_>>(),
+                a.variables.clone(),
+            )
+        };
+        let set = |d: &mut Controller, id: &str, variables: Value| {
+            d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
+                .unwrap()["recorded"]
+                .clone()
+        };
+        let seeded = BTreeMap::from([("session_id".to_string(), "old".to_string())]);
+        // With history: a recreated goblin starts with its record's values.
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a");
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record.variables = seeded.clone();
+            record
+        });
+        d.sessions.get_mut("a").unwrap().variables = seeded.clone();
+        assert_eq!(fresh(&d, "a"), (vec![], seeded.clone()));
+        assert_eq!(set(&mut d, "a", json!({"session_name":"Plan it"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_name"]);
+        assert_eq!(set(&mut d, "a", json!({"session_id":"old"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_id", "session_name"]);
+        assert_eq!(
+            d.history.as_ref().unwrap().records["a"].variables["session_id"],
+            "old"
+        );
+        // Clearing a name removes its value and its freshness together.
+        assert_eq!(set(&mut d, "a", json!({"session_name":""})), true);
+        assert_eq!(
+            fresh(&d, "a"),
+            (vec!["session_id".to_string()], seeded.clone())
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        // Without history, setting makes names fresh all the same.
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "b");
+        d.sessions.get_mut("b").unwrap().variables = seeded.clone();
+        assert_eq!(set(&mut d, "b", json!({"session_id":"new"})), false);
+        assert_eq!(fresh(&d, "b").0, ["session_id"]);
+        assert_eq!(d.sessions["b"].variables["session_id"], "new");
+        assert_eq!(set(&mut d, "b", json!({"session_id":""})), false);
+        assert_eq!(fresh(&d, "b"), (vec![], BTreeMap::new()));
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
