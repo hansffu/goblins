@@ -360,3 +360,9 @@ The in-sandbox CLI is =goblin=; =/run/goblins/bin/goblins= stays as a hidden lin
 * TODO Git identity for goblins
 
 A goblin's home is private and empty, so =git commit= fails without an identity. Each configuration has to bind a git config (=roFiles=) or set =GIT_AUTHOR_*= and =GIT_COMMITTER_*= in =env=. Consider documenting this next to the =goblins-dev= setup, or an option that passes the host's identity in.
+
+* TODO Ship the Codex adapter only with Codex goblins
+
+All Codex code should be what =mkCodexGoblin= passes to =mkGoblin=. The =goblins-codex= adapter is the exception: =nix/packages/internal-goblins.nix= links it into the shared helper bundle that =mkGoblin= adds to every goblin's =allowedPackages= and mounts at =/run/goblins/bin=, so Claude and shell goblins carry it too.
+
+Build it in the Codex Nix code instead (=import ../packages/rust.nix { package = "goblins-codex"; }=) and add it to the launcher's =symlinkJoin=, which =mkCodexGoblin= already puts in =allowedPackages=, so =goblins-codex bind=, =status= and =pause= stay on =PATH=. Have =nix/goblins/codex/launcher.nix= call it by store path (=${adapter}/bin/goblins-codex=) instead of =/run/goblins/bin/goblins-codex= (=profile-args= and =run=), and remove the link from =internal-goblins.nix=. The native smoke tests run the Cargo-built adapter directly (=GOBLINS_CODEX_ADAPTER=, =tests/test_codex_native.py=) and need no change. Update the commands that name =/run/goblins/bin/goblins-codex= to plain =goblins-codex=: in =docs/USAGE.org= (Codex delivery controls), =docs/specs/AGENT-INTEGRATION.org=, and the integration tests that run it inside goblins (=tests/test_codex_config.py=, =tests/test_operation_notices.py=).
