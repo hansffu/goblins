@@ -581,6 +581,9 @@ impl Drop for Store {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        // Release ownership now: a child forked meanwhile shares the lock's
+        // file description until it execs, so closing alone may not.
+        unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&self._lock), libc::LOCK_UN) };
     }
 }
 fn path(directory: &Path, id: &str) -> PathBuf {
