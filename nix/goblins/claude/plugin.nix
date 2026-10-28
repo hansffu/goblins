@@ -1,11 +1,11 @@
-{ pkgs }:
+{ pkgs, adapter }:
 let
   inherit (pkgs) lib;
   monitor = pkgs.writeShellApplication {
     name = "goblins-claude-monitor";
     runtimeInputs = [
       pkgs.coreutils
-      pkgs.jq
+      adapter
     ];
     text = builtins.readFile ./monitor.sh;
   };
@@ -58,4 +58,5 @@ pkgs.runCommand "goblins-claude-plugin"
     cp $manifestPath $out/.claude-plugin/plugin.json
     cp $monitorsPath $out/monitors/monitors.json
     ln -s ${message}/bin/goblins-claude-message $out/bin/goblins-claude-message
+    ln -s ${adapter}/bin/goblins-claude $out/bin/goblins-claude
   ''

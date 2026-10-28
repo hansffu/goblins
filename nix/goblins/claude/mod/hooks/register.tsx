@@ -1,7 +1,8 @@
 // The Goblins mod: what Claude Code's settings hooks cannot do. The managed
-// hooks and the plugin monitor stay authoritative for the integration
-// lifecycle and inbox delivery; this module only reports interrupted turns
-// and draws the inbox: wake rows, a footer count and a message pane.
+// hooks and the plugin monitor (goblins-claude) stay authoritative for the
+// integration lifecycle and inbox delivery; this module only reports
+// interrupted turns and draws the inbox: wake rows, a footer count and a
+// message pane.
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
@@ -35,13 +36,22 @@ let generation = 0
 let loading: Promise<void> = Promise.resolve()
 let isIndexed = false
 
-async function goblin($: EngineInterface, args: string[], timeoutMs = 5000): Promise<any> {
+async function json($: EngineInterface, argv: string[], timeoutMs: number, stdin?: string): Promise<any> {
   try {
-    const run = await $.process.run([GOBLIN, ...args], { timeoutMs })
+    const run = await $.process.run(argv, { timeoutMs, ...(stdin === undefined ? {} : { stdin }) })
     return run.exitCode === 0 ? JSON.parse(run.stdout) : undefined
   } catch {
     return undefined
   }
+}
+
+async function goblin($: EngineInterface, args: string[]): Promise<any> {
+  return json($, [GOBLIN, ...args], 5000)
+}
+
+// The goblin's own integration, linked into the plugin.
+async function integration($: EngineInterface, args: string[], stdin?: string): Promise<any> {
+  return json($, [`${$.plugin.root}/bin/goblins-claude`, ...args], 2000, stdin)
 }
 
 function toMessage(raw: any): GoblinsMessage | undefined {
@@ -120,12 +130,13 @@ async function poll($: EngineInterface): Promise<void> {
     const token = await current($)
     const status = await goblin($, ['inbox', 'status'])
     if (!status) return
+    const wakeups = await integration($, ['status'])
     const next: GoblinsInbox = {
       queued: Number(status.queued ?? 0),
       claim: typeof status.claim === 'string' ? status.claim : null,
       head: Array.isArray(status.head) && typeof status.head[0] === 'string' ? status.head[0] : null,
       revision: Number(status.revision ?? 0),
-      health: String(status.integration?.health ?? 'unregistered'),
+      health: String(wakeups?.health ?? 'unregistered'),
     }
     const previous = await read($, inbox)
     if (JSON.stringify(previous) !== JSON.stringify(next)) await update($, inbox, () => next)
@@ -168,10 +179,10 @@ async function openPane($: EngineInterface, id: string | null): Promise<void> {
 }
 
 async function reportInterrupt($: EngineInterface): Promise<void> {
-  // Activity only: the daemon maps Claude's idle reminder to idle. The
+  // Activity only: goblins-claude maps Claude's idle reminder to idle. The
   // integration lifecycle waits for the next turn, as for any interruption.
   // Bounded and awaited, so it cannot land after the next turn's report.
-  await goblin($, ['integration', 'hook', '--event', 'Notification', '--notification', 'idle_prompt'], 2000)
+  await integration($, ['hook'], JSON.stringify({ hook_event_name: 'Notification', notification_type: 'idle_prompt' }))
 }
 
 function newest<T>(all: Record<string, T>, order: (value: T) => number): Record<string, T> {

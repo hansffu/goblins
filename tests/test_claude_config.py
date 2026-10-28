@@ -62,6 +62,11 @@ class ClaudeConfigTests(unittest.TestCase):
         )
         return json.loads(terminal.expect(r"(?:^|\n)HOOK_RESULT=(.*)\n").group(1))
 
+    def integration(self, session):
+        """The goblin's own wakeup ledger, as `goblins-claude status` reports it (none before launch)."""
+        result = self.d.cli("exec", session, "--", "goblins-claude", "status", check=False)
+        return json.loads(result.stdout) if result.returncode == 0 else {}
+
     def test_mounts_hooks_skills_and_inherits_state(self):
         terminal = self.terminal()
         terminal.expect("CLAUDE_DIR=" + re.escape(str(self.claude)))
@@ -96,10 +101,10 @@ class ClaudeConfigTests(unittest.TestCase):
         terminal.send("goblin status\n")
         terminal.expect("Agent permission bypass: not requested")
         owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
-        integration = self.d.rpc.call("integration.status", {"session": owner})
-        self.assertEqual(integration["driver"], "claude")
-        self.assertEqual(integration["state"], "starting")
-        activity = lambda: self.d.get(owner)["agent_state"]
+        self.assertEqual(self.integration(owner)["state"], "starting")
+        # Hooks record activity in the ledger; the monitor (not running in the
+        # probe) reports it to the daemon.
+        activity = lambda: self.integration(owner)["activity"]
         self.assertEqual(self.hook(terminal, "SessionStart"), {})
         self.assertEqual(activity(), "idle")
         self.assertEqual(
@@ -127,9 +132,6 @@ class ClaudeConfigTests(unittest.TestCase):
         self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="again"), {})
         self.assertEqual(self.hook(terminal, "Stop"), {})
         self.assertEqual(activity(), "idle")
-        self.assertEqual(
-            self.d.rpc.call("integration.status", {"session": owner})["activity"], "idle"
-        )
         self.d.rpc.call("messages.send", {"key": "task", "to": owner, "body": "private body"})
         continuation = self.hook(terminal, "Stop")
         self.assertEqual(continuation["decision"], "block")
@@ -154,7 +156,7 @@ class ClaudeConfigTests(unittest.TestCase):
         ).group(1).decode()
         terminal.expect("claude-probe>")
         owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
-        state = lambda: self.d.rpc.call("integration.status", {"session": owner})["state"]
+        state = lambda: self.integration(owner)["state"]
         self.assertEqual(self.hook(terminal, "SessionStart"), {})
         self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="task"), {})
         body = "private body: héllo ✉\nsecond line"
@@ -176,11 +178,11 @@ class ClaudeConfigTests(unittest.TestCase):
             "printf '%s\\n' \"$!\" > /tmp/goblins-claude/monitor.pid; }; printf 'MONITOR=%s\\n' \"$?\"\n"
         )
         terminal.expect(r"(?:^|\n)MONITOR=0\n")
-        # The turn ends without a Stop-hook continuation; the daemon settles
-        # ready, so its notifier (the monitor) delivers the message.
+        # The turn ends without a Stop-hook continuation; goblins-claude
+        # settles ready, so the monitor delivers the message.
         self.assertEqual(self.hook(terminal, "Stop"), {})
         self.assertEqual(state(), "ready")
-        self.assertEqual(self.d.get(owner)["agent_state"], "idle")
+        self.assertEqual(self.integration(owner)["activity"], "idle")
         # A stale PID, or another process under it, is no monitor.
         terminal.send("kill \"$(cat /tmp/goblins-claude/monitor.pid)\"; printf 'KILLED=%s\\n' \"$?\"\n")
         terminal.expect(r"(?:^|\n)KILLED=0\n")
@@ -285,28 +287,24 @@ class ClaudeConfigTests(unittest.TestCase):
     def test_spawn_message_wakes_indented_claude_composer(self):
         launch = self.d.start("notifier", agent_name="receiver")
         receiver = launch["session"]
-        self.d.wait(
-            lambda: self.d.rpc.call(
-                "integration.status", {"session": receiver}
-            ).get("state")
-            == "starting"
-        )
-        self.d.rpc.call(
+        self.d.wait(lambda: self.integration(receiver).get("state") == "starting")
+        sent = self.d.rpc.call(
             "messages.send",
             {"key": "startup", "to": receiver, "body": "startup message"},
         )
         self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 1)
         reply = self.d.rpc.call("inbox.next", {"key": "startup-reply"})["message"]
         self.assertEqual(reply["body"], "processed: startup message")
-        events = self.d.rpc.call("communications.list", {})["events"]
-        self.assertTrue(
-            any(
-                event["kind"] == "integration.wake_attempt"
-                and event["actor"] == receiver
-                for event in events
-            )
+        # The monitor's line woke it, naming the message; the daemon took no part.
+        wakes = self.d.cli("exec", receiver, "--", "cat", "/tmp/fake-claude-wakes").stdout
+        self.assertEqual(
+            wakes,
+            f"Check your Goblins inbox and process the next item. [goblins-inbox-wake {sent['id']}]\n",
         )
-        # The fake's Stop settles idle; monitor ticks keep it fresh past expiry.
+        events = self.d.rpc.call("communications.list", {})["events"]
+        self.assertFalse(any(e["kind"].startswith("integration.") for e in events))
+        self.d.wait(lambda: self.integration(receiver)["state"] == "ready")
+        # The fake's Stop settles idle; the monitor's heartbeat keeps it fresh past expiry.
         self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
         time.sleep(32)
         self.assertEqual(self.d.get(receiver)["agent_state"], "idle")

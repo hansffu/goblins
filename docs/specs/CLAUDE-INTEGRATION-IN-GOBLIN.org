@@ -43,7 +43,7 @@ The rules move from =integration.rs= unchanged, except that nothing depends on t
 
 ** Activity
 
-=hook= maps the activity-only events as =hook_activity= does today (=PreToolUse= of =AskUserQuestion= or =ExitPlanMode=, =PermissionRequest=, =Elicitation=, the =Notification= types, =StopFailure=, tool ends while waiting) and reports a change with =sessions.set-state=, bounded so that a slow daemon cannot hold the hook. =watch= repeats the current activity every ten seconds, as =goblins-codex= does, so activity stays fresh within the daemon's 30-second expiry and becomes unknown when the monitor is gone.
+=hook= maps the activity-only events as =hook_activity= does today (=PreToolUse= of =AskUserQuestion= or =ExitPlanMode=, =PermissionRequest=, =Elicitation=, the =Notification= types, =StopFailure=, tool ends while waiting) and records it in the ledger; hooks make no daemon call for activity. =watch= is the only reporter: in its loop it sends the ledger's activity with =sessions.set-state= when it differs from the last accepted report, and repeats it every ten seconds, as =goblins-codex= does. One sequential reporter keeps reports in order, activity stays fresh within the daemon's 30-second expiry, and it becomes unknown when the monitor is gone.
 
 ** The mod
 
@@ -85,4 +85,4 @@ Steps 2 and 3 run their feature tasks before review.
 * Risks
 
 - Hook and monitor processes now share a file instead of the daemon's single-threaded state. The =flock= serializes them; a hook that cannot get the lock within its timeout answers as for a failed daemon call.
-- Activity reports from hooks are more daemon calls than before only for changes; repeated equal reports are skipped, as =goblins-codex= does.
+- If Claude is started again inside the same goblin while the previous monitor still has a report in flight, that late report can reach the daemon after the new monitor's. The old monitor records nothing in the new run's ledger and exits at its next poll, so the daemon's activity is stale for at most one heartbeat (ten seconds). Accepted as a known limit; there is no lock across monitors.

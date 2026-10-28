@@ -90,7 +90,7 @@ env = { GOBLINS_TEST_CODEX = "1" }
 description = "Claude configuration, hooks, mod and operation notices"
 python = ["test_claude_config", "test_claude_mod", "test_operation_notices.ClaudeNotices"]
 checks = ["rust"]
-paths = ["nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py"]
+paths = ["crates/claude/*", "nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py"]
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"

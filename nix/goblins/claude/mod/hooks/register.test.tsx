@@ -3,6 +3,8 @@ import type { On } from 'claude-code'
 
 const PLUGIN = 'goblins-daemon'
 const HELPER = /goblins-claude-message$/
+const CLAUDE = /\/bin\/goblins-claude$/
+const IDLE = JSON.stringify({ hook_event_name: 'Notification', notification_type: 'idle_prompt' })
 const GOBLIN = '/run/goblins/bin/goblin'
 
 const reply = {
@@ -64,17 +66,20 @@ const ran = (stdout: string, exitCode = 0) => ({
   value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
 })
 
-// The daemon beneath the plugin: `goblin` and the message helper.
+// The daemon beneath the plugin: `goblin`, the message helper and
+// goblins-claude, whose status is `status.integration`. A call's input
+// follows its arguments.
 function daemon(on: On, status: Record<string, unknown>, mail: Record<string, unknown>[]) {
   const calls: string[][] = []
   on('process.run', (_, e) => {
-    calls.push([...e.argv])
+    calls.push(e.init?.stdin === undefined ? [...e.argv] : [...e.argv, e.init.stdin])
     if (HELPER.test(e.argv[0] ?? '')) {
       const found = mail.find(m => m.id === e.argv[1])
       return found ? ran(JSON.stringify(found)) : ran('', 1)
     }
     if (e.argv[0] === GOBLIN && e.argv[1] === 'inbox') return ran(JSON.stringify(status))
-    if (e.argv[0] === GOBLIN && e.argv[1] === 'integration') return ran('{"continue":false,"notify":false}')
+    if (CLAUDE.test(e.argv[0] ?? '') && e.argv[1] === 'status') return ran(JSON.stringify(status.integration))
+    if (CLAUDE.test(e.argv[0] ?? '') && e.argv[1] === 'hook') return ran('{}')
     return ran('', 127)
   })
   return calls
@@ -311,7 +316,7 @@ test('an interrupted turn ends only after its idle report', async ($, on) => {
   const clock = mock.clock(on)
   const order: string[] = []
   on('process.run', async (_, e) => {
-    if (e.argv[1] === 'integration') {
+    if (CLAUDE.test(e.argv[0] ?? '') && e.argv[1] === 'hook') {
       await clock.sleep(1000)
       order.push('idle report')
     }
@@ -332,15 +337,15 @@ test('an interrupted main turn reports idle activity; others report nothing', as
   const clock = mock.clock(on)
   const calls = daemon(on, STATUS, [])
   engine(on)
-  const report = [GOBLIN, 'integration', 'hook', '--event', 'Notification', '--notification', 'idle_prompt']
+  const hooks = () => calls.filter(call => CLAUDE.test(call[0] ?? '') && call[1] === 'hook').map(call => call.slice(1))
   const base = { answer: '', durationMs: 1, turnId: 'x' }
   await $.turn.complete({ ...base, isAborted: false, reason: 'answer' })
   await $.turn.complete({ ...base, isAborted: true, reason: 'aborted', agentId: 'sub-1' })
   await clock.settle()
-  expect(calls.filter(call => call[1] === 'integration')).toEqual([])
+  expect(hooks()).toEqual([])
   await $.turn.complete({ ...base, isAborted: true, reason: 'aborted' })
   await clock.settle()
-  expect(calls.filter(call => call[1] === 'integration')).toEqual([report])
+  expect(hooks()).toEqual([['hook', IDLE]])
 })
 
 test('/inbox opens the pane on the newest message', async ($, on) => {
