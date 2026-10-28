@@ -1,6 +1,6 @@
 #+title: Claude as a server goblin
 
-Status: proposed 2026-10-28, to be recorded as [[file:../adr/0017-claude-server-goblins.md][ADR 0017]]. It builds on the attach handlers of [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]. Step 0 (the spike) ran on 2026-10-28; see Spike results.
+Status: not pursued. Proposed 2026-10-28; the same day the user kept Claude on the goblin's terminal, and only the move of Claude's integration out of the daemon went ahead, in [[file:CLAUDE-INTEGRATION-IN-GOBLIN.org][CLAUDE-INTEGRATION-IN-GOBLIN.org]]. It built on the attach handlers of [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]. Step 0 (the spike) ran on 2026-10-28; see Spike results.
 
 * Problem
 
