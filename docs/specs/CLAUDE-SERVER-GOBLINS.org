@@ -1,0 +1,138 @@
+#+title: Claude as a server goblin
+
+Status: not pursued. Proposed 2026-10-28; the same day the user kept Claude on the goblin's terminal, and only the move of Claude's integration out of the daemon went ahead, in [[file:CLAUDE-INTEGRATION-IN-GOBLIN.org][CLAUDE-INTEGRATION-IN-GOBLIN.org]]. It built on the attach handlers of [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]. Step 0 (the spike) ran on 2026-10-28; see Spike results.
+
+* Problem
+
+A Claude goblin runs the native Claude Code terminal on the goblin's single daemon PTY. It has the problems ADR 0016 removed for Codex: a goblin started detached, such as a raid member, starts its terminal with nobody attached, so startup terminal queries are answered late or not at all, and reattaching replays at most 64 KiB of raw output without a repaint.
+
+The daemon also carries Claude-specific terminal code for that PTY: terminal delivery (pasting the inbox prompt into the composer), reading Claude's composer from the screen to decide when that is safe, and tracking human input so that Esc or Ctrl-C pauses wakeups. Nothing Goblins ships uses terminal delivery; Claude's plugin monitor uses notification delivery.
+
+Claude Code now has its own background sessions. =claude --bg= runs a session under a supervisor and returns; =claude attach ID= opens it in a terminal; Ctrl+Z in an attached terminal drops back to the shell and the session keeps running. Goblins should use that split, as it does for Codex.
+
+* Findings
+
+Probed on 2026-10-28 with Claude Code 2.1.309 and a scratch configuration directory, so the user's =~/.claude= was not touched.
+
+- =claude --bg= starts a supervisor if none runs (=claude daemon run --origin transient=), or reuses the running one, and dispatches the session to it. Each session is the full interactive terminal UI on its own PTY host (=claude bg-pty-host=), plus a spare host kept warm for the next session. =claude attach= connects to that PTY host's socket.
+- =claude daemon run= runs the supervisor in the foreground. It did not exit when idle; =claude daemon stop --any= stops it and terminates its sessions.
+- The supervisor keeps its sockets in =/tmp/cc-daemon-UID/HASH/=, where the hash follows the configuration directory. Everything else is inside =CLAUDE_CONFIG_DIR=: =daemon.lock= and =daemon.status.json= (created at start, deleted at stop), =daemon/= (=roster.json= of workers, =control.key=), =jobs/= and the default =daemon.json= and =daemon.log=. Only the last two can be moved, with =--json-path= and =--log-file=.
+- Options given to =claude --bg= reach the session: =--plugin-dir=, =--dangerously-skip-permissions=, =--model=, =--name=. =--session-id= is ignored: =--bg= picks the session ID itself and says so. =--resume ID= with =--bg= continues that session under the same ID.
+- =claude attach= takes the 8-character job ID (the start of the session ID) or part of the session name, not the full session ID. =claude agents --json= lists sessions with =id=, =sessionId=, =name=, =status= and =state=.
+- In an attached terminal, Ctrl-C shows "Press Ctrl-C again to detach (session keeps running)"; Ctrl-D the same. The message is misleading: step 0 found that the second Ctrl-C opens the agent view inside the client, and Ctrl+Z is what exits it.
+- =--bg= refuses a directory whose workspace trust has not been accepted ("Run =claude= in DIR once and accept the trust prompt"), and refuses bypass mode until its disclaimer has been accepted (the user's own settings have =skipDangerousModePermissionPrompt=).
+- Claude follows a symlinked =.claude.json=: it rewrote the link's target (by rename) and kept the link.
+- =--include-hook-events= works only with =--print --output-format=stream-json=, the headless mode, which has no terminal to attach to. Hooks stay the event source.
+
+The supervisor's state is the reason Claude goblins cannot simply share =~/.claude= in this mode. Each goblin has its own =/tmp= and process IDs, so a second goblin's supervisor finds the first one's =daemon.lock= naming a process it cannot see, treats it as stale, takes it over and rewrites =roster.json=. The user's =daemon.log= already shows this from an earlier experiment in a goblin (17 October): workers of another sandbox marked dead, and a session that crashed with "session ID already belongs to another conversation". Mounting private files over =daemon.lock= does not work either, because the supervisor creates and deletes it.
+
+* Decisions
+
+Agreed with the user on 2026-10-28:
+
+1. Claude becomes a server goblin with ADR 0016's =onAttach=. Goblins gets no new daemon features for it.
+2. Each Claude goblin uses its own configuration directory =~/.claude/goblins/<goblin ID>/= (under the configured =claudeConfigDir=), made of links to the shared directory's entries except the supervisor's state. Paths Claude shows, such as plans, are valid on the host while the goblin runs. The directory is removed when the goblin ends, and leftovers of goblins that were killed are cleaned up.
+3. Only the goblin's first session is tracked. The person can still open the agent view (←) and start or switch to other sessions, but Goblins does not follow them.
+4. Pausing wakeups on Esc or Ctrl-C is dropped, together with terminal delivery and reading Claude's composer from the screen.
+5. Only the newest installed Claude Code (2.1.309) is supported; =mkClaudeGoblin= gets that version floor.
+6. Quitting the attached client detaches, as for Codex. In Claude that is Ctrl+Z (step 0).
+7. Moving the Claude driver out of the daemon (=docs/specs/TODO.org=) is a later, separate plan. Server mode keeps today's =integration.*= calls from the hooks and the monitor.
+
+* Design
+
+** Configuration directory
+
+The server launcher derives the directory from the goblin's ID (=goblin status=). Below, =SHARED= is the configured =claudeConfigDir= and =D= is =SHARED/goblins/<ID>=.
+
+- *Cleanup of old directories.* Each live goblin holds an exclusive =flock= on =D/lock= for its whole life. At start, while holding =flock= on =SHARED/goblins/.lock=, the launcher tries a non-blocking =flock= on every =SHARED/goblins/*/lock= and deletes each directory whose lock it obtains, since that goblin is gone, after saving its credentials (below); it then creates =D= and takes its lifetime lock before releasing =.lock=. So a starting goblin's new directory is never swept by another goblin starting at the same time. Locks work across sandboxes because the files are shared, so no daemon support is needed. A recreated goblin gets a new ID and therefore a fresh directory; its conversation resumes from the shared transcripts.
+- *Links.* =D= gets a symlink to =SHARED/NAME= for every entry of =SHARED= except =goblins=, the supervisor's state (=daemon=, =daemon.lock=, =daemon.status.json=, =daemon.json=, =daemon.log=, =jobs=) and =sessions= (Claude's per-process session registry, keyed by process ID, which is meaningless across sandboxes). Before linking, the launcher creates the shared entries Claude creates on first use, so that a first use inside a goblin does not create a private copy: the directories =projects=, =plans=, =file-history=, =session-env=, =shell-snapshots=, =backups=, =cache=, =plugins=, =skills=, =tasks=, =paste-cache=, =debug=, =telemetry=, =downloads=, =ide= and =state=, and the file =history.jsonl= (step 0). Other top-level files that do not exist yet are not linked; Claude creates them privately in =D=, which is lost with the goblin. Claude writes =.claude.json= and =history.jsonl= through their links; some caches (=policy-limits.json.stamp.json=) replace their link with a private file, which is harmless. Credentials are the exception below.
+- *Removal.* On exit the launcher stops the supervisor, saves the credentials (below) and deletes =D=. A killed launcher leaves =D= to the next start's cleanup.
+
+** Processes
+
+The goblin's main command is =goblins-claude-server=:
+
+1. Prepare =D= as above, export =CLAUDE_CONFIG_DIR=D= and =DISABLE_AUTOUPDATER=1=, and register the integration as today's launcher does (=goblin integration register --driver claude=, epoch exported).
+2. Start =claude daemon run= in the background with its log on the server log, and wait (bounded) until =claude daemon status= reports the control socket reachable.
+3. Dispatch the session: =claude --bg --name <agent name> --plugin-dir PLUGIN [--dangerously-skip-permissions] ARGS=, where =ARGS= are =args=, or =resumeCommand= on recreate. Find its job by name in =claude agents --json= and record it with =goblin variable set claude_job=ID=.
+4. Watch the job: poll =claude agents --json= every two seconds. When the job is gone (=claude stop=, or ctrl+x on it in the agent view) or the supervisor exits, stop the supervisor and exit, which ends the goblin. A session that ended normally exits 0; a supervisor that died exits non-zero.
+
+On TERM (goblin stop) the launcher stops the supervisor, which terminates its sessions, deletes =D= and exits.
+
+=onAttach= is =goblins-claude-attach {claude_job}=, which sets =CLAUDE_CONFIG_DIR= to =D= and runs =claude attach JOB=. Readiness is =claude_job= being set during this run (ADR 0016). Ctrl+Z exits the client and detaches; Ctrl-C twice opens Claude's agent view inside the client, where Ctrl-C twice more exits. =goblins detach= hangs the client up, which also leaves the session running. =/exit= in the attached client does not end the session either; it opens the agent view (step 0).
+
+=claude= on =PATH= becomes a small wrapper for use inside the sandbox: it sets the goblin's =CLAUDE_CONFIG_DIR= and =DISABLE_AUTOUPDATER=, adds =--dangerously-skip-permissions= when the goblin bypasses permissions, and does not register the integration or load the plugin. The launcher records =D= in =/tmp/goblins-claude/config-dir= for the wrapper and the attach script.
+
+** Tracking the first session
+
+Goblins' hooks come from managed settings, so they run in every Claude session in the sandbox: the goblin's session, sessions started from the agent view and =claude= runs inside the goblin. Only the goblin's session may report activity, drive wakeups or record =session_id=. The hook therefore exits early, without calling the daemon, in any other session. Only the goblin's own session is started with the Goblins plugin (=--plugin-dir=): sessions started from the agent view, the warm spare it claims as a draft and a second =claude --bg= do not get it, and the =PATH= wrapper does not pass it (step 0). Every hook runs with =CLAUDE_PID=, the session's process, so the hook acts only when that process's command line carries the Goblins plugin directory. This needs no job ID published to the hooks, so the session's first SessionStart, and a turn started by a prompt in =args=, count before the launcher has recorded =claude_job=; a =claude= run by a tool inside the session is its own process without the plugin and is ignored. =/clear= keeps the job and gives it a new session ID, with SessionStart =source=clear=, and its process keeps its options, so the goblin follows its own job across =/clear=.
+
+=session_id= and =session_name= are still recorded by the hook, for the tracked session only, so =resumeCommand= (=args ++ --resume {session_id}=, unchanged) resumes the conversation the goblin's own job showed last, including after =/clear=. Switching to another session in the agent view does not change it.
+
+** Trust and bypass
+
+- With =bypassPermissions=, =mkClaudeGoblin= adds =skipDangerousModePermissionPrompt = true= to its managed settings, so =--bg= accepts bypass mode without the user's own setting. Claude reads this consent from managed or user settings, not from =--settings= (2.1.309 code); step 2's tests check it at runtime.
+- =--bg= refuses an untrusted directory, and there is no terminal to accept the trust prompt in before the session starts. Open question for the user: the launcher can fail with an error naming the directory (the user runs =claude= there once, on the host or in any goblin with a terminal, or trusts a parent directory), or it can mark the goblin's directory trusted in =.claude.json=. Until decided, the launcher fails with the error.
+
+** What changes in the daemon
+
+Once Claude no longer runs on the goblin's PTY, the Claude-specific terminal code has no user:
+
+- Terminal delivery: the =terminal= mode of =integration.tick= and =goblin integration watch= (today the default), =Terminal::notify=, =Work::Delivery= and =integration.wake_result=.
+- Reading Claude's composer from the screen (=integration_view='s readiness, the =›=/=❯= cells and "esc to interrupt").
+- Human-input tracking (=input=, =interrupted=, =input_pending=) and what uses it: Stop pausing wakeups after Esc or Ctrl-C, SessionStart and UserPromptSubmit resetting attempts on new human input, and =integration.resume= snapshotting input. Attempts still reset when the inbox head changes and when nothing is pending; =goblins integration pause= and =resume= stay.
+- The =codex= driver name in the daemon (=integration.rs=, the =controller.rs= method gate, =API.org=): Codex never registers. =validate.nix= keeps =codex= and =claude=, because =integration= also gates =bypassPermissions=.
+
+=docs/API.org= and =AGENT-INTEGRATION.org= change in the same step. Single-PTY goblins without an integration (shells) are unaffected.
+
+** What does not change
+
+The hooks' =integration.check= calls, the Stop continuation rule, activity from hooks, the plugin monitor and its notification delivery, the Goblins mod (it runs in the session's process, so its pane shows whenever a terminal is attached), operation notices, and recording =session_id= and =session_name=.
+
+* Implementation steps
+
+Each step is its own reviewed commit with its documentation, following AGENTS.md. Feature tasks come from =just test-plan=; =just test-merge= runs on the final candidate.
+
+0. *Spike* (no Goblins changes; results appended to this plan). In a Claude goblin, with directories under =~/.claude/goblins/spike-*= and a cheap model, check:
+   - the link directory works with the real login: a session starts logged in, transcripts and plans land in the shared directories, and whether =.credentials.json= is rewritten through its link (a token refresh) or replaced;
+   - two supervisors with two such directories run side by side, and =~/.claude/daemon=, =daemon.lock= and =jobs= stay untouched;
+   - the list of shared directories to create before linking;
+   - Goblins' hooks and the plugin monitor run in a =--bg= session with nobody attached, and a monitor notification starts a turn while detached;
+   - how a hook can tell the goblin's session from sessions started from the agent view, and that those do not get =--plugin-dir=;
+   - Ctrl-C twice and a hang-up (SIGHUP) of =claude attach= leave the session running; what =/exit= and =/clear= do to the job, its ID and its session ID;
+   - =--bg --resume ID= after a supervisor restart continues the conversation;
+   - =--bg= with a prompt in =args=; =skipDangerousModePermissionPrompt= in managed settings is honoured by =--bg=;
+   - a detached start answers the terminal's startup queries and a reattach from a differently sized terminal repaints cleanly;
+   - the Goblins mod loads in a =--bg= session.
+   The spike's sessions run Goblins' hooks against the spike goblin's own integration (activity, recorded =session_id=); its own next turn records its =session_id= again. Go/no-go with the user if any check fails.
+1. *ADR 0017.* Documentation only.
+2. *Claude cutover.* =goblins-claude-server=, =goblins-claude-attach=, the =PATH= wrapper, the configuration directory with its cleanup, =onAttach=, the hook's session filter, the bypass setting, the version floor, =binName= of the main command. =tests/fake_claude.py= becomes a fake of the =claude= commands the launcher uses (=daemon run=, =daemon status=, =daemon stop=, =--bg=, =agents --json=, =attach=), driving the real hooks as today. Tests: [[file:../../tests/test_claude_config.py][test_claude_config.py]] and [[file:../../tests/test_claude_mod.py][test_claude_mod.py]] on the new topology (attach after detached start, Ctrl+Z detach, reattach, stop, session end stops the goblin, recreate resumes, monitor wakeup while detached, the first SessionStart and a prompt in =args= tracked before =claude_job= is recorded, hooks of a second session, an agent-view session and a =claude= run from a tool inside the session ignored, directory removed on stop and swept after a kill, two goblins starting at once keep both directories), and a native smoke test with the real Claude and a scratch configuration without a login (start, attach, detach, reattach, stop; no model turn). Docs: USAGE.org Claude configuration, AGENT-INTEGRATION.org, architecture components.
+3. *Daemon cleanup.* Remove terminal delivery, composer reading and human-input tracking, and the =codex= driver name, as listed above. Tests that relied on them are removed or rewritten for notification delivery. Docs: API.org, AGENT-INTEGRATION.org.
+4. *tests/features.toml* updated in each step that adds or removes tests; =just test-feature-check= stays clean.
+
+** Credentials
+
+Claude 2.1.309 writes =.credentials.json= (login and token refresh) to a temporary file next to it and renames it over the path, without following a link (step 0, from the code; no refresh happened during the spike). The first refresh in a goblin would therefore replace =D/.credentials.json= with a private file holding the new tokens, while the shared file keeps the old refresh token, which the refresh has probably invalidated. Other goblins and the host would then fail their next refresh.
+
+Open question for the user. Proposal: the launcher's two-second poll also checks =D/.credentials.json=; when it has become a regular file, the launcher moves it over =SHARED/.credentials.json= (one rename) and links it again. The launcher does the same before it deletes =D= at exit and before the start-up cleanup deletes another goblin's directory, so a refresh just before a stop or a kill is not lost. It moves the file only when it is newer than the shared one, so a killed goblin's old tokens never replace a later login or refresh; otherwise it discards them. Limits: until the move, other processes use the old tokens, so a refresh elsewhere in that window fails; a refresh in two goblins at nearly the same time keeps only one of them; and the move and the new link are two steps, so a Claude process in the goblin that reads the path between them finds no file and has to retry.
+
+* Spike results
+
+Step 0 ran on 2026-10-28 with Claude Code 2.1.309 (mucktooth), using =~/.claude/goblins/spike-a= and =spike-b=, mostly Haiku. The shared supervisor state (=~/.claude/daemon=, =daemon.log=, =jobs=) was byte-identical before and after.
+
+- *Login:* a =--bg= session in a link directory started logged in; its transcript landed in =~/.claude/projects= and a plan in =~/.claude/plans=. =.claude.json= and =history.jsonl= were written through their links. Credentials replace their link (see Credentials). Paths Claude shows, such as =transcript_path=, are under =D=, so they work on the host only while the goblin runs.
+- *Two supervisors* in two link directories ran side by side with sessions: pass.
+- *First-use entries:* the list under Links. There is no =todos= directory.
+- *Detached hooks and monitor:* Goblins' managed hook and a plugin monitor ran with nobody attached; a monitor line started a turn while detached. =agents --json= reports =busy= while a monitor runs, so its status is no activity signal.
+- *Session filter:* every hook has =CLAUDE_JOB_DIR= (also =CLAUDE_CODE_SESSION_ID=, =CLAUDE_PID=); =/clear= keeps the job and changes the session ID. Agent-view sessions and a second =--bg= get no =--plugin-dir=.
+- *Detach:* Ctrl+Z exits =claude attach= and leaves the session running; so do SIGHUP and closing the PTY. Ctrl-C twice switches the client to the agent view. =/exit= does not end the job. A job ends only with =claude stop= or ctrl+x in the agent view.
+- *Restart:* =claude daemon stop= refuses a foreground supervisor; =--any= stops it and its sessions. In a directory without the old job (the recreate case), =--bg ... --resume SID= with options continues under the same session ID. With the old job still present, options make it start a copy instead.
+- *Prompt in args* works. Bypass at runtime was not run (the spike goblin's own permission policy refused it).
+- *Terminal:* the client asks XTVERSION and DA1 on attach (the agent view also CSI ?u and OSC 7501) and draws without answers; attaching at 120x40 and reattaching at 80x24, and a live resize, repainted cleanly.
+- *Mod:* the Goblins mod loads in a detached =--bg= session and shows in the footer on attach.
+
+* Risks
+
+- Claude's background sessions are new and undocumented internals (=proto 1=; the installed version moved from 2.1.296 to 2.1.309 in eleven days). The native smoke test must run on every Claude upgrade.
+- The configuration directory depends on Claude writing its shared files through symlinks. A Claude version that replaces a link instead would silently fork that file per goblin; the spike and the smoke test check it.
+- A supervisor that dies leaves its sessions running until Goblins stops the sandbox; the launcher then ends the goblin.

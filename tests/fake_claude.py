@@ -25,6 +25,8 @@ SETTINGS = json.loads(Path("/etc/claude-code/managed-settings.json").read_text()
 RESUMED = "--resume" in sys.argv
 SESSION = sys.argv[sys.argv.index("--resume") + 1] if RESUMED else str(uuid.uuid4())
 TRANSCRIPT = Path("/tmp/fake-claude-transcript.jsonl")
+# Every monitor line, for the tests to read back.
+WAKES = Path("/tmp/fake-claude-wakes")
 TRANSCRIPT.write_text(json.dumps({"type": "ai-title", "aiTitle": "Resumed task" if RESUMED else "Fake task",
                                   "sessionId": SESSION}) + "\n")
 
@@ -64,6 +66,8 @@ try:
                 monitor = None
                 continue
             submitted = notification.decode().rstrip("\n")
+            with WAKES.open("a") as wakes:
+                wakes.write(submitted + "\n")
         else:
             data = os.read(0, 4096)
             if not data:
@@ -93,7 +97,7 @@ try:
         elif submitted == "notifier-fail":
             for path in Path("/proc").glob("[0-9]*/cmdline"):
                 try:
-                    if b"integration\x00watch\x00" in path.read_bytes():
+                    if b"goblins-claude\x00watch\x00" in path.read_bytes():
                         os.kill(int(path.parent.name), signal.SIGTERM)
                 except (OSError, ValueError):
                     pass

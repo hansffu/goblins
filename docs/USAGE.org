@@ -1144,7 +1144,17 @@ native state. Managed =skillOverrides= keep all the integration skills =on=
 for both model and direct user invocation. The shared descriptions name exact
 Goblins trigger terms and the native tools they replace.
 
-Messages are delivered through a session-scoped Claude plugin monitor that runs the daemon's notifier. Claude turns each line it prints into a native notification that starts a turn at the next idle point, so delivery does not inject editor keystrokes, alter a draft, or depend on ordinary versus Vim INSERT/NORMAL/VISUAL mode. Each line is the fixed check-inbox prompt plus a marker naming the message it is about, never a body. While the monitor runs, the =Stop= hook never continues a turn: it reports the turn's end as settled, and the notifier delivers what is pending, and retries it, as the monitor's next line. Without the monitor, the hook uses Claude Code's native =stop_hook_active= guard and blocks an eligible =Stop= only long enough to tell Claude to fetch the pending item. The hooks exchange lifecycle metadata only. =UserPromptSubmit= reports lifecycle state only and does not add context to the user's turn. Explicit Goblins routing is described in the managed skill metadata that Claude sees during skill selection.
+Messages are delivered through a session-scoped Claude plugin monitor that runs =goblins-claude watch=, the goblin's own notifier. Claude turns each line it prints into a native notification that starts a turn at the next idle point, so delivery does not inject editor keystrokes, alter a draft, or depend on ordinary versus Vim INSERT/NORMAL/VISUAL mode. Each line is the fixed check-inbox prompt plus a marker naming the message it is about, never a body. While the monitor runs, the =Stop= hook never continues a turn: it reports the turn's end as settled, and the monitor delivers what is pending, and retries it, as its next line. Without the monitor, the hook uses Claude Code's native =stop_hook_active= guard and blocks an eligible =Stop= only long enough to tell Claude to fetch the pending item. The hooks exchange lifecycle metadata only. =UserPromptSubmit= reports lifecycle state only and does not add context to the user's turn. Explicit Goblins routing is described in the managed skill metadata that Claude sees during skill selection.
+
+Inspect or pause wakeups locally, including from the host, as for Codex; a prompt you submit also resumes them, and =resume= resets the retry limit of three wakeups without inbox progress:
+
+#+begin_src sh
+goblins exec chief -- goblins-claude status
+goblins exec chief -- goblins-claude pause
+goblins exec chief -- goblins-claude resume
+#+end_src
+
+Inside the goblin, =!goblins-claude pause= works from Claude's prompt. The state lives in the sandbox's private =/tmp/goblins-claude= directory.
 
 The plugin also holds a Claude Code [[https://code.claude.com/docs/en/plugins/mods/overview][mod]], code that runs inside Claude Code (2.1.287 or later). The managed hooks stay authoritative, because Claude Code passes classic hook events past a user's mod wherever managed settings exist, which is always the case in a goblin; the mod adds what hooks cannot see or draw:
 

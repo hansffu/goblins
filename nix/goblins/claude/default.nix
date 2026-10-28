@@ -2,8 +2,13 @@
 { pkgs }:
 let
   inherit (pkgs) lib;
-  hooks = import ./hooks.nix { inherit pkgs; };
-  plugin = import ./plugin.nix { inherit pkgs; };
+  # Claude's inbox wakeups and activity: the launcher, hooks, monitor and mod use it.
+  adapter = import ../../packages/rust.nix {
+    inherit pkgs;
+    package = "goblins-claude";
+  };
+  hooks = import ./hooks.nix { inherit pkgs adapter; };
+  plugin = import ./plugin.nix { inherit pkgs adapter; };
   skills = import ../skills.nix { inherit lib; };
   skillFile = name: "claude-code/.claude/skills/${name}/SKILL.md";
   skillFiles = lib.mapAttrs' (name: text: lib.nameValuePair (skillFile name) text);
@@ -29,9 +34,13 @@ let
       lib.escapeShellArg path;
 in
 {
-  packages = [ hooks.package ];
+  # `goblins-claude status` and `pause` on PATH.
+  packages = [
+    hooks.package
+    adapter
+  ];
   inherit plugin;
-  mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
+  mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory adapter; };
   mkInjectedFiles =
     {
       settings,

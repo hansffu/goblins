@@ -442,6 +442,7 @@ in
         chmod -R u+w $TMPDIR/plugin
         cp ${plugin.source}/hooks/*.test.tsx $TMPDIR/plugin/hooks/
         test -x $TMPDIR/plugin/bin/goblins-claude-message
+        test -x $TMPDIR/plugin/bin/goblins-claude
         claude plugin validate $TMPDIR/plugin > validate.log 2>&1 || { cat validate.log; exit 1; }
         grep -F 'hooks: session.start' validate.log
         claude plugin test $TMPDIR/plugin 2>&1 | tee test.log
@@ -778,7 +779,8 @@ in
           "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_claude.py
         );
         allowedDomains = [ ];
-        allowedPackages = [ ];
+        # The tests read the fake's monitor lines with cat.
+        allowedPackages = [ pkgs.coreutils ];
         env.GOBLINS_TEST_COMPOSER = "  ❯ ";
       };
       # Host command notices (tests/test_operation_notices.py).

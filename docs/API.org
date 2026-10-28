@@ -2,7 +2,7 @@
 
 This is the reference for the daemon's JSON-RPC API 1: every method on the host and sandbox endpoints, with its parameters and result. [[file:specs/DAEMON.org][specs/DAEMON.org]] records why the protocol is shaped this way; this file records what it is now. Keep it current when a method, parameter, result or record field changes (see =AGENTS.md=).
 
-The handlers live in =crates/controller/src/controller.rs= (=host=, =sandbox_control= and =dispatch=), =controller/raids.rs=, =controller/host.rs=, =controller/exec.rs=, =controller/editor.rs=, =messaging.rs=, =mailbox.rs= and =integration.rs=. Parameter types are in those files and in =crates/protocol/src=.
+The handlers live in =crates/controller/src/controller.rs= (=host=, =sandbox_control= and =dispatch=), =controller/raids.rs=, =controller/host.rs=, =controller/exec.rs=, =controller/editor.rs=, =messaging.rs= and =mailbox.rs=. Parameter types are in those files and in =crates/protocol/src=.
 
 * Transport
 
@@ -26,7 +26,7 @@ Content-Length: 61\r\n
 #+end_example
 
 - The header is at most 256 bytes. A response body is at most 1 MiB.
-- Request bodies: messaging and integration methods accept up to 64 KiB. Other host methods, =sessions.set-variables= and =permissions.request= accept 16 KiB; other sandbox methods 4 KiB.
+- Request bodies: messaging methods accept up to 64 KiB. Other host methods, =sessions.set-variables= and =permissions.request= accept 16 KiB; other sandbox methods 4 KiB.
 - Frame deadlines are 3 seconds. Every connection must send its complete =initialize= frame within 3 seconds of being accepted, and a sandbox connection must send its one following call within 3 seconds of initializing. On an initialized host connection the clock starts at each frame's first byte, so an idle host connection never times out.
 - =params= is an object; an omitted =params= means ={}=. Unknown fields, duplicate keys, nesting deeper than 32 and batches are rejected. Request IDs must not be null. Notifications from a client (no =id=) are ignored, except =exec.signal= on an exec connection.
 - Results may gain fields; clients should ignore fields they do not know.
@@ -308,7 +308,7 @@ Replies to and completes a claimed message.
 Summarizes the caller's inbox.
 
 - Input :: ={}=
-- Output :: ={"queued", "claim", "head", "revision", "audit_failed", "raid_audit_failed", "operations", "integration"}=. =claim= is the claimed message ID or null; =head= is =[message ID, claim_generation]= of the first unresolved message or null; =operations= lists the caller's unfinished operations as ={"request", "kind", "subject", "state"}= with =state= =pending= (awaiting a decision) or =running= (approved, executing); =integration= is as for =integration.status=.
+- Output :: ={"queued", "claim", "head", "revision", "audit_failed", "raid_audit_failed", "operations"}=. =claim= is the claimed message ID or null; =head= is =[message ID, claim_generation]= of the first unresolved message or null; =operations= lists the caller's unfinished operations as ={"request", "kind", "subject", "state"}= with =state= =pending= (awaiting a decision) or =running= (approved, executing).
 
 *** =inbox.next=
 
@@ -335,20 +335,6 @@ Pages through the communications audit log. Host only.
 
 - Input :: ={"after"?, "limit"?, "session"?}=. =after= is a sequence cursor (default 0); =limit= is 1–100 (default 100); =session= filters to one goblin.
 - Output :: ={"events": [Event], "cursor", "session", "latest"}=. Pass =cursor= as the next =after=. A page is at most 512 KiB.
-
-** Agent integration
-
-*** =integration.status=
-
-- Input :: ={"session"}=
-- Output :: ={"driver", "epoch", "state", "activity", "health", "attempts"}=, or ={"health": "unregistered"}=. =health= is =healthy=, =degraded=, =stalled= or =paused=.
-
-*** =integration.pause= / =integration.resume=
-
-Stops or resumes inbox wake-ups for a goblin's agent.
-
-- Input :: ={"session"}=
-- Output :: ={"continue": false, "notify": false, "integration": IntegrationStatus}=
 
 * Sandbox endpoint
 
@@ -475,17 +461,9 @@ Sets the caller's own role.
 - Input :: ={"role"}=
 - Output :: =Raid=
 
-** Messaging and integration
+** Messaging
 
-=messages.send=, =messages.get=, =messages.reply=, =inbox.status=, =inbox.next=, =inbox.complete= and =inbox.requeue= are as on the host endpoint, acting on the caller's inbox. =integration.status= takes ={}= for the caller's own integration. Agent drivers also use:
-
-Integration methods share one parameter object; each method uses some of its fields and rejects unknown ones: ={"key"?, "driver"?, "epoch"?, "event"?, "delivery"?, "active"?, "session"?, "tool"?, "notification"?}=. =session= is host only. Results of =check=, =tick=, =pause= and =resume= also have =integration= (as for =integration.status=), except a repeated =check=; a Claude driver's =check= and =tick= results also have =agent_state=.
-
-- =integration.register= :: ={"key", "driver": "codex"|"claude"}= → ={"epoch", "driver"}=. A retry with the same =key= returns ={"epoch"}= only.
-- =integration.check= :: a hook report ={"epoch", "key", "event", "active"?, "tool"?, "notification"?}= → ={"continue", "notify", "integration"}=. =key= is a per-hook identifier; repeating the last key returns ={"continue", "notify"}= only. =event= is =SessionStart=, =UserPromptSubmit= or =Stop= (lifecycle), or =PreToolUse=, =PostToolUse=, =PostToolUseFailure=, =PermissionRequest=, =Notification=, =Elicitation=, =ElicitationResult= or =StopFailure= (activity only). On =Stop=, =active= (default false) reports that the agent is already continuing because of a stop hook, which suppresses another continuation; =continue= says whether the turn should continue to process the inbox.
-- =integration.tick= :: the monitor heartbeat ={"epoch", "delivery"?}= → ={"continue", "notify", "delivery"?, "revision"?, "integration"}=. =delivery= is =terminal= (default) or =notification= (Claude only). =notify= true asks the driver to wake the agent through =delivery=; =revision= is the terminal revision it saw.
-
-See [[file:specs/AGENT-INTEGRATION.org][specs/AGENT-INTEGRATION.org]] for the driver protocol.
+=messages.send=, =messages.get=, =messages.reply=, =inbox.status=, =inbox.next=, =inbox.complete= and =inbox.requeue= are as on the host endpoint, acting on the caller's inbox. Agent integrations live inside the goblin and use only these and the generic calls (=sessions.set-state=, =sessions.set-variables=); see [[file:specs/AGENT-INTEGRATION.org][specs/AGENT-INTEGRATION.org]].
 
 * Records
 
@@ -563,7 +541,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 
 ** Event
 
-A communications log entry: ={"instance", "sequence", "timestamp", "kind", "actor", "sessions", "data"}=. =kind= names the event (for example =message.accepted=, =message.claimed=, =operation.completed=, =raid.joined=, =session.exited=, =integration.hook=); =actor= is a session ID, =host= or =goblins=; =sessions= lists the goblins it concerns; =data= is kind-specific.
+A communications log entry: ={"instance", "sequence", "timestamp", "kind", "actor", "sessions", "data"}=. =kind= names the event (for example =message.accepted=, =message.claimed=, =operation.completed=, =raid.joined=, =session.exited=); =actor= is a session ID, =host= or =goblins=; =sessions= lists the goblins it concerns; =data= is kind-specific.
 
 ** DevShellPreview
 

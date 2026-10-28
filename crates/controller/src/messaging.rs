@@ -49,7 +49,6 @@ pub enum Work {
         method: String,
         params: Value,
         directory: Directory,
-        view: crate::integration::View,
         raids: Vec<crate::raid::Event>,
         operations: Vec<crate::operation::Event>,
     },
@@ -59,11 +58,6 @@ pub enum Work {
         directory: Directory,
         raids: Vec<crate::raid::Event>,
         operations: Vec<crate::operation::Event>,
-    },
-    Delivery {
-        actor: String,
-        revision: u64,
-        submitted: bool,
     },
 }
 pub struct Completed {
@@ -189,12 +183,11 @@ impl Log for Journal {
     }
 }
 
-/// The worker's serialized state: the mailbox and its logged raid view, the
-/// integrations, and the sessions it has seen.
+/// The worker's serialized state: the mailbox and its logged raid view,
+/// and the sessions it has seen.
 struct State<L> {
     mailbox: Mailbox,
     journal: L,
-    integrations: crate::integration::Integrations,
     known: Directory,
     /// Queued inbox counts as last reported to the controller.
     reported: Report,
@@ -204,7 +197,6 @@ impl<L: Log> State<L> {
         Self {
             mailbox,
             journal,
-            integrations: crate::integration::Integrations::default(),
             known: BTreeMap::new(),
             reported: Report {
                 queued: BTreeMap::new(),
@@ -227,27 +219,7 @@ impl<L: Log> State<L> {
     }
 
     fn handle(&mut self, work: Work) -> Option<Completed> {
-        let (mailbox, journal, integrations, known) = (
-            &mut self.mailbox,
-            &mut self.journal,
-            &mut self.integrations,
-            &mut self.known,
-        );
-        if let Work::Delivery {
-            actor,
-            revision,
-            submitted,
-        } = work
-        {
-            let _ = mailbox.record(
-                &actor,
-                "integration.wake_result",
-                json!({"terminal_revision":revision,"submitted":submitted}),
-                now(),
-                journal,
-            );
-            return None;
-        }
+        let (mailbox, journal, known) = (&mut self.mailbox, &mut self.journal, &mut self.known);
         let (directory, raids, operations) = match &work {
             Work::Call {
                 directory,
@@ -260,7 +232,6 @@ impl<L: Log> State<L> {
                 raids,
                 operations,
             } => (directory, raids, operations),
-            Work::Delivery { .. } => unreachable!(),
         };
         // Session metadata is supplied only by the host controller. Retain
         // ancestry for log filtering after its bounded UI records expire.
@@ -308,24 +279,16 @@ impl<L: Log> State<L> {
             method,
             params,
             directory,
-            view,
             ..
         } = work
         else {
             return None;
         };
         let result = match method.as_str() {
-            m if m.starts_with("integration.") => {
-                integrations.call(&actor, m, params, (&view, now()), mailbox, journal)
-            }
             "messages.get" => {
                 parse::<Get>(params).and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m)))
             }
-            "inbox.status" => parse::<Empty>(params).map(|_| {
-                let mut s = mailbox.status(&actor);
-                s["integration"] = integrations.status(&actor, now());
-                s
-            }),
+            "inbox.status" => parse::<Empty>(params).map(|_| mailbox.status(&actor)),
             "communications.list" if actor == "host" => {
                 parse::<List>(params).and_then(|p| page(journal.events(), known, p))
             }
@@ -548,7 +511,6 @@ mod tests {
             method: method.into(),
             params,
             directory: directory(),
-            view: Default::default(),
             raids,
             operations: vec![],
         }
@@ -739,7 +701,6 @@ mod tests {
             method,
             params,
             directory,
-            view,
             raids,
             ..
         } = call("b", "inbox.next", json!({"key":"fetch"}), vec![])
@@ -753,7 +714,6 @@ mod tests {
             method,
             params,
             directory,
-            view,
             raids,
             operations: vec![
                 crate::operation::Event {

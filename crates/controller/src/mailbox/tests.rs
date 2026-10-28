@@ -995,13 +995,6 @@ fn other_events_leave_queued_messages_room_to_be_fetched_and_completed() {
     let recorded = f.audit.events.len();
     for n in 0..10 {
         f.operations(vec![completed(&format!("r{n}"), "c", "denied", false)]);
-        let _ = f.mailbox.record(
-            "c",
-            "integration.wake_attempt",
-            json!({"attempt":n}),
-            1000,
-            &mut f.audit,
-        );
         f.mailbox.record_raid(
             &crate::raid::Raids::default()
                 .invite(format!("raid{n}"), "review", &["c".into()], "host")

@@ -13,67 +13,9 @@ use std::{
         },
     },
     path::{Path, PathBuf},
-    time::{Duration, Instant},
 };
 const CAP: usize = 65536;
-const INPUT_ESCAPE_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Observe control reports without changing the byte stream sent to the PTY.
-/// Unix stream reads may split a report anywhere, including after Escape.
-#[derive(Default)]
-struct InputEvents {
-    pending: Vec<u8>,
-    since: Option<Instant>,
-}
-impl InputEvents {
-    // None means only terminal reports; Some records human input/interruption.
-    fn observe(&mut self, bytes: &[u8], now: Instant) -> Option<bool> {
-        let mut human = None;
-        if self
-            .since
-            .is_some_and(|t| now.duration_since(t) >= INPUT_ESCAPE_TIMEOUT)
-        {
-            human = Some(self.pending == b"\x1b");
-            self.pending.clear();
-            self.since = None;
-        }
-        for &byte in bytes {
-            if self.pending.is_empty() {
-                if byte == 0x1b {
-                    self.pending.push(byte);
-                    self.since = Some(now);
-                } else {
-                    human = Some(human.unwrap_or(false) || byte == 3);
-                }
-                continue;
-            }
-            self.pending.push(byte);
-            let p = &self.pending;
-            let report = p == b"\x1b[I"
-                || p == b"\x1b[O"
-                || (p.starts_with(b"\x1b[")
-                    && p.len() > 3
-                    && matches!(p.last(), Some(b'R' | b'c'))
-                    && p[2..p.len() - 1]
-                        .iter()
-                        .all(|b| b.is_ascii_digit() || b";?>".contains(b)));
-            let prefix = p == b"\x1b["
-                || (p.starts_with(b"\x1b[")
-                    && p.len() < 64
-                    && p[2..]
-                        .iter()
-                        .all(|b| b.is_ascii_digit() || b";?>".contains(b)));
-            if report || !prefix {
-                if !report {
-                    human = Some(human.unwrap_or(false) || byte == 3);
-                }
-                self.pending.clear();
-                self.since = None;
-            }
-        }
-        human
-    }
-}
 pub struct Terminal {
     /// The socket frontends attach through; none for an attach client's
     /// terminal, which the daemon hands its attachment.
@@ -94,12 +36,6 @@ pub struct Terminal {
     hello: Vec<u8>,
     to_peer: Vec<u8>,
     to_pty: Vec<u8>,
-    screen: vt100::Parser,
-    revision: u64,
-    input_revision: u64,
-    input_interrupted: bool,
-    input_events: InputEvents,
-    last_output: std::time::Instant,
 }
 fn read(source: &mut impl Read, dest: &mut Vec<u8>) -> io::Result<bool> {
     if dest.len() >= CAP {
@@ -168,12 +104,6 @@ impl Terminal {
             hello: vec![],
             to_peer: vec![],
             to_pty: vec![],
-            screen: vt100::Parser::new(24, 80, 0),
-            revision: 0,
-            input_revision: 0,
-            input_interrupted: false,
-            input_events: InputEvents::default(),
-            last_output: std::time::Instant::now(),
         })
     }
     /// A terminal for one attach client's PTY, sized for its frontend.
@@ -193,12 +123,6 @@ impl Terminal {
             hello: vec![],
             to_peer: vec![],
             to_pty: vec![],
-            screen: vt100::Parser::new(24, 80, 0),
-            revision: 0,
-            input_revision: 0,
-            input_interrupted: false,
-            input_events: InputEvents::default(),
-            last_output: std::time::Instant::now(),
         };
         terminal.resize(rows, cols)?;
         terminal.master(master)?;
@@ -233,12 +157,6 @@ impl Terminal {
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.dimensions = Some((rows, cols));
-        // The screen model needs room to wrap: vt100 panics wrapping on a
-        // single row or column. The PTY still gets the real size.
-        self.screen
-            .screen_mut()
-            .set_size(rows.clamp(2, 200), cols.clamp(2, 500));
-        self.revision += 1;
         let Some(master) = self.master.as_ref() else {
             return Ok(());
         };
@@ -296,73 +214,8 @@ impl Terminal {
         self.interrupted = false;
         Ok(())
     }
-    pub fn integration_view(&self) -> crate::integration::View {
-        let screen = self.screen.screen();
-        let (row, col) = screen.cursor_position();
-        let text = screen.contents();
-        // Claude indents its composer in some layouts. Match the two prompt
-        // cells immediately before the cursor, while requiring any left
-        // padding to be blank and all composer contents to be empty/dimmed.
-        let prompt = col.checked_sub(2).is_some_and(|start| {
-            screen
-                .cell(row, start)
-                .is_some_and(|cell| matches!(cell.contents(), "›" | "❯"))
-                && screen
-                    .cell(row, start + 1)
-                    .is_none_or(|cell| cell.contents().trim().is_empty())
-                && (0..start).all(|column| {
-                    screen
-                        .cell(row, column)
-                        .is_none_or(|cell| cell.contents().trim().is_empty())
-                })
-        });
-        let empty_or_placeholder = (col..screen.size().1).all(|column| {
-            screen
-                .cell(row, column)
-                .is_none_or(|c| c.contents().trim().is_empty() || c.dim())
-        });
-        let ready = empty_or_placeholder
-            && prompt
-            && !screen.hide_cursor()
-            && !text.contains("esc to interrupt")
-            && self.last_output.elapsed() >= std::time::Duration::from_millis(300)
-            && self.to_pty.is_empty()
-            && self.input_events.pending.is_empty()
-            && !self.eof;
-        crate::integration::View {
-            revision: self.revision,
-            ready,
-            input: self.input_revision,
-            interrupted: self.input_interrupted,
-            input_pending: !self.input_events.pending.is_empty(),
-        }
-    }
-    pub fn notify(&mut self, revision: u64) -> Result<()> {
-        if revision != self.revision
-            || !self.integration_view().ready
-            || self
-                .peer
-                .as_ref()
-                .is_some_and(|p| unix::readable(p.as_raw_fd(), 0).unwrap_or(true))
-        {
-            return Err("terminal changed; notification deferred".into());
-        }
-        let bytes = format!("\x1b[200~{}\x1b[201~\r", crate::integration::PROMPT);
-        self.master
-            .as_mut()
-            .ok_or("terminal unavailable")?
-            .write_all(bytes.as_bytes())?;
-        self.revision += 1;
-        Ok(())
-    }
     pub fn tick(&mut self) -> Result<()> {
-        if let Some(interrupted) = self.input_events.observe(&[], Instant::now()) {
-            self.input_revision += 1;
-            self.input_interrupted = interrupted;
-            self.revision += 1;
-        }
         if let Some(peer) = &mut self.peer {
-            let input_before = self.to_pty.len();
             // Even after PTY EOF, continue draining output. Peer input EOF is a
             // consumer disconnect, not payload exit or session cancellation.
             if self.detached {
@@ -388,16 +241,6 @@ impl Terminal {
                     self.interrupted = true;
                 }
                 self.to_pty.clear();
-            }
-            if self.to_pty.len() > input_before {
-                let bytes = &self.to_pty[input_before..];
-                // Focus and query reports don't give the human ownership of
-                // an otherwise empty composer. Still invalidate in-flight views.
-                self.revision += 1;
-                if let Some(interrupted) = self.input_events.observe(bytes, Instant::now()) {
-                    self.input_revision += 1;
-                    self.input_interrupted = interrupted;
-                }
             }
             if self.detached {
                 self.to_pty.clear();
@@ -464,9 +307,6 @@ impl Terminal {
                 Ok(false)
             };
             if !newest.is_empty() {
-                self.screen.process(&newest);
-                self.revision += 1;
-                self.last_output = std::time::Instant::now();
                 let overflow = (self.to_peer.len() + newest.len()).saturating_sub(CAP);
                 self.to_peer.drain(..overflow);
                 self.to_peer.extend(newest);
@@ -553,144 +393,6 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
-    }
-
-    #[test]
-    fn a_tiny_window_never_breaks_the_screen_model() {
-        // A client in a one-line window (or a terminal reporting 0x0, sent
-        // as 1x1) resizes the payload to that; wrapping output must not
-        // panic the daemon in the screen parser.
-        let mut f = Fixture::new();
-        for (rows, cols) in [(1, 1), (1, 80), (24, 1)] {
-            // The fixture's master is no PTY, so only the model resizes.
-            let _ = f.terminal.resize(rows, cols);
-            f.payload
-                .write_all(
-                    "wrap this line past the edge 中文 again\r\n"
-                        .repeat(3)
-                        .as_bytes(),
-                )
-                .unwrap();
-            for _ in 0..4 {
-                f.terminal.tick().unwrap();
-            }
-        }
-    }
-    #[test]
-    fn terminal_reports_are_independent_of_stream_read_boundaries() {
-        let now = Instant::now();
-        let reports = b"\x1b[I\x1b[O\x1b[12;3R\x1b[?1;2c";
-        for split in 0..=reports.len() {
-            let mut input = InputEvents::default();
-            assert_eq!(input.observe(&reports[..split], now), None);
-            assert_eq!(input.observe(&reports[split..], now), None);
-            assert!(input.pending.is_empty());
-        }
-        let mut input = InputEvents::default();
-        for byte in reports {
-            assert_eq!(input.observe(&[*byte], now), None);
-        }
-        assert!(input.pending.is_empty());
-        for bytes in [
-            b"\x1b[Idraft\x1b[O".as_slice(),
-            b"\x1b[A", // Arrow keys are human input, not terminal reports.
-            b"\x1b[200~paste\x1b[201~",
-            b"\x1b[1I", // Only unparameterized focus events are reports.
-        ] {
-            assert_eq!(input.observe(bytes, now), Some(false));
-        }
-        assert_eq!(input.observe(b"\x03\x1b[O", now), Some(true));
-    }
-
-    #[test]
-    fn incomplete_terminal_reports_expire_without_losing_escape_interrupts() {
-        let now = Instant::now();
-        let mut input = InputEvents::default();
-        assert_eq!(input.observe(b"\x1b", now), None);
-        assert_eq!(input.observe(&[], now + INPUT_ESCAPE_TIMEOUT), Some(true));
-        assert!(input.pending.is_empty());
-        assert_eq!(input.observe(b"\x1b[", now), None);
-        assert_eq!(input.observe(&[], now + INPUT_ESCAPE_TIMEOUT), Some(false));
-        assert!(input.pending.is_empty());
-        let oversized = format!("\x1b[{}", "1".repeat(100));
-        assert_eq!(input.observe(oversized.as_bytes(), now), Some(false));
-        assert!(input.pending.is_empty());
-    }
-
-    #[test]
-    fn focus_changes_preserve_idle_input_revision_and_raw_pty_bytes() {
-        let mut f = Fixture::new();
-        let mut peer = f.connect();
-        f.payload
-            .write_all("\x1b[2J\x1b[H› \x1b[?25h".as_bytes())
-            .unwrap();
-        f.terminal.tick().unwrap();
-        f.terminal.last_output -= Duration::from_secs(1);
-        let idle = f.terminal.integration_view();
-        assert!(idle.ready);
-        for chunk in [b"\x1b".as_slice(), b"[", b"I\x1b[", b"O"] {
-            peer.write_all(chunk).unwrap();
-            f.terminal.tick().unwrap();
-            assert_eq!(f.terminal.integration_view().input, idle.input);
-            if !f.terminal.input_events.pending.is_empty() {
-                assert!(!f.terminal.integration_view().ready);
-            }
-        }
-        let mut received = [0; 6];
-        f.payload.read_exact(&mut received).unwrap();
-        assert_eq!(&received, b"\x1b[I\x1b[O");
-        let view = f.terminal.integration_view();
-        assert!(view.ready);
-        f.terminal.notify(view.revision).unwrap();
-        peer.write_all(b"\x1b[Idraft\x1b[O").unwrap();
-        f.terminal.tick().unwrap();
-        assert!(f.terminal.integration_view().input > idle.input);
-    }
-
-    #[test]
-    fn wake_requires_current_empty_composer_and_yields_to_human_input() {
-        let mut f = Fixture::new();
-        f.terminal.detached = true;
-        f.payload
-            .write_all("\x1b[2J\x1b[H› \x1b[2mAsk a question\x1b[0m\x1b[1;3H\x1b[?25h".as_bytes())
-            .unwrap();
-        f.terminal.tick().unwrap();
-        f.terminal.last_output -= Duration::from_secs(1);
-        let view = f.terminal.integration_view();
-        assert!(view.ready);
-        assert!(f.terminal.notify(view.revision + 1).is_err());
-        f.terminal.notify(view.revision).unwrap();
-        let mut bytes = [0; 256];
-        let n = f.payload.read(&mut bytes).unwrap();
-        assert_eq!(
-            &bytes[..n],
-            format!("\x1b[200~{}\x1b[201~\r", crate::integration::PROMPT).as_bytes()
-        );
-        let mut peer = f.connect();
-        peer.write_all(b"draft").unwrap();
-        assert!(f.terminal.notify(f.terminal.revision).is_err());
-        f.terminal.tick().unwrap();
-        assert_eq!(f.terminal.integration_view().input, 1);
-        f.payload
-            .write_all("\x1b[2J\x1b[H› existing draft\x1b[1;3H".as_bytes())
-            .unwrap();
-        f.terminal.tick().unwrap();
-        f.terminal.last_output -= Duration::from_secs(1);
-        assert!(!f.terminal.integration_view().ready);
-    }
-
-    #[test]
-    fn wake_recognizes_an_indented_claude_composer() {
-        let mut f = Fixture::new();
-        f.terminal.detached = true;
-        f.payload
-            .write_all("\x1b[2J\x1b[H  ❯ \x1b[2mTry a command\x1b[0m\x1b[1;5H\x1b[?25h".as_bytes())
-            .unwrap();
-        f.terminal.tick().unwrap();
-        f.terminal.last_output -= Duration::from_secs(1);
-        let view = f.terminal.integration_view();
-        assert!(view.ready);
-        f.terminal.notify(view.revision).unwrap();
     }
 
     #[test]

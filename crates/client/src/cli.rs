@@ -94,11 +94,6 @@ pub enum Command {
         #[command(subcommand)]
         command: VariableCommand,
     },
-    /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
-    Integration {
-        #[command(subcommand)]
-        command: IntegrationCommand,
-    },
     /// Send text contents through the daemon to another agent
     Send {
         recipient: String,
@@ -458,31 +453,4 @@ impl InboxCommand {
             ),
         })
     }
-}
-
-#[derive(Subcommand)]
-pub enum IntegrationCommand {
-    Register {
-        #[arg(long)]
-        driver: String,
-    },
-    Watch {
-        #[arg(long)]
-        epoch: u64,
-        #[arg(long, default_value = "terminal", value_parser = ["terminal", "notification"])]
-        delivery: String,
-    },
-    Hook {
-        #[arg(long)]
-        event: String,
-        #[arg(long)]
-        active: bool,
-        /// Tool name of a tool hook event
-        #[arg(long)]
-        tool: Option<String>,
-        /// Notification type of a Notification hook event
-        #[arg(long)]
-        notification: Option<String>,
-    },
-    Status,
 }

@@ -14,6 +14,7 @@ pkgs.rustPlatform.buildRustPackage {
       ../../crates/client/Cargo.toml
       ../../crates/controller/Cargo.toml
       ../../crates/codex/Cargo.toml
+      ../../crates/claude/Cargo.toml
       (
         if package == "goblins-mount-helper" then
           ../../src
@@ -26,7 +27,7 @@ pkgs.rustPlatform.buildRustPackage {
   # Cargo discovers targets in every workspace member, even with -p. Supply
   # inert targets only for the excluded members; they are never compiled.
   postPatch = ''
-    for dir in . crates/client crates/controller crates/codex; do
+    for dir in . crates/client crates/controller crates/codex crates/claude; do
       if [ ! -d "$dir/src" ]; then
         mkdir -p "$dir/src"
         echo 'fn main() {}' > "$dir/src/main.rs"

@@ -262,7 +262,7 @@ sequenceDiagram
     participant C as Controller
     participant M as Messaging worker
     participant J as Communications journal
-    participant B as Recipient hooks / native agent
+    participant B as Recipient adapter / native agent
     A->>C: messages.send(key, to, body)
     C->>M: Call with derived actor, directory and ordered events
     M->>M: Check retry key, target and logged raid authorization
@@ -270,11 +270,11 @@ sequenceDiagram
     M->>M: Commit message and operation receipt
     M-->>C: Accepted message and receipt
     C-->>A: Message identity and accepted outcome
-    B->>C: integration.check or integration.tick
-    C->>M: Check integration epoch, activity and inbox revision
-    M-->>C: Notify or defer according to driver/activity
-    C-->>B: Generic inbox prompt through hook, notification or terminal delivery
-    Note over C,B: Notification contains no message body and does not claim it
+    B->>C: inbox.status
+    C->>M: Read inbox head, claim and audit state
+    M-->>C: Inbox status
+    C-->>B: Status, from which the adapter in the goblin decides whether to remind the agent
+    Note over B: The reminder contains no message body and does not claim it
     B->>C: inbox.next(key)
     C->>M: Claim next queued item
     M->>J: Append claim event
@@ -291,9 +291,9 @@ sequenceDiagram
 #+RESULTS:
 [[file:diagrams/workflows-send-notify-claim-and-reply.svg]]
 
-Native integration follows notify-then-fetch. Codex/Claude hooks and monitors prompt the agent to use the inbox; they do not turn untrusted bodies into terminal input. Delivery may be deferred while the user/agent is active. Manual inbox commands remain available without native integration.
+Native integration follows notify-then-fetch. Each agent's adapter runs inside its goblin (=goblins-codex=, or =goblins-claude= with Claude's hooks and plugin monitor), polls =inbox.status= and prompts the agent to use the inbox; it never turns untrusted bodies into terminal input, and the daemon keeps no driver state. Delivery is deferred while the agent is working. Manual inbox commands remain available without native integration.
 
-Mutation keys recover the same accepted result on an identical retry within the daemon instance; conflicting reuse fails. Claim generations prevent an old claimant from completing a later claim. =inbox requeue= returns a claim to the queue, and =inbox complete= finishes without replying. Reply requires current messaging authorization; a dissolved raid can prevent reply even though the recipient can still complete the original claim. Audit acceptance is an append write, not a promise of durability through power loss. See [[file:../../crates/controller/src/mailbox.rs][mailbox.rs]], [[file:../../crates/controller/src/integration.rs][integration.rs]] and [[file:../../crates/protocol/src/messages.rs][protocol/messages.rs]].
+Mutation keys recover the same accepted result on an identical retry within the daemon instance; conflicting reuse fails. Claim generations prevent an old claimant from completing a later claim. =inbox requeue= returns a claim to the queue, and =inbox complete= finishes without replying. Reply requires current messaging authorization; a dissolved raid can prevent reply even though the recipient can still complete the original claim. Audit acceptance is an append write, not a promise of durability through power loss. See [[file:../../crates/controller/src/mailbox.rs][mailbox.rs]], [[file:../../crates/claude/src/lib.rs][claude/lib.rs]], [[file:../../crates/codex/src/lib.rs][codex/lib.rs]] and [[file:../../crates/protocol/src/messages.rs][protocol/messages.rs]].
 
 * Attach and detach a terminal
 

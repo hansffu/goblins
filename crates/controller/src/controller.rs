@@ -2046,18 +2046,17 @@ impl Controller {
             return;
         };
         let outcome = (|| -> std::result::Result<Option<Value>, Fault> {
-            let messaging = call.method.starts_with("integration.")
-                || matches!(
-                    call.method.as_str(),
-                    "messages.send"
-                        | "messages.get"
-                        | "messages.reply"
-                        | "inbox.next"
-                        | "inbox.status"
-                        | "inbox.complete"
-                        | "inbox.requeue"
-                        | "communications.list"
-                );
+            let messaging = matches!(
+                call.method.as_str(),
+                "messages.send"
+                    | "messages.get"
+                    | "messages.reply"
+                    | "inbox.next"
+                    | "inbox.status"
+                    | "inbox.complete"
+                    | "inbox.requeue"
+                    | "communications.list"
+            );
             // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
             // Host commands carry argument lists (rpc::MAX_HOST_COMMAND).
             let legacy_limit = if matches!(c.role, Role::Host)
@@ -2090,7 +2089,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2107,42 +2106,14 @@ impl Controller {
                     Role::Host => "host".to_owned(),
                     Role::Sandbox(id) => id.clone(),
                 };
-                let mut call_params = call.params;
-                let view = if call.method.starts_with("integration.") {
-                    let target = if actor == "host" {
-                        let target = call_params["session"].as_str().ok_or_else(missing)?;
-                        let resolved = self.resolve_session(target)?;
-                        call_params["session"] = json!(resolved);
-                        resolved
-                    } else {
-                        actor.clone()
-                    };
-                    let a = self.sessions.get(&target).ok_or_else(missing)?;
-                    if a.record.state != "running" {
-                        return Err(conflict());
-                    }
-                    let integration = a.inheritance.as_ref().and_then(|i| i.integration());
-                    if !matches!(integration, Some("codex" | "claude")) {
-                        return Err((-32009, "session has no supported integration".into()));
-                    }
-                    if call.method == "integration.register"
-                        && call_params["driver"].as_str() != integration
-                    {
-                        return Err((-32009, "integration driver does not match session".into()));
-                    }
-                    a.terminal.integration_view()
-                } else {
-                    crate::integration::View::default()
-                };
                 // The worker records queued membership before this call.
                 let work = crate::messaging::Work::Call {
                     connection: c.id,
                     id: id.clone(),
                     actor,
                     method: call.method,
-                    params: call_params,
+                    params: call.params,
                     directory: self.message_directory(),
-                    view,
                     raids: self.raid_outbox.drain(..).collect(),
                     operations: self.operation_outbox.drain(..).collect(),
                 };
@@ -2506,18 +2477,6 @@ impl Controller {
             c.fds.clear();
         }
     }
-    /// Claude's integration hooks and monitor ticks are its activity reports.
-    fn claude_activity(&mut self, response: &crate::messaging::Completed) {
-        if let Ok(result) = &response.result
-            && let Ok(state) = serde_json::from_value(result["agent_state"].clone())
-            && let Some(a) = self.sessions.get_mut(&response.actor)
-            && a.record.state == "running"
-            && a.worker.is_some()
-            && a.inheritance.as_ref().and_then(|i| i.integration()) == Some("claude")
-        {
-            self.dirty |= a.report_activity(state);
-        }
-    }
     /// The messaging worker's latest report: inbox counts and log health.
     fn messaging_report(&mut self, report: &crate::messaging::Report) {
         self.inbox_counts(&report.queued);
@@ -2552,7 +2511,7 @@ impl Controller {
         self.expire_activity(Instant::now());
         self.poll_history();
         self.poll_deletes();
-        // Drain human input and native output before checking wake revisions.
+        // Drain human input and native output.
         for a in self.sessions.values_mut() {
             if let Err(e) = a.terminal.tick() {
                 a.record.detail = Some(bounded(&e.to_string()));
@@ -2563,36 +2522,7 @@ impl Controller {
             self.messaging_report(&report);
         }
         let responses: Vec<_> = self.messaging.results.try_iter().collect();
-        for mut response in responses {
-            self.claude_activity(&response);
-            if let Ok(result) = &mut response.result
-                && result["notify"] == true
-                && result["delivery"] != "notification"
-            {
-                let outcome = self
-                    .sessions
-                    .get_mut(&response.actor)
-                    .filter(|a| a.record.state == "running")
-                    .ok_or("session exited")
-                    .and_then(|a| {
-                        a.terminal
-                            .notify(result["revision"].as_u64().unwrap_or(0))
-                            .map_err(|_| "terminal changed")
-                    });
-                let _ = self
-                    .messaging
-                    .commands
-                    .try_send(crate::messaging::Work::Delivery {
-                        actor: response.actor.clone(),
-                        revision: result["revision"].as_u64().unwrap_or(0),
-                        submitted: outcome.is_ok(),
-                    });
-                result["delivery"] = json!(if outcome.is_ok() {
-                    "submitted"
-                } else {
-                    "deferred"
-                });
-            }
+        for response in responses {
             if let Some(c) = self
                 .connections
                 .iter_mut()
@@ -3767,48 +3697,6 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn claude_integration_results_report_and_refresh_activity() {
-        use goblins_protocol::AgentState;
-        let mut d = daemon();
-        let path = d.state.clone();
-        let id = session_with_results(&mut d, vec![]);
-        let response = |result: Value| crate::messaging::Completed {
-            connection: 0,
-            id: json!(1),
-            result: Ok(result),
-            actor: id.clone(),
-        };
-        let a = d.sessions.get_mut(&id).unwrap();
-        a.inheritance = Some(Inheritance::fixture("shell", &[]));
-        d.dirty = false;
-        // Only a Claude-integrated session takes activity from its integration.
-        d.claude_activity(&response(json!({"agent_state":"working"})));
-        assert!(!d.dirty);
-        assert!(d.sessions[&id].activity_at.is_none());
-        let a = d.sessions.get_mut(&id).unwrap();
-        a.inheritance = Some(Inheritance::fixture_with_integration(
-            "shell",
-            &[],
-            "claude",
-        ));
-        d.claude_activity(&response(json!({"notify":false})));
-        assert!(d.sessions[&id].activity_at.is_none());
-        d.claude_activity(&response(json!({"agent_state":"working"})));
-        assert!(d.dirty);
-        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Working);
-        let at = d.sessions[&id].activity_at.unwrap();
-        d.dirty = false;
-        // Monitor ticks repeat the activity: fresher, but not republished.
-        d.claude_activity(&response(json!({"agent_state":"working"})));
-        assert!(!d.dirty);
-        assert!(d.sessions[&id].activity_at.unwrap() >= at);
-        // Once the monitor stops ticking, activity expires as for any endpoint.
-        d.expire_activity(at + std::time::Duration::from_secs(31));
-        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
-        drop(d);
-        fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
     fn activity_changes_are_timestamped() {
         use goblins_protocol::AgentState;
         let mut d = daemon();
@@ -4111,7 +3999,6 @@ mod tests {
             .flat_map(|work| match work {
                 crate::messaging::Work::Sync { operations, .. }
                 | crate::messaging::Work::Call { operations, .. } => operations,
-                crate::messaging::Work::Delivery { .. } => vec![],
             })
             .collect()
     }
@@ -4635,10 +4522,10 @@ mod tests {
         // Fill the queue so the next batches cannot be handed over.
         d.messaging
             .commands
-            .try_send(crate::messaging::Work::Delivery {
-                actor: "a".into(),
-                revision: 0,
-                submitted: false,
+            .try_send(crate::messaging::Work::Sync {
+                directory: Default::default(),
+                raids: vec![],
+                operations: vec![],
             })
             .unwrap();
         let (mut c, _peer) = connection(Role::Sandbox("a".into()));
@@ -5167,7 +5054,6 @@ mod tests {
             .flat_map(|work| match work {
                 crate::messaging::Work::Sync { raids, .. }
                 | crate::messaging::Work::Call { raids, .. } => raids,
-                crate::messaging::Work::Delivery { .. } => vec![],
             })
             .map(|e| (e.kind().to_string(), e.data()))
             .collect()
@@ -5708,10 +5594,10 @@ mod tests {
         // A full queue keeps the batch, in order, for the next tick.
         d.messaging
             .commands
-            .try_send(crate::messaging::Work::Delivery {
-                actor: "a".into(),
-                revision: 0,
-                submitted: false,
+            .try_send(crate::messaging::Work::Sync {
+                directory: Default::default(),
+                raids: vec![],
+                operations: vec![],
             })
             .unwrap();
         d.host(

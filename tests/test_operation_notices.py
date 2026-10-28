@@ -1,7 +1,9 @@
 """Goblins-owned operations resume the fake Codex and Claude agents that
 requested them, through the ordinary inbox notification machinery."""
+import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import time
 import unittest
@@ -10,6 +12,9 @@ from build_support import fixture_app
 from daemon_support import Daemon, RPC, receive
 from support import command
 from terminal_support import Terminal
+
+
+PROMPT = "Check your Goblins inbox and process the next item."
 
 
 def target(event):
@@ -40,7 +45,18 @@ class Notices:
         if self.check == "codex-goblins":
             state = self.d.get(self.receiver)["agent_state"]
             return {"state": {"idle":"ready", "unknown":"starting"}.get(state,state)}
-        return self.d.rpc.call("integration.status", {"session": self.receiver})
+        result = self.goblin("goblins-claude", "status", check=False)
+        return json.loads(result.stdout) if result.returncode == 0 else {}
+
+    def goblin(self, *argv, check=True):
+        return subprocess.run([str(self.app), "--state-dir", str(self.d.state), "exec", self.receiver, "--", *argv],
+                              check=check, capture_output=True, text=True)
+
+    def wakes(self):
+        """The lines Claude's monitor printed (none yet: no file); Codex has no monitor."""
+        if self.check == "codex-goblins":
+            return []
+        return self.goblin("cat", "/tmp/fake-claude-wakes", check=False).stdout.splitlines()
 
     def events(self):
         events, after = [], 0
@@ -64,8 +80,7 @@ class Notices:
 
     def kinds(self, events, request, notice):
         def ours(e):
-            return (e["data"].get("request") == request or target(e) == notice["id"]
-                    or e["kind"].startswith("integration.wake"))
+            return e["data"].get("request") == request or target(e) == notice["id"]
         return [e["kind"] for e in events if ours(e)]
 
     def test_idle_agent_resumes_after_each_unsuccessful_outcome(self):
@@ -83,10 +98,11 @@ class Notices:
             self.assertEqual(notice["operation"]["status"], outcome)
             self.assertEqual(notice["sender"], "goblins")
             kinds = self.kinds(events, record["id"], notice)
-            wake = [] if self.check == "codex-goblins" else ["integration.wake_attempt"]
             expected = ["operation.requested"] + (["operation.decided"] if outcome == "denied" else []) + [
-                "operation.completed", *wake, "message.claimed", "message.completed"]
-            self.assertEqual([k for k in kinds if k != "integration.wake_result"][-len(expected):], expected)
+                "operation.completed", "message.claimed", "message.completed"]
+            self.assertEqual(kinds[-len(expected):], expected)
+            if self.check == "claude-goblins":
+                self.assertIn(f"{PROMPT} [goblins-inbox-wake {notice['id']}]", self.wakes())
             self.assertEqual(self.sandbox_status()["operations"], [])
         self.assertEqual(self.sandbox_status()["queued"], 0)
 
@@ -96,7 +112,7 @@ class Notices:
         peer.expect(self.composer)
         peer.send("long-busy\r")
         peer.expect("Working")
-        self.d.wait(lambda: self.integration()["state"] == "working")
+        self.d.wait(lambda: self.integration().get("state") == "working")
         request, record = self.d.pending(self.receiver)
         self.d.decide(record, False)
         request.close()
@@ -104,9 +120,9 @@ class Notices:
         kinds = self.kinds(events, record["id"], notice)
         completed = kinds.index("operation.completed")
         # No wakeup was sent to the busy agent; it fetched the notice itself.
-        self.assertNotIn("integration.wake_attempt", kinds[completed:])
         self.assertEqual(kinds[completed + 1:], ["message.claimed", "message.completed"])
-        self.d.wait(lambda: self.integration()["state"] == "ready")
+        self.assertEqual(self.wakes(), [])
+        self.d.wait(lambda: self.integration().get("state") == "ready")
         self.assertEqual(self.sandbox_status()["queued"], 0)
 
     def test_paused_integration_holds_the_notice(self):
@@ -117,16 +133,12 @@ class Notices:
         self.d.wait(lambda: self.sandbox_status()["queued"] == 1)
         time.sleep(1.5)
         self.assertEqual(self.sandbox_status()["queued"], 1)
-        self.assertFalse(any(e["kind"] == "integration.wake_attempt" for e in self.events()))
+        self.assertEqual(self.wakes(), [])
         self.control("resume")
         self.handled(record["id"])
 
     def control(self, command):
-        if self.check == "codex-goblins":
-            __import__("subprocess").run([str(self.app), "--state-dir", str(self.d.state),
-                "exec", self.receiver, "--", "goblins-codex", command], check=True, capture_output=True)
-        else:
-            self.d.rpc.call("integration." + command, {"session": self.receiver})
+        self.goblin("goblins-codex" if self.check == "codex-goblins" else "goblins-claude", command)
 
     def sandbox_status(self):
         peer = RPC(self.d.state / self.receiver / "resources/request.sock")

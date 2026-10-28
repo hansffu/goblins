@@ -1,0 +1,88 @@
+#+title: Claude's integration inside the goblin
+
+Status: proposed 2026-10-28, to be recorded as [[file:../adr/0017-claude-integration-in-goblin.md][ADR 0017]]. It carries out the two =TODO.org= items "Move the Claude driver into mkClaudeGoblin" and "Remove the unused terminal delivery path", and replaces [[file:CLAUDE-SERVER-GOBLINS.org][CLAUDE-SERVER-GOBLINS.org]], which was not pursued.
+
+* Problem
+
+Codex goblins keep all Codex code in =mkCodexGoblin=: =goblins-codex= keeps its own wakeup ledger and talks to the daemon only through generic calls (=inbox.status=, =sessions.set-state=, =sessions.set-variables=). Claude goblins do not. Their hooks and plugin monitor call =goblin integration hook|watch=, and the daemon interprets them:
+
+- =crates/controller/src/integration.rs= knows Claude's hook vocabulary (=SessionStart=, =UserPromptSubmit=, =Stop= and the activity-only events), keeps the wakeup bookkeeping (lifecycle state, attempts, retry timing, claim tracking, pause) and maps hooks to activity.
+- =controller.rs= takes Claude's activity from those results (=claude_activity=) and gates =integration.*= on the driver names =codex= and =claude=.
+- The daemon's terminal reads Claude's screen to judge the composer empty (=integration_view=), pastes the inbox prompt into it (=Terminal::notify=, =Work::Delivery=, =integration.wake_result=), and tracks human input (=InputEvents=, =input=, =interrupted=, =input_pending=) so that Esc or Ctrl-C pauses wakeups. Nothing Goblins ships uses terminal delivery: Claude's monitor uses notification delivery, and Codex never registers.
+- The sandbox CLI every goblin carries has =goblin integration register|hook|status|watch=, which follow Claude's hook payloads; the host CLI has =goblins integration status|pause|resume=.
+
+* Decisions
+
+Agreed with the user on 2026-10-28:
+
+1. Claude stays on the goblin's terminal. Claude's own background sessions (=claude --bg=, =claude attach=) are not used, so CLAUDE-SERVER-GOBLINS.org is not pursued.
+2. All Claude-specific code is what =mkClaudeGoblin= passes to =mkGoblin=. The daemon keeps no Claude or Codex driver.
+3. Pausing wakeups on Esc or Ctrl-C is dropped, together with terminal delivery and reading Claude's composer from the screen.
+
+* Design
+
+** goblins-claude
+
+A new crate, =crates/claude=, builds =goblins-claude=, as =crates/codex= builds =goblins-codex=. It is in the Claude goblin's packages, not in the generic =goblin= CLI. Its subcommands:
+
+- =start= :: run by the launcher before it executes Claude. Starts a fresh ledger for this run, replacing =goblin integration register= and =GOBLINS_INTEGRATION_EPOCH=. A monitor of an earlier run in the same goblin exits when it sees a newer run.
+- =hook= :: run by every managed hook. Reads Claude's hook input from stdin, updates the ledger and the activity, and prints the hook's output. It replaces =goblin integration hook= and the decision part of =hook.sh=; the =session_id= and =session_name= reporting in =hook.sh= stays as it is.
+- =watch= :: the plugin monitor's process, replacing =goblin integration watch=. It prints one line per wakeup, in the form =monitor.sh= prints today, naming the message it is about.
+- =status=, =pause=, =resume= :: as for =goblins-codex=: the ledger's state, health and diagnostic as JSON, and local control of wakeups. =resume= also resets the retry limit.
+
+The ledger is =/tmp/goblins-claude/ledger.json=, private to the goblin, changed under =flock= and replaced atomically, because hooks and the monitor are separate processes.
+
+** Wakeup rules
+
+The rules move from =integration.rs= unchanged, except that nothing depends on terminal input:
+
+- =SessionStart= sets the lifecycle to starting and activity to idle. =UserPromptSubmit= sets working, and unpauses.
+- =Stop= reads =inbox.status=. While the monitor runs (=hook.sh= checks its PID as today) the turn never continues and the lifecycle settles ready. Without the monitor, the turn continues into the inbox when something is pending, the hook is not already continuing, wakeups are not paused, and nothing is claimed or the claim differs from the one at the last =Stop=; the hook then blocks with today's inbox instruction.
+- =watch= reads =inbox.status= every 500 ms. A new inbox head resets the attempts; an empty inbox resets them and forgets the remembered claim. A wakeup is due when something is pending, wakeups are not paused, the lifecycle is starting or ready and the audit log is healthy; there are at most three attempts per head, 30 seconds apart. Health is =paused=, =degraded= (=watch= has not run for five seconds), =stalled= (three attempts without progress) or =healthy=, as =integration.status= reports it today, and failed daemon calls are a diagnostic in =status=.
+- A daemon call that fails in a hook never blocks Claude: the hook prints today's messages (the =SessionStart= warning, or the =systemMessage= that the inbox check failed).
+
+** Activity
+
+=hook= maps the activity-only events as =hook_activity= does today (=PreToolUse= of =AskUserQuestion= or =ExitPlanMode=, =PermissionRequest=, =Elicitation=, the =Notification= types, =StopFailure=, tool ends while waiting) and records it in the ledger; hooks make no daemon call for activity. =watch= is the only reporter: in its loop it sends the ledger's activity with =sessions.set-state= when it differs from the last accepted report, and repeats it every ten seconds, as =goblins-codex= does. One sequential reporter keeps reports in order, activity stays fresh within the daemon's 30-second expiry, and it becomes unknown when the monitor is gone.
+
+** The mod
+
+The Goblins mod reads the health it shows from =goblins-claude status= instead of =inbox.status='s =integration= field, and reports an interrupted turn through =goblins-claude= instead of =goblin integration hook=.
+
+** What the daemon loses
+
+- =integration.rs= (the =Integrations= state, =View=, =hook_activity=) and the =integration.*= methods: =register=, =check=, =tick= and =status= on the sandbox endpoint, =status=, =pause= and =resume= on the host endpoint, and their gate on the driver names.
+- =inbox.status='s =integration= field and the =agent-integration-v1= feature.
+- =claude_activity= in =controller.rs=; Claude reports activity through =sessions.set-state= like any agent.
+- =Terminal::notify=, =integration_view= with its composer reading, =InputEvents= and the input revision, =Work::Delivery= and =integration.wake_result=.
+- The communications log events =integration.registered=, =integration.hook=, =integration.wake_attempt=, =integration.paused= and =integration.resumed=. As for Codex, wakeup attempts are local diagnostics.
+- =goblin integration register|hook|status|watch= (=crates/client=) and =goblins integration status|pause|resume= (=crates/controller/src/main.rs=).
+
+=mkGoblin='s =integration= attribute stays as "this goblin is an agent", with the values =codex= and =claude=: the daemon uses only whether it is set, to allow =bypassPermissions= and to send operation completion notices.
+
+** What does not change
+
+The goblin's PTY, attach and detach, the managed hooks and the events they cover, the plugin monitor's notification delivery, the =session_id= and =session_name= variables, =resumeCommand= and everything for Codex.
+
+* Consequences
+
+- =goblins integration status|pause|resume= is removed. As for Codex, the host uses =goblins exec NAME -- goblins-claude status|pause|resume=, and inside the goblin =!goblins-claude pause= works from Claude's prompt.
+- Esc behaves as it does today with notification delivery: an interrupted turn has no =Stop=, and its idle report changes only the activity, so the lifecycle stays working and no reminder follows until the next submitted prompt.
+- The communications log no longer shows Claude's wakeups; =goblins-claude status= does.
+- A Claude goblin built from this change works with a daemon that still has =integration.*=, because it uses only methods both have. A Claude goblin built before it loses its wakeups and activity against the new daemon, and starts otherwise; goblins built from the same flake update together.
+
+* Implementation steps
+
+Each step is reviewed and committed on its own, with =tests/features.toml= updated in the same commit as the tests and paths it adds or removes.
+
+1. *ADR 0017* (=docs/adr/0017-claude-integration-in-goblin.md=) from this plan. Documentation only.
+2. *goblins-claude.* The crate with its unit tests: the =integration.rs= tests that do not involve the terminal move there (Stop continuation, claim tracking, retries and stalling, operation notices waking an idle agent and continuing a working one, activity mapping and settling, audit failure), plus a stale monitor exiting on a new run and a pause surviving a restart of =watch=. Nix packaging in =nix/goblins/claude=; the launcher runs =goblins-claude start=, =hook.sh= and =monitor.sh= call =goblins-claude=, and the mod uses it. =tests/fake_claude.py= and the Claude tests (=test_claude_config=, =test_claude_mod=, =test_operation_notices.ClaudeNotices=, =test_activity=) check wakeups through the monitor's output and =goblins-claude status= instead of =integration.*= log events. The daemon is not changed in this step.
+3. *Daemon cleanup.* Remove what "What the daemon loses" lists, with its tests (including the terminal tests of composer reading and input tracking, and the mailbox test of =integration.wake_attempt=), and update =docs/API.org=, =docs/specs/AGENT-INTEGRATION.org= and =docs/architecture/workflows.org=. Mark the two =TODO.org= items DONE.
+4. *Verification.* =just test-feature-check= on the final candidate, then =just test-merge=.
+
+Steps 2 and 3 run their feature tasks before review.
+
+* Risks
+
+- Hook and monitor processes now share a file instead of the daemon's single-threaded state. The =flock= serializes them; a hook that cannot get the lock within its timeout answers as for a failed daemon call.
+- If Claude is started again inside the same goblin while the previous monitor still has a report in flight, that late report can reach the daemon after the new monitor's. The old monitor records nothing in the new run's ledger and exits at its next poll, so the daemon's activity is stale for at most one heartbeat (ten seconds). Accepted as a known limit; there is no lock across monitors.

@@ -58,7 +58,6 @@ fn run() -> Result<i32, String> {
                 println!("{}", call("sessions.set-state", json!({"state":state}))?);
                 return Ok(0);
             }
-            cli::Command::Integration { command } => return integration(command),
             cli::Command::Variable {
                 command: cli::VariableCommand::Set { assignments },
             } => {
@@ -575,69 +574,6 @@ fn main() {
             }
         }
     });
-}
-
-fn integration(command: cli::IntegrationCommand) -> Result<i32, String> {
-    use cli::IntegrationCommand::*;
-    let key = || goblins_protocol::messages::operation_key(None).map_err(|e| e.to_string());
-    let result = match command {
-        Register { driver } => call(
-            "integration.register",
-            json!({"driver":driver,"key":key()?}),
-        )?,
-        Hook {
-            event,
-            active,
-            tool,
-            notification,
-        } => {
-            let epoch = std::env::var("GOBLINS_INTEGRATION_EPOCH")
-                .map_err(|_| "missing integration epoch")?
-                .parse::<u64>()
-                .map_err(|_| "invalid integration epoch")?;
-            let mut params = json!({"epoch":epoch,"event":event,"active":active,"key":key()?});
-            if let Some(tool) = tool {
-                params["tool"] = json!(tool);
-            }
-            if let Some(notification) = notification {
-                params["notification"] = json!(notification);
-            }
-            call("integration.check", params)?
-        }
-        Status => call("integration.status", json!({}))?,
-        Watch { epoch, delivery } => {
-            let mut failures = 0;
-            loop {
-                match call(
-                    "integration.tick",
-                    json!({"epoch":epoch,"delivery":delivery}),
-                ) {
-                    Ok(result) => {
-                        failures = 0;
-                        if result["notify"] == true && result["delivery"] == "notification" {
-                            println!("{}", goblins_protocol::INTEGRATION_PROMPT);
-                            std::io::stdout().flush().map_err(|e| e.to_string())?;
-                        }
-                    }
-                    Err(e) => {
-                        failures += 1;
-                        if failures == 1 {
-                            eprintln!("goblins: inbox notifier unavailable: {e}");
-                        }
-                        if failures >= 20 {
-                            return Err(
-                                "inbox notifier stopped; manual inbox commands remain available"
-                                    .into(),
-                            );
-                        }
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-            }
-        }
-    };
-    println!("{result}");
-    Ok(0)
 }
 
 #[cfg(test)]
