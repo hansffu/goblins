@@ -235,14 +235,14 @@ class CodexConfigTests(unittest.TestCase):
     def local(self, receiver, command):
         return json.loads(__import__("subprocess").check_output([
             str(self.app), "--state-dir", str(self.d.state), "exec", receiver, "--",
-            "/run/goblins/bin/goblins-codex", command,
+            "goblins-codex", command,
         ]))
 
     def thread(self, receiver):
         """The adapter's conversation, or None until it writes its first status."""
         import subprocess
         result = subprocess.run([str(self.app), "--state-dir", str(self.d.state), "exec", receiver, "--",
-                                 "/run/goblins/bin/goblins-codex", "status"], capture_output=True, text=True)
+                                 "goblins-codex", "status"], capture_output=True, text=True)
         if result.returncode and "No such file or directory" in result.stderr:
             return None
         self.assertEqual(result.returncode, 0, result.stderr)

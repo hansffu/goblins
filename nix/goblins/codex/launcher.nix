@@ -1,4 +1,8 @@
-{ pkgs, runtimeDirectory }:
+{
+  pkgs,
+  runtimeDirectory,
+  adapter,
+}:
 {
   pkg,
   binName,
@@ -75,7 +79,7 @@ let
     ${pkgs.coreutils}/bin/mkdir -m 700 "$GOBLINS_CODEX_RUNTIME"
     profile_overrides=()
     if [[ -n "$profile" ]]; then
-      /run/goblins/bin/goblins-codex profile-args "$profile" >"$GOBLINS_CODEX_RUNTIME/profile-args"
+      ${adapter}/bin/goblins-codex profile-args "$profile" >"$GOBLINS_CODEX_RUNTIME/profile-args"
       while IFS= read -r -d $'\0' argument; do profile_overrides+=(-c "$argument"); done <"$GOBLINS_CODEX_RUNTIME/profile-args"
       ${pkgs.coreutils}/bin/rm "$GOBLINS_CODEX_RUNTIME/profile-args"
     fi
@@ -121,7 +125,7 @@ let
       printf 'Goblins: the Codex App Server failed to start.\n' >&2
       exit 1
     fi
-    /run/goblins/bin/goblins-codex run --socket ${socket} "''${thread[@]}"${lib.optionalString bypassPermissions " --bypass-permissions"} </dev/null &
+    ${adapter}/bin/goblins-codex run --socket ${socket} "''${thread[@]}"${lib.optionalString bypassPermissions " --bypass-permissions"} </dev/null &
     adapter_pid=$!
     # Either one ending ends the goblin: without the adapter, its conversation
     # was not created or loaded, or nobody delivers its inbox.
@@ -153,5 +157,7 @@ pkgs.symlinkJoin {
     server
     client
     wrapper
+    # `goblins-codex bind`, `status` and `pause` on PATH.
+    adapter
   ];
 }

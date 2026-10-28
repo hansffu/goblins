@@ -6,6 +6,11 @@ let
   skillFile = name: "codex/skills/${name}/SKILL.md";
   skillFiles = lib.mapAttrs' (name: text: lib.nameValuePair (skillFile name) text);
   managedFiles = [ "codex/config.toml" ] ++ map skillFile (skills { }).managed;
+  # Only Codex goblins carry the adapter: it is part of their launcher.
+  adapter = import ../../packages/rust.nix {
+    inherit pkgs;
+    package = "goblins-codex";
+  };
   runtimeDirectory =
     path:
     assert lib.assertMsg (builtins.isString path)
@@ -29,7 +34,7 @@ let
 in
 {
   packages = [ pkgs.fish ];
-  mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
+  mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory adapter; };
   mkInjectedFiles =
     {
       settings,

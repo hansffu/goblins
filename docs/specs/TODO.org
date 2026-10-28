@@ -361,7 +361,8 @@ The in-sandbox CLI is =goblin=; =/run/goblins/bin/goblins= stays as a hidden lin
 
 A goblin's home is private and empty, so =git commit= fails without an identity. Each configuration has to bind a git config (=roFiles=) or set =GIT_AUTHOR_*= and =GIT_COMMITTER_*= in =env=. Consider documenting this next to the =goblins-dev= setup, or an option that passes the host's identity in.
 
-* TODO Ship the Codex adapter only with Codex goblins
+* DONE Ship the Codex adapter only with Codex goblins
+CLOSED: [2026-10-28 Wed 14:32]
 
 All Codex code should be what =mkCodexGoblin= passes to =mkGoblin=. The =goblins-codex= adapter is the exception: =nix/packages/internal-goblins.nix= links it into the shared helper bundle that =mkGoblin= adds to every goblin's =allowedPackages= and mounts at =/run/goblins/bin=, so Claude and shell goblins carry it too.
 

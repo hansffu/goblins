@@ -1072,10 +1072,10 @@ Reminders follow the attached terminal from your first message in a conversation
 Inspect or pause new reminders locally, including from the host:
 
 #+begin_src sh
-goblins exec chief -- /run/goblins/bin/goblins-codex status
-goblins exec chief -- /run/goblins/bin/goblins-codex pause
-goblins exec chief -- /run/goblins/bin/goblins-codex resume
-goblins exec chief -- /run/goblins/bin/goblins-codex bind THREAD
+goblins exec chief -- goblins-codex status
+goblins exec chief -- goblins-codex pause
+goblins exec chief -- goblins-codex resume
+goblins exec chief -- goblins-codex bind THREAD
 #+end_src
 
 Three reminders without inbox progress exhaust the retry limit; resume resets

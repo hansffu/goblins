@@ -157,9 +157,9 @@ work retains its native ownership. =resume= allows new reminders and resets the
 retry budget. These controls live inside the sandbox, accessible from the host:
 
 #+begin_src sh
-goblins exec chief -- /run/goblins/bin/goblins-codex status
-goblins exec chief -- /run/goblins/bin/goblins-codex pause
-goblins exec chief -- /run/goblins/bin/goblins-codex resume
+goblins exec chief -- goblins-codex status
+goblins exec chief -- goblins-codex pause
+goblins exec chief -- goblins-codex resume
 #+end_src
 
 The status file includes binding, activity, pause, ledger and diagnostic fields.
