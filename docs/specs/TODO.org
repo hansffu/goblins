@@ -360,3 +360,24 @@ The in-sandbox CLI is =goblin=; =/run/goblins/bin/goblins= stays as a hidden lin
 * TODO Git identity for goblins
 
 A goblin's home is private and empty, so =git commit= fails without an identity. Each configuration has to bind a git config (=roFiles=) or set =GIT_AUTHOR_*= and =GIT_COMMITTER_*= in =env=. Consider documenting this next to the =goblins-dev= setup, or an option that passes the host's identity in.
+
+* DONE Ship the Codex adapter only with Codex goblins
+CLOSED: [2026-10-28 Wed 14:32]
+
+All Codex code should be what =mkCodexGoblin= passes to =mkGoblin=. The =goblins-codex= adapter is the exception: =nix/packages/internal-goblins.nix= links it into the shared helper bundle that =mkGoblin= adds to every goblin's =allowedPackages= and mounts at =/run/goblins/bin=, so Claude and shell goblins carry it too.
+
+Build it in the Codex Nix code instead (=import ../packages/rust.nix { package = "goblins-codex"; }=) and add it to the launcher's =symlinkJoin=, which =mkCodexGoblin= already puts in =allowedPackages=, so =goblins-codex bind=, =status= and =pause= stay on =PATH=. Have =nix/goblins/codex/launcher.nix= call it by store path (=${adapter}/bin/goblins-codex=) instead of =/run/goblins/bin/goblins-codex= (=profile-args= and =run=), and remove the link from =internal-goblins.nix=. The native smoke tests run the Cargo-built adapter directly (=GOBLINS_CODEX_ADAPTER=, =tests/test_codex_native.py=) and need no change. Update the commands that name =/run/goblins/bin/goblins-codex= to plain =goblins-codex=: in =docs/USAGE.org= (Codex delivery controls), =docs/specs/AGENT-INTEGRATION.org=, and the integration tests that run it inside goblins (=tests/test_codex_config.py=, =tests/test_operation_notices.py=).
+
+* TODO Move the Claude driver into mkClaudeGoblin
+
+All Claude code should be what =mkClaudeGoblin= passes to =mkGoblin=, as Codex now is. Its Nix side already is (launcher, hooks, plugin, monitor, mod, skills under =nix/goblins/claude=), but the daemon and the in-sandbox =goblin= CLI that every goblin carries hold a Claude driver:
+
+- =crates/controller/src/integration.rs= knows Claude's hook vocabulary: =integration.check= gives =SessionStart=, =UserPromptSubmit= and =Stop= their wakeup meaning, including the =Stop= continuation, and =hook_activity= maps =PreToolUse= (=AskUserQuestion=, =ExitPlanMode=), =PermissionRequest=, =Elicitation=, =idle_prompt= and the rest to activity. The wakeup bookkeeping (attempts, retries, claim tracking) lives there too.
+- Claude-only branches: notification delivery requires the =claude= driver (=integration.rs=, =integration.tick=), =claude_activity= in =controller.rs=, and the driver names =codex= and =claude= in =integration.rs=, =controller.rs= (the integration method gate) and =nix/internal/validate.nix=.
+- =goblin integration register|hook|status|watch= (=crates/client/src/cli.rs=, =main.rs=) follow Claude's hook payloads (=--tool=, =--notification=) and print the prompt lines its plugin monitor turns into turns.
+
+Follow the Codex pattern ([[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]): a translator inside =mkClaudeGoblin= turns hook events into the generic =sessions.set-state= and =inbox.status= calls and keeps its own wakeup ledger, as =goblins-codex= does with its =ledger.json=, and the hooks and monitor talk to it instead of the daemon. The daemon then loses the hook vocabulary and the Claude-only branches; with Codex no longer using =integration.*= either (it never registers), the =integration.*= methods, the =goblin integration= commands and the driver name list can go, leaving =integration= in =mkGoblin= at most as "this goblin is an agent" (it gates =bypassPermissions=, =permission_bypass= and approval notifications). Decide whether that warrants an ADR; it changes the API in =docs/API.org=. Dropping =codex= from the daemon's driver names is a small first step on its own.
+
+* TODO Remove the unused terminal delivery path
+
+The daemon can wake an agent by pasting the inbox prompt into its terminal: =integration.tick= with =delivery= =terminal= (the default) returns a revision, and =Terminal::notify= (=crates/controller/src/terminal.rs=, called from =controller.rs=) pastes the prompt once =integration_view= judges the composer empty by reading Claude's screen (the =›=/=❯= prompt cells, "esc to interrupt"). Nothing Goblins ships uses it: Claude's monitor runs =goblin integration watch --delivery notification= (=nix/goblins/claude/monitor.sh=) and Codex never ticks. Remove the terminal mode of =integration.tick= and =goblin integration watch=, =Terminal::notify= and the composer readiness check; keep the input tracking (=input=, =interrupted=, =input_pending=) the =Stop= hook logic uses. Update =docs/API.org= and =AGENT-INTEGRATION.org=. This goes away anyway with the Claude driver move above, so do it first only if that move is far off.

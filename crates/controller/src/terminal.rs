@@ -75,8 +75,14 @@ impl InputEvents {
     }
 }
 pub struct Terminal {
-    path: PathBuf,
-    listener: UnixListener,
+    /// The socket frontends attach through; none for an attach client's
+    /// terminal, which the daemon hands its attachment.
+    listener: Option<(PathBuf, UnixListener)>,
+    /// Why the socket refuses every attachment.
+    refusal: Option<String>,
+    /// Leave connections unanswered until it is known whether the payload
+    /// has this terminal.
+    held: bool,
     peer: Option<UnixStream>,
     master: Option<File>,
     connected: bool,
@@ -148,8 +154,9 @@ impl Terminal {
         listener.set_nonblocking(true)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         Ok(Self {
-            path: path.into(),
-            listener,
+            listener: Some((path.into(), listener)),
+            refusal: None,
+            held: false,
             peer: None,
             master: None,
             connected: false,
@@ -169,7 +176,54 @@ impl Terminal {
             last_output: std::time::Instant::now(),
         })
     }
+    /// A terminal for one attach client's PTY, sized for its frontend.
+    pub fn client(master: OwnedFd, rows: u16, cols: u16) -> Result<Self> {
+        let mut terminal = Self {
+            listener: None,
+            refusal: None,
+            held: false,
+            peer: None,
+            master: None,
+            connected: false,
+            dimensions: None,
+            detached: false,
+            eof: false,
+            interrupted: false,
+            complete: false,
+            hello: vec![],
+            to_peer: vec![],
+            to_pty: vec![],
+            screen: vt100::Parser::new(24, 80, 0),
+            revision: 0,
+            input_revision: 0,
+            input_interrupted: false,
+            input_events: InputEvents::default(),
+            last_output: std::time::Instant::now(),
+        };
+        terminal.resize(rows, cols)?;
+        terminal.master(master)?;
+        Ok(terminal)
+    }
+    /// Answer no connection until released, refused, or the payload starts
+    /// on this terminal or fails.
+    pub fn hold(&mut self) {
+        self.held = true;
+    }
+    pub fn release(&mut self) {
+        self.held = false;
+    }
+    /// Refuse every later attachment through the socket with `message`.
+    pub fn refuse(&mut self, message: &str) {
+        self.refusal = Some(message.into());
+        self.held = false;
+    }
+    /// A frontend holds the attachment, also after a detach or completion
+    /// until it closes its end.
+    pub fn connected(&self) -> bool {
+        self.peer.is_some()
+    }
     pub fn master(&mut self, fd: OwnedFd) -> Result<()> {
+        self.held = false;
         unix::nonblocking(fd.as_raw_fd())?;
         self.master = Some(File::from(fd));
         if let Some((rows, cols)) = self.dimensions {
@@ -198,6 +252,7 @@ impl Terminal {
         Ok(())
     }
     pub fn failed_start(&mut self) {
+        self.held = false;
         self.eof = true;
         self.interrupted = true;
     }
@@ -349,12 +404,19 @@ impl Terminal {
             }
         }
         for _ in 0..4 {
-            match self.listener.accept() {
+            let Some((_, listener)) = self.listener.as_ref().filter(|_| !self.held) else {
+                break;
+            };
+            match listener.accept() {
                 Ok((mut peer, _)) => {
                     use goblins_protocol::rpc;
                     use serde_json::json;
                     let writer = peer.try_clone()?;
-                    if let Err(error) = self.attach(writer, json!(0)) {
+                    let attached = match &self.refusal {
+                        Some(refusal) => Err(refusal.as_str().into()),
+                        None => self.attach(writer, json!(0)),
+                    };
+                    if let Err(error) = attached {
                         peer.set_nonblocking(true)?;
                         let _ = peer.write_all(&rpc::encode(&rpc::error(
                             json!(0),
@@ -450,7 +512,9 @@ impl Terminal {
 }
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some((path, _)) = &self.listener {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -478,7 +542,7 @@ mod tests {
             }
         }
         fn connect(&mut self) -> UnixStream {
-            let mut peer = UnixStream::connect(&self.terminal.path).unwrap();
+            let mut peer = UnixStream::connect(self.directory.join("terminal.sock")).unwrap();
             peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
             self.terminal.tick().unwrap();
             assert_eq!(rpc::read(&mut peer).unwrap()["result"]["attached"], true);
@@ -663,7 +727,7 @@ mod tests {
         assert!(!f.terminal.complete);
 
         // A competing client cannot replace the detached client's outcome.
-        let mut other = UnixStream::connect(&f.terminal.path).unwrap();
+        let mut other = UnixStream::connect(f.directory.join("terminal.sock")).unwrap();
         f.terminal.tick().unwrap();
         assert_eq!(rpc::read(&mut other).unwrap()["error"]["code"], -32009);
         // Input sent by the departing consumer must not reach the payload.
@@ -745,7 +809,7 @@ mod tests {
     fn second_consumer_is_rejected_without_interrupting_first() {
         let mut f = Fixture::new();
         let mut first = f.connect();
-        let mut second = UnixStream::connect(&f.terminal.path).unwrap();
+        let mut second = UnixStream::connect(f.directory.join("terminal.sock")).unwrap();
         f.terminal.tick().unwrap();
         assert_eq!(rpc::read(&mut second).unwrap()["error"]["code"], -32009);
         f.payload.write_all(b"ok").unwrap();

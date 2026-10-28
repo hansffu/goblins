@@ -25,6 +25,7 @@ use std::{
     time::Instant,
 };
 
+mod attach;
 mod editor;
 mod exec;
 mod host;
@@ -77,6 +78,12 @@ pub struct SessionRecord {
     #[serde(default)]
     pub auto_approve: Vec<String>,
     pub terminal: String,
+    /// The socket frontends attach through with a hello.
+    #[serde(default)]
+    pub attach: String,
+    /// Where an agent without a terminal writes its output.
+    #[serde(default)]
+    pub server_log: Option<String>,
     pub pty_eof: bool,
     pub terminal_complete: bool,
     pub terminal_interrupted: bool,
@@ -202,6 +209,14 @@ struct Active {
     /// A root goblin's recorded variables, kept also while this server has
     /// no history, for a record created when it takes the store over.
     variables: BTreeMap<String, String>,
+    /// Names `sessions.set-variables` has set to a value since this launch.
+    /// Values seeded from the history record are not in it.
+    fresh: BTreeSet<String>,
+    attach: attach::Attach,
+    /// Known once started: the agent runs without a terminal and each attach
+    /// starts a client.
+    handlers: Option<crate::config::Handlers>,
+    server_log: Option<attach::ServerLog>,
     /// The history record this goblin writes: the record it was recreated
     /// from, otherwise its own id.
     line: String,
@@ -1088,12 +1103,12 @@ impl Controller {
             } else if let Some(id) = self
                 .sessions
                 .iter()
-                .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
+                .filter(|(_, a)| a.worker.is_none() && a.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
             {
                 if let Some(a) = self.sessions.remove(&id) {
-                    let _ = fs::remove_file(a.directory.join("terminal.sock"));
+                    attach::remove_files(&a.directory);
                     let _ = fs::remove_dir(a.directory);
                 }
             } else {
@@ -1256,6 +1271,10 @@ impl Controller {
     }
     fn detach(&mut self, id: &str) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
+        if a.handlers.is_some() {
+            self.detach_client(id).map_err(|e| (-32009, e))?;
+            return Ok(json!({"accepted":true}));
+        }
         a.terminal.detach().map_err(|e| (-32009, e.to_string()))?;
         a.record.terminal_attached = a.terminal.attached();
         a.record.terminal_detached = a.terminal.detached;
@@ -1435,13 +1454,13 @@ impl Controller {
             let old = self
                 .sessions
                 .iter()
-                .filter(|(_, a)| a.worker.is_none() && a.terminal.can_evict())
+                .filter(|(_, a)| a.worker.is_none() && a.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
                 .ok_or_else(capacity)?;
             if let Some(a) = self.sessions.remove(&old) {
                 // A shared scope can still own a stopped member's resources.
-                let _ = fs::remove_file(a.directory.join("terminal.sock"));
+                attach::remove_files(&a.directory);
                 let _ = fs::remove_dir(a.directory);
             }
         }
@@ -1451,6 +1470,11 @@ impl Controller {
         let path = directory.join("terminal.sock");
         let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
         terminal.detached = p.detached;
+        // Older frontends attach here; a goblin with attach handlers refuses
+        // them, which is known once its worker read the configuration.
+        terminal.hold();
+        let attach_path = directory.join("attach.sock");
+        let attach = attach::Attach::new(&attach_path).map_err(|e| (-32010, e.to_string()))?;
         let recorded = p.recorded.take();
         // A recreated goblin continues its record; a new root goblin gets a
         // short record id of its own, used once it reaches running.
@@ -1531,6 +1555,8 @@ impl Controller {
             packages: vec![],
             auto_approve: approvals.packages.keys().cloned().collect(),
             terminal: path.display().to_string(),
+            attach: attach_path.display().to_string(),
+            server_log: None,
             pty_eof: false,
             terminal_complete: false,
             terminal_interrupted: false,
@@ -1545,7 +1571,7 @@ impl Controller {
             recreated_from: recorded.as_ref().map(|r| r.id.clone()),
             skipped: vec![],
         };
-        let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal});
+        let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
         self.sessions.insert(
             id.clone(),
             Active {
@@ -1562,6 +1588,10 @@ impl Controller {
                     .as_ref()
                     .map(|r| r.variables.clone())
                     .unwrap_or_default(),
+                fresh: BTreeSet::new(),
+                attach,
+                handlers: None,
+                server_log: None,
                 line,
                 recreated_from: recorded,
                 created: self.next,
@@ -1643,7 +1673,15 @@ impl Controller {
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
                 self.update_record(&line, |r| r.set_variables(&p.variables))
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
-                self.sessions.get_mut(scope).unwrap().variables = scratch.variables;
+                let a = self.sessions.get_mut(scope).unwrap();
+                a.variables = scratch.variables;
+                for (name, value) in &p.variables {
+                    if value.is_empty() {
+                        a.fresh.remove(name);
+                    } else {
+                        a.fresh.insert(name.clone());
+                    }
+                }
                 if recorded && p.variables.contains_key("session_id") {
                     self.merge_conversation(&line);
                 }
@@ -1656,6 +1694,8 @@ impl Controller {
                     "name":record.name,"description":record.description,
                     "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
+                    "attached":record.terminal_attached,
+                    "attached_since":self.sessions[scope].attach.since(),
                     "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
                     "host_commands":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.host_commands()),
                     "permission_bypass":self.sessions[scope].inheritance.as_ref().and_then(|i| i.permission_bypass()),
@@ -1946,12 +1986,12 @@ impl Controller {
                 if !dimensions(p.rows, p.cols) {
                     return Err((-32602, "invalid dimensions".into()));
                 }
-                self.sessions
-                    .get_mut(&p.session)
-                    .ok_or_else(missing)?
-                    .terminal
-                    .resize(p.rows, p.cols)
-                    .map_err(|_| conflict())?;
+                let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
+                match a.handlers {
+                    Some(_) => a.attach.resize(p.rows, p.cols),
+                    None => a.terminal.resize(p.rows, p.cols),
+                }
+                .map_err(|_| conflict())?;
                 Ok(json!({"accepted":true}))
             }
             "permissions.list" => {
@@ -2050,7 +2090,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","agent-integration-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2623,6 +2663,7 @@ impl Controller {
                         dev_identity,
                         initial_packages,
                         master,
+                        handlers,
                         control,
                         listener,
                         identity,
@@ -2658,7 +2699,10 @@ impl Controller {
                         a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
-                        a.terminal.master(master)?;
+                        match handlers {
+                            Some(handlers) => a.serve(master, *handlers)?,
+                            None => a.terminal.master(master)?,
+                        }
                         a.record.initial_packages = initial_packages;
                         a.record.identity = Some(identity);
                         if a.record.state == "starting" {
@@ -2668,6 +2712,10 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
+                    Completed::Mode { server } => match server {
+                        true => a.terminal.refuse(attach::UPGRADE),
+                        false => a.terminal.release(),
+                    },
                     Completed::Manifest { sequence, lease } => {
                         if sequence > self.manifest_published {
                             self.manifest_published = sequence;
@@ -2908,8 +2956,11 @@ impl Controller {
             a.record.pty_eof = a.terminal.eof;
             a.record.terminal_complete = a.terminal.complete;
             a.record.terminal_interrupted = a.terminal.interrupted;
-            a.record.terminal_attached = a.terminal.attached();
-            a.record.terminal_detached = a.terminal.detached;
+            if a.handlers.is_none() {
+                a.record.terminal_attached = a.terminal.attached();
+                a.record.terminal_detached = a.terminal.detached;
+            }
+            self.attach_tick(&mut a);
             // Observe process exit independently of a worker blocked on Nix.
             // A pidfd pins the process identity, avoiding PID-reuse races.
             let exited = a.record.state == "running"
@@ -3151,6 +3202,10 @@ mod tests {
                 call: None,
                 recreated_from: None,
                 variables: BTreeMap::new(),
+                fresh: BTreeSet::new(),
+                attach: attach::Attach::new(&directory.join("attach.sock")).unwrap(),
+                handlers: None,
+                server_log: None,
                 line: id.clone(),
                 created: 0,
                 record: SessionRecord {
@@ -3173,6 +3228,8 @@ mod tests {
                     packages: vec![],
                     auto_approve: vec![],
                     terminal: String::new(),
+                    attach: String::new(),
+                    server_log: None,
                     pty_eof: false,
                     terminal_complete: false,
                     terminal_interrupted: false,
@@ -4644,6 +4701,448 @@ mod tests {
             )["error"]["code"],
             -32010
         );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn attach_handlers_wait_start_refuse_and_detach_a_client() {
+        use goblins_protocol::init::{self, Command, Event};
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let (control, init_peer) = init::pair().unwrap();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.init = Some(control);
+        // As serve leaves it: the agent's own terminal has no frontend.
+        a.terminal.detached = true;
+        a.variables.insert("session_id".into(), "seeded".into());
+        let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        a.handlers = Some(crate::config::Handlers {
+            on_attach: crate::config::OnAttach {
+                command: template(&["client", "{session_id}"]),
+                timeout: 30,
+                wait_for: vec![],
+            },
+            on_detach: Some(template(&["stop", "{attach.pid}"])),
+        });
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            d.attach_tick(&mut a);
+            d.sessions.insert("a".into(), a);
+        };
+        let hello = |rows: u16| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                        "params":{"version":1,"rows":rows,"cols":80}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
+        };
+        let mut buffer = vec![0; init::MAX_MESSAGE];
+        let mut command = |fds: usize| {
+            let (n, received) = init::receive(init_peer.as_raw_fd(), &mut buffer, 0).unwrap();
+            assert_eq!(received.len(), fds);
+            serde_json::from_slice::<Command>(&buffer[..n]).unwrap()
+        };
+        // A seeded value is not ready: the frontend hears it waits.
+        let mut frontend = hello(30);
+        step(&mut d);
+        step(&mut d);
+        let notice = rpc::read(&mut frontend).unwrap();
+        assert_eq!(notice["method"], "attach.waiting");
+        assert_eq!(notice["params"]["missing"], json!(["session_id"]));
+        assert!(!d.sessions["a"].record.terminal_attached);
+        // Set during this run: the client starts on a PTY of its own.
+        d.sandbox_control(
+            "a",
+            "sessions.set-variables",
+            json!({"variables":{"session_id":"c819"}}),
+        )
+        .unwrap();
+        step(&mut d);
+        let Command::Spawn {
+            id, argv, env, tty, ..
+        } = command(1)
+        else {
+            panic!("expected the client's spawn");
+        };
+        assert_eq!(argv, Some(template(&["client", "c819"])));
+        assert!(tty && env.contains(&("GOBLIN_VAR_SESSION_ID".into(), "c819".into())));
+        assert!(d.attach_event("a", &Event::Spawned { id, pid: 42 }));
+        step(&mut d);
+        let reply = rpc::read(&mut frontend).unwrap();
+        assert_eq!(reply["result"]["attached"], true);
+        assert!(d.sessions["a"].record.terminal_attached);
+        assert!(d.sessions["a"].attach.since().is_some());
+        // One attachment: a second frontend is refused and changes nothing.
+        let mut second = hello(10);
+        step(&mut d);
+        step(&mut d);
+        let refused = rpc::read(&mut second).unwrap();
+        assert_eq!(refused["error"]["message"], "terminal is already attached");
+        // Detach runs onDetach with the client's PID, then cancels the
+        // client's whole subtree; it is detached once the client exited.
+        d.detach("a").unwrap();
+        let Command::Spawn {
+            id: on_detach,
+            argv,
+            tty,
+            ..
+        } = command(3)
+        else {
+            panic!("expected onDetach's spawn");
+        };
+        assert_eq!((argv, tty), (Some(template(&["stop", "42"])), false));
+        step(&mut d);
+        assert!(!d.sessions["a"].record.terminal_detached);
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id: on_detach,
+                code: Some(0),
+                signal: None
+            }
+        ));
+        step(&mut d);
+        assert_eq!(
+            command(0),
+            Command::Cancel {
+                id,
+                everything: true
+            }
+        );
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id,
+                code: None,
+                signal: Some(1)
+            }
+        ));
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        assert!(!d.sessions["a"].record.terminal_attached);
+        // The frontend closing frees the slot for the next attachment.
+        drop(frontend);
+        step(&mut d);
+        let mut next = hello(20);
+        step(&mut d);
+        step(&mut d);
+        let Command::Spawn { id, .. } = command(1) else {
+            panic!("expected a new client");
+        };
+        // A client that exits detaches without onDetach; its leftovers go.
+        assert!(d.attach_event("a", &Event::Spawned { id, pid: 43 }));
+        step(&mut d);
+        assert_eq!(rpc::read(&mut next).unwrap()["result"]["attached"], true);
+        // Its record stays while the client may still deliver output.
+        assert!(!d.sessions["a"].can_evict());
+        // A settled attachment publishes nothing on unchanged ticks.
+        d.tick().unwrap();
+        let sequence = d.sequence;
+        d.tick().unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sequence, sequence);
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id,
+                code: Some(0),
+                signal: None
+            }
+        ));
+        assert_eq!(
+            command(0),
+            Command::Cancel {
+                id,
+                everything: true
+            }
+        );
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        drop(next);
+        step(&mut d);
+        assert!(d.sessions["a"].can_evict());
+        // A client exiting while onDetach runs takes onDetach with it.
+        let mut third = hello(20);
+        step(&mut d);
+        let Command::Spawn { id, .. } = command(1) else {
+            panic!("expected a new client");
+        };
+        assert!(d.attach_event("a", &Event::Spawned { id, pid: 44 }));
+        step(&mut d);
+        assert_eq!(rpc::read(&mut third).unwrap()["result"]["attached"], true);
+        d.detach("a").unwrap();
+        let Command::Spawn { id: on_detach, .. } = command(3) else {
+            panic!("expected onDetach's spawn");
+        };
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id,
+                code: Some(0),
+                signal: None
+            }
+        ));
+        for id in [on_detach, id] {
+            assert_eq!(
+                command(0),
+                Command::Cancel {
+                    id,
+                    everything: true
+                }
+            );
+        }
+        drop(third);
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        // Init going away fails a starting attachment and frees the slot.
+        let mut fourth = hello(20);
+        step(&mut d);
+        let Command::Spawn { .. } = command(1) else {
+            panic!("expected a new client");
+        };
+        d.attach_lost("a");
+        let refused = rpc::read(&mut fourth).unwrap();
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("init")
+        );
+        let _fifth = hello(20);
+        step(&mut d);
+        let Command::Spawn { .. } = command(1) else {
+            panic!("expected the slot to be free");
+        };
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_server_goblin_refuses_older_frontends_and_can_be_evicted() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let directory = d.sessions["a"].directory.clone();
+        // As an attached launch creates it: not detached, answering nothing
+        // until the goblin started.
+        let a = d.sessions.get_mut("a").unwrap();
+        a.terminal.detached = false;
+        a.terminal.hold();
+        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        a.terminal.tick().unwrap();
+        assert!(!unix::readable(old.as_raw_fd(), 50).unwrap());
+        let (output, _input) = unix::pipe().unwrap();
+        a.serve(
+            output,
+            crate::config::Handlers {
+                on_attach: crate::config::OnAttach {
+                    command: vec!["client".into()],
+                    timeout: 30,
+                    wait_for: vec![],
+                },
+                on_detach: None,
+            },
+        )
+        .unwrap();
+        a.terminal.tick().unwrap();
+        let refused = rpc::read(&mut old).unwrap();
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("upgrade Goblins")
+        );
+        // Stopped, it can be evicted although it was launched attached.
+        a.worker = None;
+        assert!(a.can_evict());
+        // A frontend attaching after it stopped is told where to look.
+        a.record.state = "stopped".into();
+        a.record.detail = Some("the adapter stopped".into());
+        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut a = d.sessions.remove("a").unwrap();
+        d.attach_tick(&mut a);
+        let refused = rpc::read(&mut frontend).unwrap();
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert_eq!(
+            message,
+            format!(
+                "the adapter stopped; its server log is {}",
+                directory.join("server.log").display()
+            )
+        );
+        d.sessions.insert("a".into(), a);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_single_terminal_goblin_attaches_through_either_socket() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let directory = d.sessions["a"].directory.clone();
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            let _ = a.terminal.tick();
+            d.attach_tick(&mut a);
+            let _ = a.terminal.tick();
+            d.sessions.insert("a".into(), a);
+        };
+        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        step(&mut d);
+        assert_eq!(
+            rpc::read(&mut frontend).unwrap()["result"]["attached"],
+            true
+        );
+        assert!(d.sessions["a"].record.terminal_attached);
+        // terminal.sock keeps today's protocol: refused while attached.
+        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        step(&mut d);
+        assert_eq!(
+            rpc::read(&mut old).unwrap()["error"]["message"],
+            "terminal is already attached"
+        );
+        // A hello that is not one is refused.
+        let mut wrong = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        wrong
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":2,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        step(&mut d);
+        assert_eq!(
+            rpc::read(&mut wrong).unwrap()["error"]["message"],
+            "unsupported attach.hello version"
+        );
+        // A goblin with attach handlers refuses terminal.sock outright.
+        drop(frontend);
+        step(&mut d);
+        d.sessions.get_mut("a").unwrap().terminal.refuse("upgrade");
+        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        step(&mut d);
+        assert_eq!(rpc::read(&mut old).unwrap()["error"]["message"], "upgrade");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_attach_fails_when_its_variables_are_not_set_in_time() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        d.sessions.get_mut("a").unwrap().handlers = Some(crate::config::Handlers {
+            on_attach: crate::config::OnAttach {
+                command: vec!["client".into(), "{session_id}".into()],
+                timeout: 1,
+                wait_for: vec!["ready".into()],
+            },
+            on_detach: None,
+        });
+        let mut frontend =
+            UnixStream::connect(d.sessions["a"].directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            d.attach_tick(&mut a);
+            d.sessions.insert("a".into(), a);
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let reply = loop {
+            step(&mut d);
+            assert!(std::time::Instant::now() < deadline);
+            if !unix::readable(frontend.as_raw_fd(), 50).unwrap() {
+                continue;
+            }
+            let frame = rpc::read(&mut frontend).unwrap();
+            if frame["method"] != "attach.waiting" {
+                break frame;
+            }
+            assert_eq!(frame["params"]["missing"], json!(["ready", "session_id"]));
+        };
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("ready, session_id") && message.contains("restart the goblin"));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn only_variables_set_in_this_run_are_fresh() {
+        let fresh = |d: &Controller, id: &str| {
+            let a = &d.sessions[id];
+            (
+                a.fresh.iter().cloned().collect::<Vec<_>>(),
+                a.variables.clone(),
+            )
+        };
+        let set = |d: &mut Controller, id: &str, variables: Value| {
+            d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
+                .unwrap()["recorded"]
+                .clone()
+        };
+        let seeded = BTreeMap::from([("session_id".to_string(), "old".to_string())]);
+        // With history: a recreated goblin starts with its record's values.
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a");
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record.variables = seeded.clone();
+            record
+        });
+        d.sessions.get_mut("a").unwrap().variables = seeded.clone();
+        assert_eq!(fresh(&d, "a"), (vec![], seeded.clone()));
+        assert_eq!(set(&mut d, "a", json!({"session_name":"Plan it"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_name"]);
+        assert_eq!(set(&mut d, "a", json!({"session_id":"old"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_id", "session_name"]);
+        assert_eq!(
+            d.history.as_ref().unwrap().records["a"].variables["session_id"],
+            "old"
+        );
+        // Clearing a name removes its value and its freshness together.
+        assert_eq!(set(&mut d, "a", json!({"session_name":""})), true);
+        assert_eq!(
+            fresh(&d, "a"),
+            (vec!["session_id".to_string()], seeded.clone())
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        // Without history, setting makes names fresh all the same.
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "b");
+        d.sessions.get_mut("b").unwrap().variables = seeded.clone();
+        assert_eq!(set(&mut d, "b", json!({"session_id":"new"})), false);
+        assert_eq!(fresh(&d, "b").0, ["session_id"]);
+        assert_eq!(d.sessions["b"].variables["session_id"], "new");
+        assert_eq!(set(&mut d, "b", json!({"session_id":""})), false);
+        assert_eq!(fresh(&d, "b"), (vec![], BTreeMap::new()));
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

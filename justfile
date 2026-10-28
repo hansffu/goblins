@@ -9,8 +9,32 @@ emacs *args:
     setup="(progn
       (add-to-list 'load-path \"{{justfile_directory()}}/emacs\")
       (setq goblins-executable \"$goblins/bin/goblins\")
+      (let ((state (getenv \"GOBLINS_STATE_DIR\")))
+        (when state (setq goblins-state-directory state)))
       (require 'goblins-workspace))"
     exec nix develop -c emacs --eval "$setup" "$@"
+
+# Emacs exiting stops that server and removes its state directory.
+# `just emacs` with its own server beside yours, in a random GOBLINS_STATE_DIR
+[positional-arguments]
+emacs-daemon *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/goblins-dev.XXXXXX")
+    export GOBLINS_STATE_DIR=$base/state
+    goblins=$(nix build --no-link --print-out-paths .#dev-goblins)/bin/goblins
+    # Keep the directory when the server did not stop: it is how to reach it.
+    cleanup() {
+      if "$goblins" --state-dir "$GOBLINS_STATE_DIR" server stop >/dev/null; then
+        rm -rf "$base"
+      else
+        echo "Kept $GOBLINS_STATE_DIR; stop it with: $goblins --state-dir $GOBLINS_STATE_DIR server stop" >&2
+        exit 1
+      fi
+    }
+    trap cleanup EXIT
+    echo "Goblins state directory: $GOBLINS_STATE_DIR (goblins --state-dir \"\$GOBLINS_STATE_DIR\" …)"
+    {{just_executable()}} --justfile {{justfile()}} emacs "$@"
 
 # Enter `nix develop` once, then run these commands directly.
 # Rust/Python/Emacs suites are serial; Python defaults to two workers (-j 4 opts in).

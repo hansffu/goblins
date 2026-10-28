@@ -53,11 +53,7 @@ pub fn run(state: PathBuf, start: Start, detatched: bool) -> Result<i32> {
         return Ok(0);
     }
     let session = launch["session"].as_str().ok_or("missing session ID")?;
-    relay(
-        control,
-        session,
-        launch["terminal"].as_str().ok_or("missing terminal path")?,
-    )
+    relay(control, session, &launch)
 }
 
 /// `goblins resume`: recreate a recorded goblin from the current manifest,
@@ -125,11 +121,7 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
     if let Some(detail) = record["detail"].as_str() {
         eprintln!("{}", goblins_protocol::plain_text(detail));
     }
-    relay(
-        control,
-        session,
-        record["terminal"].as_str().ok_or("missing terminal path")?,
-    )
+    relay(control, session, &record)
 }
 
 pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Result<i32> {
@@ -151,26 +143,53 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
     let session = record["id"].as_str().ok_or("missing session ID")?;
     // Apply the Ghostel window's actual dimensions once the PTY is ready.
     RESIZE.store(true, Ordering::Relaxed);
-    relay(
-        control,
-        session,
-        record["terminal"].as_str().ok_or("missing terminal path")?,
-    )
+    relay(control, session, &record)
 }
 
-fn relay(mut control: Client, session: &str, path: &str) -> Result<i32> {
-    use std::os::unix::net::UnixStream;
-    let mut terminal = UnixStream::connect(path)?;
-    // rpc::read allows an unlimited idle wait for permission replies. Bound
-    // this handshake's first byte separately; subsequent bytes are timed.
-    if !unix::readable(
-        terminal.as_raw_fd(),
-        goblins_protocol::rpc::TIMEOUT.as_millis() as i32,
-    )? {
-        return Err("terminal attachment timed out".into());
-    }
-    let hello = goblins_protocol::rpc::read(&mut terminal)?;
-    goblins_protocol::rpc::validate_response(&hello, &json!(0))?;
+/// Attach to the goblin whose launch or record is `record`. A daemon with
+/// attach handlers takes a hello with this terminal's size on `attach.sock`;
+/// an older one attaches `terminal.sock` at once.
+fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Result<i32> {
+    use goblins_protocol::rpc;
+    use std::{io::Write, os::unix::net::UnixStream};
+    let attach = record["attach"]
+        .as_str()
+        .filter(|_| control.features.iter().any(|f| f == "attach-handlers"));
+    let mut terminal = match attach {
+        Some(path) => {
+            let mut terminal = UnixStream::connect(path)?;
+            let d = size(0)?;
+            terminal.write_all(&rpc::encode(
+                &json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":1,"rows":d.ws_row.max(1),"cols":d.ws_col.max(1)}}),
+            )?)?;
+            terminal
+        }
+        None => UnixStream::connect(record["terminal"].as_str().ok_or("missing terminal path")?)?,
+    };
+    let mut starting = false;
+    let hello = loop {
+        // rpc::read allows an unlimited idle wait for permission replies.
+        // Bound each handshake frame's first byte separately; a waiting
+        // notification extends the deadline to the next one.
+        if !unix::readable(terminal.as_raw_fd(), rpc::TIMEOUT.as_millis() as i32)? {
+            return Err("terminal attachment timed out".into());
+        }
+        let frame = rpc::read(&mut terminal)?;
+        if frame["method"] != "attach.waiting" {
+            break frame;
+        }
+        // Shown once the goblin itself runs and its client waits.
+        if !starting
+            && frame["params"]["missing"]
+                .as_array()
+                .is_some_and(|m| !m.is_empty())
+        {
+            eprintln!("Starting…");
+            starting = true;
+        }
+    };
+    rpc::validate_response(&hello, &json!(0))?;
     if let Some(error) = hello.get("error") {
         return Err(error["message"]
             .as_str()

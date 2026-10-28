@@ -4,14 +4,9 @@ let
     inherit pkgs;
     package = "goblins-client";
   };
-  adapter = import ./rust.nix {
-    inherit pkgs;
-    package = "goblins-codex";
-  };
 in
 pkgs.runCommand "goblins-request-client" { nativeBuildInputs = [ pkgs.installShellFiles ]; } ''
   mkdir -p $out/bin
-  ln -s ${adapter}/bin/goblins-codex $out/bin/goblins-codex
   # `goblin`, not the host's `goblins`: a dev shell that ships the host CLI
   # cannot shadow it inside a sandbox.
   ln -s ${client}/bin/goblins-client $out/bin/goblin

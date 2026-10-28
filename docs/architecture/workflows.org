@@ -329,6 +329,8 @@ sequenceDiagram
 
 Resize/control RPC uses a control connection while the attachment carries the terminal stream. Host attachment uses the private =terminal.sock= path; goblins never attach to each other's terminals. Terminal detachment and closing approval frontends do not cancel the session. See [[file:../../crates/controller/src/attachment.rs][attachment.rs]] and [[file:../../crates/controller/src/terminal.rs][terminal.rs]].
 
+A daemon with the =attach-handlers= feature takes attachments on =attach.sock= instead: the frontend first sends =attach.hello= with its version and size, and the daemon answers with =attach.waiting= notifications until it can attach. For a goblin without =onAttach= that is the flow above. For a goblin with =onAttach=, whose agent runs without a terminal, the controller waits until the variables the client needs were set during this run, starts the client as a =goblins-init= exec on a new PTY of the hello's size, and relays that PTY instead of the payload's. Detaching runs =onDetach=, then cancels everything the client's keeper holds; the goblin is detached once init reports the client exited. The client exiting by itself detaches without =onDetach=, and what it left behind is cancelled. See [[file:../../crates/controller/src/controller/attach.rs][controller/attach.rs]].
+
 * Stop a goblin and release resources
 
 #+begin_src mermaid :file diagrams/workflows-stop-a-goblin-and-release-resources.svg :background-color "'#282c34'"

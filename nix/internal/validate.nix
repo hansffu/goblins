@@ -39,6 +39,13 @@ let
     element:
     builtins.isString element
     && builtins.match "([^{}]|\\{\\{|}}|\\{[a-z][a-z0-9_]{0,31}})*" element != null;
+  # Attach handlers also accept {attach.pid}.
+  handlerElement =
+    element:
+    builtins.isString element
+    && builtins.match "([^{}]|\\{\\{|}}|\\{([a-z][a-z0-9_]{0,31}|attach\\.pid)})*" element != null;
+  handler = command: builtins.isList command && command != [ ] && builtins.all handlerElement command;
+  variableName = name: builtins.isString name && builtins.match "[a-z][a-z0-9_]{0,31}" name != null;
   defaultKeys = [
     "allowedPackages"
     "env"
@@ -77,6 +84,8 @@ in
         roFiles
         args
         resumeCommand
+        onAttach
+        onDetach
         injectedFiles
         devShellInjectedFiles
         env
@@ -169,6 +178,31 @@ in
       )
     then
       fail "resumeCommand must be null or a list of strings whose placeholders are {key} (key: a lowercase letter, then up to 31 lowercase letters, digits or _), with {{ and }} for literal braces"
+    else if
+      !(
+        onAttach == null
+        || builtins.isAttrs onAttach
+          && builtins.all (name: builtins.elem name [
+            "command"
+            "timeout"
+            "waitFor"
+          ]) (builtins.attrNames onAttach)
+          && handler (onAttach.command or null)
+          && (
+            let
+              timeout = onAttach.timeout or 30;
+            in
+            builtins.isInt timeout && timeout >= 1 && timeout <= 3600
+          )
+          && builtins.isList (onAttach.waitFor or [ ])
+          && builtins.all variableName (onAttach.waitFor or [ ])
+      )
+    then
+      fail "onAttach must be null or { command; timeout ? 30; waitFor ? [ ]; }: command a non-empty list of strings whose placeholders are {key} or {attach.pid}, timeout 1 to 3600 seconds, waitFor variable names"
+    else if !(onDetach == null || handler onDetach) then
+      fail "onDetach must be null or a non-empty list of strings whose placeholders are {key} or {attach.pid}"
+    else if onDetach != null && onAttach == null then
+      fail "onDetach requires onAttach"
     else if !etcFiles injectedFiles || !etcFiles devShellInjectedFiles then
       fail "injectedFiles and devShellInjectedFiles must map relative /etc file names to text or file derivations"
     else if

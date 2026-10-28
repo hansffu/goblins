@@ -35,6 +35,16 @@ let
       # recorded (`goblin variable set`), {{ and }} are literal braces. Each
       # element stays one argument. Null: a recreated goblin starts afresh.
       resumeCommand ? null,
+      # { command, timeout ? 30, waitFor ? [ ] }: run the main command without
+      # a terminal for the goblin's whole life, and start `command` on a new
+      # terminal at each attach, once every {key} in it and every waitFor name
+      # was set during this run (`goblin variable set`), waiting up to timeout
+      # seconds. Placeholders work as in resumeCommand.
+      onAttach ? null,
+      # The argument list run when a detach is requested, before the attached
+      # client is stopped; {attach.pid} is that client's process ID. Null:
+      # hang up the client.
+      onDetach ? null,
       env ? { },
       allowNix ? false,
       allowUnixSockets ? true,
@@ -120,6 +130,8 @@ let
         inherit
           args
           resumeCommand
+          onAttach
+          onDetach
           description
           integration
           injectedFiles
@@ -149,6 +161,16 @@ let
         allowed_scopes = allowedScopes;
         allowed_run_targets = allowedRunTargets;
         resume_command = resumeCommand;
+        on_attach =
+          if onAttach == null then
+            null
+          else
+            {
+              inherit (onAttach) command;
+              timeout = onAttach.timeout or 30;
+              wait_for = onAttach.waitFor or [ ];
+            };
+        on_detach = onDetach;
         scope_storage = scopeStorage;
         env = effectiveEnv;
         client_package = client;

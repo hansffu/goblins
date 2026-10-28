@@ -21,6 +21,11 @@ pub struct Configuration {
     /// `{key}` placeholders for its recorded variables.
     #[serde(default)]
     pub resume_command: Option<Vec<String>>,
+    /// Run the agent without a terminal and start this client at each attach.
+    #[serde(default)]
+    pub on_attach: Option<OnAttach>,
+    #[serde(default)]
+    pub on_detach: Option<Vec<String>>,
     pub env: BTreeMap<String, String>,
     pub client_package: PathBuf,
     pub helper: PathBuf,
@@ -238,6 +243,16 @@ impl Manifest {
             }
         }
         for (name, config) in &self.goblins {
+            for config in std::iter::once(config).chain(config.scopes.values()) {
+                match &config.on_attach {
+                    Some(on_attach) => Handlers::check(on_attach, config.on_detach.as_ref())
+                        .map_err(|e| format!("{e} for '{name}'"))?,
+                    None if config.on_detach.is_some() => {
+                        return Err(format!("onDetach without onAttach for '{name}'").into());
+                    }
+                    None => (),
+                }
+            }
             let targets = &config.allowed_run_targets;
             if targets.len() > MAX_RUN_TARGETS
                 || !targets.iter().all(|c| goblins_protocol::identifier(c))
@@ -334,6 +349,52 @@ impl Manifest {
         Ok(variant)
     }
 }
+/// mkGoblin's `onAttach`: the client started on a new terminal at each attach.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnAttach {
+    pub command: Vec<String>,
+    /// Seconds an attach waits for the variables the client needs.
+    pub timeout: u64,
+    /// Variables to wait for beyond the command's own placeholders.
+    #[serde(default)]
+    pub wait_for: Vec<String>,
+}
+impl OnAttach {
+    /// Every variable an attach waits for.
+    pub fn needs(&self) -> Vec<String> {
+        let mut names = placeholders(&self.command);
+        names.extend(self.wait_for.iter().cloned());
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+/// The attach handlers of a goblin that has `onAttach`.
+#[derive(Clone, Debug)]
+pub struct Handlers {
+    pub on_attach: OnAttach,
+    pub on_detach: Option<Vec<String>>,
+}
+impl Handlers {
+    fn check(on_attach: &OnAttach, on_detach: Option<&Vec<String>>) -> Result<()> {
+        let template = |command: &Vec<String>| {
+            !command.is_empty() && substitute(command, true, |key| Ok(key.to_string())).is_ok()
+        };
+        if !template(&on_attach.command)
+            || !(1..=3600).contains(&on_attach.timeout)
+            || !on_attach
+                .wait_for
+                .iter()
+                .all(|name| goblins_protocol::variable_key(name))
+            || on_detach.is_some_and(|command| !template(command))
+        {
+            return Err("invalid onAttach or onDetach".into());
+        }
+        Ok(())
+    }
+}
+
 /// Trusted launch configuration, never accepted over the sandbox socket.
 #[derive(Clone, Deserialize)]
 pub struct Launch {
@@ -358,6 +419,10 @@ pub struct Launch {
     /// Replaces `shell_args` on recreate when every placeholder has a value.
     #[serde(default)]
     pub resume_command: Option<Vec<String>>,
+    /// Present when the agent runs without a terminal and each attach
+    /// starts a client.
+    #[serde(skip)]
+    pub handlers: Option<Handlers>,
     pub posix_shell: PathBuf,
     pub helper: PathBuf,
     pub bwrap: PathBuf,
@@ -462,6 +527,10 @@ impl Configuration {
             shell: string("sandboxed_binary")?.into(),
             shell_args: self.args.clone(),
             resume_command: self.resume_command.clone(),
+            handlers: self.on_attach.clone().map(|on_attach| Handlers {
+                on_attach,
+                on_detach: self.on_detach.clone(),
+            }),
             posix_shell: string("shell")?.into(),
             helper: self.helper.clone(),
             bwrap: spec["dependencies"]["bwrap"]
@@ -507,6 +576,48 @@ pub fn resume_arguments(
     template: &[String],
     variables: &BTreeMap<String, String>,
 ) -> std::result::Result<Vec<String>, String> {
+    substitute(template, false, |key| value(variables, key))
+}
+/// An attach handler filled like `resume_arguments`; `{attach.pid}` is the
+/// attached client's process ID.
+pub fn handler_arguments(
+    template: &[String],
+    variables: &BTreeMap<String, String>,
+    pid: Option<i32>,
+) -> std::result::Result<Vec<String>, String> {
+    substitute(template, true, |key| match key {
+        "attach.pid" => pid
+            .map(|pid| pid.to_string())
+            .ok_or_else(|| "no attached client".to_string()),
+        key => value(variables, key),
+    })
+}
+/// The variable names a template's placeholders use.
+pub fn placeholders(template: &[String]) -> Vec<String> {
+    let mut names = vec![];
+    let _ = substitute(template, true, |key| {
+        if goblins_protocol::variable_key(key) {
+            names.push(key.to_string());
+        }
+        Ok(String::new())
+    });
+    names
+}
+fn value(variables: &BTreeMap<String, String>, key: &str) -> std::result::Result<String, String> {
+    let value = variables
+        .get(key)
+        .ok_or_else(|| format!("variable '{key}' is not recorded"))?;
+    // An option-like value could change what the agent does.
+    if value.starts_with('-') {
+        return Err(format!("variable '{key}' starts with '-'"));
+    }
+    Ok(value.clone())
+}
+fn substitute(
+    template: &[String],
+    attach: bool,
+    mut value: impl FnMut(&str) -> std::result::Result<String, String>,
+) -> std::result::Result<Vec<String>, String> {
     template
         .iter()
         .map(|element| {
@@ -532,24 +643,18 @@ pub fn resume_arguments(
                             }
                             key.push(c);
                         }
-                        if !closed || !goblins_protocol::variable_key(&key) {
+                        if !closed
+                            || !(goblins_protocol::variable_key(&key)
+                                || attach && key == "attach.pid")
+                        {
                             return Err(format!(
-                                "resume command element '{element}' has an invalid placeholder"
+                                "command element '{element}' has an invalid placeholder"
                             ));
                         }
-                        let value = variables
-                            .get(&key)
-                            .ok_or_else(|| format!("variable '{key}' is not recorded"))?;
-                        // An option-like value could change what the agent does.
-                        if value.starts_with('-') {
-                            return Err(format!("variable '{key}' starts with '-'"));
-                        }
-                        argument.push_str(value);
+                        argument.push_str(&value(&key)?);
                     }
                     '}' => {
-                        return Err(format!(
-                            "resume command element '{element}' has an unmatched '}}'"
-                        ));
+                        return Err(format!("command element '{element}' has an unmatched '}}'"));
                     }
                     c => argument.push(c),
                 }
@@ -792,5 +897,44 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+    #[test]
+    fn attach_handlers_fill_variables_and_the_client_pid() {
+        let variables = BTreeMap::from([("session_id".to_string(), "c819".to_string())]);
+        let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let command = template(&["resume", "{session_id}", "--pid={attach.pid}", "{{x}}"]);
+        assert_eq!(
+            handler_arguments(&command, &variables, Some(42)),
+            Ok(template(&["resume", "c819", "--pid=42", "{x}"]))
+        );
+        assert!(handler_arguments(&command, &variables, None).is_err());
+        assert!(resume_arguments(&template(&["{attach.pid}"]), &variables).is_err());
+        let on_attach = OnAttach {
+            command: template(&["{session_id}", "{attach.pid}", "{session_id}"]),
+            timeout: 30,
+            wait_for: template(&["ready", "session_id"]),
+        };
+        assert_eq!(on_attach.needs(), ["ready", "session_id"]);
+        assert!(Handlers::check(&on_attach, None).is_ok());
+        for (command, timeout, wait_for) in [
+            (template(&[]), 30, vec![]),
+            (template(&["{attach.other}"]), 30, vec![]),
+            (template(&["{Bad}"]), 30, vec![]),
+            (template(&["x"]), 0, vec![]),
+            (template(&["x"]), 30, template(&["attach.pid"])),
+        ] {
+            let on_attach = OnAttach {
+                command,
+                timeout,
+                wait_for,
+            };
+            assert!(Handlers::check(&on_attach, None).is_err());
+        }
+        let on_attach = OnAttach {
+            command: template(&["x"]),
+            timeout: 30,
+            wait_for: vec![],
+        };
+        assert!(Handlers::check(&on_attach, Some(&template(&["{attach.x}"]))).is_err());
     }
 }

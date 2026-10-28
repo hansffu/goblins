@@ -124,7 +124,7 @@ class Notices:
     def control(self, command):
         if self.check == "codex-goblins":
             __import__("subprocess").run([str(self.app), "--state-dir", str(self.d.state),
-                "exec", self.receiver, "--", "/run/goblins/bin/goblins-codex", command], check=True, capture_output=True)
+                "exec", self.receiver, "--", "goblins-codex", command], check=True, capture_output=True)
         else:
             self.d.rpc.call("integration." + command, {"session": self.receiver})
 

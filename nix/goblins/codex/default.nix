@@ -2,11 +2,15 @@
 { pkgs }:
 let
   inherit (pkgs) lib;
-  hooks = import ./hooks.nix { inherit pkgs; };
   skills = import ../skills.nix { inherit lib; };
   skillFile = name: "codex/skills/${name}/SKILL.md";
   skillFiles = lib.mapAttrs' (name: text: lib.nameValuePair (skillFile name) text);
   managedFiles = [ "codex/config.toml" ] ++ map skillFile (skills { }).managed;
+  # Only Codex goblins carry the adapter: it is part of their launcher.
+  adapter = import ../../packages/rust.nix {
+    inherit pkgs;
+    package = "goblins-codex";
+  };
   runtimeDirectory =
     path:
     assert lib.assertMsg (builtins.isString path)
@@ -29,11 +33,8 @@ let
       lib.escapeShellArg path;
 in
 {
-  packages = [
-    pkgs.fish
-    hooks.package
-  ];
-  mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory; };
+  packages = [ pkgs.fish ];
+  mkLauncher = import ./launcher.nix { inherit pkgs runtimeDirectory adapter; };
   mkInjectedFiles =
     {
       settings,
@@ -41,9 +42,7 @@ in
       host,
     }:
     {
-      "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" (
-        settings // { hooks = hooks.mkHooks (settings.hooks or { }); }
-      );
+      "codex/config.toml" = (pkgs.formats.toml { }).generate "goblins-codex.toml" settings;
     }
     // skillFiles (skills { inherit nix host; }).always;
   devShellInjectedFiles = nix: skillFiles (skills { inherit nix; }).devShell;
@@ -65,8 +64,8 @@ in
       devShellInjectedFiles,
     }:
     assert lib.assertMsg (
-      !(pkg ? version) || lib.versionAtLeast pkg.version "0.162.1"
-    ) "mkCodexGoblin: Codex 0.162.1 or later is required for the App Server adapter";
+      !(pkg ? version) || lib.versionAtLeast pkg.version "0.163.0"
+    ) "mkCodexGoblin: Codex 0.163.0 or later is required for the App Server adapter";
     assert lib.assertMsg (
       !(env ? CODEX_HOME)
     ) "mkCodexGoblin: use codexConfigDir instead of env.CODEX_HOME";

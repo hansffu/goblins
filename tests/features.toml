@@ -39,9 +39,9 @@ paths = ["crates/controller/src/server.rs", "crates/controller/src/cleanup.rs", 
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
-python = ["test_exec", "test_attachment", "test_connected"]
+python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected"]
 checks = ["rust"]
-paths = ["crates/controller/src/exec.rs", "crates/controller/src/controller/exec.rs", "crates/controller/src/attachment.rs"]
+paths = ["crates/controller/src/exec.rs", "crates/controller/src/controller/exec.rs", "crates/controller/src/attachment.rs", "crates/controller/src/controller/attach.rs"]
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"
@@ -75,13 +75,13 @@ paths = ["crates/controller/src/mailbox*", "crates/controller/src/messaging.rs",
 
 [features.history]
 description = "Persistence, recreation and CLI/native/Emacs resume"
-python = ["test_history", "test_recreate", "test_codex_native.NativeProtocol.test_remote_resume_reports_the_conversation_through_rename_and_switch", "test_codex_native.NativeProtocol.test_resume_picker_connects_while_the_foreground_stays_open", "test_codex_native.NativeProtocol.test_loaded_resume_repairs_and_verifies_effective_permissions", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
+python = ["test_history", "test_recreate", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_recreate_loads_the_recorded_thread_with_the_goblins_policy", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
 checks = ["rust"]
 paths = ["crates/controller/src/history.rs", "crates/controller/src/records.rs"]
 
 [features.codex]
 description = "Codex configuration, native adapter and operation notices"
-python = ["test_codex_native", "test_codex_proxy", "test_codex_config", "test_operation_notices.CodexNotices"]
+python = ["test_codex_native", "test_codex_config", "test_operation_notices.CodexNotices"]
 checks = ["rust"]
 paths = ["crates/codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix"]
 env = { GOBLINS_TEST_CODEX = "1" }
