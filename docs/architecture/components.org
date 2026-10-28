@@ -62,13 +62,14 @@ Both host and sandbox expose a command named =goblins=, but they execute differe
 | Nix builders          | Compose scopes, sandbox settings, agent presets and host package    | [[file:../../nix/builders/][nix/builders/]]          |
 | Host wrapper          | Select store manifest with =--runtime= and execute controller binary  | [[file:../../nix/packages/goblins.nix][goblins.nix]]            |
 | =goblins-controller=    | Daemon library, host CLI, TUI, terminal and exec frontends          | [[file:../../crates/controller/src/][crates/controller/src/]] |
-| =goblins-client=        | Sandbox CLI, init, editor client, hooks and notification monitor    | [[file:../../crates/client/src/][crates/client/src/]]     |
+| =goblins-client=        | Sandbox CLI, init and editor client                                 | [[file:../../crates/client/src/][crates/client/src/]]     |
 | Sandbox aliases       | Install =goblins=, =goblins-request=, =goblins-init= and =goblins-editor=   | [[file:../../nix/packages/internal-goblins.nix][internal-goblins.nix]]   |
 | =goblins-protocol=      | Framing, typed requests, mailbox operations, init/terminal protocol | [[file:../../crates/protocol/src/][crates/protocol/src/]]   |
 | =goblins-mount-helper=  | Namespace setup and live mount operations                           | [[file:../../src/main.rs][src/main.rs]]            |
 | Emacs frontend        | Status/approval buffer, terminal integration and TRAMP access       | [[file:../../emacs/][emacs/]]                 |
 | Agent launchers/hooks | Sandbox-only Codex and Claude configuration and integration         | [[file:../../nix/goblins/][nix/goblins/]]           |
 | =goblins-codex=         | Codex adapter: owns the goblin's conversation, follows the attached terminal, delivers reminders | [[file:../../crates/codex/src/][crates/codex/src/]]      |
+| =goblins-claude=        | Claude adapter: wakeup ledger for its hooks and plugin monitor, activity reports | [[file:../../crates/claude/src/][crates/claude/src/]]     |
 
 A Codex goblin runs the App Server and =goblins-codex= as its main command, without a terminal; each attach starts Codex's own terminal as a client of that server ([[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]).
 
@@ -79,10 +80,10 @@ The protocol crate has no Nix, launch or approval authority. The sandbox client 
 | Channel                                 | Participants                         | Contents and authority                                                                                        |
 |-----------------------------------------+--------------------------------------+---------------------------------------------------------------------------------------------------------------|
 | =STATE/host.sock=                         | Host CLI, TUI, Emacs to controller   | JSON-RPC launch, inspect, decide, subscribe, stop, exec and messaging calls; host authority                   |
-| =/run/goblins/request.sock=               | Sandbox client to controller         | JSON-RPC requests associated with that session; permissions, raid members, inbox, raids and integration |
+| =/run/goblins/request.sock=               | Sandbox client to controller         | JSON-RPC requests associated with that session; permissions, raid members, inbox and raids |
 | Session =terminal.sock= / =sessions.attach= | Attachment client to terminal broker | Framed terminal input/output after attachment handshake; raw bytes are not approval RPC                       |
 | Worker channels                         | Controller to session worker         | Bounded Rust =sync_channel= commands and completions                                                            |
-| Messaging channels                      | Controller to messaging worker       | Calls, directory/raid/operation events, notification delivery reports and responses                           |
+| Messaging channels                      | Controller to messaging worker       | Calls, directory/raid/operation events, responses, and inbox-count and log-health reports                   |
 | Helper pipes                            | Session worker to mount helper       | Private bounded commands and acknowledgements; no public helper listener                                      |
 | Init control socket                     | Controller to sandbox =goblins-init=   | Private execution/control protocol and passed file descriptors                                                |
 | Docker socket                           | Attached members to scope engine     | Docker API for the shared engine                                                                              |
@@ -118,7 +119,7 @@ Scopes are trust groups. Shared PID namespaces expose processes to peers; manage
 |------------------------------------------------------------------------+-----------------------------------------------------------------------+-------------------------------------------------------------------------------------------|
 | Live sessions, decisions, subscriptions and raids                      | Controller memory                                                     | No restart restoration of live sessions or raids                                          |
 | Session resources, roots, profile and helper diagnostics               | Per-session resource directory under daemon state                     | Released with session cleanup; shared leases may retain resources longer                  |
-| Mailboxes, claim generations, operation receipts and integration state | Messaging worker memory                                               | Scoped to one daemon instance; journal is not a restart recovery database                 |
+| Mailboxes, claim generations and operation receipts                    | Messaging worker memory                                               | Scoped to one daemon instance; journal is not a restart recovery database                 |
 | Communications audit                                                   | =communications-INSTANCE.jsonl=                                         | Retained for online/offline inspection; append writes are not a per-event fsync guarantee |
 | Server output                                                          | =server.log=                                                            | Retained host diagnostics                                                                 |
 | Scope storage and Docker data                                          | Host-user cache, managed by scope leases                              | Persistent scopes retain data while idle; temporary scopes delete it after last member    |

@@ -155,19 +155,6 @@ fn execute(cli: Cli) -> Result<i32> {
                 ),
             }
         }
-        Command::Integration { command } => {
-            use cli::IntegrationCommand::*;
-            let (method, session) = match command {
-                Status { session } => ("integration.status", session),
-                Pause { session } => ("integration.pause", session),
-                Resume { session } => ("integration.resume", session),
-            };
-            let mut client = Client::connect(&state)?;
-            println!(
-                "{}",
-                client.call(method, serde_json::json!({"session":session}))?
-            );
-        }
         Command::CommunicationsLog {
             log,
             session,

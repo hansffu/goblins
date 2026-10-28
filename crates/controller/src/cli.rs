@@ -33,11 +33,6 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Inspect, pause or resume an agent's inbox notifications
-    Integration {
-        #[command(subcommand)]
-        command: IntegrationCommand,
-    },
     /// Group goblins from any branch so they can find and message each other
     Raid {
         #[command(subcommand)]
@@ -265,13 +260,6 @@ fn parse_age(text: &str) -> std::result::Result<u64, String> {
 }
 fn parse_date(text: &str) -> std::result::Result<u64, String> {
     goblins_controller::history::parse_date(text)
-}
-
-#[derive(Subcommand)]
-pub enum IntegrationCommand {
-    Status { session: String },
-    Pause { session: String },
-    Resume { session: String },
 }
 
 #[derive(Subcommand)]

@@ -6,8 +6,7 @@
 [[file:../adr/0001-daemon-inboxes-for-agent-communication.md][ADR 0001]] defines the architecture: daemon-owned inboxes with notify-then-fetch
 communication, native agent terminals, inherited authentication, and sandbox-only
 integration configuration. [[file:../adr/0009-sandbox-owned-codex-delivery.md][ADR 0009]] supersedes the Codex terminal
-wakeup driver with a sandbox-local App Server adapter, and [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]] makes Codex a server goblin whose terminal is a client of that server, without a relay. Claude's existing native
-notification monitor remains unchanged. Ownership, grants and teardown rules in
+wakeup driver with a sandbox-local App Server adapter, and [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]] makes Codex a server goblin whose terminal is a client of that server, without a relay. [[file:../adr/0017-claude-integration-in-goblin.md][ADR 0017]] moves Claude's wakeups and activity out of the daemon into =goblins-claude= inside the goblin; Claude's native notification monitor still delivers them. Ownership, grants and teardown rules in
 [[file:DAEMON.org][DAEMON.org]] continue to apply.
 
 * Native configuration and delivery driver
@@ -28,7 +27,7 @@ skills live under =/etc/claude-code=, while the selected Claude state directory
 is writable and shared with the Claude goblins a raid owner runs. Its default description is =Claude Code
 running in a Goblins sandbox=.
 
-The trusted =mkGoblin.integration= setting selects the delivery profile; the
+The trusted =mkGoblin.integration= setting marks a goblin as an agent; the
 supported values are ="codex"= and ="claude"=, with =null= for ordinary shells.
 The native package, mounted hooks and notifier are supplied by the matching
 builder. Goblins a raid owner runs use the daemon's current manifest, never an
@@ -53,10 +52,10 @@ including failed/interrupted turns. =thread/queue/start= handles an idle queued
 reminder when automatic scheduling has not started it. The agent uses the same
 Goblins messaging skill and CLI to fetch, reply and complete work.
 
-Claude still registers its driver before launch, exports the epoch to its hooks, and runs =goblins integration watch --delivery notification= in its native plugin monitor, which turns each notification into a turn without editing the composer. The monitor appends a wake marker naming the inbox head (or claim) to the fixed prompt, =[goblins-inbox-wake ID]=, so the Goblins mod can label the row; it never carries a body. While the monitor process runs, the Stop hook reports =active=, so the daemon settles =ready= and its notifier, not a Stop continuation, delivers and retries what is pending; without the monitor, Stop continues as before. Claude's daemon control and communications-log behavior is unchanged ([[file:../adr/0015-claude-code-mod.md][ADR 0015]]).
-Codex does not register, tick, or invoke the daemon terminal-delivery path.
-The trusted =integration="codex"= configuration marker remains solely for
-operation-notice eligibility.
+Claude's integration is =goblins-claude=, in the Claude goblin's packages ([[file:../adr/0017-claude-integration-in-goblin.md][ADR 0017]], [[file:CLAUDE-INTEGRATION-IN-GOBLIN.org][CLAUDE-INTEGRATION-IN-GOBLIN.org]]). The launcher runs =goblins-claude start= before Claude, which starts a fresh ledger in =/tmp/goblins-claude=; every managed hook runs =goblins-claude hook=, and the plugin monitor runs =goblins-claude watch=, which turns each wakeup into a notification line and so a turn, without editing the composer. Each line appends a wake marker naming the inbox head (or claim) to the fixed prompt, =[goblins-inbox-wake ID]=, so the Goblins mod can label the row ([[file:../adr/0015-claude-code-mod.md][ADR 0015]]); it never carries a body. While the monitor process runs, a Stop never continues and the ledger settles =ready=, so the monitor delivers and retries what is pending; without the monitor, Stop continues into the inbox. The wakeup rules are those the daemon's Claude driver had, without terminal input: at most three attempts per inbox head, 30 seconds apart, no wakeup while the turn works, while paused or while the audit log has failed.
+Neither Codex nor Claude uses a daemon integration method; the daemon has none since ADR 0017.
+The trusted =integration= configuration marker (=codex= or =claude=) remains only for
+operation-notice eligibility and for allowing =bypassPermissions=.
 
 * Inbox contract
 
@@ -163,8 +162,7 @@ goblins exec chief -- goblins-codex resume
 #+end_src
 
 The status file includes binding, activity, pause, ledger and diagnostic fields.
-The adapter ending stops the goblin; while paused, manual inbox commands remain available. Stale activity expires at the daemon. Claude retains =goblins integration status/pause/resume NAME= and its
-existing turn-boundary hooks.
+The adapter ending stops the goblin; while paused, manual inbox commands remain available. Stale activity expires at the daemon. =goblins-claude= has the same controls, which report its ledger's state, health and diagnostic: =goblins exec chief -- goblins-claude status=, =pause= and =resume=; a submitted prompt also resumes it.
 
 * Provider-neutral activity
 
@@ -185,7 +183,7 @@ independently of provider RPC delays. App Server idle maps to idle; active work
 to working; native waiting flags map to waiting states, with user input taking
 precedence over approval. Unbound/unavailable/error states map to unknown.
 
-Claude has no App Server to observe, so the daemon derives its activity from the integration hooks it already receives, kept beside (never inside) the wakeup lifecycle. SessionStart reports idle and UserPromptSubmit working; Stop reports working when it continues into the inbox and idle otherwise; StopFailure (an API error) reports idle. PreToolUse for AskUserQuestion or ExitPlanMode, Elicitation, and elicitation notifications report waiting-input; PermissionRequest and the permission_prompt notification report waiting-approval. PostToolUse, PostToolUseFailure and ElicitationResult return to working only from a waiting state, so a late tool end never revives a settled turn. Claude fires no hook when a person interrupts a turn; the Goblins mod reports the interrupted turn's end as an idle_prompt notification at once, and without the mod Claude's own idle_prompt, about 60 seconds later, settles it to idle. Activity-only hooks change no wakeup state and write no communications-log event. Each =integration.check= and the plugin monitor's =integration.tick= return =agent_state= for Claude, and the controller applies it as a report: the 500 ms monitor ticks are its freshness heartbeat, so activity expires once Claude and its monitor exit.
+Claude has no App Server to observe, so =goblins-claude= derives its activity from Claude's hooks, kept beside (never inside) the wakeup lifecycle. SessionStart reports idle and UserPromptSubmit working; Stop reports working when it continues into the inbox and idle otherwise; StopFailure (an API error) reports idle. PreToolUse for AskUserQuestion or ExitPlanMode, Elicitation, and elicitation notifications report waiting-input; PermissionRequest and the permission_prompt notification report waiting-approval. PostToolUse, PostToolUseFailure and ElicitationResult return to working only from a waiting state, so a late tool end never revives a settled turn. Claude fires no hook when a person interrupts a turn; the Goblins mod reports the interrupted turn's end as an idle_prompt notification at once, and without the mod Claude's own idle_prompt, about 60 seconds later, settles it to idle. Activity-only hooks change no wakeup state. Hooks only record the activity in the ledger; the monitor's =goblins-claude watch= is the only reporter and sends it with =sessions.set-state= when it differs from the last accepted report and every ten seconds, so activity expires once the monitor exits.
 
 =goblins status= and Emacs overview, sidebar and details show this activity.
 Older snapshots display unknown. Goblins permission badges remain separate from
@@ -255,57 +253,44 @@ from =operation.requested= (data ={request,kind,subject,reason,automatic}=,
 actor the requester) to =operation.decided= (={request,approved}=, actor
 =host=, or =goblins= for an inherited approval). Execution wait runs to
 =operation.completed= (={request,kind,subject,status,message,notice}=, actor
-=goblins=), which also queues the notice. Notification delivery then appears
-for Claude as =integration.wake_attempt=, =integration.wake_result= or a Stop
-=integration.hook= continuation. Codex submission diagnostics remain local to
-the adapter. The agent's response is logged as
+=goblins=), which also queues the notice. Wakeup attempts are local
+diagnostics of =goblins-codex= and =goblins-claude=, not log events. The agent's response is logged as
 =message.claimed= and =message.completed= for the notice ID. All carry the
 requester in =sessions=, so =--session= filtering shows them. Requested and
 decided events count against the auxiliary-event limit; outcomes do not, so
-they are recorded after Claude ticks and hooks have spent it; Codex queue
-bookkeeping does not spend daemon integration audit capacity.
+they are recorded even after other auxiliary events have spent it.
 
 * Settled protocol
 
 JSON-RPC framing, endpoint authentication and bounded connections are unchanged.
-Initialize advertises =agent-inbox-v1=, =agent-integration-v1=,
-=agent-activity-v1= and host-only
-=communications-log-v1=. Integration calls are authorized against the trusted
-profile and the caller's own sandbox. Host controls resolve explicit sessions.
+Initialize advertises =agent-inbox-v1=, =agent-activity-v1= and host-only
+=communications-log-v1=.
 
 | Method | Parameters/result |
 |--------+-------------------|
 | =messages.send= | ={key,to,body,conversation?}= -> accepted message |
 | =messages.get= | ={message}= -> visible message record |
-| =inbox.status= | ={}= -> queued, claim, head identity, revision, audit_failed, raid_audit_failed, unfinished operations, integration health |
+| =inbox.status= | ={}= -> queued, claim, head identity, revision, audit_failed, raid_audit_failed, unfinished operations |
 | =inbox.next= | ={key}= -> message and claim_generation, or null message |
 | =messages.reply= | ={key,message,claim_generation,body}= -> reply plus completed original ID |
 | =inbox.complete= | ={key,message,claim_generation}= -> completion |
 | =inbox.requeue= | ={key,message,claim_generation,reason}= -> new generation |
 | =sessions.set-state= | sandbox-only ={state}= -> accepted; endpoint identity, running sessions only |
-| Claude =integration.register= | ={driver,key}= -> epoch; same registration key is retryable |
-| Claude =integration.check= | ={epoch,key,event,active?,tool?,notification?}= -> continue decision, agent_state and integration status |
-| Claude =integration.tick= | ={epoch}= -> notify decision, optional terminal revision/delivery result, agent_state, integration status |
-| Claude =integration.status= | own ={}=, host ={session}= -> epoch, activity, health, attempts |
-| Claude =integration.pause/resume= | host-only ={session}= -> updated integration status |
 | =communications.list= | host-only ={after?,limit?,session?}= -> events, cursor, latest, resolved session |
 
 Claude's turn-boundary hook events are SessionStart, UserPromptSubmit and Stop;
 StopFailure, PreToolUse (AskUserQuestion/ExitPlanMode), PostToolUse,
 PostToolUseFailure, Elicitation, ElicitationResult, PermissionRequest and
 Notification only report activity. Codex installs no hooks; its adapter binds
-from the App Server's own events. No message body or
-arbitrary PTY input is accepted by integration methods. Terminal evidence is
-supplied privately by the controller, not trusted from the sandbox. Epochs
-reject stale reports; a second registration cannot steal a running driver.
-The first baseline does not implement driver replacement or subscriptions.
-A later native driver can extend this boundary in its own scoped change.
+from the App Server's own events. Both adapters run inside the goblin and use
+only the calls above; the daemon reads no agent's screen and injects no
+terminal input.
 
 Bounds: 16 live sessions, 8 connections per sandbox, 64-KiB message requests,
 256 unresolved messages per inbox, 4096 messages and 16384 operation receipts
 per daemon. Auxiliary lifecycle/retry audit events are capped at 16384. Host
-log pages contain at most 100 events and 512 KiB. Terminal parsing has no
-scrollback and bounded dimensions; terminal consumers retain existing limits.
+log pages contain at most 100 events and 512 KiB. Terminal consumers retain
+existing limits.
 
 * Communications log
 
@@ -313,12 +298,11 @@ The host-private append-only JSONL file is
 =STATE/communications-INSTANCE.jsonl=. It survives session cleanup and daemon
 shutdown, without promising restart recovery or power-loss/fsync durability.
 Mailbox transitions are appended before acceptance/publication. Audit errors
-freeze new messaging mutations and wake attempts, leaving terminal control
-available. Already committed retry receipts remain recoverable.
+freeze new messaging mutations, and the adapters suspend wakeups, leaving
+terminal control available. Already committed retry receipts remain recoverable.
 
 Events include session identities/ancestry, accepted messages, claims, replies,
-completion/requeue/failure, duplicate operation retries, integration registration,
-hook decisions, notification attempts/results, raid membership changes and the
+completion/requeue/failure, duplicate operation retries, raid membership changes and the
 lifecycle of sandbox permission requests (see Operation completion notices). Exact message contents are
 available for host verification; credentials and unrelated terminal output are
 not logged. Human-readable output escapes terminal control characters.
@@ -339,8 +323,8 @@ Offline =--log= cannot be combined with =--follow=.
 
 The default suite uses fake agents, synthetic credentials and native local UI
 commands that do not submit model prompts. It covers inbox semantics and scope,
-private sender-local files, hook continuation, idle/working transitions, input
-ownership, bounded retries, audit failure, native mounts, and attachment.
+private sender-local files, hook continuation, idle/working transitions,
+bounded retries, audit failure, native mounts, and attachment.
 No automated test requires a paid Codex subscription. Native protocol tests use
 synthetic credentials and a scripted provider on loopback. Adapter tests cover
 coalescing, retry limits, uncertain acknowledgements, reconnect reconciliation,

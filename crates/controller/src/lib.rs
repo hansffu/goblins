@@ -28,5 +28,3 @@ pub mod messaging;
 pub mod operation;
 mod sandbox_etc;
 mod terminal;
-
-pub mod integration;
