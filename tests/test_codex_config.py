@@ -21,7 +21,7 @@ from support import command
 from terminal_support import Terminal, screen_wait
 
 
-PROVIDER = """
+PROVIDER = r"""
 # A scripted Responses API on loopback: the first request runs one command,
 # every later one answers with a message.
 import json, sys, uuid
@@ -34,7 +34,7 @@ class Provider(BaseHTTPRequestHandler):
         calls.append(1)
         id = str(uuid.uuid4())
         if len(calls) == 1:
-            item = {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'touch ' + sys.argv[2]})}
+            item = {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'echo ran > ' + sys.argv[2]})}
         else:
             item = {'type': 'message', 'role': 'assistant', 'id': id, 'content': [{'type': 'output_text', 'text': 'done'}]}
         events = [{'type': 'response.created', 'response': {'id': id}},
@@ -109,7 +109,7 @@ class CodexConfigTests(unittest.TestCase):
         owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
         self.assertEqual(self.d.record(owner)["variables"], {"session_id": thread, "session_name": "chief"})
         self.d.wait(lambda: self.d.get(owner)["agent_state"] == "idle")
-        self.assertEqual(self.local(owner, "status")["thread_id"], thread)
+        self.assertEqual(self.d.wait(lambda: self.thread(owner)), thread)
         # Goblins installs no hooks of its own.
         self.assertNotIn("hooks", self.settings)
         self.assertEqual(self.manifest["goblins"]["codex"]["args"], ["-c", 'model="literal $(false) {model}"'])
@@ -152,7 +152,7 @@ class CodexConfigTests(unittest.TestCase):
         config = self.original + b'[mcp_servers.missing_fixture]\ncommand = "/missing/goblins-test-mcp"\n'
         (self.codex / "config.toml").write_bytes(config)
         native = self.d.start("native", agent_name="native")["session"]
-        thread = self.d.wait(lambda: self.local(native, "status")["thread_id"], timeout=60)
+        thread = self.d.wait(lambda: self.thread(native), timeout=60)
         # `codex` in the sandbox runs its own engine with the goblin's
         # settings, and does not move the goblin's conversation.
         status = self.exec(native, "codex", "login", "status")
@@ -165,7 +165,7 @@ class CodexConfigTests(unittest.TestCase):
     def test_codex_exec_on_path_runs_its_own_engine_with_the_goblins_policy(self):
         import subprocess
         native = self.d.start("native", agent_name="native")["session"]
-        thread = self.d.wait(lambda: self.local(native, "status")["thread_id"], timeout=60)
+        thread = self.d.wait(lambda: self.thread(native), timeout=60)
         # A scripted model on the sandbox's own loopback asks to run one command.
         provider = subprocess.Popen([str(self.app), "--state-dir", str(self.d.state), "exec", native, "--",
                                      "python3", "-c", PROVIDER, "18765", "/tmp/exec-marker"])
@@ -179,7 +179,7 @@ class CodexConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         # Codex's own sandbox cannot run in a goblin: the command ran with the
         # goblin's full access, and the goblin's conversation did not move.
-        self.assertEqual(self.exec(native, "test", "-e", "/tmp/exec-marker").returncode, 0, result.stdout)
+        self.assertEqual(self.exec(native, "sh", "-c", "test -e /tmp/exec-marker").returncode, 0, result.stdout)
         self.assertEqual(self.local(native, "status")["thread_id"], thread)
 
     def test_invalid_etc_mounts_fail_before_payload_launch(self):
@@ -237,6 +237,16 @@ class CodexConfigTests(unittest.TestCase):
             str(self.app), "--state-dir", str(self.d.state), "exec", receiver, "--",
             "/run/goblins/bin/goblins-codex", command,
         ]))
+
+    def thread(self, receiver):
+        """The adapter's conversation, or None until it writes its first status."""
+        import subprocess
+        result = subprocess.run([str(self.app), "--state-dir", str(self.d.state), "exec", receiver, "--",
+                                 "/run/goblins/bin/goblins-codex", "status"], capture_output=True, text=True)
+        if result.returncode and "No such file or directory" in result.stderr:
+            return None
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["thread_id"]
 
     def native_status(self, receiver):
         import subprocess
@@ -362,7 +372,7 @@ class CodexConfigTests(unittest.TestCase):
         native = self.terminal("native", "native")
         screen_wait(native, lambda text: "gpt-5.3-codex" in text, timeout=60)
         session = self.d.rpc.call("sessions.get", {"session": "native"})["id"]
-        thread = self.d.wait(lambda: self.local(session, "status")["thread_id"])
+        thread = self.d.wait(lambda: self.thread(session))
         self.assertEqual(self.d.record(session)["variables"]["session_id"], thread)
         native.send("/quit")
         time.sleep(.5)
@@ -403,11 +413,11 @@ class CodexConfigTests(unittest.TestCase):
     def test_owner_and_member_servers_have_independent_bindings(self):
         owner = self.d.start('notifier', agent_name='owner')['session']
         self.d.wait(lambda: self.d.get(owner)['agent_state'] == 'idle')
-        owner_thread = self.d.wait(lambda: self.local(owner, 'status')['thread_id'])
+        owner_thread = self.d.wait(lambda: self.thread(owner))
         member = self.d.member(owner, 'notifier', agent_name='member', wait=False)['session']
         record = self.d.wait(lambda: (r if (r := self.d.get(member))['agent_state'] == 'idle' or r['state'] in ('stopped', 'failed') else None), timeout=60)
         self.assertEqual(record['agent_state'], 'idle', record)
-        member_thread = self.d.wait(lambda: self.local(member, 'status')['thread_id'])
+        member_thread = self.d.wait(lambda: self.thread(member))
         self.assertNotEqual(owner_thread, member_thread)
         self.local(owner, 'pause')
         self.d.rpc.call('messages.send', {'key': 'member-message', 'to': member, 'body': 'member only'})

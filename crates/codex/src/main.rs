@@ -314,7 +314,14 @@ impl Server {
         self.ws.send(Message::text(
             json!({"id":id,"method":method,"params":params}).to_string(),
         ))?;
-        let deadline = Instant::now() + Duration::from_secs(3);
+        // Starting or loading a thread waits for Codex's model refresh, which
+        // takes about five seconds without network access.
+        let wait = if matches!(method, "thread/start" | "thread/resume") {
+            30
+        } else {
+            3
+        };
+        let deadline = Instant::now() + Duration::from_secs(wait);
         while Instant::now() < deadline {
             if let Some(v) = self.receive()? {
                 // Server requests and client responses have separate ID namespaces.
