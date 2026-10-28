@@ -453,11 +453,15 @@ impl Controller {
                 }
             }
             _ => {
-                let message = a
+                let mut message = a
                     .record
                     .detail
                     .clone()
                     .unwrap_or_else(|| "the goblin has stopped".into());
+                // Why it stopped is in its server log.
+                if let Some(log) = &a.server_log {
+                    message = format!("{message}; its server log is {}", log.path().display());
+                }
                 for mut hello in a.attach.hellos.drain(..) {
                     refuse(&mut hello.stream, &message);
                 }

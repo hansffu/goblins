@@ -4960,6 +4960,29 @@ mod tests {
         // Stopped, it can be evicted although it was launched attached.
         a.worker = None;
         assert!(a.can_evict());
+        // A frontend attaching after it stopped is told where to look.
+        a.record.state = "stopped".into();
+        a.record.detail = Some("the adapter stopped".into());
+        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut a = d.sessions.remove("a").unwrap();
+        d.attach_tick(&mut a);
+        let refused = rpc::read(&mut frontend).unwrap();
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert_eq!(
+            message,
+            format!(
+                "the adapter stopped; its server log is {}",
+                directory.join("server.log").display()
+            )
+        );
+        d.sessions.insert("a".into(), a);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
