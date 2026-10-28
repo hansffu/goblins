@@ -128,7 +128,7 @@ fn run() -> Result<i32, String> {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nRun targets: {}\nState: {}\nActivity: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nRun targets: {}\nState: {}\nActivity: {}\nAttached: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -143,6 +143,20 @@ fn run() -> Result<i32, String> {
                     },
                     record["state"].as_str().unwrap_or("unknown"),
                     record["agent_state"].as_str().unwrap_or("unknown"),
+                    match (
+                        record["attached"].as_bool(),
+                        record["attached_since"].as_u64()
+                    ) {
+                        (Some(true), Some(since)) => {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| d.as_millis() as u64);
+                            format!("yes, for {}s", now.saturating_sub(since) / 1000)
+                        }
+                        (Some(true), None) => "yes".into(),
+                        (Some(false), _) => "no".into(),
+                        (None, _) => "unknown".into(),
+                    },
                     record["scope"].as_str().unwrap_or("none"),
                     if record["docker_enabled"] == true {
                         "enabled"

@@ -39,9 +39,9 @@ paths = ["crates/controller/src/server.rs", "crates/controller/src/cleanup.rs", 
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
-python = ["test_exec", "test_attachment", "test_connected"]
+python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected"]
 checks = ["rust"]
-paths = ["crates/controller/src/exec.rs", "crates/controller/src/controller/exec.rs", "crates/controller/src/attachment.rs"]
+paths = ["crates/controller/src/exec.rs", "crates/controller/src/controller/exec.rs", "crates/controller/src/attachment.rs", "crates/controller/src/controller/attach.rs"]
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"

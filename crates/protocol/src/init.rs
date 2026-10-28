@@ -30,9 +30,13 @@ pub enum Command {
     },
     /// Forward a catchable signal to the exec's process group.
     Signal { id: u64, signal: i32 },
-    /// SIGHUP and SIGTERM to the exec's process group, then SIGKILL after a
-    /// grace period.
-    Cancel { id: u64 },
+    /// SIGHUP and SIGTERM to the exec's process group, or with `everything`
+    /// to every process its keeper holds, then SIGKILL after a grace period.
+    Cancel {
+        id: u64,
+        #[serde(default)]
+        everything: bool,
+    },
     /// Cancel every exec. The agent is not affected.
     KillAll {},
 }

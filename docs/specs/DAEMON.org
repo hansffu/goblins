@@ -579,6 +579,12 @@ These choices settle the open details for API 1 before implementation.
   id 0: ={attached:true}= on success, or an error on rejection. Raw bidirectional
   terminal bytes follow the success frame. Host initialization advertises
   =terminal-reattach=; clients and daemon must both support this handshake.
+  With =attach-handlers= advertised, start also returns =attach=, a second
+  socket where the frontend first sends a framed =attach.hello= with its version
+  and size; =attach.waiting= notifications may precede the same id 0 result. A
+  goblin with =onAttach= runs its agent without a PTY and starts a client exec on
+  a new PTY per attachment once the variables it needs were set this run; its
+  =terminal.sock= refuses every connection. See ADR 0016 and [[file:../API.org][API.org]].
   The daemon owns the master and pumps bounded 64 KiB buffers. Before the first
   consumer, and while attached, output backpressures the payload. While detached
   or disconnected, the daemon continues draining and retains a bounded output

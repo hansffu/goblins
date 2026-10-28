@@ -216,7 +216,13 @@ impl Controller {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            self.exec_command(id, &Command::Cancel { id });
+            self.exec_command(
+                id,
+                &Command::Cancel {
+                    id,
+                    everything: false,
+                },
+            );
             self.exec_finished(id, None);
         }
     }
@@ -331,11 +337,14 @@ impl Controller {
                     Ok((0, _)) => {
                         self.sessions.get_mut(&session).unwrap().init = None;
                         self.end_execs(&session, "the goblin has stopped");
+                        self.attach_lost(&session);
                         break;
                     }
                     // Init never sends descriptors; any that arrive are closed.
                     Ok((n, _)) => {
-                        if let Ok(event) = serde_json::from_slice::<Event>(&buffer[..n]) {
+                        if let Ok(event) = serde_json::from_slice::<Event>(&buffer[..n])
+                            && !self.attach_event(&session, &event)
+                        {
                             self.exec_event(&session, event);
                         }
                     }
@@ -343,6 +352,7 @@ impl Controller {
                     Err(_) => {
                         self.sessions.get_mut(&session).unwrap().init = None;
                         self.end_execs(&session, "the goblin has stopped");
+                        self.attach_lost(&session);
                         break;
                     }
                 }

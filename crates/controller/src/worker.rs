@@ -83,7 +83,9 @@ pub(super) enum Completed {
         dev_shell: Option<String>,
         dev_identity: Option<String>,
         initial_packages: Vec<String>,
+        /// The agent's PTY, or with attach handlers its output pipe.
         master: OwnedFd,
+        handlers: Option<Box<crate::config::Handlers>>,
         /// The private channel to the sandbox's goblins-init.
         control: OwnedFd,
         listener: UnixListener,
@@ -96,6 +98,11 @@ pub(super) enum Completed {
     Progress {
         request: String,
         state: &'static str,
+    },
+    /// Whether the agent will run without a terminal, known before the
+    /// launch's slow work.
+    Mode {
+        server: bool,
     },
     /// Structured approval preview and candidate identity, or why it cannot
     /// refresh.
@@ -197,6 +204,9 @@ impl Worker {
                             directory,
                         )?;
                         held = Some((owner, manifest));
+                        results.try_send(Completed::Mode {
+                            server: session.launch.handlers.is_some(),
+                        })?;
                         session
                     }
                     Source::Host {
@@ -215,6 +225,16 @@ impl Worker {
                         // that cannot be rooted only does not become current:
                         // the launch reports its own errors, such as no Nix daemon.
                         Manifest::validate(&configuration)?;
+                        // Before the slow work, rooting the manifest included:
+                        // whether older frontends may attach the terminal. A
+                        // configuration that cannot be selected fails below.
+                        if let Ok(config) = Manifest::read(&configuration)
+                            .and_then(|m| m.select(&name, scope.as_deref()))
+                        {
+                            results.try_send(Completed::Mode {
+                                server: config.on_attach.is_some(),
+                            })?;
+                        }
                         let unrooted = match crate::config::ManifestLease::create(
                             &configuration,
                             &state.join("manifests"),
@@ -308,18 +328,38 @@ impl Worker {
                 if let Some(recreated) = &mut recreated {
                     auto.rooted.append(&mut recreated.auto_approve);
                 }
-                if let Err(error) = session.start(Some(slave)) {
-                    // Bubblewrap writes setup errors to the payload terminal,
-                    // which is not handed to the event pump until Started.
-                    // Preserve that diagnostic instead of losing it on failure.
-                    use std::io::Read;
-                    unix::nonblocking(master.as_raw_fd())?;
-                    let mut output = Vec::new();
-                    let _ = std::fs::File::from(master)
-                        .take(4096)
-                        .read_to_end(&mut output);
-                    return Err(format!("{error}: {}", String::from_utf8_lossy(&output)).into());
-                }
+                // With attach handlers the agent runs without a terminal: no
+                // input, and its output goes to the server log.
+                let handlers = session.launch.handlers.clone();
+                let started = if handlers.is_some() {
+                    drop(slave);
+                    session.start(None)
+                } else {
+                    session.start(Some(slave))
+                };
+                let master = match started {
+                    Ok(()) if handlers.is_some() => {
+                        session.input.take();
+                        OwnedFd::from(session.output.take().unwrap())
+                    }
+                    Ok(()) => master,
+                    Err(error) => {
+                        // Bubblewrap writes setup errors to the payload's
+                        // output, which is not handed to the event pump until
+                        // Started. Preserve that diagnostic on failure.
+                        use std::io::Read;
+                        let output = match session.output.take() {
+                            Some(output) => OwnedFd::from(output),
+                            None => master,
+                        };
+                        unix::nonblocking(output.as_raw_fd())?;
+                        let mut text = Vec::new();
+                        let _ = std::fs::File::from(output)
+                            .take(4096)
+                            .read_to_end(&mut text);
+                        return Err(format!("{error}: {}", String::from_utf8_lossy(&text)).into());
+                    }
+                };
                 // Everything it mounts is rooted by now.
                 drop(held);
                 drop(held_lease);
@@ -339,6 +379,7 @@ impl Worker {
                         .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
                         .collect(),
                     master,
+                    handlers: handlers.map(Box::new),
                     control: session.control.take().unwrap(),
                     listener: session.listener.take().unwrap(),
                     identity: session.identity.clone().unwrap(),

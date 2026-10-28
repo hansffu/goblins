@@ -80,8 +80,8 @@ class RaidMemberTests(unittest.TestCase):
         self.assertNotIn("path", record)
         status = self.sandbox(member["session"], "sessions.status", {})
         self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "agent_state", "scope",
-                                       "docker_enabled", "dev_shell", "nix", "host_commands", "permission_bypass",
-                                       "allowed_run_targets", "raid", "created_by"})
+                                       "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands",
+                                       "permission_bypass", "allowed_run_targets", "raid", "created_by"})
         self.assertIsNone(status["permission_bypass"])
         self.assertEqual(status["allowed_run_targets"], ["shell"])
         self.assertEqual(status["raid"]["owner_name"], "owner")

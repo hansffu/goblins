@@ -611,6 +611,12 @@ Session records retain a =stop_reason= identifying a host stop, the goblin that
 requested it, or an owner exiting. When shutdown leaves no payload exit code,
 =run= and =attach= report this reason instead of an unknown exit status.
 
+** Goblins that start a client at each attach
+
+A goblin configured with =onAttach= (see [[*Nix API][Nix API]]) works differently: its main command runs in the background without a terminal for the goblin's whole life, and each attach starts a fresh client on a new terminal of the attaching terminal's size. Detaching (=goblins detach=, =goblin detach= or closing the terminal) runs =onDetach= if set, then stops the client and everything it started; the main command keeps running. Quitting the client also detaches; use =goblins kill= or the frontends' stop actions to stop the goblin. Only one attachment at a time; a second is refused.
+
+An attach first waits, showing =Starting…=, until the goblin has set every variable the client needs during this run (=goblin variable set=), up to =onAttach.timeout= seconds. A value a recreated goblin starts with from its record does not count. If they are not set in time, the attach fails with the missing names and the path of the server log, and the goblin keeps running; restart it with =goblins kill= and =goblins resume=. The main command's output goes to that log (=server_log= in =goblins rpc sessions.get=, at most 1 MiB plus one rotated =server.log.1=). =goblin status= shows whether a client is attached. Frontends older than this feature cannot attach such a goblin and are told to upgrade.
+
 To inspect or explicitly stop a session from a trusted host terminal:
 
 #+begin_src sh
@@ -842,6 +848,8 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =allowedPackages= | Initially available packages; defaults to agent-sandbox =commonTools= |
 | =args= | Literal entry argument list; defaults to =[]= |
 | =resumeCommand= | Arguments instead of =args= when =goblins resume= resumes the agent; =null= (default) starts afresh. See [[*Resuming conversations][Resuming conversations]] |
+| =onAttach= | =null= (default): the main command runs on the goblin's one terminal. ={ command; timeout ? 30; waitFor ? [ ]; }=: the main command runs without a terminal, and each attach runs =command= on a new terminal once every ={key}= in it and every =waitFor= name was set during this run, waiting up to =timeout= seconds (1–3600). Placeholders work as in =resumeCommand=, plus ={attach.pid}=; handlers also get each variable as =GOBLIN_VAR_<KEY>=. See [[*Goblins that start a client at each attach][Goblins that start a client at each attach]] |
+| =onDetach= | =null= (default) or an argument list run without a terminal when a detach is requested, allowed 5 seconds before the client is stopped; ={attach.pid}= is the client's process ID. Not run when the client exits by itself. Requires =onAttach= |
 | =env= | Literal string environment values; defaults to ={}= |
 | =allowNix= | =false= (default): no =nix=, only the closure of the granted packages. =true=: ordinary =nix= commands against the host daemon and the whole host store; requires =allowedDomains = null=. See [[*Nix in a goblin][Nix in a goblin]] |
 | =allowUnixSockets= | Must be =true= for the request transport |

@@ -37,6 +37,15 @@ Every connection starts with =initialize=. A host connection may make up to 4096
 
 =goblins rpc METHOD 'PARAMS'= opens a host connection, makes one call and prints the result. It cannot follow =state.subscribe=, and cannot call =sessions.exec=, which needs passed file descriptors.
 
+** Terminal attachment
+
+Each session has two attachment sockets beside each other in its state directory; =sessions.get= returns their paths as =terminal= and =attach=. A daemon whose host =features= include =attach-handlers= serves =attach.sock=, which frontends use for every goblin; =terminal.sock= keeps the older protocol.
+
+- =attach.sock= :: The frontend first writes a framed notification ={"jsonrpc": "2.0", "method": "attach.hello", "params": {"version": 1, "rows", "cols"}}= within 3 seconds; the daemon reads nothing else before it. =rows= and =cols= (1 or more) size this attachment: a goblin's single terminal is resized to them once attached, and a client started by =onAttach= gets a new PTY of that size. The daemon then answers with framed notifications ={"jsonrpc": "2.0", "method": "attach.waiting", "params": {"missing": [names]}}=, at once and every second while it waits, then one framed reply with ID 0: ={"attached": true}= or an error (=-32009=). While the goblin is still starting, =missing= is empty. For a goblin with =onAttach=, =missing= names the variables its client still needs, which must be set to a value during this run (=sessions.set-variables=); a timeout fails the attachment with the names, the server log path and "restart the goblin". Raw terminal bytes follow only a successful reply. One attachment at a time: a second is refused, and changes no size.
+- =terminal.sock= :: The daemon attaches an accepted connection at once and writes the same framed reply, then raw bytes. For a goblin with =onAttach= it refuses every connection with an error asking to upgrade Goblins. A connection made before the daemon has read the goblin's configuration waits until then.
+
+A goblin with =onAttach= has no terminal of its own: each attachment runs its client, detaching (=sessions.detach= or the frontend closing) runs =onDetach= and then ends the client and everything it started, and the client exiting detaches. =terminal_detached= becomes true once the client has exited; processes it left behind are cancelled.
+
 ** Errors
 
 | Code     | Meaning                                                                  |
@@ -61,7 +70,7 @@ Session parameters named =session= accept a session ID or the agent name of a li
 Negotiates the API version and identifies the daemon.
 
 - Input :: ={"api": 1}=
-- Output :: ={"api": 1, "instance", "role": "host"|"sandbox", "configuration", "features": [...], "limits": {...}}=. =instance= identifies this daemon run. =configuration= is the caller's configuration name on the sandbox endpoint, null on the host endpoint. =features= lists capability strings (for example =state-subscribe=, =raids=, =exec=, =host-commands=). =limits= has =header=, =body=, =frame_seconds=, =depth=, =response_body=, =calls=, =connections=, =sessions=, =output_queue=, =snapshot= and =terminal_buffer=.
+- Output :: ={"api": 1, "instance", "role": "host"|"sandbox", "configuration", "features": [...], "limits": {...}}=. =instance= identifies this daemon run. =configuration= is the caller's configuration name on the sandbox endpoint, null on the host endpoint. =features= lists capability strings (for example =state-subscribe=, =raids=, =exec=, =host-commands=, and =attach-handlers= for =attach.sock=). =limits= has =header=, =body=, =frame_seconds=, =depth=, =response_body=, =calls=, =connections=, =sessions=, =output_queue=, =snapshot= and =terminal_buffer=.
 
 * Host endpoint
 
@@ -130,7 +139,7 @@ Launches a goblin from a configuration, or recreates a recorded one. Returns onc
   - =detached= (optional): start without a terminal consumer.
   - =raid= (optional): join this raid, creating it with the new goblin as owner. Raid names match =[a-z][a-z0-9-]{0,31}=.
   - =recreate= (optional): history record ID, unique prefix or unique agent name to recreate.
-- Output :: ={"session", "agent_name", "state": "starting", "terminal"}=. =terminal= is the path of the session's raw terminal stream socket.
+- Output :: ={"session", "agent_name", "state": "starting", "terminal", "attach"}=. =terminal= and =attach= are the paths of the session's attachment sockets (see Terminal attachment).
 
 *** =sessions.stop=
 
@@ -141,14 +150,14 @@ Requests teardown. Acceptance does not mean cleanup has finished.
 
 *** =sessions.detach=
 
-Detaches the current terminal consumer; the goblin keeps running.
+Detaches the current terminal consumer; the goblin keeps running. For a goblin with =onAttach= this runs =onDetach= and ends the attached client.
 
 - Input :: ={"session"}=
 - Output :: ={"accepted": true}=
 
 *** =sessions.resize=
 
-Resizes the session's PTY.
+Resizes the session's PTY, or for a goblin with =onAttach= the attached client's PTY (=-32009= when none is attached).
 
 - Input :: ={"session", "rows", "cols"}= (=session= is a session ID; rows and cols 1–1000)
 - Output :: ={"accepted": true}=
@@ -350,7 +359,7 @@ A sandbox sees only itself and the goblins it controls. Results never contain ho
 *** =sessions.status=
 
 - Input :: ={}=
-- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "created_by"}=. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
+- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "created_by"}=. =attached= is whether a frontend is attached. =attached_since= is when the attached client started, in Unix milliseconds, for a goblin with =onAttach=; otherwise null. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
 
 *** =sessions.set-state=
 
@@ -368,7 +377,7 @@ Stores variables in the caller's history record (for example the agent's =sessio
 
 *** =sessions.detach=
 
-Detaches the caller's own terminal. The connection closes after the reply.
+Detaches the caller's own terminal, as the host's =sessions.detach= does. The connection closes after the reply.
 
 - Input :: ={}=
 - Output :: ={"accepted": true}=
@@ -513,7 +522,8 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =raid=                                        | ={"id", "name", "role", "owner", "paused"}= or null                      |
 | =identity=                                    | ={"pid", "helper_userns", "mount_owner", "source_mountns", "mountns"}= or null |
 | =initial_packages=, =packages=, =auto_approve= | Package names                                                           |
-| =terminal=                                    | Terminal stream socket path                                              |
+| =terminal=, =attach=                          | Attachment socket paths (see Terminal attachment)                        |
+| =server_log=                                  | For a goblin with =onAttach=, the log of its agent's output; otherwise null |
 | =pty_eof=, =terminal_complete=, =terminal_interrupted=, =terminal_attached=, =terminal_detached= | Terminal lifecycle flags |
 | =shells=, =execs=                             | Live interactive shells and other execs                                  |
 | =exit_code=                                   | Payload exit code (=128 + signal= for signals) or null                   |

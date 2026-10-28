@@ -258,6 +258,34 @@ let
     { resumeCommand = [ "{session-id}" ]; }
     { resumeCommand = [ "{}" ]; }
     { resumeCommand = [ "{${pkgs.lib.fixedWidthString 33 "x" ""}}" ]; }
+    { resumeCommand = [ "{attach.pid}" ]; }
+    { onAttach = [ "client" ]; }
+    { onAttach.command = [ ]; }
+    { onAttach.command = [ "{attach.other}" ]; }
+    { onAttach.command = [ "{Bad}" ]; }
+    {
+      onAttach = {
+        command = [ "client" ];
+        timeout = 0;
+      };
+    }
+    {
+      onAttach = {
+        command = [ "client" ];
+        waitFor = [ "attach.pid" ];
+      };
+    }
+    {
+      onAttach = {
+        command = [ "client" ];
+        unknown = true;
+      };
+    }
+    { onDetach = [ "stop" ]; }
+    {
+      onAttach.command = [ "client" ];
+      onDetach = [ ];
+    }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     if [[ "$1" == --version || "$1" == app-server ]]; then
@@ -1225,6 +1253,42 @@ in
     assert !(mkClaudeGoblin { }).goblin.bypass_permissions;
     assert (mkCodexGoblin { bypassPermissions = true; }).goblin.bypass_permissions;
     assert (mkGoblin base).goblin.resume_command == null;
+    assert (mkGoblin base).goblin.on_attach == null;
+    assert
+      (
+        let
+          goblin =
+            (mkGoblin (
+              base
+              // {
+                onAttach.command = [
+                  "client"
+                  "{session_id}"
+                ];
+                onDetach = [
+                  "stop"
+                  "{attach.pid}"
+                ];
+              }
+            )).goblin;
+        in
+        {
+          inherit (goblin) on_attach on_detach;
+        }
+      ) == {
+        on_attach = {
+          command = [
+            "client"
+            "{session_id}"
+          ];
+          timeout = 30;
+          wait_for = [ ];
+        };
+        on_detach = [
+          "stop"
+          "{attach.pid}"
+        ];
+      };
     assert
       (mkGoblin (
         base

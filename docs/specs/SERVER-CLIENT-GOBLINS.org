@@ -65,12 +65,12 @@ The daemon adds a freshness set beside the map: the names =sessions.set-variable
 | Attach | After the frontend's hello (below). Refused while another attachment exists. The daemon waits until every placeholder in =onAttach= and every =waitFor= name is ready, up to =timeout=, and checks again just before starting the client. It then creates a PTY with the frontend's size (below) and starts =onAttach= on it as a =goblins-init= exec: a session leader with that PTY as its controlling terminal, under its own keeper. It relays the PTY over the attachment stream. |
 | Attach wait fails | The attachment fails with a framed error naming the missing variables, the server log location and "restart the goblin". No client starts and the goblin keeps running. |
 | Frontend leaves during the wait | No client starts; the attachment slot is released. |
-| Detach requested | Detach key, =sessions.detach=, or the frontend closing. With =onDetach=, the daemon first runs it (no terminal) and allows it 5 seconds. Then, or at once without =onDetach=, it cancels the client exec through =goblins-init= with =everything= set: the keeper's whole subtree gets SIGHUP, SIGTERM and SIGCONT, and SIGKILL after init's grace period. The goblin is detached once the keeper reports the exec ended. |
-| Client exits | The goblin becomes detached. =onDetach= does not run. Leftover processes in the client's subtree are cancelled as above. |
+| Detach requested | =goblins detach=, =goblin detach= (both =sessions.detach=), or the frontend closing; there is no detach key. With =onDetach=, the daemon first runs it (no terminal) and allows it 5 seconds. Then, or at once without =onDetach=, it cancels the client exec through =goblins-init= with =everything= set: the keeper's whole subtree gets SIGHUP, SIGTERM and SIGCONT, and SIGKILL after init's grace period. The goblin is detached once init reports the client exited; processes it left behind are cancelled. |
+| Client exits | The goblin becomes detached once init reports the client exited. =onDetach= does not run. Processes it left behind are cancelled as above. |
 | Stop, or main command exits | Cancel any client as above, then end the goblin as today. |
 | Recreate | =resumeCommand= applies to the main command. Attaching works as above. |
 
-The client is an init exec, so the existing keeper bookkeeping identifies its processes. Detach never signals a reused PID, the main command or other execs, and a client that ignores SIGHUP or leaves children behind cannot hold the single attachment slot.
+The client is an init exec, so the existing keeper bookkeeping identifies its processes. Detach never signals a reused PID, the main command or other execs, and a client that ignores SIGHUP or leaves children behind cannot hold the single attachment slot: a leader that ignores SIGHUP and SIGTERM is killed after the grace period, and leftovers do not matter to the next attach, which gets a new PTY.
 
 An attached launch (=goblins run= without =--detached=) is create followed by attach.
 
