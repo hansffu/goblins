@@ -1011,7 +1011,12 @@ mod tests {
         // A request connection, then the payload's exit, reported once.
         let _client =
             std::os::unix::net::UnixStream::connect(directory.join("request.sock")).unwrap();
-        drop(exited);
+        // Data, not a closed end: a process another test forks may hold the
+        // write end open for a moment, which would delay the end of file.
+        assert_eq!(
+            unsafe { libc::write(exited.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
         let events = round(&mut local);
         assert!(matches!(
             events.as_slice(),
@@ -1021,6 +1026,12 @@ mod tests {
         // Stop closes the request socket; init's end closes its channel.
         local.send(Command::Stop).unwrap();
         assert!(local.listener.is_none());
+        // Shut the peer down, so init's end reads as closed at once, even
+        // while a process another test forks holds a copy of the descriptor.
+        assert_eq!(
+            unsafe { libc::shutdown(sandbox.as_raw_fd(), libc::SHUT_RDWR) },
+            0
+        );
         drop(sandbox);
         assert!(matches!(round(&mut local).as_slice(), [Event::InitLost]));
         local.send(Command::KillAll).unwrap();
@@ -1047,7 +1058,12 @@ mod tests {
         results
             .try_send(Event::Mode { server: false })
             .unwrap_or_else(|_| panic!());
-        drop(exited);
+        // Data, not a closed end: a process another test forks may hold the
+        // write end open for a moment, which would delay the end of file.
+        assert_eq!(
+            unsafe { libc::write(exited.as_raw_fd(), b"x".as_ptr().cast(), 1) },
+            1
+        );
         // ...and the next round still collects every source.
         let round: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
         assert!(matches!(

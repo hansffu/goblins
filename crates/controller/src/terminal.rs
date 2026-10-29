@@ -389,6 +389,12 @@ mod tests {
             peer
         }
     }
+    /// Close a consumer's end for good: shut the connection down, so the
+    /// terminal sees the end at once, even while a process another test
+    /// forks still holds a copy of the descriptor.
+    fn close(peer: UnixStream) {
+        peer.shutdown(Shutdown::Both).unwrap();
+    }
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
@@ -404,7 +410,7 @@ mod tests {
             let (server, client) = UnixStream::pair().unwrap();
             f.terminal.attach(server, serde_json::json!(123)).unwrap();
             // Disconnect before the first handshake byte can be sent.
-            drop(client);
+            close(client);
             f.terminal.tick().unwrap();
             let mut next = f.connect();
             let mut received = vec![0; size];
@@ -436,7 +442,7 @@ mod tests {
         first.write_all(b"stale input").unwrap();
         f.terminal.tick().unwrap();
         assert!(f.terminal.to_pty.is_empty());
-        drop(first);
+        close(first);
         f.payload.write_all(b"after!").unwrap();
         let mut second = f.connect();
         second.read_exact(&mut bytes).unwrap();
@@ -456,7 +462,7 @@ mod tests {
     #[test]
     fn detached_output_is_bounded_and_connection_loss_allows_reattachment() {
         let mut f = Fixture::new();
-        drop(f.connect());
+        close(f.connect());
         f.terminal.tick().unwrap();
         assert!(f.terminal.interrupted);
         assert!(!f.terminal.attached());
@@ -501,7 +507,7 @@ mod tests {
         let mut f = Fixture::new();
         let first = f.connect();
         f.terminal.to_pty.resize(CAP, b'x');
-        drop(first);
+        close(first);
         let _second = f.connect();
         assert!(f.terminal.to_pty.is_empty());
         assert!(f.terminal.attached());

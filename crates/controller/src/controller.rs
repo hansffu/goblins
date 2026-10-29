@@ -4383,7 +4383,6 @@ mod tests {
     }
     #[test]
     fn every_terminal_outcome_is_queued_once_with_the_sandbox_message() {
-        let path = unix::temp_directory().unwrap();
         for (results, status, message) in [
             (
                 vec![Event::Granted {
@@ -4413,7 +4412,12 @@ mod tests {
                 Some("payload stopped"),
             ),
         ] {
-            let mut d = Controller::new(&path, None).unwrap();
+            // Its own directory each time: a process another test forks while
+            // the previous daemon's lock is still open could hold that lock
+            // for a moment, and a new daemon on the same directory would
+            // find it taken.
+            let mut d = daemon();
+            let path = d.state.clone();
             let (service, queue) = crate::messaging::Service::detached(8);
             d.messaging = service;
             let id = session_with_results(&mut d, results);
@@ -4435,8 +4439,8 @@ mod tests {
             drop(d);
             // Nothing was pending at shutdown, so nothing more is reported.
             assert!(operations(&queue).is_empty());
+            fs::remove_dir_all(path).unwrap();
         }
-        fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn stop_withdrawal_and_shutdown_end_pending_operations() {
