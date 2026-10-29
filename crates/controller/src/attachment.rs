@@ -171,9 +171,20 @@ fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Resu
     let hello = loop {
         // rpc::read allows an unlimited idle wait for permission replies.
         // Bound each handshake frame's first byte separately; a waiting
-        // notification extends the deadline to the next one.
-        if !unix::readable(terminal.as_raw_fd(), rpc::TIMEOUT.as_millis() as i32)? {
-            return Err("terminal attachment timed out".into());
+        // notification extends the deadline to the next one. A resize's
+        // SIGWINCH interrupts the wait without ending it; Ctrl-C ends it.
+        let deadline = std::time::Instant::now() + rpc::TIMEOUT;
+        loop {
+            if STOP.load(Ordering::Relaxed) {
+                return Err(format!("interrupted before {session} was attached").into());
+            }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if unix::readable(terminal.as_raw_fd(), left.as_millis() as i32)? {
+                break;
+            }
+            if left.is_zero() {
+                return Err("terminal attachment timed out".into());
+            }
         }
         let frame = rpc::read(&mut terminal)?;
         if frame["method"] != "attach.waiting" {
