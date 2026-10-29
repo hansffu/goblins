@@ -56,11 +56,14 @@ class HostCommandTests(unittest.TestCase):
 
     def send(self, terminal, text):
         marker = uuid.uuid4().hex[:8]
-        terminal.send(text + f"; printf '\\nDONE-{marker}=%s\\n' \"$?\"\n")
+        # The terminal echoes the command line; the printf formats keep the
+        # markers out of the echo, so only the command's own output is captured.
+        terminal.send(f"printf 'BEGIN-%s\\n' {marker}; " + text +
+                      f"; printf '\\nDONE-%s=%s\\n' {marker} \"$?\"\n")
         return marker
 
     def done(self, terminal, marker, timeout=60):
-        result = terminal.expect(rf"([\s\S]*?)\nDONE-{marker}=(\d+)\n", timeout=timeout)
+        result = terminal.expect(rf"BEGIN-{marker}\n([\s\S]*?)\nDONE-{marker}=(\d+)\n", timeout=timeout)
         terminal.expect(PROMPT)
         return result[1].decode(errors="replace"), int(result[2])
 
@@ -99,9 +102,12 @@ class HostCommandTests(unittest.TestCase):
         self.assertEqual((final["state"], final["message"]), ("finished", "exit code 3"))
         # The output stays readable in the sandbox, which cannot change it.
         log = f"/run/goblins/host-jobs/{record['id']}/output.log"
-        output, code = self.run_in(terminal, f"grep -c made-in-sandbox {log}; echo x >> {log}")
-        self.assertNotEqual(code, 0)
-        self.assertIn("1", output)
+        output, code = self.run_in(terminal, f"cat {log}")
+        self.assertEqual(code, 0, output)
+        self.assertIn("made-in-sandbox", output)
+        output, code = self.run_in(terminal, f"echo x >> {log}")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("Read-only file system", output)
 
     def test_denied_withdrawn_and_unshared_commands_do_not_run(self):
         session, terminal = self.launch()
