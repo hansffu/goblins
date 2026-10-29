@@ -5,7 +5,7 @@
     nixpkgs.url = "github:NixOS/nixpkgs/21a67dc470149f337cecafbe965d8d252a390518";
     # Agent packages for the demo goblins, updated daily. Not following
     # nixpkgs: this is the combination numtide builds and caches.
-    llm-agents.url = "github:numtide/llm-agents.nix/493c34b1bed086861b0e968a40d00bd06522f003";
+    llm-agents.url = "github:numtide/llm-agents.nix/69d1f4621804d13b9658ff9ac9b2a151815132cb";
     agent-sandbox = {
       url = "github:archie-judd/agent-sandbox.nix/566defa1560051c4e48049389f942a6c1a53aee9";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -34,7 +34,22 @@
         inherit (goblinsLib) builders commonTools;
         agents = llm-agents.packages.${system};
       };
-      demo = goblinsLib.builders.mkGoblins { goblins = demoGoblins; };
+      demoScopes = import ./nix/demo-goblins/scopes.nix { inherit (goblinsLib.builders) mkScope; };
+      demo = goblinsLib.builders.mkGoblins {
+        goblins = demoGoblins;
+        scopes = demoScopes;
+      };
+      # The demo goblins for the Python tests, whose shells start shells.
+      testGoblins = goblinsLib.builders.mkGoblins {
+        goblins = demoGoblins // {
+          shell = import ./nix/demo-goblins/shell.nix {
+            inherit pkgs;
+            inherit (goblinsLib.builders) mkGoblin;
+            options.allowedRunTargets = [ "shell" ];
+          };
+        };
+        scopes = demoScopes;
+      };
       dockerShell = import ./nix/demo-goblins/shell.nix {
         inherit pkgs;
         inherit (goblinsLib.builders) mkGoblin;
@@ -49,17 +64,47 @@
         docker.enable = true;
       };
       devGoblins = goblinsLib.builders.mkGoblins {
-        scopes = devScopes;
+        scopes = demoScopes // devScopes;
         editor.emacs.enable = true;
-        goblins = demoGoblins // {
-          shell = dockerShell;
-        };
+        # The shell runs in the dev scope, which its agent children join.
+        goblins =
+          import ./nix/demo-goblins {
+            inherit pkgs;
+            inherit (goblinsLib) builders commonTools;
+            agents = llm-agents.packages.${system};
+            agentScopes = [ "dev" ];
+          }
+          // {
+            shell = dockerShell;
+          };
+      };
+      devShell = pkgs.mkShell {
+        packages = [
+          pkgs.rustc
+          pkgs.cargo
+          pkgs.rustfmt
+          pkgs.clippy
+          pkgs.just
+          pkgs.git
+          (pkgs.python3.withPackages (p: [ p.pyte ]))
+          pkgs.bubblewrap
+          pkgs.nix
+          pkgs.nixfmt
+          pkgs.jq
+          pkgs.bashInteractive
+          pkgs.fish
+          pkgs.zsh
+        ];
       };
     in
     {
       lib.${system} = goblinsLib;
       packages.${system} = {
         inherit (demo) helper;
+        # The demo goblins, for trying and testing a checkout (`just emacs`).
+        # Not in the dev shell: inside a goblin, `nix develop` would put this
+        # host CLI ahead of the sandbox's own `goblin`.
+        dev-goblins = devGoblins;
       }
       // import ./tests/fixtures.nix {
         inherit pkgs sandbox;
@@ -70,27 +115,14 @@
           pkgs
           goblinsLib
           sandbox
-          demo
+          devShell
+          devGoblins
           ;
+        demo = testGoblins;
         agents = llm-agents.packages.${system};
       };
       formatter.${system} = pkgs.nixfmt;
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [
-          devGoblins
-          pkgs.rustc
-          pkgs.cargo
-          pkgs.rustfmt
-          pkgs.clippy
-          (pkgs.python3.withPackages (p: [ p.pyte ]))
-          pkgs.bubblewrap
-          pkgs.nix
-          pkgs.jq
-          pkgs.bashInteractive
-          pkgs.fish
-          pkgs.zsh
-        ];
-      };
+      devShells.${system}.default = devShell;
       # Only validated attributes from this pinned package set are requestable.
       legacyPackages.${system} = pkgs;
     };

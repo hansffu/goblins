@@ -49,7 +49,6 @@ pub enum Work {
         method: String,
         params: Value,
         directory: Directory,
-        view: crate::integration::View,
         raids: Vec<crate::raid::Event>,
         operations: Vec<crate::operation::Event>,
     },
@@ -60,11 +59,6 @@ pub enum Work {
         raids: Vec<crate::raid::Event>,
         operations: Vec<crate::operation::Event>,
     },
-    Delivery {
-        actor: String,
-        revision: u64,
-        submitted: bool,
-    },
 }
 pub struct Completed {
     pub connection: u64,
@@ -72,11 +66,17 @@ pub struct Completed {
     pub result: mailbox::Result<Value>,
     pub actor: String,
 }
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    pub queued: BTreeMap<String, u64>,
+    pub health: mailbox::Health,
+}
 pub struct Service {
     pub commands: SyncSender<Work>,
     pub results: Receiver<Completed>,
-    /// Queued inbox counts per recipient, sent whenever they change.
-    pub inbox: Receiver<BTreeMap<String, u64>>,
+    /// Queued inbox counts per recipient and the log's health, sent
+    /// whenever either changes.
+    pub inbox: Receiver<Report>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -136,8 +136,8 @@ impl Service {
                 );
                 while let Ok(work) = input.recv() {
                     let completed = worker.handle(work);
-                    if let Some(queued) = worker.changed_counts() {
-                        let _ = counts.send(queued);
+                    if let Some(report) = worker.changed_report() {
+                        let _ = counts.send(report);
                     }
                     if let Some(completed) = completed
                         && output.send(completed).is_err()
@@ -183,58 +183,43 @@ impl Log for Journal {
     }
 }
 
-/// The worker's serialized state: the mailbox and its logged raid view, the
-/// integrations, and the sessions it has seen.
+/// The worker's serialized state: the mailbox and its logged raid view,
+/// and the sessions it has seen.
 struct State<L> {
     mailbox: Mailbox,
     journal: L,
-    integrations: crate::integration::Integrations,
     known: Directory,
     /// Queued inbox counts as last reported to the controller.
-    counts: BTreeMap<String, u64>,
+    reported: Report,
 }
 impl<L: Log> State<L> {
     fn new(mailbox: Mailbox, journal: L) -> Self {
         Self {
             mailbox,
             journal,
-            integrations: crate::integration::Integrations::default(),
             known: BTreeMap::new(),
-            counts: BTreeMap::new(),
+            reported: Report {
+                queued: BTreeMap::new(),
+                health: mailbox::Health::default(),
+            },
         }
     }
 
-    /// The queued inbox counts, when they differ from those last reported.
-    fn changed_counts(&mut self) -> Option<BTreeMap<String, u64>> {
-        let counts = self.mailbox.queued();
-        (counts != self.counts).then(|| {
-            self.counts = counts.clone();
-            counts
+    /// The queued inbox counts and health, when either differs from what
+    /// was last reported.
+    fn changed_report(&mut self) -> Option<Report> {
+        let report = Report {
+            queued: self.mailbox.queued(),
+            health: self.mailbox.health(),
+        };
+        (report != self.reported).then(|| {
+            self.reported = report.clone();
+            report
         })
     }
 
     fn handle(&mut self, work: Work) -> Option<Completed> {
-        let (mailbox, journal, integrations, known) = (
-            &mut self.mailbox,
-            &mut self.journal,
-            &mut self.integrations,
-            &mut self.known,
-        );
-        if let Work::Delivery {
-            actor,
-            revision,
-            submitted,
-        } = work
-        {
-            let _ = mailbox.record(
-                &actor,
-                "integration.wake_result",
-                json!({"terminal_revision":revision,"submitted":submitted}),
-                now(),
-                journal,
-            );
-            return None;
-        }
+        let (mailbox, journal, known) = (&mut self.mailbox, &mut self.journal, &mut self.known);
         let (directory, raids, operations) = match &work {
             Work::Call {
                 directory,
@@ -247,7 +232,6 @@ impl<L: Log> State<L> {
                 raids,
                 operations,
             } => (directory, raids, operations),
-            Work::Delivery { .. } => unreachable!(),
         };
         // Session metadata is supplied only by the host controller. Retain
         // ancestry for log filtering after its bounded UI records expire.
@@ -260,7 +244,7 @@ impl<L: Log> State<L> {
             let _ = mailbox.record(
                 id,
                 "session.started",
-                json!({"parent":session.parent,"path":session.path}),
+                json!({"agent_name":session.agent_name}),
                 now(),
                 journal,
             );
@@ -273,12 +257,19 @@ impl<L: Log> State<L> {
         }
         // Membership is recorded before the call it arrived with, so a
         // message is always logged after the membership that allowed it.
-        mailbox.record_raid(raids, now(), journal);
+        mailbox.record_raid(raids, directory, now(), journal);
         // Outcomes are recorded before the call too: an inbox fetch that
         // arrives with a completion sees its notice.
         mailbox.record_operations(operations, directory, now(), journal);
         for id in stopped {
-            let _ = mailbox.record(&id, "session.exited", json!({}), now(), journal);
+            let reason = directory.get(&id).and_then(|s| s.stop_reason.clone());
+            let _ = mailbox.record(
+                &id,
+                "session.exited",
+                json!({"reason":reason}),
+                now(),
+                journal,
+            );
             let _ = mailbox.stop_recipient(&id, now(), journal);
         }
         let Work::Call {
@@ -288,24 +279,16 @@ impl<L: Log> State<L> {
             method,
             params,
             directory,
-            view,
             ..
         } = work
         else {
             return None;
         };
         let result = match method.as_str() {
-            m if m.starts_with("integration.") => {
-                integrations.call(&actor, m, params, (&view, now()), mailbox, journal)
-            }
             "messages.get" => {
                 parse::<Get>(params).and_then(|p| mailbox.get(&actor, &p.message).map(|m| json!(m)))
             }
-            "inbox.status" => parse::<Empty>(params).map(|_| {
-                let mut s = mailbox.status(&actor);
-                s["integration"] = integrations.status(&actor, now());
-                s
-            }),
+            "inbox.status" => parse::<Empty>(params).map(|_| mailbox.status(&actor)),
             "communications.list" if actor == "host" => {
                 parse::<List>(params).and_then(|p| page(journal.events(), known, p))
             }
@@ -360,35 +343,19 @@ fn page(journal: &[Event], directory: &Directory, p: List) -> mailbox::Result<Va
             if directory.contains_key(target) {
                 return Ok(target.clone());
             }
-            let mut found = directory.values().filter(|s| {
-                s.running
-                    && (s.path == *target || s.path.rsplit('/').next() == Some(target.as_str()))
-            });
+            let mut found = directory
+                .values()
+                .filter(|s| s.running && s.agent_name == *target);
             let first = found
                 .next()
                 .ok_or_else(|| (-32004, "session absent".into()))?;
             if found.next().is_some() {
-                return Err((-32009, "ambiguous session; use path or ID".into()));
+                return Err((-32009, "ambiguous session; use its ID".into()));
             }
             Ok(first.id.clone())
         })
         .transpose()?;
-    let contains = |id: &str| {
-        let Some(scope) = &scope else {
-            return true;
-        };
-        let mut current = id;
-        for _ in 0..=directory.len() {
-            if current == scope {
-                return true;
-            }
-            let Some(parent) = directory.get(current).and_then(|s| s.parent.as_deref()) else {
-                break;
-            };
-            current = parent;
-        }
-        false
-    };
+    let contains = |id: &str| scope.as_ref().is_none_or(|scope| id == scope);
     let mut events = vec![];
     let mut bytes = 0;
     let mut cursor = p.after;
@@ -409,7 +376,8 @@ fn page(journal: &[Event], directory: &Directory, p: List) -> mailbox::Result<Va
         "latest":journal.last().map_or(0,|e|e.sequence)}))
 }
 
-/// Offline inspection uses the same cursor/subtree filter as the live endpoint.
+/// Offline inspection uses the same cursor and session filter as the live
+/// endpoint.
 pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Value>> {
     use std::io::Read;
     let mut file = File::open(path)?;
@@ -435,12 +403,18 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
             return Err("communications log has a sequence gap or mixed instances".into());
         }
         if event.kind == "session.started" {
+            // Logs written with the ownership tree carry the tree path,
+            // whose last segment was the agent name.
+            let name = event.data["agent_name"]
+                .as_str()
+                .or_else(|| event.data["path"].as_str()?.rsplit('/').next())
+                .unwrap_or("");
             known.insert(
                 event.actor.clone(),
                 mailbox::Session {
                     id: event.actor.clone(),
-                    path: event.data["path"].as_str().unwrap_or("").into(),
-                    parent: event.data["parent"].as_str().map(String::from),
+                    agent_name: name.into(),
+                    stop_reason: None,
                     running: true,
                 },
             );
@@ -448,10 +422,12 @@ pub fn offline_log(path: &Path, session: Option<String>) -> crate::Result<Vec<Va
         events.push(event);
     }
     if session.as_ref().is_some_and(|id| !known.contains_key(id))
-        && !known.values().any(|s| session.as_ref() == Some(&s.path))
+        && !known
+            .values()
+            .any(|s| session.as_ref() == Some(&s.agent_name))
     {
         return Err(
-            "offline session selection requires a session ID or captured path from session.started"
+            "offline session selection requires a session ID or agent name from session.started"
                 .into(),
         );
     }
@@ -512,24 +488,20 @@ mod tests {
         )
     }
     fn directory() -> Directory {
-        [
-            ("a", None, "chief"),
-            ("b", Some("a"), "chief/scout"),
-            ("x", None, "other"),
-        ]
-        .into_iter()
-        .map(|(id, parent, path)| {
-            (
-                id.to_string(),
-                mailbox::Session {
-                    id: id.into(),
-                    parent: parent.map(Into::into),
-                    path: path.into(),
-                    running: true,
-                },
-            )
-        })
-        .collect()
+        [("a", "chief"), ("b", "scout"), ("x", "other")]
+            .into_iter()
+            .map(|(id, name)| {
+                (
+                    id.to_string(),
+                    mailbox::Session {
+                        id: id.into(),
+                        agent_name: name.into(),
+                        stop_reason: None,
+                        running: true,
+                    },
+                )
+            })
+            .collect()
     }
     fn call(actor: &str, method: &str, params: Value, raids: Vec<crate::raid::Event>) -> Work {
         Work::Call {
@@ -539,7 +511,6 @@ mod tests {
             method: method.into(),
             params,
             directory: directory(),
-            view: Default::default(),
             raids,
             operations: vec![],
         }
@@ -564,7 +535,7 @@ mod tests {
         let mut w = state();
         let mut raids = Raids::default();
         let batch = invite(&mut raids, &["b", "x"]);
-        let done = w.handle(send("x", "chief/scout", "k", batch)).unwrap();
+        let done = w.handle(send("x", "scout", "k", batch)).unwrap();
         assert_eq!(done.result.unwrap()["recipient"], "b");
         let kinds: Vec<_> = w
             .journal
@@ -595,18 +566,44 @@ mod tests {
             operations: vec![],
         });
         assert_eq!(w.journal.events.last().unwrap().kind, "raid.left");
-        let refused = w.handle(send("x", "chief/scout", "late", vec![])).unwrap();
+        let refused = w.handle(send("x", "scout", "late", vec![])).unwrap();
         assert_eq!(refused.result.unwrap_err().0, -32004);
+    }
+
+    #[test]
+    fn an_exit_is_logged_with_who_stopped_it() {
+        let mut w = state();
+        w.handle(Work::Sync {
+            directory: directory(),
+            raids: vec![],
+            operations: vec![],
+        });
+        let mut stopped = directory();
+        let b = stopped.get_mut("b").unwrap();
+        b.running = false;
+        b.stop_reason = Some("stopped by raid owner chief (a)".into());
+        w.handle(Work::Sync {
+            directory: stopped,
+            raids: vec![],
+            operations: vec![],
+        });
+        let exited = w.journal.events.last().unwrap();
+        assert_eq!(
+            (exited.kind.as_str(), exited.actor.as_str()),
+            ("session.exited", "b")
+        );
+        assert_eq!(exited.data["reason"], "stopped by raid owner chief (a)");
     }
 
     #[test]
     fn queued_counts_are_reported_only_when_they_change() {
         let mut w = state();
-        assert_eq!(w.changed_counts(), None);
-        w.handle(send("a", "scout", "one", vec![])).unwrap();
-        w.handle(send("a", "scout", "two", vec![])).unwrap();
-        assert_eq!(w.changed_counts(), Some([("b".into(), 2)].into()));
-        assert_eq!(w.changed_counts(), None);
+        let queued = |w: &mut State<Faulty>| w.changed_report().map(|r| r.queued);
+        assert_eq!(queued(&mut w), None);
+        w.handle(send("host", "scout", "one", vec![])).unwrap();
+        w.handle(send("host", "scout", "two", vec![])).unwrap();
+        assert_eq!(queued(&mut w), Some([("b".into(), 2)].into()));
+        assert_eq!(queued(&mut w), None);
         // A stopped recipient's queued messages fail, emptying its inbox.
         let mut running = directory();
         running.remove("b");
@@ -615,7 +612,7 @@ mod tests {
             raids: vec![],
             operations: vec![],
         });
-        assert_eq!(w.changed_counts(), Some(BTreeMap::new()));
+        assert_eq!(queued(&mut w), Some(BTreeMap::new()));
     }
 
     #[test]
@@ -623,39 +620,46 @@ mod tests {
         let mut w = state();
         w.journal.raid = Some(|| AuditError::Unavailable);
         let batch = invite(&mut Raids::default(), &["b", "x"]);
-        let done = w.handle(send("x", "chief/scout", "k", batch)).unwrap();
-        // A write failure freezes messaging, tree routes included.
+        let done = w.handle(send("x", "scout", "k", batch)).unwrap();
+        // A write failure freezes messaging, host routes included.
         assert_eq!(
             done.result.unwrap_err(),
             (-32009, "mailbox audit unavailable".into())
         );
-        let done = w.handle(send("a", "scout", "tree", vec![])).unwrap();
+        let done = w.handle(send("host", "scout", "host", vec![])).unwrap();
         assert!(done.result.is_err());
     }
 
     #[test]
-    fn capacity_failure_closes_raid_routes_but_not_tree_routes() {
+    fn capacity_failure_closes_raid_routes_but_not_host_routes() {
         let mut w = state();
         let mut raids = Raids::default();
         let batch = invite(&mut raids, &["x", "b"]);
-        w.handle(send("x", "chief/scout", "first", batch))
+        w.handle(send("x", "scout", "first", batch))
             .unwrap()
             .result
             .unwrap();
+        let before = w.changed_report().unwrap();
+        assert_eq!(before.health, mailbox::Health::default());
         w.journal.raid = Some(|| AuditError::Capacity);
         let role = raids.set_role("x", "builder", "x").unwrap();
-        let done = w.handle(send("x", "chief/scout", "second", role)).unwrap();
+        let done = w.handle(send("x", "scout", "second", role)).unwrap();
         assert_eq!(
             done.result.unwrap_err(),
             (-32009, "raid membership could not be recorded".into())
         );
+        // The host hears of it although no inbox count changed.
+        let report = w.changed_report().unwrap();
+        assert_eq!(report.queued, before.queued);
+        assert!(report.health.raid_audit_failed && !report.health.audit_failed);
+        assert_eq!(w.changed_report(), None);
         assert_eq!(w.mailbox.raids()["x"].role, None);
         let status = w
             .handle(call("x", "inbox.status", json!({}), vec![]))
             .unwrap();
         assert_eq!(status.result.unwrap()["raid_audit_failed"], true);
-        let tree = w.handle(send("a", "scout", "tree", vec![])).unwrap();
-        assert_eq!(tree.result.unwrap()["recipient"], "b");
+        let host = w.handle(send("host", "scout", "host", vec![])).unwrap();
+        assert_eq!(host.result.unwrap()["recipient"], "b");
         // Removals are still applied to the logged view.
         let left = raids.remove("b", crate::raid::Reason::Left);
         w.handle(Work::Sync {
@@ -697,7 +701,6 @@ mod tests {
             method,
             params,
             directory,
-            view,
             raids,
             ..
         } = call("b", "inbox.next", json!({"key":"fetch"}), vec![])
@@ -711,7 +714,6 @@ mod tests {
             method,
             params,
             directory,
-            view,
             raids,
             operations: vec![
                 crate::operation::Event {
@@ -754,7 +756,7 @@ mod tests {
             .handle(call(
                 "host",
                 "communications.list",
-                json!({"session":"chief/scout"}),
+                json!({"session":"scout"}),
                 vec![],
             ))
             .unwrap()

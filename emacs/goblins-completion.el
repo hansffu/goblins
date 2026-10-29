@@ -10,7 +10,7 @@
 ;; effect once its package loads.
 ;;
 ;; - Commands such as `goblins-goblin-info' and `goblins-goblin-shell' act on
-;;   a goblin chosen in the `goblin' completion category.
+;;   a goblin chosen in the `goblins-goblin' completion category.
 ;; - Embark: goblin candidates, and goblins' agent terminals among buffers
 ;;   (type `goblins-terminal'), get those commands as actions.
 ;; - Marginalia: agent terminals among buffers are described like goblins.
@@ -137,7 +137,7 @@ In the workspace its saved windows come back beside it."
   (goblins--invite-to-chosen-raid source id))
 
 (defun goblins-goblin-stop (source id)
-  "Stop goblin ID of SOURCE's server and its children, after confirming."
+  "Stop goblin ID of SOURCE's server after confirming."
   (interactive (goblins--choose-goblin "Stop goblin: "))
   (goblins-stop-goblin source id))
 
@@ -167,7 +167,7 @@ terminals, then its running goblins without one."
                        (goblins-open-session (car goblin) (cdr goblin))))
            :items (lambda () (mapcar (lambda (b) (cons (buffer-name b) b))
                                      (goblins--agent-terminals directory))))
-     (list :name "Not attached" :narrow ?a :category 'goblin
+     (list :name "Not attached" :narrow ?a :category 'goblins-goblin
            :annotate (goblins--goblin-annotation source)
            :action (lambda (candidate)
                      (goblins-open-session
@@ -438,7 +438,7 @@ longer starting."
     (define-key map (kbd "RET") #'goblins-goblin-show)
     (define-key map (kbd "o") #'goblins-goblin-show)
     map)
-  "Embark actions for `goblin' targets; Embark's general actions too.")
+  "Embark actions for `goblins-goblin' targets; Embark's general actions too.")
 
 (defvar goblins-embark-request-map
   (let ((map (make-sparse-keymap)))
@@ -470,7 +470,7 @@ it names an agent terminal."
   (set-keymap-parent goblins-embark-terminal-actions embark-general-map)
   (set-keymap-parent goblins-embark-terminal-map
                      (make-composed-keymap goblins-embark-terminal-actions embark-buffer-map))
-  (add-to-list 'embark-keymap-alist '(goblin goblins-embark-goblin-map))
+  (add-to-list 'embark-keymap-alist '(goblins-goblin goblins-embark-goblin-map))
   (add-to-list 'embark-keymap-alist '(goblins-terminal goblins-embark-terminal-map))
   (set-keymap-parent goblins-embark-request-map embark-general-map)
   (add-to-list 'embark-keymap-alist '(goblins-request goblins-embark-request-map))

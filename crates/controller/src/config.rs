@@ -21,6 +21,11 @@ pub struct Configuration {
     /// `{key}` placeholders for its recorded variables.
     #[serde(default)]
     pub resume_command: Option<Vec<String>>,
+    /// Run the agent without a terminal and start this client at each attach.
+    #[serde(default)]
+    pub on_attach: Option<OnAttach>,
+    #[serde(default)]
+    pub on_detach: Option<Vec<String>>,
     pub env: BTreeMap<String, String>,
     pub client_package: PathBuf,
     pub helper: PathBuf,
@@ -34,6 +39,13 @@ pub struct Configuration {
     pub integration: Option<String>,
     #[serde(default)]
     pub docker: Option<Docker>,
+    /// mkGoblin's hostCommands.enable: `goblin host run` may ask the host.
+    #[serde(default)]
+    pub host_commands: bool,
+    /// mkGoblin's bypassPermissions: the agent launcher skips the agent's own
+    /// permission prompts. Only shown; the launcher already applies it.
+    #[serde(default)]
+    pub bypass_permissions: bool,
     /// Default scope; `allowed_scopes` may be selected at launch instead.
     #[serde(default)]
     pub scope: Option<String>,
@@ -45,10 +57,9 @@ pub struct Configuration {
     /// The same goblin with each permitted scope's defaults merged in by Nix.
     #[serde(default)]
     pub scopes: BTreeMap<String, Configuration>,
-    /// Configurations this one may launch as children. Nix always writes it
-    /// on top-level configurations; absent (an older build) means itself only.
+    /// Configurations this one may run as raid members; none when absent.
     #[serde(default)]
-    pub allowed_children: Option<Vec<String>>,
+    pub allowed_run_targets: Vec<String>,
     #[serde(skip)]
     pub selected_scope: Option<Scope>,
 }
@@ -102,8 +113,8 @@ pub struct Editor {
 // Host manifests contain only launch metadata, not package contents. Bound the
 // read and reject special files so a mistaken FIFO/device cannot stall startup.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
-/// Bound on a configuration's `allowed_children`, as in mkGoblins.
-pub const MAX_CHILDREN: usize = 64;
+/// Bound on a configuration's `allowed_run_targets`, as in mkGoblins.
+pub const MAX_RUN_TARGETS: usize = 64;
 fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
@@ -119,6 +130,66 @@ fn read_regular(path: &Path, limit: u64) -> Result<Vec<u8>> {
         return Err(format!("configuration exceeds {} MiB", limit / (1024 * 1024)).into());
     }
     Ok(bytes)
+}
+/// A validated manifest the daemon may launch goblins from, kept from
+/// garbage collection while anything holds the lease: the daemon while it is
+/// current, and every launch accepted against it until that launch started.
+#[derive(Debug)]
+pub(crate) struct ManifestLease {
+    pub path: PathBuf,
+    root: Option<PathBuf>,
+}
+impl ManifestLease {
+    /// Validate `path` and root the store output that holds it under
+    /// `directory`, named for `sequence` so leases never share a root.
+    pub(crate) fn create(
+        path: &Path,
+        directory: &Path,
+        sequence: u64,
+        cancel: &crate::process::Cancellation,
+    ) -> Result<Self> {
+        Manifest::validate(path)?;
+        let root = match crate::session::containing_store_output(path) {
+            None => None,
+            Some(output) => {
+                crate::unix::private_directory(directory)?;
+                let name = output.file_name().unwrap().to_string_lossy();
+                let link = directory.join(format!("{sequence}-{name}"));
+                crate::process::command(
+                    std::process::Command::new("nix-store")
+                        .arg("--realise")
+                        .arg(&output)
+                        .arg("--add-root")
+                        .arg(&link)
+                        .arg("--indirect"),
+                    directory,
+                    cancel,
+                )?;
+                Some(link)
+            }
+        };
+        Ok(Self {
+            path: path.to_path_buf(),
+            root,
+        })
+    }
+}
+#[cfg(test)]
+impl ManifestLease {
+    /// A lease on a manifest that is not in the store, for tests.
+    pub(crate) fn unrooted(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            root: None,
+        }
+    }
+}
+impl Drop for ManifestLease {
+    fn drop(&mut self) {
+        if let Some(root) = &self.root {
+            let _ = std::fs::remove_file(root);
+        }
+    }
 }
 impl Manifest {
     pub fn read(path: &Path) -> Result<Self> {
@@ -148,31 +219,17 @@ impl Manifest {
         })?;
         self.resolve(name, config, scope)
     }
-    /// Select the root like `select`, then snapshot every configuration its
-    /// `allowed_children` reach, resolved for the root's actual scope.
-    pub(crate) fn branch(
-        self,
-        name: &str,
-        scope: Option<&str>,
-    ) -> Result<(Configuration, crate::branch::Branch)> {
-        self.check()?;
-        let config = self.goblins.get(name).cloned().ok_or_else(|| {
-            format!(
-                "unknown goblin; available: {}",
-                self.goblins.keys().cloned().collect::<Vec<_>>().join(", ")
-            )
-        })?;
-        let root = self.resolve(name, config, scope)?;
-        let selected = root.selected_scope.as_ref().map(|s| s.name.clone());
-        let branch = crate::branch::Branch::snapshot(
-            name,
-            |key| self.children(key),
-            |key| self.select_inherited(key, selected.as_deref()),
-        );
-        Ok((root, branch))
+    /// Read a manifest and check everything about it that does not depend
+    /// on the goblin selected: versions, scope catalog, run-target bounds and
+    /// editor. A manifest that passes may become the daemon's current one.
+    pub fn validate(path: &Path) -> Result<Self> {
+        let manifest = Self::read(path)?;
+        manifest.check()?;
+        manifest.editor()?;
+        Ok(manifest)
     }
     fn check(&self) -> Result<()> {
-        if self.api != 2 || self.helper_api != 5 {
+        if self.api != 2 || self.helper_api != 6 {
             return Err("incompatible manifest/helper API".into());
         }
         for (scope, definition) in &self.scopes {
@@ -186,31 +243,43 @@ impl Manifest {
             }
         }
         for (name, config) in &self.goblins {
-            if let Some(children) = &config.allowed_children
-                && (children.len() > MAX_CHILDREN
-                    || !children.iter().all(|c| goblins_protocol::identifier(c)))
+            for config in std::iter::once(config).chain(config.scopes.values()) {
+                match &config.on_attach {
+                    Some(on_attach) => Handlers::check(on_attach, config.on_detach.as_ref())
+                        .map_err(|e| format!("{e} for '{name}'"))?,
+                    None if config.on_detach.is_some() => {
+                        return Err(format!("onDetach without onAttach for '{name}'").into());
+                    }
+                    None => (),
+                }
+            }
+            let targets = &config.allowed_run_targets;
+            if targets.len() > MAX_RUN_TARGETS
+                || !targets.iter().all(|c| goblins_protocol::identifier(c))
             {
                 return Err(format!(
-                    "invalid allowed_children for '{name}': at most {MAX_CHILDREN} names of at most 64 characters"
+                    "invalid allowed_run_targets for '{name}': at most {MAX_RUN_TARGETS} names of at most 64 characters"
                 )
                 .into());
             }
         }
         Ok(())
     }
-    /// A top-level configuration's permitted children; unknown names have none.
-    fn children(&self, name: &str) -> Vec<String> {
+    /// The configurations a top-level configuration may run as raid
+    /// members; unknown names have none. Scope variants never carry the list.
+    pub(crate) fn run_targets(&self, name: &str) -> Vec<String> {
         match self.goblins.get(name) {
-            Some(config) => config
-                .allowed_children
-                .clone()
-                .unwrap_or_else(|| vec![name.to_string()]),
+            Some(config) => config.allowed_run_targets.clone(),
             None => vec![],
         }
     }
-    /// Resolve a child configuration for the scope its branch runs in. A child
-    /// never selects a scope: a different default scope is ignored.
-    fn select_inherited(&self, name: &str, scope: Option<&str>) -> Result<Configuration> {
+    /// Resolve a run target for the scope its owner runs in. It never selects
+    /// a scope: a different default scope is ignored.
+    pub(crate) fn select_inherited(
+        &self,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Result<Configuration> {
         let config = self
             .goblins
             .get(name)
@@ -218,7 +287,7 @@ impl Manifest {
             .ok_or_else(|| format!("unknown goblin '{name}'"))?;
         match (scope, &config.scope) {
             (None, Some(required)) => {
-                Err(format!("'{name}' requires scope '{required}'; its parent has no scope").into())
+                Err(format!("'{name}' requires scope '{required}'; its owner has no scope").into())
             }
             (Some(scope), default)
                 if default.as_deref() != Some(scope)
@@ -280,11 +349,66 @@ impl Manifest {
         Ok(variant)
     }
 }
+/// mkGoblin's `onAttach`: the client started on a new terminal at each attach.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnAttach {
+    pub command: Vec<String>,
+    /// Seconds an attach waits for the variables the client needs.
+    pub timeout: u64,
+    /// Variables to wait for beyond the command's own placeholders.
+    #[serde(default)]
+    pub wait_for: Vec<String>,
+}
+impl OnAttach {
+    /// Every variable an attach waits for.
+    pub fn needs(&self) -> Vec<String> {
+        let mut names = placeholders(&self.command);
+        names.extend(self.wait_for.iter().cloned());
+        names.sort();
+        names.dedup();
+        names
+    }
+}
+/// The attach handlers of a goblin that has `onAttach`.
+#[derive(Clone, Debug)]
+pub struct Handlers {
+    pub on_attach: OnAttach,
+    pub on_detach: Option<Vec<String>>,
+}
+impl Handlers {
+    fn check(on_attach: &OnAttach, on_detach: Option<&Vec<String>>) -> Result<()> {
+        let template = |command: &Vec<String>| {
+            !command.is_empty() && substitute(command, true, |key| Ok(key.to_string())).is_ok()
+        };
+        if !template(&on_attach.command)
+            || !(1..=3600).contains(&on_attach.timeout)
+            || !on_attach
+                .wait_for
+                .iter()
+                .all(|name| goblins_protocol::variable_key(name))
+            || on_detach.is_some_and(|command| !template(command))
+        {
+            return Err("invalid onAttach or onDetach".into());
+        }
+        Ok(())
+    }
+}
+
 /// Trusted launch configuration, never accepted over the sandbox socket.
 #[derive(Clone, Deserialize)]
 pub struct Launch {
     #[serde(default)]
     pub description: String,
+    /// The host store and Nix daemon are visible (mkGoblin's allowNix).
+    #[serde(default)]
+    pub allow_nix: bool,
+    /// The sandbox may ask the host to run commands outside it.
+    #[serde(default)]
+    pub host_commands: bool,
+    /// The configuration asks the agent to skip its own permission prompts.
+    #[serde(default)]
+    pub bypass_permissions: bool,
     #[serde(default)]
     pub pasta: Option<PathBuf>,
     #[serde(skip)]
@@ -295,6 +419,10 @@ pub struct Launch {
     /// Replaces `shell_args` on recreate when every placeholder has a value.
     #[serde(default)]
     pub resume_command: Option<Vec<String>>,
+    /// Present when the agent runs without a terminal and each attach
+    /// starts a client.
+    #[serde(skip)]
+    pub handlers: Option<Handlers>,
     pub posix_shell: PathBuf,
     pub helper: PathBuf,
     pub bwrap: PathBuf,
@@ -304,6 +432,10 @@ pub struct Launch {
     pub initial_packages: Vec<PathBuf>,
     #[serde(default)]
     pub initial_closure: Vec<PathBuf>,
+    /// Registered references of this file may retain initial paths together.
+    /// This is GC protection only; it never widens the sandbox's store view.
+    #[serde(default)]
+    pub initial_closure_file: Option<PathBuf>,
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
@@ -320,10 +452,10 @@ pub struct Launch {
     pub docker: Option<Docker>,
     #[serde(skip)]
     pub scope: Option<Scope>,
-    /// Host-evaluated flake dev shell; children inherit this generation.
+    /// Host-evaluated flake dev shell; members a raid owner runs start in this generation.
     #[serde(skip)]
     pub dev_shell: Option<crate::devshell::DevShell>,
-    /// The manifest's host editor; children inherit it.
+    /// The manifest's host editor; members take the current manifest's.
     #[serde(skip)]
     pub editor: Option<Editor>,
 }
@@ -342,11 +474,20 @@ fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]
 }
 impl Configuration {
+    fn spec(&self) -> Result<serde_json::Value> {
+        Ok(serde_json::from_slice(&read_regular(
+            &self.build_spec,
+            MAX_MANIFEST_BYTES,
+        )?)?)
+    }
+    /// mkGoblin's allowNix, from the build spec the launch also reads.
+    pub fn allows_nix(&self) -> Result<bool> {
+        Ok(self.spec()?["allow_nix"] == true)
+    }
     pub fn launch(&self) -> Result<Launch> {
-        let spec: serde_json::Value =
-            serde_json::from_slice(&read_regular(&self.build_spec, MAX_MANIFEST_BYTES)?)?;
+        let spec = self.spec()?;
         if spec["platform"] != "linux"
-            || spec["allow_nix"] != false
+            || !spec["allow_nix"].is_boolean()
             || spec["allow_unix_sockets"] != true
         {
             return Err("unsupported Goblin sandbox policy".into());
@@ -369,6 +510,9 @@ impl Configuration {
         env.extend(self.env.clone());
         Ok(Launch {
             description: self.description.clone(),
+            allow_nix: spec["allow_nix"] == true,
+            host_commands: self.host_commands,
+            bypass_permissions: self.bypass_permissions,
             pasta: if self.network {
                 Some(
                     spec["dependencies"]["pasta"]
@@ -383,6 +527,10 @@ impl Configuration {
             shell: string("sandboxed_binary")?.into(),
             shell_args: self.args.clone(),
             resume_command: self.resume_command.clone(),
+            handlers: self.on_attach.clone().map(|on_attach| Handlers {
+                on_attach,
+                on_detach: self.on_detach.clone(),
+            }),
             posix_shell: string("shell")?.into(),
             helper: self.helper.clone(),
             bwrap: spec["dependencies"]["bwrap"]
@@ -403,6 +551,7 @@ impl Configuration {
             .lines()
             .map(PathBuf::from)
             .collect(),
+            initial_closure_file: Some(string("closure_paths_file")?.into()),
             env,
             protected_paths: vec![],
             sandbox_etc: self.sandbox_etc.clone(),
@@ -426,6 +575,48 @@ impl Configuration {
 pub fn resume_arguments(
     template: &[String],
     variables: &BTreeMap<String, String>,
+) -> std::result::Result<Vec<String>, String> {
+    substitute(template, false, |key| value(variables, key))
+}
+/// An attach handler filled like `resume_arguments`; `{attach.pid}` is the
+/// attached client's process ID.
+pub fn handler_arguments(
+    template: &[String],
+    variables: &BTreeMap<String, String>,
+    pid: Option<i32>,
+) -> std::result::Result<Vec<String>, String> {
+    substitute(template, true, |key| match key {
+        "attach.pid" => pid
+            .map(|pid| pid.to_string())
+            .ok_or_else(|| "no attached client".to_string()),
+        key => value(variables, key),
+    })
+}
+/// The variable names a template's placeholders use.
+pub fn placeholders(template: &[String]) -> Vec<String> {
+    let mut names = vec![];
+    let _ = substitute(template, true, |key| {
+        if goblins_protocol::variable_key(key) {
+            names.push(key.to_string());
+        }
+        Ok(String::new())
+    });
+    names
+}
+fn value(variables: &BTreeMap<String, String>, key: &str) -> std::result::Result<String, String> {
+    let value = variables
+        .get(key)
+        .ok_or_else(|| format!("variable '{key}' is not recorded"))?;
+    // An option-like value could change what the agent does.
+    if value.starts_with('-') {
+        return Err(format!("variable '{key}' starts with '-'"));
+    }
+    Ok(value.clone())
+}
+fn substitute(
+    template: &[String],
+    attach: bool,
+    mut value: impl FnMut(&str) -> std::result::Result<String, String>,
 ) -> std::result::Result<Vec<String>, String> {
     template
         .iter()
@@ -452,24 +643,18 @@ pub fn resume_arguments(
                             }
                             key.push(c);
                         }
-                        if !closed || !goblins_protocol::variable_key(&key) {
+                        if !closed
+                            || !(goblins_protocol::variable_key(&key)
+                                || attach && key == "attach.pid")
+                        {
                             return Err(format!(
-                                "resume command element '{element}' has an invalid placeholder"
+                                "command element '{element}' has an invalid placeholder"
                             ));
                         }
-                        let value = variables
-                            .get(&key)
-                            .ok_or_else(|| format!("variable '{key}' is not recorded"))?;
-                        // An option-like value could change what the agent does.
-                        if value.starts_with('-') {
-                            return Err(format!("variable '{key}' starts with '-'"));
-                        }
-                        argument.push_str(value);
+                        argument.push_str(&value(&key)?);
                     }
                     '}' => {
-                        return Err(format!(
-                            "resume command element '{element}' has an unmatched '}}'"
-                        ));
+                        return Err(format!("command element '{element}' has an unmatched '}}'"));
                     }
                     c => argument.push(c),
                 }
@@ -482,6 +667,192 @@ pub fn resume_arguments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
+    fn goblin(extra: Value) -> Value {
+        let mut value = json!({
+            "build_spec": "/nix/store/00000000000000000000000000000000-spec.json",
+            "args": [], "env": {}, "client_package": "/unused", "helper": "/unused",
+            "flake": "unused",
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        value
+    }
+    fn manifest(goblins: Value) -> Value {
+        json!({
+            "api": 2, "helper_api": 6, "goblins": goblins,
+            "scopes": {
+                "work": {"persistent": false, "pid": true},
+                "other": {"persistent": false, "pid": true},
+            },
+        })
+    }
+    fn parse(value: Value) -> Manifest {
+        serde_json::from_value(value).unwrap()
+    }
+    /// Validate a manifest written to a file, as the daemon reads it.
+    fn validated(value: &Value) -> Result<Manifest> {
+        let directory = crate::unix::temp_directory().unwrap();
+        let path = directory.join("manifest.json");
+        std::fs::write(&path, value.to_string()).unwrap();
+        let result = Manifest::validate(&path);
+        std::fs::remove_dir_all(directory).unwrap();
+        result
+    }
+
+    #[test]
+    fn run_targets_come_from_the_top_level_configuration() {
+        let m = parse(manifest(json!({
+            "coordinator": goblin(json!({
+                "allowed_run_targets": ["reviewer"], "scope": "work",
+                "scopes": {"work": goblin(json!({}))},
+            })),
+            "reviewer": goblin(json!({})),
+        })));
+        assert_eq!(m.run_targets("coordinator"), ["reviewer"]);
+        assert!(m.run_targets("reviewer").is_empty());
+        assert!(m.run_targets("unknown").is_empty());
+    }
+
+    #[test]
+    fn run_targets_resolve_for_the_owner_scope() {
+        let goblins = json!({
+            // A different default scope is ignored, never followed.
+            "member": goblin(json!({
+                "scope": "other", "allowed_scopes": ["work"],
+                "scopes": {
+                    "other": goblin(json!({"description": "member in other"})),
+                    "work": goblin(json!({"description": "member in work"})),
+                },
+            })),
+            "elsewhere": goblin(json!({
+                "scope": "other", "scopes": {"other": goblin(json!({}))},
+            })),
+            "unscoped": goblin(json!({})),
+            "required": goblin(json!({
+                "scope": "work", "scopes": {"work": goblin(json!({}))},
+            })),
+            "joins": goblin(json!({
+                "allowed_scopes": ["work"], "scopes": {"work": goblin(json!({}))},
+            })),
+        });
+        let m = parse(manifest(goblins));
+        let member = m.select_inherited("member", Some("work")).unwrap();
+        assert_eq!(member.description, "member in work");
+        assert_eq!(member.selected_scope.as_ref().unwrap().name, "work");
+        assert!(m.select_inherited("required", Some("work")).is_ok());
+        assert!(m.select_inherited("joins", Some("work")).is_ok());
+        assert!(
+            m.select_inherited("joins", None)
+                .unwrap()
+                .selected_scope
+                .is_none()
+        );
+        assert!(m.select_inherited("unscoped", None).is_ok());
+        for (name, scope, error) in [
+            (
+                "elsewhere",
+                Some("work"),
+                "'elsewhere' does not allow scope 'work'",
+            ),
+            (
+                "unscoped",
+                Some("work"),
+                "'unscoped' does not allow scope 'work'",
+            ),
+            (
+                "required",
+                None,
+                "'required' requires scope 'work'; its owner has no scope",
+            ),
+            ("absent", None, "unknown goblin 'absent'"),
+        ] {
+            assert_eq!(
+                m.select_inherited(name, scope).err().unwrap().to_string(),
+                error
+            );
+        }
+    }
+
+    #[test]
+    fn a_manifest_lease_roots_its_store_output_until_the_last_holder_drops_it() {
+        // Needs the host's Nix daemon, which a Nix build sandbox lacks.
+        if std::process::Command::new("nix-store")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let directory = crate::unix::temp_directory().unwrap();
+        let file = directory.join("goblins-config.json");
+        std::fs::write(
+            &file,
+            manifest(json!({"shell": goblin(json!({}))})).to_string(),
+        )
+        .unwrap();
+        let added = std::process::Command::new("nix-store")
+            .arg("--add")
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(added.status.success());
+        let stored = PathBuf::from(String::from_utf8(added.stdout).unwrap().trim());
+        let roots = directory.join("manifests");
+        let cancel = crate::process::Cancellation::default();
+        let lease =
+            std::sync::Arc::new(ManifestLease::create(&stored, &roots, 7, &cancel).unwrap());
+        let link = roots.join(format!(
+            "7-{}",
+            stored.file_name().unwrap().to_string_lossy()
+        ));
+        assert_eq!(std::fs::read_link(&link).ok(), Some(stored.clone()));
+        // A launch holding a clone keeps it after the daemon replaced it.
+        let launch = lease.clone();
+        drop(lease);
+        assert!(link.is_symlink());
+        drop(launch);
+        assert!(!link.is_symlink());
+        // An invalid manifest is never leased.
+        std::fs::write(&file, "invalid").unwrap();
+        assert!(ManifestLease::create(&file, &roots, 8, &cancel).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn validation_covers_versions_bounds_and_the_editor() {
+        let good = manifest(json!({"shell": goblin(json!({}))}));
+        assert!(validated(&good).is_ok());
+        let mut old = good.clone();
+        old["api"] = json!(1);
+        assert!(
+            validated(&old)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("incompatible")
+        );
+        let mut editor = good.clone();
+        editor["editor"] = json!({"kind": "vim", "command": "vim"});
+        assert!(
+            validated(&editor)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("editor")
+        );
+        let many: Vec<_> = (0..65).map(|i| format!("g{i}")).collect();
+        for targets in [json!(many), json!(["x".repeat(65)]), json!(["../bad"])] {
+            let bad = manifest(json!({"shell": goblin(json!({"allowed_run_targets": targets}))}));
+            let error = validated(&bad).err().unwrap().to_string();
+            assert!(error.contains("invalid allowed_run_targets"), "{error}");
+        }
+        let fits = manifest(json!({"shell": goblin(json!({"allowed_run_targets": many[..64]}))}));
+        assert!(validated(&fits).is_ok());
+        assert!(Manifest::validate(Path::new("/nonexistent/manifest.json")).is_err());
+    }
     #[test]
     fn resume_arguments_fill_placeholders_or_say_why_not() {
         let variables = BTreeMap::from([
@@ -526,5 +897,44 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+    #[test]
+    fn attach_handlers_fill_variables_and_the_client_pid() {
+        let variables = BTreeMap::from([("session_id".to_string(), "c819".to_string())]);
+        let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let command = template(&["resume", "{session_id}", "--pid={attach.pid}", "{{x}}"]);
+        assert_eq!(
+            handler_arguments(&command, &variables, Some(42)),
+            Ok(template(&["resume", "c819", "--pid=42", "{x}"]))
+        );
+        assert!(handler_arguments(&command, &variables, None).is_err());
+        assert!(resume_arguments(&template(&["{attach.pid}"]), &variables).is_err());
+        let on_attach = OnAttach {
+            command: template(&["{session_id}", "{attach.pid}", "{session_id}"]),
+            timeout: 30,
+            wait_for: template(&["ready", "session_id"]),
+        };
+        assert_eq!(on_attach.needs(), ["ready", "session_id"]);
+        assert!(Handlers::check(&on_attach, None).is_ok());
+        for (command, timeout, wait_for) in [
+            (template(&[]), 30, vec![]),
+            (template(&["{attach.other}"]), 30, vec![]),
+            (template(&["{Bad}"]), 30, vec![]),
+            (template(&["x"]), 0, vec![]),
+            (template(&["x"]), 30, template(&["attach.pid"])),
+        ] {
+            let on_attach = OnAttach {
+                command,
+                timeout,
+                wait_for,
+            };
+            assert!(Handlers::check(&on_attach, None).is_err());
+        }
+        let on_attach = OnAttach {
+            command: template(&["x"]),
+            timeout: 30,
+            wait_for: vec![],
+        };
+        assert!(Handlers::check(&on_attach, Some(&template(&["{attach.x}"]))).is_err());
     }
 }

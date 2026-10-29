@@ -13,7 +13,7 @@ use goblins_protocol::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File},
     io::{self, Read, Write},
     os::fd::{AsRawFd, OwnedFd},
@@ -25,8 +25,10 @@ use std::{
     time::Instant,
 };
 
+mod attach;
 mod editor;
 mod exec;
+mod host;
 mod raids;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
 
@@ -43,16 +45,16 @@ pub struct SessionRecord {
     /// Flake reference of the host-launched dev shell, if any.
     #[serde(default)]
     pub dev_shell: Option<String>,
-    /// Working directory the sandbox was launched in (children inherit it).
+    /// Working directory the sandbox was launched in (goblins a raid owner
+    /// runs share it).
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     pub id: String,
+    /// Unique among live goblins: the address in messages, exec and TRAMP.
     pub agent_name: String,
-    /// None denotes the host root. Ownership always uses immutable IDs.
+    /// The raid owner that ran this goblin, for display only.
     #[serde(default)]
-    pub parent: Option<String>,
-    #[serde(default)]
-    pub path: String,
+    pub created_by: Option<CreatedBy>,
     /// Reusable Nix configuration key, distinct from the per-launch agent name.
     pub name: String,
     #[serde(default)]
@@ -71,7 +73,17 @@ pub struct SessionRecord {
     pub identity: Option<Identity>,
     pub initial_packages: Vec<String>,
     pub packages: Vec<String>,
+    /// Packages granted on request without asking the host, copied from the
+    /// goblin that started this one.
+    #[serde(default)]
+    pub auto_approve: Vec<String>,
     pub terminal: String,
+    /// The socket frontends attach through with a hello.
+    #[serde(default)]
+    pub attach: String,
+    /// Where an agent without a terminal writes its output.
+    #[serde(default)]
+    pub server_log: Option<String>,
     pub pty_eof: bool,
     pub terminal_complete: bool,
     pub terminal_interrupted: bool,
@@ -110,6 +122,11 @@ impl SessionRecord {
         changed
     }
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedBy {
+    pub id: String,
+    pub agent_name: String,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PermissionRecord {
     #[serde(default = "goblins_protocol::package_kind")]
@@ -133,6 +150,9 @@ pub struct Snapshot {
     pub permissions: Vec<PermissionRecord>,
     #[serde(default)]
     pub raids: Vec<RaidRecord>,
+    /// The communications log's health: messaging stops while it fails.
+    #[serde(default)]
+    pub messaging: crate::mailbox::Health,
 }
 struct Pending {
     initial_output: Option<PathBuf>,
@@ -144,6 +164,10 @@ struct Pending {
     cancel: Cancel,
     /// The requester has an agent integration to wake with a completion notice.
     notify: bool,
+    /// A host command waiting for the decision.
+    host: Option<host::Spec>,
+    /// The request outlives its connection (`goblin host run --detach`).
+    detached: bool,
 }
 /// A sandbox call waiting on the worker (`flake.run`, `devshell.diff`). One
 /// at a time per sandbox; the worker runs them in turn with other work.
@@ -172,6 +196,10 @@ struct Active {
     /// The private channel to the sandbox's goblins-init.
     init: Option<OwnedFd>,
     granted_outputs: BTreeMap<String, PathBuf>,
+    /// Auto-approved packages, by exact output, rooted by the session itself.
+    auto_approve: BTreeMap<String, PathBuf>,
+    /// Dev-shell generations a refresh may move to without asking.
+    auto_approve_dev_shells: BTreeSet<String>,
     /// Identity of the current trusted dev shell generation.
     dev_identity: Option<String>,
     call: Option<Call>,
@@ -181,6 +209,14 @@ struct Active {
     /// A root goblin's recorded variables, kept also while this server has
     /// no history, for a record created when it takes the store over.
     variables: BTreeMap<String, String>,
+    /// Names `sessions.set-variables` has set to a value since this launch.
+    /// Values seeded from the history record are not in it.
+    fresh: BTreeSet<String>,
+    attach: attach::Attach,
+    /// Known once started: the agent runs without a terminal and each attach
+    /// starts a client.
+    handlers: Option<crate::config::Handlers>,
+    server_log: Option<attach::ServerLog>,
     /// The history record this goblin writes: the record it was recreated
     /// from, otherwise its own id.
     line: String,
@@ -369,13 +405,11 @@ struct Start {
     name: String,
     agent_name: Option<String>,
     #[serde(default)]
-    parent: Option<String>,
-    #[serde(default)]
     cwd: Option<PathBuf>,
-    /// Scope for a root sandbox; children always inherit their parent's.
+    /// Scope for a host launch; goblins a raid owner runs share its scope.
     #[serde(default)]
     scope: Option<String>,
-    /// Absolute `PATH[#ATTR]` of a host flake dev shell; children inherit.
+    /// Absolute `PATH[#ATTR]` of a host flake dev shell; shared the same way.
     #[serde(default)]
     dev_shell: Option<String>,
     rows: u16,
@@ -385,9 +419,6 @@ struct Start {
     /// Join this raid, creating it with the new goblin as owner if absent.
     #[serde(default)]
     raid: Option<String>,
-    /// Sandbox launches only: join the selected parent's raid.
-    #[serde(skip)]
-    inherit_raid: bool,
     /// Recreate this recorded goblin (record id, unique id prefix or unique
     /// agent name) from the current configuration of the same name.
     #[serde(default)]
@@ -398,22 +429,17 @@ struct Start {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ChildStart {
+struct MemberStart {
     key: String,
     name: String,
     agent_name: Option<String>,
-    parent: Option<String>,
     #[serde(default)]
     detached: bool,
-    #[serde(default)]
-    inherit_raid: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stop {
     session: String,
-    #[serde(default)]
-    kill_children: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -460,6 +486,24 @@ struct Subscription {
 #[serde(deny_unknown_fields)]
 struct Empty {}
 type Fault = (i32, String);
+/// Permission states the snapshot keeps whatever its size: the request still
+/// waits for, or is being carried out after, a decision.
+const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing", "running"];
+/// A raid owner running a member, checked and holding its live scope.
+#[derive(Clone)]
+struct Owner {
+    id: String,
+    inheritance: Inheritance,
+    scope: Option<std::sync::Arc<crate::scope::Shared>>,
+}
+/// Dev-shell generations an auto-approve set holds.
+const AUTO_DEV_SHELLS: usize = 32;
+/// Approvals copied to a goblin when it is started.
+#[derive(Clone, Debug, Default)]
+struct AutoApprove {
+    packages: BTreeMap<String, PathBuf>,
+    dev_shells: BTreeSet<String>,
+}
 fn params<T: DeserializeOwned>(v: Value) -> std::result::Result<T, Fault> {
     serde_json::from_value(v).map_err(|e| (-32602, e.to_string()))
 }
@@ -510,10 +554,11 @@ fn random_name<'a>(
 }
 pub struct Controller {
     messaging: crate::messaging::Service,
+    /// As the messaging worker last reported it.
+    messaging_health: crate::mailbox::Health,
     messaging_directory: crate::mailbox::Directory,
     state: PathBuf,
     workspace: Option<PathBuf>,
-    _lock: File,
     listener: UnixListener,
     instance: String,
     next: u64,
@@ -522,6 +567,9 @@ pub struct Controller {
     sessions: BTreeMap<String, Active>,
     execs: BTreeMap<u64, exec::Exec>,
     edits: Vec<editor::Edit>,
+    host_jobs: Vec<host::Job>,
+    /// Finished host commands' results, by request.
+    host_outcomes: BTreeMap<String, Value>,
     permissions: VecDeque<PermissionRecord>,
     launches: BTreeMap<String, (Start, Value)>,
     shutdown: Option<(u64, Instant)>,
@@ -546,6 +594,16 @@ pub struct Controller {
     history_waiting: Option<std::sync::mpsc::Receiver<crate::history::Store>>,
     /// Ends the waiting thread with this server.
     history_token: std::sync::Arc<()>,
+    /// The last validated manifest the host used: what raid owners run
+    /// members from. Its root goes once nothing holds the lease.
+    current_manifest: Option<std::sync::Arc<crate::config::ManifestLease>>,
+    /// The order of the last accepted host launch, and of the published
+    /// manifest: a slower, older launch never replaces a newer manifest.
+    manifest_sequence: u64,
+    manifest_published: u64,
+    // Fields drop in declaration order. Keep ownership through every worker,
+    // history store and manifest lease being released, including on errors.
+    _lock: File,
 }
 impl Controller {
     pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
@@ -566,8 +624,11 @@ impl Controller {
         File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         let instance: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let messaging = crate::messaging::Service::new(&state, &instance)?;
+        // Roots of manifests a previous server held.
+        let _ = fs::remove_dir_all(state.join("manifests"));
         Ok(Self {
             messaging,
+            messaging_health: Default::default(),
             messaging_directory: BTreeMap::new(),
             state,
             workspace,
@@ -580,6 +641,8 @@ impl Controller {
             sessions: BTreeMap::new(),
             execs: BTreeMap::new(),
             edits: Vec::new(),
+            host_jobs: Vec::new(),
+            host_outcomes: BTreeMap::new(),
             permissions: VecDeque::new(),
             launches: BTreeMap::new(),
             shutdown: None,
@@ -593,7 +656,33 @@ impl Controller {
             keep_sessions: crate::history::DEFAULT_KEEP,
             history_waiting: None,
             history_token: std::sync::Arc::new(()),
+            current_manifest: None,
+            manifest_sequence: 0,
+            manifest_published: 0,
         })
+    }
+    /// Finish cleanup while retaining the daemon lock for the caller's final
+    /// output. A stop command must not return before that output is flushed.
+    pub fn shutdown(self) -> Result<File> {
+        let lock = self._lock.try_clone()?;
+        drop(self);
+        Ok(lock)
+    }
+    /// Start with the manifest the server was started with as current, once
+    /// it validates. Call before the first launch.
+    pub fn use_manifest(&mut self, path: &Path) {
+        match crate::config::ManifestLease::create(
+            path,
+            &self.state.join("manifests"),
+            0,
+            &Cancel::default(),
+        ) {
+            Ok(lease) => self.current_manifest = Some(std::sync::Arc::new(lease)),
+            Err(e) => eprintln!(
+                "goblins: no current configuration from {}: {e}",
+                path.display()
+            ),
+        }
     }
     /// Own the history store in `directory`. While another process holds
     /// it, run without history and take it over once it is released.
@@ -677,9 +766,9 @@ impl Controller {
             .map(|a| a.line.clone())
             .collect()
     }
-    /// Start the record of a root goblin that reached running.
+    /// Start the record of a goblin that reached running.
     fn record_started(&mut self, a: &Active) {
-        if a.record.parent.is_some() || self.workspace.is_some() {
+        if self.workspace.is_some() {
             return;
         }
         let mut running = self.live_lines();
@@ -693,8 +782,8 @@ impl Controller {
         store.write(record);
         store.retain(keep, &running);
     }
-    /// Records for root goblins that reached running before this server
-    /// owned the history store, so they can be recreated too.
+    /// Records for goblins that reached running before this server owned
+    /// the history store, so they can be recreated too.
     fn record_running(&mut self) {
         if self.workspace.is_some() {
             return;
@@ -705,8 +794,7 @@ impl Controller {
             return;
         };
         for a in self.sessions.values() {
-            if a.record.parent.is_none()
-                && a.record.state == "running"
+            if a.record.state == "running"
                 && a.worker.is_some()
                 && store
                     .records
@@ -722,12 +810,6 @@ impl Controller {
     /// Fill a recreate launch from its record, refusing what cannot be
     /// recreated now.
     fn prepare_recreate(&self, p: &mut Start, target: &str) -> std::result::Result<(), Fault> {
-        if p.parent.is_some() {
-            return Err((
-                -32602,
-                "resume cannot be combined with --parent: only root goblins are resumed".into(),
-            ));
-        }
         if !p.name.is_empty()
             || p.agent_name.is_some()
             || p.cwd.is_some()
@@ -767,6 +849,17 @@ impl Controller {
                 ),
             ));
         }
+        // A record from disk is bounded like an owner's copied approvals.
+        if record.packages.auto_approve.len() > crate::history::MAX_NAMES {
+            return Err((
+                -32010,
+                format!(
+                    "record {} exceeds the auto-approve limit of {} packages",
+                    record.id,
+                    crate::history::MAX_NAMES
+                ),
+            ));
+        }
         if let Some(reason) = self.recreate_conflict(record) {
             return Err((
                 -32009,
@@ -775,8 +868,8 @@ impl Controller {
         }
         p.name = record.configuration.clone();
         // Its own name when that is free, otherwise a new one.
-        p.agent_name = Some(record.agent_name.clone())
-            .filter(|name| self.allocate_name(Some(name), None).is_ok());
+        p.agent_name =
+            Some(record.agent_name.clone()).filter(|name| self.allocate_name(Some(name)).is_ok());
         p.cwd = record.cwd.clone();
         p.scope = record.scope.clone();
         p.dev_shell = record.dev_shell.clone();
@@ -788,7 +881,7 @@ impl Controller {
     fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
         self.sessions
             .values()
-            .filter(|a| a.worker.is_some() && a.record.parent.is_none())
+            .filter(|a| a.worker.is_some())
             .find(|a| a.line == record.id)
             .map(|a| {
                 format!(
@@ -840,6 +933,12 @@ impl Controller {
             for package in &other.packages.approved {
                 if !merged.packages.denied.contains(package) {
                     let _ = merged.approve(package);
+                }
+            }
+            // Never over the merged record's own decisions.
+            for package in &other.packages.auto_approve {
+                if !merged.packages.denied.contains(package) {
+                    let _ = merged.auto(package);
                 }
             }
             merged.created = merged.created.min(other.created);
@@ -972,6 +1071,7 @@ impl Controller {
             sessions: self.sessions.values().map(|s| s.record.clone()).collect(),
             permissions: self.permissions.iter().cloned().collect(),
             raids: self.raid_records(),
+            messaging: self.messaging_health,
         }
     }
     pub fn shutdown_ready(&self) -> bool {
@@ -986,32 +1086,29 @@ impl Controller {
     fn publish(&mut self) {
         // A stop dispatched just before must not publish the old membership.
         self.reconcile_raids();
+        self.refresh_raid_prompts();
         if !self.dirty {
             return;
         }
         // Count-based retention is supplemented by a total snapshot byte cap.
         // Evictions are visible in the next replacement snapshot.
         while serde_json::to_vec(&self.snapshot()).is_ok_and(|v| v.len() > 900 * 1024) {
-            if let Some(index) = self.permissions.iter().position(|p| {
-                !["pending", "realizing", "mounting", "publishing"].contains(&p.state.as_str())
-            }) {
-                self.permissions.remove(index);
+            if let Some(index) = self
+                .permissions
+                .iter()
+                .position(|p| !UNEVICTABLE.contains(&p.state.as_str()))
+            {
+                let removed = self.permissions.remove(index).unwrap();
+                self.host_outcomes.remove(&removed.id);
             } else if let Some(id) = self
                 .sessions
                 .iter()
-                .filter(|(id, a)| {
-                    a.worker.is_none()
-                        && a.terminal.can_evict()
-                        && !self
-                            .sessions
-                            .values()
-                            .any(|child| child.record.parent.as_ref() == Some(id))
-                })
+                .filter(|(_, a)| a.worker.is_none() && a.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
             {
                 if let Some(a) = self.sessions.remove(&id) {
-                    let _ = fs::remove_file(a.directory.join("terminal.sock"));
+                    attach::remove_files(&a.directory);
                     let _ = fs::remove_dir(a.directory);
                 }
             } else {
@@ -1055,24 +1152,14 @@ impl Controller {
         };
         self.operation(request, goblins_protocol::messages::NOTICE_SENDER, change);
     }
-    fn allocate_name(
-        &self,
-        requested: Option<&str>,
-        parent: Option<&str>,
-    ) -> std::result::Result<String, Fault> {
-        // Reserve ancestor names until the entire subtree finishes cleanup,
-        // so reusing a parent name cannot produce duplicate live tree paths.
-        // Allocation and insertion are serialized in this event loop.
+    fn allocate_name(&self, requested: Option<&str>) -> std::result::Result<String, Fault> {
+        // Names are unique among live goblins: they address messages, execs
+        // and TRAMP. Allocation and insertion are serialized in this loop.
         let available = |name: &str| {
-            !self.sessions.values().any(|a| {
-                a.record.parent.as_deref() == parent
-                    && a.record.agent_name == name
-                    && (a.worker.is_some()
-                        || self.sessions.values().any(|child| {
-                            child.worker.is_some()
-                                && self.descendant(&child.record.id, &a.record.id)
-                        }))
-            })
+            !self
+                .sessions
+                .values()
+                .any(|a| a.worker.is_some() && a.record.agent_name == name)
         };
         if let Some(name) = requested {
             if !valid_agent_name(name) {
@@ -1095,72 +1182,46 @@ impl Controller {
         })?;
         random_name(&available, &mut random).map(str::to_owned)
     }
-    fn descendant(&self, id: &str, ancestor: &str) -> bool {
-        let mut current = self
-            .sessions
-            .get(id)
-            .and_then(|a| a.record.parent.as_deref());
-        while let Some(parent) = current {
-            if parent == ancestor {
-                return true;
-            }
-            current = self
-                .sessions
-                .get(parent)
-                .and_then(|a| a.record.parent.as_deref());
-        }
-        false
-    }
-    fn relative_path<'a>(&'a self, record: &'a SessionRecord, scope: Option<&str>) -> &'a str {
-        if let Some(root) = scope.and_then(|id| self.sessions.get(id)) {
-            record
-                .path
-                .strip_prefix(&format!("{}/", root.record.path))
-                .unwrap_or(&record.path)
-        } else {
-            &record.path
-        }
-    }
-    fn resolve_scoped(
-        &self,
-        target: &str,
-        scope: Option<&str>,
-    ) -> std::result::Result<String, Fault> {
-        let visible = |a: &&Active| scope.is_none_or(|root| self.descendant(&a.record.id, root));
-        let records: Vec<_> = self.sessions.values().filter(visible).collect();
-        if let Some(a) = records.iter().find(|a| a.record.id == target) {
-            return Ok(a.record.id.clone());
-        }
-        if let Some(a) = records
-            .iter()
-            .find(|a| a.worker.is_some() && self.relative_path(&a.record, scope) == target)
-        {
-            return Ok(a.record.id.clone());
-        }
-        let mut matches = records
-            .iter()
-            .filter(|a| a.worker.is_some() && a.record.agent_name == target);
-        let first = matches.next().ok_or_else(missing)?;
-        if matches.next().is_some() {
-            return Err((
-                -32009,
-                "ambiguous agent name; use its tree path or session ID".into(),
-            ));
-        }
-        Ok(first.record.id.clone())
-    }
+    /// A session by ID, or a live goblin by its unique agent name.
     fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
-        self.resolve_scoped(target, None)
+        if let Some(a) = self.sessions.get(target) {
+            return Ok(a.record.id.clone());
+        }
+        self.sessions
+            .values()
+            .find(|a| a.worker.is_some() && a.record.agent_name == target)
+            .map(|a| a.record.id.clone())
+            .ok_or_else(missing)
     }
-    fn sandbox_record(&self, record: &SessionRecord, scope: &str) -> Value {
+    /// Whether `owner` now owns the raid `member` was created in. Evaluated
+    /// on every call, so losing ownership or the member revokes it at once.
+    fn controls(&self, owner: &str, member: &str) -> bool {
+        member != owner
+            && self.raids.of(owner).is_some_and(|r| {
+                r.owner.as_deref() == Some(owner)
+                    && r.members
+                        .get(member)
+                        .is_some_and(|m| m.created_by.is_some())
+            })
+    }
+    /// A created member of the raid `owner` owns; anything else is absent.
+    fn resolve_member(&self, target: &str, owner: &str) -> std::result::Result<String, Fault> {
+        let id = self.resolve_session(target)?;
+        if self.controls(owner, &id) {
+            Ok(id)
+        } else {
+            Err(missing())
+        }
+    }
+    fn sandbox_record(&self, record: &SessionRecord) -> Value {
         // No host paths, process IDs, terminal sockets or diagnostics cross the
-        // sandbox endpoint. Paths are relative to the caller's subtree.
-        json!({"id":record.id,"agent_name":record.agent_name,
-            "parent":record.parent.as_deref().filter(|p| *p != scope),
-            "path":self.relative_path(record, Some(scope)),"name":record.name,
+        // sandbox endpoint.
+        json!({"id":record.id,"agent_name":record.agent_name,"name":record.name,
+            "created_by":record.created_by,
             "description":record.description,"state":record.state,"agent_state":record.agent_state,
             "initial_packages":record.initial_packages,
-            "packages":record.packages,"scope":record.scope,"docker_enabled":record.docker_enabled,
+            "packages":record.packages,"auto_approve":record.auto_approve,
+            "scope":record.scope,"docker_enabled":record.docker_enabled,
             "exit_code":record.exit_code,
             "stop_reason":record.stop_reason,
             "terminal_complete":record.terminal_complete,
@@ -1168,60 +1229,52 @@ impl Controller {
             "terminal_detached":record.terminal_detached,
             "terminal_attached":record.terminal_attached})
     }
-    fn owner_exited_reason(&self, id: &str) -> String {
-        format!(
-            "stopped because owner goblin {} ({id}) exited",
-            self.sessions[id].record.agent_name
-        )
+    /// A package granted without asking: the session's own grant, or one in
+    /// its auto-approve set. Never resolved again, never mounted proactively.
+    fn auto_output(&self, session: &str, package: &str) -> Option<PathBuf> {
+        let a = self.sessions.get(session)?;
+        a.granted_outputs
+            .get(package)
+            .or_else(|| a.auto_approve.get(package))
+            .cloned()
     }
-    fn stop_tree(
-        &mut self,
-        id: &str,
-        kill_children: bool,
-        reason: Option<String>,
-    ) -> std::result::Result<Value, Fault> {
-        let descendants: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|(child, a)| a.worker.is_some() && self.descendant(child, id))
-            .map(|(id, _)| id.clone())
-            .collect();
-        if !kill_children && !descendants.is_empty() {
+    /// What a goblin a raid owner runs may be granted without asking: the
+    /// owner's approvals and its own auto-approve sets, copied now. Refused
+    /// rather than truncated beyond the bounds.
+    fn copied_approvals(&self, owner: &str) -> std::result::Result<AutoApprove, Fault> {
+        let a = &self.sessions[owner];
+        let mut packages = a.auto_approve.clone();
+        packages.extend(a.granted_outputs.clone());
+        let mut dev_shells = a.auto_approve_dev_shells.clone();
+        dev_shells.extend(a.dev_identity.clone());
+        if packages.len() > crate::history::MAX_NAMES {
             return Err((
-                -32009,
+                -32010,
                 format!(
-                    "warning: sandbox has {} live descendant(s); use --kill-children to kill the subtree",
-                    descendants.len()
+                    "the owner's approvals exceed the auto-approve limit of {} packages",
+                    crate::history::MAX_NAMES
                 ),
             ));
         }
-        // The event loop serializes this check with child creation. Stop the
-        // whole tree before accepting any more calls from its sockets.
-        let child_reason = reason
-            .clone()
-            .unwrap_or_else(|| self.owner_exited_reason(id));
-        for child in descendants {
-            self.stop(&child, Some(child_reason.clone()))?;
+        if dev_shells.len() > AUTO_DEV_SHELLS {
+            return Err((
+                -32010,
+                format!(
+                    "the owner's approvals exceed the auto-approve limit of {AUTO_DEV_SHELLS} dev shells"
+                ),
+            ));
         }
-        self.stop(id, reason)
-    }
-    /// Approval inheritance is deliberately isolated here: it applies downward
-    /// on request, never mounts packages proactively or grants them upward.
-    fn inherits_package(&self, session: &str, package: &str) -> Option<PathBuf> {
-        let mut current = Some(session);
-        while let Some(id) = current {
-            let a = self.sessions.get(id)?;
-            if let Some(output) = a.granted_outputs.get(package) {
-                // Reuse the exact granted store output; approval inheritance
-                // must not resolve a possibly changed attribute a second time.
-                return Some(output.clone());
-            }
-            current = a.record.parent.as_deref();
-        }
-        None
+        Ok(AutoApprove {
+            packages,
+            dev_shells,
+        })
     }
     fn detach(&mut self, id: &str) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
+        if a.handlers.is_some() {
+            self.detach_client(id).map_err(|e| (-32009, e))?;
+            return Ok(json!({"accepted":true}));
+        }
         a.terminal.detach().map_err(|e| (-32009, e.to_string()))?;
         a.record.terminal_attached = a.terminal.attached();
         a.record.terminal_detached = a.terminal.detached;
@@ -1255,9 +1308,10 @@ impl Controller {
             w.cancel.cancel();
             self.reply_waiting(&call_key(w.serial), Err("session stopped".into()));
         }
-        let message = format!("goblin {} has stopped", self.sessions[id].record.path);
+        let message = format!("goblin {} has stopped", self.sessions[id].record.agent_name);
         self.end_execs(id, &message);
         self.end_edits(id);
+        self.end_host_jobs(id);
         self.dirty = true;
         Ok(json!({"accepted":true}))
     }
@@ -1291,6 +1345,7 @@ impl Controller {
     fn withdraw(&mut self, connection: u64) {
         self.exec_withdraw(connection);
         self.edit_withdraw(connection);
+        self.host_withdraw(connection);
         // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
             if a.call.as_ref().is_some_and(|w| w.connection == connection) {
@@ -1301,7 +1356,7 @@ impl Controller {
         for a in self.sessions.values_mut() {
             if a.pending
                 .as_ref()
-                .is_some_and(|p| p.connection == connection)
+                .is_some_and(|p| p.connection == connection && !p.detached)
             {
                 let p = a.pending.as_ref().unwrap();
                 if self
@@ -1342,33 +1397,12 @@ impl Controller {
             }
             self.prepare_recreate(&mut p, &target)?;
         }
-        let parent = match (scope, p.parent.as_deref()) {
-            (Some(root), None | Some(".")) => Some(root.to_string()),
-            (_, Some(target)) => Some(self.resolve_scoped(target, scope)?),
-            (None, None) => None,
-        };
-        if parent.is_some() && p.scope.is_some() {
-            return Err((-32602, "children inherit their parent's scope".into()));
-        }
-        if parent.is_some() && p.dev_shell.is_some() {
-            return Err((-32602, "children inherit their parent's dev shell".into()));
-        }
-        let inherited = if let Some(id) = &parent {
-            let a = &self.sessions[id];
-            if a.record.state != "running" || a.worker.is_none() {
-                return Err(conflict());
-            }
-            // A host --parent launch uses the parent's branch snapshot rather
-            // than a newer manifest.
-            p.configuration = a.record.configuration.clone();
-            p.cwd = None;
-            Some(a.inheritance.clone().ok_or_else(conflict)?)
-        } else {
-            None
-        };
+        // A sandbox launch is a raid owner running a member: no tree, but
+        // the owner's workspace, scope, dev shell and approvals are shared.
+        let member = scope.is_some();
         if !goblins_protocol::identifier(&p.key)
             || !goblins_protocol::identifier(&p.name)
-            || !Path::new(&p.configuration).is_absolute()
+            || !(member || Path::new(&p.configuration).is_absolute())
             || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
             || p.scope
                 .as_deref()
@@ -1380,11 +1414,6 @@ impl Controller {
         {
             return Err((-32602, "invalid launch parameters".into()));
         }
-        // The selected parent's own list, also for --parent from the host or an
-        // ancestor: a caller's permissions are never substituted.
-        if let Some(inherited) = &inherited {
-            inherited.permit(&p.name).map_err(|e| (-32602, e))?;
-        }
         if let Some((old, result)) = self.launches.get(&key) {
             return if old == &p {
                 Ok(result.clone())
@@ -1392,8 +1421,25 @@ impl Controller {
                 Err(conflict())
             };
         }
-        let join = self.launch_raid(&p, parent.as_deref(), scope)?;
-        let agent_name = self.allocate_name(p.agent_name.as_deref(), parent.as_deref())?;
+        let owner = match scope {
+            Some(owner) => Some(self.member_owner(owner, &p.name)?),
+            None => None,
+        };
+        let approvals = match &owner {
+            Some(owner) => self.copied_approvals(&owner.id)?,
+            None => AutoApprove::default(),
+        };
+        let manifest = match &owner {
+            // Taken after the retry comparison: a newer current manifest
+            // never turns an identical retry into a conflict.
+            Some(_) => Some(self.current_manifest.clone().ok_or((
+                -32009,
+                "no configuration is known yet; start the server with the installed goblins or run a goblin from the host".to_string(),
+            ))?),
+            None => None,
+        };
+        let join = self.launch_raid(&p, owner.as_ref().map(|o| o.id.as_str()))?;
+        let agent_name = self.allocate_name(p.agent_name.as_deref())?;
         if self.launches.len() >= 4096
             || self
                 .sessions
@@ -1408,20 +1454,13 @@ impl Controller {
             let old = self
                 .sessions
                 .iter()
-                .filter(|(id, a)| {
-                    a.worker.is_none()
-                        && a.terminal.can_evict()
-                        && !self
-                            .sessions
-                            .values()
-                            .any(|child| child.record.parent.as_ref() == Some(id))
-                })
+                .filter(|(_, a)| a.worker.is_none() && a.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
                 .ok_or_else(capacity)?;
             if let Some(a) = self.sessions.remove(&old) {
                 // A shared scope can still own a stopped member's resources.
-                let _ = fs::remove_file(a.directory.join("terminal.sock"));
+                attach::remove_files(&a.directory);
                 let _ = fs::remove_dir(a.directory);
             }
         }
@@ -1431,6 +1470,11 @@ impl Controller {
         let path = directory.join("terminal.sock");
         let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
         terminal.detached = p.detached;
+        // Older frontends attach here; a goblin with attach handlers refuses
+        // them, which is known once its worker read the configuration.
+        terminal.hold();
+        let attach_path = directory.join("attach.sock");
+        let attach = attach::Attach::new(&attach_path).map_err(|e| (-32010, e.to_string()))?;
         let recorded = p.recorded.take();
         // A recreated goblin continues its record; a new root goblin gets a
         // short record id of its own, used once it reaches running.
@@ -1445,12 +1489,16 @@ impl Controller {
                 .map_err(|e| (-32010, e.to_string()))?
             }
         };
-        let source = match inherited {
-            Some(inherited) => Source::Child {
-                inherited,
+        let sequence = self.manifest_sequence + 1;
+        let source = match (owner.clone(), manifest) {
+            (Some(owner), Some(manifest)) => Source::Member {
+                owner: owner.inheritance,
+                scope: owner.scope,
+                manifest,
                 configuration: p.name.clone(),
+                auto: approvals.packages.clone(),
             },
-            None => Source::Host {
+            _ => Source::Host {
                 configuration: p.configuration.clone().into(),
                 name: p.name.clone(),
                 scope: p.scope.clone(),
@@ -1461,14 +1509,27 @@ impl Controller {
                 history: self.history_directory.clone(),
                 recreate: recorded.as_ref().map(|r| crate::worker::Recreate {
                     packages: r.packages.approved.clone(),
+                    auto_approve: r.packages.auto_approve.clone(),
                     docker: r.docker_enabled,
                     variables: r.variables.clone(),
                 }),
+                sequence,
             },
         };
-        let cwd = match &parent {
-            Some(id) => self.sessions[id].record.cwd.clone(),
+        if owner.is_none() {
+            self.manifest_sequence = sequence;
+        }
+        let cwd = match &owner {
+            Some(owner) => self.sessions[&owner.id].record.cwd.clone(),
             None => p.cwd.clone().filter(|_| self.workspace.is_none()),
+        };
+        let configuration = match &owner {
+            Some(_) => self
+                .current_manifest
+                .as_ref()
+                .map(|m| m.path.display().to_string())
+                .unwrap_or_default(),
+            None => p.configuration.clone(),
         };
         let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
@@ -1480,20 +1541,22 @@ impl Controller {
             dev_shell: None,
             cwd,
             id: id.clone(),
-            path: parent
-                .as_ref()
-                .map(|id| format!("{}/{}", self.sessions[id].record.path, agent_name))
-                .unwrap_or_else(|| agent_name.clone()),
-            parent,
             agent_name,
+            created_by: owner.as_ref().map(|o| CreatedBy {
+                id: o.id.clone(),
+                agent_name: self.sessions[&o.id].record.agent_name.clone(),
+            }),
             name: p.name.clone(),
             description: String::new(),
-            configuration: p.configuration.clone(),
+            configuration,
             state: "starting".into(),
             identity: None,
             initial_packages: vec![],
             packages: vec![],
+            auto_approve: approvals.packages.keys().cloned().collect(),
             terminal: path.display().to_string(),
+            attach: attach_path.display().to_string(),
+            server_log: None,
             pty_eof: false,
             terminal_complete: false,
             terminal_interrupted: false,
@@ -1508,7 +1571,7 @@ impl Controller {
             recreated_from: recorded.as_ref().map(|r| r.id.clone()),
             skipped: vec![],
         };
-        let result = json!({"session":id,"agent_name":record.agent_name,"path":record.path,"parent":record.parent,"state":"starting","terminal":record.terminal});
+        let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
         self.sessions.insert(
             id.clone(),
             Active {
@@ -1517,12 +1580,18 @@ impl Controller {
                 exit_watch: None,
                 init: None,
                 granted_outputs: BTreeMap::new(),
+                auto_approve: approvals.packages,
+                auto_approve_dev_shells: approvals.dev_shells,
                 dev_identity: None,
                 call: None,
                 variables: recorded
                     .as_ref()
                     .map(|r| r.variables.clone())
                     .unwrap_or_default(),
+                fresh: BTreeSet::new(),
+                attach,
+                handlers: None,
+                server_log: None,
                 line,
                 recreated_from: recorded,
                 created: self.next,
@@ -1541,6 +1610,30 @@ impl Controller {
             self.apply_launch_raid(&id, join)?;
         }
         Ok(result)
+    }
+    /// The checks a raid owner's run passes before anything is allocated:
+    /// it owns an unpaused raid, runs, and its configuration permits the
+    /// target. Its live scope is held from here on.
+    fn member_owner(&self, owner: &str, target: &str) -> std::result::Result<Owner, Fault> {
+        let raid = self.raids.of(owner);
+        if raid.is_none_or(|r| r.owner.as_deref() != Some(owner)) {
+            return Err((
+                -32009,
+                "only a raid owner can run goblins; create one with goblin raid create NAME".into(),
+            ));
+        }
+        let a = &self.sessions[owner];
+        if a.record.state != "running" || a.worker.is_none() {
+            return Err(conflict());
+        }
+        let inheritance = a.inheritance.clone().ok_or_else(conflict)?;
+        inheritance.permit(target).map_err(|e| (-32602, e))?;
+        let scope = inheritance.scope().map_err(|e| (-32009, e))?;
+        Ok(Owner {
+            id: owner.into(),
+            inheritance,
+            scope,
+        })
     }
     fn sandbox_control(
         &mut self,
@@ -1565,10 +1658,6 @@ impl Controller {
                 if a.record.state != "running" || a.worker.is_none() {
                     return Err(conflict());
                 }
-                if a.record.parent.is_some() {
-                    // Children are not recorded; their hooks need no special case.
-                    return Ok(json!({"accepted":true,"recorded":false}));
-                }
                 // Only the caller's own record. Without history the server
                 // keeps them, for a record created when it takes the store.
                 let line = a.line.clone();
@@ -1584,7 +1673,15 @@ impl Controller {
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
                 self.update_record(&line, |r| r.set_variables(&p.variables))
                     .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
-                self.sessions.get_mut(scope).unwrap().variables = scratch.variables;
+                let a = self.sessions.get_mut(scope).unwrap();
+                a.variables = scratch.variables;
+                for (name, value) in &p.variables {
+                    if value.is_empty() {
+                        a.fresh.remove(name);
+                    } else {
+                        a.fresh.insert(name.clone());
+                    }
+                }
                 if recorded && p.variables.contains_key("session_id") {
                     self.merge_conversation(&line);
                 }
@@ -1597,11 +1694,17 @@ impl Controller {
                     "name":record.name,"description":record.description,
                     "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
-                    "allowed_children":self.sessions[scope].inheritance.as_ref()
-                        .map_or(&[][..], |i| i.allowed_children()),
+                    "attached":record.terminal_attached,
+                    "attached_since":self.sessions[scope].attach.since(),
+                    "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
+                    "host_commands":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.host_commands()),
+                    "permission_bypass":self.sessions[scope].inheritance.as_ref().and_then(|i| i.permission_bypass()),
+                    "allowed_run_targets":self.sessions[scope].inheritance.as_ref()
+                        .map_or(&[][..], |i| i.allowed_run_targets()),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
-                        "role":r.role,"owner":r.owner,
-                        "owner_path":self.sessions.get(&r.owner).map(|a| &a.record.path)}))}))
+                        "role":r.role,"owner":r.owner,"paused":r.paused,
+                        "owner_name":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.agent_name)})),
+                    "created_by":record.created_by}))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
@@ -1616,43 +1719,30 @@ impl Controller {
                 Ok(json!({"path":dev.path.join("flake.lock"),"lock":dev.lock,
                     "generation":dev.generation}))
             }
-            "sessions.resize" => {
-                let p: Resize = params(value)?;
-                let id = self.resolve_scoped(&p.session, Some(scope))?;
-                if !dimensions(p.rows, p.cols) {
-                    return Err((-32602, "invalid dimensions".into()));
-                }
-                self.sessions
-                    .get_mut(&id)
-                    .unwrap()
-                    .terminal
-                    .resize(p.rows, p.cols)
-                    .map_err(|_| conflict())?;
-                Ok(json!({"accepted":true}))
-            }
+            // A raid owner sees and stops only the members created in its
+            // raid, while it owns it. No goblin attaches to another's terminal.
             "sessions.list" => {
                 let _: Empty = params(value)?;
                 Ok(json!(
                     self.sessions
                         .values()
-                        .filter(|a| self.descendant(&a.record.id, scope))
-                        .map(|a| self.sandbox_record(&a.record, scope))
+                        .filter(|a| a.worker.is_some() && self.controls(scope, &a.record.id))
+                        .map(|a| self.sandbox_record(&a.record))
                         .collect::<Vec<_>>()
                 ))
             }
             "sessions.get" => {
                 let p: SessionId = params(value)?;
-                let id = self.resolve_scoped(&p.session, Some(scope))?;
-                Ok(self.sandbox_record(&self.sessions[&id].record, scope))
+                let id = self.resolve_member(&p.session, scope)?;
+                Ok(self.sandbox_record(&self.sessions[&id].record))
             }
             "sessions.start" => {
-                let p: ChildStart = params(value)?;
+                let p: MemberStart = params(value)?;
                 let result = self.start(
                     Start {
                         key: p.key,
                         name: p.name,
                         agent_name: p.agent_name,
-                        parent: p.parent,
                         configuration: String::new(),
                         cwd: None,
                         scope: None,
@@ -1661,31 +1751,30 @@ impl Controller {
                         cols: 80,
                         detached: p.detached,
                         raid: None,
-                        inherit_raid: p.inherit_raid,
                         recreate: None,
                         recorded: None,
                     },
                     Some(scope),
                 )?;
-                let path = result["path"].as_str().ok_or_else(missing)?;
-                let relative = path
-                    .strip_prefix(&format!("{}/", self.sessions[scope].record.path))
-                    .ok_or_else(missing)?;
                 Ok(
                     json!({"session":result["session"],"agent_name":result["agent_name"],
-                    "path":relative,"state":result["state"]}),
+                    "state":result["state"]}),
                 )
             }
             "sessions.stop" => {
                 let p: Stop = params(value)?;
-                let id = self.resolve_scoped(&p.session, Some(scope))?;
+                let id = self.resolve_member(&p.session, scope)?;
                 let reason = format!(
-                    "stopped by goblin {} ({scope})",
+                    "stopped by raid owner {} ({scope})",
                     self.sessions[scope].record.agent_name
                 );
-                self.stop_tree(&id, p.kill_children, Some(reason))
+                self.stop(&id, Some(reason))
             }
             m if m.starts_with("raids.") => self.sandbox_raids(scope, m, value),
+            "host.status" | "host.list" | "host.cancel" => {
+                let scope = scope.to_string();
+                self.host_control(Some(&scope), method, value)
+            }
             _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
         }
     }
@@ -1696,6 +1785,13 @@ impl Controller {
             .iter()
             .find(|r| r.id == p.request)
             .ok_or_else(missing)?;
+        if r.kind == raids::RAID_OWNER {
+            return Err((
+                -32602,
+                "use goblins raid set-owner or goblins raid destroy to resolve a paused raid"
+                    .into(),
+            ));
+        }
         if r.session != p.session || r.approval != p.approval || r.state != "pending" {
             return Err(conflict());
         }
@@ -1716,7 +1812,9 @@ impl Controller {
         }
         // Order a decision against bytes/EOF already present, consuming
         // unexpected input instead of letting it hide a disconnected peer.
-        if let Some(peer) = self
+        if pending.detached {
+            // No connection waits for a detached host command.
+        } else if let Some(peer) = self
             .connections
             .iter_mut()
             .find(|c| c.id == pending.connection)
@@ -1734,7 +1832,7 @@ impl Controller {
         }
         let request = self.permissions.iter().find(|r| r.id == p.request).unwrap();
         let inherited = if request.kind == "package" {
-            self.inherits_package(&p.session, &request.package)
+            self.auto_output(&p.session, &request.package)
         } else {
             None
         };
@@ -1742,6 +1840,9 @@ impl Controller {
         let pending = a.pending.as_ref().unwrap();
         let notify = pending.notify;
         pending.cancel.cancel();
+        if pending.host.is_some() {
+            return self.decide_host(p, actor);
+        }
         if p.approved {
             let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
             a.worker
@@ -1786,20 +1887,13 @@ impl Controller {
         self.dirty = true;
         Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
     }
-    /// A refresh to a generation this sandbox or an ancestor already has
-    /// grants no new trust: the host launched or approved that generation.
-    fn inherits_dev_shell(&self, session: &str, identity: &str) -> bool {
-        let mut current = Some(session);
-        while let Some(id) = current {
-            let Some(a) = self.sessions.get(id) else {
-                return false;
-            };
-            if a.dev_identity.as_deref() == Some(identity) {
-                return true;
-            }
-            current = a.record.parent.as_deref();
-        }
-        false
+    /// A refresh to this sandbox's current generation, or to one in its
+    /// auto-approve set, grants no new trust: the host launched or approved it.
+    fn auto_dev_shell(&self, session: &str, identity: &str) -> bool {
+        self.sessions.get(session).is_some_and(|a| {
+            a.dev_identity.as_deref() == Some(identity)
+                || a.auto_approve_dev_shells.contains(identity)
+        })
     }
     fn approve_inherited_requests(&mut self) {
         let decisions: Vec<_> = self
@@ -1814,10 +1908,10 @@ impl Controller {
                                 return p
                                     .dev_identity
                                     .as_deref()
-                                    .is_some_and(|i| self.inherits_dev_shell(&r.session, i));
+                                    .is_some_and(|i| self.auto_dev_shell(&r.session, i));
                             }
                             p.initial_output.is_some()
-                                || self.inherits_package(&r.session, &r.package).is_some()
+                                || self.auto_output(&r.session, &r.package).is_some()
                         })
                 })
             })
@@ -1845,7 +1939,8 @@ impl Controller {
             "server.status" => {
                 let _: Empty = params(value)?;
                 Ok(
-                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count(),"history":self.history_status()}),
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count(),"history":self.history_status(),
+                        "manifest":self.current_manifest.as_ref().map(|m| &m.path)}),
                 )
             }
             "server.stop" => {
@@ -1875,7 +1970,7 @@ impl Controller {
             "sessions.stop" => {
                 let p: Stop = params(value)?;
                 let id = self.resolve_session(&p.session)?;
-                self.stop_tree(&id, p.kill_children, Some("stopped by host".into()))
+                self.stop(&id, Some("stopped by host".into()))
             }
             "sessions.detach" => {
                 let p: SessionId = params(value)?;
@@ -1891,12 +1986,12 @@ impl Controller {
                 if !dimensions(p.rows, p.cols) {
                     return Err((-32602, "invalid dimensions".into()));
                 }
-                self.sessions
-                    .get_mut(&p.session)
-                    .ok_or_else(missing)?
-                    .terminal
-                    .resize(p.rows, p.cols)
-                    .map_err(|_| conflict())?;
+                let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
+                match a.handlers {
+                    Some(_) => a.attach.resize(p.rows, p.cols),
+                    None => a.terminal.resize(p.rows, p.cols),
+                }
+                .map_err(|_| conflict())?;
                 Ok(json!({"accepted":true}))
             }
             "permissions.list" => {
@@ -1939,6 +2034,7 @@ impl Controller {
                 Ok(json!({"accepted":true}))
             }
             m if m.starts_with("raids.") => self.host_raids(m, value),
+            "host.cancel" | "host.status" | "host.list" => self.host_control(None, method, value),
             _ => Err((-32601, "method unavailable on host endpoint".into())),
         }
     }
@@ -1950,25 +2046,28 @@ impl Controller {
             return;
         };
         let outcome = (|| -> std::result::Result<Option<Value>, Fault> {
-            let messaging = call.method.starts_with("integration.")
+            let messaging = matches!(
+                call.method.as_str(),
+                "messages.send"
+                    | "messages.get"
+                    | "messages.reply"
+                    | "inbox.next"
+                    | "inbox.status"
+                    | "inbox.complete"
+                    | "inbox.requeue"
+                    | "communications.list"
+            );
+            // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
+            // Host commands carry argument lists (rpc::MAX_HOST_COMMAND).
+            let legacy_limit = if matches!(c.role, Role::Host)
                 || matches!(
                     call.method.as_str(),
-                    "messages.send"
-                        | "messages.get"
-                        | "messages.reply"
-                        | "inbox.next"
-                        | "inbox.status"
-                        | "inbox.complete"
-                        | "inbox.requeue"
-                        | "communications.list"
-                );
-            // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
-            let legacy_limit =
-                if matches!(c.role, Role::Host) || call.method == "sessions.set-variables" {
-                    16384
-                } else {
-                    4096
-                };
+                    "sessions.set-variables" | "permissions.request"
+                ) {
+                16384
+            } else {
+                4096
+            };
             if !messaging && c.body_bytes > legacy_limit {
                 return Err((-32602, "request exceeds method frame limit".into()));
             }
@@ -1990,7 +2089,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","agent-inbox-v1","agent-integration-v1","communications-log-v1","allowed-children","raids","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","subtree-control","subtree-terminal","sandbox-status","agent-activity-v1","agent-inbox-v1","agent-integration-v1","flake-run","devshell-diff","allowed-children","raids","editor-open","variables"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2007,42 +2106,14 @@ impl Controller {
                     Role::Host => "host".to_owned(),
                     Role::Sandbox(id) => id.clone(),
                 };
-                let mut call_params = call.params;
-                let view = if call.method.starts_with("integration.") {
-                    let target = if actor == "host" {
-                        let target = call_params["session"].as_str().ok_or_else(missing)?;
-                        let resolved = self.resolve_session(target)?;
-                        call_params["session"] = json!(resolved);
-                        resolved
-                    } else {
-                        actor.clone()
-                    };
-                    let a = self.sessions.get(&target).ok_or_else(missing)?;
-                    if a.record.state != "running" {
-                        return Err(conflict());
-                    }
-                    let integration = a.inheritance.as_ref().and_then(|i| i.integration());
-                    if !matches!(integration, Some("codex" | "claude")) {
-                        return Err((-32009, "session has no supported integration".into()));
-                    }
-                    if call.method == "integration.register"
-                        && call_params["driver"].as_str() != integration
-                    {
-                        return Err((-32009, "integration driver does not match session".into()));
-                    }
-                    a.terminal.integration_view()
-                } else {
-                    crate::integration::View::default()
-                };
                 // The worker records queued membership before this call.
                 let work = crate::messaging::Work::Call {
                     connection: c.id,
                     id: id.clone(),
                     actor,
                     method: call.method,
-                    params: call_params,
+                    params: call.params,
                     directory: self.message_directory(),
-                    view,
                     raids: self.raid_outbox.drain(..).collect(),
                     operations: self.operation_outbox.drain(..).collect(),
                 };
@@ -2091,23 +2162,11 @@ impl Controller {
                         return Ok(Some(result));
                     }
                     if call.method == "sessions.attach" {
-                        let p: SessionId = params(call.params)?;
-                        let target = self.resolve_scoped(&p.session, Some(&session))?;
-                        // Upgrade only after initialize has drained. Reject
-                        // pipelined frames instead of interpreting them as keys.
-                        if !c.input.is_empty() || !c.output.is_empty() {
-                            return Err((-32600, "unexpected pipelined input".into()));
-                        }
-                        let peer = c.peer.try_clone().map_err(|_| conflict())?;
-                        self.sessions
-                            .get_mut(&target)
-                            .unwrap()
-                            .terminal
-                            .attach(peer, id.clone())
-                            .map_err(|e| (-32009, e.to_string()))?;
-                        c.dead = true;
-                        self.dirty = true;
-                        return Ok(None);
+                        // Attachments outlive any check of who may hold them.
+                        return Err((
+                            -32601,
+                            "goblins do not attach to other goblins' terminals; the host can, with goblins attach NAME".into(),
+                        ));
                     }
                     if call.method == "editor.open" {
                         if !c.input.is_empty() {
@@ -2152,6 +2211,9 @@ impl Controller {
                             })
                         };
                         let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
+                        if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
+                            return Err((-32602, crate::session::NIX_DEV_SHELL.into()));
+                        }
                         if a.record.dev_shell.is_none() {
                             return Err((
                                 -32602,
@@ -2195,6 +2257,17 @@ impl Controller {
                     if a.record.state != "running" || a.pending.is_some() {
                         return Err(conflict());
                     }
+                    if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
+                        match p.kind.as_str() {
+                            "package" => {
+                                return Err((-32602, crate::session::NIX_PACKAGES.into()));
+                            }
+                            "devshell" => {
+                                return Err((-32602, crate::session::NIX_DEV_SHELL.into()));
+                            }
+                            _ => (),
+                        }
+                    }
                     let docker_scope = a
                         .inheritance
                         .as_ref()
@@ -2213,6 +2286,18 @@ impl Controller {
                     if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
                     }
+                    // The approval shows the resolved host directory, and
+                    // approving runs exactly this.
+                    let host = match &p.host {
+                        Some(command) if p.kind == "host-command" => {
+                            let spec = self.host_spec(&session, command)?;
+                            p.package = spec.subject();
+                            Some(spec)
+                        }
+                        _ => None,
+                    };
+                    let host_preview = host.as_ref().map(host::Spec::preview);
+                    let detached = host.as_ref().is_some_and(|h| h.detach);
                     if p.kind == "devshell" {
                         if a.record.dev_shell.is_none() {
                             return Err((
@@ -2234,22 +2319,27 @@ impl Controller {
                     if self.operation_outbox.len() >= 1024 {
                         return Err(capacity());
                     }
-                    if self.permissions.len() >= 256 {
+                    // Raid-owner prompts (one per raid) never take a slot.
+                    if self
+                        .permissions
+                        .iter()
+                        .filter(|r| r.kind != raids::RAID_OWNER)
+                        .count()
+                        >= 256
+                    {
                         let index = self
                             .permissions
                             .iter()
-                            .position(|r| {
-                                !["pending", "realizing", "mounting", "publishing"]
-                                    .contains(&r.state.as_str())
-                            })
+                            .position(|r| !UNEVICTABLE.contains(&r.state.as_str()))
                             .ok_or_else(capacity)?;
-                        self.permissions.remove(index);
+                        let removed = self.permissions.remove(index).unwrap();
+                        self.host_outcomes.remove(&removed.id);
                     }
                     let serial = self.number();
                     let request = format!("{}-r{serial}", self.instance);
                     let approval = format!("{}-a{serial}", self.instance);
                     let inherited_output = if p.kind == "package" {
-                        self.inherits_package(&session, &p.package)
+                        self.auto_output(&session, &p.package)
                     } else {
                         None
                     };
@@ -2305,6 +2395,8 @@ impl Controller {
                         connection: c.id,
                         cancel,
                         notify,
+                        host,
+                        detached,
                     });
                     self.permissions.push_back(PermissionRecord {
                         kind: p.kind.clone(),
@@ -2316,7 +2408,7 @@ impl Controller {
                         reason: p.reason,
                         state: if auto_approve { "realizing" } else { "pending" }.into(),
                         approved: if auto_approve { Some(true) } else { None },
-                        preview: docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Children inherit the attachment.")})),
+                        preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
                         message: None,
                     });
                     let r = self.permissions.back().unwrap();
@@ -2327,9 +2419,20 @@ impl Controller {
                         automatic: auto_approve,
                     };
                     let session = r.session.clone();
+                    let host = r.kind == "host-command";
                     self.operation(&request, &session, change);
-                    c.waiting = Some((request, id.clone()));
                     self.dirty = true;
+                    if detached {
+                        // Its outcome arrives as an operation notice.
+                        c.close = true;
+                        return Ok(Some(json!({"request":request,"status":"pending"})));
+                    }
+                    if host {
+                        // The ID comes first: it names the job's output.
+                        c.queue(json!({"jsonrpc":"2.0","method":"host.submitted",
+                            "params":{"request":request}}));
+                    }
+                    c.waiting = Some((request, id.clone()));
                     Ok(None)
                 }
             }
@@ -2353,8 +2456,8 @@ impl Controller {
                     id.clone(),
                     crate::mailbox::Session {
                         id: id.clone(),
-                        parent: a.record.parent.clone(),
-                        path: a.record.path.clone(),
+                        agent_name: a.record.agent_name.clone(),
+                        stop_reason: a.record.stop_reason.clone(),
                         running: matches!(a.record.state.as_str(), "starting" | "running"),
                     },
                 )
@@ -2374,16 +2477,12 @@ impl Controller {
             c.fds.clear();
         }
     }
-    /// Claude's integration hooks and monitor ticks are its activity reports.
-    fn claude_activity(&mut self, response: &crate::messaging::Completed) {
-        if let Ok(result) = &response.result
-            && let Ok(state) = serde_json::from_value(result["agent_state"].clone())
-            && let Some(a) = self.sessions.get_mut(&response.actor)
-            && a.record.state == "running"
-            && a.worker.is_some()
-            && a.inheritance.as_ref().and_then(|i| i.integration()) == Some("claude")
-        {
-            self.dirty |= a.report_activity(state);
+    /// The messaging worker's latest report: inbox counts and log health.
+    fn messaging_report(&mut self, report: &crate::messaging::Report) {
+        self.inbox_counts(&report.queued);
+        if self.messaging_health != report.health {
+            self.messaging_health = report.health;
+            self.dirty = true;
         }
     }
     /// Each goblin's queued inbox count, as the messaging worker reported it.
@@ -2412,47 +2511,18 @@ impl Controller {
         self.expire_activity(Instant::now());
         self.poll_history();
         self.poll_deletes();
-        // Drain human input and native output before checking wake revisions.
+        // Drain human input and native output.
         for a in self.sessions.values_mut() {
             if let Err(e) = a.terminal.tick() {
                 a.record.detail = Some(bounded(&e.to_string()));
                 a.terminal.interrupted = true;
             }
         }
-        if let Some(counts) = self.messaging.inbox.try_iter().last() {
-            self.inbox_counts(&counts);
+        if let Some(report) = self.messaging.inbox.try_iter().last() {
+            self.messaging_report(&report);
         }
         let responses: Vec<_> = self.messaging.results.try_iter().collect();
-        for mut response in responses {
-            self.claude_activity(&response);
-            if let Ok(result) = &mut response.result
-                && result["notify"] == true
-                && result["delivery"] != "notification"
-            {
-                let outcome = self
-                    .sessions
-                    .get_mut(&response.actor)
-                    .filter(|a| a.record.state == "running")
-                    .ok_or("session exited")
-                    .and_then(|a| {
-                        a.terminal
-                            .notify(result["revision"].as_u64().unwrap_or(0))
-                            .map_err(|_| "terminal changed")
-                    });
-                let _ = self
-                    .messaging
-                    .commands
-                    .try_send(crate::messaging::Work::Delivery {
-                        actor: response.actor.clone(),
-                        revision: result["revision"].as_u64().unwrap_or(0),
-                        submitted: outcome.is_ok(),
-                    });
-                result["delivery"] = json!(if outcome.is_ok() {
-                    "submitted"
-                } else {
-                    "deferred"
-                });
-            }
+        for response in responses {
             if let Some(c) = self
                 .connections
                 .iter_mut()
@@ -2468,6 +2538,7 @@ impl Controller {
         }
         self.poll_init();
         self.poll_edits();
+        self.poll_host_jobs();
         for _ in 0..HOSTS {
             match self.listener.accept() {
                 Ok((p, _))
@@ -2522,12 +2593,14 @@ impl Controller {
                         dev_identity,
                         initial_packages,
                         master,
+                        handlers,
                         control,
                         listener,
                         identity,
                         inheritance,
                         exit_watch,
                         recreated,
+                        auto,
                     } => {
                         a.init = Some(control);
                         // Recreated grants are this goblin's own: children
@@ -2544,6 +2617,11 @@ impl Controller {
                                 bounded(&format!("resumed in a fresh conversation: {reason}"))
                             });
                         }
+                        // Only outputs the session rooted itself stay
+                        // auto-approved; the others are skipped.
+                        a.auto_approve = auto.rooted.into_iter().collect();
+                        a.record.auto_approve = a.auto_approve.keys().cloned().collect();
+                        a.record.skipped.extend(auto.skipped);
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = scope;
                         a.record.dev_shell = dev_shell;
@@ -2551,7 +2629,10 @@ impl Controller {
                         a.record.description = inheritance.description().to_owned();
                         a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
-                        a.terminal.master(master)?;
+                        match handlers {
+                            Some(handlers) => a.serve(master, *handlers)?,
+                            None => a.terminal.master(master)?,
+                        }
                         a.record.initial_packages = initial_packages;
                         a.record.identity = Some(identity);
                         if a.record.state == "starting" {
@@ -2560,6 +2641,16 @@ impl Controller {
                             self.record_started(&a);
                         }
                         self.dirty = true;
+                    }
+                    Completed::Mode { server } => match server {
+                        true => a.terminal.refuse(attach::UPGRADE),
+                        false => a.terminal.release(),
+                    },
+                    Completed::Manifest { sequence, lease } => {
+                        if sequence > self.manifest_published {
+                            self.manifest_published = sequence;
+                            self.current_manifest = Some(lease);
+                        }
                     }
                     Completed::Preview { approval, result } => {
                         if let Some(p) = &mut a.pending
@@ -2795,8 +2886,11 @@ impl Controller {
             a.record.pty_eof = a.terminal.eof;
             a.record.terminal_complete = a.terminal.complete;
             a.record.terminal_interrupted = a.terminal.interrupted;
-            a.record.terminal_attached = a.terminal.attached();
-            a.record.terminal_detached = a.terminal.detached;
+            if a.handlers.is_none() {
+                a.record.terminal_attached = a.terminal.attached();
+                a.record.terminal_detached = a.terminal.detached;
+            }
+            self.attach_tick(&mut a);
             // Observe process exit independently of a worker blocked on Nix.
             // A pidfd pins the process identity, avoiding PID-reuse races.
             let exited = a.record.state == "running"
@@ -2821,28 +2915,20 @@ impl Controller {
                     }
                 });
             }
+            // Stopping stops only this goblin: raid members it ran keep
+            // running, and its raid pauses.
             if exited {
-                let _ = self.stop_tree(&id, true, None);
+                let _ = self.stop(&id, None);
             } else if stopped {
                 if self.execs.values().any(|e| e.session() == id) {
-                    let message = format!("goblin {} has stopped", self.sessions[&id].record.path);
+                    let message = format!(
+                        "goblin {} has stopped",
+                        self.sessions[&id].record.agent_name
+                    );
                     self.end_execs(&id, &message);
                 }
                 self.end_edits(&id);
-                let children: Vec<_> = self
-                    .sessions
-                    .iter()
-                    .filter(|(child, a)| {
-                        a.worker.is_some()
-                            && !["stopped", "failed", "stopping"].contains(&a.record.state.as_str())
-                            && self.descendant(child, &id)
-                    })
-                    .map(|(id, _)| id.clone())
-                    .collect();
-                for child in children {
-                    let reason = self.owner_exited_reason(&id);
-                    let _ = self.stop(&child, Some(reason));
-                }
+                self.end_host_jobs(&id);
             }
         }
         self.reconcile_raids();
@@ -2905,6 +2991,7 @@ fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::
         Some(record) => record.clone(),
         None => crate::history::Record::new(&a.line, &a.record.name, &a.record.agent_name, now),
     };
+    record.version = crate::history::VERSION;
     record.ran_as(&a.record.id);
     record.configuration = a.record.name.clone();
     record.agent_name = a.record.agent_name.clone();
@@ -2920,6 +3007,9 @@ fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::
     for package in &a.record.packages {
         // A full record keeps what fits, as a live grant would.
         let _ = record.approve(package);
+    }
+    for package in &a.record.auto_approve {
+        let _ = record.auto(package);
     }
     record
 }
@@ -3036,10 +3126,16 @@ mod tests {
                 exit_watch: None,
                 init: None,
                 granted_outputs: BTreeMap::new(),
+                auto_approve: BTreeMap::new(),
+                auto_approve_dev_shells: BTreeSet::new(),
                 dev_identity: None,
                 call: None,
                 recreated_from: None,
                 variables: BTreeMap::new(),
+                fresh: BTreeSet::new(),
+                attach: attach::Attach::new(&directory.join("attach.sock")).unwrap(),
+                handlers: None,
+                server_log: None,
                 line: id.clone(),
                 created: 0,
                 record: SessionRecord {
@@ -3052,8 +3148,7 @@ mod tests {
                     cwd: None,
                     id: id.clone(),
                     agent_name: "snikk".into(),
-                    parent: None,
-                    path: "snikk".into(),
+                    created_by: None,
                     name: "shell".into(),
                     description: "Test shell running in a Goblins sandbox".into(),
                     configuration: "test".into(),
@@ -3061,7 +3156,10 @@ mod tests {
                     identity: None,
                     initial_packages: vec![],
                     packages: vec![],
+                    auto_approve: vec![],
                     terminal: String::new(),
+                    attach: String::new(),
+                    server_log: None,
                     pty_eof: false,
                     terminal_complete: false,
                     terminal_interrupted: false,
@@ -3086,6 +3184,8 @@ mod tests {
                     connection: 99,
                     cancel: Cancel::default(),
                     notify: false,
+                    host: None,
+                    detached: false,
                 }),
                 terminal,
                 directory,
@@ -3154,103 +3254,210 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn child_configurations_follow_the_selected_parents_list() {
-        let mut d = daemon();
-        let goblin = |children: Value| {
-            json!({"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
-                "client_package": "/unused", "helper": "/unused", "flake": "unused",
-                "allowed_children": children})
-        };
-        let manifest: crate::config::Manifest = serde_json::from_value(json!({
-            "api": 2, "helper_api": 5,
-            "goblins": {
-                "coordinator": goblin(json!(["coordinator", "reviewer", "scoped"])),
-                "reviewer": goblin(json!(["shell"])),
-                "shell": goblin(json!([])),
-                "scoped": {"scope": "work", "scopes": {"work": goblin(Value::Null)},
-                    "build_spec": "/unused", "args": [], "env": {}, "client_package": "/unused",
-                    "helper": "/unused", "flake": "unused"},
-            },
-            "scopes": {"work": {"persistent": false, "pid": true}},
-        }))
-        .unwrap();
-        let branch = std::sync::Arc::new(manifest.branch("coordinator", None).unwrap().1);
-        let root = session_with_results_id(&mut d, "root", vec![]);
-        let child = session_with_results_id(&mut d, "child", vec![]);
-        let leaf = session_with_results_id(&mut d, "leaf", vec![]);
-        for (id, parent, name) in [
-            (&root, None, "coordinator"),
-            (&child, Some(&root), "reviewer"),
-            (&leaf, Some(&child), "shell"),
-        ] {
-            let a = d.sessions.get_mut(id).unwrap();
-            a.record.parent = parent.cloned();
-            a.record.name = name.into();
-            a.record.agent_name = id.clone();
-            a.record.configuration = "/loaded.json".into();
-            a.inheritance = Some(Inheritance::fixture(name, branch.clone()));
-        }
-        let keys = std::cell::Cell::new(0);
-        let start = |name: &str, parent: &str| -> Start {
-            keys.set(keys.get() + 1);
-            serde_json::from_value(json!({"key": format!("k{}", keys.get()),
-                "configuration": "/newer.json", "name": name, "agent_name": null,
-                "parent": parent, "rows": 24, "cols": 80}))
-            .unwrap()
-        };
-        let refused = |d: &mut Controller, p: Start, scope: Option<&str>| {
-            let error = d.start(p, scope).unwrap_err();
-            assert_eq!(error.0, -32602);
-            error.1
-        };
-        // The host selecting a descendant uses that descendant's list.
-        assert_eq!(
-            refused(&mut d, start("coordinator", "child"), None),
-            "configuration 'coordinator' is not an allowed child of 'reviewer'; allowed: shell"
-        );
-        assert_eq!(
-            refused(&mut d, start("reviewer", "leaf"), None),
-            "configuration 'shell' permits no children"
-        );
-        // So does a sandbox selecting its descendant with --parent.
-        assert_eq!(
-            refused(&mut d, start("reviewer", "child"), Some(&root)),
-            "configuration 'reviewer' is not an allowed child of 'reviewer'; allowed: shell"
-        );
-        assert_eq!(
-            refused(&mut d, start("scoped", "."), Some(&root)),
-            "configuration 'scoped' cannot be launched here: 'scoped' requires scope 'work'; its parent has no scope"
-        );
-        // Nothing was recorded or allocated for a refused launch.
-        assert!(d.launches.is_empty());
-        assert_eq!(d.sessions.len(), 3);
-        let accepted = d.start(start("shell", "child"), None).unwrap();
-        let record = &d.sessions[accepted["session"].as_str().unwrap()].record;
-        assert_eq!(record.name, "shell");
-        assert_eq!(record.parent.as_deref(), Some(child.as_str()));
-        // The record keeps the parent's manifest, the snapshot's origin.
-        assert_eq!(record.configuration, "/loaded.json");
-    }
-    #[test]
-    fn parent_name_stays_reserved_until_descendant_cleanup_finishes() {
+    fn raid_owners_run_their_own_targets_from_the_current_manifest() {
         let mut d = daemon();
         let path = d.state.clone();
         let root = session_with_results_id(&mut d, "root", vec![]);
-        let child = session_with_results_id(&mut d, "child", vec![]);
-        let a = d.sessions.get_mut(&child).unwrap();
-        a.record.parent = Some(root.clone());
-        a.record.agent_name = "kid".into();
-        a.record.path = "snikk/kid".into();
-        a.record.state = "stopping".into();
-        d.sessions.get_mut(&root).unwrap().worker.take();
-        assert_eq!(d.allocate_name(Some("snikk"), None).unwrap_err().0, -32009);
-        // The same name in a different sibling group remains independent.
-        assert_eq!(
-            d.allocate_name(Some("snikk"), Some(&root)).unwrap(),
-            "snikk"
+        let member = session_with_results_id(&mut d, "member", vec![]);
+        for (id, name, targets) in [
+            (&root, "coordinator", &["reviewer", "shell"][..]),
+            (&member, "reviewer", &["shell"][..]),
+        ] {
+            let a = d.sessions.get_mut(id).unwrap();
+            a.record.name = name.into();
+            a.record.agent_name = id.clone();
+            a.record.cwd = Some("/project".into());
+            a.inheritance = Some(Inheritance::fixture(name, targets));
+        }
+        let keys = std::cell::Cell::new(0);
+        let start = |name: &str| {
+            keys.set(keys.get() + 1);
+            json!({"key": format!("k{}", keys.get()), "name": name, "agent_name": null})
+        };
+        let refused = |d: &mut Controller, scope: &str, p: Value| {
+            d.sandbox_control(scope, "sessions.start", p).unwrap_err()
+        };
+        // Only the owner of an unpaused raid runs goblins.
+        let not_owner = (
+            -32009,
+            "only a raid owner can run goblins; create one with goblin raid create NAME"
+                .to_string(),
         );
-        d.sessions.get_mut(&child).unwrap().worker.take();
-        assert_eq!(d.allocate_name(Some("snikk"), None).unwrap(), "snikk");
+        assert_eq!(refused(&mut d, &root, start("shell")), not_owner);
+        d.sandbox_control(&root, "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let (mut host, _peer) = host_connection();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":[member]}),
+        )
+        .unwrap();
+        assert_eq!(refused(&mut d, &member, start("shell")), not_owner);
+        // The owner's own configuration decides what it may run.
+        assert_eq!(
+            refused(&mut d, &root, start("coordinator")),
+            (
+                -32602,
+                "configuration 'coordinator' is not an allowed run target of 'coordinator'; allowed: reviewer, shell".into()
+            )
+        );
+        // Without a current manifest there is nothing to run from.
+        assert_eq!(refused(&mut d, &root, start("shell")).0, -32009);
+        assert!(d.launches.is_empty());
+        assert_eq!(d.sessions.len(), 2);
+        let manifest = path.join("current.json");
+        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
+            &manifest,
+        )));
+        d.sessions
+            .get_mut(&root)
+            .unwrap()
+            .granted_outputs
+            .insert("jq".into(), "/nix/store/x-jq".into());
+        let accepted = d
+            .sandbox_control(&root, "sessions.start", start("shell"))
+            .unwrap();
+        assert_eq!(accepted.as_object().unwrap().len(), 3);
+        let id = accepted["session"].as_str().unwrap();
+        let a = &d.sessions[id];
+        assert_eq!(a.record.name, "shell");
+        assert_eq!(a.record.configuration, manifest.display().to_string());
+        assert_eq!(a.record.cwd.as_deref(), Some(Path::new("/project")));
+        assert_eq!(
+            a.record.created_by,
+            Some(CreatedBy {
+                id: root.clone(),
+                agent_name: root.clone()
+            })
+        );
+        assert_eq!(a.record.auto_approve, ["jq"]);
+        let raid = d.raids.get("crew").unwrap();
+        assert_eq!(raid.members[id].created_by.as_deref(), Some(root.as_str()));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn owners_list_and_stop_only_members_created_in_the_raid_they_own() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["owner", "made", "invited", "other"] {
+            live(&mut d, id);
+        }
+        d.sandbox_control("owner", "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let mut next = d.raids.clone();
+        let events = next.run("owner", "made").unwrap();
+        d.raid_commit(next, events).unwrap();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":["invited"]}),
+        )
+        .unwrap();
+        let listed = d
+            .sandbox_control("owner", "sessions.list", json!({}))
+            .unwrap();
+        assert_eq!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["made"]
+        );
+        for target in ["invited", "other", "owner"] {
+            for method in ["sessions.get", "sessions.stop"] {
+                assert_eq!(
+                    d.sandbox_control("owner", method, json!({"session":target}))
+                        .unwrap_err()
+                        .0,
+                    -32004,
+                    "{method} {target}"
+                );
+            }
+        }
+        // A created member cannot leave; host-invited ones can.
+        assert_eq!(
+            d.sandbox_control("made", "raids.leave", json!({}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        // A new owner takes over control; the old one loses it at once.
+        d.host(
+            &mut host,
+            "raids.set_owner",
+            json!({"raid":"crew","session":"invited"}),
+        )
+        .unwrap();
+        assert_eq!(
+            d.sandbox_control("owner", "sessions.get", json!({"session":"made"}))
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        d.sandbox_control("invited", "sessions.stop", json!({"session":"made"}))
+            .unwrap();
+        assert_eq!(d.sessions["made"].record.state, "stopping");
+        assert_eq!(
+            d.sessions["made"].record.stop_reason.as_deref(),
+            Some("stopped by raid owner invited (invited)")
+        );
+        assert_eq!(d.sessions["owner"].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_current_manifest_follows_host_acceptance_order() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let lease = |name: &str| {
+            std::sync::Arc::new(crate::config::ManifestLease::unrooted(&path.join(name)))
+        };
+        d.manifest_sequence = 3;
+        // The newest acceptance reports first; an older one reporting later
+        // must not replace it. A failed launch never reports one.
+        session_with_results_id(
+            &mut d,
+            "newer",
+            vec![Completed::Manifest {
+                sequence: 3,
+                lease: lease("newer.json"),
+            }],
+        );
+        d.tick().unwrap();
+        session_with_results_id(
+            &mut d,
+            "older",
+            vec![Completed::Manifest {
+                sequence: 2,
+                lease: lease("older.json"),
+            }],
+        );
+        session_with_results_id(&mut d, "failed", vec![Completed::Failed("bad".into())]);
+        d.tick().unwrap();
+        assert_eq!(
+            d.current_manifest.as_ref().unwrap().path,
+            path.join("newer.json")
+        );
+        assert_eq!(d.manifest_published, 3);
+        drop(d);
+        fs::remove_dir_all(&path).unwrap();
+    }
+    #[test]
+    fn names_stay_reserved_while_their_goblin_is_live() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let goblin = session_with_results_id(&mut d, "goblin", vec![]);
+        let a = d.sessions.get_mut(&goblin).unwrap();
+        a.record.agent_name = "kid".into();
+        a.record.state = "stopping".into();
+        assert_eq!(d.allocate_name(Some("kid")).unwrap_err().0, -32009);
+        d.sessions.get_mut(&goblin).unwrap().worker.take();
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -3395,7 +3602,7 @@ mod tests {
             .unwrap();
         for state in ["starting", "running", "stopping", "stopped", "failed"] {
             d.sessions.get_mut(id).unwrap().record.state = state.into();
-            assert_eq!(d.allocate_name(Some("shell"), None).unwrap_err().0, -32009);
+            assert_eq!(d.allocate_name(Some("shell")).unwrap_err().0, -32009);
         }
         d.sessions.get_mut(id).unwrap().worker.take();
         assert!(d.resolve_session("shell").is_err());
@@ -3490,54 +3697,6 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn claude_integration_results_report_and_refresh_activity() {
-        use goblins_protocol::AgentState;
-        let mut d = daemon();
-        let path = d.state.clone();
-        let manifest: crate::config::Manifest = serde_json::from_value(json!({
-            "api": 2, "helper_api": 5,
-            "goblins": {"shell": {"build_spec": "/unused", "args": [], "env": {},
-                "client_package": "/unused", "helper": "/unused", "flake": "unused"}},
-            "scopes": {},
-        }))
-        .unwrap();
-        let branch = std::sync::Arc::new(manifest.branch("shell", None).unwrap().1);
-        let id = session_with_results(&mut d, vec![]);
-        let response = |result: Value| crate::messaging::Completed {
-            connection: 0,
-            id: json!(1),
-            result: Ok(result),
-            actor: id.clone(),
-        };
-        let a = d.sessions.get_mut(&id).unwrap();
-        a.inheritance = Some(Inheritance::fixture("shell", branch.clone()));
-        d.dirty = false;
-        // Only a Claude-integrated session takes activity from its integration.
-        d.claude_activity(&response(json!({"agent_state":"working"})));
-        assert!(!d.dirty);
-        assert!(d.sessions[&id].activity_at.is_none());
-        let a = d.sessions.get_mut(&id).unwrap();
-        a.inheritance = Some(Inheritance::fixture_with_integration(
-            "shell", branch, "claude",
-        ));
-        d.claude_activity(&response(json!({"notify":false})));
-        assert!(d.sessions[&id].activity_at.is_none());
-        d.claude_activity(&response(json!({"agent_state":"working"})));
-        assert!(d.dirty);
-        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Working);
-        let at = d.sessions[&id].activity_at.unwrap();
-        d.dirty = false;
-        // Monitor ticks repeat the activity: fresher, but not republished.
-        d.claude_activity(&response(json!({"agent_state":"working"})));
-        assert!(!d.dirty);
-        assert!(d.sessions[&id].activity_at.unwrap() >= at);
-        // Once the monitor stops ticking, activity expires as for any endpoint.
-        d.expire_activity(at + std::time::Duration::from_secs(31));
-        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
-        drop(d);
-        fs::remove_dir_all(path).unwrap();
-    }
-    #[test]
     fn activity_changes_are_timestamped() {
         use goblins_protocol::AgentState;
         let mut d = daemon();
@@ -3573,6 +3732,18 @@ mod tests {
         d.inbox_counts(&BTreeMap::new());
         assert!(d.dirty);
         assert_eq!(d.sessions[&id].record.inbox, 0);
+        // A log failure reaches the host's snapshot without a count change.
+        d.dirty = false;
+        let health = crate::mailbox::Health {
+            audit_failed: false,
+            raid_audit_failed: true,
+        };
+        d.messaging_report(&crate::messaging::Report {
+            queued: BTreeMap::new(),
+            health,
+        });
+        assert!(d.dirty);
+        assert_eq!(d.snapshot().messaging, health);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -3828,7 +3999,6 @@ mod tests {
             .flat_map(|work| match work {
                 crate::messaging::Work::Sync { operations, .. }
                 | crate::messaging::Work::Call { operations, .. } => operations,
-                crate::messaging::Work::Delivery { .. } => vec![],
             })
             .collect()
     }
@@ -3957,8 +4127,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         d.open_history(Ok(path.join("history")), 100);
-        let _results = live(&mut d, "a", None);
-        let _child = live(&mut d, "kid", Some("a"));
+        let _results = live(&mut d, "a");
+        let _other = live(&mut d, "kid");
         let record = |d: &Controller| d.history.as_ref().unwrap().records["a"].clone();
         d.history.as_mut().unwrap().write({
             let mut record = crate::history::Record::new("a", "shell", "a", 1);
@@ -3986,6 +4156,7 @@ mod tests {
             true
         );
         assert!(!record(&d).variables.contains_key("session_name"));
+        // A goblin whose record is not written yet records nothing.
         assert_eq!(
             set(&mut d, "kid", json!({"session_id":"other"})).unwrap(),
             json!({"accepted":true,"recorded":false})
@@ -4134,6 +4305,37 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn a_resumed_record_is_bounded_like_copied_approvals() {
+        use crate::history::{MAX_NAMES, Record};
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let store = d.history.as_mut().unwrap();
+        for (id, count) in [("fits", MAX_NAMES), ("oversize", MAX_NAMES + 1)] {
+            let mut record = Record::new(id, "shell", id, 1);
+            record.ran_as(id);
+            // As read from disk, past Record::update's own bound.
+            record.packages.auto_approve = (0..count).map(|i| format!("p{i}")).collect();
+            store.write(record);
+        }
+        let (mut host, _peer) = host_connection();
+        let recreate = |target: &str| {
+            json!({"key":target,"configuration":"/missing-goblins-test-manifest",
+                "recreate":target,"rows":24,"cols":80})
+        };
+        let refused = d
+            .host(&mut host, "sessions.start", recreate("oversize"))
+            .unwrap_err();
+        assert_eq!(refused.0, -32010);
+        assert!(refused.1.contains("auto-approve limit of 256"));
+        let sessions = d.sessions.len();
+        d.host(&mut host, "sessions.start", recreate("fits"))
+            .unwrap();
+        assert_eq!(d.sessions.len(), sessions + 1);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn a_record_is_refused_while_a_goblin_runs_it_and_retries_return_the_launch() {
         use crate::history::Record;
         let mut d = daemon();
@@ -4161,13 +4363,14 @@ mod tests {
                 "rows":24,"cols":80})
         };
         let mut start = |d: &mut Controller, p: Value| d.host(&mut host, "sessions.start", p);
+        // There is no tree to resume a goblin into.
         let mut with_parent = recreate("k0", "r0");
         with_parent["parent"] = json!("r0");
         assert!(
             start(&mut d, with_parent)
                 .unwrap_err()
                 .1
-                .contains("--parent")
+                .contains("unknown field `parent`")
         );
         let mut with_name = recreate("k0", "r0");
         with_name["name"] = json!("shell");
@@ -4224,11 +4427,11 @@ mod tests {
         // Released when that session ends.
         d.sessions.get_mut(&id).unwrap().worker.take();
         // The original goblin running its own record refuses too.
-        let _a3 = live(&mut d, "a3", None);
+        let _a3 = live(&mut d, "a3");
         assert!(refused(&mut d, &mut start, "k7", "a3").contains("goblin a3 (a3)"));
         d.sessions.get_mut("a3").unwrap().worker.take();
         // A goblin already using the name leaves a new name.
-        let _morb = live(&mut d, "morb", None);
+        let _morb = live(&mut d, "morb");
         let again = start(&mut d, recreate("k4", "r0")).unwrap();
         assert_ne!(again["agent_name"], "morb");
         drop(d);
@@ -4269,8 +4472,8 @@ mod tests {
             Some(fs::canonicalize(&shared).unwrap().as_path())
         );
         // A goblin running meanwhile keeps its variables in the server.
-        let _g = live(&mut second, "g", None);
-        let _kid = live(&mut second, "kid", Some("g"));
+        let _g = live(&mut second, "g");
+        let _kid = live(&mut second, "kid");
         second.sessions.get_mut("g").unwrap().record.packages = vec!["hello".into()];
         for id in ["g", "kid"] {
             assert_eq!(
@@ -4284,8 +4487,8 @@ mod tests {
                 false
             );
         }
-        // Released, the store is taken over without a restart, and the
-        // running root goblin gets its record.
+        // Released, the store is taken over without a restart, and every
+        // running goblin gets its record.
         let paths = [first.state.clone(), second.state.clone()];
         drop(first);
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
@@ -4295,7 +4498,7 @@ mod tests {
         }
         assert_eq!(second.history_status()["owner"], true);
         let store = second.history.as_ref().unwrap();
-        assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g"]);
+        assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g", "kid"]);
         let record = &store.records["g"];
         assert_eq!(record.packages.approved, ["hello"]);
         assert_eq!(record.variables["session_id"], "c819");
@@ -4311,7 +4514,7 @@ mod tests {
         let path = d.state.clone();
         let (service, queue) = crate::messaging::Service::detached(1);
         d.messaging = service;
-        let _results = live(&mut d, "a", None);
+        let _results = live(&mut d, "a");
         let (worker, _results, _commands) = Worker::listening();
         d.sessions.get_mut("a").unwrap().worker = Some(worker);
         d.tick().unwrap();
@@ -4319,10 +4522,10 @@ mod tests {
         // Fill the queue so the next batches cannot be handed over.
         d.messaging
             .commands
-            .try_send(crate::messaging::Work::Delivery {
-                actor: "a".into(),
-                revision: 0,
-                submitted: false,
+            .try_send(crate::messaging::Work::Sync {
+                directory: Default::default(),
+                raids: vec![],
+                operations: vec![],
             })
             .unwrap();
         let (mut c, _peer) = connection(Role::Sandbox("a".into()));
@@ -4388,23 +4591,455 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
-    fn live(
-        d: &mut Controller,
-        id: &str,
-        parent: Option<&str>,
-    ) -> std::sync::mpsc::SyncSender<Completed> {
-        let path = match parent {
-            Some(p) => format!("{}/{id}", d.sessions[p].record.path),
-            None => id.into(),
+    #[test]
+    fn attach_handlers_wait_start_refuse_and_detach_a_client() {
+        use goblins_protocol::init::{self, Command, Event};
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let (control, init_peer) = init::pair().unwrap();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.init = Some(control);
+        // As serve leaves it: the agent's own terminal has no frontend.
+        a.terminal.detached = true;
+        a.variables.insert("session_id".into(), "seeded".into());
+        let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        a.handlers = Some(crate::config::Handlers {
+            on_attach: crate::config::OnAttach {
+                command: template(&["client", "{session_id}"]),
+                timeout: 30,
+                wait_for: vec![],
+            },
+            on_detach: Some(template(&["stop", "{attach.pid}"])),
+        });
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            d.attach_tick(&mut a);
+            d.sessions.insert("a".into(), a);
         };
+        let hello = |rows: u16| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                        "params":{"version":1,"rows":rows,"cols":80}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
+        };
+        let mut buffer = vec![0; init::MAX_MESSAGE];
+        let mut command = |fds: usize| {
+            let (n, received) = init::receive(init_peer.as_raw_fd(), &mut buffer, 0).unwrap();
+            assert_eq!(received.len(), fds);
+            serde_json::from_slice::<Command>(&buffer[..n]).unwrap()
+        };
+        // A seeded value is not ready: the frontend hears it waits.
+        let mut frontend = hello(30);
+        step(&mut d);
+        step(&mut d);
+        let notice = rpc::read(&mut frontend).unwrap();
+        assert_eq!(notice["method"], "attach.waiting");
+        assert_eq!(notice["params"]["missing"], json!(["session_id"]));
+        assert!(!d.sessions["a"].record.terminal_attached);
+        // Set during this run: the client starts on a PTY of its own.
+        d.sandbox_control(
+            "a",
+            "sessions.set-variables",
+            json!({"variables":{"session_id":"c819"}}),
+        )
+        .unwrap();
+        step(&mut d);
+        let Command::Spawn {
+            id, argv, env, tty, ..
+        } = command(1)
+        else {
+            panic!("expected the client's spawn");
+        };
+        assert_eq!(argv, Some(template(&["client", "c819"])));
+        assert!(tty && env.contains(&("GOBLIN_VAR_SESSION_ID".into(), "c819".into())));
+        assert!(d.attach_event("a", &Event::Spawned { id, pid: 42 }));
+        step(&mut d);
+        let reply = rpc::read(&mut frontend).unwrap();
+        assert_eq!(reply["result"]["attached"], true);
+        assert!(d.sessions["a"].record.terminal_attached);
+        assert!(d.sessions["a"].attach.since().is_some());
+        // One attachment: a second frontend is refused and changes nothing.
+        let mut second = hello(10);
+        step(&mut d);
+        step(&mut d);
+        let refused = rpc::read(&mut second).unwrap();
+        assert_eq!(refused["error"]["message"], "terminal is already attached");
+        // Detach runs onDetach with the client's PID, then cancels the
+        // client's whole subtree; it is detached once the client exited.
+        d.detach("a").unwrap();
+        let Command::Spawn {
+            id: on_detach,
+            argv,
+            tty,
+            ..
+        } = command(3)
+        else {
+            panic!("expected onDetach's spawn");
+        };
+        assert_eq!((argv, tty), (Some(template(&["stop", "42"])), false));
+        step(&mut d);
+        assert!(!d.sessions["a"].record.terminal_detached);
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id: on_detach,
+                code: Some(0),
+                signal: None
+            }
+        ));
+        step(&mut d);
+        assert_eq!(
+            command(0),
+            Command::Cancel {
+                id,
+                everything: true
+            }
+        );
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id,
+                code: None,
+                signal: Some(1)
+            }
+        ));
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        assert!(!d.sessions["a"].record.terminal_attached);
+        // The frontend closing frees the slot for the next attachment.
+        drop(frontend);
+        step(&mut d);
+        let mut next = hello(20);
+        step(&mut d);
+        step(&mut d);
+        let Command::Spawn { id, .. } = command(1) else {
+            panic!("expected a new client");
+        };
+        // A client that exits detaches without onDetach; its leftovers go.
+        assert!(d.attach_event("a", &Event::Spawned { id, pid: 43 }));
+        step(&mut d);
+        assert_eq!(rpc::read(&mut next).unwrap()["result"]["attached"], true);
+        // Its record stays while the client may still deliver output.
+        assert!(!d.sessions["a"].can_evict());
+        // A settled attachment publishes nothing on unchanged ticks.
+        d.tick().unwrap();
+        let sequence = d.sequence;
+        d.tick().unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sequence, sequence);
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id,
+                code: Some(0),
+                signal: None
+            }
+        ));
+        assert_eq!(
+            command(0),
+            Command::Cancel {
+                id,
+                everything: true
+            }
+        );
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        drop(next);
+        step(&mut d);
+        assert!(d.sessions["a"].can_evict());
+        // A client exiting while onDetach runs takes onDetach with it.
+        let mut third = hello(20);
+        step(&mut d);
+        let Command::Spawn { id, .. } = command(1) else {
+            panic!("expected a new client");
+        };
+        assert!(d.attach_event("a", &Event::Spawned { id, pid: 44 }));
+        step(&mut d);
+        assert_eq!(rpc::read(&mut third).unwrap()["result"]["attached"], true);
+        d.detach("a").unwrap();
+        let Command::Spawn { id: on_detach, .. } = command(3) else {
+            panic!("expected onDetach's spawn");
+        };
+        assert!(d.attach_event(
+            "a",
+            &Event::Exited {
+                id,
+                code: Some(0),
+                signal: None
+            }
+        ));
+        for id in [on_detach, id] {
+            assert_eq!(
+                command(0),
+                Command::Cancel {
+                    id,
+                    everything: true
+                }
+            );
+        }
+        drop(third);
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        // Init going away fails a starting attachment and frees the slot.
+        let mut fourth = hello(20);
+        step(&mut d);
+        let Command::Spawn { .. } = command(1) else {
+            panic!("expected a new client");
+        };
+        d.attach_lost("a");
+        let refused = rpc::read(&mut fourth).unwrap();
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("init")
+        );
+        let _fifth = hello(20);
+        step(&mut d);
+        let Command::Spawn { .. } = command(1) else {
+            panic!("expected the slot to be free");
+        };
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_server_goblin_refuses_older_frontends_and_can_be_evicted() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let directory = d.sessions["a"].directory.clone();
+        // As an attached launch creates it: not detached, answering nothing
+        // until the goblin started.
+        let a = d.sessions.get_mut("a").unwrap();
+        a.terminal.detached = false;
+        a.terminal.hold();
+        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        a.terminal.tick().unwrap();
+        assert!(!unix::readable(old.as_raw_fd(), 50).unwrap());
+        let (output, _input) = unix::pipe().unwrap();
+        a.serve(
+            output,
+            crate::config::Handlers {
+                on_attach: crate::config::OnAttach {
+                    command: vec!["client".into()],
+                    timeout: 30,
+                    wait_for: vec![],
+                },
+                on_detach: None,
+            },
+        )
+        .unwrap();
+        a.terminal.tick().unwrap();
+        let refused = rpc::read(&mut old).unwrap();
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("upgrade Goblins")
+        );
+        // Stopped, it can be evicted although it was launched attached.
+        a.worker = None;
+        assert!(a.can_evict());
+        // A frontend attaching after it stopped is told where to look.
+        a.record.state = "stopped".into();
+        a.record.detail = Some("the adapter stopped".into());
+        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut a = d.sessions.remove("a").unwrap();
+        d.attach_tick(&mut a);
+        let refused = rpc::read(&mut frontend).unwrap();
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert_eq!(
+            message,
+            format!(
+                "the adapter stopped; its server log is {}",
+                directory.join("server.log").display()
+            )
+        );
+        d.sessions.insert("a".into(), a);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_single_terminal_goblin_attaches_through_either_socket() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let directory = d.sessions["a"].directory.clone();
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            let _ = a.terminal.tick();
+            d.attach_tick(&mut a);
+            let _ = a.terminal.tick();
+            d.sessions.insert("a".into(), a);
+        };
+        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        step(&mut d);
+        assert_eq!(
+            rpc::read(&mut frontend).unwrap()["result"]["attached"],
+            true
+        );
+        assert!(d.sessions["a"].record.terminal_attached);
+        // terminal.sock keeps today's protocol: refused while attached.
+        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        step(&mut d);
+        assert_eq!(
+            rpc::read(&mut old).unwrap()["error"]["message"],
+            "terminal is already attached"
+        );
+        // A hello that is not one is refused.
+        let mut wrong = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        wrong
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":2,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        step(&mut d);
+        assert_eq!(
+            rpc::read(&mut wrong).unwrap()["error"]["message"],
+            "unsupported attach.hello version"
+        );
+        // A goblin with attach handlers refuses terminal.sock outright.
+        drop(frontend);
+        step(&mut d);
+        d.sessions.get_mut("a").unwrap().terminal.refuse("upgrade");
+        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        step(&mut d);
+        assert_eq!(rpc::read(&mut old).unwrap()["error"]["message"], "upgrade");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_attach_fails_when_its_variables_are_not_set_in_time() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        d.sessions.get_mut("a").unwrap().handlers = Some(crate::config::Handlers {
+            on_attach: crate::config::OnAttach {
+                command: vec!["client".into(), "{session_id}".into()],
+                timeout: 1,
+                wait_for: vec!["ready".into()],
+            },
+            on_detach: None,
+        });
+        let mut frontend =
+            UnixStream::connect(d.sessions["a"].directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            d.attach_tick(&mut a);
+            d.sessions.insert("a".into(), a);
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let reply = loop {
+            step(&mut d);
+            assert!(std::time::Instant::now() < deadline);
+            if !unix::readable(frontend.as_raw_fd(), 50).unwrap() {
+                continue;
+            }
+            let frame = rpc::read(&mut frontend).unwrap();
+            if frame["method"] != "attach.waiting" {
+                break frame;
+            }
+            assert_eq!(frame["params"]["missing"], json!(["ready", "session_id"]));
+        };
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("ready, session_id") && message.contains("restart the goblin"));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn only_variables_set_in_this_run_are_fresh() {
+        let fresh = |d: &Controller, id: &str| {
+            let a = &d.sessions[id];
+            (
+                a.fresh.iter().cloned().collect::<Vec<_>>(),
+                a.variables.clone(),
+            )
+        };
+        let set = |d: &mut Controller, id: &str, variables: Value| {
+            d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
+                .unwrap()["recorded"]
+                .clone()
+        };
+        let seeded = BTreeMap::from([("session_id".to_string(), "old".to_string())]);
+        // With history: a recreated goblin starts with its record's values.
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a");
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record.variables = seeded.clone();
+            record
+        });
+        d.sessions.get_mut("a").unwrap().variables = seeded.clone();
+        assert_eq!(fresh(&d, "a"), (vec![], seeded.clone()));
+        assert_eq!(set(&mut d, "a", json!({"session_name":"Plan it"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_name"]);
+        assert_eq!(set(&mut d, "a", json!({"session_id":"old"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_id", "session_name"]);
+        assert_eq!(
+            d.history.as_ref().unwrap().records["a"].variables["session_id"],
+            "old"
+        );
+        // Clearing a name removes its value and its freshness together.
+        assert_eq!(set(&mut d, "a", json!({"session_name":""})), true);
+        assert_eq!(
+            fresh(&d, "a"),
+            (vec!["session_id".to_string()], seeded.clone())
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        // Without history, setting makes names fresh all the same.
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "b");
+        d.sessions.get_mut("b").unwrap().variables = seeded.clone();
+        assert_eq!(set(&mut d, "b", json!({"session_id":"new"})), false);
+        assert_eq!(fresh(&d, "b").0, ["session_id"]);
+        assert_eq!(d.sessions["b"].variables["session_id"], "new");
+        assert_eq!(set(&mut d, "b", json!({"session_id":""})), false);
+        assert_eq!(fresh(&d, "b"), (vec![], BTreeMap::new()));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Completed> {
         session_with_results_id(d, id, vec![]);
         let (worker, results) = Worker::idle();
         let a = d.sessions.get_mut(id).unwrap();
         a.worker = Some(worker);
         a.pending = None;
         a.record.agent_name = id.into();
-        a.record.parent = parent.map(Into::into);
-        a.record.path = path;
         results
     }
     fn host_connection() -> (Connection, UnixStream) {
@@ -4419,7 +5054,6 @@ mod tests {
             .flat_map(|work| match work {
                 crate::messaging::Work::Sync { raids, .. }
                 | crate::messaging::Work::Call { raids, .. } => raids,
-                crate::messaging::Work::Delivery { .. } => vec![],
             })
             .map(|e| (e.kind().to_string(), e.data()))
             .collect()
@@ -4431,11 +5065,11 @@ mod tests {
         let (service, queue) = crate::messaging::Service::detached(64);
         d.messaging = service;
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let exits = live(&mut d, "b", None);
-        let _c = live(&mut d, "c", None);
-        let fails = live(&mut d, "e", None);
-        let _f = live(&mut d, "f", None);
+        let _a = live(&mut d, "a");
+        let exits = live(&mut d, "b");
+        let _c = live(&mut d, "c");
+        let fails = live(&mut d, "e");
+        let _f = live(&mut d, "f");
         session_with_results_id(&mut d, "w", vec![]);
         d.sessions.get_mut("w").unwrap().pending = None;
         let record = d
@@ -4446,7 +5080,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(record["owner"], "a");
-        assert_eq!(d.sessions["f"].record.raid.as_ref().unwrap().owner, "a");
+        assert_eq!(
+            d.sessions["f"]
+                .record
+                .raid
+                .as_ref()
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("a")
+        );
         d.tick().unwrap();
         let events = sent(&queue);
         assert_eq!(events[0].0, "raid.created");
@@ -4473,15 +5116,236 @@ mod tests {
                 ("raid.left".into(), json!("e"), json!("launch-failed")),
             ]
         );
-        // The owner stopping dissolves the raid; the other member keeps running.
+        // The owner stopping pauses the raid and asks the host to resolve it;
+        // the other member keeps running.
         d.stop("a", None).unwrap();
         d.tick().unwrap();
         let events = sent(&queue);
-        assert_eq!(events.last().unwrap().0, "raid.dissolved");
-        assert_eq!(events.last().unwrap().1["reason"], "owner-left");
+        assert_eq!(events.last().unwrap().0, "raid.paused");
+        assert_eq!(events.last().unwrap().1["former_owner"], "a");
         assert_eq!(d.sessions["f"].record.state, "running");
-        assert!(d.sessions["f"].record.raid.is_none());
+        let membership = d.sessions["f"].record.raid.clone().unwrap();
+        assert!(membership.paused && membership.owner.is_none());
+        let prompt = d
+            .permissions
+            .iter()
+            .find(|r| r.kind == raids::RAID_OWNER)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (prompt.state.as_str(), prompt.session.as_str()),
+            ("pending", "a")
+        );
+        assert_eq!(prompt.preview.as_ref().unwrap()["members"][0]["id"], "f");
+        // The last member leaving dissolves it and cancels the prompt.
+        d.stop("f", None).unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.last().unwrap().0, "raid.dissolved");
+        assert_eq!(events.last().unwrap().1["reason"], "empty");
+        assert_eq!(d.permission_mut(&prompt.id).unwrap().state, "cancelled");
         assert!(d.snapshot().raids.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn approvals_are_copied_once_within_bounds() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        live(&mut d, "b");
+        let output = |name: &str| PathBuf::from(format!("/nix/store/{}-{name}", "0".repeat(32)));
+        let a = d.sessions.get_mut("a").unwrap();
+        a.granted_outputs.insert("jq".into(), output("jq"));
+        a.auto_approve.insert("rg".into(), output("rg"));
+        a.dev_identity = Some("dev-1".into());
+        let copied = d.copied_approvals("a").unwrap();
+        assert_eq!(copied.packages.keys().collect::<Vec<_>>(), ["jq", "rg"]);
+        assert_eq!(copied.dev_shells, BTreeSet::from(["dev-1".to_string()]));
+        let b = d.sessions.get_mut("b").unwrap();
+        b.auto_approve = copied.packages;
+        b.auto_approve_dev_shells = copied.dev_shells;
+        b.granted_outputs.insert("own".into(), output("own"));
+        assert_eq!(d.auto_output("b", "jq"), Some(output("jq")));
+        assert_eq!(d.auto_output("b", "own"), Some(output("own")));
+        assert!(d.auto_dev_shell("b", "dev-1"));
+        // Copied once: a later grant to the owner does not reach it.
+        d.sessions
+            .get_mut("a")
+            .unwrap()
+            .granted_outputs
+            .insert("htop".into(), output("htop"));
+        assert_eq!(d.auto_output("b", "htop"), None);
+        assert!(!d.auto_dev_shell("b", "dev-2"));
+        // Beyond the bounds a launch is refused, never truncated.
+        let a = d.sessions.get_mut("a").unwrap();
+        for i in 0..crate::history::MAX_NAMES {
+            a.auto_approve
+                .insert(format!("p{i}"), output(&format!("p{i}")));
+        }
+        assert_eq!(d.copied_approvals("a").err().unwrap().0, -32010);
+        let a = d.sessions.get_mut("a").unwrap();
+        a.auto_approve.clear();
+        a.auto_approve_dev_shells = (0..AUTO_DEV_SHELLS).map(|i| format!("old-{i}")).collect();
+        assert!(
+            d.copied_approvals("a")
+                .err()
+                .unwrap()
+                .1
+                .contains("32 dev shells")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_host_resolves_a_paused_raid_only_as_it_saw_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["a", "b", "c"] {
+            live(&mut d, id);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b","c"]}),
+        )
+        .unwrap();
+        // An active raid's ownership can move; the record names the owner.
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"b"}),
+            )
+            .unwrap();
+        assert_eq!(
+            (record["owner"].as_str(), &record["generation"]),
+            (Some("b"), &json!(1))
+        );
+        assert!(!d.permissions.iter().any(|r| r.kind == raids::RAID_OWNER));
+        // Kicking the owner pauses the raid and opens a prompt.
+        let kicked = d
+            .host(
+                &mut host,
+                "raids.kick",
+                json!({"raid":"review","session":"b"}),
+            )
+            .unwrap();
+        assert_eq!(
+            kicked,
+            json!({"accepted":true,"dissolved":false,"paused":true})
+        );
+        let prompt = d.permissions.back().unwrap().clone();
+        assert_eq!(prompt.kind, raids::RAID_OWNER);
+        let preview = prompt.preview.clone().unwrap();
+        assert_eq!(
+            (&preview["generation"], &preview["former_owner"]["id"]),
+            (&json!(2), &json!("b"))
+        );
+        // A plain decision is refused; a decision for another generation too.
+        let decision =
+            json!({"session":"b","request":prompt.id,"approval":prompt.approval,"approved":true});
+        assert_eq!(
+            d.host(&mut host, "permissions.decide", decision)
+                .unwrap_err()
+                .0,
+            -32602
+        );
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","generation":1})
+            )
+            .unwrap_err(),
+            (-32009, "the raid changed; reload the prompt".into())
+        );
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","id":"other","generation":2})
+            )
+            .unwrap_err()
+            .0,
+            -32009
+        );
+        // Selecting an owner resumes the raid and approves the prompt.
+        let id = preview["raid"].clone();
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","id":id,"generation":2}),
+            )
+            .unwrap();
+        assert_eq!(
+            (record["owner"].as_str(), &record["paused"]),
+            (Some("c"), &json!(false))
+        );
+        let resolved = d.permission_mut(&prompt.id).unwrap().clone();
+        assert_eq!(
+            (resolved.state.as_str(), resolved.approved),
+            ("approved", Some(true))
+        );
+        // A new pause is a new prompt; dissolving with stop_members stops
+        // every live member and denies it.
+        d.stop("c", None).unwrap();
+        d.reconcile_raids();
+        let second = d.permissions.back().unwrap().clone();
+        assert_ne!(second.id, prompt.id);
+        assert_eq!(second.state, "pending");
+        let destroyed = d
+            .host(
+                &mut host,
+                "raids.destroy",
+                json!({"raid":"review","generation":4,"stop_members":true}),
+            )
+            .unwrap();
+        assert_eq!(destroyed, json!({"accepted":true,"stopped":["a"]}));
+        assert_eq!(d.sessions["a"].record.state, "stopping");
+        assert_eq!(d.permission_mut(&second.id).unwrap().state, "denied");
+        assert!(d.raids.get("review").is_none());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn raid_prompts_never_take_a_permission_slot() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["a", "b"] {
+            live(&mut d, id);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let existing = d.permissions.len();
+        for n in existing..256 {
+            d.permissions.push_back(PermissionRecord {
+                kind: "package".into(),
+                id: format!("p{n}"),
+                session: "b".into(),
+                agent_name: "b".into(),
+                approval: format!("a{n}"),
+                package: "hello".into(),
+                reason: String::new(),
+                state: "pending".into(),
+                approved: None,
+                preview: None,
+                message: None,
+            });
+        }
+        d.stop("a", None).unwrap();
+        d.reconcile_raids();
+        assert_eq!(d.permissions.len(), 257);
+        assert_eq!(d.permissions.back().unwrap().kind, raids::RAID_OWNER);
+        assert_eq!(d.permissions.back().unwrap().state, "pending");
+        assert!(d.raids.get("review").unwrap().paused.is_some());
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4490,8 +5354,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let _b = live(&mut d, "b", None);
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
         d.host(
             &mut host,
             "raids.invite",
@@ -4531,45 +5395,30 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn launch_joins_follow_the_parent_and_retries_do_not_join_again() {
+    fn launch_joins_follow_the_owner_and_retries_do_not_join_again() {
         let mut d = daemon();
         let path = d.state.clone();
-        let manifest: crate::config::Manifest = serde_json::from_value(json!({
-            "api": 2, "helper_api": 5,
-            "goblins": {"shell": {"build_spec": "/nonexistent/spec.json", "args": [], "env": {},
-                "client_package": "/unused", "helper": "/unused", "flake": "unused",
-                "allowed_children": ["shell"]}},
-            "scopes": {},
-        }))
-        .unwrap();
-        let branch = std::sync::Arc::new(manifest.branch("shell", None).unwrap().1);
-        let _root = live(&mut d, "root", None);
-        let _kid = live(&mut d, "kid", Some("root"));
-        let _grandkid = live(&mut d, "grandkid", Some("kid"));
-        let _other = live(&mut d, "other", None);
-        for id in ["root", "kid", "grandkid", "other"] {
+        live(&mut d, "root");
+        live(&mut d, "other");
+        for id in ["root", "other"] {
             let a = d.sessions.get_mut(id).unwrap();
-            a.inheritance = Some(Inheritance::fixture("shell", branch.clone()));
-            a.record.configuration = "/loaded.json".into();
+            a.inheritance = Some(Inheritance::fixture("shell", &["shell"]));
         }
-        let child = |key: &str| json!({"key":key,"name":"shell","agent_name":null,"parent":null,"inherit_raid":true});
-        assert_eq!(
-            d.sandbox_control("root", "sessions.start", child("k1"))
-                .unwrap_err(),
-            (-32009, "parent is not in a raid".into())
-        );
-        assert!(d.launches.is_empty());
+        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
+            &path.join("current.json"),
+        )));
+        let member = |key: &str| json!({"key":key,"name":"shell","agent_name":null});
         d.sandbox_control("root", "raids.create", json!({"raid":"review"}))
             .unwrap();
         let before = d.raid_outbox.len();
         let accepted = d
-            .sandbox_control("root", "sessions.start", child("k1"))
+            .sandbox_control("root", "sessions.start", member("k1"))
             .unwrap();
         let id = accepted["session"].as_str().unwrap().to_string();
         assert_eq!(d.sessions[&id].record.state, "starting");
         let raid = d.sessions[&id].record.raid.clone().unwrap();
         assert_eq!(
-            (raid.name.as_str(), raid.owner.as_str()),
+            (raid.name.as_str(), raid.owner.as_deref().unwrap()),
             ("review", "root")
         );
         let joined = d.raid_outbox.back().unwrap();
@@ -4580,34 +5429,18 @@ mod tests {
         assert_eq!(d.raid_outbox.len(), before + 1);
         // An identical retry returns the original acceptance without joining.
         assert_eq!(
-            d.sandbox_control("root", "sessions.start", child("k1"))
+            d.sandbox_control("root", "sessions.start", member("k1"))
                 .unwrap(),
             accepted
         );
         assert_eq!(d.raid_outbox.len(), before + 1);
-        // Direct children only; other branches are not even visible.
-        assert_eq!(
-            d.sandbox_control("root", "raids.invite", json!({"sessions":["kid/grandkid"]}))
-                .unwrap_err(),
-            (-32602, "only direct children can be invited".into())
-        );
+        // Sandboxes invite nobody: the host invites, owners run members.
         assert_eq!(
             d.sandbox_control("root", "raids.invite", json!({"sessions":["other"]}))
                 .unwrap_err()
                 .0,
-            -32004
+            -32601
         );
-        assert_eq!(
-            d.sandbox_control("root", "raids.invite", json!({"sessions":["kid"]}))
-                .unwrap()["owner"],
-            "root"
-        );
-        // The invited child may invite its own child; ownership is unchanged.
-        let record = d
-            .sandbox_control("kid", "raids.invite", json!({"sessions":["grandkid"]}))
-            .unwrap();
-        assert_eq!(record["owner"], "root");
-        assert_eq!(record["members"].as_array().unwrap().len(), 4);
         // A goblin in another raid cannot be moved.
         d.sandbox_control("other", "raids.create", json!({"raid":"elsewhere"}))
             .unwrap();
@@ -4630,7 +5463,10 @@ mod tests {
         start["raid"] = json!("brand-new");
         let accepted = d.host(&mut host, "sessions.start", start.clone()).unwrap();
         let fresh = accepted["session"].as_str().unwrap();
-        assert_eq!(d.raids.get("brand-new").unwrap().owner, fresh);
+        assert_eq!(
+            d.raids.get("brand-new").unwrap().owner.as_deref(),
+            Some(fresh)
+        );
         d.host(&mut host, "raids.destroy", json!({"raid":"brand-new"}))
             .unwrap();
         assert_eq!(
@@ -4652,8 +5488,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let _b = live(&mut d, "b", None);
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
         session_with_results_id(&mut d, "dead", vec![]);
         d.sessions.get_mut("dead").unwrap().record.state = "stopped".into();
         for (sessions, code) in [
@@ -4717,7 +5553,7 @@ mod tests {
         );
         assert_eq!(
             d.sandbox_control("b", "raids.leave", json!({})).unwrap(),
-            json!({"accepted":true,"dissolved":false})
+            json!({"accepted":true,"dissolved":false,"paused":false})
         );
         assert_eq!(
             d.sandbox_control("b", "raids.members", json!({}))
@@ -4727,7 +5563,7 @@ mod tests {
         );
         assert_eq!(
             d.sandbox_control("a", "raids.leave", json!({})).unwrap(),
-            json!({"accepted":true,"dissolved":true})
+            json!({"accepted":true,"dissolved":true,"paused":false})
         );
         assert_eq!(d.sessions["b"].record.state, "running");
         drop(d);
@@ -4740,8 +5576,8 @@ mod tests {
         let (service, queue) = crate::messaging::Service::detached(1);
         d.messaging = service;
         let (mut host, _peer) = host_connection();
-        let _a = live(&mut d, "a", None);
-        let _b = live(&mut d, "b", None);
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
         d.tick().unwrap();
         assert!(sent(&queue).is_empty());
         // Sent even though the directory is unchanged.
@@ -4758,10 +5594,10 @@ mod tests {
         // A full queue keeps the batch, in order, for the next tick.
         d.messaging
             .commands
-            .try_send(crate::messaging::Work::Delivery {
-                actor: "a".into(),
-                revision: 0,
-                submitted: false,
+            .try_send(crate::messaging::Work::Sync {
+                directory: Default::default(),
+                raids: vec![],
+                operations: vec![],
             })
             .unwrap();
         d.host(

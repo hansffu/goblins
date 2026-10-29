@@ -1,25 +1,38 @@
-//! Codex App Server 0.162.1 adapter. Runs entirely inside the reporting sandbox.
+//! Codex App Server adapter. Runs entirely inside the reporting sandbox: it
+//! owns the goblin's conversation on its own App Server connection, follows
+//! the attached terminal's conversation switches, and delivers inbox reminders.
 use clap::{Parser, Subcommand};
 use goblins_codex::{Delivery, activity};
 use goblins_protocol::{AgentState, rpc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Write},
     os::{
         fd::AsRawFd,
         unix::{
-            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::{UnixListener, UnixStream},
+            fs::{OpenOptionsExt, PermissionsExt},
+            net::UnixStream,
         },
     },
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tungstenite::{Message, WebSocket};
+use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
+
+/// Match Codex's remote client receive limits. The handshake's advertised
+/// 16 MiB cap limits client uploads; server model/configuration responses can
+/// be larger. Tungstenite's default 16 MiB frame / 64 MiB message limits would
+/// disconnect before it receives those responses.
+fn websocket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_frame_size(Some(128 << 20))
+        .max_message_size(Some(128 << 20))
+        .max_write_buffer_size((128 << 20) + (128 << 10))
+}
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[derive(Parser)]
@@ -37,11 +50,17 @@ enum Command {
     Run {
         #[arg(long)]
         socket: PathBuf,
-        /// Pass through the native connection to capture exact start/resume IDs
+        /// Load this recorded conversation instead of starting one
         #[arg(long)]
-        native_socket: Option<PathBuf>,
+        thread: Option<String>,
+        /// The goblin bypasses Codex's approvals (bypassPermissions)
+        #[arg(long)]
+        bypass_permissions: bool,
     },
-    Hook,
+    /// Deliver reminders to this conversation until the terminal's next message
+    Bind {
+        thread: String,
+    },
     Status,
     Pause,
     Resume,
@@ -215,6 +234,8 @@ struct Server {
     status: Value,
     subscribed: bool,
     transitions: Sender<AgentState>,
+    /// Notifications the adapter follows conversations by, oldest first.
+    events: VecDeque<Value>,
 }
 impl Server {
     fn connect(path: &Path, transitions: Sender<AgentState>) -> Result<Self> {
@@ -222,7 +243,11 @@ impl Server {
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         stream.set_write_timeout(Some(Duration::from_secs(3)))?;
         // Codex's explicit Unix transport is RFC6455, unlike its NDJSON stdio.
-        let (ws, _) = tungstenite::client("ws://localhost/", stream)?;
+        let (ws, _) = tungstenite::client::client_with_config(
+            "ws://localhost/",
+            stream,
+            Some(websocket_config()),
+        )?;
         ws.get_ref()
             .set_read_timeout(Some(Duration::from_millis(50)))?;
         let mut server = Self {
@@ -232,6 +257,7 @@ impl Server {
             status: Value::Null,
             subscribed: false,
             transitions,
+            events: VecDeque::new(),
         };
         server.call("initialize",json!({"clientInfo":{"name":"goblins-codex","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
         server
@@ -260,6 +286,15 @@ impl Server {
         if v.get("id").is_some() {
             return;
         }
+        if matches!(
+            v["method"].as_str(),
+            Some(
+                "thread/started" | "thread/status/changed" | "item/started" | "thread/name/updated"
+            )
+        ) && self.events.len() < 4096
+        {
+            self.events.push_back(v.clone());
+        }
         if v["params"]["threadId"].as_str() != self.thread.as_deref() {
             return;
         }
@@ -279,7 +314,14 @@ impl Server {
         self.ws.send(Message::text(
             json!({"id":id,"method":method,"params":params}).to_string(),
         ))?;
-        let deadline = Instant::now() + Duration::from_secs(3);
+        // Starting or loading a thread waits for Codex's model refresh, which
+        // takes about five seconds without network access.
+        let wait = if matches!(method, "thread/start" | "thread/resume") {
+            30
+        } else {
+            3
+        };
+        let deadline = Instant::now() + Duration::from_secs(wait);
         while Instant::now() < deadline {
             if let Some(v) = self.receive()? {
                 // Server requests and client responses have separate ID namespaces.
@@ -298,10 +340,8 @@ impl Server {
         Err("App Server request timed out; acceptance may be uncertain".into())
     }
     fn bind(&mut self, thread: &str) -> Result<()> {
+        // The previous thread stays subscribed: the terminal may return to it.
         if self.thread.as_deref() != Some(thread) {
-            if let Some(old) = self.thread.clone() {
-                let _ = self.call("thread/unsubscribe", json!({"threadId":old}));
-            }
             self.thread = Some(thread.to_owned());
             self.subscribed = false;
             self.set_status(Value::Null);
@@ -407,141 +447,229 @@ impl Server {
         Ok(())
     }
 }
-/// The terminal alone owns this connection. Forward every payload unchanged;
-/// only successful foreground start/resume/fork responses select a thread.
-/// Codex defers SessionStart until the first turn, so this also binds an empty
-/// terminal and immediately guards against late compaction hooks after a switch.
-#[allow(clippy::result_large_err)] // Tungstenite callback requires an unboxed HTTP error response.
-fn native_proxy(
-    listener: &UnixListener,
-    upstream: &Path,
-    dir: &Path,
-    conversation: &Sender<(String, String)>,
-) -> Result<()> {
-    let (native_stream, _) = listener.accept()?;
-    native_stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    native_stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    let stream = UnixStream::connect(upstream)?;
-    stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(3)))?;
-    let (mut server, handshake) = tungstenite::client("ws://localhost/", stream)?;
-    let cap = handshake
-        .headers()
-        .get("x-codex-websocket-max-unfragmented-message-bytes")
-        .cloned();
-    let mut native = tungstenite::accept_hdr(
-        native_stream,
-        move |_: &tungstenite::handshake::server::Request,
-              mut response: tungstenite::handshake::server::Response| {
-            if let Some(cap) = cap {
-                response
-                    .headers_mut()
-                    .insert("x-codex-websocket-max-unfragmented-message-bytes", cap);
-            }
-            Ok(response)
-        },
-    )?;
-    native
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_millis(10)))?;
-    server
-        .get_ref()
-        .set_read_timeout(Some(Duration::from_millis(10)))?;
-    let mut pending = std::collections::BTreeSet::new();
-    let mut foreground: Option<String> = None;
-    fn receive(ws: &mut WebSocket<UnixStream>) -> Result<Option<Message>> {
-        match ws.read() {
-            Ok(message) => Ok(Some(message)),
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
-            }
-            Err(e) => Err(e.into()),
-        }
-    }
-    loop {
-        if let Some(message) = receive(&mut native)? {
-            if let Message::Text(text) = &message
-                && let Ok(v) = serde_json::from_str::<Value>(text)
-                && foreground_thread_request(&v)
-                && let Some(id) = v.get("id")
-            {
-                if pending.len() >= 64 {
-                    return Err("too many pending native thread requests".into());
-                }
-                pending.insert(id.to_string());
-            }
-            let closing = matches!(message, Message::Close(_));
-            if matches!(
-                message,
-                Message::Text(_) | Message::Binary(_) | Message::Close(_)
-            ) {
-                server.send(message)?;
-            }
-            if closing {
-                return Ok(());
-            }
-        }
-        if let Some(message) = receive(&mut server)? {
-            if let Message::Text(text) = &message
-                && let Ok(v) = serde_json::from_str::<Value>(text)
-            {
-                if v.get("method").is_none()
-                    && let Some(id) = v.get("id")
-                    && pending.remove(&id.to_string())
-                    && let Some(thread) = v["result"]["thread"]["id"].as_str()
-                {
-                    atomic(&dir.join("native-thread.json"), &thread)?;
-                    atomic(&dir.join("thread.json"), &thread)?;
-                    // A foreground switch replaces both values at once.
-                    foreground = Some(thread.to_owned());
-                    let name = v["result"]["thread"]["name"].as_str().unwrap_or_default();
-                    let _ = conversation.send((thread.to_owned(), name.to_owned()));
-                } else if v["method"] == "thread/name/updated"
-                    && let Some(thread) = &foreground
-                    && v["params"]["threadId"].as_str() == Some(thread)
-                {
-                    let name = v["params"]["threadName"].as_str().unwrap_or_default();
-                    let _ = conversation.send((thread.clone(), name.to_owned()));
-                }
-            }
-            let closing = matches!(message, Message::Close(_));
-            if matches!(
-                message,
-                Message::Text(_) | Message::Binary(_) | Message::Close(_)
-            ) {
-                native.send(message)?;
-            }
-            if closing {
-                return Ok(());
-            }
-        }
-    }
-}
-
-/// In native Codex 0.162.1, foreground requests use integer IDs (or these
-/// startup/fallback IDs). Hidden title/recap requests and background task tools
-/// share the same connection but use their own string IDs. Neither selects the
-/// terminal's conversation. Do not guess ownership for unfamiliar string IDs.
-fn foreground_thread_request(v: &Value) -> bool {
-    matches!(
-        v["method"].as_str(),
-        Some("thread/start" | "thread/resume" | "thread/fork")
-    ) && (v["id"].is_i64()
-        || v["id"].is_u64()
-        || v["id"].as_str().is_some_and(|id| {
-            id.starts_with("startup-thread-start-") || id.starts_with("legacy-thread-start-")
-        }))
-        && v["params"]["threadSource"]
+/// A thread the person works in: not ephemeral, not a subagent's, not a
+/// background task's.
+fn user_thread(thread: &Value) -> bool {
+    !(thread["ephemeral"] == true
+        || !thread["parentThreadId"].is_null()
+        || thread["source"]
+            .as_object()
+            .is_some_and(|s| s.keys().any(|k| k.eq_ignore_ascii_case("subagent")))
+        || thread["threadSource"]
             .as_str()
-            .is_none_or(|source| source == "user")
+            .is_some_and(|source| source != "user"))
 }
 
-fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
+/// Which conversation the attached terminal works in: the thread of the
+/// newest user message that started during the current attachment and is
+/// not one of the adapter's own reminders.
+#[derive(Default)]
+struct Follow {
+    /// When the current attachment's client started.
+    since: Option<u64>,
+    /// The newest qualifying message: when it started, and its thread.
+    winner: Option<(u64, String)>,
+    /// Item IDs already considered, per thread, newest last.
+    seen: BTreeMap<String, VecDeque<String>>,
+}
+impl Follow {
+    /// A new attachment starts afresh: true when it changed. Its threads are
+    /// caught up again, since messages seen before it was known still count.
+    fn attach(&mut self, since: Option<u64>) -> bool {
+        if since == self.since {
+            return false;
+        }
+        self.since = since;
+        self.winner = None;
+        self.seen.clear();
+        true
+    }
+    /// A user message item in `thread`, live or caught up, considered once.
+    fn message(
+        &mut self,
+        thread: &str,
+        item: &Value,
+        started: Option<u64>,
+        reminded: impl Fn(&str) -> bool,
+    ) {
+        let Some(id) = item["id"].as_str() else {
+            return;
+        };
+        // Judged only against a known attachment; the catch-up once it is
+        // known sees it again.
+        let Some(since) = self.since else {
+            return;
+        };
+        let seen = self.seen.entry(thread.to_owned()).or_default();
+        if seen.iter().any(|s| s == id) {
+            return;
+        }
+        seen.push_back(id.to_owned());
+        if seen.len() > 256 {
+            seen.pop_front();
+        }
+        let Some(started) = started else {
+            return;
+        };
+        if started < since || item["clientId"].as_str().is_some_and(reminded) {
+            return;
+        }
+        if self.winner.as_ref().is_none_or(|(at, _)| started > *at) {
+            self.winner = Some((started, thread.to_owned()));
+        }
+    }
+}
+
+/// The goblin's approval policy for a thread in `cwd`: "never" when it
+/// bypasses approvals, else the one configured there, else Codex's own
+/// default, on-request. The sandbox is always full access: Goblins is the
+/// sandbox, and Codex's own cannot run inside a goblin.
+fn approval(server: &mut Server, bypass: bool, cwd: Option<&Value>) -> Result<Value> {
+    if bypass {
+        return Ok(json!("never"));
+    }
+    let params = match cwd {
+        Some(cwd) if cwd.is_string() => json!({"cwd":cwd}),
+        _ => json!({}),
+    };
+    let read = server.call("config/read", params)?;
+    let policy = &read.get("config").ok_or("config/read returned no config")?["approval_policy"];
+    Ok(if policy.is_null() {
+        json!("on-request")
+    } else {
+        policy.clone()
+    })
+}
+fn permitted(result: &Value, approval: &Value) -> bool {
+    result["approvalPolicy"] == *approval && result["sandbox"]["type"] == "dangerFullAccess"
+}
+/// Apply the goblin's policy to a loaded thread, then read it back.
+fn enforce(server: &mut Server, thread: &str, approval: &Value) -> Result<Value> {
+    server.call(
+        "thread/settings/update",
+        json!({"threadId":thread,"approvalPolicy":approval,"sandboxPolicy":{"type":"dangerFullAccess"}}),
+    )?;
+    let verified = server.call(
+        "thread/resume",
+        json!({"threadId":thread,"excludeTurns":true}),
+    )?;
+    if !permitted(&verified, approval) {
+        return Err("Codex did not apply this goblin's approval and sandbox policy".into());
+    }
+    Ok(verified)
+}
+/// Create the goblin's conversation, or load the recorded one, with its
+/// policy. A new one is named at once, which saves it, so the terminal can
+/// resume it before its first turn. Returns the thread.
+fn open(server: &mut Server, thread: Option<&str>, bypass: bool, name: &str) -> Result<Value> {
+    let (mut result, approval) = match thread {
+        Some(thread) => {
+            let cwd = server.call(
+                "thread/read",
+                json!({"threadId":thread,"includeTurns":false}),
+            )?["thread"]["cwd"]
+                .clone();
+            let approval = approval(server, bypass, Some(&cwd))?;
+            let result = server.call(
+                "thread/resume",
+                json!({"threadId":thread,"excludeTurns":true,"approvalPolicy":approval,"sandbox":"danger-full-access"}),
+            )?;
+            (result, approval)
+        }
+        None => {
+            let approval = approval(server, bypass, None)?;
+            let mut result = server.call(
+                "thread/start",
+                json!({"approvalPolicy":approval,"sandbox":"danger-full-access"}),
+            )?;
+            let id = result["thread"]["id"]
+                .as_str()
+                .ok_or("thread response has no id")?
+                .to_owned();
+            server.call("thread/name/set", json!({"threadId":id,"name":name}))?;
+            result["thread"]["name"] = json!(name);
+            (result, approval)
+        }
+    };
+    let id = result["thread"]["id"]
+        .as_str()
+        .ok_or("thread response has no id")?
+        .to_owned();
+    // A loaded thread can keep its own policy despite the request's.
+    if !permitted(&result, &approval) {
+        let verified = enforce(server, &id, &approval)?;
+        result["thread"]["status"] = verified["thread"]["status"].clone();
+    }
+    Ok(result["thread"].clone())
+}
+/// Join a thread without changing it. None when it is not saved yet: a new
+/// thread has no rollout until its first turn.
+fn join(server: &mut Server, thread: &str) -> Result<Option<Value>> {
+    match server.call(
+        "thread/resume",
+        json!({"threadId":thread,"excludeTurns":true}),
+    ) {
+        Ok(v) => Ok(Some(v["thread"].clone())),
+        Err(e)
+            if e.downcast_ref::<Rejected>()
+                .is_some_and(|e| e.0.contains("no rollout found")) =>
+        {
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+/// Every thread the server has loaded.
+fn loaded(server: &mut Server) -> Result<Vec<String>> {
+    let mut threads = vec![];
+    let mut cursor = Value::Null;
+    for _ in 0..32 {
+        let v = server.call("thread/loaded/list", json!({"cursor":cursor}))?;
+        threads.extend(
+            v["data"]
+                .as_array()
+                .ok_or("invalid loaded thread list")?
+                .iter()
+                .filter_map(|t| t.as_str().map(str::to_owned)),
+        );
+        cursor = v["nextCursor"].clone();
+        if cursor.is_null() {
+            return Ok(threads);
+        }
+    }
+    Err("loaded thread pagination limit exceeded".into())
+}
+/// Consider a joined thread's user messages from the current attachment
+/// that arrived before it could be joined, or while disconnected.
+fn catch_up(server: &mut Server, follow: &mut Follow, ledger: &Ledger, thread: &str) -> Result<()> {
+    let Some(since) = follow.since else {
+        return Ok(());
+    };
+    let reminded = |id: &str| ledger.threads.get(thread).is_some_and(|d| d.reminded(id));
+    let mut cursor = Value::Null;
+    for _ in 0..8 {
+        let v = server.call(
+            "thread/items/list",
+            json!({"threadId":thread,"sortDirection":"desc","limit":100,"cursor":cursor}),
+        )?;
+        for entry in v["data"].as_array().ok_or("invalid item list")? {
+            let started = entry["startedAtMs"].as_u64();
+            if started.is_some_and(|at| at < since) {
+                return Ok(());
+            }
+            if entry["item"]["type"] == "userMessage" {
+                follow.message(thread, &entry["item"], started, reminded);
+            }
+        }
+        cursor = v["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn run(dir: &Path, socket: &Path, thread: Option<&str>, bypass: bool) -> Result<()> {
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -550,41 +678,6 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
         .open(dir.join("run.lock"))?;
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err("adapter already running".into());
-    }
-    if let Some(path) = native_socket {
-        if path.parent() != Some(dir) {
-            return Err("native socket must be inside the private runtime directory".into());
-        }
-        match fs::symlink_metadata(path) {
-            Ok(meta)
-                if meta.file_type().is_socket() && meta.uid() == unsafe { libc::geteuid() } =>
-            {
-                fs::remove_file(path)?
-            }
-            Ok(_) => return Err("native socket path is occupied by a non-socket".into()),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
-            Err(e) => return Err(e.into()),
-        }
-        // The exclusive runtime lock proves an old adapter no longer owns it.
-        let listener = UnixListener::bind(path)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-        let upstream = socket.to_owned();
-        let runtime = dir.to_owned();
-        let conversation = conversation_reporter();
-        std::thread::spawn(move || {
-            loop {
-                if let Err(e) = native_proxy(&listener, &upstream, &runtime, &conversation) {
-                    eprintln!("native proxy: {e}");
-                }
-                // The terminal has disconnected; do not deliver to its old thread.
-                let _ = fs::remove_file(runtime.join("thread.json"));
-                // A tombstone also rejects delayed hooks from the disconnected
-                // thread while the terminal reconnects and selects its next one.
-                let _ = atomic(&runtime.join("native-thread.json"), &"");
-                // Keep accepting the terminal's reconnects. It still selects the
-                // thread explicitly; the adapter never retries a human task.
-            }
-        });
     }
     let mut ledger: Ledger = match read(&dir.join("ledger.json")) {
         Ok(v) => v,
@@ -596,14 +689,30 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
         }
         Err(e) => return Err(e),
     };
-    let mut server: Option<Server> = None;
-    let mut report = AgentState::Unknown;
     let reporter = Reporter::start();
+    let conversation = conversation_reporter();
+    let name = daemon("sessions.status", json!({}))
+        .ok()
+        .and_then(|s| s["agent_name"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "goblin".into());
+    // A conversation that cannot be created or loaded stops the goblin.
+    let mut s = Server::connect(socket, reporter.transitions.clone())?;
+    let opened = open(&mut s, thread, bypass, &name)?;
+    let mut bound = opened["id"].as_str().ok_or("thread has no id")?.to_owned();
+    let _ = conversation.send((
+        bound.clone(),
+        opened["name"].as_str().unwrap_or_default().to_owned(),
+    ));
+    let mut server = Some(s);
+    // Joined threads and their directories; threads that are not the person's.
+    let mut joined: BTreeMap<String, Value> = BTreeMap::new();
+    let mut ignored: BTreeSet<String> = BTreeSet::new();
+    let mut follow = Follow::default();
+    let mut report = AgentState::Unknown;
     let mut report_error = None;
     loop {
         let tick = Instant::now();
         let mut diagnostic = None;
-        let mut bound = None;
         let mut paused = false;
         let result = (|| -> Result<()> {
             let control: Controls = match read(&dir.join("controls.json")) {
@@ -623,8 +732,67 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
                 }
                 ledger.resume = control.resume;
             }
-            bound = match read::<String>(&dir.join("thread.json")) {
-                Ok(v) => Some(v),
+            if server.is_none() {
+                server = Some(Server::connect(socket, reporter.transitions.clone())?);
+                // Rejoin and catch up on everything after a reconnect.
+                joined.clear();
+            }
+            let s = server.as_mut().unwrap();
+            // Follow the terminal only while a client is attached.
+            // An unanswered status keeps the attachment last known.
+            if let Ok(status) = daemon("sessions.status", json!({}))
+                && follow.attach(
+                    status["attached_since"]
+                        .as_u64()
+                        .filter(|_| status["attached"] == true),
+                )
+            {
+                for thread in joined.keys().cloned().collect::<Vec<_>>() {
+                    catch_up(s, &mut follow, &ledger, &thread)?;
+                }
+            }
+            let mut found: BTreeSet<String> = loaded(s)?.into_iter().collect();
+            for v in std::mem::take(&mut s.events) {
+                let params = &v["params"];
+                match v["method"].as_str() {
+                    Some("thread/started") if user_thread(&params["thread"]) => {
+                        if let Some(id) = params["thread"]["id"].as_str() {
+                            found.insert(id.to_owned());
+                        }
+                    }
+                    Some("thread/status/changed") => {
+                        if let Some(id) = params["threadId"].as_str() {
+                            found.insert(id.to_owned());
+                        }
+                    }
+                    // Only the person's joined threads; one not joined yet is
+                    // caught up once it is, and others never count.
+                    Some("item/started")
+                        if params["item"]["type"] == "userMessage"
+                            && params["threadId"]
+                                .as_str()
+                                .is_some_and(|t| joined.contains_key(t)) =>
+                    {
+                        let thread = params["threadId"].as_str().unwrap_or_default();
+                        let reminded =
+                            |id: &str| ledger.threads.get(thread).is_some_and(|d| d.reminded(id));
+                        follow.message(
+                            thread,
+                            &params["item"],
+                            params["startedAtMs"].as_u64(),
+                            reminded,
+                        );
+                    }
+                    Some("thread/name/updated") if params["threadId"] == bound.as_str() => {
+                        let name = params["threadName"].as_str().unwrap_or_default();
+                        let _ = conversation.send((bound.clone(), name.to_owned()));
+                    }
+                    _ => (),
+                }
+            }
+            // The adapter's own binding request.
+            let requested = match read::<String>(&dir.join("bind.json")) {
+                Ok(thread) => Some(thread),
                 Err(e)
                     if e.downcast_ref::<io::Error>()
                         .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) =>
@@ -633,29 +801,59 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
                 }
                 Err(e) => return Err(e),
             };
-            let Some(thread) = bound.as_deref() else {
-                report = AgentState::Unknown;
-                return Ok(());
-            };
-            if server.is_none() {
-                server = Some(Server::connect(socket, reporter.transitions.clone())?);
+            if let Some(thread) = &requested {
+                found.insert(thread.clone());
             }
-            let s = server.as_mut().unwrap();
-            s.bind(thread)?;
+            for thread in found {
+                if joined.contains_key(&thread) || ignored.contains(&thread) {
+                    continue;
+                }
+                match join(s, &thread)? {
+                    Some(view) if user_thread(&view) => {
+                        joined.insert(thread.clone(), view["cwd"].clone());
+                        catch_up(s, &mut follow, &ledger, &thread)?;
+                    }
+                    Some(_) => {
+                        let _ = s.call("thread/unsubscribe", json!({"threadId":thread}));
+                        ignored.insert(thread);
+                    }
+                    None => (),
+                }
+            }
+            if let Some(thread) = requested {
+                fs::remove_file(dir.join("bind.json"))?;
+                if !joined.contains_key(&thread) {
+                    return Err(
+                        format!("cannot bind {thread}: it is not a loaded conversation").into(),
+                    );
+                }
+                follow.winner = Some((now_ms(), thread));
+            }
+            if let Some((_, thread)) = follow.winner.clone()
+                && thread != bound
+                && joined.contains_key(&thread)
+            {
+                let approval = approval(s, bypass, joined.get(&thread))?;
+                let verified = enforce(s, &thread, &approval)?;
+                bound = thread;
+                let name = verified["thread"]["name"].as_str().unwrap_or_default();
+                let _ = conversation.send((bound.clone(), name.to_owned()));
+            }
+            s.bind(&bound)?;
             report = activity(&s.status);
             let inbox = daemon("inbox.status", json!({}))?;
             if inbox["audit_failed"] != false {
                 return Err("inbox audit unavailable; delivery suspended".into());
             }
-            let d = ledger.threads.entry(thread.to_owned()).or_default();
+            let d = ledger.threads.entry(bound.clone()).or_default();
             d.progress(&inbox["head"]);
-            s.reconcile(thread, d)?;
+            s.reconcile(&bound, d)?;
             if d.eligible(now_ms(), paused, &inbox) {
                 let id = goblins_protocol::messages::operation_key(None)?;
                 d.begin(id.clone(), now_ms());
                 atomic(&dir.join("ledger.json"), &ledger)?; // write ahead of send
-                let d = ledger.threads.get_mut(thread).unwrap();
-                match s.call("thread/queue/add",json!({"threadId":thread,"clientUserMessageId":id,"input":[{"type":"text","text":goblins_protocol::INTEGRATION_PROMPT}]})) {
+                let d = ledger.threads.get_mut(&bound).unwrap();
+                match s.call("thread/queue/add",json!({"threadId":bound,"clientUserMessageId":id,"input":[{"type":"text","text":goblins_protocol::INTEGRATION_PROMPT}]})) {
                     Ok(v) => {
                         d.pending.as_mut().unwrap().queue_id=v["queuedSubmission"]["id"].as_str().map(str::to_owned);
                         if d.pending.as_ref().unwrap().queue_id.is_none() { d.uncertain=true; }
@@ -664,7 +862,7 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
                     Err(e) => { d.uncertain=true;return Err(e); }
                 }
             }
-            let d = ledger.threads.get(thread).unwrap();
+            let d = ledger.threads.get(&bound).unwrap();
             if d.uncertain {
                 diagnostic = Some(
                     "submission ownership uncertain; automatic submissions suspended".to_string(),
@@ -689,45 +887,19 @@ fn run(dir: &Path, socket: &Path, native_socket: Option<&Path>) -> Result<()> {
             server = None;
         }
         atomic(&dir.join("ledger.json"), &ledger)?;
-        let _ = reporter.transitions.send(report);
         for error in reporter.errors.try_iter() {
             report_error = error;
         }
         if report_error.is_some() {
             diagnostic = report_error.clone();
         }
+        let _ = reporter.transitions.send(report);
         atomic(
             &dir.join("status.json"),
             &json!({"thread_id":bound,"agent_state":report,"paused":paused,"diagnostic":diagnostic,"updated_at_ms":now_ms(),"threads":ledger.threads}),
         )?;
         std::thread::sleep(Duration::from_millis(500).saturating_sub(tick.elapsed()));
     }
-}
-fn bind_hook(dir: &Path, v: &Value) -> Result<()> {
-    if v["hook_event_name"] != "SessionStart" {
-        return Err("expected SessionStart hook".into());
-    }
-    let id = v["session_id"].as_str().ok_or("hook has no session_id")?;
-    if id.len() != 36
-        || !id.bytes().enumerate().all(|(i, b)| {
-            if [8, 13, 18, 23].contains(&i) {
-                b == b'-'
-            } else {
-                b.is_ascii_hexdigit()
-            }
-        })
-    {
-        return Err("invalid hook thread ID".into());
-    }
-    match read::<String>(&dir.join("native-thread.json")) {
-        Ok(native) if native != id => return Ok(()), // stale compaction hook
-        Ok(_) => (),
-        Err(e)
-            if e.downcast_ref::<io::Error>()
-                .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) => {}
-        Err(e) => return Err(e),
-    }
-    atomic(&dir.join("thread.json"), &id)
 }
 fn main() {
     let cli = Cli::parse();
@@ -738,7 +910,6 @@ fn main() {
         .runtime_dir
         .or_else(|| std::env::var_os("GOBLINS_CODEX_RUNTIME").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/tmp/goblins-codex"));
-    let hook = matches!(cli.command, Command::Hook);
     let result = (|| -> Result<()> {
         if let Command::ProfileArgs { name } = &cli.command {
             if name.is_empty()
@@ -774,16 +945,21 @@ fn main() {
         match cli.command {
             Command::Run {
                 socket,
-                native_socket,
-            } => run(&dir, &socket, native_socket.as_deref()),
-            Command::Hook => {
-                let mut input = String::new();
-                io::stdin().take(65537).read_to_string(&mut input)?;
-                if input.len() > 65536 {
-                    return Err("hook input too large".into());
+                thread,
+                bypass_permissions,
+            } => run(&dir, &socket, thread.as_deref(), bypass_permissions),
+            Command::Bind { thread } => {
+                if thread.is_empty()
+                    || thread.len() > 128
+                    || !thread
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                {
+                    return Err("invalid thread ID".into());
                 }
-                let v: Value = serde_json::from_str(&input)?;
-                bind_hook(&dir, &v)
+                atomic(&dir.join("bind.json"), &thread)?;
+                println!("{}", json!({"bind":thread}));
+                Ok(())
             }
             Command::Status => {
                 println!("{}", read::<Value>(&dir.join("status.json"))?);
@@ -808,12 +984,7 @@ fn main() {
             Command::ProfileArgs { .. } => unreachable!(),
         }
     })();
-    if hook {
-        if let Err(e) = result {
-            eprintln!("goblins-codex hook: {e}");
-        }
-        println!("{{}}");
-    } else if let Err(e) = result {
+    if let Err(e) = result {
         eprintln!("goblins-codex: {e}");
         std::process::exit(1);
     }
@@ -821,7 +992,7 @@ fn main() {
 
 fn profile_arguments(input: &str, path: &Path, base: &toml::Table) -> Result<Vec<String>> {
     let mut profile: toml::Table = toml::from_str(input)?;
-    // Codex 0.162.1 keys hook preferences by declaration file. Moving a
+    // Codex keys hook preferences by declaration file. Moving a
     // profile into runtime overrides changes that file to this native synthetic
     // path. Preserve existing enablement/trusted hashes for the same handlers;
     // Codex still verifies the hash, so edited commands never inherit trust.
@@ -871,37 +1042,59 @@ fn profile_arguments(input: &str, path: &Path, base: &toml::Table) -> Result<Vec
 mod tests {
     use super::*;
     use std::os::unix::net::UnixListener;
+
     #[test]
-    fn native_background_requests_do_not_select_the_conversation() {
-        for method in ["thread/start", "thread/resume", "thread/fork"] {
-            assert!(foreground_thread_request(
-                &json!({"id":8,"method":method,"params":{}})
-            ));
-            assert!(!foreground_thread_request(
-                &json!({"id":"tui-dynamic-task","method":method,"params":{}})
-            ));
-            assert!(!foreground_thread_request(
-                &json!({"id":"temporary-structured-title","method":method,"params":{"ephemeral":true,"threadSource":"thread_title"}})
-            ));
-            assert!(!foreground_thread_request(
-                &json!({"id":"unfamiliar","method":method,"params":{}})
-            ));
-        }
-        for id in [
-            "startup-thread-start-terminal",
-            "legacy-thread-start-terminal",
-        ] {
-            assert!(foreground_thread_request(
-                &json!({"id":id,"method":"thread/start","params":{}})
-            ));
-        }
-        // A visible ephemeral conversation is still the terminal's thread;
-        // feature ownership and request identity, rather than persistence, matter.
-        assert!(foreground_thread_request(
-            &json!({"id":8,"method":"thread/start","params":{"ephemeral":true}})
+    fn the_newest_message_of_this_attachment_wins_unless_it_is_a_reminder() {
+        let item = |id: &str, client: Option<&str>| json!({"type":"userMessage","id":id,"clientId":client});
+        let none = |_: &str| false;
+        let mut f = Follow::default();
+        // Nothing qualifies while detached, and nothing is judged before the
+        // attachment is known: a message seen then counts once it is.
+        f.message("a", &item("1", None), Some(300), none);
+        assert!(f.winner.is_none());
+        assert!(f.attach(Some(200)));
+        assert!(!f.attach(Some(200)));
+        f.message("a", &item("1", None), Some(300), none);
+        assert_eq!(f.winner, Some((300, "a".into())));
+        // Items are considered once per attachment.
+        assert!(f.attach(Some(250)));
+        f.message("a", &item("2", None), Some(260), none);
+        assert_eq!(f.winner, Some((260, "a".into())));
+        f.message("a", &item("2", None), Some(500), none);
+        assert_eq!(f.winner, Some((260, "a".into())));
+        // Old history and messages from before the attachment never count.
+        assert!(f.attach(Some(1000)));
+        f.message("a", &item("3", None), Some(150), none);
+        f.message("a", &item("4", None), None, none);
+        assert!(f.winner.is_none());
+        f.message("b", &item("5", Some("native")), Some(1010), none);
+        assert_eq!(f.winner, Some((1010, "b".into())));
+        // A reminder never moves it; a late catch-up of an older message
+        // cannot override a newer one.
+        f.message("c", &item("6", Some("reminder")), Some(1400), |id| {
+            id == "reminder"
+        });
+        f.message("a", &item("7", None), Some(1005), none);
+        assert_eq!(f.winner, Some((1010, "b".into())));
+        f.message("a", &item("8", None), Some(1020), none);
+        assert_eq!(f.winner, Some((1020, "a".into())));
+        // Detaching forgets it.
+        assert!(f.attach(None));
+        assert!(f.winner.is_none());
+    }
+    #[test]
+    fn only_the_persons_threads_are_followed() {
+        assert!(user_thread(
+            &json!({"id":"t","ephemeral":false,"parentThreadId":null,"source":"vscode","threadSource":null})
         ));
-        assert!(!foreground_thread_request(
-            &json!({"id":8,"method":"thread/start","params":{"threadSource":"thread_title"}})
+        assert!(user_thread(&json!({"id":"t","threadSource":"user"})));
+        assert!(!user_thread(&json!({"id":"t","ephemeral":true})));
+        assert!(!user_thread(&json!({"id":"t","parentThreadId":"p"})));
+        assert!(!user_thread(
+            &json!({"id":"t","source":{"subAgent":{"other":"x"}}})
+        ));
+        assert!(!user_thread(
+            &json!({"id":"t","threadSource":"thread_title"})
         ));
     }
     #[test]
@@ -981,197 +1174,34 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
     #[test]
-    fn repeated_hooks_preserve_binding_and_stale_hooks_cannot_switch_it() {
+    fn observer_accepts_large_server_frames() {
         let root = std::env::temp_dir().join(format!(
-            "gh-{}",
+            "go-{}",
             goblins_protocol::messages::operation_key(None).unwrap()
         ));
         fs::create_dir(&root).unwrap();
-        let current = "00000000-0000-4000-8000-000000000001";
-        let previous = "00000000-0000-4000-8000-000000000002";
-        atomic(&root.join("native-thread.json"), &current).unwrap();
-        let v = json!({"hook_event_name":"SessionStart","session_id":current,"source":"compact"});
-        bind_hook(&root, &v).unwrap();
-        bind_hook(&root, &v).unwrap();
-        bind_hook(
-            &root,
-            &json!({"hook_event_name":"SessionStart","session_id":previous}),
-        )
-        .unwrap();
-        assert_eq!(read::<String>(&root.join("thread.json")).unwrap(), current);
-        assert!(
-            bind_hook(
-                &root,
-                &json!({"hook_event_name":"SubagentStart","session_id":previous})
-            )
-            .is_err()
-        );
-        assert!(bind_hook(&root,&json!({"hook_event_name":"SessionStart","session_id":"------------------------------------"})).is_err());
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    #[allow(clippy::result_large_err)] // Required by Tungstenite's handshake callback.
-    fn native_proxy_binds_only_owned_responses_and_preserves_requests() {
-        let root = std::env::temp_dir().join(format!(
-            "gp-{}",
-            goblins_protocol::messages::operation_key(None).unwrap()
-        ));
-        fs::create_dir(&root).unwrap();
-        let upstream = root.join("upstream.sock");
-        let endpoint = root.join("native.sock");
-        let listener = UnixListener::bind(&upstream).unwrap();
-        let native_listener = UnixListener::bind(&endpoint).unwrap();
-        let (notice_tx, notice_rx) = mpsc::channel();
-        let remote = std::thread::spawn(move || {
-            let (peer, _) = listener.accept().unwrap();
-            let mut ws = tungstenite::accept_hdr(
-                peer,
-                |_: &tungstenite::handshake::server::Request,
-                 mut response: tungstenite::handshake::server::Response| {
-                    response.headers_mut().insert(
-                        "x-codex-websocket-max-unfragmented-message-bytes",
-                        "16777216".parse().unwrap(),
-                    );
-                    Ok(response)
-                },
-            )
-            .unwrap();
-            let request = ws.read().unwrap();
-            let v: Value = serde_json::from_str(request.to_text().unwrap()).unwrap();
-            assert_eq!(v["params"]["input"][0]["type"], "localImage");
-            ws.send(Message::text(
-                json!({"method":"thread/started","params":{"thread":{"id":"foreign"}}}).to_string(),
-            ))
-            .unwrap();
-            notice_rx.recv().unwrap();
-            ws.send(Message::text(json!({"id":v["id"],"method":"item/tool/requestUserInput","params":{"threadId":"exact"}}).to_string())).unwrap();
-            ws.send(Message::text(
-                json!({"id":v["id"],"result":{"thread":{"id":"exact"}}}).to_string(),
-            ))
-            .unwrap();
-            let reply: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(reply, json!({"id":7,"result":{"answers":{}}}));
-            let resume: Value =
-                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
-            assert_eq!(resume["method"], "thread/resume");
-            ws.send(Message::text(
-                json!({"id":resume["id"],"result":{"thread":{"id":"switched"}}}).to_string(),
-            ))
-            .unwrap();
-            let _ = ws.read();
-        });
-        let runtime = root.clone();
-        let (conversation, _reported) = mpsc::channel();
-        let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime, &conversation).unwrap()
-        });
-        let stream = UnixStream::connect(&endpoint).unwrap();
-        let (mut native, handshake) = tungstenite::client("ws://localhost/", stream).unwrap();
-        assert_eq!(
-            handshake.headers()["x-codex-websocket-max-unfragmented-message-bytes"],
-            "16777216"
-        );
-        native.send(Message::text(json!({"id":7,"method":"thread/start","params":{"input":[{"type":"localImage","path":"input.png"}]}}).to_string())).unwrap();
-        native.read().unwrap(); // Foreign notifications do not bind.
-        assert!(!root.join("thread.json").exists());
-        notice_tx.send(()).unwrap();
-        let approval: Value =
-            serde_json::from_str(native.read().unwrap().to_text().unwrap()).unwrap();
-        assert_eq!(approval["id"], 7);
-        assert_eq!(approval["method"], "item/tool/requestUserInput");
-        native.read().unwrap();
-        assert_eq!(read::<String>(&root.join("thread.json")).unwrap(), "exact");
-        native
-            .send(Message::text(
-                json!({"id":7,"result":{"answers":{}}}).to_string(),
-            ))
-            .unwrap();
-        native
-            .send(Message::text(
-                json!({"id":8,"method":"thread/resume","params":{"threadId":"switched"}})
-                    .to_string(),
-            ))
-            .unwrap();
-        native.read().unwrap();
-        assert_eq!(
-            read::<String>(&root.join("native-thread.json")).unwrap(),
-            "switched"
-        );
-        native.close(None).unwrap();
-        proxy.join().unwrap();
-        remote.join().unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn the_foreground_thread_and_its_name_are_reported_together() {
-        let root = std::env::temp_dir().join(format!(
-            "gn-{}",
-            goblins_protocol::messages::operation_key(None).unwrap()
-        ));
-        fs::create_dir(&root).unwrap();
-        let upstream = root.join("upstream.sock");
-        let endpoint = root.join("native.sock");
-        let listener = UnixListener::bind(&upstream).unwrap();
-        let native_listener = UnixListener::bind(&endpoint).unwrap();
+        let endpoint = root.join("server.sock");
+        let listener = UnixListener::bind(&endpoint).unwrap();
         let remote = std::thread::spawn(move || {
             let (peer, _) = listener.accept().unwrap();
             let mut ws = tungstenite::accept(peer).unwrap();
-            let answer = |ws: &mut WebSocket<UnixStream>, thread: Value| {
-                let v: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
-                ws.send(Message::text(
-                    json!({"id":v["id"],"result":{"thread":thread}}).to_string(),
-                ))
-                .unwrap();
-            };
-            let renamed = |thread: &str, name: &str| {
-                Message::text(
-                    json!({"method":"thread/name/updated","params":{"threadId":thread,"threadName":name}})
-                        .to_string(),
-                )
-            };
-            answer(&mut ws, json!({"id":"a","name":null}));
-            ws.send(renamed("other", "Not ours")).unwrap();
-            ws.send(renamed("a", "Named\tlater")).unwrap();
-            answer(&mut ws, json!({"id":"c","name":"Old c"}));
-            ws.send(renamed("a", "No longer foreground")).unwrap();
-            let _ = ws.read();
-        });
-        let runtime = root.clone();
-        let (conversation, reported) = mpsc::channel();
-        let proxy = std::thread::spawn(move || {
-            native_proxy(&native_listener, &upstream, &runtime, &conversation).unwrap()
-        });
-        let stream = UnixStream::connect(&endpoint).unwrap();
-        let (mut native, _) = tungstenite::client("ws://localhost/", stream).unwrap();
-        native
-            .send(Message::text(
-                json!({"id":1,"method":"thread/start","params":{}}).to_string(),
+            let request: Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            ws.send(Message::text(
+                json!({"id":request["id"],"result":{"padding":"x".repeat((64 << 20) + 1)}})
+                    .to_string(),
             ))
             .unwrap();
-        for _ in 0..3 {
-            native.read().unwrap();
-        }
-        native
-            .send(Message::text(
-                json!({"id":2,"method":"thread/resume","params":{"threadId":"c"}}).to_string(),
-            ))
-            .unwrap();
-        for _ in 0..2 {
-            native.read().unwrap();
-        }
-        native.close(None).unwrap();
-        proxy.join().unwrap();
+            let initialized: Value =
+                serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(initialized["method"], "initialized");
+        });
+        let (transitions, _states) = mpsc::channel();
+        let _server = Server::connect(&endpoint, transitions).unwrap();
         remote.join().unwrap();
-        let values: Vec<_> = reported.try_iter().collect();
-        let pair = |a: &str, b: &str| (a.to_string(), b.to_string());
-        assert_eq!(
-            values,
-            [pair("a", ""), pair("a", "Named\tlater"), pair("c", "Old c")]
-        );
-        assert_eq!(variable_text("Named\tlater"), "Named later");
-        assert!(variable_text(&"é".repeat(200)).len() <= 256);
         fs::remove_dir_all(root).unwrap();
     }
+
     #[test]
     fn failed_reports_retry_with_only_the_latest_values() {
         let root = std::env::temp_dir().join(format!(

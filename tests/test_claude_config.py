@@ -9,18 +9,15 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT, RPC
-from support import FLAKE, command
+from build_support import fixture_app
+from daemon_support import Daemon
 from terminal_support import Terminal
 
 
 class ClaudeConfigTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command([
-            "nix", "build", "--no-link", "--print-out-paths",
-            FLAKE + "#checks.x86_64-linux.claude-goblins",
-        ])) / "bin/goblins"
+        cls.app = fixture_app("claude-goblins")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="gclaude-")
@@ -56,13 +53,6 @@ class ClaudeConfigTests(unittest.TestCase):
         self.addCleanup(terminal.close)
         return terminal
 
-    def sandbox(self, session, method, params):
-        peer = RPC(self.d.state / session / "resources/request.sock")
-        try:
-            return peer.call(method, params)
-        finally:
-            peer.close()
-
     def hook(self, terminal, event, **extra):
         handler = self.settings["hooks"][event][0]["hooks"][0]["command"]
         payload = json.dumps({"hook_event_name": event, **extra})
@@ -72,6 +62,11 @@ class ClaudeConfigTests(unittest.TestCase):
         )
         return json.loads(terminal.expect(r"(?:^|\n)HOOK_RESULT=(.*)\n").group(1))
 
+    def integration(self, session):
+        """The goblin's own wakeup ledger, as `goblins-claude status` reports it (none before launch)."""
+        result = self.d.cli("exec", session, "--", "goblins-claude", "status", check=False)
+        return json.loads(result.stdout) if result.returncode == 0 else {}
+
     def test_mounts_hooks_skills_and_inherits_state(self):
         terminal = self.terminal()
         terminal.expect("CLAUDE_DIR=" + re.escape(str(self.claude)))
@@ -79,8 +74,9 @@ class ClaudeConfigTests(unittest.TestCase):
         plugin = terminal.expect(
             r"CLAUDE_ARG=(/nix/store/[^\n]+-goblins-claude-plugin)"
         ).group(1).decode()
-        terminal.expect(r"CLAUDE_ARG=--dangerously-skip-permissions")
-        terminal.expect(r"CLAUDE_ARG=literal \$\(false\) argument")
+        # Next, with no --dangerously-skip-permissions before it: without
+        # bypassPermissions, Claude Code's own settings choose the mode.
+        terminal.expect(r"\A\s*CLAUDE_ARG=literal \$\(false\) argument")
         terminal.expect("claude-probe>")
         terminal.send(
             "printf 'UID=%s\\n' \"$(id -u)\"; "
@@ -102,11 +98,13 @@ class ClaudeConfigTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)SETUP=0\n")
         terminal.expect(r"(?:^|\n)READONLY=1\n")
         terminal.expect(r"(?:^|\n)SECRET=1\n")
-        parent = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
-        integration = self.d.rpc.call("integration.status", {"session": parent})
-        self.assertEqual(integration["driver"], "claude")
-        self.assertEqual(integration["state"], "starting")
-        activity = lambda: self.d.get(parent)["agent_state"]
+        terminal.send("goblin status\n")
+        terminal.expect("Agent permission bypass: not requested")
+        owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        self.assertEqual(self.integration(owner)["state"], "starting")
+        # Hooks record activity in the ledger; the monitor (not running in the
+        # probe) reports it to the daemon.
+        activity = lambda: self.integration(owner)["activity"]
         self.assertEqual(self.hook(terminal, "SessionStart"), {})
         self.assertEqual(activity(), "idle")
         self.assertEqual(
@@ -134,22 +132,13 @@ class ClaudeConfigTests(unittest.TestCase):
         self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="again"), {})
         self.assertEqual(self.hook(terminal, "Stop"), {})
         self.assertEqual(activity(), "idle")
-        self.assertEqual(
-            self.d.rpc.call("integration.status", {"session": parent})["activity"], "idle"
-        )
-        self.d.rpc.call("messages.send", {"key": "task", "to": parent, "body": "private body"})
+        self.d.rpc.call("messages.send", {"key": "task", "to": owner, "body": "private body"})
         continuation = self.hook(terminal, "Stop")
         self.assertEqual(continuation["decision"], "block")
         self.assertNotIn("private body", json.dumps(continuation))
         self.assertEqual(self.hook(terminal, "Stop", stop_hook_active=True), {})
-        child = self.sandbox(parent, "sessions.start", {
-            "key": uuid.uuid4().hex,
-            "name": "claude",
-            "agent_name": "scout",
-            "detached": True,
-        })["session"]
-        self.d.wait(lambda: self.d.get(child)["state"] == "running")
-        attached = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        member = self.d.member(owner, "claude", agent_name="scout")["session"]
+        attached = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(attached.close)
         attached.expect("CLAUDE_DIR=" + re.escape(str(self.claude)))
         replacement = self.claude / "replacement"
@@ -159,6 +148,53 @@ class ClaudeConfigTests(unittest.TestCase):
             peer.send("printf 'AUTH=%s\\n' \"$(jq -r .fixture \"$CLAUDE_CONFIG_DIR/.credentials.json\")\"\n")
             peer.expect(r"(?:^|\n)AUTH=rotated\n")
         self.assertEqual((self.claude / "settings.json").read_text(), '{"model":"host-model"}')
+
+    def test_stop_leaves_pending_messages_to_a_running_monitor(self):
+        terminal = self.terminal()
+        plugin = terminal.expect(
+            r"CLAUDE_ARG=(/nix/store/[^\n]+-goblins-claude-plugin)", timeout=60
+        ).group(1).decode()
+        terminal.expect("claude-probe>")
+        owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        state = lambda: self.integration(owner)["state"]
+        self.assertEqual(self.hook(terminal, "SessionStart"), {})
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="task"), {})
+        body = "private body: héllo ✉\nsecond line"
+        sent = self.d.rpc.call("messages.send", {"key": "pending", "to": owner, "body": body})
+        # The mod's read-only helper reads it whole, without claiming it.
+        helper = shlex.quote(plugin + "/bin/goblins-claude-message")
+        terminal.send(
+            f"{helper} {sent['id']} | jq -e --arg body {shlex.quote(body)} "
+            "'.body == $body and .state == \"queued\"' >/dev/null; printf 'HELPER=%s\\n' \"$?\"; "
+            f"{helper} unknown-id 2>/dev/null; printf 'UNKNOWN=%s\\n' \"$?\"\n"
+        )
+        terminal.expect(r"(?:^|\n)HELPER=0\n")
+        terminal.expect(r"(?:^|\n)UNKNOWN=1\n")
+        # A script under the monitor's name stands in for the plugin monitor
+        # (not exec -a: a multi-call coreutils reads its applet from argv[0]).
+        terminal.send(
+            "printf '#!%s\\nsleep 300 &\\nwait\\n' \"$(command -v bash)\" > /tmp/goblins-claude-monitor && "
+            "chmod +x /tmp/goblins-claude-monitor && { /tmp/goblins-claude-monitor & "
+            "printf '%s\\n' \"$!\" > /tmp/goblins-claude/monitor.pid; }; printf 'MONITOR=%s\\n' \"$?\"\n"
+        )
+        terminal.expect(r"(?:^|\n)MONITOR=0\n")
+        # The turn ends without a Stop-hook continuation; goblins-claude
+        # settles ready, so the monitor delivers the message.
+        self.assertEqual(self.hook(terminal, "Stop"), {})
+        self.assertEqual(state(), "ready")
+        self.assertEqual(self.integration(owner)["activity"], "idle")
+        # A stale PID, or another process under it, is no monitor.
+        terminal.send("kill \"$(cat /tmp/goblins-claude/monitor.pid)\"; printf 'KILLED=%s\\n' \"$?\"\n")
+        terminal.expect(r"(?:^|\n)KILLED=0\n")
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="again"), {})
+        continuation = self.hook(terminal, "Stop")
+        self.assertEqual(continuation["decision"], "block")
+        self.assertNotIn("private body", json.dumps(continuation))
+        self.assertEqual(state(), "working")
+        terminal.send("printf '%s\\n' $$ > /tmp/goblins-claude/monitor.pid; printf 'SELF=%s\\n' \"$?\"\n")
+        terminal.expect(r"(?:^|\n)SELF=0\n")
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="third"), {})
+        self.assertEqual(self.hook(terminal, "Stop")["decision"], "block")
 
     def test_hooks_record_the_conversation_and_recreate_resumes_it(self):
         self.assertEqual(self.manifest["goblins"]["claude"]["resume_command"],
@@ -226,38 +262,49 @@ class ClaudeConfigTests(unittest.TestCase):
         resumed.expect("CLAUDE_ARG=" + second)
         resumed.expect("claude-probe>")
 
-    def test_custom_directory(self):
+    def test_a_goblin_with_nix_gets_the_nix_skill_instead_of_packages(self):
+        terminal = self.terminal("nix", "nixer")
+        terminal.expect("claude-probe>")
+        skills = "/etc/claude-code/.claude/skills"
+        terminal.send(
+            f"test -r {skills}/goblins-nix/SKILL.md && test -r {skills}/goblins-messaging/SKILL.md "
+            f"&& test ! -e {skills}/goblins-packages && test ! -e {skills}/goblins-devshell "
+            "&& command -v nix >/dev/null; printf 'NIX_SKILLS=%s\\n' \"$?\"\n"
+        )
+        terminal.expect(r"(?:^|\n)NIX_SKILLS=0\n")
+
+    def test_custom_directory_and_permission_bypass(self):
         custom = self.home / "custom claude"
         custom.mkdir()
         terminal = self.terminal("custom")
         terminal.expect("CLAUDE_DIR=" + re.escape(str(custom)), timeout=60)
+        # This configuration sets bypassPermissions.
+        terminal.expect(r"CLAUDE_ARG=--dangerously-skip-permissions")
         terminal.expect("claude-probe>")
+        terminal.send("goblin status\n")
+        terminal.expect("Agent permission bypass: requested")
 
     def test_spawn_message_wakes_indented_claude_composer(self):
         launch = self.d.start("notifier", agent_name="receiver")
         receiver = launch["session"]
-        self.d.wait(
-            lambda: self.d.rpc.call(
-                "integration.status", {"session": receiver}
-            ).get("state")
-            == "starting"
-        )
-        self.d.rpc.call(
+        self.d.wait(lambda: self.integration(receiver).get("state") == "starting")
+        sent = self.d.rpc.call(
             "messages.send",
             {"key": "startup", "to": receiver, "body": "startup message"},
         )
         self.d.wait(lambda: self.d.rpc.call("inbox.status", {})["queued"] == 1)
         reply = self.d.rpc.call("inbox.next", {"key": "startup-reply"})["message"]
         self.assertEqual(reply["body"], "processed: startup message")
-        events = self.d.rpc.call("communications.list", {})["events"]
-        self.assertTrue(
-            any(
-                event["kind"] == "integration.wake_attempt"
-                and event["actor"] == receiver
-                for event in events
-            )
+        # The monitor's line woke it, naming the message; the daemon took no part.
+        wakes = self.d.cli("exec", receiver, "--", "cat", "/tmp/fake-claude-wakes").stdout
+        self.assertEqual(
+            wakes,
+            f"Check your Goblins inbox and process the next item. [goblins-inbox-wake {sent['id']}]\n",
         )
-        # The fake's Stop settles idle; monitor ticks keep it fresh past expiry.
+        events = self.d.rpc.call("communications.list", {})["events"]
+        self.assertFalse(any(e["kind"].startswith("integration.") for e in events))
+        self.d.wait(lambda: self.integration(receiver)["state"] == "ready")
+        # The fake's Stop settles idle; the monitor's heartbeat keeps it fresh past expiry.
         self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
         time.sleep(32)
         self.assertEqual(self.d.get(receiver)["agent_state"], "idle")

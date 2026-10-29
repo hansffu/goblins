@@ -1,6 +1,10 @@
 //! Sandbox-owned delivery bookkeeping. No inbox bodies or acknowledgement authority.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
+
+/// Reminder submissions remembered per thread after they complete.
+pub const REMINDERS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Submission {
@@ -15,6 +19,10 @@ pub struct Delivery {
     pub attempts: u8,
     pub last_attempt_ms: Option<u64>,
     pub uncertain: bool,
+    /// The newest reminders' client IDs: their messages never move the
+    /// conversation the goblin follows.
+    #[serde(default)]
+    pub reminders: VecDeque<String>,
 }
 impl Delivery {
     pub fn progress(&mut self, head: &Value) {
@@ -41,6 +49,10 @@ impl Delivery {
     }
     pub fn begin(&mut self, client_id: String, now_ms: u64) {
         assert!(self.pending.is_none());
+        self.reminders.push_back(client_id.clone());
+        if self.reminders.len() > REMINDERS {
+            self.reminders.pop_front();
+        }
         self.pending = Some(Submission {
             client_id,
             queue_id: None,
@@ -73,6 +85,12 @@ impl Delivery {
         } else {
             self.uncertain = true;
         }
+    }
+}
+impl Delivery {
+    /// A message this adapter submitted as a reminder.
+    pub fn reminded(&self, client_id: &str) -> bool {
+        self.reminders.iter().any(|id| id == client_id)
     }
 }
 pub fn has_client_id(value: &Value, id: &str) -> bool {
@@ -191,6 +209,17 @@ mod tests {
         let b = Delivery::default();
         assert!(b.eligible(90_000, false, &inbox()));
         assert_eq!(restored.pending.unwrap().client_id, "a");
+    }
+    #[test]
+    fn reminders_are_recognised_after_they_complete_and_bounded() {
+        let mut d = Delivery::default();
+        for n in 0..=REMINDERS {
+            d.begin(format!("r{n}"), 0);
+            d.reconcile(&[], &items(&format!("r{n}")), true);
+        }
+        assert!(d.pending.is_none());
+        assert!(d.reminded(&format!("r{REMINDERS}")) && d.reminded("r1"));
+        assert!(!d.reminded("r0") && !d.reminded("human"));
     }
     #[test]
     fn completed_failed_and_interrupted_reminders_all_allow_pending_work() {

@@ -4,16 +4,16 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from build_support import fixture_app
 from support import FLAKE, command
 from terminal_support import Terminal
-from daemon_support import Daemon, ROOT
+from daemon_support import Daemon
 
 class ConfigurationTests(unittest.TestCase):
     def test_client_selects_each_launch_without_restarting_daemon(self):
         with tempfile.TemporaryDirectory(prefix="gc-") as directory:
             root = Path(directory)
-            apps = [Path(command(["nix", "build", "--print-out-paths", "--out-link", root / name,
-                                  FLAKE + "#checks.x86_64-linux." + name])) / "bin/goblins"
+            apps = [fixture_app(name)
                     for name in ("named-goblins", "updated-goblins")]
             original, updated = apps
             d = Daemon(original); self.addCleanup(d.close)

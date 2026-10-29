@@ -9,7 +9,10 @@ use crate::{
 use std::{
     ffi::OsString,
     fs,
-    os::{fd::RawFd, unix::process::CommandExt},
+    os::{
+        fd::RawFd,
+        unix::{fs::FileTypeExt, process::CommandExt},
+    },
     path::{Path, PathBuf},
     process::Command,
 };
@@ -21,7 +24,26 @@ experimental-features = nix-command flakes
 accept-flake-config = false
 flake-registry =
 ";
-const DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket";
+pub(crate) const DAEMON_SOCKET: &str = "/nix/var/nix/daemon-socket";
+
+/// The host Nix daemon's socket for an allowNix sandbox. Like agent-sandbox.nix,
+/// `NIX_DAEMON_SOCKET_PATH` in the daemon's environment selects another one.
+/// A launch without a socket is refused: nothing inside would say why Nix fails.
+pub(crate) fn daemon_socket() -> Result<PathBuf> {
+    let path = std::env::var_os("NIX_DAEMON_SOCKET_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(DAEMON_SOCKET).join("socket"));
+    let resolved = fs::canonicalize(&path)
+        .ok()
+        .filter(|p| fs::metadata(p).is_ok_and(|m| m.file_type().is_socket()))
+        .ok_or_else(|| {
+            format!(
+                "allowNix needs a Nix daemon socket at {}; set NIX_DAEMON_SOCKET_PATH if the daemon listens elsewhere",
+                path.display()
+            )
+        })?;
+    Ok(resolved)
+}
 
 /// Where evaluation-time fetches leave the host.
 pub enum Network {

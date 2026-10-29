@@ -108,9 +108,12 @@ A reply belongs to the raid of the message it answers."
                (list :id id
                      :conversation (or (plist-get message :conversation) id)
                      :sender (plist-get message :sender)
-                     :sender-path (plist-get message :sender_path)
+                     ;; Older logs name goblins by their tree path.
+                     :sender-name (or (plist-get message :sender_name)
+                                      (plist-get message :sender_path))
                      :recipient (plist-get message :recipient)
-                     :recipient-path (plist-get message :recipient_path)
+                     :recipient-name (or (plist-get message :recipient_name)
+                                         (plist-get message :recipient_path))
                      :body (plist-get message :body)
                      :created (plist-get message :created_at)
                      :reply-to (and (stringp reply-to) reply-to)
@@ -268,14 +271,14 @@ messages out of the last-minutes filter."
 
 ;;;; Names
 
-(defun goblins--messages-goblin-path (id)
-  "The tree path of session ID, from its messages or the snapshot."
+(defun goblins--messages-goblin-name (id)
+  "The name of session ID, from its messages or the snapshot."
   (or (cl-some (lambda (record)
-                 (cond ((equal (plist-get record :sender) id) (plist-get record :sender-path))
-                       ((equal (plist-get record :recipient) id) (plist-get record :recipient-path))))
+                 (cond ((equal (plist-get record :sender) id) (plist-get record :sender-name))
+                       ((equal (plist-get record :recipient) id) (plist-get record :recipient-name))))
                (and goblins--messages (hash-table-values goblins--messages)))
       (let ((session (goblins--snapshot-session (goblins--view-snapshot) id)))
-        (and session (goblins--session-path session)))
+        (and session (plist-get session :agent_name)))
       (goblins--messages-short id)))
 
 (defun goblins--messages-goblin-face (id)
@@ -287,9 +290,9 @@ messages out of the last-minutes filter."
                                 goblins--messages-colors))))
         (list (nth (mod index (length faces)) faces) 'bold)))))
 
-(defun goblins--messages-goblin (id path)
-  "PATH, the name of session ID, in its face."
-  (propertize (goblins--safe (or path (goblins--messages-goblin-path id)))
+(defun goblins--messages-goblin (id name)
+  "NAME, the name of session ID, in its face."
+  (propertize (goblins--safe (or name (goblins--messages-goblin-name id)))
               'face (goblins--messages-goblin-face id)))
 
 (defun goblins--messages-raid-name (id)
@@ -411,10 +414,10 @@ order of their first message."
                                  records))))
 
 (defun goblins--messages-route (record)
-  (concat (goblins--messages-goblin (plist-get record :sender) (plist-get record :sender-path))
+  (concat (goblins--messages-goblin (plist-get record :sender) (plist-get record :sender-name))
           (propertize " → " 'face 'goblins-dim)
           (goblins--messages-goblin (plist-get record :recipient)
-                                    (plist-get record :recipient-path))))
+                                    (plist-get record :recipient-name))))
 
 (defun goblins--messages-width ()
   "The text width of a window showing the list."
@@ -651,11 +654,11 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
   (goblins--message-target (propertize (goblins--messages-short id) 'face 'goblins-messages-ref)
                            'message id))
 
-(defun goblins--message-goblin-field (label id path)
+(defun goblins--message-goblin-field (label id name)
   (let ((session (goblins--snapshot-session (goblins--view-snapshot) id)))
     (goblins--message-field
      label
-     (goblins--message-target (goblins--messages-goblin id path) 'goblin id)
+     (goblins--message-target (goblins--messages-goblin id name) 'goblin id)
      (if session (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
                              'face 'goblins-dim)
        ""))))
@@ -671,9 +674,9 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
          (claimed (plist-get record :claimed-at))
          (raid (plist-get record :raid)))
     (concat
-     (goblins--message-goblin-field "From" (plist-get record :sender) (plist-get record :sender-path))
+     (goblins--message-goblin-field "From" (plist-get record :sender) (plist-get record :sender-name))
      (goblins--message-goblin-field "To" (plist-get record :recipient)
-                                    (plist-get record :recipient-path))
+                                    (plist-get record :recipient-name))
      (goblins--message-field
       "Thread"
       (goblins--message-target (propertize (goblins--messages-short conversation)
@@ -690,7 +693,7 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
                                                        (plist-get reply-to :created)))
                                   'face 'goblins-dim)
                       (goblins--messages-goblin (plist-get reply-to :sender)
-                                                (plist-get reply-to :sender-path))
+                                                (plist-get reply-to :sender-name))
                       "  ")))
          ;; One line, however narrow the reader.
          (goblins--message-field
@@ -705,7 +708,7 @@ With a prefix argument, prompt for the daemon state DIRECTORY."
        (delq nil
              (list (and claimed
                         (propertize (format "claimed by %s %s"
-                                            (goblins--safe (plist-get record :recipient-path))
+                                            (goblins--safe (plist-get record :recipient-name))
                                             (goblins--messages-time claimed))
                                     'face 'goblins-dim))
                    (and replies
@@ -917,7 +920,7 @@ Only threads with replies fold."
 (defun goblins--read-message-goblin (prompt)
   "Choose a running goblin of the server at hand with PROMPT.
 Return (SOURCE SESSION-ID), for an `interactive' form.  Running goblins'
-paths are unique; a stopped goblin's messages are its participant's."
+names are unique; a stopped goblin's messages are its participant's."
   (let ((goblin (goblins--read-goblin prompt (goblins--messages-source))))
     (list (car goblin) (cdr goblin))))
 
@@ -930,7 +933,7 @@ alist of (LABEL . SESSION-ID)."
         (unless (member id ids) (push id ids))))
     (let ((seen (make-hash-table :test #'equal)))
       (mapcar (lambda (id)
-                (let* ((label (goblins--safe (goblins--messages-goblin-path id)))
+                (let* ((label (goblins--safe (goblins--messages-goblin-name id)))
                        (count (puthash label (1+ (gethash label seen 0)) seen)))
                   (cons (if (> count 1) (format "%s <%d>" label count) label) id)))
               (nreverse ids)))))
@@ -938,7 +941,7 @@ alist of (LABEL . SESSION-ID)."
 (defun goblins--messages-goblin-label (id)
   "Session ID's name among the participants, numbered when names repeat."
   (or (car (rassoc id (goblins--messages-participants)))
-      (goblins--safe (goblins--messages-goblin-path id))))
+      (goblins--safe (goblins--messages-goblin-name id))))
 
 (defun goblins--messages-participant-annotation (choices)
   "An annotation function for participants of CHOICES, an alist of (LABEL . ID):
@@ -1295,16 +1298,14 @@ Return it in Unix seconds."
 
 (defun goblins--messages-embark-goblin (id)
   "Session ID as an Embark target type and string.
-A running goblin, its path naming it alone, gets every goblin action; any
-other one, such as a stopped goblin whose name a new one took, only its
-messages, by its session ID."
+A running goblin, whose name is unique among running goblins, gets every
+goblin action; any other one, such as a stopped goblin whose name a new one
+took, only its messages, by its session ID."
   (with-current-buffer (goblins--messages-list)
     (let* ((running (goblins--running-sessions (goblins--view-snapshot)))
-           (session (cl-find id running :key (lambda (s) (plist-get s :id)) :test #'equal))
-           (path (and session (goblins--session-path session))))
-      (if (and session
-               (= 1 (cl-count path running :key #'goblins--session-path :test #'equal)))
-          (list 'goblin path)
+           (session (cl-find id running :key (lambda (s) (plist-get s :id)) :test #'equal)))
+      (if session
+          (list 'goblins-goblin (plist-get session :agent_name))
         (list 'goblins-participant (goblins--messages-goblin-label id))))))
 
 (defun goblins--messages-embark-target ()

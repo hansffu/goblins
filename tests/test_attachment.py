@@ -1,6 +1,10 @@
 """Editor terminal relay uses exact session and daemon identities."""
 import json
+import os
+import signal
 import subprocess
+import termios
+import threading
 import unittest
 
 from daemon_support import Daemon, RPC
@@ -44,6 +48,9 @@ class AttachmentTests(unittest.TestCase):
             client = Terminal([*command, "attach", "snikk"])
             self.addCleanup(client.close)
             d.wait(lambda: d.get(a["session"])["terminal_attached"])
+            # Until the client makes its terminal raw, the line discipline
+            # turns Ctrl-C into SIGINT for the client instead of relaying it.
+            d.wait(lambda: not termios.tcgetattr(client.fd)[3] & termios.ISIG)
             client.send("\x03")
             client.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
             client.expect(r"(?:^|\n)STATE=" + pid.decode() + r",retained\n")
@@ -93,7 +100,7 @@ class AttachmentTests(unittest.TestCase):
         session = d.rpc.call("sessions.list", {})[0]["id"]
         identity = d.get(session)["identity"]
         for _ in range(2):
-            client.send("goblins detach; printf 'DETACHED_CODE=%s\\n' $status\n")
+            client.send("goblin detach; printf 'DETACHED_CODE=%s\\n' $status\n")
             self.assertEqual(client.wait(), 0)
             self.assertEqual(d.get(session)["state"], "running")
             self.assertEqual(d.get(session)["identity"], identity)
@@ -125,6 +132,32 @@ class AttachmentTests(unittest.TestCase):
         again.expect(r"(?:^|\n)RECONNECTED\n")
         self.assertEqual(again.wait(), 0)
 
+    def test_resizes_while_attaching_do_not_end_the_attachment(self):
+        # Each resize sends the client SIGWINCH, which interrupts whatever
+        # system call it is waiting in. Editors resize their window as the
+        # client attaches, so the handshake must carry on.
+        d = Daemon()
+        self.addCleanup(d.close)
+        for attempt in range(3):
+            session = d.start()["session"]
+            client = Terminal([str(d.app), "--state-dir", str(d.state), "attach", session])
+            self.addCleanup(client.close)
+            stop = threading.Event()
+
+            def resize():
+                # The client makes its terminal raw once it has attached.
+                while not stop.is_set() and termios.tcgetattr(client.fd)[3] & termios.ISIG:
+                    os.kill(client.pid, signal.SIGWINCH)
+                    stop.wait(.001)
+            resizer = threading.Thread(target=resize)
+            resizer.start()
+            try:
+                client.send(f"echo ATTACHED_{attempt}\n")
+                client.expect(rf"(?:^|\n)ATTACHED_{attempt}\n")
+            finally:
+                stop.set()
+                resizer.join()
+
     def test_background_output_continues_while_detached_and_attached_kill(self):
         d = Daemon()
         self.addCleanup(d.close)
@@ -134,7 +167,7 @@ class AttachmentTests(unittest.TestCase):
         client.send("echo READY\n")
         client.expect(r"(?:^|\n)READY\n")
         session = d.rpc.call("sessions.list", {})[0]["id"]
-        client.send("goblins detach; string repeat -n 200000 x; touch /tmp/output-finished\n")
+        client.send("goblin detach; string repeat -n 200000 x; touch /tmp/output-finished\n")
         self.assertEqual(client.wait(), 0)
         # /proc sees the sandbox root without adding host authority to payloads.
         from pathlib import Path
@@ -169,7 +202,7 @@ class AttachmentTests(unittest.TestCase):
         # Detach does not cancel a concurrent package approval.
         pending, permission = d.pending(a["session"])
         self.addCleanup(pending.close)
-        client.send("goblins detach\n")
+        client.send("goblin detach\n")
         self.assertEqual(client.wait(), 0)
         self.assertEqual(d.rpc.call("permissions.get", {"request": permission["id"]})["state"], "pending")
         killed = json.loads(subprocess.check_output(

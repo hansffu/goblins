@@ -1,4 +1,4 @@
-{ pkgs }:
+{ pkgs, adapter }:
 let
   hook = pkgs.writeShellApplication {
     name = "goblins-claude-hook";
@@ -7,6 +7,7 @@ let
       pkgs.coreutils
       pkgs.gnugrep
       pkgs.util-linux
+      adapter
     ];
     text = builtins.readFile ./hook.sh;
   };

@@ -3,6 +3,8 @@
 
 * Status and structure
 
+Superseded: children were removed and raids gained ownership transfer and created members ([[file:RAIDS-REPLACE-CHILDREN.org][RAIDS-REPLACE-CHILDREN.org]], [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]). This document is kept for history.
+
 This is the technical plan for the functional specification
 [[file:CHILDREN-AND-RAIDS.org][CHILDREN-AND-RAIDS.org]]. Nothing here is implemented. The two features are
 implemented separately, in order:

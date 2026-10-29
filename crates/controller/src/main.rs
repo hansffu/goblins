@@ -42,6 +42,20 @@ fn execute(cli: Cli) -> Result<i32> {
     let root = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| format!("/run/user/{uid}").into());
+    let completion_default_allowed =
+        cli.state_dir.is_some() || std::env::var_os("GOBLINS_HOST_JOB").is_none();
+    // A host command (`goblin host run`) works for a goblin of the default
+    // server. Tests it runs must name their own server, never reach or stop
+    // that one by accident.
+    if cli.state_dir.is_none()
+        && std::env::var_os("GOBLINS_HOST_JOB").is_some()
+        && !matches!(
+            command,
+            Command::Configurations | Command::Completions { .. } | Command::CompleteNames { .. }
+        )
+    {
+        return Err("inside a Goblins host command (GOBLINS_HOST_JOB), pass --state-dir: the default server runs the goblin that asked for this command".into());
+    }
     let state = cli.state_dir.unwrap_or_else(|| {
         if root.is_dir() {
             root.join("goblins")
@@ -50,6 +64,22 @@ fn execute(cli: Cli) -> Result<i32> {
         }
     });
     match command {
+        Command::Scope { command } => match command {
+            cli::ScopeCommand::Clear {
+                name,
+                all: _,
+                dry_run,
+            } => {
+                goblins_controller::cleanup::clear_scope(
+                    cli.runtime.as_deref(),
+                    name.as_deref(),
+                    dry_run,
+                )?;
+            }
+        },
+        Command::Gc { dry_run } => {
+            goblins_controller::cleanup::gc(cli.runtime.as_deref(), &state, dry_run)?;
+        }
         Command::Send {
             recipient,
             source,
@@ -94,9 +124,19 @@ fn execute(cli: Cli) -> Result<i32> {
                         serde_json::json!({"raid":raid,"sessions":goblins})
                     )?
                 ),
-                Destroy { raid } => println!(
+                Destroy { raid, stop_members } => println!(
                     "{}",
-                    client.call("raids.destroy", serde_json::json!({"raid":raid}))?
+                    client.call(
+                        "raids.destroy",
+                        serde_json::json!({"raid":raid,"stop_members":stop_members})
+                    )?
+                ),
+                SetOwner { raid, goblin } => println!(
+                    "{}",
+                    client.call(
+                        "raids.set_owner",
+                        serde_json::json!({"raid":raid,"session":goblin})
+                    )?
                 ),
                 Members { raid, json } => {
                     let record = client.call("raids.members", serde_json::json!({"raid":raid}))?;
@@ -114,19 +154,6 @@ fn execute(cli: Cli) -> Result<i32> {
                     )?
                 ),
             }
-        }
-        Command::Integration { command } => {
-            use cli::IntegrationCommand::*;
-            let (method, session) = match command {
-                Status { session } => ("integration.status", session),
-                Pause { session } => ("integration.pause", session),
-                Resume { session } => ("integration.resume", session),
-            };
-            let mut client = Client::connect(&state)?;
-            println!(
-                "{}",
-                client.call(method, serde_json::json!({"session":session}))?
-            );
         }
         Command::CommunicationsLog {
             log,
@@ -183,10 +210,18 @@ fn execute(cli: Cli) -> Result<i32> {
                 foreground,
                 keep_sessions,
             } => {
+                // The manifest the wrapper passes is the first current one
+                // raid owners run members from.
+                let runtime = cli.runtime.as_deref().map(fs::canonicalize).transpose()?;
                 if foreground {
-                    server::foreground(&state, workspace, keep_sessions)?;
+                    server::foreground(&state, workspace, keep_sessions, runtime.as_deref())?;
                 } else {
-                    server::start(&state, workspace.as_deref(), keep_sessions)?;
+                    server::start(
+                        &state,
+                        workspace.as_deref(),
+                        keep_sessions,
+                        runtime.as_deref(),
+                    )?;
                 }
             }
             ServerCommand::Stop => server::stop(&state)?,
@@ -204,19 +239,10 @@ fn execute(cli: Cli) -> Result<i32> {
             "{}",
             Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
         ),
-        Command::Stop {
-            id_or_name,
-            kill_children,
-        }
-        | Command::Kill {
-            id_or_name,
-            kill_children,
-        } => println!(
+        Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
             "{}",
-            Client::connect(&state)?.call(
-                "sessions.stop",
-                serde_json::json!({"session":id_or_name,"kill_children":kill_children})
-            )?
+            Client::connect(&state)?
+                .call("sessions.stop", serde_json::json!({"session":id_or_name}))?
         ),
         Command::Detach { id_or_name } => println!(
             "{}",
@@ -233,7 +259,6 @@ fn execute(cli: Cli) -> Result<i32> {
         Command::Run {
             config,
             name,
-            parent,
             scope,
             dev_shell,
             detatched,
@@ -243,25 +268,21 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            // A child's configuration comes from its parent's branch snapshot,
-            // which may permit one this build no longer lists: the daemon decides.
-            if parent.is_none() {
-                let manifest = Manifest::read(&runtime)?;
-                if !manifest.goblins.contains_key(&config) {
-                    return Err(format!(
-                        "unknown configuration '{config}'; available: {}",
-                        manifest
-                            .goblins
-                            .keys()
-                            .cloned()
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                    .into());
-                }
-                // Report an unknown or disallowed scope before starting.
-                manifest.select(&config, scope.as_deref())?;
+            let manifest = Manifest::read(&runtime)?;
+            if !manifest.goblins.contains_key(&config) {
+                return Err(format!(
+                    "unknown configuration '{config}'; available: {}",
+                    manifest
+                        .goblins
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .into());
             }
+            // Report an unknown or disallowed scope before starting.
+            manifest.select(&config, scope.as_deref())?;
             // Resolve a relative flake path against the caller's directory.
             let dev_shell = dev_shell
                 .map(|reference| -> goblins_controller::Result<String> {
@@ -284,7 +305,6 @@ fn execute(cli: Cli) -> Result<i32> {
                     name: config,
                     configuration,
                     agent_name: name,
-                    parent,
                     scope,
                     dev_shell,
                     raid,
@@ -329,6 +349,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("configurations requires --runtime (use the Nix-built goblins command)")?;
             let manifest = Manifest::read(&runtime)?;
+            // Configurations with allowNix use Nix rather than a Goblins dev
+            // shell, so frontends don't offer one for them.
+            let mut nix = Vec::new();
+            for (name, config) in &manifest.goblins {
+                if config.allows_nix()? {
+                    nix.push(name);
+                }
+            }
             println!(
                 "{}",
                 serde_json::json!({
@@ -336,7 +364,8 @@ fn execute(cli: Cli) -> Result<i32> {
                     "names": manifest.goblins.keys().collect::<Vec<_>>(),
                     "descriptions": manifest.goblins.iter().map(|(name, config)| {
                         (name.clone(), config.description.clone())
-                    }).collect::<std::collections::BTreeMap<_, _>>()
+                    }).collect::<std::collections::BTreeMap<_, _>>(),
+                    "nix": nix,
                 })
             );
         }
@@ -366,7 +395,12 @@ fn execute(cli: Cli) -> Result<i32> {
             return attachment::attach(state, session, instance);
         }
         Command::Completions { shell } => cli::completions(shell, cli.runtime.as_deref())?,
-        Command::CompleteNames { words } => return Ok(cli::complete_names(&state, words)),
+        Command::CompleteNames { words } => {
+            return Ok(cli::complete_names(
+                completion_default_allowed.then_some(state.as_path()),
+                words,
+            ));
+        }
     }
     Ok(0)
 }

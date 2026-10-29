@@ -7,8 +7,8 @@ from pathlib import Path
 import socket
 import unittest
 
-from daemon_support import Daemon, ROOT, RPC
-from support import command
+from build_support import fixture_app
+from daemon_support import Daemon
 from terminal_support import Terminal
 
 
@@ -25,8 +25,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class NetworkTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.network-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("network-goblins")
 
     def setUp(self):
         self.d = Daemon(self.app)
@@ -55,33 +54,30 @@ class NetworkTests(unittest.TestCase):
         terminal.expect(r"(?:^|\n)FETCH=0\n")
         terminal.expect("network-test>")
 
-    def test_open_network_child_inheritance_and_interrupt(self):
-        parent = self.d.start("online", agent_name="chief")["session"]
-        terminal = self.terminal(parent)
+    def test_open_network_members_and_interrupt(self):
+        owner = self.d.start("online", agent_name="chief")["session"]
+        terminal = self.terminal(owner)
         self.fetch(terminal)
         terminal.send("readlink /proc/self/ns/net; cat /etc/resolv.conf; printf 'PROXY=%s\\n' \"${HTTPS_PROXY-unset}\"\n")
-        parent_ns = terminal.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
-        self.assertNotEqual(parent_ns, os.readlink("/proc/self/ns/net"))
+        owner_ns = terminal.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
+        self.assertNotEqual(owner_ns, os.readlink("/proc/self/ns/net"))
         terminal.expect("nameserver 10.0.2.3")
         terminal.expect("PROXY=unset")
         terminal.expect("network-test>")
         terminal.send("\x03")
         terminal.expect("network-test>")
         self.fetch(terminal)
-        peer = RPC(self.d.state / parent / "resources/request.sock")
-        self.addCleanup(peer.close)
-        child = peer.call("sessions.start", {"key": "child", "name": "online", "agent_name": "scout", "detached": True})["session"]
-        self.d.wait(lambda: self.d.get(child)["state"] == "running")
-        attached = self.terminal(child)
+        member = self.d.member(owner, "online", agent_name="scout", key="scout")["session"]
+        attached = self.terminal(member)
         self.fetch(attached)
         attached.send("readlink /proc/self/ns/net\n")
-        child_ns = attached.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
+        member_ns = attached.expect(r"(?:^|\n)(net:\[\d+\])\n").group(1).decode()
         # Without a scope, each sandbox has its own network namespace; a scope
         # is how goblins share one.
-        self.assertNotEqual(parent_ns, child_ns)
+        self.assertNotEqual(owner_ns, member_ns)
         attached.expect("network-test>")
         attached.send("exit\n")
-        self.d.wait(lambda: self.d.get(child)["state"] == "stopped")
+        self.d.wait(lambda: self.d.get(member)["state"] == "stopped")
         self.fetch(terminal)
 
     def test_explicit_offline_mode(self):

@@ -1,0 +1,562 @@
+#+title: Goblins JSON-RPC API reference
+
+This is the reference for the daemon's JSON-RPC API 1: every method on the host and sandbox endpoints, with its parameters and result. [[file:specs/DAEMON.org][specs/DAEMON.org]] records why the protocol is shaped this way; this file records what it is now. Keep it current when a method, parameter, result or record field changes (see =AGENTS.md=).
+
+The handlers live in =crates/controller/src/controller.rs= (=host=, =sandbox_control= and =dispatch=), =controller/raids.rs=, =controller/host.rs=, =controller/exec.rs=, =controller/editor.rs=, =messaging.rs= and =mailbox.rs=. Parameter types are in those files and in =crates/protocol/src=.
+
+* Transport
+
+** Endpoints
+
+| Endpoint | Path                                     | Caller                                   |
+|----------+------------------------------------------+------------------------------------------|
+| Host     | =$XDG_RUNTIME_DIR/goblins/host.sock=     | The trusted host user: CLI, TUI, Emacs   |
+| Sandbox  | =/run/goblins/request.sock= (in sandbox) | A goblin; the daemon knows which one     |
+
+=goblins --state-dir DIR= moves the host socket to =DIR/host.sock=. The sandbox endpoint identifies its caller from the socket it connected through; no parameter can name another sandbox as the caller.
+
+** Framing
+
+Each message is a JSON-RPC 2.0 object preceded by an LSP-style header:
+
+#+begin_example
+Content-Length: 61\r\n
+\r\n
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"api":1}}
+#+end_example
+
+- The header is at most 256 bytes. A response body is at most 1 MiB.
+- Request bodies: messaging methods accept up to 64 KiB. Other host methods, =sessions.set-variables= and =permissions.request= accept 16 KiB; other sandbox methods 4 KiB.
+- Frame deadlines are 3 seconds. Every connection must send its complete =initialize= frame within 3 seconds of being accepted, and a sandbox connection must send its one following call within 3 seconds of initializing. On an initialized host connection the clock starts at each frame's first byte, so an idle host connection never times out.
+- =params= is an object; an omitted =params= means ={}=. Unknown fields, duplicate keys, nesting deeper than 32 and batches are rejected. Request IDs must not be null. Notifications from a client (no =id=) are ignored, except =exec.signal= on an exec connection.
+- Results may gain fields; clients should ignore fields they do not know.
+
+** Connections
+
+Every connection starts with =initialize=. A host connection may make up to 4096 calls including =initialize=, and hold one state subscription; the daemon accepts up to 32 host connections. A sandbox connection makes one call after =initialize= and is then closed by the daemon (up to 8 connections per sandbox).
+
+=goblins rpc METHOD 'PARAMS'= opens a host connection, makes one call and prints the result. It cannot follow =state.subscribe=, and cannot call =sessions.exec=, which needs passed file descriptors.
+
+** Terminal attachment
+
+Each session has two attachment sockets beside each other in its state directory; =sessions.get= returns their paths as =terminal= and =attach=. A daemon whose host =features= include =attach-handlers= serves =attach.sock=, which frontends use for every goblin; =terminal.sock= keeps the older protocol.
+
+- =attach.sock= :: The frontend first writes a framed notification ={"jsonrpc": "2.0", "method": "attach.hello", "params": {"version": 1, "rows", "cols"}}= within 3 seconds; the daemon reads nothing else before it. =rows= and =cols= (1 or more) size this attachment: a goblin's single terminal is resized to them once attached, and a client started by =onAttach= gets a new PTY of that size. The daemon then answers with framed notifications ={"jsonrpc": "2.0", "method": "attach.waiting", "params": {"missing": [names]}}=, at once and every second while it waits, then one framed reply with ID 0: ={"attached": true}= or an error (=-32009=). While the goblin is still starting, =missing= is empty. For a goblin with =onAttach=, =missing= names the variables its client still needs, which must be set to a value during this run (=sessions.set-variables=); a timeout fails the attachment with the names, the server log path and "restart the goblin". An attachment to such a goblin that has stopped fails with why and, when it has one, the server log path. Raw terminal bytes follow only a successful reply. One attachment at a time: a second is refused, and changes no size.
+- =terminal.sock= :: The daemon attaches an accepted connection at once and writes the same framed reply, then raw bytes. For a goblin with =onAttach= it refuses every connection with an error asking to upgrade Goblins. A connection made before the daemon has read the goblin's configuration waits until then.
+
+A goblin with =onAttach= has no terminal of its own: each attachment runs its client, detaching (=sessions.detach= or the frontend closing) runs =onDetach= and then ends the client and everything it started, and the client exiting detaches. =terminal_detached= becomes true once the client has exited; processes it left behind are cancelled.
+
+** Errors
+
+| Code     | Meaning                                                                  |
+|----------+--------------------------------------------------------------------------|
+| =-32700= | Invalid JSON, duplicate keys or nesting too deep                         |
+| =-32600= | Malformed frame (bad header or =Content-Length=, oversized body, missed deadline); invalid envelope (JSON-RPC version, null or invalid ID, method name over 64 bytes); or unexpected bytes after a one-shot request |
+| =-32601= | Method unavailable on this endpoint                                      |
+| =-32602= | Invalid parameters; the message says which                               |
+| =-32001= | A method was called before =initialize=                                  |
+| =-32002= | Unsupported API version                                                  |
+| =-32003= | Host command limit: too many running, or too many large requests waiting for a decision |
+| =-32004= | Record absent or no longer retained                                      |
+| =-32009= | Stale or conflicting operation, wrong state, or the server is stopping   |
+| =-32010= | Resource limit reached, or the sandbox's init cannot be reached          |
+
+Session parameters named =session= accept a session ID or the agent name of a live goblin unless stated otherwise.
+
+* Initialization (both endpoints)
+
+** =initialize=
+
+Negotiates the API version and identifies the daemon.
+
+- Input :: ={"api": 1}=
+- Output :: ={"api": 1, "instance", "role": "host"|"sandbox", "configuration", "features": [...], "limits": {...}}=. =instance= identifies this daemon run. =configuration= is the caller's configuration name on the sandbox endpoint, null on the host endpoint. =features= lists capability strings (for example =state-subscribe=, =raids=, =exec=, =host-commands=, and =attach-handlers= for =attach.sock=). =limits= has =header=, =body=, =frame_seconds=, =depth=, =response_body=, =calls=, =connections=, =sessions=, =output_queue=, =snapshot= and =terminal_buffer=.
+
+* Host endpoint
+
+While the server is stopping, every method except =server.status= and =server.stop= fails with =-32009=.
+
+** Server
+
+*** =server.status=
+
+Reports whether the server is running and how many goblins it has.
+
+- Input :: ={}=
+- Output :: ={"instance", "state": "running"|"stopping", "sessions": N, "history", "manifest"}=. =sessions= counts goblins with a live worker. =history= is ={"directory", "owner": true, "keep", "recording"}= when this server owns the history store, or ={"directory", "owner": false, "reason"}= when it does not. =manifest= is the current runtime manifest path or null.
+
+*** =server.stop=
+
+Stops the server and every goblin. The connection is closed after the reply.
+
+- Input :: ={}=
+- Output :: ={"accepted": true}=
+
+** State
+
+*** =state.subscribe=
+
+Returns the current state, then pushes a complete replacement snapshot on every change. One subscription per connection.
+
+- Input :: ={}=
+- Output :: ={"subscription", "sequence", "snapshot": Snapshot}=
+- Notifications :: ={"method": "state.changed", "params": {"subscription", "sequence", "snapshot": Snapshot}}=. =sequence= increases by one per published change. A subscriber whose output queue (2 MiB) overflows is disconnected and must subscribe again; no change is skipped silently.
+
+*** =state.unsubscribe=
+
+Ends this connection's subscription.
+
+- Input :: ={"subscription"}=
+- Output :: ={"accepted": true}=
+
+** Sessions
+
+*** =sessions.list=
+
+Lists retained session records, including starting and stopped ones.
+
+- Input :: ={}=
+- Output :: =[Session]=
+
+*** =sessions.get=
+
+Returns one session record.
+
+- Input :: ={"session"}=
+- Output :: =Session=
+
+*** =sessions.start=
+
+Launches a goblin from a configuration, or recreates a recorded one. Returns once the launch is accepted; follow its state through =sessions.get= or the subscription.
+
+- Input :: ={"key", "configuration", "name", "agent_name", "cwd", "scope", "dev_shell", "rows", "cols", "detached", "raid", "recreate"}=
+  - =key= (required): a retry key, 1–64 of =[A-Za-z0-9_-]=. Repeating a start with the same key and parameters returns the original acceptance; different parameters conflict.
+  - =configuration= (required): absolute path of the runtime manifest directory.
+  - =name=: the configuration key (for example =shell=), 1–64 of =[A-Za-z0-9_-]=. Omitted or empty for a recreate.
+  - =agent_name= (optional, may be null): the goblin's name, matching =[a-z][a-z0-9-]{0,31}= and unique among live goblins; omitted or null picks one from the name list.
+  - =cwd=, =scope=, =dev_shell= (optional): absolute launch directory; scope to join, matching =[A-Za-z_][A-Za-z0-9_-]{0,63}=; absolute =PATH[#ATTR]= of a host flake dev shell.
+  - =rows=, =cols= (required): initial terminal size, 1–1000 each.
+  - =detached= (optional): start without a terminal consumer.
+  - =raid= (optional): join this raid, creating it with the new goblin as owner. Raid names match =[a-z][a-z0-9-]{0,31}=.
+  - =recreate= (optional): history record ID, unique prefix or unique agent name to recreate.
+- Output :: ={"session", "agent_name", "state": "starting", "terminal", "attach"}=. =terminal= and =attach= are the paths of the session's attachment sockets (see Terminal attachment).
+
+*** =sessions.stop=
+
+Requests teardown. Acceptance does not mean cleanup has finished.
+
+- Input :: ={"session"}=
+- Output :: ={"accepted": true}=
+
+*** =sessions.detach=
+
+Detaches the current terminal consumer; the goblin keeps running. For a goblin with =onAttach= this runs =onDetach= and ends the attached client.
+
+- Input :: ={"session"}=
+- Output :: ={"accepted": true}=
+
+*** =sessions.resize=
+
+Resizes the session's PTY, or for a goblin with =onAttach= the attached client's PTY (=-32009= when none is attached).
+
+- Input :: ={"session", "rows", "cols"}= (=session= is a session ID; rows and cols 1–1000)
+- Output :: ={"accepted": true}=
+
+*** =sessions.exec=
+
+Runs a command inside a running goblin. The request must carry file descriptors (=SCM_RIGHTS=) with its first byte: one PTY slave with =tty=, otherwise stdin, stdout and stderr. The reply arrives when the command exits, and the connection then closes. While it runs, the client may send =exec.signal= notifications (={"signal": N}=) to forward a signal.
+
+- Input :: ={"session", "pin", "argv", "cwd", "env", "tty", "interactive"}=. =pin= (optional) requires this exact session ID. =argv= (optional) defaults to the sandbox's =$SHELL=; otherwise 1–1024 arguments of at most 64 KiB each, without NUL. =cwd= (optional) is absolute, at most 4096 bytes. =env= is a list of at most 256 =[name, value]= pairs. =interactive= marks an explicit =-t= shell, counted in =shells=.
+- Output :: ={"code", "signal"}= when it exited, or ={"code", "message"}= when it could not be started.
+
+*** =sessions.kill_execs=
+
+Kills every exec running in a goblin.
+
+- Input :: ={"session"}=
+- Output :: ={"accepted": true}=
+
+** Permissions
+
+*** =permissions.list=
+
+Lists retained permission requests: pending ones and recent decisions and outcomes.
+
+- Input :: ={"session"?, "state"?}= (both optional filters; =session= is a session ID)
+- Output :: =[Permission]=
+
+*** =permissions.get=
+
+Returns one permission request.
+
+- Input :: ={"request"}=
+- Output :: =Permission=
+
+*** =permissions.decide=
+
+Approves or denies a pending request. All three identities must match the pending record; a raid-owner request is resolved with =raids.set_owner= or =raids.destroy= instead.
+
+- Input :: ={"session", "request", "approval", "approved": bool}=
+- Output :: ={"accepted": true, "request", "approved"}=. Acceptance of an approval does not mean the grant is ready; follow the record's =state=.
+
+** History
+
+*** =history.list=
+
+Lists recorded conversations that can be recreated, newest first.
+
+- Input :: ={}=
+- Output :: ={"directory", "records": [HistoryRecord], "truncated"}=. Each record also has =running=. =truncated= is true when the list was cut at 900 KiB.
+
+*** =history.prune=
+
+Removes records that are not running. Every given criterion must match; at least one is required.
+
+- Input :: ={"older_than"?, "before"?, "keep"?, "dry_run"?}=. =older_than= is milliseconds since the last update; =before= is a Unix millisecond; =keep= keeps the N most recently updated.
+- Output :: ={"removed": [id], "failed": [{"id", "reason"}], "dry_run"}=. A real prune replies after the deletes finish.
+
+** Raids
+
+Each method that returns =Raid= returns the raid's current record. Raid names and roles match =[a-z][a-z0-9-]{0,31}=; a role can be changed but not cleared.
+
+*** =raids.invite=
+
+Adds goblins to a raid, creating it with the first goblin as owner if it does not exist.
+
+- Input :: ={"raid", "sessions": [session]}= with 1–16 sessions
+- Output :: =Raid=
+
+*** =raids.destroy=
+
+Dissolves a raid. Its goblins keep running unless =stop_members= is set.
+
+- Input :: ={"raid", "id"?, "generation"?, "stop_members"?}=. =id= and =generation= make the call fail if the raid changed since it was shown.
+- Output :: ={"accepted": true, "stopped": [session ID]}=
+
+*** =raids.set_owner=
+
+Makes a member the owner, resuming a paused raid.
+
+- Input :: ={"raid", "session", "id"?, "generation"?}=
+- Output :: =Raid=
+
+*** =raids.kick=
+
+Removes a member.
+
+- Input :: ={"raid", "session"}=
+- Output :: ={"accepted": true, "dissolved", "paused"}=
+
+*** =raids.set_role=
+
+Sets a member's descriptive role.
+
+- Input :: ={"raid", "session", "role"}=
+- Output :: =Raid=
+
+*** =raids.members=
+
+Returns a raid's record.
+
+- Input :: ={"raid"}=
+- Output :: =Raid=
+
+** Host commands
+
+Host commands are permission requests of kind =host-command=; these methods inspect and stop them.
+
+*** =host.list=
+
+- Input :: ={}=
+- Output :: ={"jobs": [HostJob]}=
+
+*** =host.status=
+
+- Input :: ={"request"}=
+- Output :: =HostJob=
+
+*** =host.cancel=
+
+Withdraws a pending host command or stops a running one.
+
+- Input :: ={"request"}=
+- Output :: ={"accepted": true, "request"}=
+
+** Messaging
+
+The host has its own inbox; agents address it as =host=. Mutations take a caller-chosen =key= (1–64 of =[A-Za-z0-9_-]=): an identical retry returns the original result.
+
+*** =messages.send=
+
+- Input :: ={"key", "to", "body", "conversation"}=. =to= is an agent name, session ID or =host=; =body= is at most 8 KiB; =conversation= (nullable) continues a conversation.
+- Output :: =Message=
+
+*** =messages.get=
+
+- Input :: ={"message"}=
+- Output :: =Message=
+
+*** =messages.reply=
+
+Replies to and completes a claimed message.
+
+- Input :: ={"key", "message", "claim_generation", "body"}=
+- Output :: ={"reply": Message, "completed": message ID}=
+
+*** =inbox.status=
+
+Summarizes the caller's inbox.
+
+- Input :: ={}=
+- Output :: ={"queued", "claim", "head", "revision", "audit_failed", "raid_audit_failed", "operations"}=. =claim= is the claimed message ID or null; =head= is =[message ID, claim_generation]= of the first unresolved message or null; =operations= lists the caller's unfinished operations as ={"request", "kind", "subject", "state"}= with =state= =pending= (awaiting a decision) or =running= (approved, executing).
+
+*** =inbox.next=
+
+Claims the next queued message.
+
+- Input :: ={"key"}=
+- Output :: ={"message": Message|null, "claim_generation"|null}=
+
+*** =inbox.complete=
+
+- Input :: ={"key", "message", "claim_generation"}=
+- Output :: ={"message", "state"}=
+
+*** =inbox.requeue=
+
+Returns a claimed message to the queue.
+
+- Input :: ={"key", "message", "claim_generation", "reason"}=
+- Output :: ={"message", "claim_generation"}=
+
+*** =communications.list=
+
+Pages through the communications audit log. Host only.
+
+- Input :: ={"after"?, "limit"?, "session"?}=. =after= is a sequence cursor (default 0); =limit= is 1–100 (default 100); =session= filters to one goblin.
+- Output :: ={"events": [Event], "cursor", "session", "latest"}=. Pass =cursor= as the next =after=. A page is at most 512 KiB.
+
+* Sandbox endpoint
+
+A sandbox sees only itself and the goblins it controls. Results never contain host paths, process identities or terminal sockets.
+
+** Self
+
+*** =sessions.status=
+
+- Input :: ={}=
+- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "created_by"}=. =attached= is whether a frontend is attached. =attached_since= is when the attached client started, in Unix milliseconds, for a goblin with =onAttach=; otherwise null. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
+
+*** =sessions.set-state=
+
+Reports the agent's activity, shown as =agent_state=.
+
+- Input :: ={"state": "unknown"|"idle"|"working"|"waiting-input"|"waiting-approval"}=
+- Output :: ={"accepted": true}=
+
+*** =sessions.set-variables=
+
+Stores variables in the caller's history record (for example the agent's =session_id=). All given keys change together; an empty value removes a key. A key set to a value is ready for the current run; values a recreated goblin starts with from its record are not ready until it sets them again, and removing a key makes it not ready.
+
+- Input :: ={"variables": {name: value}}= with 1–16 entries. Names match =[a-z][a-z0-9_]{0,31}=; values are at most 256 bytes without control characters.
+- Output :: ={"accepted": true, "recorded"}=
+
+*** =sessions.detach=
+
+Detaches the caller's own terminal, as the host's =sessions.detach= does. The connection closes after the reply.
+
+- Input :: ={}=
+- Output :: ={"accepted": true}=
+
+** Permissions
+
+*** =permissions.request=
+
+Asks the host for a grant. The reply arrives after the decision and its execution, unless the request is detached.
+
+- Input :: ={"kind", "package", "reason", "update"?, "lock"?, "host"?}=. =reason= is 1–1024 characters.
+  - =kind: "package"=: =package= is the Nix attribute name. Unless stated, =package= is empty and =update=, =lock= and =host= are absent.
+  - =kind: "docker"=: attach the scope's Docker engine; =package= empty.
+  - =kind: "devshell"=: refresh the dev shell; =update= lists flake inputs to update (empty for all) or =lock= locks inputs =flake.nix= declares but the lock lacks; not both. =update= holds at most 32 names of 1–200 bytes: =/=-separated parts that start with a letter or =_= and continue with letters, digits, =_=, =-= or ='=.
+  - =kind: "host-command"=: =host= is ={"argv", "cwd", "env"?, "timeout"?, "detach"?}=. =argv= has 1–1024 entries and a non-empty program; =cwd= is an absolute sandbox path; =env= is at most 256 =[name, value]= pairs and cannot set =GOBLINS_HOST_JOB=; =timeout= is a positive number of seconds. Strings contain no NUL, and =argv=, =env= and =cwd= together are at most 12 KiB.
+- Output :: ={"request", "status", "message"}= with =status= =ready=, =denied=, =failed=, =withdrawn= or =error=. A host command that ran returns ={"request", "status", "message", "exit_code", "signal", "code", "log"}= instead (a =HostJob= without =subject= and =reason=): =status= is =finished= (whatever its exit code, and after a timeout, with a message starting =timed out;=), =cancelled= (cancelled by the goblin or host, or stopped with the goblin) or =failed= (not started). A host command denied or withdrawn before running returns the plain result above. A detached host command returns ={"request", "status": "pending"}= at once and its outcome arrives as an inbox notice.
+- Notifications :: an attached host command sends ={"method": "host.submitted", "params": {"request"}}= before its result.
+
+*** =host.list= / =host.status= / =host.cancel=
+
+As on the host endpoint, limited to the caller's own host commands.
+
+** Dev shell and flake apps
+
+*** =devshell.lock=
+
+- Input :: ={}=
+- Output :: ={"path", "lock", "generation"}=: the current =flake.lock= path, its contents and the dev shell generation.
+
+*** =devshell.diff=
+
+Previews what a refresh would change, without requesting it.
+
+- Input :: ={"update"?, "lock"?}= as for a =devshell= permission request.
+- Output :: =DevShellPreview=, the same preview a =devshell= permission request shows.
+
+*** =flake.run=
+
+Builds an app of the dev shell's flake for the caller to execute.
+
+- Input :: ={"app"}=: 1–256 of =[A-Za-z0-9_+'-]=; =default= for the default app.
+- Output :: ={"program", "generation"}=
+
+** Editor
+
+*** =editor.open=
+
+Opens files in the host's Emacs through =emacsclient=.
+
+- Input :: ={"files": [{"path", "line"?, "column"?}], "wait"}=. 1–32 absolute, normalized sandbox paths of at most 4096 bytes (no =.=, =..= or empty components, no trailing slash, no control characters). =line= and =column= start at 1, and =column= needs =line=. =wait= blocks until the editor is done with every file.
+- Output :: ={"code", "message"?}=: =emacsclient='s exit code, with a message when it failed.
+
+** Raid members
+
+A raid owner sees and stops only the goblins it ran in its raid, while it owns it.
+
+*** =sessions.list= / =sessions.get=
+
+- Input :: ={}= / ={"session"}=
+- Output :: =[SandboxSession]= / =SandboxSession=, a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached=.
+
+*** =sessions.start=
+
+Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals.
+
+- Input :: ={"key", "name", "agent_name", "detached"?}=
+- Output :: ={"session", "agent_name", "state"}=
+
+*** =sessions.stop=
+
+- Input :: ={"session"}=
+- Output :: ={"accepted": true}=
+
+** Raids
+
+*** =raids.create=
+
+- Input :: ={"raid"}=
+- Output :: =Raid=
+
+*** =raids.leave=
+
+- Input :: ={}=
+- Output :: ={"accepted": true, "dissolved", "paused"}=
+
+*** =raids.members=
+
+- Input :: ={}=
+- Output :: =Raid= (the caller's raid)
+
+*** =raids.set_role=
+
+Sets the caller's own role.
+
+- Input :: ={"role"}=
+- Output :: =Raid=
+
+** Messaging
+
+=messages.send=, =messages.get=, =messages.reply=, =inbox.status=, =inbox.next=, =inbox.complete= and =inbox.requeue= are as on the host endpoint, acting on the caller's inbox. Agent integrations live inside the goblin and use only these and the generic calls (=sessions.set-state=, =sessions.set-variables=); see [[file:specs/AGENT-INTEGRATION.org][specs/AGENT-INTEGRATION.org]].
+
+* Records
+
+Optional values are JSON null. Timestamps are Unix milliseconds.
+
+** Snapshot
+
+| Field         | Type                                                            |
+|---------------+-----------------------------------------------------------------|
+| =instance=    | string                                                          |
+| =sessions=    | =[Session]=                                                     |
+| =permissions= | =[Permission]=                                                  |
+| =raids=       | =[Raid]=                                                        |
+| =messaging=   | ={"audit_failed", "raid_audit_failed"}=: messaging stops while the log fails |
+
+Snapshots are capped at 900 KiB; settled permission records and stopped sessions are evicted first.
+
+** Session
+
+| Field                                         | Type and meaning                                                         |
+|-----------------------------------------------+--------------------------------------------------------------------------|
+| =id=                                          | Session ID                                                               |
+| =agent_name=                                  | Unique among live goblins                                                |
+| =name=                                        | Configuration key                                                        |
+| =configuration=                               | Runtime manifest path                                                    |
+| =description=                                 | Configuration description                                                |
+| =state=                                       | =starting=, =running=, =stopping=, =stopped= or =failed=                 |
+| =agent_state=                                 | =unknown=, =idle=, =working=, =waiting-input= or =waiting-approval=      |
+| =agent_state_since=                           | When =agent_state= last changed, or null                                 |
+| =inbox=                                       | Queued inbox messages                                                    |
+| =scope=, =dev_shell=, =cwd=                   | Launch scope, dev shell reference and directory, or null                 |
+| =docker_enabled=                              | Whether Docker is attached                                               |
+| =created_by=                                  | ={"id", "agent_name"}= of the raid owner that ran it, or null            |
+| =raid=                                        | ={"id", "name", "role", "owner", "paused"}= or null                      |
+| =identity=                                    | ={"pid", "helper_userns", "mount_owner", "source_mountns", "mountns"}= or null |
+| =initial_packages=, =packages=, =auto_approve= | Package names                                                           |
+| =terminal=, =attach=                          | Attachment socket paths (see Terminal attachment)                        |
+| =server_log=                                  | For a goblin with =onAttach=, the log of its agent's output; otherwise null |
+| =pty_eof=, =terminal_complete=, =terminal_interrupted=, =terminal_attached=, =terminal_detached= | Terminal lifecycle flags |
+| =shells=, =execs=                             | Live interactive shells and other execs                                  |
+| =exit_code=                                   | Payload exit code (=128 + signal= for signals) or null                   |
+| =stop_reason=, =detail=                       | Why it stopped; diagnostic detail                                        |
+| =recreated_from=                              | History record it was recreated from, or null                            |
+| =skipped=                                     | =[{"name", "reason"}]= that a recreate could not restore                 |
+
+** Permission
+
+| Field       | Type and meaning                                                                                             |
+|-------------+--------------------------------------------------------------------------------------------------------------|
+| =id=        | Request ID                                                                                                   |
+| =session=, =agent_name= | Requesting session and its name (kept after the session is evicted)                              |
+| =approval=  | Approval identity, required by =permissions.decide=                                                          |
+| =kind=      | =package=, =docker=, =devshell=, =host-command= or =raid-owner=                                              |
+| =package=   | Subject: package name, Docker scope label, refresh or command summary                                        |
+| =reason=    | The agent's reason                                                                                           |
+| =state=     | =pending=, =realizing=, =mounting=, =publishing=, =running=, =ready=, =finished= (host command ran), =approved= (raid owner chosen), =denied=, =withdrawn=, =failed= or =cancelled= |
+| =approved=  | Decision, or null before one                                                                                 |
+| =preview=   | Kind-specific, or null: =package= ={"in_store", "download", "build_required"}= or ={"error"}=; =docker= ={"description"}=; =devshell= =DevShellPreview=; =host-command= ={"kind": "host-command", "description", "command", "directory", "environment", "time_limit"}= |
+| =message=   | Outcome message or null                                                                                      |
+
+** Raid
+
+={"id", "name", "owner", "former_owner", "paused", "generation", "members": [{"id", "agent_name", "name", "role", "state", "owner", "created_by"}]}=. =owner= is null while paused; =generation= changes on every pause and owner change.
+
+** HostJob
+
+={"request", "status", "subject", "reason", "message", "log"}=, plus =exit_code=, =signal= and =code= once it has run. =status= is the Permission state: =pending=, =running=, then =finished=, =cancelled=, =failed=, =denied= or =withdrawn=. =code= is the exit code, =128 + signal=, or 125–127 when the command could not be started. =log= is the job's output path inside the sandbox.
+
+** Message
+
+={"id", "conversation", "sender", "recipient", "sender_name", "recipient_name", "in_reply_to", "body", "created_sequence", "created_at", "state", "claim_generation", "failure"}=, plus =operation= on operation notices and =raid= on raid notices. =state= is =queued=, =claimed=, =completed= or =failed=.
+
+- =operation= :: ={"request", "kind", "subject", "status", "message"}=: the outcome of an operation the goblin requested. =status= is =ready=, =denied=, =failed=, =withdrawn= or =cancelled= (=finished= for a host command that ran). Its sender is =goblins=.
+- =raid= :: ={"id", "name", "event": "resumed", "owner"}=: a paused raid the goblin could not message has resumed under =owner= (a session ID).
+
+** Event
+
+A communications log entry: ={"instance", "sequence", "timestamp", "kind", "actor", "sessions", "data"}=. =kind= names the event (for example =message.accepted=, =message.claimed=, =operation.completed=, =raid.joined=, =session.exited=); =actor= is a session ID, =host= or =goblins=; =sessions= lists the goblins it concerns; =data= is kind-specific.
+
+** DevShellPreview
+
+={"kind", "reference", "from", "to", "attention", "files", "inputs", "packages", "env", "fetch", "build", "download", "incoming", "diff"}=: facts about a dev shell refresh, which frontends word and lay out.
+
+- =reference= :: the dev shell's flake reference; =from= and =to= are the current and candidate generations.
+- =attention= :: items to call out, each with a =kind=: ={"kind": "input-source", "input", "old", "new"}=, ={"kind": "new-input", "input", "source"}=, ={"kind": "nix-config"}=, ={"kind": "local-builds", "count"}= or ={"kind": "shell-hook"}=.
+- =files= :: changed source files, ={"path", "added", "removed"}= (counts null for binary files).
+- =inputs= :: ={"name", "change", "old", "new"}= with =change= =added=, =removed= or =changed= and =old=/=new= ={"source", "id", "date"}= or null.
+- =packages= :: the same change shape per package =name=, with =old= and =new= as lists of that package's versions, for example ={"name": "hello", "change": "changed", "old": ["2.12"], "new": ["2.13"]}=.
+- =env= :: ={"name", "change", "old", "new", "long"}= for changed environment variables.
+- =fetch=, =build=, =download= :: how many store paths are fetched and built, and the estimated download size or null.
+- =incoming= :: ={"action": "build"|"fetch", "name", "versions"}= for packages built or fetched, including transitive ones, builds first. It is cut at 1000 entries without a marker, so it is not a complete dependency list.
+- =diff= :: the source patch, without =flake.lock=.
+
+** HistoryRecord
+
+={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "created", "updated", "stopped"}=

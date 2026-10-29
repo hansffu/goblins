@@ -10,24 +10,23 @@ import json
 from pathlib import Path
 import shlex
 import shutil
+import signal
 import tempfile
 import socket
 import threading
 import unittest
 from unittest.mock import patch
 
+from build_support import fixture_app, fixture_path
 from daemon_support import Daemon, ROOT, RPC, receive
-from support import command
 from terminal_support import Terminal
 
 
 class DockerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.docker-goblins"])) / "bin/goblins"
-        cls.image = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                 f"git+file://{ROOT}#checks.x86_64-linux.docker-test-image"]))
+        cls.app = fixture_app("docker-goblins")
+        cls.image = fixture_path(f"git+file://{ROOT}#checks.x86_64-linux.docker-test-image")
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory(prefix="goblins-docker-test-")
@@ -82,7 +81,7 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, f"docker load -i {shlex.quote(str(self.rw / 'image.tar.gz'))}")
 
     def enable(self, session, terminal, approved=True, options=""):
-        terminal.send("goblins enable-docker --reason 'integration test' " + options + "\n")
+        terminal.send("goblin enable-docker --reason 'integration test' " + options + "\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
         self.assertEqual(request["kind"], "docker")
         self.d.decide(request, approved)
@@ -112,7 +111,7 @@ class DockerTests(unittest.TestCase):
         self.load(terminal)
         self.run_ok(terminal, "docker run --rm --network host goblins-test wget -q -O - -T 5 http://127.0.0.1:18081/network-before")
         store, = self.storage.iterdir()
-        self.run_ok(terminal, "goblins enable-docker")
+        self.run_ok(terminal, "goblin enable-docker")
         self.assertEqual(list(self.storage.iterdir()), [store])
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
@@ -216,42 +215,33 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, "! command -v docker")
         # A new, explicitly approved request can still succeed after withdrawal.
         self.enable(session, terminal)
-        self.run_ok(terminal, 'case "$(goblins status)" in *"Docker: enabled"*) true;; *) false;; esac')
+        self.run_ok(terminal, 'case "$(goblin status)" in *"Docker: enabled"*) true;; *) false;; esac')
 
-    def test_children_inherit_scope_and_activation(self):
+    def test_members_inherit_scope_and_activation(self):
         self.named_storage = True
-        parent, terminal = self.shell("scoped")
-        self.enable(parent, terminal)
+        owner, terminal = self.shell("scoped")
+        self.enable(owner, terminal)
         self.load(terminal)
-        peer = RPC(self.d.state / parent / "resources/request.sock")
-        try:
-            child = peer.call("sessions.start", {"key": "docker-child", "name": "scoped",
-                              "agent_name": "child", "detached": True})["session"]
-        finally:
-            peer.close()
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        member = self.d.member(owner, "scoped", agent_name="helper")["session"]
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
-        self.assertTrue(self.d.get(child)["docker_enabled"])
-        self.assertEqual(self.d.get(child)["scope"], "work")
-        self.assertFalse(self.d.permissions(session=child, state="pending"))
+        self.assertTrue(self.d.get(member)["docker_enabled"])
+        self.assertEqual(self.d.get(member)["scope"], "work")
+        self.assertFalse(self.d.permissions(session=member, state="pending"))
         self.run_ok(other, "docker image inspect goblins-test >/dev/null")
 
-    def test_inactive_parent_joins_child_started_engine(self):
-        parent, terminal = self.shell("plain")
-        peer = RPC(self.d.state / parent / "resources/request.sock")
-        try:
-            child = peer.call("sessions.start", {"key": "lazy-child", "name": "plain", "detached": True})["session"]
-        finally:
-            peer.close()
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+    def test_inactive_owner_joins_member_started_engine(self):
+        owner, terminal = self.shell("plain")
+        member = self.d.member(owner, "plain")["session"]
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", member])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
-        self.assertFalse(self.d.get(child)["docker_enabled"])
-        self.enable(child, other); self.load(other)
-        self.assertFalse(self.d.get(parent)["docker_enabled"])
+        self.assertFalse(self.d.get(member)["docker_enabled"])
+        self.enable(member, other); self.load(other)
+        self.assertFalse(self.d.get(owner)["docker_enabled"])
         self.run_ok(terminal, "test ! -S /run/goblins/docker-socket/docker.sock")
-        self.enable(parent, terminal)
+        self.enable(owner, terminal)
         self.assertEqual(len(self.engines()), 1)
         self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
 
@@ -267,7 +257,7 @@ class DockerTests(unittest.TestCase):
         self.addCleanup(terminal.close)
         terminal.expect("docker-test>", timeout=60)
         for _ in range(2):
-            terminal.send("goblins enable-docker\n")
+            terminal.send("goblin enable-docker\n")
             request = self.d.wait(lambda: next(iter(self.d.permissions(session=session, state="pending")), None))
             self.d.decide(request, True)
             terminal.expect('"status":"error"', timeout=60)
@@ -325,6 +315,42 @@ class DockerTests(unittest.TestCase):
         self.enable(fresh, four)
         self.run_ok(four, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
 
+    def test_scope_clear_removes_subordinate_owned_volumes_and_restarts_empty(self):
+        self.named_storage = True
+        session, terminal = self.shell("scoped", cwd=self.rw)
+        self.enable(session, terminal)
+        self.load(terminal)
+        self.run_ok(terminal, "docker run --rm -v database:/data goblins-test sh -c 'mkdir /data/private; echo database > /data/private/value; chown -R 1234:1234 /data/private; chmod 000 /data/private'")
+        (self.rw / "keep").write_text("host-side effect")
+        refused = self.d.cli("scope", "clear", "work", check=False)
+        self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+        self.assertIn("in use", refused.stderr)
+        self.d.cli("gc")
+        self.run_ok(terminal, "docker image inspect goblins-test >/dev/null")
+        terminal.send("exit\n")
+        self.d.wait(lambda: not (self.d.state / session / "resources").exists())
+        self.assertTrue((self.storage / "scope-work").exists())
+        self.d.cli("scope", "clear", "work")
+        self.assertFalse((self.storage / "scope-work").exists())
+        self.assertEqual((self.rw / "keep").read_text(), "host-side effect")
+        fresh, other = self.shell("scoped", cwd=self.rw)
+        self.enable(fresh, other)
+        self.run_ok(other, 'test -z "$(docker image ls -q)"; test -z "$(docker volume ls -q)"')
+        other.send("exit\n")
+        self.d.wait(lambda: not (self.d.state / fresh / "resources").exists())
+        self.d.process.terminate()
+        self.d.process.wait(timeout=10)
+        self.assertTrue(all(not (self.d.state / sid).exists() for sid in (session, fresh)))
+
+    def test_gc_keeps_a_running_temporary_engine_and_its_storage(self):
+        session, terminal = self.shell()
+        self.load(terminal)
+        stores = list(self.storage.glob("session-*"))
+        self.assertEqual(len(stores), 1)
+        self.d.cli("gc")
+        self.assertTrue(stores[0].exists())
+        self.run_ok(terminal, "docker run --rm goblins-test true")
+
     def test_scope_selection_inheritance_and_published_ports(self):
         self.named_storage = True
         first, one = self.shell("scoped", cwd=self.rw)
@@ -336,16 +362,13 @@ class DockerTests(unittest.TestCase):
         self.enable(second, two)
         self.run_ok(one, "docker run -d --name shared-web -p 18082:8080 goblins-test httpd -f -p 8080 -h /bin")
         self.run_ok(two, "curl --retry 10 --retry-connrefused --retry-delay 1 --fail http://127.0.0.1:18082/sh -o /dev/null")
-        peer = RPC(self.d.state / second / "resources/request.sock")
-        try:
-            child = peer.call("sessions.start", {"key": "inherited-work", "name": "member", "detached": True})["session"]
-        finally:
-            peer.close()
-        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", child])
+        # A goblin it runs inherits the selected scope and its attachment.
+        created = self.d.member(second, "member", key="inherited-work")["session"]
+        other = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", created])
         self.addCleanup(other.close)
         other.expect("docker-test>", timeout=60)
-        self.assertEqual(self.d.get(child)["scope"], "work")
-        self.assertTrue(self.d.get(child)["docker_enabled"])
+        self.assertEqual(self.d.get(created)["scope"], "work")
+        self.assertTrue(self.d.get(created)["docker_enabled"])
         self.run_ok(other, "docker image inspect goblins-test >/dev/null; curl --fail http://127.0.0.1:18082/sh -o /dev/null")
         # The member's default scope has its own engine and network.
         third, three = self.shell("member", cwd=self.rw)
@@ -419,7 +442,7 @@ class DockerTests(unittest.TestCase):
     def test_docker_requires_a_docker_scope(self):
         for name in ("unscoped", "nodocker"):
             session, terminal = self.shell(name)
-            self.run_ok(terminal, "! command -v docker; ! goblins enable-docker")
+            self.run_ok(terminal, "! command -v docker; ! goblin enable-docker")
             self.assertFalse(self.d.permissions(session=session, state="pending"))
             self.assertFalse(self.d.get(session)["docker_enabled"])
 
@@ -446,7 +469,7 @@ class DockerTests(unittest.TestCase):
         first, one = self.shell("scoped")
         self.enable(first, one)
         second, two = self.shell("scoped")
-        two.send("goblins enable-docker\n")
+        two.send("goblin enable-docker\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
         self.d.decide(request, True)
         two.expect('"status":"error"', timeout=60)
@@ -463,7 +486,7 @@ class DockerTests(unittest.TestCase):
         self.enable(first, one); self.load(one)
         self.run_ok(one, f"docker run --rm -v /:/engine goblins-test ln -s {self.rw} /engine{extra_ro}")
         second, two = self.shell("extra", cwd=self.rw)
-        two.send("goblins enable-docker\n")
+        two.send("goblin enable-docker\n")
         request = self.d.wait(lambda: next(iter(self.d.permissions(session=second, state="pending")), None))
         self.d.decide(request, True)
         two.expect('"status":"error"', timeout=60)
@@ -670,7 +693,7 @@ class DockerTests(unittest.TestCase):
         self.run_ok(terminal, f"{compose} down", timeout=60)
 
     def test_server_death_reaps_containers(self):
-        _, terminal = self.shell()
+        session, terminal = self.shell()
         self.load(terminal)
         self.run_ok(terminal, "docker run --rm --network none -v crash-data:/data goblins-test sh -c 'mkdir /data/locked; echo saved > /data/locked/file; chown -R 1234:1234 /data/locked; chmod 000 /data/locked'")
         self.run_ok(terminal, "docker run -d --network none goblins-test sleep 300")
@@ -690,8 +713,33 @@ class DockerTests(unittest.TestCase):
         children(self.d.process.pid)
         self.assertTrue(any(Path(f"/proc/{pid}/comm").read_text().strip() == "dockerd" for pid in descendants))
         identities = {pid: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19] for pid in descendants}
-        self.d.process.kill()
-        self.d.process.wait(timeout=5)
+        bootstraps = {pid for pid in descendants
+                      if Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")[1:2] == [b"--docker-init"]}
+        # The bootstrap's forked namespace supervisors retain its argv. The
+        # outermost one alone retains cleanup authority and the lifetime leases.
+        guardians = [pid for pid in bootstraps
+                     if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1] not in bootstraps]
+        self.assertEqual(len(guardians), 1)
+        guardian = guardians[0]
+        guardian_fd = os.pidfd_open(int(guardian))
+        try:
+            # Hold teardown in place so GC runs after daemon death while the
+            # real guardian still owns both storage and session-resource leases.
+            signal.pidfd_send_signal(guardian_fd, signal.SIGSTOP)
+            self.d.wait(lambda: Path(f"/proc/{guardian}/stat").read_text().rsplit(")", 1)[1].split()[0] == "T")
+            self.d.process.kill()
+            self.d.process.wait(timeout=5)
+            result = self.d.cli("gc")
+            self.assertIn("Keeping active storage", result.stdout)
+            self.assertIn("Keeping active session resources", result.stdout)
+            self.assertTrue((self.d.state / session / "resources").exists())
+            self.assertTrue(list(self.storage.glob("session-*")))
+        finally:
+            try:
+                signal.pidfd_send_signal(guardian_fd, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+            os.close(guardian_fd)
 
         def dead(pid, start):
             try:
@@ -702,6 +750,8 @@ class DockerTests(unittest.TestCase):
 
         self.d.wait(lambda: all(dead(pid, start) for pid, start in identities.items()))
         self.d.wait(lambda: not list(self.storage.iterdir()))
+        self.d.cli("gc")
+        self.assertFalse((self.d.state / session).exists())
 
 
 if __name__ == "__main__":

@@ -7,9 +7,11 @@ from pathlib import Path
 import select
 import signal
 import socket
+import subprocess
+import sys
 import time
 import unittest
-from daemon_support import Daemon, RPC, frame, receive
+from daemon_support import Daemon, RPC, ROOT, frame, receive
 from terminal_support import Terminal, screen_wait
 
 class DaemonTests(unittest.TestCase):
@@ -214,5 +216,32 @@ class DaemonTests(unittest.TestCase):
         d.wait(lambda: d.rpc.call("permissions.get", {"request": record["id"]})["state"] == "withdrawn")
         fresh, record = d.pending(launch["session"]); self.addCleanup(fresh.close); d.decide(record, False)
         self.assertEqual(receive(fresh.peer)["result"]["status"], "denied")
+
+class ShutdownReapingTests(unittest.TestCase):
+    def test_shutdown_reaps_sandboxes_before_an_external_subreaper_runs(self):
+        # A host-job supervisor may not reap orphans until after the server
+        # returns. Leave that reaper idle and keep the existing PID-absence
+        # assertions, making incomplete sandbox reaping deterministic.
+        script = '''
+import ctypes
+import os
+from pathlib import Path
+import sys
+import unittest
+assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+suite = unittest.defaultTestLoader.loadTestsFromNames([
+    "test_server.ServerTests.test_background_start_status_logs_stop_and_restart",
+    "test_daemon.DaemonTests.test_postapproval_disconnect_and_normal_shutdown",
+])
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+for pid in Path(f"/proc/self/task/{os.getpid()}/children").read_text().split():
+    os.waitpid(int(pid), os.WNOHANG)
+sys.exit(not result.wasSuccessful())
+'''
+        env = {**os.environ, "PYTHONPATH": str(ROOT / "tests")}
+        result = subprocess.run([sys.executable, "-c", script], env=env, cwd=ROOT,
+                                text=True, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 
 if __name__ == "__main__": unittest.main(verbosity=2)

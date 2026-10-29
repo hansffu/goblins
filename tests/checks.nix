@@ -3,8 +3,11 @@
   goblinsLib,
   sandbox,
   agents,
-  # The demo goblins the dev shell and the Python tests use.
+  # The demo goblins the Python tests use.
   demo,
+  devShell,
+  # The dev-goblins package: the demo goblins with a Docker shell.
+  devGoblins,
 }:
 let
   inherit (goblinsLib.builders)
@@ -29,7 +32,7 @@ let
         ];
         allowedPackages = [ pkgs.coreutils ];
         env.GOBLIN_MARKER = "literal $HOME $(false)";
-        allowedChildren = [
+        allowedRunTargets = [
           "fishy"
           "utility"
         ];
@@ -50,7 +53,7 @@ let
             GOBLIN_MARKER = "utility";
             PS1 = "utility> ";
           };
-          allowedChildren = [ ];
+          allowedRunTargets = [ ];
         }
       );
     };
@@ -118,21 +121,34 @@ let
         );
       };
     }
+    {
+      scopes.work = mkScope { docker.enable = true; };
+      goblins = {
+        plain = mkGoblin (base // { scope = "work"; });
+        nix = mkGoblin (
+          base
+          // {
+            scope = "work";
+            allowNix = true;
+          }
+        );
+      };
+    }
   ]
   ++ [
-    { goblins.shell = mkGoblin (base // { allowedChildren = [ "missing" ]; }); }
+    { goblins.shell = mkGoblin (base // { allowedRunTargets = [ "missing" ]; }); }
     # Over the bound: 65 declared goblins, or a name longer than 64 characters.
     (
       let
         names = map (i: "g${toString i}") (pkgs.lib.range 1 65);
       in
       {
-        goblins = pkgs.lib.genAttrs names (_: mkGoblin (base // { allowedChildren = names; }));
+        goblins = pkgs.lib.genAttrs names (_: mkGoblin (base // { allowedRunTargets = names; }));
       }
     )
     {
       goblins = {
-        shell = mkGoblin (base // { allowedChildren = [ (pkgs.lib.fixedWidthString 65 "x" "") ]; });
+        shell = mkGoblin (base // { allowedRunTargets = [ (pkgs.lib.fixedWidthString 65 "x" "") ]; });
         ${pkgs.lib.fixedWidthString 65 "x" ""} = mkGoblin base;
       };
     }
@@ -174,8 +190,14 @@ let
     { description = ""; }
     { description = "two\nlines"; }
     { description = 1; }
-    { allowNix = true; }
+    { allowNix = "yes"; }
+    {
+      allowNix = true;
+      allowedDomains = [ ];
+    }
     { docker.enable = "yes"; }
+    { hostCommands.enable = "yes"; }
+    { hostCommands.unknown = true; }
     { docker.unknown = true; }
     { docker.defaultScope = "work"; }
     { docker.allowedScopes = [ "work" ]; }
@@ -215,15 +237,19 @@ let
       injectedFiles."same.conf" = "a";
       devShellInjectedFiles."same.conf" = "b";
     }
-    { allowedChildren = "bad"; }
+    { allowedRunTargets = "bad"; }
+    { allowedRunTargets = null; }
+    { bypassPermissions = "yes"; }
+    # A plain goblin has no agent prompts to bypass.
+    { bypassPermissions = true; }
     {
-      allowedChildren = [
+      allowedRunTargets = [
         "bad"
         "bad"
       ];
     }
-    { allowedChildren = [ "../bad" ]; }
-    { allowedChildren = [ 1 ]; }
+    { allowedRunTargets = [ "../bad" ]; }
+    { allowedRunTargets = [ 1 ]; }
     { resumeCommand = "--resume {session_id}"; }
     { resumeCommand = [ 1 ]; }
     { resumeCommand = [ "{Session}" ]; }
@@ -232,6 +258,34 @@ let
     { resumeCommand = [ "{session-id}" ]; }
     { resumeCommand = [ "{}" ]; }
     { resumeCommand = [ "{${pkgs.lib.fixedWidthString 33 "x" ""}}" ]; }
+    { resumeCommand = [ "{attach.pid}" ]; }
+    { onAttach = [ "client" ]; }
+    { onAttach.command = [ ]; }
+    { onAttach.command = [ "{attach.other}" ]; }
+    { onAttach.command = [ "{Bad}" ]; }
+    {
+      onAttach = {
+        command = [ "client" ];
+        timeout = 0;
+      };
+    }
+    {
+      onAttach = {
+        command = [ "client" ];
+        waitFor = [ "attach.pid" ];
+      };
+    }
+    {
+      onAttach = {
+        command = [ "client" ];
+        unknown = true;
+      };
+    }
+    { onDetach = [ "stop" ]; }
+    {
+      onAttach.command = [ "client" ];
+      onDetach = [ ];
+    }
   ];
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     if [[ "$1" == --version || "$1" == app-server ]]; then
@@ -271,8 +325,237 @@ in
         inherit pkgs agents;
         inherit (api) builders commonTools;
       };
+      scopes = import "${source}/nix/demo-goblins/scopes.nix" { inherit (api.builders) mkScope; };
     };
   demo-goblins = demo;
+  # Ordinary API/terminal tests need Fish semantics, not the demo's agent and
+  # developer tool closures. Keep the complete demo above for packaging and
+  # connected-shell coverage. Exec tests only need Bash and core utilities.
+  shell-goblins = mkGoblins {
+    goblins.shell = mkGoblin {
+      pkg = pkgs.fish;
+      binName = "fish";
+      args = [
+        "--no-config"
+        "--interactive"
+      ];
+      allowedPackages = [
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gnused
+      ];
+      allowedDomains = [ ];
+      allowedRunTargets = [ "shell" ];
+    };
+  };
+  exec-goblins = mkGoblins {
+    goblins.shell = mkGoblin {
+      pkg = pkgs.bashInteractive;
+      binName = "bash";
+      args = [
+        "--noprofile"
+        "--norc"
+        "-i"
+      ];
+      allowedPackages = [ pkgs.coreutils ];
+      allowedDomains = [ ];
+    };
+  };
+  # This output references jq without listing it in the sandbox's closure.
+  # GC coverage of an output must not grant visibility to every reference.
+  root-reference-fixture = pkgs.runCommand "goblins-root-reference-fixture" { } ''
+    mkdir $out
+    printf '%s\n' ${pkgs.coreutils} > $out/paths
+    printf '%s\n' ${pkgs.jq} > $out/unlisted
+  '';
+  # Every demo goblin may start the agents, also the dev package's shell in
+  # its dev scope, and no goblin may start goblins-dev.
+  demo-run-targets =
+    pkgs.runCommand "goblins-demo-run-targets" { nativeBuildInputs = [ pkgs.jq ]; }
+      ''
+        jq -e '.goblins as $g
+          | ($g | keys) == ["claude", "codex", "goblins-dev", "shell"]
+          and all($g[]; .allowed_run_targets == ["claude", "codex"])
+          and $g.shell.scope == "dev"
+          and ($g.claude.scopes | has("dev")) and ($g.codex.scopes | has("dev"))
+          and ($g.claude.host_commands | not) and ($g.codex.host_commands | not)
+          and $g["goblins-dev"].host_commands' ${devGoblins.config}
+        touch $out
+      '';
+  # The launchers ask the agent to skip its own prompts only with
+  # bypassPermissions; Codex keeps full access either way (Goblins is the
+  # sandbox) and gets "never" only when bypassing.
+  agent-permissions =
+    let
+      claude = import ../nix/goblins/claude { inherit pkgs; };
+      codex = import ../nix/goblins/codex { inherit pkgs; };
+      launchers = bypassPermissions: {
+        claude = claude.mkLauncher {
+          pkg = agents.claude-code;
+          binName = "claude";
+          claudeConfigDir = "$HOME/.claude";
+          inherit (claude) plugin;
+          inherit bypassPermissions;
+        };
+        codex = codex.mkLauncher {
+          pkg = agents.codex;
+          binName = "codex";
+          codexConfigDir = "$HOME/.codex";
+          filterUnavailableMcp = false;
+          inherit bypassPermissions;
+        };
+      };
+      own = launchers false;
+      bypass = launchers true;
+    in
+    pkgs.runCommand "goblins-agent-permissions" { } ''
+      # `! grep` would not stop the build under set -e.
+      if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
+      grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
+      for launcher in ${own.codex} ${bypass.codex}; do
+        # `codex` on PATH runs its own engine with full access.
+        grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher/bin/codex
+        grep -q -- "-c 'sandbox_mode=\"danger-full-access\"'" $launcher/bin/goblins-codex-server
+        # The terminal joins the conversation as it is; the adapter set its policy.
+        if grep -Eq -- '--sandbox|--ask-for-approval' $launcher/bin/goblins-codex-attach; then exit 1; fi
+      done
+      if grep -q -e 'approval_policy=' -e '--ask-for-approval never' -e --bypass-permissions ${own.codex}/bin/codex ${own.codex}/bin/goblins-codex-server; then exit 1; fi
+      grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access --ask-for-approval never --enable hooks' ${bypass.codex}/bin/codex
+      grep -q -- "-c 'approval_policy=\"never\"'" ${bypass.codex}/bin/goblins-codex-server
+      grep -Fq -- '"''${thread[@]}" --bypass-permissions' ${bypass.codex}/bin/goblins-codex-server
+      touch $out
+    '';
+  # The Claude mod as Claude Code loads it: its manifest and hooks module
+  # validate, and its tests (kept out of the plugin) pass against the engine.
+  claude-mod =
+    let
+      inherit (import ../nix/goblins/claude { inherit pkgs; }) plugin;
+    in
+    pkgs.runCommand "goblins-claude-mod"
+      {
+        nativeBuildInputs = [ agents.claude-code ];
+      }
+      ''
+        export HOME=$TMPDIR/home DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1
+        mkdir -p $HOME
+        cp -r ${plugin} $TMPDIR/plugin
+        chmod -R u+w $TMPDIR/plugin
+        cp ${plugin.source}/hooks/*.test.tsx $TMPDIR/plugin/hooks/
+        test -x $TMPDIR/plugin/bin/goblins-claude-message
+        test -x $TMPDIR/plugin/bin/goblins-claude
+        claude plugin validate $TMPDIR/plugin > validate.log 2>&1 || { cat validate.log; exit 1; }
+        grep -F 'hooks: session.start' validate.log
+        claude plugin test $TMPDIR/plugin 2>&1 | tee test.log
+        grep -Eq '^ *[1-9][0-9]* pass$' test.log
+        grep -Eq '^ *0 fail$' test.log
+        touch $out
+      '';
+  # Each feature set gets its own skills, and none of them presents a
+  # workflow the sandbox doesn't have (tests/test_*_config.py check the mounts).
+  skill-selection =
+    let
+      inherit (pkgs) lib;
+      variants = {
+        claude = mkClaudeGoblin { };
+        claude-nix = mkClaudeGoblin { allowNix = true; };
+        codex = mkCodexGoblin { };
+        codex-nix = mkCodexGoblin { allowNix = true; };
+        claude-host = mkClaudeGoblin {
+          allowNix = true;
+          hostCommands.enable = true;
+        };
+        codex-host = mkCodexGoblin { hostCommands.enable = true; };
+      };
+      directory =
+        name: if lib.hasPrefix "claude" name then "claude-code/.claude/skills" else "codex/skills";
+      skills =
+        name: files:
+        lib.sort (a: b: a < b) (
+          lib.concatMap (
+            file:
+            let
+              m = builtins.match "${directory name}/([^/]+)/SKILL.md" file;
+            in
+            lib.optional (m != null) (builtins.head m)
+          ) (builtins.attrNames files)
+        );
+      always = name: skills name variants.${name}.goblin.sandbox_etc;
+      devShell = name: skills name variants.${name}.goblin.dev_shell_sandbox_etc;
+      expected = {
+        claude = [
+          "goblins-docker"
+          "goblins-messaging"
+          "goblins-packages"
+          "goblins-raids"
+          "goblins-spawn"
+        ];
+        claude-nix = [
+          "goblins-docker"
+          "goblins-messaging"
+          "goblins-nix"
+          "goblins-raids"
+          "goblins-spawn"
+        ];
+      };
+      settings = name: variants.${name}.goblin.sandbox_etc."claude-code/managed-settings.json";
+      installed =
+        name:
+        lib.concatStringsSep " " (
+          lib.mapAttrsToList (_: file: "${file}") (
+            lib.filterAttrs (file: _: lib.hasSuffix "SKILL.md" file) variants.${name}.goblin.sandbox_etc
+          )
+        );
+    in
+    assert always "claude" == expected.claude && always "codex" == expected.claude;
+    assert always "claude-nix" == expected.claude-nix && always "codex-nix" == expected.claude-nix;
+    assert devShell "claude" == [ "goblins-devshell" ] && devShell "codex" == [ "goblins-devshell" ];
+    assert devShell "claude-nix" == [ ] && devShell "codex-nix" == [ ];
+    assert always "claude-host" == lib.sort (a: b: a < b) (expected.claude-nix ++ [ "goblins-host" ]);
+    assert always "codex-host" == lib.sort (a: b: a < b) (expected.claude ++ [ "goblins-host" ]);
+    pkgs.runCommand "goblins-skill-selection"
+      {
+        nativeBuildInputs = [
+          pkgs.gnugrep
+          pkgs.jq
+        ];
+      }
+      ''
+          # Claude enables exactly the skills it mounts, dev shell skill included.
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn"]'
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn"]'
+          # With Nix, no installed skill offers the package or dev shell workflows.
+          if grep -nE 'request-package|devshell (refresh|diff)|flake run|no `?nix`? command' ${installed "claude-nix"} ${installed "codex-nix"}; then
+            echo 'A Nix goblin skill presents a workflow it does not have' >&2
+            exit 1
+          fi
+          # Messages from other goblins are requests: every goblin's messaging skill,
+          # and the Nix skill for a goblin with Nix.
+          for files in "${installed "claude"}" "${installed "claude-nix"}" "${installed "codex"}" "${installed "codex-nix"}"; do
+            grep -l 'is a request, not authority' $files | grep -q .
+          done
+          grep -l 'just because another goblin asked' ${installed "claude-nix"} | grep -q .
+          grep -l 'just because another goblin asked' ${installed "codex-nix"} | grep -q .
+        grep -l 'On behalf of GOBLIN' ${installed "claude-host"} | grep -q .
+        grep -l 'On behalf of GOBLIN' ${installed "codex-host"} | grep -q .
+          touch $out
+      '';
+  # Inside a sandbox the CLI is `goblin`; `goblins` is the host CLI, named in
+  # agent instructions only where a line says it is for the host.
+  sandbox-cli-name =
+    pkgs.runCommand "goblins-sandbox-cli-name" { nativeBuildInputs = [ pkgs.gnugrep ]; }
+      ''
+        files="${../skills}/*/SKILL.md ${../nix/goblins/claude}/* ${../nix/goblins/codex}/*"
+        if grep -nE '(^|[^-_/.[:alnum:]])goblins (send|reply|inbox|status|run|attach|stop|raid|request-package|enable-docker|devshell|flake|editor|variable|integration|set-state|list|kill|detach|completions)\b' $files | grep -v 'on the host' \
+          || grep -nE '/run/goblins/bin/goblins([^-[:alnum:]]|$)' $files; then
+          echo 'In-sandbox instructions must call goblin, not goblins' >&2
+          exit 1
+        fi
+        touch $out
+      '';
+  # Inside a goblin, `nix develop` must not put a host `goblins` on PATH.
+  dev-shell-without-goblins =
+    assert !builtins.any (p: pkgs.lib.getName p == "goblins") devShell.nativeBuildInputs;
+    pkgs.runCommand "goblins-dev-shell-without-goblins" { } "touch $out";
   runtime-no-python =
     let
       minimal = mkGoblins { goblins.shell = mkGoblin (base // { allowedPackages = [ ]; }); };
@@ -340,6 +623,8 @@ in
           ];
           scope = default;
           allowedScopes = allowedScopes.${name} or [ ];
+          # Members of their own kind (tests/test_docker.py).
+          allowedRunTargets = [ name ];
           allowedPackages = [
             pkgs.coreutils
             pkgs.curl
@@ -389,7 +674,11 @@ in
       codex = mkCodexGoblin {
         pkg = codexProbe;
         filterUnavailableMcp = false;
-        args = [ "literal $(false) argument" ];
+        args = [
+          "-c"
+          ''model="literal $(false) {model}"''
+        ];
+        allowedRunTargets = [ "codex" ];
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -406,6 +695,8 @@ in
         );
         allowedDomains = [ ];
         allowedPackages = [ pkgs.python3 ];
+        # A member of its own kind (test_owner_and_member_servers_have_independent_bindings).
+        allowedRunTargets = [ "notifier" ];
       };
       profile = mkCodexGoblin {
         pkg = pkgs.writeScriptBin "codex" (
@@ -424,6 +715,16 @@ in
           "plugins"
         ];
       };
+      # Nix workflows instead of package grants (test_*_config.py).
+      nix = mkCodexGoblin {
+        pkg = codexProbe;
+        filterUnavailableMcp = false;
+        allowNix = true;
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+      };
       custom = mkCodexGoblin {
         pkg = codexProbe;
         filterUnavailableMcp = false;
@@ -436,26 +737,8 @@ in
       native = mkCodexGoblin {
         filterUnavailableMcp = true;
         allowedDomains = [ ];
-        args = [
-          "login"
-          "status"
-        ];
-        allowedPackages = [ ];
-      };
-      native-ui = mkCodexGoblin {
-        allowedDomains = [ ];
-        args = [ "--no-alt-screen" ];
-        allowedPackages = [ ];
-      };
-      native-mcp = mkCodexGoblin {
-        filterUnavailableMcp = true;
-        allowedDomains = [ ];
-        args = [
-          "mcp"
-          "list"
-          "--json"
-        ];
-        allowedPackages = [ ];
+        # The scripted model for `codex exec` (test_codex_config.py).
+        allowedPackages = [ pkgs.python3 ];
       };
     };
   };
@@ -464,6 +747,7 @@ in
       claude = mkClaudeGoblin {
         pkg = claudeProbe;
         args = [ "literal $(false) argument" ];
+        allowedRunTargets = [ "claude" ];
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -472,9 +756,19 @@ in
         env.GOBLINS_TEST_MARKER = "inherited";
         injectedFiles."goblins-test.conf" = "sandbox-only\n";
       };
+      # Nix workflows instead of package grants (test_*_config.py).
+      nix = mkClaudeGoblin {
+        pkg = claudeProbe;
+        allowNix = true;
+        allowedPackages = [
+          pkgs.coreutils
+          pkgs.jq
+        ];
+      };
       custom = mkClaudeGoblin {
         pkg = claudeProbe;
         claudeConfigDir = "\${HOME}/custom claude";
+        bypassPermissions = true;
         allowedPackages = [
           pkgs.coreutils
           pkgs.jq
@@ -485,8 +779,20 @@ in
           "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_claude.py
         );
         allowedDomains = [ ];
+        # The tests read the fake's monitor lines with cat.
+        allowedPackages = [ pkgs.coreutils ];
+        env.GOBLINS_TEST_COMPOSER = "  ❯ ";
+      };
+      # Host command notices (tests/test_operation_notices.py).
+      host-notifier = mkClaudeGoblin {
+        pkg = pkgs.writeScriptBin "claude" (
+          "#!${pkgs.python3}/bin/python3\n" + builtins.readFile ./fake_claude.py
+        );
+        allowedDomains = [ ];
         allowedPackages = [ ];
         env.GOBLINS_TEST_COMPOSER = "  ❯ ";
+        hostCommands.enable = true;
+        rwDirs = [ "$HOME/shared" ];
       };
     };
   };
@@ -564,8 +870,12 @@ in
             "private"
           ];
           env.OVERRIDDEN = "from-goblin";
+          allowedRunTargets = [ "member" ];
         };
-        loner = member { allowedScopes = [ "work" ]; };
+        loner = member {
+          allowedScopes = [ "work" ];
+          allowedRunTargets = [ "member" ];
+        };
         builder = member {
           scope = "builds";
           rwDirs = [ "$GOBLINS_TEST_ROOT/projects" ];
@@ -593,6 +903,7 @@ in
           VISUAL = "custom-visual";
         };
         allowedScopes = [ "work" ];
+        allowedRunTargets = [ "plain" ];
       };
     };
   };
@@ -611,6 +922,7 @@ in
           pkgs.curl
         ];
         env.PS1 = "network-test> ";
+        allowedRunTargets = [ "online" ];
       };
       offline = mkGoblin {
         pkg = pkgs.bashInteractive;
@@ -629,8 +941,77 @@ in
       };
     };
   };
-  # Different child configurations (tests/test_ownership.py).
-  children-goblins =
+  # Host commands, approved and run outside the sandbox
+  # (tests/test_host_commands.py).
+  host-goblins =
+    let
+      member =
+        options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [ pkgs.coreutils ];
+            env.PS1 = "host-test> ";
+          }
+          // options
+        );
+    in
+    mkGoblins {
+      goblins = {
+        host = member {
+          hostCommands.enable = true;
+          allowedRunTargets = [
+            "host"
+            "plain"
+          ];
+        };
+        plain = member { };
+      };
+    };
+  # allowNix against the host's Nix daemon (tests/test_nix.py).
+  nix-goblins =
+    let
+      member =
+        options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [ pkgs.coreutils ];
+          }
+          // options
+        );
+    in
+    mkGoblins {
+      goblins = {
+        nix = member {
+          allowNix = true;
+          allowedRunTargets = [
+            "nix"
+            "plain"
+          ];
+          env = {
+            PS1 = "nix-test> ";
+            # Evaluated and built inside the sandbox; already in the host store.
+            NIXPKGS = "${pkgs.path}";
+          };
+        };
+        plain = member { env.PS1 = "nix-test> "; };
+      };
+    };
+  # Raid members with other configurations (tests/test_run_targets.py).
+  run-target-goblins =
     let
       member =
         name: options:
@@ -643,14 +1024,14 @@ in
               "--norc"
               "-i"
             ];
-            description = "${name} child configuration";
+            description = "${name} run target";
             allowedPackages = [ pkgs.coreutils ];
             allowedScopes = [ "work" ];
             env = {
-              CHILD_MARKER = name;
-              PS1 = "children-test> ";
+              TARGET_MARKER = name;
+              PS1 = "run-target-test> ";
             };
-            injectedFiles."children-test.conf" = "${name}\n";
+            injectedFiles."run-target-test.conf" = "${name}\n";
           }
           // options
         );
@@ -674,7 +1055,7 @@ in
       };
       goblins = {
         coordinator = member "coordinator" {
-          allowedChildren = [
+          allowedRunTargets = [
             "coordinator"
             "reviewer"
             "shell"
@@ -683,28 +1064,22 @@ in
           ];
         };
         reviewer = member "reviewer" {
-          allowedChildren = [ ];
+          allowedRunTargets = [ ];
           rwDirs = [ "$GOBLINS_TEST_ROOT/reviewer" ];
-          # Only the reviewer's closure has cowsay, which shows that the
-          # branch retained it rather than the root's own roots.
-          allowedPackages = [
-            pkgs.coreutils
-            pkgs.cowsay
-          ];
         };
-        shell = member "shell" { allowedChildren = [ "reviewer" ]; };
+        shell = member "shell" { allowedRunTargets = [ "reviewer" ]; };
         unlisted = member "unlisted" { };
         broken = member "broken" { roDirs = [ "$GOBLINS_TEST_ROOT/missing" ]; };
         unscoped = member "unscoped" { allowedScopes = [ ]; };
-        # Attached at start; its "plain" children attach through it.
+        # Attached at start; the "plain" members it runs attach through it.
         attached = member "attached" (docker {
           docker.enable = true;
-          allowedChildren = [ "plain" ];
+          allowedRunTargets = [ "plain" ];
         });
         plain = member "plain" (docker { });
-        # Not attached; its "eager" children attach through their own option.
+        # Not attached; the "eager" members it runs attach through their own option.
         detached = member "detached" (docker {
-          allowedChildren = [ "eager" ];
+          allowedRunTargets = [ "eager" ];
         });
         eager = member "eager" (docker {
           docker.enable = true;
@@ -712,43 +1087,43 @@ in
       };
     };
   # A rebuild that removed every configuration but the coordinator.
-  children-goblins-updated = mkGoblins {
+  run-target-goblins-updated = mkGoblins {
     goblins.coordinator = mkGoblin (
       base
       // {
-        allowedChildren = [ ];
-        env.CHILD_MARKER = "updated";
+        allowedRunTargets = [ ];
+        env.TARGET_MARKER = "updated";
       }
     );
   };
-  allowed-children-manifest =
+  run-targets-manifest =
     let
       manifest = mkGoblins {
         scopes.work = mkScope { };
         goblins = {
           claude = mkClaudeGoblin {
             pkg = claudeProbe;
-            allowedChildren = [
+            allowedRunTargets = [
               "claude"
               "codex"
             ];
           };
           codex = mkCodexGoblin {
             pkg = codexProbe;
-            allowedChildren = [ ];
+            allowedRunTargets = [ ];
           };
           shell = mkGoblin (base // { allowedScopes = [ "work" ]; });
         };
       };
     in
-    pkgs.runCommand "goblins-allowed-children-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
-      # Resolved on top-level configurations (omitted means only itself) and
-      # never carried by scope variants.
-      jq -e '.api == 2 and .helper_api == 5
-        and .goblins.claude.allowed_children == ["claude", "codex"]
-        and .goblins.codex.allowed_children == []
-        and .goblins.shell.allowed_children == ["shell"]
-        and (.goblins.shell.scopes.work | has("allowed_children") | not)' ${manifest.config}
+    pkgs.runCommand "goblins-run-targets-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      # Resolved on top-level configurations (omitted means none) and never
+      # carried by scope variants.
+      jq -e '.api == 2 and .helper_api == 6
+        and .goblins.claude.allowed_run_targets == ["claude", "codex"]
+        and .goblins.codex.allowed_run_targets == []
+        and .goblins.shell.allowed_run_targets == []
+        and (.goblins.shell.scopes.work | has("allowed_run_targets") | not)' ${manifest.config}
       touch $out
     '';
   cli-completions =
@@ -759,9 +1134,20 @@ in
           pkgs.fish
           pkgs.zsh
           pkgs.gnugrep
+          pkgs.diffutils
         ];
       }
       ''
+        # Keep installation verification outside the incremental Cargo loop.
+        # Check exact installed contents for all three shells, not just syntax.
+        for entry in \
+          'bash share/bash-completion/completions/goblins' \
+          'fish share/fish/vendor_completions.d/goblins.fish' \
+          'zsh share/zsh/site-functions/_goblins'; do
+          read -r shell relative <<< "$entry"
+          ${configured}/bin/goblins completions "$shell" > generated
+          cmp generated "${configured}/$relative"
+        done
         bash -n ${configured}/share/bash-completion/completions/goblins
         zsh -n ${configured}/share/zsh/site-functions/_goblins
         fish --no-config -c 'source ${configured}/share/fish/vendor_completions.d/goblins.fish; complete -C "goblins run "' > candidates
@@ -846,8 +1232,47 @@ in
     assert (mkGoblin (base // { scope = "work"; })).goblin.scope == "work";
     assert (mkCodexGoblin { allowedScopes = [ "work" ]; }).goblin.allowed_scopes == [ "work" ];
     assert (mkClaudeGoblin { scope = "work"; }).goblin.scope == "work";
-    assert (mkGoblin base).goblin.allowed_children == null;
+    assert (mkGoblin base).goblin.allowed_run_targets == [ ];
+    assert !(mkGoblin base).goblin.bypass_permissions;
+    assert !(mkClaudeGoblin { }).goblin.bypass_permissions;
+    assert (mkCodexGoblin { bypassPermissions = true; }).goblin.bypass_permissions;
     assert (mkGoblin base).goblin.resume_command == null;
+    assert (mkGoblin base).goblin.on_attach == null;
+    assert
+      (
+        let
+          goblin =
+            (mkGoblin (
+              base
+              // {
+                onAttach.command = [
+                  "client"
+                  "{session_id}"
+                ];
+                onDetach = [
+                  "stop"
+                  "{attach.pid}"
+                ];
+              }
+            )).goblin;
+        in
+        {
+          inherit (goblin) on_attach on_detach;
+        }
+      ) == {
+        on_attach = {
+          command = [
+            "client"
+            "{session_id}"
+          ];
+          timeout = 30;
+          wait_for = [ ];
+        };
+        on_detach = [
+          "stop"
+          "{attach.pid}"
+        ];
+      };
     assert
       (mkGoblin (
         base
@@ -873,9 +1298,44 @@ in
       }).goblin.resume_command == [
         "-c"
         "mcp_servers.x={{command=\"y\"}}"
-        "resume"
+        "--thread"
         "{session_id}"
       ];
+    # A Codex goblin's args are App Server options, and it starts a client at
+    # each attach on the conversation its adapter recorded.
+    assert
+      builtins.all
+        (args: !(builtins.tryEval (mkCodexGoblin { inherit args; }).goblin.build_spec.drvPath).success)
+        [
+          [ "prompt" ]
+          [ "resume" ]
+          [ "-c" ]
+          [ "--sandbox" "read-only" ]
+          [ "--ask-for-approval" "never" ]
+          [ "--no-alt-screen" ]
+        ];
+    assert
+      (mkCodexGoblin {
+        args = [
+          "-p"
+          "work"
+          "--enable=plugins"
+          "-cmodel=\"x\""
+        ];
+      }).goblin.args == [
+        "-p"
+        "work"
+        "--enable=plugins"
+        "-cmodel=\"x\""
+      ];
+    assert
+      (
+        let
+          command = (mkCodexGoblin { }).goblin.on_attach.command;
+        in
+        pkgs.lib.hasSuffix "/bin/goblins-codex-attach" (builtins.head command)
+        && builtins.tail command == [ "{session_id}" ]
+      );
     assert
       (mkClaudeGoblin {
         args = [
@@ -888,12 +1348,13 @@ in
         "--resume"
         "{session_id}"
       ];
-    assert (mkClaudeGoblin { allowedChildren = [ "codex" ]; }).goblin.allowed_children == [ "codex" ];
-    assert (mkCodexGoblin { allowedChildren = [ ]; }).goblin.allowed_children == [ ];
+    assert
+      (mkClaudeGoblin { allowedRunTargets = [ "codex" ]; }).goblin.allowed_run_targets == [ "codex" ];
+    assert (mkCodexGoblin { allowedRunTargets = [ ]; }).goblin.allowed_run_targets == [ ];
     # Not a scope default: a scope variant keeps the goblin's own value.
     assert
-      ((mkGoblin (base // { allowedChildren = [ "x" ]; })).withScopeDefaults { }).goblin.allowed_children
-      == [ "x" ];
+      ((mkGoblin (base // { allowedRunTargets = [ "x" ]; })).withScopeDefaults { })
+      .goblin.allowed_run_targets == [ "x" ];
     assert
       let
         merged =
@@ -935,6 +1396,33 @@ in
         m2 = "/var/cache/m2";
       };
     assert ((mkClaudeGoblin { }).withScopeDefaults { env.FROM_SCOPE = "1"; }).goblin.env ? FROM_SCOPE;
+    assert (mkGoblin (base // { allowNix = true; })).goblin.nix;
+    # Without Docker, a scope may mix goblins with and without Nix.
+    assert
+      !rejected {
+        scopes.work = mkScope { };
+        goblins = {
+          plain = mkGoblin (base // { scope = "work"; });
+          nix = mkGoblin (
+            base
+            // {
+              scope = "work";
+              allowNix = true;
+            }
+          );
+        };
+      };
+    assert !(mkGoblin base).goblin.nix;
+    assert !((mkGoblin base).goblin.env ? NIX_CONFIG);
+    assert pkgs.lib.hasInfix "flakes" (mkGoblin (base // { allowNix = true; })).goblin.env.NIX_CONFIG;
+    assert
+      (mkGoblin (
+        base
+        // {
+          allowNix = true;
+          env.NIX_CONFIG = "own";
+        }
+      )).goblin.env.NIX_CONFIG == "own";
     assert !(mkGoblin base).goblin.docker.enabled;
     assert (mkGoblin (base // { docker.enable = true; })).goblin.docker.enabled;
     assert (mkGoblin base).goblin.network;
@@ -943,6 +1431,7 @@ in
       (options: !(builtins.tryEval (mkCodexGoblin options).goblin.build_spec.drvPath).success)
       [
         { codexConfigDir = null; }
+        { bypassPermissions = "yes"; }
         { codexConfigDir = "relative"; }
         { env.CODEX_HOME = "/different"; }
         { injectedFiles."codex/config.toml" = "override"; }
@@ -958,6 +1447,7 @@ in
       (options: !(builtins.tryEval (mkClaudeGoblin options).goblin.build_spec.drvPath).success)
       [
         { claudeConfigDir = null; }
+        { bypassPermissions = "yes"; }
         { claudeConfigDir = "relative"; }
         { env.CLAUDE_CONFIG_DIR = "/different"; }
         { injectedFiles."claude-code/managed-settings.json" = "override"; }

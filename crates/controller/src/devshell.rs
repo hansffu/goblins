@@ -450,7 +450,7 @@ pub fn check_lock(current: &DevShell) -> Result<()> {
     let workspace = read_lock(&current.path).map_err(|e| {
         format!(
             "{e}\n  flake.lock must be the trusted lock for this sandbox\n  \
-             revert: goblins devshell restore-lock"
+             revert: goblin devshell restore-lock"
         )
     })?;
     if workspace == current.lock {
@@ -460,8 +460,8 @@ pub fn check_lock(current: &DevShell) -> Result<()> {
     changed_paths(&current.lock, &workspace, "", &mut changed, 5);
     Err(format!(
         "flake.lock differs from the trusted lock for this sandbox\n  changed: {}\n  \
-         revert:  goblins devshell restore-lock\n  \
-         then:    goblins devshell refresh --update INPUT (or --lock for new inputs)",
+         revert:  goblin devshell restore-lock\n  \
+         then:    goblin devshell refresh --update INPUT (or --lock for new inputs)",
         changed.join(", ")
     )
     .into())
@@ -586,8 +586,8 @@ pub fn candidate(
     )
     .map_err(|e| {
         format!(
-            "{e}\n  lock new inputs: goblins devshell refresh --lock\n  \
-             update inputs:   goblins devshell refresh --update [INPUT...]"
+            "{e}\n  lock new inputs: goblin devshell refresh --lock\n  \
+             update inputs:   goblin devshell refresh --update [INPUT...]"
         )
     })?;
     if relock {
@@ -750,7 +750,7 @@ pub fn app(
     if root != current.source {
         return Err(format!(
             "the workspace flake differs from dev shell generation {}; flake run uses \
-             the trusted generation only\n  first: goblins devshell refresh --reason TEXT",
+             the trusted generation only\n  first: goblin devshell refresh --reason TEXT",
             current.generation
         )
         .into());
@@ -1382,13 +1382,29 @@ fn preview(
 /// Nix prints trace frames before the actual error; lead with the latter so
 /// bounded diagnostics keep it.
 pub(crate) fn cause(message: &str) -> String {
-    match message
-        .rfind("\nerror:")
-        .or_else(|| message.rfind("       error:"))
-    {
-        Some(at) => message[at..].trim().to_string(),
-        None => message.to_string(),
+    // Ignore empty trace headers. Prefer the least-indented meaningful error,
+    // then the last at that level: nested tool output or a multiline throw must
+    // not replace its enclosing error. Nix also indents genuine final causes.
+    let mut selected = None;
+    for (at, _) in message.match_indices("error:") {
+        let prefix = message[..at].rsplit('\n').next().unwrap();
+        if !prefix.trim().is_empty()
+            || message[at + "error:".len()..]
+                .lines()
+                .next()
+                .is_none_or(|line| line.trim().is_empty())
+        {
+            continue;
+        }
+        let indent = prefix.len();
+        if selected.is_none_or(|(level, _)| indent <= level) {
+            selected = Some((indent, at));
+        }
     }
+    selected.map_or_else(
+        || message.to_string(),
+        |(_, at)| message[at..].trim().to_string(),
+    )
 }
 
 fn variable_name(name: &str) -> bool {
@@ -1655,6 +1671,37 @@ mod tests {
         let message = "host command failed (exit status: 1): error:\n       … while x\n\n       error: path '/tmp/x' does not exist\n";
         assert_eq!(cause(message), "error: path '/tmp/x' does not exist");
         assert_eq!(cause("plain"), "plain");
+        for indentation in ["", "  ", "       "] {
+            let message = format!(
+                "host command failed: warning: ignored setting\nerror:\n{}\n{indentation}error: cannot build during evaluation: allow-import-from-derivation is disabled\n",
+                "trace context ".repeat(60)
+            );
+            assert_eq!(
+                cause(&message),
+                "error: cannot build during evaluation: allow-import-from-derivation is disabled"
+            );
+        }
+    }
+
+    #[test]
+    fn cause_keeps_the_enclosing_error_before_nested_output() {
+        for (message, expected) in [
+            (
+                "error: builder failed\n  error: misleading tool diagnostic\n",
+                "error: builder failed\n  error: misleading tool diagnostic",
+            ),
+            // Reproduced with nix eval --show-trace and a multiline throw.
+            (
+                "error:\n       … while calling the 'throw' builtin\n\n       error: outer failure\n         error: inner tool log\n",
+                "error: outer failure\n         error: inner tool log",
+            ),
+            (
+                "error: first failure\nerror: final failure\n  error: nested detail\n",
+                "error: final failure\n  error: nested detail",
+            ),
+        ] {
+            assert_eq!(cause(message), expected);
+        }
     }
 
     #[test]

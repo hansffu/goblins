@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader};
 
 #[test]
 fn profiles_preserve_path_precedence_across_duplicate_commands() {
-    let fixture = SessionDirectory(unix::temp_directory().unwrap());
+    let fixture = SessionDirectory::new(unix::temp_directory().unwrap()).unwrap();
     let package = |name: &str, commands: &[&str]| {
         let path = fixture.0.join(name);
         fs::create_dir_all(path.join("bin")).unwrap();

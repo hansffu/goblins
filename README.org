@@ -11,7 +11,7 @@ This is a personal experiment, built with substantial AI-generated code. It is m
 Goblins runs shells and coding agents (Codex, Claude Code) in Linux sandboxes, called /goblins/. A goblin starts with a small, fixed set of packages. When it needs another tool, it asks for it:
 
 #+begin_src sh
-goblins request-package jq --reason "Parse the API response"
+goblin request-package jq --reason "Parse the API response"
 #+end_src
 
 You approve or deny the request in a terminal UI or in Emacs, and an approved package appears inside the running sandbox at once, without restarting it.
@@ -22,7 +22,9 @@ Around that, Goblins provides:
 - *Agent integration*: Codex and Claude Code run with sandbox-only hooks and skills, so they know how to request packages, start helpers and message each other.
 - *Scopes*: trust groups of goblins sharing a network, caches and optionally a rootless Docker engine.
 - *Flake dev shells*: start a goblin inside a project's =nix develop= environment, and approve changes to it.
-- *Children and raids*: goblins can start other goblins and message each other.
+- *Nix access* (=allowNix=): a goblin can run ordinary =nix= commands against the host's Nix daemon instead of requesting packages (see [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]]).
+- *Host commands* (=hostCommands.enable=): a goblin can ask to run a command on the host, outside its sandbox, once you approve it (see [[file:docs/USAGE.org::*Host commands][Host commands]]).
+- *Raids*: goblins group into raids to message each other, and a raid's owner can run more goblins into it.
 - *Emacs integration*: approvals, a workspace with each goblin's terminals, and TRAMP access to files inside sandboxes.
 
 A few terms used below:
@@ -124,13 +126,13 @@ goblins run shell --name snikk
 Inside the sandbox, request a package, approve it in the TUI, then use it:
 
 #+begin_src fish
-goblins request-package cowsay --reason "Try a live package grant"
+goblin request-package cowsay --reason "Try a live package grant"
 cowsay hello
 #+end_src
 
 The directory you start a goblin in is shared with it read-write, at the same path, so the goblin's edits are your files. In the TUI, Tab switches between sandboxes and requests, =y= / =n= approve or deny the selected request, and =q= closes the TUI while goblins keep running.
 
-To try Goblins from a checkout without configuring anything, =nix develop= puts a =goblins= with demo configurations on =PATH= (see [[file:docs/README.org][the developer docs]]).
+To try Goblins from a checkout without configuring anything, =nix shell .#dev-goblins= puts a =goblins= with demo configurations on =PATH= (see [[file:docs/README.org][the developer docs]]).
 
 * Configuring goblins
 
@@ -146,19 +148,28 @@ To try Goblins from a checkout without configuring anything, =nix develop= puts 
 | =allowedDomains=                   | =null= (default): open internet; =[]=: no network. Domain filtering is not supported |
 | =injectedFiles=                    | Files placed read-only under =/etc= inside the sandbox                             |
 | =scope=, =allowedScopes=, =docker=     | See [[*Scopes][Scopes]] and [[*Docker][Docker]]                                                            |
-| =allowedChildren=                  | See [[*Children and raids][Children and raids]]                                                           |
+| =allowNix=, =hostCommands=           | Ordinary =nix= commands; approved commands on the host. See [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]] and [[file:docs/USAGE.org::*Host commands][Host commands]] |
+| =allowedRunTargets=                | See [[*Raids][Raids]]                                                                         |
 
 The rest of the home directory inside a sandbox is private and temporary. See the [[file:docs/USAGE.org::*Nix API][Nix API reference]] for all options and limits.
+
+** A goblin for developing Goblins
+
+The =goblins-dev= demo goblin (=nix/demo-goblins/=) is set up for working on Goblins itself: Claude Code with =allowNix= and =hostCommands.enable=, in a =goblins-dev= scope whose storage keeps =$HOME/.cargo= and =$HOME/.cache/nix= between sessions, and =claude= and =codex= as run targets, which join that scope. To use the same setup from your own configuration, copy that goblin and =nix/demo-goblins/scopes.nix=; without the scope, Cargo and the Nix fetcher download everything again in every session. See [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]].
 
 ** Codex and Claude Code
 
 =mkCodexGoblin= and =mkClaudeGoblin= accept the =mkGoblin= options and add:
 
 - A writable mount of your agent config directory (=codexConfigDir=, default =$HOME/.codex=; =claudeConfigDir=, default =$HOME/.claude=), so the agent uses your existing login. The directory must exist. Use a string, not a Nix path, or your credentials would be copied into the Nix store.
-- Hooks and skills mounted only inside the sandbox, under =/etc=. They teach the agent to request packages, enable Docker, start child goblins and exchange messages. Your own agent configuration is not modified.
+- Hooks and skills mounted only inside the sandbox, under =/etc=. They teach the agent to request packages, enable Docker, run other goblins into its raid and exchange messages. Your own agent configuration is not modified.
 - =codexSettings= / =claudeSettings= for extra sandbox-only agent settings, for example =codexSettings.model_reasoning_effort = "high";= or =claudeSettings.model = "sonnet";=.
 
-The agents run without their own permission prompts (Codex with =--sandbox danger-full-access --ask-for-approval never=, Claude Code with =--dangerously-skip-permissions=); Goblins is the sandbox and approves packages. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
+- =bypassPermissions = true;= to run the agent without its own permission prompts: Claude Code with =--dangerously-skip-permissions=, Codex with the approval policy =never=. It is off by default, and then Goblins asks for no bypass: the agent's own settings decide, such as =permissions.defaultMode= in your Claude settings or =claudeSettings=, or =approval_policy= in your Codex config or =codexSettings=.
+
+Goblins is the sandbox either way, so Codex always runs with full access inside it (its own sandbox cannot run inside a goblin). That makes Codex's default approval policy, =on-request=, leave asking to the model: without bypass, Codex rarely prompts, while Claude Code's default mode asks before each tool that changes something. Details: [[file:docs/USAGE.org::*Codex configuration][Codex]], [[file:docs/USAGE.org::*Claude Code configuration][Claude Code]].
+
+Until this option, the agents always bypassed their prompts; a configuration that wants that now sets =bypassPermissions = true;=.
 
 * Scopes
 
@@ -197,12 +208,12 @@ mkGoblins {
 
 =mkScope= is in =inputs.goblins.lib.x86_64-linux.builders=, like =mkGoblin=.
 
-- A goblin joins at most one scope, chosen when it starts: its =scope=, or =goblins run CONFIG --scope NAME= for a scope in its =allowedScopes=. Without either, it runs unscoped. Children always join their parent's scope.
+- A goblin joins at most one scope, chosen when it starts: its =scope=, or =goblins run CONFIG --scope NAME= for a scope in its =allowedScopes=. Without either, it runs unscoped. Goblins a raid owner runs always join its scope.
 - A scope starts with its first member and stops after its last member exits. Persistent scopes keep their storage and Docker data under =~/.cache/goblins=; temporary ones (=persistent = false=) delete it.
 - Storage is a fresh directory managed by Goblins, mounted at =path=; it does not reuse what is already at that path on the host. Remove =rwDirs= entries for the same path when moving a cache into a scope.
 - Every goblin that may join a scope must have the same online/offline network policy.
 - =namespaces.pid.enable = false= stops members seeing each other's processes.
-- =goblins status= inside a goblin shows its scope.
+- =goblin status= inside a goblin shows its scope.
 
 ** Risks: scopes are trust groups, not isolation boundaries
 
@@ -237,7 +248,7 @@ mkGoblins {
 Inside a goblin of that scope:
 
 #+begin_src sh
-goblins enable-docker --reason "Run the integration test services"
+goblin enable-docker --reason "Run the integration test services"
 docker compose up
 #+end_src
 
@@ -263,41 +274,41 @@ goblins run shell --dev-shell .           # devShells.<system>.default
 goblins run claude --dev-shell .#rust
 #+end_src
 
-The flake must be in the goblin's working directory and fully locked. Goblins evaluates it on the host in a restricted evaluator and mounts the result; the =shellHook= runs inside the sandbox only. Children start in the same dev shell.
+The flake must be in the goblin's working directory and fully locked. Goblins evaluates it on the host in a restricted evaluator and mounts the result; the =shellHook= runs inside the sandbox only. Goblins a raid owner runs start in its dev shell.
 
 When the flake changes, the goblin asks for the new version:
 
 #+begin_src sh
-goblins devshell diff                       # preview, no request
-goblins devshell refresh --reason "added a formatter"
-goblins devshell refresh --update nixpkgs   # update a lock input
-goblins flake run '#fmt' -- --check         # run the flake's apps
+goblin devshell diff                       # preview, no request
+goblin devshell refresh --reason "added a formatter"
+goblin devshell refresh --update nixpkgs   # update a lock input
+goblin flake run '#fmt' -- --check         # run the flake's apps
 #+end_src
 
 The approval shows what changed: inputs, Nix files, packages, environment and what will be built. A goblin cannot change =flake.lock= behind your back; only locks you launched with or approved are trusted. See [[file:docs/USAGE.org::*Flake dev shells][the dev shell reference]].
 
-* Children and raids
+* Raids
 
-A goblin can start child goblins; children share their parent's working directory, scope and dev shell, and stop when the parent stops. By default a goblin may only start children with its own configuration; =allowedChildren= lists others:
+A /raid/ is a group of goblins that can message each other; goblins outside it are not reachable, apart from the host. The host invites goblins into a raid, or a goblin creates one and owns it. The owner can run new goblins into its raid with =goblin run CONFIG=, using only the configurations its =allowedRunTargets= lists, by default none, not even its own:
 
 #+begin_src nix
 goblins = {
-  coordinator = mkCodexGoblin { allowedChildren = [ "coordinator" "reviewer" ]; };
-  reviewer = mkClaudeGoblin { allowedChildren = [ ]; };  # no children
+  coordinator = mkCodexGoblin { allowedRunTargets = [ "coordinator" "reviewer" ]; };
+  reviewer = mkClaudeGoblin { allowedRunTargets = [ ]; };  # runs nobody
 };
 #+end_src
 
-A child can have access its parent lacks, if its configuration grants it. A package you approve for a goblin is approved for its descendants too.
-
-Goblins can message their parent and children. A /raid/ also lets goblins in different branches message each other directly; it shares nothing else:
+A goblin the owner runs shares its working directory, scope and dev shell, but is not its child: it keeps running when the owner stops, and only the raid's owner can stop it. It can have access its owner lacks, if its configuration grants it, and packages approved for the owner before it ran are approved for it on request. It starts from the configuration the host last used, so a rebuild reaches new goblins after your next launch or a server restart.
 
 #+begin_src sh
 goblins raid invite review chief critic   # host: create raid 'review', owned by chief
-goblins raid members                      # inside a member
-goblins send critic --message "Please review the build."
+goblin raid create crew                   # inside a goblin: create and own a raid
+goblin run reviewer --name critic         # the owner runs a member
+goblin raid members
+goblin send critic --message "Please review the build."
 #+end_src
 
-Codex and Claude Code goblins are woken when a message arrives. See [[file:docs/USAGE.org::*Sandbox ownership][sandbox ownership]], [[file:docs/USAGE.org::*Raids][raids]] and [[file:docs/USAGE.org::*Manual inbox messaging][messaging]].
+When the owner leaves or stops, the raid pauses: its members keep running, but cannot message each other until you pick a new owner (=goblins raid set-owner=), or dissolve the raid (=goblins raid destroy=, with =--stop-members= to stop them too). The TUI and Emacs ask you when this happens. Codex and Claude Code goblins are woken when a message arrives. See [[file:docs/USAGE.org::*Raids][raids]] and [[file:docs/USAGE.org::*Manual inbox messaging][messaging]].
 
 * Command line
 
@@ -312,7 +323,6 @@ goblins tui                          # approvals; add --plain for a line-based U
 
 goblins configurations               # configured names, as JSON
 goblins run CONFIG [--name NAME] [--detached] [--scope S] [--dev-shell FLAKE] [--raid R]
-goblins run CONFIG --parent NAME     # start a child of a running goblin
 goblins list                         # running goblins and recent history
 goblins history                      # conversations that can be resumed
 goblins resume ID [--detached]       # resume one in a new goblin with the same environment
@@ -321,29 +331,38 @@ goblins attach NAME                  # reconnect a terminal
 goblins detach NAME                  # detach it, leave the goblin running
 goblins exec -t NAME                 # an extra shell inside the goblin
 goblins exec NAME -- git status      # run a command inside it
-goblins kill NAME [--kill-children]  # stop a goblin
+goblins kill NAME                    # stop a goblin
 
 goblins send NAME --message TEXT     # message a goblin
-goblins raid invite|members|set-role|destroy ...
+goblins raid invite|members|set-role|set-owner|destroy ...
 goblins communications-log [--session NAME] [--follow]
+
+goblins scope clear NAME [--dry-run] # delete scope storage and all its Docker data
+goblins scope clear --all           # clear every stored scope, including retired ones
+goblins gc [--dry-run]              # collect abandoned temporary stores and server resources
 #+end_src
 
-A goblin is addressed by its name, its tree path (=snikk/scout= for a child) or its session ID. Names are lowercase letters, digits and hyphens. Without =--name=, the server picks a free fantasy goblin name.
+A goblin is addressed by its name, unique among running goblins, or its session ID. Names are lowercase letters, digits and hyphens. Without =--name=, the server picks a free fantasy goblin name.
+
+=scope clear= requires the selected scopes to be unused. =gc= preserves persistent scopes, resume history and logs; it skips live temporary stores and running-server resources. Both leave host-mounted files and the Nix store alone. See [[file:docs/USAGE.org::*Clearing scopes and collecting abandoned data][Clearing scopes and collecting abandoned data]].
 
 ** Inside a goblin
 
+Inside a goblin the command is =goblin=, so that a project's dev shell that ships the host =goblins= cannot shadow it:
+
 #+begin_src sh
-goblins status                         # name, configuration, scope, raid
-goblins request-package NAME --reason TEXT
-goblins enable-docker --reason TEXT
-goblins devshell refresh | diff | restore-lock
-goblins flake run [#APP] [-- ARGS]
-goblins run CONFIG --name NAME         # start a child
-goblins list | attach | kill           # manage descendants
-goblins detach                         # return to the enclosing terminal
-goblins send parent --message TEXT     # message the parent, children or raid
-goblins inbox status | next            # read messages
-goblins editor open FILE               # open a file in your Emacs
+goblin status                         # name, configuration, scope, raid
+goblin request-package NAME --reason TEXT
+goblin enable-docker --reason TEXT
+goblin devshell refresh | diff | restore-lock
+goblin flake run [#APP] [-- ARGS]
+goblin raid create NAME               # create a raid and own it
+goblin run CONFIG --name NAME         # as owner: run a member into the raid
+goblin list | stop NAME               # as owner: the members you can stop
+goblin detach                         # detach this goblin's terminal
+goblin send NAME --message TEXT       # message a raid member
+goblin inbox status | next            # read messages
+goblin editor open FILE               # open a file in your Emacs
 #+end_src
 
 =request-package= takes a nixpkgs attribute name, such as =cowsay= or =python3Packages.black=, from Goblins' pinned nixpkgs.
@@ -351,7 +370,7 @@ goblins editor open FILE               # open a file in your Emacs
 ** Lifecycle
 
 - Closing the TUI or a terminal leaves goblins running; =goblins attach= reconnects.
-- A goblin stops when its program exits (=exit= or Ctrl-D in a shell), and its children stop with it.
+- A goblin stops when its program exits (=exit= or Ctrl-D in a shell). No other goblin stops with it.
 - =goblins server stop= stops everything. Goblins do not survive a server restart or reboot, but =goblins resume= continues a goblin's conversation in a new goblin with the same environment: its current configuration, granted packages and Docker (see "Resuming conversations" in [[file:docs/USAGE.org][USAGE.org]]).
 - =--state-dir DIR= runs a separate, isolated server; pass it to every command that should talk to that server.
 
@@ -423,7 +442,11 @@ See [[file:emacs/README.org][the Emacs guide]] for all keys, the workspace layou
 - Network access is open by default. Set =allowedDomains = []= for an offline goblin.
 - The working directory and every =rw*= path you grant are your real files: the goblin can change or delete them. Use =goblins server start --workspace DIR= to give each top-level goblin a disposable copy at =/workspace= instead.
 - Agent config directories are mounted writable, so agents can read your credentials there.
+- An agent's own permission prompts are a second check inside the sandbox, not part of it. With =bypassPermissions=, the agent does whatever the sandbox allows without asking; without it, it asks as its own settings say, which your settings can also turn off. =goblin status= shows what the configuration requests, not the agent's effective mode.
 - Package grants can only add packages from Goblins' pinned nixpkgs. They do not activate development setup hooks; use a dev shell for that.
+- =allowNix= gives a goblin the whole host Nix store, read-only, and the host Nix daemon, as =allowNix= in agent-sandbox.nix does. It reaches no files directly, but the daemon acts for your user: if you are in Nix's =trusted-users=, which Nix documents as essentially equivalent to root, the goblin can import unsigned store paths and set daemon options, such as hooks the daemon runs as root, without any approval. The daemon's own downloads also ignore the goblin's network policy. Give =allowNix= only to goblins you would give that, or keep your user out of =trusted-users=.
+- A host command (=hostCommands.enable=) runs as you, outside the sandbox, once you approve it, with your files, services, credentials and the server's environment. It runs whatever the files it reads say, such as scripts, build files and tests the goblin can change, also after you approved. Approve each one as you would let the goblin run anything as you.
+- A raid owner runs only the configurations its =allowedRunTargets= lists, by default none; a goblin it runs has its own configuration's access, not the owner's. One with host commands or =allowNix= has them whatever its owner has.
 - Goblins do not survive a server restart; a resumed one starts afresh apart from its packages, Docker and agent conversation. There are no live file or network grants yet, and no domain allowlist.
 - At most 16 goblins run at once.
 

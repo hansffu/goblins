@@ -16,26 +16,31 @@ import tempfile
 import unittest
 import uuid
 
-from support import command
+from build_support import fixture_app
 from daemon_support import Daemon, ROOT, RPC, app, receive
+
+EMACS_INIT = str(ROOT / "tests/emacs-init.el")
 
 
 @unittest.skipUnless(shutil.which("emacs"), "Emacs is not installed")
 class EmacsTests(unittest.TestCase):
-    def setUp(self):
+    maxDiff = None
+
+    @classmethod
+    def setUpClass(cls):
         available = subprocess.run(
             ["emacs", "--batch", "-Q", "--eval",
              '(kill-emacs (if (locate-library "magit-section") 0 1))'],
             capture_output=True, timeout=10,
         )
         if available.returncode:
-            self.skipTest("magit-section is not on Emacs load-path")
+            raise unittest.SkipTest("magit-section is not on Emacs load-path")
 
     def test_live_activity_updates_overview_sidebar_and_details(self):
         daemon = Daemon(); self.addCleanup(daemon.close)
         agent = daemon.start(agent_name='activity')['session']
-        result = subprocess.run(['emacs', '--batch', '-Q', '--eval', '(setq load-prefer-newer t)',
-            '-L', str(ROOT/'emacs'), '-l', 'goblins-tests', '-f', 'goblins-test-activity-live'],
+        result = subprocess.run(['emacs', '--batch', '-Q', '-l', EMACS_INIT,
+            '-l', 'goblins-tests', '-f', 'goblins-test-activity-live'],
             env={**os.environ, 'GOBLINS_APP':str(daemon.app), 'GOBLINS_TEST_STATE':str(daemon.state),
                  'GOBLINS_TEST_AGENT':agent}, capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -60,8 +65,8 @@ class EmacsTests(unittest.TestCase):
                                    "claim_generation": claim["claim_generation"],
                                    "body": "First answer"})
         ready = Path(daemon.temp.name) / "ready"
-        emacs = subprocess.Popen(['emacs', '--batch', '-Q', '--eval', '(setq load-prefer-newer t)',
-            '-L', str(ROOT/'emacs'), '-l', 'goblins-tests', '-f', 'goblins-test-messages-live'],
+        emacs = subprocess.Popen(['emacs', '--batch', '-Q', '-l', EMACS_INIT,
+            '-l', 'goblins-tests', '-f', 'goblins-test-messages-live'],
             env={**os.environ, 'GOBLINS_TEST_STATE': str(daemon.state),
                  'GOBLINS_TEST_READY': str(ready)},
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -78,39 +83,12 @@ class EmacsTests(unittest.TestCase):
         output, _ = emacs.communicate(timeout=60)
         self.assertEqual(emacs.returncode, 0, output)
 
-    def test_live_ownership_tree_and_stopped_branches(self):
-        daemon = Daemon()
-        self.addCleanup(daemon.close)
-        parent = daemon.start(agent_name="parent")
-        other = daemon.start(agent_name="other")
-        def child(owner, name):
-            launch = daemon.rpc.call("sessions.start", {
-                "key":uuid.uuid4().hex,"name":"shell","agent_name":name,
-                "configuration":daemon.manifest,"parent":owner["session"],"rows":24,"cols":100,
-            })
-            daemon.wait(lambda: daemon.get(launch["session"])["state"] == "running")
-            return launch
-        kid = child(parent, "kid")
-        leaf = child(kid, "leaf")
-        child(other, "kid")
-        result = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
-             "-l", "goblins.el", "-l", "goblins-tests.el", "-f", "goblins-test-tree-live"],
-            env={**os.environ,"GOBLINS_TEST_STATE":str(daemon.state),
-                 "GOBLINS_TEST_PARENT":parent["session"],"GOBLINS_TEST_CHILD":kid["session"],
-                 "GOBLINS_TEST_LEAF":leaf["session"]},
-            capture_output=True, text=True, timeout=60,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(daemon.get(other["session"])["state"], "running")
-
     def test_start_server_from_status(self):
         application = app()
         with tempfile.TemporaryDirectory(prefix="ge-start-") as state:
             try:
                 result = subprocess.run(
-                    ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
-                     "-l", "goblins-tests", "-f", "goblins-test-start-live"],
+                    ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-start-live"],
                     env={**os.environ, "GOBLINS_APP": str(application),
                          "GOBLINS_TEST_STATE": state,
                          # Its server keeps a private history, never the user's.
@@ -143,8 +121,7 @@ class EmacsTests(unittest.TestCase):
                 session=agent["session"], state="pending")), None)))
             peers.append(peer)
         result = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
-             "-l", "goblins-tests", "-f", "goblins-test-live"],
+            ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-live"],
             env={**os.environ, "GOBLINS_TEST_STATE": str(daemon.state),
                  "GOBLINS_TEST_ACCEPT": requests[0]["id"],
                  "GOBLINS_TEST_DENY": requests[1]["id"]},
@@ -178,8 +155,7 @@ class EmacsTests(unittest.TestCase):
         launcher.chmod(0o700)
         with tempfile.TemporaryDirectory(prefix="ge-workspace-") as workspace:
             result = subprocess.run(
-                ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
-                 "-l", "goblins-tests", "-f", "goblins-test-run-live"],
+                ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-run-live"],
                 env={**os.environ, "GOBLINS_APP": str(launcher),
                      "GOBLINS_TEST_STATE": str(daemon.state),
                      "GOBLINS_TEST_WORKSPACE": workspace,
@@ -200,11 +176,11 @@ class EmacsTests(unittest.TestCase):
         peer = RPC(daemon.state / session / "resources/request.sock")
         peer.call("sessions.set-variables", {"variables": {"session_name": "Plan the resume"}}); peer.close()
         record = daemon.wait(lambda: (r if (r := daemon.record(session))["variables"] else None))
-        daemon.rpc.call("sessions.stop", {"session": session, "kill_children": True})
+        daemon.rpc.call("sessions.stop", {"session": session})
         daemon.wait(lambda: daemon.record(session)["stopped"])
+        daemon.wait_record_released(record["id"])
         result = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval", "(setq load-prefer-newer t)", "-L", str(ROOT / "emacs"),
-             "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
+            ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
             env={**os.environ, "GOBLINS_APP": str(daemon.app), "GOBLINS_TEST_STATE": str(daemon.state),
                  "GOBLINS_TEST_RECORD": record["id"]},
             capture_output=True, text=True, timeout=120,
@@ -244,8 +220,8 @@ class EmacsTests(unittest.TestCase):
         peer, request = daemon.pending(ids["gamma"], "hello")
         self.addCleanup(peer.close)
         result = Path(projects.name) / "result"
-        argv = ["emacs", "-nw", "-Q", "--eval", "(setq load-prefer-newer t)",
-                "-L", str(ROOT / "emacs"), "-l", "goblins-tests",
+        argv = ["emacs", "-nw", "-Q", "-l", EMACS_INIT,
+                "-l", "goblins-tests",
                 "--eval", "(goblins-test-workspace-live)"]
         env = {**os.environ, "TERM": "xterm-256color",
                "GOBLINS_APP": str(daemon.app),
@@ -288,8 +264,7 @@ class EmacsTests(unittest.TestCase):
     def test_tramp_shell_and_editor_in_a_terminal_emacs(self):
         """/goblins: TRAMP, goblins-shell and goblins-editor in a real
         `emacs -nw`, against isolated daemons built with editor.emacs.enable."""
-        application = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                    f"git+file://{ROOT}#checks.x86_64-linux.editor-goblins"])) / "bin/goblins"
+        application = fixture_app("editor-goblins")
         temp = tempfile.TemporaryDirectory(prefix="ge-tramp-")
         self.addCleanup(temp.cleanup)
         server_dir = Path(temp.name) / "server"
@@ -303,8 +278,8 @@ class EmacsTests(unittest.TestCase):
         self.addCleanup(other.close)
         other.start(name="plain", agent_name="gribble")
         result = Path(temp.name) / "result"
-        argv = ["emacs", "-nw", "-Q", "--eval", "(setq load-prefer-newer t)",
-                "-L", str(ROOT / "emacs"), "-l", "goblins-tests",
+        argv = ["emacs", "-nw", "-Q", "-l", EMACS_INIT,
+                "-l", "goblins-tests",
                 "--eval", "(goblins-test-tramp-live)"]
         env = {**os.environ, "TERM": "xterm-256color",
                "GOBLINS_APP": str(application),
@@ -339,7 +314,6 @@ class EmacsTests(unittest.TestCase):
             ["emacs", "--batch", "-Q", "--eval",
              '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
             capture_output=True, timeout=10).returncode == 0
-        self.maxDiff = None
         self.assertEqual(result.read_text(), "ok ghostel" if ghostel else "ok")
 
 if __name__ == "__main__":

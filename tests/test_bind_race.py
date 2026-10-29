@@ -1,13 +1,12 @@
 """Deterministic startup-bind races driven by a concurrent writable sandbox."""
 import json
-import os
 from pathlib import Path
 import shlex
-import shutil
 import sys
 import tempfile
 import unittest
 from daemon_support import Daemon
+from build_support import fixture_app, nix_bin
 
 
 class BindRaceTests(unittest.TestCase):
@@ -17,7 +16,7 @@ class BindRaceTests(unittest.TestCase):
             shared = root / "shared"; shared.mkdir()
             bindir = root / "bin"; bindir.mkdir()
             armed, paused, release = [root / n for n in ("armed", "paused", "release")]
-            real = shutil.which("nix-store")
+            real = str(nix_bin() / "nix-store")
             wrapper = bindir / "nix-store"
             wrapper.write_text(f'''#!{sys.executable}
 import os,sys,time
@@ -29,7 +28,10 @@ if "--realise" in sys.argv and os.path.exists({str(armed)!r}) and not os.path.ex
  else: sys.exit("bind-race barrier timed out")
 os.execv({real!r},[{real!r},*sys.argv[1:]])
 '''); wrapper.chmod(0o700)
-            d = Daemon(env={**os.environ, "PATH": str(bindir) + ":" + os.environ["PATH"]})
+            # The attacker only executes POSIX commands over a raw socket.
+            # Bash avoids waiting for Fish terminal-query replies from a
+            # deliberately non-emulating reader on every race variant.
+            d = Daemon(fixture_app("exec-goblins"), tool_path=bindir)
             try:
                 (d.state / "sentinel").write_text("PRIVATE-CONTROL-DATA")
                 if ancestor:

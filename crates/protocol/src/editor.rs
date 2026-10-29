@@ -76,7 +76,7 @@ pub fn absolute(cwd: &Path, path: &Path) -> PathBuf {
     result
 }
 
-/// `goblins editor open` arguments: `[--no-wait] [+LINE[:COL]] FILE ...`, where
+/// `goblin editor open` arguments: `[--no-wait] [+LINE[:COL]] FILE ...`, where
 /// a position applies to the file after it, as with emacsclient. Returns the
 /// files, still relative, and whether to wait.
 pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
@@ -119,14 +119,9 @@ pub fn parse(args: &[String]) -> Result<(Vec<File>, bool), String> {
         return Err("a position must be followed by a file".into());
     }
     if files.is_empty() {
-        return Err("usage: goblins editor open [--no-wait] [+LINE[:COL]] FILE...".into());
+        return Err("usage: goblin editor open [--no-wait] [+LINE[:COL]] FILE...".into());
     }
     Ok((files, wait))
-}
-
-/// The TRAMP host for a goblin's tree path: `/` is not allowed in hosts.
-pub fn tramp_host(path: &str) -> String {
-    path.replace('/', ".")
 }
 
 #[cfg(test)]
@@ -177,6 +172,5 @@ mod tests {
         assert!(open(vec![file("/a", None, Some(2))]).is_err());
         assert!(open(vec![]).is_err());
         assert!(open(vec![file("/a", None, None); 33]).is_err());
-        assert_eq!(tramp_host("gribble/snaga"), "gribble.snaga");
     }
 }

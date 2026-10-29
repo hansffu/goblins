@@ -1,44 +1,49 @@
 # Proposed architecture: per-Goblin supervisors and macOS support
 
-**Status:** Proposal for future implementation; not a description of the current runtime.  
-**Scope:** Architectural direction and a deliberately reduced first macOS milestone.  
-**Intent:** A working document for follow-up work, not a prescriptive implementation plan.
+**Status:** Proposal for future implementation, not a description of the current runtime.  
+**Reviewed against:** Goblins `master`, 2026-10-29 (particularly ADRs 0011–0017).  
+**Scope:** Architectural boundaries and a deliberately reduced first macOS milestone. The details of process layout, transport and operating-system APIs remain open.
 
-## Motivation and goals
+## Motivation and agreed direction
 
-Goblins is a personal tool for running and coordinating sandboxed coding agents. It currently relies on Linux namespaces, Bubblewrap, private mounts and additional low-level helpers. The goal is to make a dedicated work Mac a viable option without replacing the Goblins workflow or compromising existing Linux behavior.
+Goblins is a personal tool for running and coordinating sandboxed coding agents and shells. Its Linux runtime uses namespaces, Bubblewrap, private mounts and helpers. The goal is to support a dedicated work Mac while preserving the existing Linux workflow, without rebuilding every Linux-specific feature on Darwin.
 
-The agreed architectural direction is:
+- **One dedicated host-side supervisor process per running Goblin.** It owns the sandbox's OS resources, launches and supervises all processes inside it, implements any supported runtime modifications, and mediates every sandbox-to-daemon request.
+- **A backend-agnostic daemon.** It owns logical sessions, raids (including owner and created-member permissions), inboxes, messaging, approvals, history, agent-neutral state and frontend orchestration. It never needs to manipulate Linux namespaces or macOS Seatbelt policies.
+- **No direct sandbox-to-daemon channel.** Sandbox-originated requests pass through their supervisor, with caller identity anchored to the trusted supervisor connection rather than values supplied by the sandbox.
+- **Agent-specific functionality stays inside each Goblin.** Codex/Claude integrations, adapters, hooks, skills, notification delivery and provider-specific behavior are packaged into the sandbox. Neither daemon nor supervisor gains a provider driver.
+- **Start and attach are distinct.** A Goblin can have a long-running main workload and optional `onAttach`/`onDetach` handlers that start and stop separate terminal clients without changing the Goblin's lifetime.
+- **Existing Linux behavior is preserved.** Especially enforced live package grants, scopes, Docker, host-command approvals, Nix access and dev-shell workflows.
+- **macOS v1 favors the essential workflow.** Shell/agent launch, messaging, raids, sandbox-only integrations, terminals and generic attach handlers are required. Existing opt-in Nix and host-command capabilities are targeted; live package grants, Linux-style namespace scopes, managed Docker and dev shells may be deferred.
 
-- **One host-side supervisor process per running Goblin.** It owns that Goblin's sandbox, process lifecycle, changes to its execution environment and all sandbox-facing communication.
-- **A backend-agnostic daemon.** It owns orchestration, identity, parent/child relationships, raids, messaging, permissions, history and other logical state. It delegates execution to supervisors rather than handling Linux or Darwin internals.
-- **No direct sandbox-to-daemon communication.** Every request from a sandbox passes through its supervisor. The daemon must derive the calling Goblin's identity from the trusted supervisor connection, never from a caller-supplied identity.
-- **Linux remains fully functional.** Its existing security boundaries, dynamic package grants, scopes and Docker should be preserved through the refactor.
-- **macOS first milestone favors workflow over full feature parity.** The primary requirements are agent integration, orchestration, messaging, sandbox-only hooks/skills/configuration, terminals and basic sandboxing. Dynamic package requests, scoped Docker and Linux-style namespace sharing can wait.
-
-Platform-dependent details should be isolated behind the supervisor boundary, while the logical daemon protocol and its clients remain consistent.
+This architecture should be implemented in terms of Goblins concepts rather than hard-coded knowledge of any particular coding agent.
 
 ## Vocabulary
 
-| Term | Canonical meaning | Boundary / ownership |
+| Term | Meaning | Ownership / distinction |
 | --- | --- | --- |
-| **Goblin** | A named, running instance of a Goblins configuration: the managed unit consisting of its logical session, supervisor, sandbox and workload. It need not run an AI agent. | One Goblin has one supervisor and one sandbox for this design. |
-| **Configuration** | A reusable Nix declaration describing a kind of Goblin, initial tools, entry program and permissions. Many Goblins may use the same configuration. | Selected at launch; distinct from a running Goblin. |
-| **Daemon** | The central, platform-agnostic Goblins backend. | Owns logical sessions, orchestration, messaging, permission decisions, history and user-facing state. |
-| **Session** | The daemon's logical representation and identity of a Goblin execution. | A session is a record/state concept, not another operating-system process. |
-| **Supervisor** | The dedicated **host-side process** managing one Goblin's restricted runtime and mediating all sandbox traffic. | Owns sandbox launch, operating-system resources, runtime modifications, process cleanup and sandbox communication proxying. |
-| **Sandbox** | The restricted execution environment containing the Goblin's workload. | Linux isolation or macOS Seatbelt; separate from the host-side supervisor. |
-| **Payload** | The primary command or program and its descendants inside the sandbox. | Often an agent, but may be a shell or another program. |
-| **Agent** | An AI coding application running as the payload, such as Codex or Claude Code. | Agent is not synonymous with Goblin. |
-| **Sandbox client** | The restricted Goblins command-line entry points callable from inside the sandbox. | Talks to the supervisor, not directly to the daemon. |
-| **Sandbox init** | Optional in-sandbox runtime responsible for launching and supervising additional processes and terminals. | Not the host-side supervisor; implementation may vary by platform. |
-| **Helper** | Optional low-level subprocess used internally by the supervisor for operations requiring a separate process/namespace context. | Not a first-class architectural component or daemon API. Linux's mount worker is an example; Darwin need not have one. |
-| **Host** | The user's machine context outside a Goblin's sandbox. | Runs the daemon and supervisors. |
-| **Control channel** | Trusted, bidirectional daemon-supervisor communication. | Carries commands, logical events, forwarded sandbox calls and their results; not a direct agent authority. |
-| **Scope** | An optional Linux resource/trust grouping for several Goblins. | Not required for macOS v1; scope semantics remain a separate concern from parent/child or raid relationships. |
-| **Raid** | A logical communication grouping of Goblins. | Owned by the daemon; independent of platform-specific resource scopes. |
+| **Goblin** | One named, running instance of a Goblins configuration: logical session, host supervisor, sandbox and main workload. May contain a shell, a coding agent or a background server. | A Goblin is the whole managed unit, not just an agent or terminal. |
+| **Configuration** | Reusable Nix declaration of a Goblin's program, initial tools, environment, permissions and optional attach handlers. | Many Goblins can use the same configuration. |
+| **Daemon** | Central, platform-independent Goblins backend. | Owns session state, raid control, messaging, approvals, history, subscriptions and frontend semantics; no Codex/Claude driver. |
+| **Session** | Logical identity and state of one Goblin execution in the daemon. | Not a separate OS process, nor a provider conversation ID. |
+| **Supervisor** | Dedicated **host-side process**, one per running Goblin, responsible for its sandbox and for mediating sandbox communication. | Owns OS-level launch, process resources, restrictions, runtime changes, terminal process handles and cleanup; has no agent-specific knowledge. |
+| **Sandbox** | Restricted execution environment for a Goblin's workload and in-sandbox utilities. | Linux namespace/Box or Darwin Seatbelt isolation, not the supervisor itself. |
+| **Main workload** (or **payload**) | The Goblin's long-lived configured entry program and its process tree. | May be an interactive shell, Claude's terminal, or a Codex App Server plus adapter; its lifetime is the Goblin's lifetime. |
+| **Agent** | Coding assistant such as Codex or Claude Code, possibly split into server and terminal client processes. | Runs entirely inside the sandbox; not every Goblin has an agent. |
+| **Agent adapter** | Agent-specific in-sandbox integration code and configuration (hooks, skills, wakeups, state reporting and provider protocols). | Composed by the agent configuration; talks to Goblins through generic sandbox commands/APIs. |
+| **Attachment** | A frontend's current connection to a Goblin's terminal. | Transient; does not define the lifetime of the Goblin. |
+| **Attach handlers** | Optional generic `onAttach` and `onDetach` commands configured for a Goblin. | Allows an always-running main workload and a separate per-attachment client; not provider-specific. |
+| **Attach client** | Program started inside the existing sandbox for one attachment when `onAttach` is configured. | Has its own PTY and lifetime; exits/detaches without stopping the main workload. |
+| **Sandbox client** | The restricted `goblin` commands available to code within the sandbox. | Uses the supervisor as its route to the daemon, not a direct daemon socket. |
+| **Sandbox init** | Trusted in-sandbox process runtime for additional execs, terminal clients and cancellation. | Distinct from the **host** supervisor; internals may need OS-specific porting. |
+| **Helper** | Optional, low-level private subprocess used by a supervisor, e.g. a Linux namespace/mount worker. | Implementation detail, not a second public runtime boundary or daemon API. |
+| **Host command** | An explicitly approved command run with host-user access outside the sandbox via `hostCommands.enable`. | Not the same as exposing a host executable within the sandbox or granting unrestricted host shell access. |
+| **Control channel** | Trusted, bidirectional daemon–supervisor protocol. | Carries lifecycle, delegated execution, sandbox RPC relays and events; no agent-supplied authority. |
+| **Scope** | Optional Linux trust/resource group with shared networking, storage and possibly Docker. | Independent from raids; native equivalent not required in macOS v1. |
+| **Raid** | Daemon-owned grouping for permitted messaging and ownership of **created members**. | The raid owner may run/stop created members; ownership can transfer. Members continue running if the owner leaves, while the raid is paused. |
+| **Host** | User's environment outside the sandbox. | Runs the daemon and supervisors; some approved host commands also execute here. |
 
-Use **Goblin** for the whole running unit, **session** for its daemon-side identity/state, **sandbox** for restricted execution, and **supervisor** for the host-side manager. A stopped Goblin has a historical session record; recreating it starts a new Goblin associated with that record.
+Use **Goblin** for the whole instance and **session** for its daemon representation. A historical session record can be recreated as a new Goblin. **Supervisor** unambiguously refers to the proposed per-Goblin host process; existing host-command job guardians/supervisors are narrower subordinate mechanisms and should not be conflated with it.
 
 ## System boundaries
 
@@ -46,167 +51,200 @@ Use **Goblin** for the whole running unit, **session** for its daemon-side ident
 flowchart TB
   subgraph HOST["Host machine"]
     UI["CLI / TUI / Emacs"]
-    D["Goblins daemon<br/>sessions, messaging, raids,<br/>permissions, history"]
+    D["Goblins daemon<br/>sessions, messaging, raids,<br/>approvals, history"]
     UI <-->|host API| D
 
-    subgraph G1["Goblin A"]
+    subgraph G1["Goblin A - optional server/client model"]
       S1["Host supervisor A"]
-      B1["Sandbox A<br/>sandbox init + payload + sandbox client"]
-      H1["Optional private helper<br/>(e.g. Linux mount worker)"]
-      S1 <-->|sandbox RPC + process control| B1
-      S1 -.->|internal operations| H1
+      subgraph B1["Sandbox A"]
+        P1["Main workload + sandbox init"]
+        I1["Agent-specific adapter / hooks / skills"]
+        A1["Attach client (optional)"]
+        P1 --- I1
+      end
+      H1["Optional internal helper"]
+      S1 <-->|sandbox RPC and process control| P1
+      S1 <-->|attachment / PTY| A1
+      S1 -.->|private OS operations| H1
     end
 
-    subgraph G2["Goblin B"]
+    subgraph G2["Goblin B - direct terminal model"]
       S2["Host supervisor B"]
-      B2["Sandbox B<br/>sandbox init + payload + sandbox client"]
-      S2 <-->|sandbox RPC + process control| B2
+      B2["Sandbox B<br/>main workload + sandbox client"]
+      S2 <-->|sandbox RPC / terminal| B2
     end
 
     D <-->|trusted control channel| S1
     D <-->|trusted control channel| S2
   end
-
-  classDef logical fill:#e8edf5,stroke:#607087,color:#182438
-  class D,S1,S2 logical
 ```
 
-This is a logical diagram, not a required process-launch order or on-disk layout. The supervisor is **outside** its own sandbox; helpers, if any, remain internal supervisor implementation details. There is no sandbox-to-daemon bypass.
+The diagram is a logical ownership map, not an implementation-mandated process tree. The agent integration is **inside** the sandbox. An attach client is part of the same Goblin and sandbox, not a separate Goblin or supervisor. A supervisor may use internal helpers, but the daemon addresses only the supervisor.
 
 ## Responsibility split
 
-| Concern | Daemon | Supervisor |
+| Concern | Daemon | Host supervisor |
 | --- | --- | --- |
-| Goblin/session identity, state and history | Authority | Reports runtime events for its Goblin |
-| Parent/child creation rules and raids | Authority | Executes launch/stop requests; protects inherited runtime resources |
-| Agent inboxes, message routing and notifications | Authority | Transparently relays sandbox messages and results |
-| Permissions and approvals | Decides and records intent | Enforces supported runtime changes or returns unsupported/failure |
-| Sandbox creation and configuration | Selects trusted logical configuration | Validates/prepares platform runtime and starts sandbox |
-| Sandboxed files, network and executable access | Expresses requested policy without OS assumptions | Applies platform-appropriate restrictions |
-| Sandbox-specific skills, hooks and settings | Coordinates configured Goblin features | Makes effective files/configuration available within the sandbox |
-| Process execution and lifetime | Tracks logical outcomes | Owns processes, handles execution, signaling and teardown |
-| Terminals | Owns frontend-facing state and orchestration semantics | Owns operating-system PTYs and sandbox process connections |
-| Platform capabilities | Uses reported capabilities to determine available actions | Reports its supported operations; fails closed for unsupported actions |
+| Goblin/session identity and historical records | Authority | Reports status and outcomes |
+| Raids, run-target authorization and created-member rights | Authority; ownership/pause/transfer semantics | Launches/stops instances on trusted instruction; manages inherited runtime resources |
+| Inbox, messaging, generic agent state and operation notices | Authorizes and routes; no provider-specific driver | Relays sandbox-originated calls and replies |
+| Agent-specific integrations | No Codex/Claude logic; only generic session/API features | No provider logic; makes trusted generic configuration/material accessible to the sandbox |
+| Configuration selection | Selects trusted named configuration and records semantics | Converts configuration to OS-specific launch and access policy |
+| Sandbox filesystem, network and executables | Describes policy intent and supported capabilities | Enforces access restrictions and mutations |
+| Permissions and package/host-command approval | Decides and records authority; surfaces approvals | Carries out requested runtime work or reports unsupported/failure |
+| Host-command jobs | Authorizes the exact host-side operation and manages logical lifecycle | Executes/supervises host-side work through appropriate isolated mechanisms after approval |
+| Goblin start and stop | Owns logical lifecycle and records | Owns actual workload, termination and cleanup |
+| Terminal attachment and `onAttach` readiness | Owns frontend authorization, attach state and required current-run variables | Executes generic attach/detach commands, allocates PTYs and manages client lifetime |
+| Terminal UI state | Owns frontend-facing state/subscriptions and ordering | Owns OS PTYs, streams and process handles |
+| Backend capabilities | Chooses available operations from advertised capabilities | Reports capabilities; fails closed for unsupported actions |
 
-The daemon must not become a generic host command executor. Supervisors must not decide whether an agent is *authorized* to perform a logical operation: that decision belongs to the daemon. Trusted supervisor commands are distinct from untrusted sandbox-originated requests.
+The supervisor must not make Goblins authorization decisions, and the daemon must not execute arbitrary host commands without the approval boundary. All OS-specific execution remains on the supervisor side. A host-command job is a consciously broader trust boundary than running a tool *inside* the sandbox.
 
-## Communication
+## Communication and integration
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant A as Agent / sandbox client
-  participant S as Goblin supervisor
+  participant S as Host supervisor
   participant D as Daemon
-  participant M as Messaging / orchestration
-  A->>S: Sandbox request (e.g. send message)
-  S->>D: Forward request with trusted session identity
-  D->>M: Authorize and handle request
-  M-->>D: Result or event
+  participant M as Inbox / raid logic
+  A->>S: Generic sandbox RPC (send, inbox, status, variables)
+  S->>D: Forward request with trusted Goblin identity
+  D->>M: Authorize and handle
+  M-->>D: Result / operation event
   D-->>S: Reply / notification
-  S-->>A: Sandbox reply / notification
+  S-->>A: Sandbox reply
+  Note over A,S: Agent adapter decides how to present notices to Codex/Claude
 ```
 
-Communication expectations:
+- All sandbox-facing calls (including messages, `sessions.set-state`, `sessions.set-variables`, permissions and generic agent integration) cross the supervisor; there is no direct sandbox–daemon endpoint.
+- The daemon associates a supervisor with a particular session; a sandbox client cannot select or impersonate another Goblin by supplying an ID.
+- The provider-specific wakeup ledger, hooks, app-server adapter and UI integration stay **inside the Goblin**. In particular the daemon does not parse provider hooks or generate terminal prompts for them.
+- Generic RPC needs concurrent calls, long-lived waits, cancellation and bounded resource usage. Exact transport, multiplexing, framing and descriptor transfer are deliberately open.
+- Terminal data may use a separate streaming path. The supervisor owns the actual PTY/process resources; daemon-facing attachment semantics and frontend subscriptions stay backend-independent.
+- A supervisor forwards application-level messages rather than implementing inbox or raid behavior.
 
-- The **supervisor** is the only reachable path between its sandbox and the daemon, including messaging, status, agent integration and permission requests.
-- The daemon authenticates/associates each supervisor with exactly the intended session; sandbox-provided names and IDs never grant cross-session authority.
-- Preserve concurrent requests, long-running calls, cancellation and bounded resource use. Exact transport, framing and descriptor-passing mechanisms are intentionally undecided.
-- Terminal data may use a separate data path from structured commands. The supervisor owns OS-level PTYs; the daemon can retain UI-facing terminal state, subscriptions and notification decisions.
-- The supervisor forwards application-level messages; it does **not** implement inbox, raid or agent-specific orchestration logic.
+## Start, attach, detach and stop
 
-## Lifecycle and failure boundaries
+A Goblin's main workload and its terminal attachment are **different lifecycles**. An ordinary Goblin keeps the existing single-PTY behavior. A Goblin configured with `onAttach` starts its main workload without a terminal, then launches a fresh client within the *same sandbox* for each attachment. This is a generic configuration capability: currently Codex uses it; Claude does not.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant U as Frontend
   participant D as Daemon
-  participant S as Supervisor
-  participant B as Sandbox
-  U->>D: Start named configuration
-  D->>D: Allocate session / verify parent permissions
-  D->>S: Start with trusted launch intent
-  S->>S: Prepare runtime and isolation
-  S->>B: Launch sandbox and payload
-  S-->>D: Ready (capabilities, identity, runtime state)
+  participant S as Host supervisor
+  participant B as Sandbox / main workload
+  participant C as Optional attach client
+  U->>D: Start configured Goblin
+  D->>D: Validate named config, raid/run permissions
+  D->>S: Start trusted runtime
+  S->>B: Launch main workload (direct PTY or no terminal)
+  S-->>D: Ready / capabilities
   D-->>U: Goblin running
-  Note over D,S: Subsequent commands / events remain routed through supervisor
+  opt Later attachment
+    U->>D: Attach Goblin
+    alt onAttach configured
+      D->>D: Wait for required variables from this run
+      D->>S: Execute configured onAttach
+      S->>C: Start client on fresh PTY inside sandbox
+    else No onAttach
+      D->>S: Connect existing main PTY
+    end
+    D-->>U: Terminal attached
+    U->>D: Detach or attached client exits
+    opt Client created by onAttach
+      D->>S: End attach (onDetach if applicable)
+      S->>C: Stop attach client and descendants
+    end
+    D-->>U: Goblin still running
+  end
   U->>D: Stop Goblin
-  D->>S: Stop / cancel
-  S->>B: Terminate workload and descendants
-  S-->>D: Stopped / result
-  D-->>U: Session state updated
+  D->>S: Stop entire runtime
+  S->>B: Terminate sandbox workload and descendants
+  S-->>D: Stopped
 ```
 
-Expected invariants:
+Preserve the generic handler semantics introduced in [ADR 0016](../adr/0016-server-and-client-goblins.md): a configured attach can wait for declared variables to be **set during this Goblin's current run**, not merely carried over from history. Attach refusal or the attached client's exit must not silently kill the long-lived workload. An explicit detach may invoke `onDetach` before cancelling the client; normal Goblin stop ends the whole sandbox. A frontend may attach/detach repeatedly without restarting an agent server.
 
-- Each running Goblin has a dedicated host-side supervisor. Neither a frontend nor the daemon needs to enter the sandbox's OS isolation context.
-- Supervisor exit or loss of the trusted channel must **not** leave an uncontrolled sandbox running. Daemon failure should similarly terminate its Goblins under the existing lifecycle contract. The mechanism is platform-specific.
-- A stopped child cannot outlive its parent contrary to Goblins' parent/child lifecycle rules.
-- The daemon should handle supervisor failures as session events and remain available for other Goblins.
-- The supervisor owns cleanup and resource lifetime, including any internal helper. Its platform-specific identity and handles do not leak into logical session APIs.
-- Inherited runtime resources for child Goblins need an explicit, trusted handoff mechanism; no assumption that Rust references or descriptors can be shared with a separate supervisor process.
+Linux and Darwin supervisors should both implement these generic lifecycle operations without understanding which agent, if any, is behind the commands.
 
-## Platform behavior and first macOS milestone
+## Raids, independent Goblins and failure boundaries
 
-The aim is **similar user-facing Goblins behavior**, not identical kernel isolation across Linux and macOS.
+The old parent/child ownership tree **no longer exists** (see [ADR 0014](../adr/0014-raids-replace-the-ownership-tree.md)). Every Goblin has its own logical session and independent supervisor. A raid owner may run configured member Goblins into its raid if allowed by `allowedRunTargets`. They have separate sandbox access and can inherit selected runtime resources, but **must survive their creator leaving or stopping**.
 
-| Feature | Existing Linux behavior | Proposed macOS v1 |
+The daemon retains raid membership and control rights. The owner can stop members created within its raid, but cannot attach to another member's terminal. When an owner leaves and members remain, the raid pauses messaging until host intervention; member processes keep running. A new owner may assume control. Do not accidentally reintroduce parent-controlled termination when designing supervisor cleanup.
+
+Invariants:
+
+- The daemon allocates logical Goblin identity and authorizes raids/run targets; the supervisor owns only the corresponding runtime.
+- A failed supervisor stops *that Goblin's* execution and produces a session event. It does not automatically stop other Goblins, including created raid members.
+- Daemon death must still terminate its supervisors and sandboxes under the existing lifetime contract; a supervisor disappearing must not leave an uncontrolled agent running.
+- Resource inheritance (workspace, scope, dev-shell generation, approved outputs) needs a trusted handoff independent of a creator's ongoing lifetime. A separate supervisor cannot inherit an in-daemon Rust reference directly.
+- Shared Linux scopes have resource lifetime rules of their own; the daemon must not rely on namespace identities, PID/mount descriptors or Seatbelt details when deciding logical raid control.
+
+## Platform behavior and macOS v1
+
+The target is comparable **user workflow** rather than identical kernel isolation. Initial Darwin support should avoid features that demand substantial Linux namespace machinery.
+
+| Feature | Linux requirement | macOS v1 target |
 | --- | --- | --- |
-| Daemon, CLI/TUI, Emacs integration | Preserve | Required |
-| Multiple Goblins, children and raids | Preserve | Required |
-| Messaging, inboxes and agent integration | Preserve | Required |
-| Injected Goblins-only skills, hooks and settings | Preserve | Required; use platform-suitable injection |
-| Sandbox terminal, exec and lifecycle | Preserve | Required |
-| Initial Nix packages and restricted filesystem grants | Preserve | Required; use native sandbox policy |
-| Configurable Nix access | Keep current Linux policy unless deliberately changed | Allow configuration of Nix/store/daemon access, following upstream Darwin semantics |
-| Configurable host commands | No implied changes | Allow explicitly configured host tools subject to sandbox policy |
-| Live package requests | Preserve dynamic, enforced grants | **Deferred**; no claim of live-grant parity |
-| Flake dev shells and live refresh | Preserve | Deferred for v1 |
-| Shared scope network/PID namespaces and managed storage | Preserve | Deferred for v1 |
-| Goblins-managed rootless Docker | Preserve | Deferred for v1 |
-| Linux-specific mounts and syscalls | Existing behavior | No equivalent required for v1 |
+| Generic daemon, frontends and messaging/raids | Preserve existing behavior | Required |
+| Independent Goblins and owner-created raid members | Preserve latest raid semantics | Required |
+| Main workload and generic `onAttach`/`onDetach` lifecycles | Preserve (including Codex server/client and Claude direct PTY) | Required |
+| In-sandbox Codex and Claude adapters, hooks, skills and managed config | Preserve and keep provider-specific code sandbox-local | Required |
+| Agent-neutral activity, inboxes and operation notices | Preserve | Required |
+| Terminal connections, `goblins exec`, editor/TRAMP workflows | Preserve | Required where supported by native tools |
+| Initial packages and file grants | Preserve | Required using macOS sandbox policy |
+| `allowNix` | Preserve existing opt-in full-store and Nix-daemon semantics | Adapt as an explicit configuration option |
+| `hostCommands.enable` | Preserve **per-command approval** and managed host-job lifecycle | Adapt the existing approval workflow if practical for v1; never silently remove per-command approval |
+| `bypassPermissions` | Preserve the agent-config option and native default prompting behavior | Required for agent integrations |
+| Live package requests | Preserve enforced in-place mounts | Deferred; report unavailable rather than quietly relying on `PATH` |
+| Host-evaluated dev shells / live refresh | Preserve | Deferred |
+| Shared scope network/PID namespaces, scope storage | Preserve | Deferred |
+| Goblins-managed rootless Docker | Preserve | Deferred |
 
-Notes:
+- Reuse the existing `agent-sandbox.nix` Darwin Seatbelt design where useful. A fixed launch policy need not grow dynamically in macOS v1.
+- `allowNix` already exists: it exposes the full store and Nix daemon, a deliberate and substantial capability increase. Preserve the opt-in and its documented limitations, not a vague permission to add tools.
+- `hostCommands.enable` already exists: it permits **asking for an approved command to run on the host**, outside the Goblin sandbox. It is not the same feature as adding host command paths to the sandbox's `PATH`. Its approvals remain authoritative.
+- The adapter's selected skills should match supported operations; a Darwin Goblin without live grants should not be taught that it can request live packages.
+- `bypassPermissions` is an agent launch preference, not the sandbox security boundary. Preserve per-agent behavior without adding provider logic to daemon/supervisor.
+- Sandbox-only skills/hooks/settings must not rewrite the user's global agent configuration or casually copy authentication state.
+- If an option cannot be implemented safely on Darwin, expose an explicit capability/error and keep the Linux behavior intact.
 
-- On macOS, use the Seatbelt-based model already supported by `agent-sandbox.nix` where practical. A new execution policy is applied at sandbox launch, not dynamically expanded for live grants.
-- `allowNix` is a conscious relaxation: access to the Nix daemon and full store is broader than the current Goblins package grant model. It should be opt-in, clearly documented and distinct from mere ability to execute selected host commands.
-- Host commands must not silently imply access to arbitrary host files, sockets or services. Support should be explicit and platform-policy-controlled.
-- Sandbox-only skill/hook/config injection must not unintentionally modify the agent's ordinary host configuration, authentication or persistent conversation state.
-- Unsupported operations must be reported honestly. The daemon should rely on explicit supervisor capabilities, not silently approximate Linux behavior.
+## Phasing (guidance, not an implementation plan)
 
-## Phasing (non-prescriptive)
+1. **Move the Linux runtime behind a per-Goblin supervisor process** while preserving package grants, scopes, Docker, dev shells, current host jobs, raids and both attachment modes. Retain any Linux mount helper only as private supervisor implementation machinery.
+2. **Route all sandbox-facing requests and execution control through the supervisor** without moving the daemon's authorization, inbox, raid or frontend semantics into it. Eliminate direct in-daemon OS-specific resources.
+3. **Port only the generic runtime boundary to Darwin**: Seatbelt launch and static access grants, sandbox-client RPC proxy, sandbox init/exec, PTYs, process lifetime, generic attach handlers and configuration materialization.
+4. **Exercise real workflows** for interactive shell, Claude direct terminal, Codex server plus repeated attach clients, sandbox-local messaging/adapters and raid members that outlive their creator.
+5. **Evaluate deferred functionality separately** once a minimal native macOS version is usable, especially package requests, Nix evaluation/dev shells, scopes and Docker.
 
-1. **Define the boundary on Linux:** isolate the per-Goblin supervisor as an independent host process; move sandbox launch, low-level process ownership, sandbox endpoints and Linux-specific runtime operations out of the daemon. Preserve all existing Linux features and tested semantics.
-2. **Make daemon communication backend-agnostic:** route sandbox calls and supervisor events through the trusted boundary; preserve messaging, frontend behavior, child relationships and failure handling.
-3. **Introduce a minimal Darwin supervisor:** provide Seatbelt launch, initial tools, explicit host/Nix access, sandbox-specific configuration injection and process/terminal handling.
-4. **Validate user workflows end-to-end:** launch Codex/Claude or a shell; send messages; create children/raids; inject hooks/skills; attach terminals and use Emacs; stop and clean up without leaving host processes.
-5. **Reassess deferred features only as needed:** live package requests, dev shells, scoped resources or Docker should be independent follow-up decisions, not prerequisites for macOS v1.
+Do not prescribe crate layout, IPC implementation, helper binary names or file paths here. Consult current `master` and ongoing work before implementing these boundaries.
 
-Do not lock in crate boundaries, binary names, specific IPC transports, helper strategy or file layout before reviewing concurrent work in the repository.
+## Open questions for follow-up
 
-## Open questions for implementation review
+- What is the minimum trusted supervisor registration/identity and per-sandbox RPC proxy protocol that preserves the daemon's authorization semantics?
+- How do we transfer/hold shared workspace, scope and approved resources for raid-created members when the creator may stop immediately?
+- How much terminal screen state belongs to the daemon, versus PTY ownership and byte streaming in the supervisor?
+- How will the supervisor implement repeated `onAttach` clients and their lifecycle while preserving the main server's continuity, readiness variables and frontend behavior?
+- What is the smallest portable sandbox-init/process-supervision contract that supports `goblins exec`, terminal clients, cancellation and reliable descendant cleanup on both operating systems?
+- How should the existing approved host-job process guardian relate to the new per-Goblin supervisor, especially when the host command intentionally runs with broader host-user access?
+- How should Darwin represent injected files, mutable agent configuration and authentication without Linux mount overlays?
+- Which platform-specific capabilities should be advertised, and how will unsupported features be reflected in agent-injected instructions?
+- Which regression tests are backend-agnostic contracts and which should run only on Linux or Darwin?
 
-- How should the trusted supervisor identify itself to the daemon, and how are sandbox connections correlated without authority confusion?
-- Should the supervisor-to-daemon link multiplex calls and terminals, or use distinct data/control paths?
-- Which process is responsible for persistent terminal screen history versus OS-level PTY ownership?
-- What minimal portable sandbox-init interface is needed for `goblins exec`, TRAMP and cleanup across macOS/Linux?
-- How do child supervisors receive inherited workspace/configuration/resources without passing mutable authority through the daemon?
-- What exact host-command configuration and Nix-access semantics can be safely supported on Darwin?
-- How should agent-specific injected settings coexist with existing credentials and user configuration on macOS?
-- What level of descendant-process cleanup can native Darwin guarantee, especially for detached processes?
-- Which current Linux tests express platform-independent contracts, and which must become backend-specific?
+## Acceptance criteria and references
 
-## Compatibility and acceptance expectations
+This is a proposal, not a claim that any supervisor refactor is already implemented.
 
-This is a design proposal, not an implementation report. Before describing the migration as complete:
+- The daemon remains free of OS-specific sandbox lifecycle operations and provider-specific Codex/Claude integration drivers.
+- Every sandbox-to-daemon request crosses exactly its own trusted host supervisor; the daemon authenticates the session binding.
+- Generic attach handlers preserve **main workload vs attachment** lifetimes; a client leaving does not stop a server Goblin.
+- Raids preserve the current **independent member** lifecycle, including owner departure, pause, transfer and authorized member control.
+- The existing Linux sandbox, package requests, Nix access, scoped Docker, dev shells and approved host commands remain functional.
+- macOS can launch configured shells and agents with generic messaging, in-sandbox integrations, initial tools, supported file grants and terminal attachment, with unsupported live-grant features clearly identified.
+- Relevant tests cover identity/authority, terminal detach/reattach, daemon or supervisor failure, resource cleanup, and one Goblin operating without disturbing others.
 
-- The daemon contains no direct Bubblewrap, namespace, mount, seccomp or Seatbelt lifecycle code.
-- Every sandbox-originated daemon request crosses its session's host supervisor.
-- Existing Linux package requests, sandbox restrictions, scopes, Docker and dev-shell workflows remain available with no intentional regression.
-- Multiple Goblins can operate independently; an error or shutdown in one supervisor does not corrupt another's logical state.
-- macOS can run a configured shell or coding agent with the required sandbox-only integration, messaging, orchestration and terminal workflow, without requiring dynamic package grants.
-- Tests cover cross-session authority, cancellation, crashes, resource cleanup, messaging and basic agent launch on supported platforms.
-
-**Related current documentation:** [Architecture](../architecture/README.org), [Daemon design](DAEMON.org), [Agent integration](AGENT-INTEGRATION.org), [Sandbox access](SANDBOX-ACCESS.org), [Shared scopes ADR](../adr/0006-shared-scopes.md). These describe the *current* implementation unless updated separately.
+**Current references:** [API](../API.org), [Architecture](../architecture/README.org), [Agent integration](AGENT-INTEGRATION.org), [Sandbox access](SANDBOX-ACCESS.org), [ADR 0011 — Nix access](../adr/0011-nix-in-a-goblin.md), [ADR 0012 — approved host commands](../adr/0012-host-commands.md), [ADR 0013 — agent prompts](../adr/0013-agent-permission-bypass.md), [ADR 0014 — raids](../adr/0014-raids-replace-the-ownership-tree.md), [ADR 0016 — attach handlers](../adr/0016-server-and-client-goblins.md), [ADR 0017 — agent integration](../adr/0017-claude-integration-in-goblin.md). These references describe the **current** runtime, whereas this document specifies the proposed future supervisor boundary.

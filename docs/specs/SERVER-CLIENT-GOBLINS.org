@@ -1,0 +1,173 @@
+#+title: Server and client goblins: attach handlers, and Codex without the relay
+
+Status: accepted 2026-10-28 and recorded as [[file:../adr/0016-server-and-client-goblins.md][ADR 0016]], which supersedes the relay parts of [[file:../adr/0009-sandbox-owned-codex-delivery.md][ADR 0009]]. Implemented on branch =codex-server-client= (steps 2 to 4); the session-starting test suites and the merge gate are still to run.
+
+* Problem
+
+A Codex goblin runs three processes in its sandbox: =codex app-server=, the =goblins-codex= adapter, and the native terminal =codex --remote=, which reaches the server only through the adapter. The adapter relays every WebSocket frame between them ([[file:../../crates/codex/src/transport.rs][transport.rs]], =native_proxy= in [[file:../../crates/codex/src/main.rs][main.rs]]).
+
+Only two jobs need that position. The adapter learns which conversation the terminal shows from the terminal's own =thread/start=, =thread/resume= and =thread/fork= replies, and it rewrites the approval and sandbox policy on those requests. Inbox reminders (=thread/queue/add=) and activity already use the adapter's own server connection. The foreground detection guesses from native request ID formats pinned to Codex 0.162.1, and is the most version-fragile code in the integration.
+
+The native terminal also runs on one long-lived daemon PTY. A goblin started detached, such as a raid member, starts its terminal with nobody attached. Terminal queries at startup are then answered late or not at all: the background color (unshaded composer), the cursor position and keyboard support. Reattaching replays at most 64 KiB of raw output without a repaint, so the screen and scrollback can be garbled.
+
+Codex already separates server and client. Goblins should use that split instead of hiding it.
+
+* Decisions
+
+Agreed with the user on 2026-10-27:
+
+1. Goblins gets generic attach lifecycle handlers in configuration. =onAttach= starts a client on each attach and =onDetach= stops it. Handlers can reference goblin state with ={key}= placeholders, as =resumeCommand= does.
+2. When a goblin has =onAttach=, its main command runs in the background with no terminal, for the goblin's whole life. Without =onAttach=, goblins work exactly as today.
+3. Detaching stops the client, and the client exiting detaches. Quitting Codex detaches; it does not stop the goblin.
+4. One attachment at a time.
+5. The daemon waits for readiness before running =onAttach=. Readiness is generic configuration.
+6. A missing placeholder value at attach means something is broken. There is no fallback: the attach fails with an error and the user restarts the goblin. A resumed goblin whose recorded conversation no longer exists also fails rather than starting a new conversation.
+7. Inbox reminders should follow conversation switches made in the attached Codex terminal.
+8. Whether a late-attaching client receives a pending approval request is checked during implementation; it does not gate the plan.
+9. (2026-10-28) Following a conversation from the person's first message in it is enough; switching to a conversation without sending a message does not move reminders.
+10. (2026-10-28) Only the newest installed Codex is supported. Older versions, including the current 0.162.1 floor, are not tested; =mkCodexGoblin='s version floor rises to the installed version.
+
+* Design: generic attach handlers
+
+** Configuration
+
+=mkGoblin= gains two options. Both are absent by default, and the manifest carries them to the daemon like =resumeCommand=.
+
+#+begin_src nix
+mkGoblin {
+  # Unchanged: the main command, now run without a terminal because onAttach is set.
+  pkg = server; binName = "goblins-codex-server"; args = [ ];
+  resumeCommand = [ "--thread" "{session_id}" ];
+  onAttach = {
+    command = [ "${codex}/bin/codex" "--remote" "unix:///tmp/goblins-codex/app-server.sock" "resume" "{session_id}" ];
+    timeout = 30;       # seconds to wait for readiness; default 30
+    waitFor = [ ];      # extra variables to wait for, beyond the command's placeholders
+  };
+  onDetach = null;      # optional argument list; default hangs up the client's terminal
+}
+#+end_src
+
+Placeholders follow =resumeCommand=: ={key}= is a variable, ={{= and =}}= are literal braces, each element stays one argument and no shell is involved. =onAttach= and =onDetach= also accept =attach.pid=, the client's process ID inside the sandbox, which is meaningful only in =onDetach=. Handlers receive the goblin's variables as environment variables too (=GOBLIN_VAR_<KEY>=), so a script can use them.
+
+Validation rejects =onDetach= without =onAttach=, an empty command, unknown =attach.*= names and placeholders that are not valid variable names.
+
+** Variables for the current run
+
+Each live goblin already keeps its variables in =Active.variables= ([[file:../../crates/controller/src/controller.rs][controller.rs]]), also when the server has no history, and =sessions.set-variables= updates that map. A recreated goblin starts with that map seeded from its record, so a value in it does not show that this run reported it.
+
+The daemon adds a freshness set beside the map: the names =sessions.set-variables= has set to a value since this launch, empty at every launch. Removing a variable (an empty value) also removes it from the set. Both change in the same =sessions.set-variables= operation as the map. A name is ready when it is in the freshness set and has a value in =Active.variables=. Placeholders take their values from =Active.variables= as today. The map, its write-back to history and the =resumeCommand= substitution from recorded values are unchanged.
+
+** Lifecycle
+
+| Event | Behaviour |
+|-------+-----------|
+| Create | The main command (or =resumeCommand= on recreate) starts under =goblins-init= with stdin =/dev/null= and stdout/stderr to a bounded server log. Its exit ends the goblin. |
+| Attach | After the frontend's hello (below). Refused while another attachment exists. The daemon waits until every placeholder in =onAttach= and every =waitFor= name is ready, up to =timeout=, and checks again just before starting the client. It then creates a PTY with the frontend's size (below) and starts =onAttach= on it as a =goblins-init= exec: a session leader with that PTY as its controlling terminal, under its own keeper. It relays the PTY over the attachment stream. |
+| Attach wait fails | The attachment fails with a framed error naming the missing variables, the server log location and "restart the goblin". No client starts and the goblin keeps running. |
+| Frontend leaves during the wait | No client starts; the attachment slot is released. |
+| Detach requested | =goblins detach=, =goblin detach= (both =sessions.detach=), or the frontend closing; there is no detach key. With =onDetach=, the daemon first runs it (no terminal) and allows it 5 seconds. Then, or at once without =onDetach=, it cancels the client exec through =goblins-init= with =everything= set: the keeper's whole subtree gets SIGHUP, SIGTERM and SIGCONT, and SIGKILL after init's grace period. The goblin is detached once init reports the client exited; processes it left behind are cancelled. |
+| Client exits | The goblin becomes detached once init reports the client exited. =onDetach= does not run. Processes it left behind are cancelled as above. |
+| Stop, or main command exits | Cancel any client as above, then end the goblin as today. |
+| Recreate | =resumeCommand= applies to the main command. Attaching works as above. |
+
+The client is an init exec, so the existing keeper bookkeeping identifies its processes. Detach never signals a reused PID, the main command or other execs, and a client that ignores SIGHUP or leaves children behind cannot hold the single attachment slot: a leader that ignores SIGHUP and SIGTERM is killed after the grace period, and leftovers do not matter to the next attach, which gets a new PTY.
+
+An attached launch (=goblins run= without =--detached=) is create followed by attach.
+
+** Attachment handshake
+
+Two parts of the handshake change. The host CLI changes in the same step; Emacs attaches by running =goblins attach= in a terminal, so it follows the CLI.
+
+- *Hello.* Today the daemon attaches an accepted socket at once and the frontend only reads a result ([[file:../../crates/controller/src/terminal.rs][terminal.rs]], [[file:../../crates/controller/src/attachment.rs][attachment.rs]]), so the daemon cannot tell an old frontend from a new one. New frontends therefore use a second socket, =attach.sock=, next to =terminal.sock=, whose path =sessions.get= returns. On it, the frontend writes a framed =attach.hello= first, with its protocol version and terminal size (=rows=, =cols=). The daemon reads it, bounded by =rpc::TIMEOUT=, before reserving the attachment, waiting or starting a client. It serves every goblin, so frontends use it whenever the daemon advertises the new =attach-handlers= feature. =terminal.sock= keeps today's protocol for goblins without =onAttach=. For a server goblin it answers with a framed error result asking to upgrade the frontend, which an old frontend reads as its handshake result and shows. Neither socket ever has to guess whether hello bytes are terminal input.
+- *Size.* The hello's size belongs to this attachment attempt. The client's PTY is created with it, so a reattach from a differently sized terminal starts at the right size. A concurrent or refused attach cannot change the running client's size. Later resizes go through =sessions.resize= as today.
+- *Waiting.* The CLI bounds the first handshake byte to =rpc::TIMEOUT= (3 seconds), shorter than a readiness wait. Only after a valid hello, the daemon sends a framed =attach.waiting= notification at once and repeats it every second. The frontend shows "starting…" and extends its deadline to the next notification. The daemon then sends the existing success result after the client has started, or a framed error on timeout. Raw terminal bytes start only after the success result.
+** What does not apply in this mode
+
+The single-PTY features stay for goblins without =onAttach= (Claude, shells) and do not apply to server goblins: retained output and its replay, and the terminal-readiness view used for terminal wakeups. A fresh client asks the attached terminal itself. The same holds for the color-query answering, palette inheritance and input-mode restore on the unmerged =codex-attach-issues= branch: server goblins do not need them.
+
+** Attachment state for the goblin
+
+The goblin learns whether a client is attached: =sessions.status= gains =attached= (boolean) and =attached_since= (Unix milliseconds when the current attachment's client started, or null), and =goblin status= prints them. Codex uses it to follow switches only while attached (below).
+
+* Design: Codex as a server goblin
+
+** Processes
+
+The main command is a server launcher. It starts =codex app-server --listen unix:///tmp/goblins-codex/app-server.sock= with the current server options (sandbox =danger-full-access=, =approval_policy="never"= with =bypassPermissions=, =--enable hooks=, profile and =-c= options, optional MCP filtering), then starts =goblins-codex run=. It ends when either the App Server or =goblins-codex= exits, with that process's status, so a conversation that cannot be loaded (decision 6) or an adapter crash stops the goblin. =goblins-codex= keeps its single App Server connection and has no native socket. The managed SessionStart hook is removed; your own hooks still run.
+
+=onAttach= is native =codex --remote unix:///tmp/goblins-codex/app-server.sock resume {session_id}=, through a small script that sets the goblin's =CODEX_HOME=.
+
+The =codex= on =PATH= inside the sandbox stays a small wrapper, like today's utility-subcommand passthrough, for every invocation: it runs native Codex with its own engine and adds =--sandbox danger-full-access=, =--ask-for-approval never= when the goblin bypasses permissions, and =--enable hooks=. It never connects to the goblin's server, so =codex= or =codex exec= from =goblins exec= keeps working with the goblin's policy and cannot rebind the goblin.
+
+** The goblin's conversation
+
+=goblins-codex= owns the conversation. At start it either creates a conversation with =thread/start= (fresh goblin) or loads the recorded one with =thread/resume= (=--thread ID= from =resumeCommand=). It sets the goblin's policy on that request, verifies it as today and repairs it with =thread/settings/update= when a loaded thread ignored it.
+
+A fresh conversation has no saved rollout until its first turn, and another client's =thread/resume= then fails with "no rollout found" (=Server::bind= already handles this case). =goblins-codex= therefore names a fresh conversation after the goblin's agent name with =thread/name/set=, which saves it without a model turn (checked on 0.164.0: =thread/name/set= and =thread/inject_items= make it resumable from a second connection; =thread/metadata/update= and =historyMode= do not).
+
+Then it records =session_id= and =session_name= for the current run. That recording is what makes attach ready. If loading the recorded conversation fails, =goblins-codex= exits with the error and the server launcher stops the goblin (decision 6).
+
+Because the conversation is already loaded with the right policy, the client's =resume= joins it as it is.
+
+** Following the attached terminal
+
+Switches follow the attached terminal (decision 7) from the person's first message in a conversation (decision 9). There is one rule, for new and resumed conversations alike:
+
+- A user message in thread X that started during the current attachment (its =startedAtMs= is at or after =attached_since=) rebinds to X, unless its =clientId= is one of =goblins-codex='s own reminder submissions. A reminder in the old thread therefore never switches the binding, and every message the person sends, typed or from the native queue, does. Messages from before the attachment, including old history and anything sent while detached, never rebind. When several qualify, the one with the latest =startedAtMs= wins, so a late catch-up cannot override a newer message.
+
+To see those messages, =goblins-codex= joins every user thread (not ephemeral, not a subagent) with =thread/resume= without overrides. It discovers threads through =thread/started=, =thread/loaded/list= at each inbox poll and the global =thread/status/changed= events. A new thread cannot be joined until its first turn saves it, and that turn may already have finished by then. So on joining, and after any reconnect, =goblins-codex= catches up: it reads the thread's items with =thread/items/list= (newest first, stopping before =attached_since=) and applies the same rule to user messages it has not seen, whether their turn is running or finished. Each thread keeps a watermark (the newest item seen), and live =item/started= events and catch-up are deduplicated by item ID. These discovery signals never rebind by themselves. On the installed Codex an interrupted first turn keeps no user message, so a conversation whose first turn is interrupted before =goblins-codex= joins it is followed only from its next message.
+
+The ledger keeps the =clientId= of each thread's recent reminder submissions after they complete, at least for the current attachment and bounded to the newest 64 per thread. Today it keeps only the pending one and clears it when the thread goes idle ([[file:../../crates/codex/src/lib.rs][lib.rs]]). A reminder that catch-up reads after it finished is still recognised. Item events are new to =goblins-codex=: =Server::event= ignores them today.
+
+Codex runs SessionStart once per in-memory session, not on each rejoin, and resuming does not raise =thread/started= (Codex 0.163.0 source). The message rule needs neither, so it also covers rejoining a conversation that is still loaded. SessionStart is no longer used for binding.
+
+Until the person's first message, reminders keep going to the previously bound conversation. After a rebind, =goblins-codex= applies the goblin's policy with =thread/settings/update=, re-reads it, and records the new =session_id= and =session_name=. The remaining confusion is a second client connected by hand to the internal socket while the goblin is attached. That is documented as unsupported, and =goblins-codex bind THREAD= rebinds by hand.
+
+** Policy
+
+Codex's own command sandbox cannot run inside a goblin, so every thread is full access and Goblins remains the boundary. The approval policy rules are unchanged: =never= with =bypassPermissions=, else the configured policy for the thread's directory, default =on-request=. A policy applied a moment after a switch can cost an extra approval prompt or a failed command, not an escape.
+
+** Delivery, activity and controls
+
+Unchanged from ADR 0009: =inbox.status= every 500 ms, one outstanding =thread/queue/add= reminder per thread, the ledger and reconciliation, three retries at least 30 seconds apart without progress, =pause=, =resume= and =status=, and activity through =sessions.set-state= with ten-second heartbeats. The foreground-ownership checks go away; the binding comes only from =goblins-codex=.
+
+** Resume
+
+=mkCodexGoblin='s default =resumeCommand= becomes =literal args ++ [ "--thread" "{session_id}" ]=, passed to the server launcher. The current refusal of =--sandbox= and =--ask-for-approval= with =resume= disappears with the client argument handling.
+
+** Arguments
+
+=args= become server options only: =-c=, =--enable=, =--disable= and =-p=. Prompts, subcommands and permission flags in =args= are rejected at build time. An initial prompt is out of scope.
+
+** Removed
+
+- =native_proxy=, =NativeConnection=, =NativeForeground=, the request-identity rules and =transport.rs=.
+- The launcher's native client start and its resume flag checks. The utility passthrough becomes the =PATH= wrapper.
+- =native-thread.json=, the managed SessionStart hook ([[file:../../nix/goblins/codex/hooks.nix][hooks.nix]], =hook.sh=, =goblins-codex hook=), and the 16-connection and picker handling.
+- Relay-only tests: [[file:../../tests/test_codex_proxy.py][test_codex_proxy.py]] and the relay cases in [[file:../../tests/test_codex_native.py][test_codex_native.py]]. The native policy, repair, delivery and resume cases move to the new topology instead of being dropped.
+
+* Implementation steps
+
+Each step is its own reviewed commit with its documentation, following AGENTS.md. Feature tasks come from =just test-plan= for each step; =just test-merge= runs on the final candidate.
+
+1. *ADR 0016.* Records the decisions above and marks the relay parts of ADR 0009 superseded. Documentation only.
+2. *Freshness set.* Names set to a value by =sessions.set-variables= since launch, empty at every launch, removed again with the variable, updated in the same operation as =Active.variables=. Tests: a recreated goblin's seeded variables are not fresh until it sets them again; setting them makes them fresh with and without history ownership; set then clear leaves the name not ready; history write-back and =resumeCommand= substitution are unchanged. Docs: API.org, USAGE.org.
+3. *Attach handlers in the daemon.* Nix options and validation, manifest schema, server-mode launch (no PTY, server log), the client as a =goblins-init= exec on a per-attach PTY, readiness wait over the freshness set, =attach.sock= with =attach.hello= (version and size) and =attach.waiting=, the =attach-handlers= feature, the upgrade error on =terminal.sock= for server goblins, =onDetach= and cancellation of the client's subtree, client exit = detach, one attachment, =attached= in =sessions.status=. The host CLI changes in this step; Emacs runs it. Tests use a shell-script server and client, no Codex: readiness taking longer than 3 seconds, readiness timeout, a required variable cleared during the wait, frontend leaving during the wait, reattach from a differently sized CLI and Emacs terminal, a refused second attach not resizing the running client, single-PTY goblins attaching through both sockets, detach with a client that ignores SIGHUP and SIGTERM and one that leaves a child behind (main command and unrelated execs untouched), client exit detaches, second attach refused, stop cancels the client, recreate with =resumeCommand=, an older frontend refused. Docs: API.org, USAGE.org (Nix API, attach), architecture workflows and daemon.org.
+4. *Codex cutover.* One commit, since the adapter and the launcher depend on each other: =goblins-codex= without the relay (own and name the conversation, record each run, subscribe to loaded user threads and follow switches while attached, =bind=, delivery and activity unchanged), removal of the managed SessionStart hook, the server launcher, =onAttach=, the =PATH= wrapper, the new =resumeCommand= default and argument validation. Tests: adapter tests against the offline App Server fixture in [[file:../../tests/fake_codex.py][fake_codex.py]], [[file:../../tests/test_codex_config.py][test_codex_config.py]], and native smoke tests with synthetic credentials, which cover what the fixture cannot: first attach to a fresh goblin before any turn, detach, reattach, quit = detach, a new conversation while attached (bound at its first message, including the turn that saves it) and while detached (never bound), a new conversation whose first turn completes before =goblins-codex= can join it, a reminder in the old thread that has completed before catch-up reads it, old history and messages sent while detached not rebinding, resuming an unloaded conversation while attached, the rejoin sequence (first turn in A, switch to B, resume still-loaded A, next message in A rebinds to A), a reminder turn in the old thread not switching the binding, =codex= run by =goblins exec= not affecting the binding, a real =codex exec= through the =PATH= wrapper with the goblin's policy, recreate, missing conversation fails, and pending approval on late attach. The existing native policy, repair and delivery cases move to the new topology. Docs: USAGE.org Codex configuration, AGENT-INTEGRATION.org, architecture components.
+5. *tests/features.toml.* Updated in each step that adds or removes tests; =just test-feature-check= stays clean.
+
+* Checks during implementation
+
+- A pending approval or user-input request reaches a client that attaches after it was raised (decision 8). If not, the plan needs a way to surface it before relying on detached turns.
+- =goblins-codex= receives user message items, with their =clientId=, for threads it joined with =thread/resume=, and joining a thread the terminal has loaded does not change it.
+- =thread/items/list= entries carry =startedAtMs= and stable item IDs on the installed Codex (0.164.0 schema: =ThreadItemEntry= has =startedAtMs=, =completedAtMs=, =turnId=).
+- =thread/name/set= saves a fresh conversation on the installed Codex, and a remote client resuming it shows an empty conversation normally.
+- A remote client exiting or being hung up leaves the server and its loaded thread untouched.
+- A remote =resume= client draws the conversation's full history.
+- Whether Codex keeps an unsent composer draft across a client restart. If not, detach loses it; document that.
+
+* Risks
+
+- The App Server protocol remains experimental. The plan depends on less of it (no request ID formats), but =thread/started= broadcast and =thread/settings/update= still need the native smoke tests on every Codex upgrade.
+- The server log replaces visible terminal output for a detached goblin. Its location must be easy to find from attach errors and =goblins status=.
+- Emacs and the TUI now see quitting the agent as a detach. Their stop actions must stay obvious.

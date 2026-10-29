@@ -49,7 +49,7 @@
       (unless found (forward-line 1)))
     (should found)))
 
-(ert-deftest goblins-details-are-separate-from-tree-expansion ()
+(ert-deftest goblins-details-are-separate-from-section-folding ()
   (goblins-test--buffer
     (should buffer-read-only)
     (should (string-match-p "Agents (1)" (buffer-string)))
@@ -180,12 +180,12 @@
     ;; TAB folds the summary, and expanded sections survive updates.
     (goto-char (point-min))
     (search-forward "Dev shell refresh")
-    (goblins-toggle-tree)
+    (goblins-toggle-section)
     (should (cdar (goblins-test--sections 'goblins-summary-section)))
-    (goblins-toggle-tree)
+    (goblins-toggle-section)
     (goto-char (point-min))
     (re-search-forward "^Other changes")
-    (goblins-toggle-tree)
+    (goblins-toggle-section)
     (goblins--render)
     (should (equal (cdr (assoc '(other-diff "devshell") (goblins-test--sections 'goblins-diff-section)))
                    nil))))
@@ -254,12 +254,12 @@
                              ("k" . magit-section-backward)
                              ("h" . magit-section-hide)
                              ("l" . magit-section-show)
-                             ("TAB" . goblins-toggle-tree)
-                             ("<tab>" . goblins-toggle-tree)
+                             ("TAB" . goblins-toggle-section)
+                             ("<tab>" . goblins-toggle-section)
                              ("RET" . goblins-details)
                              ("t" . goblins-visit)
                              ("b" . goblins-back)
-                             ("za" . goblins-toggle-tree)
+                             ("za" . goblins-toggle-section)
                              ("a" . goblins-accept)
                              ("d" . goblins-deny)
                              ("r" . goblins-refresh)
@@ -381,59 +381,50 @@
       (should section)
       (goto-char (oref section start)))))
 
-(ert-deftest goblins-hierarchy-folds-preserve-identity-and-stopped-ancestry ()
+(ert-deftest goblins-flat-agents-preserve-identity-and-move-stopped-ones ()
   (goblins-test--buffer
     (setq goblins--snapshot
-          '(:sessions [(:id "leaf" :parent "kid" :agent_name "leaf" :name "shell" :state "running")
-                       (:id "parent" :agent_name "parent" :name "shell" :state "running")
-                       (:id "other" :agent_name "other" :name "shell" :state "running")
-                       (:id "kid" :parent "parent" :agent_name "kid" :name "shell" :state "running")
-                       (:id "other-kid" :parent "other" :agent_name "kid" :name "shell" :state "running")]
+          '(:sessions [(:id "leaf" :agent_name "leaf" :name "shell" :state "running")
+                       (:id "chief" :agent_name "chief" :name "shell" :state "running")
+                       (:id "kid" :agent_name "kid" :name "shell" :state "running"
+                        :created_by (:id "chief" :agent_name "chief"))]
             :permissions []))
     (goblins--render)
-    (should (string-match-p "  host\n  ├─ parent" (buffer-string)))
-    (should (string-match-p "  │  └─ kid" (buffer-string)))
-    (should (string-match-p "  │     └─ leaf" (buffer-string)))
-    (should (string-match-p "  └─ other" (buffer-string)))
-    (goblins-test--goto-agent "leaf")
-    (should-not (invisible-p (point)))
-    (should (equal (oref (oref (magit-current-section) parent) value) "kid"))
+    (should (string-match-p "Agents (3)\n  leaf +running.*\n  chief +running.*\n  kid +running"
+                            (buffer-string)))
+    (should-not (string-match-p "host\\|├\\|└" (buffer-string)))
     (goblins-test--goto-agent "kid")
-    (should-not (oref (magit-current-section) hidden))
-    (magit-section-hide (magit-current-section))
-    ;; A sibling inserted ahead of the selected branch cannot move selection.
+    (should (equal (oref (oref (magit-current-section) parent) value) 'agents))
+    ;; A goblin inserted ahead of the selected one cannot move selection.
     (plist-put goblins--snapshot :sessions
-               (vconcat [(:id "new" :parent "parent" :agent_name "new" :name "shell" :state "running")]
+               (vconcat [(:id "new" :agent_name "new" :name "shell" :state "running")]
                         (plist-get goblins--snapshot :sessions)))
     (goblins--render)
     (should (equal (oref (magit-current-section) value) "kid"))
-    (should (oref (magit-current-section) hidden))
-    (goblins-test--goto-agent "leaf")
-    (should (invisible-p (point)))
-    ;; A stopped child stays in its live parent's branch.
-    (plist-put (aref (plist-get goblins--snapshot :sessions) 1) :state "stopped")
+    ;; A stopped goblin moves to collapsed history, whoever created it.
+    (plist-put (aref (plist-get goblins--snapshot :sessions) 2) :state "stopped")
     (goblins--render)
-    (goblins-test--goto-agent "leaf")
-    (should (equal (oref (oref (magit-current-section) parent) value) "kid"))
-    ;; Once the whole branch stops it moves intact to collapsed history.
-    (seq-doseq (agent (plist-get goblins--snapshot :sessions))
-      (when (member (plist-get agent :id) '("parent" "kid" "new"))
-        (plist-put agent :state "stopped")))
-    (goblins--render)
-    (goblins-test--goto-agent "parent")
+    (should (string-match-p "Agents (3)" (buffer-string)))
+    (should (string-match-p "Stopped agents (1)" (buffer-string)))
+    (goblins-test--goto-agent "chief")
     (should (equal (oref (oref (magit-current-section) parent) value) 'stopped))
     (should (invisible-p (point)))
     (goblins-test--goto-agent "kid")
-    (should (equal (oref (oref (magit-current-section) parent) value) "parent"))))
-
-(ert-deftest goblins-partial-tree-and-request-paths ()
-  (let* ((records '((:id "orphan" :parent "missing") (:id "a" :parent "b") (:id "b" :parent "a")))
-         (trees (goblins--agent-forest records)))
-    (should (= 3 (apply #'+ (mapcar #'goblins--tree-count trees)))))
-  (goblins-test--buffer
-    (plist-put (aref (plist-get goblins--snapshot :sessions) 0) :path "parent/snikk")
+    (should (equal (oref (oref (magit-current-section) parent) value) 'agents))
+    ;; Details name the goblin's creator and its auto-approved packages.
+    (plist-put (aref (plist-get goblins--snapshot :sessions) 3) :auto_approve ["jq" "ripgrep"])
     (goblins--render)
-    (should (string-match-p "parent/snikk  hello" (buffer-string)))))
+    (goblins-test--goto-agent "kid")
+    (goblins-details)
+    (should (string-match-p "Created by: +chief" (buffer-string)))
+    (should (string-match-p "Auto: +jq, ripgrep" (buffer-string)))
+    (should-not (string-match-p "Parent" (buffer-string)))))
+
+(ert-deftest goblins-request-labels-use-agent-names ()
+  (goblins-test--buffer
+    (plist-put (aref (plist-get goblins--snapshot :sessions) 0) :agent_name "gribble")
+    (goblins--render)
+    (should (string-match-p "gribble  hello" (buffer-string)))))
 
 (ert-deftest goblins-terminal-links-use-session-identities ()
   (goblins-test--buffer
@@ -493,7 +484,11 @@
             (should (string-match-p "flake\\.nix as the dev shell\\? \\'" (car prompts)))
             (setq answer t)
             (should (equal (goblins--launch-location)
-                           (cons root (directory-file-name (file-truename root))))))
+                           (cons root (directory-file-name (file-truename root)))))
+            ;; A configuration with allowNix runs nix develop itself.
+            (setq prompts nil)
+            (should (equal (goblins--launch-location t) (cons root nil)))
+            (should-not prompts))
           (setq prompts nil)
           ;; Outside a project: the current directory, never a dev shell.
           (write-region "{}" nil (expand-file-name "flake.nix" outside))
@@ -792,54 +787,6 @@ history, without a terminal; print the new goblin's ID."
       (when (derived-mode-p 'goblins-status-mode) (kill-buffer (current-buffer)))
       (kill-buffer source))))
 
-(defun goblins-test-tree-live ()
-  "Check nested status sections against an isolated real daemon."
-  (let ((parent (getenv "GOBLINS_TEST_PARENT"))
-        (kid (getenv "GOBLINS_TEST_CHILD"))
-        (leaf (getenv "GOBLINS_TEST_LEAF")))
-    (unwind-protect
-        (progn
-          (goblins-status (getenv "GOBLINS_TEST_STATE"))
-          (goblins-test--wait (lambda () goblins--subscription))
-          (should (string-match-p "  host\n  ├─ parent" (buffer-string)))
-          (should (string-match-p "  │     └─ leaf" (buffer-string)))
-          (goblins-test--goto-agent leaf)
-          (should-not (invisible-p (point)))
-          (should (equal (oref (oref (magit-current-section) parent) value) kid))
-          (goblins-test--goto-agent kid)
-          (should (equal (oref (oref (magit-current-section) parent) value) parent))
-          (magit-section-hide (magit-current-section))
-          (goblins-details)
-          (should (string-match-p (concat "Session:.*" (regexp-quote kid)) (buffer-string)))
-          (should-not (string-match-p "Startup:" (progn (goblins-back) (buffer-string))))
-          (should (oref (magit-current-section) hidden))
-          (goblins-details)
-          (jsonrpc-request goblins--connection 'sessions.stop (list :session leaf))
-          (goblins-test--wait
-           (lambda () (equal (plist-get
-                             (cl-find leaf (plist-get goblins--snapshot :sessions)
-                                      :key (lambda (a) (plist-get a :id)) :test #'equal)
-                             :state) "stopped")))
-          (should (equal (oref (magit-current-section) value) kid))
-          (goblins-back)
-          (should (oref (magit-current-section) hidden))
-          (goblins-test--goto-agent leaf)
-          (should (invisible-p (point)))
-          (should (equal (oref (oref (magit-current-section) parent) value) kid))
-          (jsonrpc-request goblins--connection 'sessions.stop
-                           (list :session parent :kill_children t))
-          (goblins-test--wait
-           (lambda () (not (cl-some
-                            (lambda (a) (and (member (plist-get a :id) (list parent kid leaf))
-                                             (not (equal (plist-get a :state) "stopped"))))
-                            (append (plist-get goblins--snapshot :sessions) nil)))))
-          (goblins-test--goto-agent parent)
-          (should (equal (oref (oref (magit-current-section) parent) value) 'stopped))
-          (should (invisible-p (point)))
-          (goblins-test--goto-agent leaf)
-          (should (equal (oref (oref (magit-current-section) parent) value) kid)))
-      (when (derived-mode-p 'goblins-status-mode) (kill-buffer (current-buffer))))))
-
 ;; Run against an isolated real daemon from tests/test_emacs.py.
 (defun goblins-test-live ()
   (let ((directory (getenv "GOBLINS_TEST_STATE")))
@@ -954,7 +901,7 @@ history, without a terminal; print the new goblin's ID."
   (list (goblins-test--session "session-a" :cwd "/p/one"
                                :raid '(:id "r1" :name "zeta"))
         (goblins-test--session "session-b" :cwd "/p/two")
-        (goblins-test--session "session-c" :cwd "/p/one" :parent "session-a"
+        (goblins-test--session "session-c" :cwd "/p/one"
                                :raid '(:id "r1" :name "zeta"))
         (goblins-test--session "session-d" :cwd "/p/two"
                                :raid '(:id "r0" :name "alpha"))
@@ -976,11 +923,11 @@ history, without a terminal; print the new goblin's ID."
 (ert-deftest goblins-sidebar-groups-by-raid-then-directory ()
   (goblins-test--sidebar goblins-test--raid-sessions
     ;; Raids first, then directories; a blank line before each group, and a
-    ;; rule before each child goblin at its indent.
+    ;; rule between goblins of a group.
     (should (equal (goblins-test--sidebar-plain)
                    (concat "▾ raid alpha\n  ▾ /p/two/\n    session-d (shell)\n"
                            "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    session-a (shell)\n"
-                           "    ! hello (package)\n    ──\n      session-c (shell)\n"
+                           "    ! hello (package)\n  ──\n    session-c (shell)\n"
                            "\n▾ /p/two/\n  session-b (shell)\n"
                            "\n▾ unknown\n  session-e (shell)\n")))))
 
@@ -990,9 +937,9 @@ history, without a terminal; print the new goblin's ID."
           (list (goblins-test--session "chief" :cwd "/p" :name "claude"
                                        :agent_state "working" :agent_state_since since
                                        :inbox 2 :shells 2 :execs 1)
-                (goblins-test--session "scout" :cwd "/p" :parent "chief" :name "codex"
+                (goblins-test--session "scout" :cwd "/p" :name "codex"
                                        :agent_state "waiting-approval" :agent_state_since since)
-                (goblins-test--session "helper" :cwd "/p" :parent "chief"
+                (goblins-test--session "helper" :cwd "/p"
                                        :agent_state "idle" :inbox 1)
                 (goblins-test--session "beta" :cwd "/p" :state "starting")
                 (goblins-test--session "old" :cwd "/p" :name "claude"
@@ -1012,16 +959,16 @@ history, without a terminal; print the new goblin's ID."
         (should (equal (goblins-test--sidebar-plain)
                        (concat "▾ /p/ !2\n  chief (claude)\n  ◐ working · 4m\n"
                                "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · Tramp connected\n"
-                               "  ──\n    scout (codex)\n    ◆ needs approval · 4m\n"
-                               "    ! docker\n"
-                               "  ──\n    helper (shell)\n    ○ idle\n    ✉ 1 message\n"
+                               "──\n  scout (codex)\n  ◆ needs approval · 4m\n"
+                               "  ! docker\n"
+                               "──\n  helper (shell)\n  ○ idle\n  ✉ 1 message\n"
                                "──\n  beta (shell)\n  ◌ starting\n"
                                "──\n  ✗ old (claude) · exited 1\n")))
-        ;; Rules before children are fainter.
+        ;; Every rule looks the same: no goblin nests under another.
         (should (equal (cl-loop for pos from (point-min) below (point-max)
                                 when (get-text-property pos 'goblins-rule)
                                 collect (get-text-property pos 'face))
-                       '(goblins-sidebar-child-separator goblins-sidebar-child-separator
+                       '(goblins-sidebar-separator goblins-sidebar-separator
                          goblins-sidebar-separator goblins-sidebar-separator)))
         (goto-char (point-min))
         (re-search-forward "working")
@@ -1033,7 +980,7 @@ history, without a terminal; print the new goblin's ID."
 (ert-deftest goblins-sidebar-moves-past-a-goblins-details-in-one-step ()
   (goblins-test--sidebar
       (list (goblins-test--session "chief" :cwd "/p" :agent_state "working" :inbox 1)
-            (goblins-test--session "scout" :cwd "/p" :parent "chief" :agent_state "idle")
+            (goblins-test--session "scout" :cwd "/p" :agent_state "idle")
             (goblins-test--session "beta" :cwd "/p"))
     (goto-char (point-min))
     (let ((stops nil))
@@ -1437,7 +1384,7 @@ keeps the parameters of windows that live on."
         (should (string-match-p "Reason: +Try a live grant" (buffer-string)))
         ;; a decides the request shown.
         (cl-letf (((symbol-function 'goblins--decide-record)
-                   (lambda (record approved) (setq decided (list (plist-get record :id) approved)))))
+                   (lambda (record approved &optional _shown) (setq decided (list (plist-get record :id) approved)))))
           (goblins-request-popup-accept))
         (should (equal decided '("a" t))))
       ;; A goblin with nothing waiting closes it.
@@ -1467,7 +1414,7 @@ keeps the parameters of windows that live on."
 
 (ert-deftest goblins-editor-files-wait-for-approval-before-requests ()
   (require 'server)
-  (goblins-test--workspace (list (goblins-test--session "session-a" :path "gribble"))
+  (goblins-test--workspace (list (goblins-test--session "session-a" :agent_name "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
           (goblins--pending-edits nil)
           (client (start-process "goblins-test-client" nil "sleep" "60"))
@@ -1707,7 +1654,7 @@ keeps the parameters of windows that live on."
     (let (decided)
       (terminal "session-a")
       (cl-letf (((symbol-function 'goblins--decide-record)
-                 (lambda (record approved) (setq decided (list (plist-get record :id) approved)))))
+                 (lambda (record approved &optional _shown) (setq decided (list (plist-get record :id) approved)))))
         (goblins-select-goblin source "session-a")
         (should (eq (window-buffer) (terminal "session-a")))
         (goblins-request-popup-deny)
@@ -1728,7 +1675,7 @@ keeps the parameters of windows that live on."
                          (goblins--main-windows)))))
 
 (ert-deftest goblins-editor-files-open-right-of-their-goblin ()
-  (goblins-test--workspace (list (goblins-test--session "session-a" :path "gribble"))
+  (goblins-test--workspace (list (goblins-test--session "session-a" :agent_name "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
           (file (generate-new-buffer " *goblin file*"))
           (name (buffer-name source)))
@@ -1767,7 +1714,7 @@ keeps the parameters of windows that live on."
                                             :raid '(:id "r1" :name "crew" :owner "session-b"))
                                            (goblins-test--session "session-b" :cwd "/p/one"))
                          :raids [(:id "r1" :name "crew"
-                                  :members [(:path "session-a") (:path "session-b")])]
+                                  :members [(:id "session-a" :agent_name "session-a") (:id "session-b" :agent_name "session-b")])]
                          :permissions (vconcat ,snapshot-permissions))))
            ,@body)
        (dolist (name (list goblins--info-buffer-name goblins--permissions-buffer-name))
@@ -1810,7 +1757,7 @@ keeps the parameters of windows that live on."
   (goblins-test--view (list (goblins-test--request-in "r1" "session-a" "pending"))
     (let (decided)
       (cl-letf (((symbol-function 'goblins--decide-record)
-                 (lambda (record approved)
+                 (lambda (record approved &optional _shown)
                    (setq decided (list (current-buffer) (plist-get record :id) approved)))))
         (with-current-buffer (goblins-permissions-buffer source "session-a")
           (goblins-permissions-accept)
@@ -1903,9 +1850,9 @@ keeps the parameters of windows that live on."
              goblins--snapshot
              (plist-put goblins--snapshot :raids
                         [(:id "r1" :name "crew" :owner "session-a"
-                          :members [(:id "session-a" :path "session-a" :name "shell"
+                          :members [(:id "session-a" :agent_name "session-a" :name "shell"
                                      :state "running" :owner t)
-                                    (:id "session-b" :path "session-b" :name "shell"
+                                    (:id "session-b" :agent_name "session-b" :name "shell"
                                      :state "running" :owner :json-false :role "reviewer")])])))
      (goblins--sidebar-render)
      ,@body))
@@ -1997,12 +1944,86 @@ keeps the parameters of windows that live on."
                 (cl-letf (((symbol-function 'y-or-n-p)
                            (lambda (prompt) (setq asked prompt) nil)))
                   (goblins-raid-kick))
-                (should (string-match-p "dissolves the raid" asked))
+                (should (string-match-p "pauses the raid" asked))
                 (should-not calls))
               (goto-char (point-min))
               (re-search-forward "session-c")
               (should-error (goblins-raid-kick) :type 'user-error))
           (kill-buffer page))))))
+
+(ert-deftest goblins-raid-page-and-status-warn-when-the-log-fails ()
+  (should-not (goblins--messaging-warning '(:messaging (:audit_failed :false
+                                                        :raid_audit_failed :false))))
+  (should-not (goblins--messaging-warning '(:sessions [])))
+  (should (string-prefix-p "Messaging stopped"
+                           (goblins--messaging-warning
+                            '(:messaging (:audit_failed t :raid_audit_failed t)))))
+  (goblins-test--raid-sidebar
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :messaging '(:audit_failed :false
+                                                      :raid_audit_failed t))))
+    (let ((page (goblins-raid-buffer source "crew")))
+      (unwind-protect
+          (with-current-buffer page
+            (should (string-match-p "^Raid messages stopped: raid events could not be logged"
+                                    (buffer-string))))
+        (kill-buffer page)))
+    (with-temp-buffer
+      (let ((inhibit-read-only t))
+        (goblins--insert-messaging-warning (buffer-local-value 'goblins--snapshot source)))
+      (should (eq (get-text-property (point-min) 'face) 'goblins-attention)))))
+
+(ert-deftest goblins-raid-page-makes-the-member-at-point-owner ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (let ((page (goblins-raid-buffer source "crew")))
+        (unwind-protect
+            (with-current-buffer page
+              (goto-char (point-min))
+              (re-search-forward "session-b (shell)")
+              (goblins-raid-set-owner)
+              ;; The page's raid ID and generation go with it.
+              (should (equal (pop calls)
+                             '(raids.set_owner :raid "crew" :session "session-b"
+                                               :id "r1" :generation nil)))
+              (goto-char (point-min))
+              (re-search-forward "session-a (shell)")
+              (should-error (goblins-raid-set-owner) :type 'user-error)
+              (should-not calls))
+          (kill-buffer page))))))
+
+(ert-deftest goblins-raid-owner-prompt-resumes-or-dissolves-as-it-saw-the-raid ()
+  (let ((record '(:kind "raid-owner" :id "r9" :state "pending" :package "crew"
+                  :preview (:raid "i-raid1" :name "crew" :generation 3
+                            :former_owner (:id "s1" :agent_name "chief")
+                            :members [(:id "s2" :agent_name "kid" :state "running" :created t)
+                                      (:id "s3" :agent_name "gone" :state "stopped")]))))
+    (goblins-test--raid-calls calls
+      (let (offered)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt choices &rest _)
+                     (setq offered (goblins-test--choices choices))
+                     (car offered))))
+          (goblins-raid-owner-pick 'source record))
+        ;; Only running members can own it.
+        (should (= (length offered) 1))
+        (should (equal (pop calls)
+                       '(raids.set_owner :raid "crew" :session "s2" :id "i-raid1" :generation 3))))
+      (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+        (goblins-raid-owner-dissolve 'source record)
+        (goblins-raid-owner-dissolve 'source record t))
+      (should (equal (nreverse calls)
+                     '((raids.destroy :raid "crew" :id "i-raid1" :generation 3)
+                       (raids.destroy :raid "crew" :id "i-raid1" :generation 3 :stop_members t))))
+      (setq calls nil)
+      ;; Declining sends nothing; a plain decision is refused.
+      (cl-letf (((symbol-function 'y-or-n-p) #'ignore))
+        (goblins-raid-owner-dissolve 'source record t))
+      (should-not calls)
+      (with-temp-buffer
+        (setq-local goblins--connection t goblins--subscription "s")
+        (should-error (goblins--decide-record record t) :type 'user-error)))))
 
 (ert-deftest goblins-raid-command-creates-or-joins-around-a-goblin ()
   (goblins-test--raid-sidebar
@@ -2244,7 +2265,7 @@ keeps the parameters of windows that live on."
     (goblins-sidebar-next-pending)
     (should (equal (get-text-property (point) 'goblins-id) "session-a"))))
 
-(ert-deftest goblins-sidebar-stops-goblins-and-their-children ()
+(ert-deftest goblins-sidebar-stops-only-the-goblin-at-point ()
   (goblins-test--raid-sidebar
     (goblins-test--raid-calls calls
       (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
@@ -2252,18 +2273,6 @@ keeps the parameters of windows that live on."
         (re-search-forward "session-c")
         (goblins-sidebar-stop)
         (should (equal (pop calls) '(sessions.stop :session "session-c")))
-        (with-current-buffer source
-          (setq goblins--snapshot
-                (plist-put goblins--snapshot :sessions
-                           (vconcat (plist-get goblins--snapshot :sessions)
-                                    (vector (goblins-test--session "kid" :parent "session-c")
-                                            (goblins-test--session "old" :parent "session-c"
-                                                                   :state "stopped"))))))
-        (let (asked)
-          (cl-letf (((symbol-function 'y-or-n-p) (lambda (p) (setq asked p) t)))
-            (goblins-sidebar-stop))
-          (should (string-match-p "and its 1 running descendant\\?" asked)))
-        (should (equal (pop calls) '(sessions.stop :session "session-c" :kill_children t)))
         ;; Declining sends nothing.
         (cl-letf (((symbol-function 'y-or-n-p) #'ignore))
           (goblins-sidebar-stop))
@@ -2275,13 +2284,36 @@ keeps the parameters of windows that live on."
       (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
         (goto-char (point-min))
         (goblins-sidebar-destroy-raid)
-        (should (equal (pop calls) '(raids.destroy :raid "crew")))
+        (should (equal (pop calls) '(raids.destroy :raid "crew" :id "r1")))
         (forward-line 1)
         (should-error (goblins-sidebar-destroy-raid) :type 'user-error)
         (with-current-buffer (goblins-raid-buffer source "crew")
           (goblins-raid-destroy)
-          (should (equal (pop calls) '(raids.destroy :raid "crew")))
+          (should (equal (pop calls) '(raids.destroy :raid "crew" :id "r1")))
           (kill-buffer))))))
+
+(ert-deftest goblins-dissolving-a-raid-names-the-raid-that-was-confirmed ()
+  (goblins-test--raid-sidebar
+    (goblins-test--raid-calls calls
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :raids
+                         [(:id "r1" :name "crew" :owner "session-a" :generation 2 :members [])])))
+      ;; While you decide, the raid is replaced by another of the same name:
+      ;; the call still names the one you confirmed, so the daemon refuses it.
+      (cl-letf (((symbol-function 'y-or-n-p)
+                 (lambda (_)
+                   (with-current-buffer source
+                     (setq goblins--snapshot
+                           (plist-put goblins--snapshot :raids
+                                      [(:id "r2" :name "crew" :owner "session-b" :generation 0
+                                        :members [])])))
+                   t)))
+        (goblins-destroy-raid source "crew" t))
+      (should (equal (pop calls)
+                     '(raids.destroy :raid "crew" :id "r1" :generation 2 :stop_members t)))
+      (should-error (goblins-destroy-raid source "absent") :type 'user-error)
+      (should-not calls))))
 
 (ert-deftest goblins-raid-page-sets-roles-and-marks-emacs-terminals ()
   (goblins-test--raid-sidebar
@@ -2297,7 +2329,7 @@ keeps the parameters of windows that live on."
               (goto-char (point-min))
               (re-search-forward "session-b (shell)")
               (cl-letf (((symbol-function 'read-string)
-                         (lambda (_prompt initial) (should (equal initial "reviewer")) "lead")))
+                         (lambda (_prompt initial &rest _) (should (equal initial "reviewer")) "lead")))
                 (goblins-raid-set-role))
               (should (equal (pop calls)
                              '(raids.set_role :raid "crew" :session "session-b" :role "lead")))
@@ -2388,7 +2420,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                                                        (cadr choices)))))
                      (cadr choices))))
                 ((symbol-function 'goblins--decide-record)
-                 (lambda (record approved) (setq decided (list (plist-get record :id) approved))))
+                 (lambda (record approved &optional _shown) (setq decided (list (plist-get record :id) approved))))
                 ((symbol-function 'goblins-open-session)
                  (lambda (src id) (setq opened (list src id))))
                 ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
@@ -2512,7 +2544,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 (ert-deftest goblins-embark-acts-on-goblins-and-their-terminals ()
   (skip-unless (require 'embark nil t))
   (goblins-test--terminals (list (goblins-test--session "session-a" :cwd "/p"))
-    (should (equal (alist-get 'goblin embark-keymap-alist) '(goblins-embark-goblin-map)))
+    (should (equal (alist-get 'goblins-goblin embark-keymap-alist) '(goblins-embark-goblin-map)))
     (should (equal (alist-get 'goblins-terminal embark-keymap-alist)
                    '(goblins-embark-terminal-map)))
     ;; A goblin's terminal among buffers is a goblins-terminal target, in
@@ -2573,7 +2605,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
           (funcall (plist-get terminals :action) terminal)
           (should (equal opened (list source "session-a")))
           ;; Running goblins without a terminal, in the goblin category.
-          (should (eq (plist-get others :category) 'goblin))
+          (should (eq (plist-get others :category) 'goblins-goblin))
           (let ((items (funcall (plist-get others :items))))
             (should (equal items '("session-b")))
             (funcall (plist-get others :action) (car items)))
@@ -2609,7 +2641,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                    "session-a")))
         (goblins-switch))
       (should (equal (sort offered #'string<) '("session-a" "session-b" "session-c")))
-      (should (eq category 'goblin))
+      (should (eq category 'goblins-goblin))
       (should (string-match-p "shell.*raid crew.*/p/one !1" annotation))
       (should (equal opened (list source "session-a"))))))
 
@@ -2629,7 +2661,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                        (lambda (_prompt table &rest _)
                          (let* ((metadata (completion-metadata "" table nil))
                                 (annotate (completion-metadata-get metadata 'annotation-function)))
-                           (should (eq (completion-metadata-get metadata 'category) 'goblin))
+                           (should (eq (completion-metadata-get metadata 'category) 'goblins-goblin))
                            (should (equal (goblins-test--choices table) '("session-a" "session-b")))
                            (should (string-match-p
                                     "claude +◆ needs input +raid crew +/p !1 ✉2 \\[term\\]"
@@ -2664,44 +2696,141 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (goblins-attention-mode -1))
       (should-not (memq 'goblins--mode-line-string global-mode-string)))))
 
-;;; goblin-mode
+(ert-deftest goblins-attention-mode-counts-and-announces-agent-prompts ()
+  (goblins-test--buffer
+    (let ((global-mode-string nil) announced
+          (waiting (lambda (&rest states)
+                     (let ((snapshot (goblins-test--snapshot (goblins-test--request "a"))))
+                       (plist-put snapshot :sessions
+                                  (vconcat (seq-map-indexed
+                                            (lambda (state i)
+                                              (goblins-test--session (format "s%d" i) :agent_state state))
+                                            states)))))))
+      (unwind-protect
+          (let ((goblins-attention-approval-function (lambda (s) (push (plist-get s :id) announced))))
+            (goblins-attention-mode 1)
+            ;; Goblins already waiting when Emacs connects are counted, not announced.
+            (setq goblins--seen-approvals 'unset
+                  goblins--snapshot (funcall waiting "waiting-approval" "working"))
+            (goblins--note-requests)
+            (goblins--render)
+            (should-not announced)
+            (should (string-match-p "Goblins!2" goblins--mode-line-string))
+            ;; A new prompt is announced once; waiting for input is neither.
+            (setq goblins--snapshot (funcall waiting "waiting-approval" "waiting-approval" "waiting-input"))
+            (goblins--note-requests)
+            (goblins--note-requests)
+            (goblins--render)
+            (should (equal announced '("s1")))
+            (should (string-match-p "Goblins!3" goblins--mode-line-string))
+            ;; Waiting again after answering is a new prompt.
+            (setq goblins--snapshot (funcall waiting "working" "waiting-approval"))
+            (goblins--note-requests)
+            (setq goblins--snapshot (funcall waiting "waiting-approval" "waiting-approval"))
+            (goblins--note-requests)
+            (should (equal announced '("s0" "s1"))))
+        (goblins-attention-mode -1)))))
 
-(ert-deftest goblin-mode-gives-goblin-terminals-their-own-keys ()
+(ert-deftest goblins-notify-uses-desktop-notifications-or-the-echo-area ()
+  ;; Loaded first, so it does not replace the stand-ins below.
+  (require 'notifications nil t)
+  (dolist (capabilities '((:body :body-markup) (:body)))
+    (let (shown clicked)
+      (cl-letf (((symbol-function 'notifications-get-capabilities) (lambda (&rest _) capabilities))
+                ((symbol-function 'notifications-notify)
+                 (lambda (&rest params) (setq shown params) 1)))
+        (goblins--notify "Goblins: snikk asks for a && b" "a & <b>"
+                         (lambda () (setq clicked t)))
+        ;; The title is never markup; the body only where the server reads it.
+        (should (equal (plist-get shown :title) "Goblins: snikk asks for a && b"))
+        (should (equal (plist-get shown :body)
+                       (if (memq :body-markup capabilities) "a &amp; &lt;b&gt;" "a & <b>")))
+        (funcall (plist-get shown :on-action) 1 "default")
+        (should clicked))))
+  (dolist (failing '(notifications-notify notifications-get-capabilities))
+    (cl-letf (((symbol-function 'notifications-get-capabilities)
+               (lambda (&rest _)
+                 (when (eq failing 'notifications-get-capabilities)
+                   (error "No D-Bus"))))
+              ((symbol-function 'notifications-notify)
+               (lambda (&rest _)
+                 (if (eq failing 'notifications-notify)
+                     (error "No D-Bus")
+                   1))))
+      (should (equal (goblins--notify "Goblins: snikk needs your approval" "body" #'ignore)
+                     "Goblins: snikk needs your approval — body")))))
+
+(ert-deftest goblins-announcements-that-wait-do-not-repeat ()
+  "A hook that processes events meanwhile, as a desktop notification does,
+sees the new baseline: neither the same nor a newer snapshot repeats one."
+  (goblins-test--buffer
+    (let ((goblins--seen-approvals nil) (goblins--seen-requests nil)
+          approvals requests nested)
+      (setq goblins--snapshot
+            (list :permissions (vector (goblins-test--request "a"))
+                  :sessions (vector (goblins-test--session "s" :agent_state "waiting-approval"))))
+      (let ((goblins-approval-hook
+             (list (lambda (session)
+                     (push (plist-get session :id) approvals)
+                     (unless nested
+                       (setq nested t)
+                       ;; Unchanged, then a newer snapshot with one more.
+                       (goblins--note-requests)
+                       (setq goblins--snapshot
+                             (list :permissions (vector (goblins-test--request "a")
+                                                        (goblins-test--request "b"))
+                                   :sessions (vector (goblins-test--session "s" :agent_state "waiting-approval")
+                                                     (goblins-test--session "t" :agent_state "waiting-approval"))))
+                       (goblins--note-requests)))))
+            (goblins-request-hook (list (lambda (r) (push (plist-get r :id) requests)))))
+        (goblins--note-requests)
+        (should (equal (sort approvals #'string<) '("s" "t")))
+        (should (equal (sort requests #'string<) '("a" "b")))
+        ;; The newest baseline stays.
+        (should (equal goblins--seen-approvals '("s" "t")))
+        (should (equal goblins--seen-requests '("a" "b")))))))
+
+;;; goblins-goblin-mode
+
+(ert-deftest goblins-goblin-mode-gives-goblin-terminals-their-own-keys ()
   (goblins-test--raid-sidebar
     (let ((terminal (generate-new-buffer " *goblins test terminal*")) shown)
       (unwind-protect
           (with-current-buffer terminal
             (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
-            (goblin-mode 1)
-            (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions))
-            (should (eq (key-binding (kbd "C-c g i")) #'goblin-info))
+            (goblins-goblin-mode 1)
+            (should (eq (key-binding (kbd "C-c g p")) #'goblins-permissions))
+            (should (eq (key-binding (kbd "C-c g i")) #'goblins-info))
             (should (eq (key-binding (kbd "C-c g r")) #'goblins-raid))
             (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) source))
                       ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
-              (goblin-info)
+              (goblins-info)
               (should (equal (buffer-local-value 'goblins--view-session shown) "session-c"))
-              (should (derived-mode-p 'goblin-mode 'fundamental-mode))
-              (goblin-permissions)
+              (should (derived-mode-p 'goblins-goblin-mode 'fundamental-mode))
+              (goblins-permissions)
               (should (eq (buffer-local-value 'major-mode shown) 'goblins-permissions-mode))))
         (kill-buffer terminal)
         (dolist (name (list goblins--info-buffer-name goblins--permissions-buffer-name))
           (when (get-buffer name) (kill-buffer name))))))
   (with-temp-buffer
-    (should-error (goblin-info) :type 'user-error)))
+    (should-error (goblins-info) :type 'user-error)))
 
 ;; The sandbox has no display, so the agents' own Ctrl+V cannot reach the
 ;; clipboard; Emacs writes the image into the goblin and pastes its path.
-(ert-deftest goblin-paste-image-writes-into-the-goblin-and-pastes-its-path ()
+(ert-deftest goblins-paste-image-writes-into-the-goblin-and-pastes-its-path ()
   (let ((terminal (generate-new-buffer " *goblins test terminal*"))
         (png (unibyte-string #x89 ?P ?N ?G #x0d #x0a #x1a #x0a #x00 #xff))
         directories written pasted redraws)
     (unwind-protect
         (with-current-buffer terminal
           (setq-local goblins--session-key (list "/tmp/goblins-test" "daemon-a" "session-c"))
-          (goblin-mode 1)
-          (should (eq (key-binding (kbd "C-c g v")) #'goblin-paste-image))
+          (goblins-goblin-mode 1)
+          (should (eq (key-binding (kbd "C-c g v")) #'goblins-paste-image))
           (cl-letf (((symbol-function 'goblins--status-buffer) (lambda (&optional _) terminal))
                     ((symbol-function 'goblins--pinned-terminal-host) (lambda () "gribble"))
+                    ;; Batch/nox Emacs need not have image decoders. The test
+                    ;; passes clipboard bytes through; it never renders them.
+                    ((symbol-function 'image-type-available-p) (lambda (type) (eq type 'png)))
                     ((symbol-function 'gui-get-selection)
                      (lambda (_selection type)
                        (pcase type
@@ -2717,7 +2846,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                     ((symbol-function 'ghostel-paste-string) (lambda (s) (push s pasted)))
                     ((symbol-function 'run-with-timer)
                      (lambda (delay &rest _) (push delay redraws))))
-            (goblin-paste-image))
+            (goblins-paste-image))
           (should (equal (sort redraws #'<) '(0.2 1)))
           (should (equal directories '("/goblins:gribble:/tmp/goblins-clipboard/")))
           (pcase-let ((`((,file ,bytes ,multibyte ,coding)) written))
@@ -2731,7 +2860,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
   (should (equal (goblins--image-extension 'image/svg+xml) "svg"))
   (should (equal (goblins--image-extension 'image/webp) "webp"))
   (with-temp-buffer
-    (should-error (goblin-paste-image) :type 'user-error)))
+    (should-error (goblins-paste-image) :type 'user-error)))
 
 ;;; Live workspace, from tests/test_emacs.py in a terminal Emacs (emacs -nw)
 
@@ -2863,7 +2992,8 @@ for session-a, `terminal', and an unrelated buffer, `other'."
     (should (string-match-p "reconnecting" (buffer-local-value 'goblins--notice source)))
     (goblins-test--wait (lambda () (equal (buffer-local-value 'goblins--notice source) "Connected")))
     (goblins-test--wait (lambda () (string-match-p "alpha" (goblins-test--sidebar-text))))
-    ;; Switching attaches a terminal in goblin-mode, shown in the main window.
+    ;; Switching attaches a terminal in goblins-goblin-mode, shown in the main
+    ;; window.
     (when (and (require 'ghostel nil t) (require 'ghostel-module nil t))
       (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "alpha")))
         (let ((goblins-switch-use-consult nil)) (goblins-switch)))
@@ -2872,8 +3002,8 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list terminal)))
         (with-current-buffer terminal
           (should (derived-mode-p 'ghostel-mode))
-          (should goblin-mode)
-          (should (eq (key-binding (kbd "C-c g p")) #'goblin-permissions)))
+          (should goblins-goblin-mode)
+          (should (eq (key-binding (kbd "C-c g p")) #'goblins-permissions)))
         (goblins-test--in-sidebar "^  alpha")
         (should (overlays-at (point)))
         (kill-buffer terminal)
@@ -2904,7 +3034,10 @@ for session-a, `terminal', and an unrelated buffer, `other'."
   (with-temp-buffer
     (let ((code (call-process
                  (expand-file-name invocation-name invocation-directory) nil t nil
-                 "--batch" "-Q" "-L" (file-name-directory (locate-library "goblins"))
+                 "--batch" "-Q" "-l"
+                 (expand-file-name "../tests/emacs-init.el"
+                                   (file-name-directory (file-truename (locate-library "goblins"))))
+                 "-L" (file-name-directory (locate-library "goblins"))
                  "--eval" "(require 'goblins)"
                  "--eval" (concat "(kill-emacs (if (and (commandp 'goblins-workspace)"
                                   " (not (featurep 'goblins-workspace))) 0 1))"))))
@@ -2915,7 +3048,10 @@ for session-a, `terminal', and an unrelated buffer, `other'."
   (with-temp-buffer
     (let ((code (call-process
                  (expand-file-name invocation-name invocation-directory) nil t nil
-                 "--batch" "-Q" "-L" (file-name-directory (locate-library "goblins"))
+                 "--batch" "-Q" "-l"
+                 (expand-file-name "../tests/emacs-init.el"
+                                   (file-name-directory (file-truename (locate-library "goblins"))))
+                 "-L" (file-name-directory (locate-library "goblins"))
                  "--eval" "(progn (require 'goblins) (require 'server))"
                  "--eval" (concat "(let ((client (start-process \"client\" nil \"sleep\" \"10\")))"
                                   " (server-execute client '((\"/goblins:g:/x\")) nil nil nil nil nil nil)"
@@ -2983,7 +3119,6 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 (defvar goblins-test--pwned nil)
 
 (ert-deftest goblins-tramp-hosts-and-osc7-directories ()
-  (should (equal (goblins-tramp-host "gribble/snaga") "gribble.snaga"))
   (should (equal (goblins--osc7-directory "file://sandbox/tmp/a%20b" "gribble")
                  "/goblins:gribble:/tmp/a b/"))
   (should (equal (goblins--osc7-directory "kitty-shell-cwd://sandbox/w" "a.b")
@@ -2993,18 +3128,18 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 
 (ert-deftest goblins-terminals-track-directories-as-goblins-paths ()
   (with-temp-buffer
-    (setq-local ghostel-identity '((kind . goblins-shell) (host . "gribble.snaga")
+    (setq-local ghostel-identity '((kind . goblins-shell) (host . "snaga")
                                    (session . "i-s3") (instance . "i")))
     (setq-local goblins--directory "/state")
     (let ((goblins--pins (make-hash-table :test #'equal))
           (called nil))
       (goblins--ghostel-directory (lambda (_) (setq called t)) "file://sandbox/tmp/x")
       (should-not called)
-      (should (equal default-directory "/goblins:gribble.snaga:/tmp/x/"))
+      (should (equal default-directory "/goblins:snaga:/tmp/x/"))
       ;; Pinned from the terminal's identity, before any TRAMP use.
-      (should (equal (goblins-pin "gribble.snaga") '("/state" "i" "i-s3")))
+      (should (equal (goblins-pin "snaga") '("/state" "i" "i-s3")))
       ;; A host pinned to another goblin falls back to the session ID.
-      (puthash "gribble.snaga" '("/state" "i" "i-s1") goblins--pins)
+      (puthash "snaga" '("/state" "i" "i-s1") goblins--pins)
       (goblins--ghostel-directory #'ignore "file://sandbox/w")
       (should (equal default-directory "/goblins:i-s3:/w/")))
     (setq-local ghostel-identity '((kind . exec)))
@@ -3013,8 +3148,8 @@ for session-a, `terminal', and an unrelated buffer, `other'."
       (should called))))
 
 (ert-deftest goblins-agent-terminals-stay-in-their-project ()
-  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :path "gribble")
-                               (goblins-test--session "session-b" :path "snaga"))
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :agent_name "gribble")
+                               (goblins-test--session "session-b" :agent_name "snaga"))
     (let ((goblins--pins (make-hash-table :test #'equal)))
       (with-temp-buffer
         (setq-local goblins--directory "/tmp/goblins-test")
@@ -3031,7 +3166,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (should (equal (goblins-pin "snaga") '("/tmp/goblins-test" "daemon-a" "session-b")))))))
 
 (ert-deftest goblins-find-file-visits-any-path-inside-the-goblin ()
-  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :path "gribble"))
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :agent_name "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
           (file (generate-new-buffer " *goblin file*"))
           read shown)
@@ -3051,7 +3186,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
         (kill-buffer file))
       (should (eq (key-binding "f") #'goblins-sidebar-find-file)))
     (with-temp-buffer
-      (goblin-mode 1)
+      (goblins-goblin-mode 1)
       (should (eq (key-binding (kbd "C-c g f")) #'goblins-find-file)))))
 
 (ert-deftest goblins-exec-summary-counts-shells-and-tramp ()
@@ -3062,13 +3197,15 @@ for session-a, `terminal', and an unrelated buffer, `other'."
                  " · 2 shells")))
 
 (ert-deftest goblins-tramp-resolves-names-like-the-daemon ()
-  (let ((sessions (list (list :id "s1" :path "gribble" :agent_name "gribble" :state "stopped")
-                        (list :id "s2" :path "gribble" :agent_name "gribble" :state "running")
-                        (list :id "s3" :path "gribble/snaga" :agent_name "snaga" :state "running")
-                        (list :id "s4" :path "other/snaga" :agent_name "snaga" :state "running"))))
+  (let ((sessions (list (list :id "s1" :agent_name "gribble" :state "stopped")
+                        (list :id "s2" :agent_name "gribble" :state "running")
+                        (list :id "s3" :agent_name "snaga" :state "running")
+                        (list :id "s4" :agent_name "snaga" :state "running"))))
+    ;; A running goblin by name, any goblin by session ID.
     (should (equal (plist-get (goblins-tramp--match "gribble" sessions) :id) "s2"))
-    (should (equal (plist-get (goblins-tramp--match "gribble.snaga" sessions) :id) "s3"))
     (should (equal (plist-get (goblins-tramp--match "s1" sessions) :id) "s1"))
+    (should-not (goblins-tramp--match "gribble.snaga" sessions))
+    ;; The daemon keeps live names unique; should two run, neither is chosen.
     (should-error (goblins-tramp--match "snaga" sessions))
     (should-not (goblins-tramp--match "nobody" sessions))))
 
@@ -3123,7 +3260,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 
 (ert-deftest goblins-sidebar-lists-shells-below-their-goblin ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p" :execs 1)
-                               (goblins-test--session "session-b" :cwd "/p" :parent "session-a"))
+                               (goblins-test--session "session-b" :cwd "/p"))
     (let* ((process (start-process "goblins-test-shell" nil "sleep" "60"))
            (first (goblins-test--shell "session-a" 1 process))
            (second (goblins-test--shell "session-a" 2))
@@ -3137,7 +3274,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
             (should (equal (goblins-test--sidebar-plain)
                            (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
                                    "  ⇄ Tramp connected\n  › shell\n  › shell 2 · exited\n"
-                                   "  ──\n    session-b (shell)\n")))
+                                   "──\n  session-b (shell)\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
             (goto-char (point-min))
@@ -3166,7 +3303,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
       (should (eq (key-binding (kbd (car binding))) (cdr binding))))
     (should (memq (key-binding (kbd "S")) '(nil undefined))))
   (with-temp-buffer
-    (goblin-mode 1)
+    (goblins-goblin-mode 1)
     (dolist (binding '(("C-c g t" . goblins-shell) ("C-c g e" . goblins-eshell)
                        ("C-c g d" . goblins-dired)))
       (should (eq (key-binding (kbd (car binding))) (cdr binding)))))
@@ -3190,9 +3327,9 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 
 (ert-deftest goblins-eshell-and-dired-open-in-the-goblins-pinned-directory ()
   (require 'eshell)
-  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :path "gribble")
-                               (goblins-test--session "session-b" :path "snaga")
-                               (goblins-test--session "session-c" :path "gone" :state "stopped"))
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :agent_name "gribble")
+                               (goblins-test--session "session-b" :agent_name "snaga")
+                               (goblins-test--session "session-c" :agent_name "gone" :state "stopped"))
     (let ((goblins--pins (make-hash-table :test #'equal))
           (snapshot (buffer-local-value 'goblins--snapshot source))
           eshell listed shown)
@@ -3297,7 +3434,7 @@ for session-a, `terminal', and an unrelated buffer, `other'."
   (should-not (vc-find-root "/goblins:gribble:/home/x/" ".git")))
 
 (ert-deftest goblins-shell-runs-goblins-shell-program ()
-  (goblins-test--sidebar (list (goblins-test--session "session-a" :path "gribble"))
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :agent_name "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
           (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
                                               "session-a"))
@@ -3688,8 +3825,8 @@ for session-a, `terminal', and an unrelated buffer, `other'."
 (require 'goblins-messages)
 
 (defun goblins-test--message (id sender recipient body conversation created &optional reply-to)
-  (list :id id :sender sender :sender_path (if (equal sender "a") "alpha" "beta")
-        :recipient recipient :recipient_path (if (equal recipient "a") "alpha" "beta")
+  (list :id id :sender sender :sender_name (if (equal sender "a") "alpha" "beta")
+        :recipient recipient :recipient_name (if (equal recipient "a") "alpha" "beta")
         :body body :conversation conversation :created_at created :in_reply_to reply-to
         :state "queued" :failure nil :claim_generation 0))
 
@@ -3728,9 +3865,9 @@ m2, and m3, which failed when beta stopped."
                    goblins--subscription "s"
                    goblins--snapshot
                    (list :instance "i"
-                         :sessions [(:id "a" :path "alpha" :agent_name "alpha" :name "claude"
+                         :sessions [(:id "a" :agent_name "alpha" :name "claude"
                                      :state "running")
-                                    (:id "b" :path "beta" :agent_name "beta" :name "codex"
+                                    (:id "b" :agent_name "beta" :name "codex"
                                      :state "running")]
                          :raids [(:id "i-r1" :name "test")])))
            (cl-letf (((symbol-function 'goblins--messages-fetch) #'ignore))
@@ -3855,7 +3992,7 @@ m2, and m3, which failed when beta stopped."
       (goto-char (point-min))
       (search-forward "alpha")
       (should (equal (goblins--messages-embark-target)
-                     `(goblin "alpha" ,(- (point) 5) . ,(point))))
+                     `(goblins-goblin "alpha" ,(- (point) 5) . ,(point))))
       (search-forward "c1")
       (should (equal (car (goblins--messages-embark-target)) 'goblins-thread))
       (should (equal (cadr (goblins--messages-embark-target)) "c1"))
@@ -4011,15 +4148,15 @@ m2, and m3, which failed when beta stopped."
     (with-current-buffer goblins--message-buffer-name
       (goto-char (point-min))
       (search-forward "alpha")
-      (should (equal (car (goblins--messages-embark-target)) 'goblin))
+      (should (equal (car (goblins--messages-embark-target)) 'goblins-goblin))
       ;; alpha stopped, and a new goblin took its name: alpha's own target
       ;; offers only its messages, by its session.
       (with-current-buffer goblins--view-source
         (setq goblins--snapshot
               (plist-put goblins--snapshot :sessions
-                         [(:id "a" :path "alpha" :agent_name "alpha" :name "claude" :state "stopped")
-                          (:id "b" :path "beta" :agent_name "beta" :name "codex" :state "running")
-                          (:id "c" :path "alpha" :agent_name "alpha" :name "claude"
+                         [(:id "a" :agent_name "alpha" :name "claude" :state "stopped")
+                          (:id "b" :agent_name "beta" :name "codex" :state "running")
+                          (:id "c" :agent_name "alpha" :name "claude"
                            :state "running")])))
       (should (equal (butlast (goblins--messages-embark-target) 0)
                      `(goblins-participant "alpha" ,(- (point) 5) . ,(point))))
@@ -4124,3 +4261,83 @@ m2, and m3, which failed when beta stopped."
         (goblins--messages-render)
         (should (= (window-point one) (goblins--messages-position 'goblins-message "i-x10")))
         (should (= (window-point two) (goblins--messages-position 'goblins-message "i-x50")))))))
+
+;; A host command's approval lists its parts as fields, the command wrapped
+;; to the window with every character kept, instead of one long heading.
+;; The fields are the daemon's escaped values: none can add a line.
+(ert-deftest goblins-host-command-requests-wrap-instead-of-one-long-heading ()
+  (let* ((command (concat "bash -c 'echo \"ON-HOST  in $PWD\"; " (make-string 150 ?x) "'"))
+         (record (list :kind "host-command" :agent_name "zazzik" :reason "verify"
+                       :package (concat command " (in /home/u/project)") :state "pending"
+                       :preview (list :kind "host-command"
+                                      :description (concat "Runs on the host as you, outside the sandbox.\n"
+                                                           "Command: " command "\nDirectory: /fake\n")
+                                      :command command
+                                      :directory "/home/u/project"
+                                      :environment ["A=1" "LD_PRELOAD=/p.so"]
+                                      :time_limit "none"))))
+    (with-temp-buffer
+      (goblins--popup-insert-request nil (list record))
+      (let ((text (buffer-string)))
+        (should (string-match-p "\\`zazzik asks to run a command on the host\n" text))
+        (should (string-match-p "^    Directory:  /home/u/project$" text))
+        (should-not (string-match-p "/fake" text))
+        (should (string-match-p "^    Variable:   A=1\n    Variable:   LD_PRELOAD=/p.so$" text))
+        (should (string-match-p "^    Time limit: none$" text))
+        (should (string-match-p "^    Reason:     verify$" text))
+        (should (string-match-p "^    Runs on the host as you" text))
+        (should (cl-every (lambda (line) (<= (length line) 100)) (split-string text "\n")))
+        (string-match "^    Command:    \\([^\0]*?\\)\n    Directory:" text)
+        (should (equal (mapconcat (lambda (line) (substring line (min 16 (length line))))
+                                  (split-string (concat (make-string 16 ?\s) (match-string 1 text)) "\n")
+                                  "")
+                       command))))
+    (should (<= (length (goblins--request-subject record)) 60))
+    (should (equal (goblins--request-subject (list :kind "package" :package "jq")) "jq"))))
+
+;; A host command is accepted only where it is shown whole: its details view
+;; or the popup.  Choosing it from a list or completion opens the details
+;; instead of sending a decision; denying works anywhere.
+(ert-deftest goblins-host-commands-are-accepted-only-where-shown-whole ()
+  (let ((request (append (goblins-test--request-in "h1" "session-a" "pending" "true (in /p/one)")
+                         (list :preview '(:kind "host-command" :description "Runs on the host"
+                                          :command "true" :directory "/p/one"
+                                          :environment ["LD_PRELOAD=/p/one/payload.so"]
+                                          :time_limit "none")))))
+    (setq request (plist-put request :kind "host-command"))
+    (goblins-test--view (list request)
+      (let (sent shown)
+       (unwind-protect
+        (progn
+        (cl-letf (((symbol-function 'goblins--request)
+                   (lambda (method params _callback) (push (list method params) sent)))
+                  ((symbol-function 'goblins--display-main) (lambda (b) (setq shown b))))
+          (with-current-buffer source
+            (setq-local goblins--connection 'test goblins--subscription "sub")
+            ;; Completion and Embark: details open, nothing is sent.
+            (should-error (goblins-request-accept source request) :type 'user-error)
+            (should-not sent)
+            (should (eq shown (get-buffer goblins--permissions-buffer-name))))
+          (with-current-buffer shown
+            (let ((text (buffer-string)))
+              (should (string-match-p "LD_PRELOAD=/p/one/payload.so" text))
+              (should (string-match-p "Directory" text)))
+            (goblins--view-goto (oref (goblins--find-request-section "h1") start))
+            ;; Folded, it shows only its heading: no.
+            (magit-section-hide (goblins--find-request-section "h1"))
+            (should-error (goblins-permissions-accept) :type 'user-error)
+            (should-not sent)
+            ;; Shown whole: the decision goes out.
+            (magit-section-show (goblins--find-request-section "h1"))
+            (goblins-permissions-accept)
+            (should (equal (car sent) '(permissions.decide
+                                        (:session "session-a" :request "h1"
+                                         :approval "approval-h1" :approved t)))))
+          ;; Denial needs no review.
+          (with-current-buffer source
+            (clrhash goblins--decisions)
+            (setq sent nil)
+            (goblins-request-deny source request)
+            (should (equal (plist-get (cadr (car sent)) :approved) :json-false)))))
+        ;; Not a real connection: nothing to close when the test ends.
+        (with-current-buffer source (setq-local goblins--connection nil)))))))

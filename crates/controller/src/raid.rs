@@ -1,8 +1,9 @@
 //! Raid membership rules. Pure state: the controller resolves targets,
-//! enforces ownership-tree restrictions and forwards the returned events.
+//! enforces who may act and forwards the returned events.
 //!
 //! A raid only helps members find and message each other. It grants no
-//! files, terminals or lifecycle control, and dissolving one stops nobody.
+//! files or terminals, and dissolving one stops nobody. An owner leaving
+//! pauses the raid until the host selects a new owner or dissolves it.
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -14,9 +15,20 @@ pub struct Raid {
     /// "{instance}-raid{n}"; a reused name gets a new ID.
     pub id: String,
     pub name: String,
-    /// Session ID. Only the first joiner owns the raid; roles never move it.
-    pub owner: String,
+    /// Session ID. The first joiner owns the raid; roles never move it, only
+    /// the host does. None while paused.
+    pub owner: Option<String>,
     pub members: BTreeMap<String, Member>,
+    /// Set when the owner left while members remained.
+    pub paused: Option<Paused>,
+    /// Bumped on every pause and owner change, so a host decision made for
+    /// one pause cannot apply to a later one.
+    pub generation: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Paused {
+    pub former_owner: String,
+    pub reason: Reason,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
@@ -24,6 +36,9 @@ pub struct Member {
     pub role: Option<String>,
     /// Join order, for listings.
     pub joined: u64,
+    /// The owner that ran this member with `goblin run`. Any owner of the
+    /// raid may stop it, and it cannot leave on its own.
+    pub created_by: Option<String>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Raids {
@@ -50,6 +65,24 @@ impl Reason {
             Self::Kicked => "kicked",
         }
     }
+    /// Completes "the owner ...".
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Left => "left the raid",
+            Self::Stopped => "stopped",
+            Self::LaunchFailed => "failed to start",
+            Self::Kicked => "was removed by the host",
+        }
+    }
+}
+
+/// Why a raid was dissolved, as recorded in `raid.dissolved`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dissolution {
+    /// By the host.
+    Destroyed,
+    /// Its last member left.
+    Empty,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +96,7 @@ pub enum Change {
         raid: String,
         session: String,
         role: Option<String>,
+        created_by: Option<String>,
     },
     Role {
         raid: String,
@@ -74,11 +108,25 @@ pub enum Change {
         session: String,
         reason: Reason,
     },
+    /// The owner left while members remained.
+    Paused {
+        raid: String,
+        former_owner: String,
+        reason: Reason,
+        members: Vec<String>,
+    },
+    /// The host selected an owner, resuming a paused raid.
+    Owner {
+        raid: String,
+        owner: String,
+        previous: Option<String>,
+        members: Vec<String>,
+    },
     Dissolved {
         raid: String,
-        /// Everyone who was a member, the owner included.
+        /// Everyone who was a member, a last leaver included.
         members: Vec<String>,
-        destroyed: bool,
+        reason: Dissolution,
     },
 }
 /// One membership change, attributed to the session (or `host`) that caused it.
@@ -94,12 +142,17 @@ impl Event {
             Change::Joined { .. } => "raid.joined",
             Change::Role { .. } => "raid.role",
             Change::Left { .. } => "raid.left",
+            Change::Paused { .. } => "raid.paused",
+            Change::Owner { .. } => "raid.owner",
             Change::Dissolved { .. } => "raid.dissolved",
         }
     }
     /// Additions can authorize messages; removals only take access away.
     pub fn addition(&self) -> bool {
-        !matches!(self.change, Change::Left { .. } | Change::Dissolved { .. })
+        !matches!(
+            self.change,
+            Change::Left { .. } | Change::Paused { .. } | Change::Dissolved { .. }
+        )
     }
     /// The sessions a filtered communications log should show this event to.
     pub fn sessions(&self) -> Vec<String> {
@@ -108,7 +161,15 @@ impl Event {
             Change::Joined { session, .. }
             | Change::Role { session, .. }
             | Change::Left { session, .. } => vec![session.clone()],
-            Change::Dissolved { members, .. } => members.clone(),
+            Change::Paused {
+                former_owner,
+                members,
+                ..
+            } => std::iter::once(former_owner)
+                .chain(members)
+                .cloned()
+                .collect(),
+            Change::Owner { members, .. } | Change::Dissolved { members, .. } => members.clone(),
         }
     }
     pub fn data(&self) -> Value {
@@ -120,7 +181,8 @@ impl Event {
                 raid,
                 session,
                 role,
-            } => json!({"raid":raid,"session":session,"role":role}),
+                created_by,
+            } => json!({"raid":raid,"session":session,"role":role,"created_by":created_by}),
             Change::Role {
                 raid,
                 session,
@@ -131,11 +193,22 @@ impl Event {
                 session,
                 reason,
             } => json!({"raid":raid,"session":session,"reason":reason.as_str()}),
-            Change::Dissolved {
-                raid, destroyed, ..
-            } => {
-                json!({"raid":raid,"reason":if *destroyed {"destroyed"} else {"owner-left"}})
-            }
+            Change::Paused {
+                raid,
+                former_owner,
+                reason,
+                ..
+            } => json!({"raid":raid,"former_owner":former_owner,"reason":reason.as_str()}),
+            Change::Owner {
+                raid,
+                owner,
+                previous,
+                ..
+            } => json!({"raid":raid,"owner":owner,"previous":previous}),
+            Change::Dissolved { raid, reason, .. } => json!({"raid":raid,"reason":match reason {
+                Dissolution::Destroyed => "destroyed",
+                Dissolution::Empty => "empty",
+            }}),
         }
     }
 }
@@ -156,6 +229,8 @@ pub enum Error {
     },
     /// The session is in no raid, or not in the one named.
     NotMember(String),
+    /// The session does not own its raid.
+    NotOwner(String),
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -205,12 +280,15 @@ impl Raids {
             Raid {
                 id: id.clone(),
                 name: name.into(),
-                owner: owner.into(),
+                owner: Some(owner.into()),
+                paused: None,
+                generation: 0,
                 members: BTreeMap::from([(
                     owner.into(),
                     Member {
                         role: None,
                         joined: self.joined,
+                        created_by: None,
                     },
                 )]),
             },
@@ -266,6 +344,7 @@ impl Raids {
                 Member {
                     role: None,
                     joined: self.joined,
+                    created_by: None,
                 },
             );
             self.member_of.insert(session.clone(), name.into());
@@ -275,34 +354,70 @@ impl Raids {
                     raid: raid.id.clone(),
                     session: session.clone(),
                     role: None,
+                    created_by: None,
                 },
             });
         }
         Ok(events)
     }
 
-    /// A launch join. `--inherit-raid` never creates: the raid must exist.
+    /// A host launch join, creating the raid if absent.
     pub fn join(
         &mut self,
         id: String,
         name: &str,
         session: &str,
-        create: bool,
         actor: &str,
     ) -> Result<Vec<Event>> {
-        if !create && !self.raids.contains_key(name) {
-            return Err(Error::Absent(name.into()));
-        }
         self.invite(id, name, &[session.into()], actor)
     }
 
-    /// Leave, exit, stop or failed launch. Removing the owner dissolves the
-    /// raid and clears every member; it never stops anyone.
+    /// A member the owner ran with `goblin run`, joining the raid it owns.
+    pub fn run(&mut self, owner: &str, session: &str) -> Result<Vec<Event>> {
+        let name = self
+            .member_of
+            .get(owner)
+            .cloned()
+            .ok_or_else(|| Error::NotMember(owner.into()))?;
+        if let Some(raid) = self.member_of.get(session) {
+            return Err(Error::Member {
+                session: session.into(),
+                raid: raid.clone(),
+            });
+        }
+        let raid = self.raids.get_mut(&name).expect("member of a live raid");
+        if raid.owner.as_deref() != Some(owner) {
+            return Err(Error::NotOwner(owner.into()));
+        }
+        self.joined += 1;
+        raid.members.insert(
+            session.into(),
+            Member {
+                role: None,
+                joined: self.joined,
+                created_by: Some(owner.into()),
+            },
+        );
+        self.member_of.insert(session.into(), name);
+        Ok(vec![Event {
+            actor: owner.into(),
+            change: Change::Joined {
+                raid: raid.id.clone(),
+                session: session.into(),
+                role: None,
+                created_by: Some(owner.into()),
+            },
+        }])
+    }
+
+    /// Leave, exit, stop or failed launch. Removing the owner pauses the
+    /// raid while members remain; the last member leaving dissolves it. It
+    /// never stops anyone.
     pub fn remove(&mut self, session: &str, reason: Reason) -> Vec<Event> {
         self.leave(session, session, reason)
     }
 
-    /// The host removes a member. Kicking the owner dissolves the raid.
+    /// The host removes a member. Kicking the owner pauses the raid.
     pub fn kick(&mut self, session: &str, actor: &str) -> Result<Vec<Event>> {
         if !self.member_of.contains_key(session) {
             return Err(Error::NotMember(session.into()));
@@ -324,34 +439,87 @@ impl Raids {
                 reason,
             },
         }];
-        if raid.owner == session {
-            events.extend(self.dissolve(&name, actor, false));
+        if raid.members.is_empty() {
+            events.extend(self.dissolve(&name, actor, Dissolution::Empty, Some(session)));
+        } else if raid.owner.as_deref() == Some(session) {
+            raid.owner = None;
+            raid.paused = Some(Paused {
+                former_owner: session.into(),
+                reason,
+            });
+            raid.generation += 1;
+            events.push(Event {
+                actor: actor.into(),
+                change: Change::Paused {
+                    raid: raid.id.clone(),
+                    former_owner: session.into(),
+                    reason,
+                    members: raid.members.keys().cloned().collect(),
+                },
+            });
         }
         events
+    }
+
+    /// The host selects a live member as owner, resuming a paused raid or
+    /// moving ownership of an active one. The current owner is a no-op.
+    pub fn set_owner(&mut self, name: &str, session: &str, actor: &str) -> Result<Vec<Event>> {
+        let raid = self
+            .raids
+            .get_mut(name)
+            .ok_or_else(|| Error::Absent(name.into()))?;
+        if !raid.members.contains_key(session) {
+            return Err(Error::NotMember(session.into()));
+        }
+        if raid.owner.as_deref() == Some(session) {
+            return Ok(vec![]);
+        }
+        let previous = raid
+            .owner
+            .take()
+            .or_else(|| raid.paused.take().map(|p| p.former_owner));
+        raid.owner = Some(session.into());
+        raid.paused = None;
+        raid.generation += 1;
+        Ok(vec![Event {
+            actor: actor.into(),
+            change: Change::Owner {
+                raid: raid.id.clone(),
+                owner: session.into(),
+                previous,
+                members: raid.members.keys().cloned().collect(),
+            },
+        }])
     }
 
     pub fn destroy(&mut self, name: &str, actor: &str) -> Result<Vec<Event>> {
         if !self.raids.contains_key(name) {
             return Err(Error::Absent(name.into()));
         }
-        Ok(self.dissolve(name, actor, true))
+        Ok(self.dissolve(name, actor, Dissolution::Destroyed, None))
     }
 
-    fn dissolve(&mut self, name: &str, actor: &str, destroyed: bool) -> Vec<Event> {
+    /// `leaver` already left, and is listed first so its filtered log shows
+    /// the dissolution.
+    fn dissolve(
+        &mut self,
+        name: &str,
+        actor: &str,
+        reason: Dissolution,
+        leaver: Option<&str>,
+    ) -> Vec<Event> {
         let raid = self.raids.remove(name).expect("raid exists");
-        let mut members: Vec<_> = raid.members.keys().cloned().collect();
-        for member in &members {
+        let mut members: Vec<_> = leaver.map(String::from).into_iter().collect();
+        for member in raid.members.keys() {
             self.member_of.remove(member);
-        }
-        if !members.contains(&raid.owner) {
-            members.insert(0, raid.owner.clone());
+            members.push(member.clone());
         }
         vec![Event {
             actor: actor.into(),
             change: Change::Dissolved {
                 raid: raid.id,
                 members,
-                destroyed,
+                reason,
             },
         }]
     }
@@ -393,10 +561,10 @@ mod tests {
     }
 
     #[test]
-    fn the_host_kicks_members_and_dissolves_on_the_owner() {
+    fn the_host_kicks_members_and_pauses_on_the_owner() {
         let mut r = Raids::default();
         r.create("r1".into(), "review", "a", "a").unwrap();
-        r.join("r2".into(), "review", "b", false, "a").unwrap();
+        r.join("r2".into(), "review", "b", "a").unwrap();
         assert_eq!(
             r.kick("z", "host").unwrap_err(),
             Error::NotMember("z".into())
@@ -406,9 +574,12 @@ mod tests {
         assert_eq!(events[0].actor, "host");
         assert_eq!(events[0].data()["reason"], "kicked");
         assert!(r.of("b").is_none() && r.of("a").is_some());
+        r.join("r3".into(), "review", "c", "a").unwrap();
         let events = r.kick("a", "host").unwrap();
-        assert_eq!(kinds(&events), ["raid.left", "raid.dissolved"]);
+        assert_eq!(kinds(&events), ["raid.left", "raid.paused"]);
+        assert_eq!(events[1].data()["reason"], "kicked");
         assert!(r.of("a").is_none());
+        assert_eq!(r.of("c").unwrap().owner, None);
     }
 
     #[test]
@@ -421,26 +592,41 @@ mod tests {
             events[0].data(),
             json!({"raid":"r1","name":"review","owner":"a"})
         );
-        let events = r.join("r2".into(), "review", "b", false, "a").unwrap();
+        let events = r.join("r2".into(), "review", "b", "a").unwrap();
         assert_eq!(kinds(&events), ["raid.joined"]);
         assert_eq!(
             (events[0].actor.as_str(), events[0].sessions()),
             ("a", ids(&["b"]))
         );
         assert_eq!(r.of("b").unwrap().id, "r1");
-        assert_eq!(r.of("b").unwrap().owner, "a");
+        assert_eq!(r.of("b").unwrap().owner.as_deref(), Some("a"));
         let events = r.remove("b", Reason::Left);
         assert_eq!(kinds(&events), ["raid.left"]);
         assert_eq!(events[0].data()["reason"], "left");
         assert!(r.of("b").is_none());
         assert_eq!(r.get("review").unwrap().members.len(), 1);
         assert!(r.remove("b", Reason::Left).is_empty());
-        // Launch joins never create for --inherit-raid.
+        // A run joins the raid its owner owns, marked as created by it.
+        let events = r.run("a", "d").unwrap();
         assert_eq!(
-            r.join("r3".into(), "absent", "c", false, "a").unwrap_err(),
-            Error::Absent("absent".into())
+            events[0].data(),
+            json!({"raid":"r1","session":"d","role":null,"created_by":"a"})
         );
-        assert!(r.get("absent").is_none());
+        assert_eq!(events[0].actor, "a");
+        assert_eq!(
+            r.get("review").unwrap().members["d"].created_by.as_deref(),
+            Some("a")
+        );
+        assert_eq!(r.run("d", "e").unwrap_err(), Error::NotOwner("d".into()));
+        assert_eq!(r.run("z", "e").unwrap_err(), Error::NotMember("z".into()));
+        assert_eq!(
+            r.run("a", "d").unwrap_err(),
+            Error::Member {
+                session: "d".into(),
+                raid: "review".into()
+            }
+        );
+        r.remove("d", Reason::Stopped);
         assert_eq!(
             r.create("r4".into(), "review", "c", "c").unwrap_err(),
             Error::Exists("review".into())
@@ -461,18 +647,92 @@ mod tests {
     }
 
     #[test]
-    fn owner_removal_dissolves_and_clears_every_member() {
+    fn owner_removal_pauses_and_the_last_member_dissolves() {
         let mut r = Raids::default();
         r.invite("r1".into(), "review", &ids(&["a", "b", "c"]), "host")
             .unwrap();
         let events = r.remove("a", Reason::Stopped);
-        assert_eq!(kinds(&events), ["raid.left", "raid.dissolved"]);
+        assert_eq!(kinds(&events), ["raid.left", "raid.paused"]);
         assert_eq!(events[0].data()["reason"], "stopped");
         assert_eq!(events[1].actor, "a");
-        assert_eq!(events[1].data(), json!({"raid":"r1","reason":"owner-left"}));
+        assert!(!events[1].addition());
+        assert_eq!(
+            events[1].data(),
+            json!({"raid":"r1","former_owner":"a","reason":"stopped"})
+        );
         assert_eq!(events[1].sessions(), ids(&["a", "b", "c"]));
+        let raid = r.get("review").unwrap();
+        assert_eq!((raid.owner.as_ref(), raid.generation), (None, 1));
+        assert_eq!(
+            raid.paused,
+            Some(Paused {
+                former_owner: "a".into(),
+                reason: Reason::Stopped
+            })
+        );
+        // A paused raid keeps its members, takes invites without an owner and
+        // keeps its name.
+        r.invite("r2".into(), "review", &ids(&["d"]), "host")
+            .unwrap();
+        assert_eq!(r.get("review").unwrap().owner, None);
+        assert_eq!(
+            r.create("r3".into(), "review", "x", "x").unwrap_err(),
+            Error::Exists("review".into())
+        );
+        r.remove("b", Reason::Left);
+        r.remove("c", Reason::Left);
+        let events = r.remove("d", Reason::Stopped);
+        assert_eq!(kinds(&events), ["raid.left", "raid.dissolved"]);
+        assert_eq!(events[1].data(), json!({"raid":"r1","reason":"empty"}));
+        assert_eq!(events[1].sessions(), ids(&["d"]));
         assert!(r.get("review").is_none());
         assert!(r.members().next().is_none());
+        // An owner alone dissolves rather than pauses.
+        r.create("r4".into(), "solo", "a", "a").unwrap();
+        assert_eq!(
+            kinds(&r.remove("a", Reason::Left)),
+            ["raid.left", "raid.dissolved"]
+        );
+    }
+
+    #[test]
+    fn the_host_selects_owners_and_each_change_bumps_the_generation() {
+        let mut r = Raids::default();
+        r.invite("r1".into(), "review", &ids(&["a", "b", "c"]), "host")
+            .unwrap();
+        assert_eq!(
+            r.set_owner("absent", "b", "host").unwrap_err(),
+            Error::Absent("absent".into())
+        );
+        assert_eq!(
+            r.set_owner("review", "z", "host").unwrap_err(),
+            Error::NotMember("z".into())
+        );
+        assert!(r.set_owner("review", "a", "host").unwrap().is_empty());
+        // An active raid's ownership moves.
+        let events = r.set_owner("review", "b", "host").unwrap();
+        assert_eq!(kinds(&events), ["raid.owner"]);
+        assert!(events[0].addition());
+        assert_eq!(
+            events[0].data(),
+            json!({"raid":"r1","owner":"b","previous":"a"})
+        );
+        assert_eq!(events[0].sessions(), ids(&["a", "b", "c"]));
+        assert_eq!(r.get("review").unwrap().generation, 1);
+        // A paused raid resumes; the former owner is the previous one.
+        r.remove("b", Reason::Stopped);
+        assert_eq!(r.get("review").unwrap().generation, 2);
+        let events = r.set_owner("review", "c", "host").unwrap();
+        assert_eq!(
+            events[0].data(),
+            json!({"raid":"r1","owner":"c","previous":"b"})
+        );
+        let raid = r.get("review").unwrap();
+        assert_eq!(
+            (raid.owner.as_deref(), &raid.paused, raid.generation),
+            (Some("c"), &None, 3)
+        );
+        assert_eq!(r.of("a").unwrap().owner.as_deref(), Some("c"));
     }
 
     #[test]
@@ -483,14 +743,14 @@ mod tests {
             .unwrap();
         assert_eq!(kinds(&events), ["raid.created", "raid.joined"]);
         assert!(events.iter().all(|e| e.actor == "host"));
-        assert_eq!(r.get("review").unwrap().owner, "a");
+        assert_eq!(r.get("review").unwrap().owner.as_deref(), Some("a"));
         // Current members are a no-op, and inviting keeps the owner.
         let events = r
             .invite("r2".into(), "review", &ids(&["b", "a", "c"]), "host")
             .unwrap();
         assert_eq!(kinds(&events), ["raid.joined"]);
         assert_eq!(events[0].sessions(), ["c"]);
-        assert_eq!(r.get("review").unwrap().owner, "a");
+        assert_eq!(r.get("review").unwrap().owner.as_deref(), Some("a"));
         assert_eq!(r.get("review").unwrap().id, "r1");
         // A member of another raid fails the whole invite: no raid, no owner.
         r.create("r3".into(), "build", "x", "x").unwrap();
@@ -559,7 +819,7 @@ mod tests {
             events[0].data(),
             json!({"raid":"r1","session":"b","role":"owner"})
         );
-        assert_eq!(r.get("review").unwrap().owner, "a");
+        assert_eq!(r.get("review").unwrap().owner.as_deref(), Some("a"));
         // Several members may share a role; setting the same role is a no-op.
         r.set_role("a", "owner", "host").unwrap();
         assert!(r.set_role("a", "owner", "a").unwrap().is_empty());
@@ -572,7 +832,7 @@ mod tests {
         );
         // A non-owner leaving leaves the raid and its owner in place.
         r.remove("b", Reason::Left);
-        assert_eq!(r.get("review").unwrap().owner, "a");
+        assert_eq!(r.get("review").unwrap().owner.as_deref(), Some("a"));
     }
 
     #[test]
@@ -580,11 +840,13 @@ mod tests {
         let mut r = Raids::default();
         let mut log = vec![];
         log.extend(r.create("r1".into(), "quick", "a", "a").unwrap());
-        log.extend(r.join("r1".into(), "quick", "b", false, "a").unwrap());
+        log.extend(r.join("r1".into(), "quick", "b", "a").unwrap());
         log.extend(r.set_role("b", "builder", "b").unwrap());
         log.extend(r.set_role("b", "reviewer", "host").unwrap());
         log.extend(r.set_role("b", "builder", "b").unwrap());
         log.extend(r.remove("a", Reason::Left));
+        log.extend(r.set_owner("quick", "b", "host").unwrap());
+        log.extend(r.remove("b", Reason::Left));
         assert_eq!(
             kinds(&log),
             [
@@ -594,16 +856,21 @@ mod tests {
                 "raid.role",
                 "raid.role",
                 "raid.left",
+                "raid.paused",
+                "raid.owner",
+                "raid.left",
                 "raid.dissolved"
             ]
         );
         assert_eq!(
             log.iter().map(|e| e.actor.as_str()).collect::<Vec<_>>(),
-            ["a", "a", "b", "host", "b", "a", "a"]
+            ["a", "a", "b", "host", "b", "a", "a", "host", "b", "b"]
         );
         assert_eq!(
             log.iter().map(|e| e.addition()).collect::<Vec<_>>(),
-            [true, true, true, true, true, false, false]
+            [
+                true, true, true, true, true, false, false, true, false, false
+            ]
         );
         assert!(r.raids.is_empty());
     }

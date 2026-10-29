@@ -1,4 +1,6 @@
-"""Isolated Codex 0.162.1 protocol smoke tests; synthetic auth, local provider."""
+"""Isolated Codex protocol smoke tests for the goblins-codex adapter and the
+native terminal as a client of the goblin's App Server; synthetic auth, local
+provider. A fake sandbox endpoint stands in for the daemon and its attachment."""
 import json
 import struct
 import zlib
@@ -50,6 +52,12 @@ class NativeProtocol(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.env = {k:v for k,v in os.environ.items() if k not in ('OPENAI_API_KEY','CODEX_API_KEY','ACCESS_TOKEN','CODEX_AUTH_JSON')}
         self.env['CODEX_HOME'] = str(self.root)
+        # Terminal supplies a PTY and emulates ANSI/xterm responses. Do not
+        # inherit TERM=dumb from a headless runner and trigger Codex's prompt.
+        self.env['TERM'] = 'xterm-256color'
+        target = Path(os.environ.get('CARGO_TARGET_DIR', 'target'))
+        self.adapter = Path(os.environ.get('GOBLINS_CODEX_ADAPTER',
+            Path(__file__).resolve().parents[1]/target/'debug/goblins-codex')).resolve()
         self.scripts = queue.Queue()
         self.inputs = []
         scripts, inputs = self.scripts, self.inputs
@@ -89,38 +97,83 @@ wire_api="responses"
 supports_websockets=false
 requires_openai_auth=false
 ''')
-        log = (self.root/'log').open('w'); self.addCleanup(log.close)
-        self.server = subprocess.Popen(['codex', 'app-server', '--listen', 'unix://'+str(self.root/'server.sock')], cwd=self.root, env=self.env, stdout=subprocess.DEVNULL, stderr=log)
         self.addCleanup(self.stop)
+        self.start_server()
+        self.owner = self.client('native-terminal')
+        self.observer = self.client('goblins-observer')
+        self.thread = self.owner.call('thread/start', {'cwd': str(self.root), 'approvalPolicy': 'on-request', 'sandbox': 'read-only', 'model': 'fixture-model'})['thread']['id']
+    def start_server(self):
+        log = (self.root/'log').open('a'); self.addCleanup(log.close)
+        self.server = subprocess.Popen(['codex', 'app-server', '--listen', 'unix://'+str(self.root/'server.sock')], cwd=self.root, env=self.env, stdout=subprocess.DEVNULL, stderr=log)
         for _ in range(1200):
             if (self.root/'server.sock').exists(): break
             if self.server.poll() is not None: self.fail((self.root/'log').read_text())
             time.sleep(.025)
         self.assertTrue((self.root/'server.sock').exists(), (self.root/'log').read_text())
-        self.owner = self.client('native-terminal')
-        self.observer = self.client('goblins-observer')
-        self.thread = self.owner.call('thread/start', {'cwd': str(self.root), 'approvalPolicy': 'on-request', 'sandbox': 'read-only', 'model': 'fixture-model'})['thread']['id']
+    def restart_server(self):
+        """A fresh server, which has no thread loaded."""
+        self.stop()
+        (self.root/'server.sock').unlink(missing_ok=True)
+        self.start_server()
     def client(self, name):
         c = Client(self.root/'server.sock', name); c.wire.peer.settimeout(15)
         self.addCleanup(c.wire.close)
         return c
-    def start_adapter(self, request_socket=None):
-        binary = Path(__file__).resolve().parents[1]/'target/debug/goblins-codex'
-        self.assertTrue(binary.exists(), 'build goblins-codex before native proxy smoke tests')
-        runtime = self.root/'adapter'
+    def start_adapter(self, request_socket=None, bypass=False, name='adapter', thread=None, wait=True):
+        """goblins-codex on its own connection, as the goblin's server
+        launcher runs it. Returns its runtime directory and process."""
+        binary = self.adapter
+        self.assertTrue(binary.exists(), 'build goblins-codex before native smoke tests')
+        runtime = self.root/name
         runtime.mkdir(mode=0o700)
         log = (runtime/'log').open('w'); self.addCleanup(log.close)
-        daemon = ['--request-socket', str(request_socket)] if request_socket else []
-        adapter = subprocess.Popen([str(binary),'--runtime-dir',str(runtime),*daemon,'run','--socket',str(self.root/'server.sock'),'--native-socket',str(runtime/'native.sock')],stdout=subprocess.DEVNULL,stderr=log)
+        # Never the real sandbox endpoint, which these tests may run inside.
+        daemon = ['--request-socket', str(request_socket or self.root/'no-daemon.sock')]
+        mode = ['--bypass-permissions'] if bypass else []
+        resume = ['--thread', thread] if thread else []
+        adapter = subprocess.Popen([str(binary),'--runtime-dir',str(runtime),*daemon,'run','--socket',str(self.root/'server.sock'),*resume,*mode],cwd=self.root,stdout=subprocess.DEVNULL,stderr=log)
         def stop():
-            adapter.terminate(); adapter.wait(timeout=5)
+            if adapter.poll() is None:
+                adapter.terminate(); adapter.wait(timeout=5)
         self.addCleanup(stop)
-        for _ in range(100):
-            if (runtime/'native.sock').exists(): break
-            time.sleep(.025)
-        return runtime
+        if wait:
+            self.bound(runtime)
+        return runtime, adapter
+    def bound(self, runtime, thread=None, timeout=15):
+        """The conversation the adapter delivers to, once it is `thread`."""
+        deadline = time.monotonic() + timeout
+        status = None
+        while time.monotonic() < deadline:
+            try: status = json.loads((runtime/'status.json').read_text())
+            except (OSError, ValueError): status = None
+            if status and status['thread_id'] and (thread is None or status['thread_id'] == thread):
+                return status['thread_id']
+            time.sleep(.05)
+        self.fail(f'adapter not bound to {thread}: {status}; log: {(runtime/"log").read_text()}')
+    def stays(self, runtime, thread, seconds=2):
+        """The adapter keeps delivering to `thread` for a while."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.assertEqual(json.loads((runtime/'status.json').read_text())['thread_id'], thread)
+            time.sleep(.1)
+    def policy(self, thread):
+        """The thread's live approval policy and sandbox, from the server."""
+        live = self.client('inspector-'+uuid.uuid4().hex).call('thread/resume', {'threadId': thread, 'excludeTurns': True})
+        return live['approvalPolicy'], live['sandbox']['type']
+    def trust_hooks(self):
+        """Trust this configuration's own hook, as you would once in Codex."""
+        owner = self.client('trust')
+        hooks = owner.call('hooks/list', {'cwds': [str(self.root)]})['data'][0]['hooks']
+        owner.call('config/batchWrite', {'edits': [{'keyPath': 'hooks.state.'+json.dumps(h['key'])+'.trusted_hash', 'value': h['currentHash'], 'mergeStrategy': 'replace'} for h in hooks], 'reloadUserConfig': True})
+    def turn(self, client, thread, text='human task', **params):
+        """A user message in `thread` and the turn it starts, completed."""
+        self.script()
+        client.call('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': text}], **params})
+        client.event('turn/completed', lambda p: p['threadId'] == thread)
     def stop(self):
-        self.server.terminate(); self.server.wait(timeout=10)
+        self.server.terminate()
+        try: self.server.wait(timeout=10)
+        except subprocess.TimeoutExpired: self.server.kill(); self.server.wait()
     def script(self, *items):
         id = str(uuid.uuid4())
         events = [{'type':'response.created','response':{'id':id}}]
@@ -182,7 +235,7 @@ requires_openai_auth=false
         hook = self.owner.call('hooks/list', {'cwds':[str(self.root)]})['data'][0]['hooks'][0]
         key = str(profile)+':'+hook['key'].split(':', 1)[1]
         self.owner.call('config/batchWrite', {'edits':[{'keyPath':'hooks.state.'+json.dumps(key)+'.trusted_hash','value':hook['currentHash'],'mergeStrategy':'replace'}],'reloadUserConfig':True})
-        binary = Path(__file__).resolve().parents[1]/'target/debug/goblins-codex'
+        binary = self.adapter
         for changed in (False, True):
             if changed:
                 profile.write_text('[hooks]\nSessionStart=[{hooks=[{type="command",command="/bin/false",timeout=5}]}]\n')
@@ -203,139 +256,6 @@ requires_openai_auth=false
             entry = next(h for h in entries if h['key'].startswith('/<session-flags>/config.toml:'))
             self.assertEqual(entry['trustStatus'], 'modified' if changed else 'trusted', (entry, values))
 
-    def test_hidden_native_threads_do_not_replace_visible_binding(self):
-        runtime = self.start_adapter()
-        native = Client(runtime/'native.sock', 'native-terminal'); self.addCleanup(native.wire.close)
-        visible = native.call('thread/start', {'cwd':str(self.root)}, request_id='startup-thread-start-test')['thread']['id']
-        self.assertEqual(json.loads((runtime/'thread.json').read_text()), visible)
-        hidden = native.call('thread/start', {'cwd':str(self.root),'ephemeral':True,'threadSource':'thread_title'}, request_id='temporary-structured-test')['thread']['id']
-        native.call('thread/unsubscribe', {'threadId':hidden})
-        deadline = time.monotonic() + 5
-        while hidden in (loaded := native.call('thread/loaded/list', {})['data']) and time.monotonic() < deadline:
-            time.sleep(.025)
-        self.assertIn(visible, loaded)
-        self.assertNotIn(hidden, loaded)
-        self.assertEqual(native.call('thread/read', {'threadId':visible,'includeTurns':False})['thread']['status']['type'], 'idle')
-        background = native.call('thread/start', {'cwd':str(self.root)}, request_id='tui-dynamic-test')['thread']['id']
-        self.assertNotEqual(background, visible)
-        for file in ('thread.json', 'native-thread.json'):
-            self.assertEqual(json.loads((runtime/file).read_text()), visible)
-        # An actual foreground clear/switch still binds immediately.
-        switched = native.call('thread/start', {'cwd':str(self.root),'sessionStartSource':'clear'})['thread']['id']
-        self.assertEqual(json.loads((runtime/'thread.json').read_text()), switched)
-
-    def test_native_draft_and_image_survive_queue_arrival(self):
-        from terminal_support import Terminal, screen_wait
-        image = self.root/'input.png'
-        def chunk(kind,data):
-            return struct.pack('>I',len(data))+kind+data+struct.pack('>I',zlib.crc32(kind+data))
-        image.write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',1,1,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(b'\0\xff\0\0'))+chunk(b'IEND',b''))
-        hooks = self.owner.call('hooks/list',{'cwds':[str(self.root)]})['data'][0]['hooks']
-        self.assertTrue(hooks, 'synthetic SessionStart hook was not discovered')
-        edits = [{'keyPath':'hooks.state.'+json.dumps(h['key'])+'.trusted_hash', 'value':h['currentHash'], 'mergeStrategy':'replace'} for h in hooks]
-        self.owner.call('config/batchWrite', {'edits':edits,'reloadUserConfig':True})
-        runtime = self.start_adapter()
-        self.script()
-        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(runtime/'native.sock'),
-            '--dangerously-bypass-hook-trust', '--sandbox', 'danger-full-access', '--ask-for-approval', 'never',
-            '-i', str(image), '--', 'image task'], cwd=self.root, env=self.env)
-        self.addCleanup(terminal.close)
-        screen_wait(terminal,lambda text: 'image task' in text,timeout=30)
-        for _ in range(200):
-            if (self.root/'hook-thread.json').exists(): break
-            time.sleep(.025)
-        self.assertTrue((self.root/'hook-thread.json').exists(),(self.root/'log').read_text())
-        hook = json.loads((self.root/'hook-thread.json').read_text())
-        self.assertEqual(hook['hook_event_name'],'SessionStart')
-        self.assertNotEqual(hook['session_id'],self.thread)
-        self.assertEqual(json.loads((runtime/'thread.json').read_text()), hook['session_id'])
-        self.thread = hook['session_id']
-        self.subscribe()
-        self.observer.event('turn/completed',lambda p:p['threadId']==self.thread)
-        self.assertIn('input_image',json.dumps(self.inputs))
-        terminal.send('my unsent draft')
-        screen_wait(terminal,lambda text:'my unsent draft' in text)
-        self.script()
-        self.add('draft-reminder')
-        self.observer.event('turn/completed',lambda p:p['threadId']==self.thread)
-        screen_wait(terminal,lambda text:'my unsent draft' in text)
-
-    def fake_daemon(self):
-        """A sandbox endpoint that records the adapter's conversation reports."""
-        from daemon_support import frame, receive
-        import socket
-        path = self.root/'daemon.sock'
-        listener = socket.socket(socket.AF_UNIX); listener.bind(str(path)); listener.listen()
-        self.addCleanup(listener.close)
-        reports = queue.Queue()
-        def serve():
-            while True:
-                try: peer, _ = listener.accept()
-                except OSError: return
-                with peer:
-                    try:
-                        init = receive(peer)
-                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':{'api':1,'role':'sandbox'}}))
-                        call = receive(peer)
-                        if call['method'] == 'sessions.set-variables':
-                            reports.put(call['params']['variables'])
-                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'accepted':True,'recorded':True}}))
-                        else:
-                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'error':{'code':-32601,'message':'not in this test'}}))
-                    except (OSError, EOFError, ValueError): pass
-        threading.Thread(target=serve, daemon=True).start()
-        return path, reports
-    def reported(self, reports, expected, timeout=30):
-        deadline = time.monotonic() + timeout
-        seen = []
-        while time.monotonic() < deadline:
-            try: seen.append(reports.get(timeout=.5))
-            except queue.Empty: continue
-            if seen[-1] == expected: return
-        self.fail(f'missing report {expected}; saw {seen}')
-
-    def test_remote_resume_reports_the_conversation_through_rename_and_switch(self):
-        from terminal_support import Terminal, screen_wait
-        hooks = self.owner.call('hooks/list',{'cwds':[str(self.root)]})['data'][0]['hooks']
-        edits = [{'keyPath':'hooks.state.'+json.dumps(h['key'])+'.trusted_hash', 'value':h['currentHash'], 'mergeStrategy':'replace'} for h in hooks]
-        self.owner.call('config/batchWrite', {'edits':edits,'reloadUserConfig':True})
-        self.script()
-        self.owner.call('turn/start', {'threadId': self.thread, 'input': [{'type': 'text', 'text': 'earlier task'}]})
-        self.owner.event('turn/completed')
-        self.owner.call('thread/name/set', {'threadId': self.thread, 'name': 'Original name'})
-        calls = len(self.inputs)
-        # Codex refuses permission overrides when resuming a remote thread:
-        # the reason the launcher leaves them off.
-        refused = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(self.root/'server.sock'), '--sandbox',
-                            'danger-full-access', '--ask-for-approval', 'never', 'resume', self.thread],
-                           cwd=self.root, env=self.env)
-        self.addCleanup(refused.close)
-        refused.expect('Permission overrides are not supported', timeout=30)
-        self.assertNotEqual(refused.wait(), 0)
-        request_socket, reports = self.fake_daemon()
-        runtime = self.start_adapter(request_socket)
-        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(runtime/'native.sock'),
-            '--dangerously-bypass-hook-trust', 'resume', self.thread], cwd=self.root, env=self.env)
-        self.addCleanup(terminal.close)
-        self.reported(reports, {'session_id': self.thread, 'session_name': 'Original name'})
-        self.assertEqual(json.loads((runtime/'thread.json').read_text()), self.thread)
-        screen_wait(terminal, lambda text: 'earlier task' in text, timeout=30)
-        self.assertEqual(len(self.inputs), calls, 'resuming must not call the model')
-        # A rename of the foreground thread reaches the proxied connection.
-        self.observer.call('thread/name/set', {'threadId': self.thread, 'name': 'Renamed'})
-        self.reported(reports, {'session_id': self.thread, 'session_name': 'Renamed'})
-        # A foreground switch replaces both values.
-        terminal.send('/new')
-        time.sleep(1)
-        terminal.send('\r')
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            current = json.loads((runtime/'thread.json').read_text()) if (runtime/'thread.json').exists() else None
-            if current and current != self.thread: break
-            time.sleep(.1)
-        self.assertNotEqual(current, self.thread)
-        self.reported(reports, {'session_id': current, 'session_name': ''})
-
     def test_native_owns_approval_and_input_while_observer_does_not_answer(self):
         self.script({'type': 'response.output_item.done', 'item': {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'touch /tmp/native-approval-test', 'sandbox_permissions': 'require_escalated', 'justification': 'test approval'})}})
         self.owner.call('turn/start', {'threadId': self.thread, 'input': [{'type': 'text', 'text': 'approval task'}]})
@@ -354,5 +274,300 @@ requires_openai_auth=false
         self.script()
         self.owner.wire.send({'id': v['id'], 'result': {'answers': {'q': {'answers': ['A']}}}})
         self.owner.event('turn/completed')
+
+    def saved(self, approval, sandbox, cwd=None):
+        """A thread saved with these permissions, not loaded in a fresh server."""
+        thread = self.owner.call('thread/start', {'cwd': str(cwd or self.root), 'approvalPolicy': approval, 'sandbox': sandbox, 'model': 'fixture-model'})['thread']['id']
+        self.script()
+        self.owner.call('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': 'saved task'}]})
+        self.owner.event('turn/completed')
+        self.restart_server()
+        return thread
+
+    def fake_daemon(self):
+        """A sandbox endpoint that records the adapter's conversation reports.
+        `self.attached_since` is the attachment it reports, None when detached,
+        and `self.inbox` what inbox.status returns."""
+        from daemon_support import frame, receive
+        import socket
+        path = self.root/'daemon.sock'
+        listener = socket.socket(socket.AF_UNIX); listener.bind(str(path)); listener.listen()
+        self.addCleanup(listener.close)
+        reports = queue.Queue()
+        self.states = queue.Queue()
+        self.attached_since = None
+        self.status_held, self.reported_since = False, None
+        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'audit_failed': False}
+        def serve():
+            while True:
+                try: peer, _ = listener.accept()
+                except OSError: return
+                with peer:
+                    try:
+                        init = receive(peer)
+                        peer.sendall(frame({'jsonrpc':'2.0','id':init['id'],'result':{'api':1,'role':'sandbox'}}))
+                        call = receive(peer)
+                        if call['method'] == 'sessions.set-variables':
+                            reports.put(call['params']['variables'])
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'accepted':True,'recorded':True}}))
+                        elif call['method'] == 'sessions.status':
+                            if not self.status_held: self.reported_since = self.attached_since
+                            since = self.reported_since
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{'agent_name':'gobbo','attached':since is not None,'attached_since':since}}))
+                        elif call['method'] == 'inbox.status':
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':self.inbox}))
+                        elif call['method'] == 'sessions.set-state':
+                            self.states.put(call['params']['state'])
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'result':{}}))
+                        else:
+                            peer.sendall(frame({'jsonrpc':'2.0','id':call['id'],'error':{'code':-32601,'message':'not in this test'}}))
+                    except (OSError, EOFError, ValueError): pass
+        threading.Thread(target=serve, daemon=True).start()
+        return path, reports
+    def reported(self, reports, expected, timeout=30):
+        deadline = time.monotonic() + timeout
+        seen = []
+        while time.monotonic() < deadline:
+            try: seen.append(reports.get(timeout=.5))
+            except queue.Empty: continue
+            if seen[-1] == expected: return
+        self.fail(f'missing report {expected}; saw {seen}')
+    def attach(self, held=False):
+        """A client attaches now: messages from here on count. While `held`,
+        the endpoint keeps reporting the previous attachment."""
+        self.status_held = held
+        self.attached_since = int(time.time() * 1000)
+        if not held:
+            time.sleep(1.2)  # the adapter polls twice a second
+
+    def test_a_fresh_conversation_is_named_and_a_terminal_can_join_it_before_any_turn(self):
+        from terminal_support import Terminal, screen_wait
+        request_socket, reports = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        thread = self.bound(runtime)
+        # Named, so saved: recorded at once, and another connection resumes it.
+        self.reported(reports, {'session_id': thread, 'session_name': 'gobbo'})
+        self.assertEqual(self.policy(thread), ('on-request', 'dangerFullAccess'))
+        # Codex's own terminal, as onAttach starts it, shows it normally.
+        self.trust_hooks()
+        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(self.root/'server.sock'), 'resume', thread], cwd=self.root, env=self.env)
+        self.addCleanup(terminal.close)
+        screen_wait(terminal, lambda text: 'fixture-model' in text and 'rror' not in text, timeout=30)
+        # Quitting the terminal, or hanging it up, leaves the server and the thread.
+        terminal.send('/quit')
+        time.sleep(.5)
+        terminal.send('\r')
+        self.assertEqual(terminal.wait(), 0)
+        again = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(self.root/'server.sock'), 'resume', thread], cwd=self.root, env=self.env)
+        self.addCleanup(again.close)
+        screen_wait(again, lambda text: 'fixture-model' in text and 'rror' not in text, timeout=30)
+        again.close()
+        time.sleep(1)
+        self.assertIn(thread, self.observer.call('thread/loaded/list', {})['data'])
+        self.assertEqual(json.loads((runtime/'status.json').read_text())['thread_id'], thread)
+
+    def test_a_terminal_resuming_the_conversation_draws_its_history(self):
+        from terminal_support import Terminal, screen_wait
+        thread = self.saved('on-request', 'danger-full-access')
+        runtime, _ = self.start_adapter(thread=thread)
+        self.assertEqual(self.bound(runtime), thread)
+        self.trust_hooks()
+        terminal = Terminal([shutil.which('codex'), '--remote', 'unix://'+str(self.root/'server.sock'), 'resume', thread], cwd=self.root, env=self.env)
+        self.addCleanup(terminal.close)
+        screen_wait(terminal, lambda text: 'saved task' in text, timeout=30)
+
+    def test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails(self):
+        thread = self.saved('never', 'read-only')
+        runtime, _ = self.start_adapter(thread=thread)
+        self.assertEqual(self.bound(runtime), thread)
+        # The config leaves approval_policy unset: Codex's own default.
+        self.assertEqual(self.policy(thread), ('on-request', 'dangerFullAccess'))
+        # Bypassing always means never.
+        self.restart_server()
+        runtime, _ = self.start_adapter(thread=thread, bypass=True, name='bypass')
+        self.assertEqual(self.policy(self.bound(runtime)), ('never', 'dangerFullAccess'))
+        # A conversation that no longer exists stops the adapter, and so the goblin.
+        runtime, adapter = self.start_adapter(thread=str(uuid.uuid4()), name='missing', wait=False)
+        self.assertNotEqual(adapter.wait(timeout=15), 0)
+        self.assertIn('goblins-codex:', (runtime/'log').read_text())
+
+    def test_the_configured_policy_is_the_saved_threads_directorys(self):
+        # Your config says never; the thread's project says on-request.
+        project = self.root/'project'
+        (project/'.codex').mkdir(parents=True)
+        (project/'.codex'/'config.toml').write_text('approval_policy="on-request"\n')
+        config = self.root/'config.toml'
+        config.write_text('approval_policy="never"\n' + config.read_text() + f'[projects."{project}"]\ntrust_level="trusted"\n')
+        thread = self.saved('never', 'danger-full-access', cwd=project)
+        runtime, _ = self.start_adapter(thread=thread)
+        self.assertEqual(self.policy(self.bound(runtime)), ('on-request', 'dangerFullAccess'))
+
+    def test_a_loaded_thread_that_keeps_its_own_policy_is_repaired_without_a_turn(self):
+        request_socket, _ = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        original = self.bound(runtime)
+        for busy in (False, True):
+            with self.subTest(busy=busy):
+                self.attach()
+                thread = self.owner.call('thread/start', {'cwd':str(self.root), 'approvalPolicy':'never', 'sandbox':'read-only'})['thread']['id']
+                gate = threading.Event()
+                self.addCleanup(gate.set)
+                self.script(*([gate] if busy else []))
+                calls = len(self.inputs) + 1
+                self.owner.call('turn/start', {'threadId':thread, 'input':[{'type':'text','text':'switch here'}]})
+                self.owner.event('turn/started' if busy else 'turn/completed', lambda p:p['threadId']==thread)
+                self.bound(runtime, thread)
+                self.assertEqual(self.policy(thread), ('on-request', 'dangerFullAccess'))
+                gate.set()
+                if busy: self.owner.event('turn/completed', lambda p:p['threadId']==thread)
+                self.assertEqual(len(self.inputs), calls, 'policy repair must not submit a turn')
+        self.assertNotEqual(original, thread)
+
+    def test_only_the_first_message_while_attached_moves_reminders(self):
+        request_socket, reports = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        first = self.bound(runtime)
+        # While detached, a new conversation and its messages never move them.
+        detached = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.turn(self.owner, detached)
+        self.stays(runtime, first)
+        # Attached: switching alone does not move them; the first message does,
+        # also when it is the turn that saves a new conversation.
+        self.attach()
+        # Nor do a background task's messages, also in a saved thread.
+        background = self.owner.call('thread/start', {'cwd':str(self.root), 'threadSource':'thread_title'})['thread']['id']
+        self.turn(self.owner, background, text='title this')
+        self.stays(runtime, first)
+        switched = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.stays(runtime, first, seconds=1.5)
+        self.turn(self.owner, switched)
+        self.bound(runtime, switched)
+        self.reported(reports, {'session_id': switched, 'session_name': ''})
+        # Old history, from before the attachment, does not count either.
+        self.owner.call('thread/resume', {'threadId': detached})
+        self.stays(runtime, switched)
+
+    def test_a_first_turn_that_ends_before_it_can_be_joined_is_caught_up(self):
+        request_socket, _ = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        self.bound(runtime)
+        self.attach()
+        # The turn that saves the conversation ends before the adapter's next
+        # poll can join it. (An interrupted first turn keeps no message.)
+        thread = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.turn(self.owner, thread, text='quick')
+        self.bound(runtime, thread)
+
+    def test_a_first_message_before_the_adapter_learns_of_the_attachment_counts(self):
+        request_socket, _ = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        first = self.bound(runtime)
+        # A conversation the adapter has joined, with history from while detached.
+        other = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.turn(self.owner, other, text='while detached')
+        self.stays(runtime, first)
+        # The terminal attaches and sends at once, while the adapter still
+        # believes nobody is attached.
+        self.attach(held=True)
+        self.turn(self.owner, other, text='first while attached')
+        self.stays(runtime, first, seconds=1)
+        self.assertIsNone(self.reported_since, 'the message must arrive before the attachment is reported')
+        self.status_held = False
+        self.bound(runtime, other)
+
+    def test_the_rejoin_sequence_follows_each_first_message(self):
+        request_socket, _ = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        self.bound(runtime)
+        self.attach()
+        a = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.turn(self.owner, a)
+        self.bound(runtime, a)
+        b = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.turn(self.owner, b)
+        self.bound(runtime, b)
+        # Back to A, still loaded: no signal until the next message in it.
+        self.owner.call('thread/resume', {'threadId': a})
+        self.stays(runtime, b)
+        self.turn(self.owner, a, text='back again')
+        self.bound(runtime, a)
+
+    def test_resuming_an_unloaded_conversation_while_attached(self):
+        request_socket, _ = self.fake_daemon()
+        thread = self.saved('on-request', 'danger-full-access')
+        runtime, _ = self.start_adapter(request_socket)
+        first = self.bound(runtime)
+        self.attach()
+        terminal = self.client('native-terminal')
+        terminal.call('thread/resume', {'threadId': thread})
+        self.stays(runtime, first, seconds=1.5)
+        self.turn(terminal, thread, text='continue')
+        self.bound(runtime, thread)
+        self.assertEqual(self.policy(thread), ('on-request', 'dangerFullAccess'))
+
+    def test_reminders_never_move_the_binding_even_once_completed(self):
+        request_socket, _ = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket)
+        home = self.bound(runtime)
+        self.attach()
+        terminal = self.client('native-terminal')
+        terminal.call('thread/resume', {'threadId': home})
+        # The person is busy in the bound conversation when a message arrives:
+        # the reminder waits in its queue.
+        gate = threading.Event()
+        self.addCleanup(gate.set)
+        self.script(gate)
+        terminal.call('turn/start', {'threadId': home, 'input': [{'type': 'text', 'text': 'long task'}]})
+        terminal.event('turn/started', lambda p: p['threadId'] == home)
+        self.bound(runtime, home)
+        self.inbox = {'queued': 1, 'claim': None, 'head': ['m', 0], 'audit_failed': False}
+        deadline = time.monotonic() + 10
+        while not self.observer.call('thread/queue/list', {'threadId': home})['data']:
+            self.assertLess(time.monotonic(), deadline, 'no reminder queued')
+            time.sleep(.1)
+        # Then they move to another conversation, and the reminder's turn runs
+        # in the old one after the person's turn there ends.
+        other = self.owner.call('thread/start', {'cwd':str(self.root)})['thread']['id']
+        self.turn(self.owner, other)
+        self.bound(runtime, other)
+        self.script()
+        gate.set()
+        reminder = terminal.event('item/started', lambda p: p['threadId'] == home and p['item'].get('type') == 'userMessage' and p['item'].get('clientId'))
+        self.assertEqual(reminder['item']['content'][0]['text'], 'Check your Goblins inbox and process the next item.')
+        terminal.event('turn/completed', lambda p: p['threadId'] == home)
+        self.inbox = {'queued': 0, 'claim': None, 'head': None, 'audit_failed': False}
+        self.stays(runtime, other)
+        # Rebinding by hand.
+        subprocess.run([str(self.adapter), '--runtime-dir', str(runtime), 'bind', home], check=True, stdout=subprocess.DEVNULL)
+        self.bound(runtime, home)
+
+    def test_a_pending_approval_reaches_a_terminal_that_attaches_later(self):
+        self.script({'type': 'response.output_item.done', 'item': {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'touch /tmp/native-approval-test', 'sandbox_permissions': 'require_escalated', 'justification': 'test approval'})}})
+        self.owner.call('turn/start', {'threadId': self.thread, 'input': [{'type': 'text', 'text': 'approval task'}]})
+        self.owner.event('item/commandExecution/requestApproval', envelope=True)
+        late = self.client('late-terminal')
+        late.call('thread/resume', {'threadId': self.thread})
+        envelope = late.event('item/commandExecution/requestApproval', envelope=True)
+        self.script()
+        late.wire.send({'id': envelope['id'], 'result': {'decision': 'decline'}})
+        late.event('turn/completed')
+
+    def test_approvals_reach_the_terminal_and_report_waiting(self):
+        thread = self.saved('on-request', 'read-only')
+        request_socket, _ = self.fake_daemon()
+        runtime, _ = self.start_adapter(request_socket, thread=thread)
+        self.bound(runtime, thread)
+        terminal = self.client('native-terminal')
+        terminal.call('thread/resume', {'threadId': thread})
+        self.script({'type': 'response.output_item.done', 'item': {'type': 'function_call', 'call_id': 'cmd', 'name': 'exec_command', 'arguments': json.dumps({'cmd': 'touch /tmp/native-approval-test', 'sandbox_permissions': 'require_escalated', 'justification': 'test approval'})}})
+        # The person's own turn may ask for a stricter policy, here one that asks.
+        terminal.call('turn/start', {'threadId': thread, 'input': [{'type': 'text', 'text': 'approval task'}], 'approvalPolicy': 'on-request', 'sandboxPolicy': {'type': 'readOnly'}})
+        envelope = terminal.event('item/commandExecution/requestApproval', envelope=True)
+        deadline = time.monotonic() + 15
+        while self.states.get(timeout=max(deadline - time.monotonic(), .1)) != 'waiting-approval':
+            pass
+        self.script()
+        terminal.wire.send({'id': envelope['id'], 'result': {'decision': 'decline'}})
+        terminal.event('turn/completed')
 
 if __name__ == '__main__': unittest.main()

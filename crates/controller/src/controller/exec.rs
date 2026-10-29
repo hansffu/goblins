@@ -34,7 +34,7 @@ impl Exec {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExecParams {
-    /// Name, tree path (`/` or `.` separated) or session ID.
+    /// Agent name or session ID.
     session: String,
     /// Require exactly this session ID; never re-resolve the name.
     #[serde(default)]
@@ -90,7 +90,6 @@ impl Controller {
     /// Resolve an exec target. A pin names the exact session: a stopped or
     /// different goblin fails instead of falling back to the name.
     fn exec_target(&self, designator: &str, pin: Option<&str>) -> Result<String, Fault> {
-        let path = designator.replace('.', "/");
         let id = match pin {
             Some(pin) => {
                 let a = self.sessions.get(pin).ok_or_else(|| {
@@ -99,20 +98,18 @@ impl Controller {
                         format!("goblin {designator} ({pin}) has stopped or is not on this daemon"),
                     )
                 })?;
-                if ![pin, a.record.path.as_str(), a.record.agent_name.as_str()]
-                    .contains(&path.as_str())
-                {
+                if ![pin, a.record.agent_name.as_str()].contains(&designator) {
                     return Err((-32009, format!("goblin {designator} is not session {pin}")));
                 }
                 pin.to_string()
             }
-            None => self.resolve_session(&path)?,
+            None => self.resolve_session(designator)?,
         };
         let a = &self.sessions[&id];
         if a.record.state != "running" || a.worker.is_none() {
             return Err((
                 -32009,
-                format!("goblin {} ({id}) has stopped", a.record.path),
+                format!("goblin {} ({id}) has stopped", a.record.agent_name),
             ));
         }
         Ok(id)
@@ -219,7 +216,13 @@ impl Controller {
             .map(|(id, _)| *id)
             .collect();
         for id in ids {
-            self.exec_command(id, &Command::Cancel { id });
+            self.exec_command(
+                id,
+                &Command::Cancel {
+                    id,
+                    everything: false,
+                },
+            );
             self.exec_finished(id, None);
         }
     }
@@ -334,11 +337,14 @@ impl Controller {
                     Ok((0, _)) => {
                         self.sessions.get_mut(&session).unwrap().init = None;
                         self.end_execs(&session, "the goblin has stopped");
+                        self.attach_lost(&session);
                         break;
                     }
                     // Init never sends descriptors; any that arrive are closed.
                     Ok((n, _)) => {
-                        if let Ok(event) = serde_json::from_slice::<Event>(&buffer[..n]) {
+                        if let Ok(event) = serde_json::from_slice::<Event>(&buffer[..n])
+                            && !self.attach_event(&session, &event)
+                        {
                             self.exec_event(&session, event);
                         }
                     }
@@ -346,6 +352,7 @@ impl Controller {
                     Err(_) => {
                         self.sessions.get_mut(&session).unwrap().init = None;
                         self.end_execs(&session, "the goblin has stopped");
+                        self.attach_lost(&session);
                         break;
                     }
                 }

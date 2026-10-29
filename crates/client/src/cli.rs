@@ -5,8 +5,8 @@ use serde_json::json;
 
 #[derive(Parser)]
 #[command(
-    name = "goblins",
-    about = "Manage descendant sandboxes and request packages"
+    name = "goblin",
+    about = "Message goblins in this raid, run raid members and request packages"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -52,7 +52,7 @@ pub enum FlakeCommand {
 pub enum EditorCommand {
     /// Open files in the host's editor; waits until it is done with all of them
     #[command(
-        override_usage = "goblins editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]..."
+        override_usage = "goblin editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]..."
     )]
     Open {
         /// [--no-wait] [+LINE[:COL]] FILE...; a position applies to the next file
@@ -64,12 +64,7 @@ pub enum EditorCommand {
 pub enum RaidCommand {
     /// Create a raid and join it as its owner
     Create { raid: String },
-    /// Add direct children to this goblin's raid
-    Invite {
-        #[arg(required = true, value_name = "CHILD")]
-        children: Vec<String>,
-    },
-    /// Leave this goblin's raid; the owner leaving dissolves it
+    /// Leave this goblin's raid; the owner leaving pauses it
     Leave,
     /// List the raid's members, their roles and its owner
     Members {
@@ -98,11 +93,6 @@ pub enum Command {
     Variable {
         #[command(subcommand)]
         command: VariableCommand,
-    },
-    /// Sandbox integration lifecycle (used by the mounted notifier and hooks)
-    Integration {
-        #[command(subcommand)]
-        command: IntegrationCommand,
     },
     /// Send text contents through the daemon to another agent
     Send {
@@ -139,7 +129,12 @@ pub enum Command {
         #[arg(long)]
         reason: Option<String>,
     },
-    /// This sandbox's flake dev shell (there is no nix command)
+    /// Run commands on the host, outside this sandbox, after approval
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
+    /// This sandbox's host-evaluated flake dev shell
     Devshell {
         #[command(subcommand)]
         command: DevshellCommand,
@@ -149,7 +144,7 @@ pub enum Command {
         #[command(subcommand)]
         command: EditorCommand,
     },
-    /// Collaborate with goblins in other branches: find and message members
+    /// Collaborate with other goblins: find and message members
     Raid {
         #[command(subcommand)]
         command: RaidCommand,
@@ -159,39 +154,23 @@ pub enum Command {
         #[command(subcommand)]
         command: FlakeCommand,
     },
-    /// Launch a child using a configuration this sandbox may start
+    /// Run a raid member with a configuration this goblin may run (raid owners only)
     Run {
         config: String,
         #[arg(long)]
         name: Option<String>,
-        /// Parent within this subtree; defaults to this sandbox (.)
-        #[arg(long)]
-        parent: Option<String>,
-        /// Start without attaching
+        /// Return once it is starting (the only mode: goblins do not attach)
         #[arg(long, visible_alias = "detached")]
         detatched: bool,
-        /// Join the child to the parent's raid
-        #[arg(long)]
-        inherit_raid: bool,
     },
-    /// Attach to a descendant's terminal
-    Attach { session: String },
     /// Show the name and identity of this sandbox
     Status,
-    /// List only descendants of this sandbox
+    /// List the members created in the raid this goblin owns
     List,
-    /// Kill a descendant; requires --kill-children if it has live descendants
-    Kill {
-        session: String,
-        #[arg(long)]
-        kill_children: bool,
-    },
-    /// Stop a descendant (same subtree rules as kill)
-    Stop {
-        session: String,
-        #[arg(long)]
-        kill_children: bool,
-    },
+    /// Stop a member created in the raid this goblin owns
+    Kill { session: String },
+    /// Stop a member created in the raid this goblin owns (same as kill)
+    Stop { session: String },
     /// Detach this sandbox's terminal
     Detach,
     Completions {
@@ -228,33 +207,15 @@ fn slot(words: Vec<String>) -> Option<bool> {
     }
     match Cli::try_parse_from(normalized).ok()?.command {
         Command::Run { config, .. } if config == TARGET => Some(false),
-        Command::Run {
-            parent: Some(parent),
-            ..
-        } if parent == TARGET => Some(true),
-        Command::Kill { session, .. }
-        | Command::Stop { session, .. }
-        | Command::Attach { session }
-            if session == TARGET =>
-        {
-            Some(true)
-        }
-        Command::Raid {
-            command: RaidCommand::Invite { children },
-        } if children.last().is_some_and(|c| c == TARGET) => Some(true),
+        Command::Kill { session } | Command::Stop { session } if session == TARGET => Some(true),
         _ => None,
     }
 }
 pub fn complete(words: Vec<String>) -> Result<i32, String> {
-    let parent = words
-        .iter()
-        .rev()
-        .take(2)
-        .any(|w| w == "--parent" || w == "--parent=");
     let Some(names) = slot(words) else {
         return Ok(1);
     };
-    let Ok((mut socket, init)) = super::connect() else {
+    let Ok((mut socket, _)) = super::connect() else {
         return Ok(0);
     };
     if !names {
@@ -264,45 +225,32 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
         };
-        // The configurations this sandbox may start; an older daemon permits
-        // only its own configuration.
+        // The configurations this goblin may run.
         let status = rpc::exchange(&mut socket, json!(1), "sessions.status", json!({}))
             .map_err(|e| e.to_string())?;
-        match status["allowed_children"].as_array() {
-            Some(names) => names
-                .iter()
-                .filter_map(|n| n.as_str())
-                .filter(|n| configuration(n))
-                .for_each(|n| println!("{n}")),
-            None => {
-                if let Some(name) = init["configuration"].as_str().filter(|n| configuration(n)) {
-                    println!("{name}");
-                }
-            }
-        }
+        status["allowed_run_targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.as_str())
+            .filter(|n| configuration(n))
+            .for_each(|n| println!("{n}"));
         return Ok(0);
-    }
-    if parent {
-        println!(".");
     }
     let records = rpc::exchange(&mut socket, json!(1), "sessions.list", json!({}))
         .map_err(|e| e.to_string())?;
     if let Some(records) = records.as_array() {
         for record in records {
-            if (if parent {
-                record["state"] == "running"
-            } else {
-                matches!(
-                    record["state"].as_str(),
-                    Some("starting" | "running" | "stopping")
-                )
-            }) && let Some(path) = record["path"].as_str()
-                && !path.is_empty()
-                && path
+            if matches!(
+                record["state"].as_str(),
+                Some("starting" | "running" | "stopping")
+            ) && let Some(name) = record["agent_name"].as_str()
+                && !name.is_empty()
+                && name
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-/".contains(&b))
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             {
-                println!("{path}");
+                println!("{name}");
             }
         }
     }
@@ -310,7 +258,7 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
 }
 pub fn completions(shell: clap_complete::Shell) {
     let mut bytes = Vec::new();
-    clap_complete::generate(shell, &mut Cli::command(), "goblins", &mut bytes);
+    clap_complete::generate(shell, &mut Cli::command(), "goblin", &mut bytes);
     let mut script = String::from_utf8(bytes).unwrap();
     let hook = match shell {
         clap_complete::Shell::Bash => Some(
@@ -338,18 +286,17 @@ pub fn completions(shell: clap_complete::Shell) {
         _ => None,
     };
     if let Some(hook) = hook {
-        script = script.replacen("_goblins() {", &format!("_goblins() {{{hook}"), 1);
+        script = script.replacen("_goblin() {", &format!("_goblin() {{{hook}"), 1);
     }
     print!("{script}");
     if shell == clap_complete::Shell::Fish {
         println!(
             r#"
-function __fish_goblins_subtree_candidates
+function __fish_goblin_candidates
     set -l words (commandline -opc)
     command $words[1] __complete-names -- $words 2>/dev/null
 end
-complete -c goblins -f -a '(__fish_goblins_subtree_candidates)'
-complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_subtree_candidates)'
+complete -c goblin -f -a '(__fish_goblin_candidates)'
 "#
         );
     }
@@ -362,53 +309,42 @@ mod tests {
     fn restricted_commands_and_completion_positions() {
         Cli::command().debug_assert();
         for args in [
-            vec!["goblins", "rpc", "server.stop", "{}"],
-            vec!["goblins", "run", "shell", "--runtime", "/tmp/manifest"],
+            vec!["goblin", "rpc", "server.stop", "{}"],
+            vec!["goblin", "run", "shell", "--runtime", "/tmp/manifest"],
         ] {
             assert!(Cli::try_parse_from(args).is_err());
         }
         assert_eq!(
-            slot(["goblins", "run"].map(String::from).to_vec()),
+            slot(["goblin", "run"].map(String::from).to_vec()),
             Some(false)
         );
         assert_eq!(
             slot(
-                ["goblins", "run", "shell", "--parent"]
-                    .map(String::from)
-                    .to_vec()
-            ),
-            Some(true)
-        );
-        assert_eq!(
-            slot(
-                ["goblins", "run", "shell", "--name"]
+                ["goblin", "run", "shell", "--name"]
                     .map(String::from)
                     .to_vec()
             ),
             None
         );
-        assert!(Cli::try_parse_from(["goblins", "run", "shell", "--detatched"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "attach", "child"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "status"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "detach"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "detatch"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--detatched"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "attach", "member"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "status"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "detach"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "detatch"]).is_err());
         assert_eq!(
-            slot(["goblins", "attach"].map(String::from).to_vec()),
+            slot(["goblin", "stop"].map(String::from).to_vec()),
             Some(true)
         );
-        assert_eq!(
-            slot(["goblins", "raid", "invite"].map(String::from).to_vec()),
-            Some(true)
-        );
-        assert!(Cli::try_parse_from(["goblins", "raid", "invite"]).is_err());
-        assert!(Cli::try_parse_from(["goblins", "raid", "set-role"]).is_err());
-        assert!(Cli::try_parse_from(["goblins", "run", "shell", "--inherit-raid"]).is_ok());
-        assert!(Cli::try_parse_from(["goblins", "variable", "set"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "raid", "invite", "x"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "raid", "set-role"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--inherit-raid"]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "run", "shell", "--parent", "."]).is_err());
+        assert!(Cli::try_parse_from(["goblin", "variable", "set"]).is_err());
         assert!(
-            Cli::try_parse_from(["goblins", "variable", "set", "a=1", "name=two words"]).is_ok()
+            Cli::try_parse_from(["goblin", "variable", "set", "a=1", "name=two words"]).is_ok()
         );
         assert!(matches!(
-            Cli::try_parse_from(["goblins", "editor", "open", "--no-wait", "+3:4", "a"])
+            Cli::try_parse_from(["goblin", "editor", "open", "--no-wait", "+3:4", "a"])
                 .unwrap()
                 .command,
             Command::Editor { command: EditorCommand::Open { args } } if args.len() == 3
@@ -424,6 +360,48 @@ pub struct MessageSource {
     /// Sender-local UTF-8 file, or - for stdin (contents are sent)
     #[arg(long, conflicts_with = "message", required_unless_present = "message")]
     pub file: Option<std::path::PathBuf>,
+}
+#[derive(Subcommand)]
+pub enum HostCommand {
+    /// Ask the host to run COMMAND; waits for approval and the job unless --detach
+    Run {
+        /// Why the task needs it, shown to the approver
+        #[arg(long)]
+        reason: String,
+        /// Return once submitted; the outcome arrives as an inbox notice
+        #[arg(long)]
+        detach: bool,
+        /// Directory to run in (default: the current one); must be shared with the host
+        #[arg(long)]
+        cwd: Option<std::path::PathBuf>,
+        /// Add or replace a variable in the host environment
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Cancel the job after this many seconds
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<u64>,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// A host command's state, and its exit code once finished
+    Status { job: String },
+    /// A host command's output so far
+    Logs {
+        job: String,
+        /// Keep printing until the job ends
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Wait for a host command and exit like an attached run (124: still running)
+    Wait {
+        job: String,
+        #[arg(long, value_name = "SECONDS", default_value_t = 540)]
+        timeout: u64,
+    },
+    /// Withdraw a pending host command or stop a running one
+    Cancel { job: String },
+    /// This sandbox's host commands
+    List,
 }
 #[derive(Subcommand)]
 pub enum InboxCommand {
@@ -475,31 +453,4 @@ impl InboxCommand {
             ),
         })
     }
-}
-
-#[derive(Subcommand)]
-pub enum IntegrationCommand {
-    Register {
-        #[arg(long)]
-        driver: String,
-    },
-    Watch {
-        #[arg(long)]
-        epoch: u64,
-        #[arg(long, default_value = "terminal", value_parser = ["terminal", "notification"])]
-        delivery: String,
-    },
-    Hook {
-        #[arg(long)]
-        event: String,
-        #[arg(long)]
-        active: bool,
-        /// Tool name of a tool hook event
-        #[arg(long)]
-        tool: Option<String>,
-        /// Notification type of a Notification hook event
-        #[arg(long)]
-        notification: Option<String>,
-    },
-    Status,
 }

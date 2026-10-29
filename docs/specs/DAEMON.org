@@ -515,8 +515,8 @@ These choices settle the open details for API 1 before implementation.
   they use the same explicit host approval and withdrawal rules. They never
   inherit ancestor package approval. Already-enabled sessions selecting the
   same scope return ready without approval; explicit anonymous creates a fresh
-  scope. Children inherit the parent's live scope and activation without a new
-  Docker request, including anonymous scopes. =docker_enabled= is separate from
+  scope. Goblins a raid owner runs join its live scope and activation without a
+  new Docker request, including anonymous scopes. =docker_enabled= is separate from
   package grant state.
   Host connections permit sequential calls and ordered notifications; at most
   4096 calls per connection. No automatic retry of uncertain mutations.
@@ -579,6 +579,12 @@ These choices settle the open details for API 1 before implementation.
   id 0: ={attached:true}= on success, or an error on rejection. Raw bidirectional
   terminal bytes follow the success frame. Host initialization advertises
   =terminal-reattach=; clients and daemon must both support this handshake.
+  With =attach-handlers= advertised, start also returns =attach=, a second
+  socket where the frontend first sends a framed =attach.hello= with its version
+  and size; =attach.waiting= notifications may precede the same id 0 result. A
+  goblin with =onAttach= runs its agent without a PTY and starts a client exec on
+  a new PTY per attachment once the variables it needs were set this run; its
+  =terminal.sock= refuses every connection. See ADR 0016 and [[file:../API.org][API.org]].
   The daemon owns the master and pumps bounded 64 KiB buffers. Before the first
   consumer, and while attached, output backpressures the payload. While detached
   or disconnected, the daemon continues draining and retains a bounded output
@@ -642,7 +648,7 @@ Session records (host and sandbox views) also include =docker_enabled:boolean=
 and =docker_scope:string-or-null= (null means anonymous). Permission records
 include =scope:string-or-null= and =anonymous:boolean=.
 Session records also carry =cwd:string-or-null=, the working directory the host
-launched the sandbox in (children inherit it; null with a daemon workspace).
+launched the sandbox in (members a raid owner runs share it; null with a daemon workspace).
 For =kind:"docker"=, =package= is a display label for the engine/scope, not a Nix
 attribute or an entry in the session's =packages= list.
 
@@ -767,6 +773,8 @@ Foreground output goes to its caller. No follow, rotation or sandbox-output
 aggregation is implemented. See [[file:../USAGE.org::*Server commands, help and completion][usage and completion setup]].
 
 * Ownership tree and sandbox lifecycle control (2026-09-19)
+
+Superseded on 2026-10-18 by [[*Raids replace the ownership tree (2026-10-18)][Raids replace the ownership tree]]: this section and the next three describe the removed tree and are kept for history.
 
 This section extends API 1 and supersedes the earlier host-only lifecycle and
 daemon-wide name-allocation rules.
@@ -937,6 +945,20 @@ held in the controller's event loop and never persisted.
   over with a blocking send on orderly shutdown before the messaging worker
   closes. Messaging authorization is described in
   [[file:AGENT-INTEGRATION.org][AGENT-INTEGRATION.org]].
+
+* Raids replace the ownership tree (2026-10-18)
+
+See [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]] and [[file:RAIDS-REPLACE-CHILDREN.org][RAIDS-REPLACE-CHILDREN.org]]. This replaces the ownership tree, allowed child configurations and the tree parts of the raid contract above.
+
+- Records :: =SessionRecord= has no =parent= or =path=. =agent_name= is unique among live sessions (=allocate_name=) and addresses sessions everywhere: host =resolve_session= takes an ID or a live agent name, exec and editor TRAMP hosts are agent names. Records gain =created_by= ={id,agent_name}= (display only) and =auto_approve= (package names). Eviction no longer keeps sessions for their children. Every session is recorded in history.
+- Lifecycle :: stopping, exiting or failing stops only that session; there is no cascade and =sessions.stop= takes only ={session}=. =stop_reason= for an owner's stop is "stopped by raid owner NAME (ID)".
+- Run targets :: top-level manifest configurations carry =allowed_run_targets= (at most 64 identifiers; omitted means none). Sandbox =sessions.start {key,name,agent_name?,detached?}= requires the caller to own an unpaused raid (-32009 "only a raid owner can run goblins; ..."), the key in the caller's own list as loaded at its launch (-32602 "configuration 'Y' permits no run targets" / "configuration 'X' is not an allowed run target of 'Y'; allowed: ..."), a running caller and its live scope, held strongly from here, and a current manifest (-32009). The result is ={session,agent_name,state}=. The worker resolves the key from the current manifest with =select_inherited= for the owner's scope and builds the session with =Session::member=: owner's cwd (pinned descriptor), workspace, dev shell generation, protected paths and Docker attachment, the target's own launch and binds, and the current manifest's editor; =scope::Shared::compatible= still applies. The member joins the raid as created by the owner in the same event-loop step that inserts it.
+- Current manifest :: =current_manifest= is a =ManifestLease= (path plus an indirect GC root under =STATE/manifests=, removed when the last holder drops it). Candidates are =--runtime= at server start and every host =sessions.start=/resume; =Manifest::validate= (read, versions, scope catalog, run-target bounds, editor) runs off the event loop, and the worker reports =Completed::Manifest {sequence,lease}=. A manifest that validates but cannot be rooted (no Nix daemon, for example) does not become current, and the launch goes on to report its own errors. Each host acceptance gets a sequence; a report replaces the current lease only when its sequence is greater than the published one. Member launches clone the lease and hold it, with the owner's =Inheritance= (and so its session directory), until they have started. =server.status= reports =manifest=.
+- Owner control :: sandbox =sessions.list/get/stop= see only members created in the raid the caller owns (=controls=), re-evaluated on every call; others are -32004. Sandbox =sessions.attach= and =sessions.resize= of other sessions are -32601. A created member's =raids.leave= is -32009. Sandbox =raids.invite= is removed. Initialize no longer advertises =allowed-children=, =subtree-control= or =subtree-terminal=; both endpoints advertise =run-targets= and =raid-owner=.
+- Paused raids :: removing an owner while members remain sets =owner= to null and =paused= ={former_owner,reason}=, bumps the raid's =generation= and emits =raid.paused= (a removal); the last member leaving dissolves it (=raid.dissolved= reason =empty=). =raids.set_owner {raid,session,id?,generation?}= (host) makes a live member owner, resuming a paused raid, and emits =raid.owner= (an addition). =raids.destroy= gains =id=, =generation= and =stop_members=; a mismatching =id= or =generation= is -32009 "the raid changed; reload the prompt". =raids.kick= and =raids.leave= return =paused=. Raid records gain =owner= (nullable), =former_owner=, =paused=, =generation= and per-member =created_by=; member =path= is gone.
+- Raid-owner prompt :: a pause adds a =PermissionRecord= of kind =raid-owner= (=session= the former owner, =package= the raid name, =preview= ={raid,name,generation,former_owner,members}=), kept current as members change, outside the 256-record bound and unevictable while pending. =raid.owner= approves it, a host destroy denies it, the raid emptying or pausing again cancels it. =permissions.decide= refuses it (-32602).
+- Messaging :: =mailbox::Session= is ={id,agent_name,running}=; =Message= carries =sender_name=/=recipient_name= (aliases for the old =sender_path=/=recipient_path=). Goblins reach only members of their logged raid, and the host; there is no =parent= alias, and =route= is =raid= or =host=. A send or reply whose only route is a paused raid is -32009 and records the sender; when =raid.owner= is logged, each such sender still a live member gets one notice from =goblins= with =Message.raid= ={id,name,event:"resumed",owner}= (event =raid.notice=). =communications.list --session= selects that session only; offline logs take a missing =agent_name= from the last segment of an old =path=.
+- Approvals :: a member's =auto_approve= (exact outputs) and auto-approved dev shell identities are copied from the owner at acceptance (owner's grants and auto sets; at most 256 and 32, else -32010), and rooted by the member's worker before it starts; a requester's own grant or current dev shell also decides automatically. History records are version 2 with =packages.auto_approve=; version 1 records are read as version 2.
 
 * Session history and recreate (2026-10-16)
 

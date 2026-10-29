@@ -8,5 +8,10 @@ publish = false
 libc = "=0.2.186"
 
 [workspace]
-members = ["crates/protocol", "crates/client", "crates/controller", "crates/codex"]
+members = ["crates/protocol", "crates/client", "crates/controller", "crates/codex", "crates/claude"]
 resolver = "3"
+
+# The --host-job supervisor, run as a separate process like the daemon runs it.
+[[test]]
+name = "host-job"
+path = "src/host_job_tests.rs"

@@ -8,13 +8,11 @@
 ;; Files and processes inside running goblin sandboxes:
 ;;
 ;;   C-x C-f /goblins:gribble:/tmp/diagram.svg
-;;   C-x C-f /goblins:gribble.snaga:/workspace/      (a child's tree path)
 ;;   M-x goblins-shell     (a Ghostel terminal; also goblins-eshell, goblins-dired)
 ;;
 ;; The method runs `goblins exec' as its login program, so dired, eshell,
 ;; compile, grep, magit and eglot run inside the sandbox.  The host part is an
-;; agent name, a tree path with `.' for `/', or a session ID; names complete
-;; after "/goblins:".
+;; agent name or a session ID; names complete after "/goblins:".
 ;;
 ;; Names are reusable, so each connection is pinned to the session it first
 ;; reached: (state directory, daemon instance, session ID).  Every later
@@ -31,7 +29,7 @@
 (require 'goblins)
 
 (declare-function ghostel-exec "ghostel" (buffer program &optional args identity))
-(declare-function goblin-mode "goblins-terminal" (&optional arg))
+(declare-function goblins-goblin-mode "goblins-terminal" (&optional arg))
 (declare-function goblins--sidebar-render-all "goblins-workspace" ())
 (defvar server-window)
 (declare-function server-send-string "server" (proc string))
@@ -44,10 +42,6 @@
 
 (defconst goblins-tramp-method "goblins"
   "The TRAMP method for files and processes inside running goblins.")
-
-(defun goblins-tramp-host (path)
-  "The TRAMP host for a goblin's tree PATH: `/' is not allowed in hosts."
-  (string-replace "/" "." path))
 
 (defun goblins-tramp-file-p (name)
   "Whether NAME is a /goblins: file name."
@@ -92,14 +86,13 @@ Always runs locally, whatever `default-directory' is."
 
 (defun goblins-tramp--match (host sessions)
   "The running session in SESSIONS that HOST names, as the daemon resolves it."
-  (let* ((path (string-replace "." "/" host))
-         (running (cl-remove-if-not #'goblins-tramp--running-p sessions)))
+  (let ((running (cl-remove-if-not #'goblins-tramp--running-p sessions)))
     (or (cl-find host sessions :key (lambda (s) (plist-get s :id)) :test #'equal)
-        (cl-find path running :key (lambda (s) (plist-get s :path)) :test #'equal)
+        ;; Names are unique among running goblins; refuse rather than guess.
         (let ((named (cl-remove-if-not
                       (lambda (s) (equal (plist-get s :agent_name) host)) running)))
           (if (cdr named)
-              (error "Goblins: ambiguous agent name %s; use its tree path" host)
+              (error "Goblins: ambiguous agent name %s; use its session ID" host)
             (car named))))))
 
 (defun goblins-tramp--resolve (host)
@@ -132,7 +125,7 @@ not resolve the name anew."
   "Running goblins for host completion after /goblins:."
   (ignore-errors
     (let ((sessions (cdr (goblins-tramp--sessions (goblins-tramp--state-directory)))))
-      (mapcar (lambda (session) (list nil (goblins-tramp-host (plist-get session :path))))
+      (mapcar (lambda (session) (list nil (plist-get session :agent_name)))
               (cl-remove-if-not #'goblins-tramp--running-p sessions)))))
 
 (defconst goblins-tramp-connection-local-variables
@@ -226,8 +219,8 @@ for a pin of another daemon whose goblin is gone."
 (defun goblins-tramp--after-snapshot ()
   "Release unpinned /goblins: buffers that name a stopped goblin.
 Pinned hosts are released by `goblins--release-stopped-pins'.  A buffer that
-never connected has no pin, but its host still names a stopped goblin by tree
-path, name or ID: release it unless a running goblin now has that name."
+never connected has no pin, but its host still names a stopped goblin by name
+or ID: release it unless a running goblin now has that name."
   (when goblins--snapshot
     (let ((sessions (append (plist-get goblins--snapshot :sessions) nil))
           (hosts (make-hash-table :test #'equal)))
@@ -236,11 +229,9 @@ path, name or ID: release it unless a running goblin now has that name."
           (puthash (tramp-file-name-host v) t hosts)))
       (maphash
        (lambda (host _)
-         (let* ((path (string-replace "." "/" host))
-                (named (cl-remove-if-not
-                        (lambda (s) (member host (list (plist-get s :id) (plist-get s :agent_name)
-                                                       (and (equal (plist-get s :path) path) host))))
-                        sessions)))
+         (let ((named (cl-remove-if-not
+                       (lambda (s) (member host (list (plist-get s :id) (plist-get s :agent_name))))
+                       sessions)))
            (when (and named (not (goblins-pin host))
                       (not (cl-some #'goblins-tramp--running-p named)))
              (goblins-tramp-release host))))
@@ -448,13 +439,13 @@ refusal fails it with an explanation."
   :group 'goblins)
 
 (defun goblins-tramp--goblin-label (name)
-  "The goblin of /goblins: file NAME, as its tree path when Emacs knows it."
+  "The goblin of /goblins: file NAME, as its agent name when Emacs knows it."
   (let* ((host (tramp-file-name-host (goblins-tramp--vec name)))
          (pin (goblins-pin host))
          (source (and pin (get-buffer (format "*Goblins: %s*" (car pin)))))
          (session (and source (goblins--snapshot-session
                                (buffer-local-value 'goblins--snapshot source) (nth 2 pin)))))
-    (if session (goblins--session-path session) host)))
+    (if session (plist-get session :agent_name) host)))
 
 (defun goblins-tramp--refuse-edit (proc)
   "Fail the emacsclient PROC: opening its files was refused."
@@ -517,7 +508,7 @@ the user's own mode hooks still run."
   "Choose a running session of SOURCE's snapshot with PROMPT."
   (with-current-buffer source
     (goblins--choose prompt
-                     (mapcar (lambda (s) (cons (plist-get s :path) s))
+                     (mapcar (lambda (s) (cons (plist-get s :agent_name) s))
                              (cl-remove-if-not
                               #'goblins-tramp--running-p
                               (append (plist-get goblins--snapshot :sessions) nil)))
@@ -553,14 +544,14 @@ buffer, else (or with a prefix argument) one chosen with PROMPT."
                       (and (not current-prefix-arg) (goblins-tramp--current-session source))
                       (goblins-tramp--choose-session source prompt))))
     (unless (goblins-tramp--running-p session)
-      (user-error "%s is not running" (goblins--session-path session)))
+      (user-error "%s is not running" (plist-get session :agent_name)))
     (cons source session)))
 
 (defun goblins-tramp--session-host (source session)
   "The /goblins: host of SOURCE's SESSION, pinned to it now.
-Its tree path, or its ID when that path is pinned to another goblin.  Pinned
+Its agent name, or its ID when that name is pinned to another goblin.  Pinned
 before any TRAMP use, so it never reaches a later goblin with the same name."
-  (goblins--pin-or-id (goblins-tramp-host (plist-get session :path))
+  (goblins--pin-or-id (plist-get session :agent_name)
                       (buffer-local-value 'goblins--directory source)
                       (buffer-local-value 'goblins--instance source)
                       (plist-get session :id)))
@@ -629,7 +620,7 @@ right of the goblin's agent and remembers it for the goblin."
          (id (plist-get session :id))
          (host (goblins-tramp--session-host source session))
          (number (goblins-tramp--shell-number directory id))
-         (buffer (generate-new-buffer (format "*Goblin shell: %s*" (plist-get session :path)))))
+         (buffer (generate-new-buffer (format "*Goblin shell: %s*" (plist-get session :agent_name)))))
     (condition-case err
         (progn
           ;; Spawn from a local directory: Ghostel would otherwise run the
@@ -675,7 +666,7 @@ DISPLAY and SOURCE are as for `goblins-shell'."
          (buffer (or (cl-find key (buffer-list) :test #'equal
                               :key (lambda (b) (buffer-local-value 'goblins-tramp--eshell-goblin b)))
                      (let ((buffer (generate-new-buffer
-                                    (format "*Goblin eshell: %s*" (plist-get session :path)))))
+                                    (format "*Goblin eshell: %s*" (plist-get session :agent_name)))))
                        (condition-case err
                            (with-current-buffer buffer
                              (setq default-directory directory)
@@ -711,7 +702,7 @@ right of the goblin's agent."
          (file (let ((default-directory
                       (goblins-tramp--session-directory (car goblin) (cdr goblin))))
                  (read-file-name (format "Find file in %s: "
-                                         (goblins--session-path (cdr goblin)))))))
+                                         (plist-get (cdr goblin) :agent_name))))))
     (goblins-select-goblin (car goblin) (plist-get (cdr goblin) :id)
                            (find-file-noselect file))))
 

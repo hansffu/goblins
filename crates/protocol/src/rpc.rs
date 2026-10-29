@@ -250,7 +250,22 @@ pub(crate) fn read_started(
             ))?;
         }
         let room = byte.len().min(decoder.remaining());
-        let n = stream.read(&mut byte[..room])?;
+        // With a read timeout a signal interrupts the read even under
+        // SA_RESTART. Retry, but not past the deadline: the timeout above
+        // never drops below 1 ms, so steady signals could otherwise
+        // prolong a stalled frame indefinitely.
+        let n = match stream.read(&mut byte[..room]) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "whole-frame deadline exceeded",
+                    ));
+                }
+                continue;
+            }
+            result => result?,
+        };
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -326,6 +341,55 @@ pub struct PermissionParams {
     /// Dev shell refresh: lock inputs `flake.nix` declares but the lock lacks.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lock: bool,
+    /// Host command: what the host runs once it approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostCommand>,
+}
+/// A command a sandbox asks the host to run outside it (`goblin host run`).
+/// No shell is involved: `argv` is the program and its arguments.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostCommand {
+    pub argv: Vec<String>,
+    /// The sandbox's absolute path; the daemon maps it to the host.
+    pub cwd: String,
+    /// Added to, or replacing, the daemon's environment.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// Seconds before the job is cancelled; none when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    /// The request returns once submitted instead of waiting for the job, and
+    /// survives its connection closing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detach: bool,
+}
+/// Variables a host command's environment may not override.
+pub const HOST_RESERVED_ENV: &[&str] = &["GOBLINS_HOST_JOB"];
+/// The total size of a host command's argument and environment strings.
+pub const MAX_HOST_COMMAND: usize = 12 * 1024;
+impl HostCommand {
+    pub fn validate(&self) -> bool {
+        let text = |s: &String| !s.contains('\0');
+        let size: usize = self.argv.iter().map(String::len).sum::<usize>()
+            + self
+                .env
+                .iter()
+                .map(|(k, v)| k.len() + v.len())
+                .sum::<usize>()
+            + self.cwd.len();
+        (1..=crate::init::MAX_ARGS).contains(&self.argv.len())
+            && self.argv.iter().all(text)
+            && !self.argv[0].is_empty()
+            && self.cwd.starts_with('/')
+            && text(&self.cwd)
+            && self.env.len() <= crate::init::MAX_ENV
+            && self.env.iter().all(|(k, v)| {
+                crate::init::env_name(k) && text(v) && !HOST_RESERVED_ENV.contains(&k.as_str())
+            })
+            && self.timeout.is_none_or(|t| t > 0)
+            && size <= MAX_HOST_COMMAND
+    }
 }
 /// A flake input name, or a `/`-separated path to a nested input.
 pub fn input_name(name: &str) -> bool {
@@ -341,15 +405,21 @@ pub fn input_name(name: &str) -> bool {
 impl PermissionParams {
     pub fn validate(&self) -> bool {
         let refresh = self.update.is_some() || self.lock;
-        ((self.kind == "package" && crate::package_name(&self.package) && !refresh)
-            || (self.kind == "docker" && self.package.is_empty() && !refresh)
+        let host = self.host.is_some();
+        ((self.kind == "package" && crate::package_name(&self.package) && !refresh && !host)
+            || (self.kind == "docker" && self.package.is_empty() && !refresh && !host)
             || (self.kind == "devshell"
                 && self.package.is_empty()
+                && !host
                 && !(self.update.is_some() && self.lock)
                 && self
                     .update
                     .as_ref()
-                    .is_none_or(|u| u.len() <= 32 && u.iter().all(|i| input_name(i)))))
+                    .is_none_or(|u| u.len() <= 32 && u.iter().all(|i| input_name(i))))
+            || (self.kind == "host-command"
+                && self.package.is_empty()
+                && !refresh
+                && self.host.as_ref().is_some_and(HostCommand::validate)))
             && (1..=1024).contains(&self.reason.chars().count())
     }
 }
@@ -392,6 +462,41 @@ impl DevShellDiffParams {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn host_commands_are_bounded_argument_lists() {
+        let request = |host: Value| -> PermissionParams {
+            serde_json::from_value(json!({"kind":"host-command","reason":"tests","host":host}))
+                .unwrap()
+        };
+        let ok =
+            json!({"argv":["cargo","test"],"cwd":"/home/u/project","env":[["RUST_LOG","debug"]]});
+        assert!(request(ok.clone()).validate());
+        for bad in [
+            json!({"argv":[],"cwd":"/p"}),
+            json!({"argv":[""],"cwd":"/p"}),
+            json!({"argv":["a\0b"],"cwd":"/p"}),
+            json!({"argv":["true"],"cwd":"relative"}),
+            json!({"argv":["true"],"cwd":"/p","env":[["BAD-NAME","x"]]}),
+            json!({"argv":["true"],"cwd":"/p","env":[["GOBLINS_HOST_JOB","x"]]}),
+            json!({"argv":["true"],"cwd":"/p","timeout":0}),
+            json!({"argv":["x".repeat(MAX_HOST_COMMAND)],"cwd":"/p"}),
+        ] {
+            assert!(!request(bad.clone()).validate(), "{bad}");
+        }
+        // Only host commands carry one, and they need one.
+        let mut package: PermissionParams =
+            serde_json::from_value(json!({"kind":"package","package":"jq","reason":"x"})).unwrap();
+        assert!(package.validate());
+        package.host = request(ok).host;
+        assert!(!package.validate());
+        let bare: PermissionParams =
+            serde_json::from_value(json!({"kind":"host-command","reason":"x"})).unwrap();
+        assert!(!bare.validate());
+        assert!(serde_json::from_value::<PermissionParams>(
+            json!({"kind":"host-command","reason":"x","host":{"argv":["true"],"cwd":"/p","shell":true}})
+        )
+        .is_err());
+    }
     #[test]
     fn devshell_diff_params_match_refresh_rules() {
         let diff = |v: Value| serde_json::from_value::<DevShellDiffParams>(v);
@@ -442,6 +547,38 @@ mod tests {
                 .push(&[], now + TIMEOUT)
                 .is_err()
         );
+    }
+    #[test]
+    fn signals_do_not_extend_a_stalled_frame() {
+        use std::{io::Write, os::unix::net::UnixStream, sync::mpsc, thread};
+        extern "C" fn ignore(_: libc::c_int) {}
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = ignore as *const () as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut());
+        }
+        let (mut reader, mut peer) = UnixStream::pair().unwrap();
+        // Half a frame, then nothing more.
+        peer.write_all(b"Content-Length: 10\r\n\r\n{").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let start = Instant::now();
+        let read = thread::spawn(move || {
+            tx.send(unsafe { libc::pthread_self() }).unwrap();
+            let result = read_started(&mut reader, Some(Instant::now()));
+            (result, start.elapsed())
+        });
+        let thread = rx.recv().unwrap();
+        // Interrupt the read faster than its 1 ms minimum timeout until
+        // well past the deadline.
+        while !read.is_finished() && start.elapsed() < TIMEOUT * 2 {
+            unsafe { libc::pthread_kill(thread, libc::SIGUSR1) };
+            thread::sleep(Duration::from_micros(200));
+        }
+        let (result, elapsed) = read.join().unwrap();
+        assert!(result.is_err());
+        assert!(elapsed < TIMEOUT + Duration::from_secs(1), "{elapsed:?}");
+        drop(peer);
     }
     #[test]
     fn strict_envelope_and_nested_fields() {

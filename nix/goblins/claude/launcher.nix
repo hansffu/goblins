@@ -1,7 +1,12 @@
-{ pkgs, runtimeDirectory }:
+{
+  pkgs,
+  runtimeDirectory,
+  adapter,
+}:
 {
   pkg,
   binName,
+  bypassPermissions,
   claudeConfigDir,
   plugin,
 }:
@@ -13,9 +18,9 @@ pkgs.writeShellScriptBin binName ''
   export CLAUDE_CONFIG_DIR=${directory}
   export DISABLE_AUTOUPDATER=1
   claude_executable=${lib.escapeShellArg "${pkg}/bin/${binName}"}
-  # Register before native launch; the notifier never claims inbox items.
-  registration=$(/run/goblins/bin/goblins integration register --driver claude)
-  export GOBLINS_INTEGRATION_EPOCH=$(${pkgs.jq}/bin/jq -r .epoch <<< "$registration")
-  # Goblins owns the outer sandbox and permission boundary.
-  exec "$claude_executable" --plugin-dir ${lib.escapeShellArg plugin} --dangerously-skip-permissions "$@"
+  # A fresh wakeup ledger for this launch; an earlier launch's monitor exits.
+  ${adapter}/bin/goblins-claude start >/dev/null
+  # Without bypassPermissions, Claude Code's own settings choose the
+  # permission mode.
+  exec "$claude_executable" --plugin-dir ${lib.escapeShellArg plugin} ${lib.optionalString bypassPermissions "--dangerously-skip-permissions "}"$@"
 ''

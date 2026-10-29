@@ -1,4 +1,4 @@
-"""Recreate records through a real daemon: what a root goblin's record holds.
+"""Recreate records through a real daemon: what a goblin's record holds.
 
 Each daemon gets a private XDG_STATE_HOME (daemon_support), never the user's.
 """
@@ -30,10 +30,10 @@ class HistoryTests(unittest.TestCase):
         session = launch["session"]
         record = d.wait(lambda: d.record(session))
         self.assertEqual((record["version"], record["sessions"], record["configuration"], record["agent_name"]),
-                         (1, [session], "shell", launch["agent_name"]))
+                         (2, [session], "shell", launch["agent_name"]))
         # A short random id of its own, unlike the goblin's.
         self.assertRegex(record["id"], r"^[0-9a-hjkmnp-tv-z]{8}$")
-        self.assertEqual(record["packages"], {"approved": [], "denied": []})
+        self.assertEqual(record["packages"], {"approved": [], "denied": [], "auto_approve": []})
         self.assertIsNone(record["stopped"])
         self.assertEqual(os.stat(d.history).st_mode & 0o777, 0o700)
         self.assertEqual(os.stat(d.history / f"{record['id']}.json").st_mode & 0o777, 0o600)
@@ -53,29 +53,36 @@ class HistoryTests(unittest.TestCase):
         peer.peer.sendall(b"x"); peer.close()
         d.wait(lambda: d.rpc.call("permissions.get", {"request": request["id"]})["state"] == "withdrawn")
         # Variables from the sandbox CLI, all keys in one call.
-        result = d.cli("exec", session, "--", "/run/goblins/bin/goblins", "variable", "set",
+        result = d.cli("exec", session, "--", "/run/goblins/bin/goblin", "variable", "set",
                        "session_id=c8193c93-1", "session_name=Plan goblin session restore")
         self.assertEqual(json.loads(result.stdout), {"accepted": True, "recorded": True})
         record = d.wait(lambda: (r if (r := d.record(session))["variables"].get("session_id") else None))
         self.assertEqual(record["variables"], {"session_id": "c8193c93-1", "session_name": "Plan goblin session restore"})
         self.assertGreaterEqual(record["updated"], record["created"])
-        refused = d.cli("exec", session, "--", "/run/goblins/bin/goblins", "variable", "set", "Bad=1", check=False)
+        refused = d.cli("exec", session, "--", "/run/goblins/bin/goblin", "variable", "set", "Bad=1", check=False)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("invalid variable name", refused.stderr)
         self.sandbox(session, "sessions.set-variables", {"variables": {"session_name": ""}})
         d.wait(lambda: d.record(session)["variables"] == {"session_id": "c8193c93-1"})
-        # Children are neither recorded nor able to write their parent's record.
-        child = self.sandbox(session, "sessions.start", {"key": "child", "name": "shell", "agent_name": "kid", "detached": True})
-        d.wait(lambda: d.get(child["session"])["state"] == "running", timeout=60)
-        self.assertEqual(self.sandbox(child["session"], "sessions.set-variables", {"variables": {"session_id": "other"}}),
-                         {"accepted": True, "recorded": False})
-        self.assertIsNone(d.record(child["session"]))
+        # A member the goblin runs gets a record of its own, with the owner's
+        # grants as its auto-approve set, and cannot write the owner's record.
+        member = d.member(session, agent_name="kid")["session"]
+        kid = d.wait(lambda: d.record(member))
+        self.assertNotEqual(kid["id"], record["id"])
+        self.assertEqual((kid["sessions"], kid["configuration"], kid["agent_name"]), ([member], "shell", "kid"))
+        self.assertEqual(kid["packages"], {"approved": [], "denied": [], "auto_approve": ["hello"]})
+        self.assertEqual(self.sandbox(member, "sessions.set-variables", {"variables": {"session_id": "other"}}),
+                         {"accepted": True, "recorded": True})
+        d.wait(lambda: d.record(member)["variables"] == {"session_id": "other"})
         self.assertEqual(d.record(session)["variables"], {"session_id": "c8193c93-1"})
-        # The stop is recorded.
-        d.rpc.call("sessions.stop", {"session": session, "kill_children": True})
+        # The stop is recorded, and stops only the owner.
+        d.rpc.call("sessions.stop", {"session": session})
         record = d.wait(lambda: (r if (r := d.record(session))["stopped"] else None))
         self.assertEqual(record["packages"]["approved"], ["hello"])
-        self.assertEqual(sorted(p.name for p in d.history.iterdir()), [".lock", f"{record['id']}.json"])
+        self.assertEqual(d.get(member)["state"], "running")
+        self.assertIsNone(d.record(member)["stopped"])
+        self.assertEqual(sorted(p.name for p in d.history.iterdir()),
+                         sorted([".lock", f"{record['id']}.json", f"{kid['id']}.json"]))
         status = d.cli("server", "status").stdout
         self.assertIn(f"Session history in {d.history}", status)
 

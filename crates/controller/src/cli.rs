@@ -22,10 +22,16 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Inspect, pause or resume an agent's inbox notifications
-    Integration {
+    /// Clear persistent scope storage and Docker data
+    Scope {
         #[command(subcommand)]
-        command: IntegrationCommand,
+        command: ScopeCommand,
+    },
+    /// Remove abandoned temporary storage and stopped-server resources
+    Gc {
+        /// List unused data without deleting it
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Group goblins from any branch so they can find and message each other
     Raid {
@@ -86,19 +92,11 @@ pub enum Command {
         /// Agent name; omitted names are chosen from the goblin name list
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Create a child of this running sandbox (name, tree path or ID)
-        #[arg(long, value_name = "PARENT", conflicts_with = "scope")]
-        parent: Option<String>,
-        /// Join this scope instead of the goblin's default (children inherit)
+        /// Join this scope instead of the goblin's default (goblins it runs share it)
         #[arg(long, value_name = "SCOPE")]
         scope: Option<String>,
-        /// Start in this flake's dev shell, like `nix develop` (children inherit)
-        #[arg(
-            long,
-            value_name = "FLAKE[#ATTR]",
-            conflicts_with = "parent",
-            value_hint = clap::ValueHint::DirPath
-        )]
+        /// Start in this flake's dev shell, like `nix develop` (goblins it runs share it)
+        #[arg(long, value_name = "FLAKE[#ATTR]", value_hint = clap::ValueHint::DirPath)]
         dev_shell: Option<String>,
         /// Start without attaching to its terminal
         #[arg(long, visible_alias = "detached")]
@@ -162,7 +160,7 @@ pub enum Command {
         /// Require this exact session ID; the name is never resolved again
         #[arg(long, value_name = "ID")]
         session: Option<String>,
-        /// Name, tree path (gribble/snaga or gribble.snaga) or session ID
+        /// Agent name or session ID
         goblin: String,
         /// Command and arguments, after --
         #[arg(last = true)]
@@ -173,19 +171,9 @@ pub enum Command {
     /// List agent names, session IDs, configurations and lifecycle state
     List,
     /// Stop one agent by live name or immutable session ID
-    Stop {
-        id_or_name: String,
-        /// Also kill all living descendants
-        #[arg(long)]
-        kill_children: bool,
-    },
+    Stop { id_or_name: String },
     /// Kill one sandbox by live name or immutable session ID
-    Kill {
-        id_or_name: String,
-        /// Also kill all living descendants
-        #[arg(long)]
-        kill_children: bool,
-    },
+    Kill { id_or_name: String },
     /// Call a trusted host JSON-RPC method
     Rpc { method: String, params_json: String },
     /// Print a shell completion script (Nix packages install Bash/Fish/Zsh scripts)
@@ -201,6 +189,23 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum ScopeCommand {
+    /// Delete a scope's managed storage and its complete Docker store
+    #[command(group = clap::ArgGroup::new("selection").required(true))]
+    Clear {
+        /// Stored scope name, including scopes no longer configured
+        #[arg(group = "selection")]
+        name: Option<String>,
+        /// Clear every stored scope; refuses if any selected scope is in use
+        #[arg(long, group = "selection")]
+        all: bool,
+        /// List data without deleting it
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum RaidCommand {
     /// Add goblins, creating the raid (first goblin as owner) if absent
     Invite {
@@ -208,8 +213,15 @@ pub enum RaidCommand {
         #[arg(required = true, value_name = "GOBLIN")]
         goblins: Vec<String>,
     },
-    /// Dissolve the raid without stopping its goblins
-    Destroy { raid: String },
+    /// Dissolve the raid; its goblins keep running unless --stop-members
+    Destroy {
+        raid: String,
+        /// Also stop every running member
+        #[arg(long)]
+        stop_members: bool,
+    },
+    /// Make a member the owner, resuming a paused raid
+    SetOwner { raid: String, goblin: String },
     /// List the raid's members, their roles and its owner
     Members {
         raid: String,
@@ -251,13 +263,6 @@ fn parse_date(text: &str) -> std::result::Result<u64, String> {
 }
 
 #[derive(Subcommand)]
-pub enum IntegrationCommand {
-    Status { session: String },
-    Pause { session: String },
-    Resume { session: String },
-}
-
-#[derive(Subcommand)]
 pub enum ServerCommand {
     /// Start the server in the background; repeated starts leave it running
     Start {
@@ -281,14 +286,14 @@ pub enum ServerCommand {
 
 // Return 1 outside a name argument so Bash/Zsh can retain their generated
 // option/path completion. A missing server is a valid, empty candidate list.
-pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
-    let words_are_parent = words
-        .iter()
-        .rev()
-        .take(2)
-        .any(|w| w == "--parent" || w == "--parent=");
-    let Some((state, slot)) = completion_state(default_state, words) else {
+pub fn complete_names(default_state: Option<&Path>, words: Vec<String>) -> i32 {
+    let Some((state, slot)) = completion_target(words) else {
         return 1;
+    };
+    // Host jobs may complete an explicitly selected server, but must never
+    // query the default server that owns the job. An empty list is successful.
+    let Some(state) = state.or_else(|| default_state.map(Path::to_path_buf)) else {
+        return 0;
     };
     if slot == Slot::Record {
         // Record ids, described by agent name, chat name and last update:
@@ -315,7 +320,7 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
         return 0;
     };
     if slot == Slot::Raid {
-        // Every raid has a live owner, so the records name them all.
+        // Every raid has a live member, so the records name them all.
         let names: std::collections::BTreeSet<_> = records
             .as_array()
             .into_iter()
@@ -339,14 +344,11 @@ pub fn complete_names(default_state: &Path, words: Vec<String>) -> i32 {
             ) {
                 continue;
             }
-            if let Some(name) = record["path"]
-                .as_str()
-                .or_else(|| record["agent_name"].as_str())
+            if let Some(name) = record["agent_name"].as_str()
                 && !name.is_empty()
                 && name
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-/".contains(&b))
-                && (!words_are_parent || record["state"] == "running")
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             {
                 println!("{name}");
             }
@@ -363,7 +365,7 @@ enum Slot {
     Raid,
 }
 
-fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf, Slot)> {
+fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
     // Bash may split --option=value at '='. Restore it without evaluating any
     // shell text, then let the actual CLI parser identify the argument slot.
     const TARGET: &str = "__goblins_completion_target__";
@@ -414,10 +416,6 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
             Slot::Goblin
         }
         Command::Run {
-            parent: Some(parent),
-            ..
-        } if parent == TARGET => Slot::Goblin,
-        Command::Run {
             raid: Some(raid), ..
         } if raid == TARGET => Slot::Raid,
         Command::Resume { id, .. } if id == TARGET => Slot::Record,
@@ -428,10 +426,12 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
             RaidCommand::SetRole { goblin, role, .. } if goblin == TARGET && role != TARGET => {
                 Slot::Goblin
             }
+            RaidCommand::SetOwner { goblin, .. } if goblin == TARGET => Slot::Goblin,
             RaidCommand::Invite { raid, .. }
-            | RaidCommand::Destroy { raid }
+            | RaidCommand::Destroy { raid, .. }
             | RaidCommand::Members { raid, .. }
             | RaidCommand::SetRole { raid, .. }
+            | RaidCommand::SetOwner { raid, .. }
                 if raid == TARGET =>
             {
                 Slot::Raid
@@ -440,7 +440,7 @@ fn completion_state(default_state: &Path, words: Vec<String>) -> Option<(PathBuf
         },
         _ => return None,
     };
-    Some((cli.state_dir.unwrap_or_else(|| default_state.into()), slot))
+    Some((cli.state_dir, slot))
 }
 
 pub fn completions(shell: clap_complete::Shell, runtime: Option<&Path>) -> Result<()> {
@@ -533,7 +533,7 @@ function __fish_goblins_needs_positional
     argparse -s (__fish_goblins_global_optspecs) -- $words 2>/dev/null; or return 1
     test "$argv[1]" = "$subcommand"; or return 1
     set -e argv[1]
-    argparse (__fish_goblins_global_optspecs) name= parent= scope= dev-shell= raid= detatched detached -- $argv 2>/dev/null; or return 1
+    argparse (__fish_goblins_global_optspecs) name= scope= dev-shell= raid= detatched detached -- $argv 2>/dev/null; or return 1
     test (count $argv) -eq 0
 end
 complete -c goblins -n '__fish_goblins_needs_positional run' -f -a '{}'
@@ -550,9 +550,8 @@ function __fish_goblins_agent_names
     command $words[1] __complete-names -- $words 2>/dev/null
 end
 complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop resume' -f -a '(__fish_goblins_agent_names)'
-complete -c goblins -n '__fish_goblins_using_subcommand run' -l parent -r -f -a '(__fish_goblins_agent_names)'
 complete -c goblins -n '__fish_goblins_using_subcommand run' -l raid -r -f -a '(__fish_goblins_agent_names)'
-complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role set-owner' -f -a '(__fish_goblins_agent_names)'
 "#
         );
     }
@@ -564,7 +563,6 @@ mod tests {
     use super::*;
     #[test]
     fn completion_uses_cli_argument_positions_and_state_directory() {
-        let default = Path::new("/tmp/default");
         for words in [
             vec!["goblins", "attach"],
             vec!["goblins", "exec"],
@@ -572,13 +570,10 @@ mod tests {
             vec!["goblins", "detach"],
             vec!["goblins", "kill"],
             vec!["goblins", "stop"],
-            vec!["goblins", "run", "shell", "--parent"],
-            vec!["goblins", "run", "shell", "--parent="],
-            vec!["goblins", "run", "shell", "--parent", "="],
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
-                Some((default.into(), Slot::Goblin))
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((None, Slot::Goblin))
             );
         }
         for (words, slot) in [
@@ -591,19 +586,20 @@ mod tests {
             (vec!["goblins", "raid", "set-role"], Slot::Raid),
             (vec!["goblins", "raid", "set-role", "review"], Slot::Goblin),
             (vec!["goblins", "raid", "destroy"], Slot::Raid),
+            (vec!["goblins", "raid", "set-owner"], Slot::Raid),
+            (vec!["goblins", "raid", "set-owner", "review"], Slot::Goblin),
             (vec!["goblins", "raid", "members"], Slot::Raid),
             (vec!["goblins", "run", "shell", "--raid"], Slot::Raid),
             (vec!["goblins", "resume"], Slot::Record),
             (vec!["goblins", "resume", "--detached"], Slot::Record),
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
-                Some((default.into(), slot))
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((None, slot))
             );
         }
         assert_eq!(
-            completion_state(
-                default,
+            completion_target(
                 ["goblins", "raid", "set-role", "review", "a"]
                     .map(String::from)
                     .to_vec()
@@ -616,8 +612,8 @@ mod tests {
             vec!["goblins", "--state-dir", "=", "/tmp/custom state", "detach"],
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
-                Some(("/tmp/custom state".into(), Slot::Goblin))
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((Some("/tmp/custom state".into()), Slot::Goblin))
             );
         }
         for words in [
@@ -631,7 +627,7 @@ mod tests {
             vec!["goblins", "attach", "--instance", "exact-daemon"],
         ] {
             assert_eq!(
-                completion_state(default, words.into_iter().map(String::from).collect()),
+                completion_target(words.into_iter().map(String::from).collect()),
                 None
             );
         }

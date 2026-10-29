@@ -36,28 +36,20 @@ since this uses the new =configurations= and =attach= commands.
 
 The buffer updates automatically
 and includes agents, pending requests, and collapsible recent request history.
-Agents form a tree rooted at =host=, with children nested beneath their owners.
-Branches start expanded; =TAB= collapses or expands children only. The overview
-contains headings only, with no detail rows. =RET= opens a separate details view
-for the selected sandbox or request. Sandbox details show session IDs and
-startup/granted packages; request details show the reason and preview. Details
-update live and stay tied to the selected identity. Use =b= or =q= to return to
-the tree with selection and branch folds preserved. Request labels use the
-sandbox's full tree path to distinguish matching names in different branches.
+Agents are listed flat, by their agent names, which are unique among running goblins. The overview contains headings only, with no detail rows. =RET= opens a separate details view for the selected sandbox or request. Sandbox details show session IDs, who ran the goblin if a raid owner did, and startup, granted and auto-approved packages; request details show the reason and preview. Details update live and stay tied to the selected identity. Use =b= or =q= to return to the overview with its selection preserved.
 
-Stopped children remain under their parent while any session in that root branch
-is active. Entire stopped or failed trees move intact to “Stopped agents”. That
-section and recent request history start collapsed. Live updates preserve section
-identity, selection and your folding choices.
+Stopped and failed goblins move to “Stopped agents”. That section and recent request history start collapsed. Live updates preserve section identity, selection and your folding choices.
+
+A paused raid (its owner left while members remain) shows up as a pending request. Its popup lists the raid's members: =o= picks a new owner, which resumes the raid, =x= dissolves it, and =k= dissolves it and stops its members. Accepting or denying it like a package request is refused.
 
 | Key | Action |
 |-----+--------|
 | =R= | Choose and launch a goblin in Ghostel |
 | =n= / =p= | Next / previous section |
-| =TAB= | Expand / collapse tree children |
+| =TAB= | Expand / collapse the section |
 | =RET= | Open sandbox or request details |
 | =t= | Open the selected sandbox's Ghostel terminal |
-| =b= | Return from details to the tree |
+| =b= | Return from details to the overview |
 | =a= | Accept the pending request at point |
 | =d= | Deny the pending request at point |
 | =g= or =r= | Reconnect and refresh |
@@ -70,10 +62,10 @@ When Evil is enabled, the buffer starts in normal state with dedicated bindings:
 | =R= | Choose and launch a goblin in Ghostel |
 | =j= / =k= | Next / previous section |
 | =h= / =l= | Collapse / expand section |
-| =TAB= or =za= | Expand / collapse tree children |
+| =TAB= or =za= | Expand / collapse the section |
 | =RET= | Open sandbox or request details |
 | =t= | Open the selected sandbox's Ghostel terminal |
-| =b= | Return from details to the tree |
+| =b= | Return from details to the overview |
 | =a= / =d= | Accept / deny the pending request at point |
 | =gr= or =r= | Reconnect and refresh |
 | =gg= / =G= | Beginning / end of buffer |
@@ -92,7 +84,7 @@ otherwise =goblins-state-directory= or the default server directory.
 Launches start in the root of the calling buffer's project.el project, or in
 its =default-directory= outside a project. When the project root has a
 =flake.nix=, =goblins-run= asks whether to use it as the sandbox's dev shell
-(like =--dev-shell .=). Each launch gets a new agent name from the daemon and a separate Ghostel buffer, even for the same
+(like =--dev-shell .=), except for a configuration with =allowNix=, whose agent runs =nix develop= itself. Each launch gets a new agent name from the daemon and a separate Ghostel buffer, even for the same
 configuration. Status marks linked agents with =[t: terminal]=. Links use
 the daemon instance and immutable session ID and live only in this Emacs
 process. Closing/reopening status preserves them; killing the terminal buffer
@@ -123,9 +115,9 @@ directly; there is no need to download another copy of Magit.
 
 =M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory, and selects it; in the workspace it opens a menu for moving around (see [[*Moving around][Moving around]]).  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
 
-Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text, and fainter before a child; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
+Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
 
-The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  A bar down a goblin's block, two columns before its text, says where its terminal is: blue while it or the goblin's page is shown beside the sidebar (=goblins-sidebar-bar-shown=), grey while its terminal buffer exists here but is hidden (=goblins-sidebar-bar-attached=), and no bar without one.  A bar's colour is its face's foreground.  A shell shown beside the sidebar has its own blue bar inside its goblin's, with a gap between them.  Give =goblins-sidebar-active= a background to tint the shown blocks and shells as well.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox=, =goblins-sidebar-separator= and =goblins-sidebar-child-separator=.
+The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  A bar down a goblin's block, two columns before its text, says where its terminal is: blue while it or the goblin's page is shown beside the sidebar (=goblins-sidebar-bar-shown=), grey while its terminal buffer exists here but is hidden (=goblins-sidebar-bar-attached=), and no bar without one.  A bar's colour is its face's foreground.  A shell shown beside the sidebar has its own blue bar inside its goblin's, with a gap between them.  Give =goblins-sidebar-active= a background to tint the shown blocks and shells as well.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox= and =goblins-sidebar-separator=.
 
 In Evil's motion state the sidebar's own keys take precedence over every minor
 mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
@@ -142,7 +134,7 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =TAB=                        | fold the group                                           |
 | =p=                          | permissions of the goblin: current request, history      |
 | =I=                          | info: everything the daemon knows about the goblin       |
-| =K=                          | stop the goblin (and its running descendants)            |
+| =K=                          | stop the goblin (only it: no other goblin stops with it) |
 | =t=                          | a new shell terminal inside the goblin, listed below it  |
 | =e=                          | Eshell inside the goblin, in its directory               |
 | =d=                          | Dired inside the goblin, in its directory                |
@@ -158,12 +150,7 @@ Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
 | =?=                          | key help                                                 |
 | =q=                          | leave the workspace                                      |
 
-The raid page lists the members (role, directory, =[term]= when an Emacs
-terminal is open) and the running goblins that could join.  =i= invites the
-goblin at point or one you choose, =x= kicks the member at point (kicking the
-owner dissolves the raid), =R= sets a member's role, =D= dissolves the raid,
-=RET= opens a goblin and =?= lists the keys.  Invitations join at once; there
-is no acceptance step.
+The raid page lists the members (role, directory, whether its owner created it, =[term]= when an Emacs terminal is open) and the running goblins that could join, and says when the raid is paused.  =i= invites the goblin at point or one you choose, =x= kicks the member at point (kicking the owner pauses the raid), =o= makes the member at point owner (resuming a paused raid), =R= sets a member's role, =D= dissolves the raid (with a prefix argument it also stops the members), =RET= opens a goblin and =?= lists the keys.  Invitations join at once; there is no acceptance step.
 
 In the permissions view the current request is focused: =a= accepts, =d= denies,
 =RET= folds a request, =q= goes back.  Add sections to the info view with
@@ -268,14 +255,10 @@ the whole frame; =goblins-workspace-quit-function= restores it.
 
 ** Anywhere
 
-- =M-x goblins-switch= completes over the running goblins, annotated with type, activity, raid, directory, pending requests, queued messages and =[term]= when a terminal is open here, and shows (or attaches) the chosen one.  With Consult installed it lists the agent terminals (narrowing key =t=, including those of goblins that have stopped) apart from the running goblins without one (=a=); set =goblins-switch-use-consult= to nil for plain completion.  Every prompt for a goblin uses the =goblin= completion category.
+- =M-x goblins-switch= completes over the running goblins, annotated with type, activity, raid, directory, pending requests, queued messages and =[term]= when a terminal is open here, and shows (or attaches) the chosen one.  With Consult installed it lists the agent terminals (narrowing key =t=, including those of goblins that have stopped) apart from the running goblins without one (=a=); set =goblins-switch-use-consult= to nil for plain completion.  Every prompt for a goblin uses the =goblins-goblin= completion category.
 - =M-x goblins-resume= resumes a recorded conversation (see /Resuming conversations/ in the usage guide) in a new goblin with the same environment and opens its terminal.  It completes over the conversations the server's history holds and no goblin runs now, newest first, as the agent name and the chat name the agent gave it (=nikka: Fix the tests=); alike ones get their record id (=<k3f9x2ab>=).  Each is annotated with its record id, age, configuration, directory (as a warning when it is gone), Docker, the packages granted to it and those skipped last time.  A record id, a goblin id it ran as or the agent's conversation id can be typed instead.  Once the goblin has started, the echo area says what was skipped and why; its info view (=I=) shows the record it was resumed from and what was skipped.  With a prefix argument, choose the daemon state directory.
 - =M-x goblins-raid= is the sidebar's =r= from any goblin terminal.
-- =goblins-attention-mode= shows =Goblins!N= in the mode line while requests are
-  pending (click it to open the workspace) and announces new ones through
-  =goblins-attention-notify-function= (an echo-area message by default).  For
-  your own reaction, add a function to =goblins-request-hook=; it receives each
-  request record once, when it becomes pending.
+- =goblins-attention-mode= shows =Goblins!N= in the mode line while something waits for your approval: pending requests, and goblins waiting at their agent's own permission prompt (agents without =bypassPermissions=).  Click it to open the workspace.  It announces each new one with a desktop notification through Emacs's =notifications= library, or in the echo area when Emacs has no D-Bus notification service; clicking a notification shows the request or the goblin's terminal.  A goblin waiting for input is neither counted nor announced.  =goblins-attention-notify-function= announces requests (=goblins-notify-message= for the echo area only) and =goblins-attention-approval-function= agent prompts (nil for none).  For your own reaction, add a function to =goblins-request-hook=, which receives each request record once, when it becomes pending, or to =goblins-approval-hook=, which receives a goblin's session record each time its agent begins waiting at a prompt.
 - A lost connection is retried after =goblins-reconnect-delays= (1, 2, 5, 10,
   then every 30 seconds); =r= in the status buffer or =g= in the sidebar
   reconnects at once.
@@ -284,7 +267,7 @@ the whole frame; =goblins-workspace-quit-function= restores it.
 
 None of them is required; each part below takes effect once its package loads.
 
-- *Commands on a goblin you choose.*  =goblins-goblin-show=, =-permissions=, =-info=, =-shell=, =-eshell=, =-dired=, =-find-file=, =-raid=, =-invite=, =-stop= and =-kill-execs= read a running goblin in the =goblin= completion category, and =goblins-show-in-workspace= shows one in the workspace.
+- *Commands on a goblin you choose.*  =goblins-goblin-show=, =-permissions=, =-info=, =-shell=, =-eshell=, =-dired=, =-find-file=, =-raid=, =-invite=, =-stop= and =-kill-execs= read a running goblin in the =goblins-goblin= completion category, and =goblins-show-in-workspace= shows one in the workspace.
 - *Embark.*  On a goblin candidate, and on a goblin's agent terminal among buffers (in =switch-to-buffer= or =consult-buffer=, as type =goblins-terminal=), these are actions: =W= show in the workspace, =p= permissions, =I= info, =t= shell, =e= Eshell, =d= Dired, =f= find file, =R= raid, =+= invite, =K= stop, =X= kill its shells and commands.  On a goblin =RET= or =o= shows it; on a terminal Embark's buffer actions stay, except that =K= stops the goblin.  The keymaps are =goblins-embark-goblin-map= and =goblins-embark-terminal-map=.
 - *Messages.*  On a goblin, =m= is a prefix for its messages: =m m= those it sent or received, =m f= those it sent, =m t= those it received; the commands ask among the running goblins.  The filter menu's goblin, from and to ask among every goblin in the log, stopped ones too, numbered =<2>= when names repeat.  In the message list each message is a target (type =goblins-message=): =F= lists the messages from its sender, =T= those to its recipient, =t= its thread, =RET= shows it; a message sent within a raid (=goblins-raid-message=) adds =r= for the messages of that raid.  In the reader the sender and recipient are goblin targets while they run under their name; a goblin that stopped, or whose name a new goblin took, is a =goblins-participant= target instead, with only its messages under =m= (=m m=, =m f=, =m t=; =goblins-embark-participant-map=), so stopping or killing never reaches the wrong goblin.  The thread ID a =goblins-thread= target (=RET= or =t= lists it) and a message ID a message target; elsewhere the reader is its message.  The commands are =goblins-goblin-messages=, =-messages-from= and =-messages-to=, =goblins-message-from=, =-to=, =-thread=, =-raid= and =-show=, and =goblins-thread-messages=; the keymaps =goblins-embark-goblin-messages-map=, =goblins-embark-message-map=, =goblins-embark-raid-message-map= and =goblins-embark-thread-map=.
 - *Marginalia.*  Agent terminals among buffers are annotated like goblins: type, activity, raid, directory, pending requests and queued messages.  Recorded conversations (=goblins-record=) get the annotation of =goblins-resume= in Marginalia's columns (=goblins-marginalia-annotate-record=).
@@ -294,13 +277,13 @@ None of them is required; each part below takes effect once its package loads.
 
 ** Goblin terminals
 
-Every Ghostel buffer attached to a goblin turns on the minor mode =goblin-mode=,
+Every Ghostel buffer attached to a goblin turns on the minor mode =goblins-goblin-mode=,
 so you can give those buffers keys of your own:
 
 #+begin_src emacs-lisp
-(define-key goblin-mode-map (kbd "C-c C-w") #'goblins-workspace)
+(define-key goblins-goblin-mode-map (kbd "C-c C-w") #'goblins-workspace)
 (with-eval-after-load 'evil
-  (evil-define-key 'normal goblin-mode-map (kbd "g i") #'goblin-info))
+  (evil-define-key 'normal goblins-goblin-mode-map (kbd "g i") #'goblins-info))
 #+end_src
 
 Its own keys are under =C-c g=: =w= workspace (in the workspace, its menu: Ghostel passes most other keys to the terminal), =s= switch, =i= info, =p=
@@ -314,7 +297,7 @@ reach Emacs in every input mode.
 Also under =C-c g=: =t= opens a shell terminal inside the goblin, =e= Eshell,
 =d= Dired, and =f= visits a file inside it (=goblins-find-file=).
 
-=C-c g v= (=goblin-paste-image=, or =M-x yank-media=) pastes the image on the clipboard into the agent. The agents' own =Ctrl+V= can't work in a goblin: Claude Code and Codex read the clipboard themselves, through X11 or Wayland, and the sandbox has no display. Instead Emacs writes the image to =/tmp/goblins-clipboard/= inside the goblin and pastes its path, which both agents attach as an image. The goblin only ever sees the images you paste, never the clipboard, and they go away with it. Bind it to =C-v= in =goblin-mode-map= if you want the agents' usual key.
+=C-c g v= (=goblins-paste-image=, or =M-x yank-media=) pastes the image on the clipboard into the agent. The agents' own =Ctrl+V= can't work in a goblin: Claude Code and Codex read the clipboard themselves, through X11 or Wayland, and the sandbox has no display. Instead Emacs writes the image to =/tmp/goblins-clipboard/= inside the goblin and pastes its path, which both agents attach as an image. The goblin only ever sees the images you paste, never the clipboard, and they go away with it. Bind it to =C-v= in =goblins-goblin-mode-map= if you want the agents' usual key.
 
 An agent terminal's =default-directory= is its goblin's working directory on
 the host, the project bound at the same path inside the sandbox, so
@@ -332,10 +315,10 @@ disable.
 
 #+begin_example
 C-x C-f /goblins:gribble:/tmp/diagram.svg
-C-x C-f /goblins:gribble.snaga:/workspace/     ; a child: its tree path, with . for /
+C-x C-f /goblins:snaga:/workspace/
 #+end_example
 
-The host is an agent name, a tree path or a session ID, and running goblins
+The host is an agent name or a session ID, and running goblins
 complete after =/goblins:=. The method's login program is =goblins exec=, so
 dired, saving, eshell, =shell-command=, compile, grep, magit and eglot work
 inside the sandbox, with its live =PATH=; asynchronous processes each run as
@@ -397,24 +380,15 @@ the daemon of =goblins-state-directory=.
 
 * Checks
 
-Run with an Emacs that already has =magit-section= on its load path:
+Enter =nix develop= once, using your configured Emacs with =magit-section=, Transient and optional Ghostel on its load path. =just test-emacs= runs the ERT suite; =just test-python test_emacs= runs the integration tests with the incremental Cargo controller. The direct commands are:
 
 #+begin_src sh
 emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
   emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
   emacs/goblins-tramp.el emacs/goblins-completion.el emacs/goblins-messages.el
-emacs --batch -Q -L emacs -l goblins-tests -f ert-run-tests-batch-and-exit
+emacs --batch -Q -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
 
-The Python integration tests exercise server start/stop/restart, real approvals,
-two simultaneous Ghostel launches with working-directory input and status
-links, and the whole workspace (sidebar, permissions, raids, stopping,
-reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as
-well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a
-blocking =goblins-editor= against daemons built with =editor.emacs.enable=.
-Each starts its own daemon on a temporary state directory and socket, so a
-daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test
-also requires its installed native module. These commands use =-Q= and do not
-load your init file or install Emacs packages.
+The Python integration tests exercise server start/stop/restart, real approvals, two simultaneous Ghostel launches with working-directory input and status links, and the whole workspace (sidebar, permissions, raids, stopping, reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a blocking =goblins-editor= against daemons built with =editor.emacs.enable=. Each starts its own daemon on a temporary state directory and socket, so a daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test also requires its installed native module. These commands use =-Q= and do not load your init file or install Emacs packages.

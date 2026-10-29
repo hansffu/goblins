@@ -82,37 +82,39 @@ sequenceDiagram
 
 The manifest path comes from the invoking host wrapper. New root launches can select a rebuilt manifest without restarting the daemon. Startup work can fail after the =starting= response; the final session record contains the failure. Launch keys make identical retries return the original result; reusing a key with different parameters is a conflict. Implementation: [[file:../../crates/controller/src/controller.rs][Controller::start]], [[file:../../crates/controller/src/worker.rs][Worker::start]] and [[file:../../crates/controller/src/session.rs][Session::start]].
 
-* Start a child goblin
+* Run a raid member
 
-#+begin_src mermaid :file diagrams/workflows-start-a-child-goblin.svg :background-color "'#282c34'"
+#+begin_src mermaid :file diagrams/workflows-run-a-raid-member.svg :background-color "'#282c34'"
 sequenceDiagram
-    participant P as Parent agent
-    participant CLI as Sandbox goblins client
+    participant O as Raid owner agent
+    participant CLI as Sandbox goblin client
     participant C as Controller
-    participant W as Child worker
-    participant I as Child init and agent
-    P->>CLI: goblins run CONFIG --name CHILD --detached
-    CLI->>C: sessions.start via parent's request.sock
-    C->>C: Derive caller, check parent is running and CONFIG is allowed
-    C->>C: Reserve child ID and path under parent
-    C->>W: Start with parent's inheritance capability
-    C-->>CLI: Child session ID, path and starting state
-    CLI-->>P: Launch acknowledged
-    W->>W: Use branch snapshot and child's selected configuration
-    Note over W: Inherit workspace, scope, dev shell generation and Docker attachment
-    W->>I: Launch child sandbox and entry program
-    W-->>C: Started and child control handles
-    opt Parent assigns work
-        P->>CLI: goblins send CHILD --message TASK
+    participant W as Member worker
+    participant I as Member init and agent
+    O->>CLI: goblin run CONFIG --name MEMBER
+    CLI->>C: sessions.start via the owner's request.sock
+    C->>C: Caller owns an unpaused raid, runs, and lists CONFIG
+    C->>C: Hold the owner's scope, current manifest and approvals
+    C->>C: Reserve the ID and name, join the raid as created by the owner
+    C->>W: Start with the owner's inheritance capability
+    C-->>CLI: Member session ID, name and starting state
+    CLI-->>O: Launch acknowledged
+    W->>W: Resolve CONFIG from the current manifest for the owner's scope
+    Note over W: Share workspace, cwd, scope, dev shell generation and Docker attachment
+    W->>W: Root the copied auto-approved packages
+    W->>I: Launch the member's sandbox and entry program
+    W-->>C: Started and member control handles
+    opt Owner assigns work
+        O->>CLI: goblin send MEMBER --message TASK
         CLI->>C: messages.send
-        Note over C,I: Task delivery uses the inbox workflow below
+        Note over C,I: Raid routing, then the inbox workflow below
     end
 #+end_src
 
 #+RESULTS:
-[[file:diagrams/workflows-start-a-child-goblin.svg]]
+[[file:diagrams/workflows-run-a-raid-member.svg]]
 
-Launching does not transfer the parent's conversation or assign a task. The parent names a configuration from its retained branch and its own =allowedChildren= list. The child's file/package settings come from that configuration. A host =--parent= launch uses the same selected-parent checks. Sibling messaging requires a shared raid; the ownership tree alone permits parent/descendant routes. See [[file:../../crates/controller/src/branch.rs][branch.rs]] and [[file:../../crates/controller/src/controller.rs][sandbox_control/start]].
+Running does not transfer the owner's conversation or assign a task. The owner names a configuration from its own =allowedRunTargets= list; the member's file and package settings come from that configuration in the daemon's current manifest, the last validated one the host used. The member is not a child: it keeps running when the owner stops, and the owner can list and stop it only while it owns the raid. See [[file:../../crates/controller/src/controller.rs][member_owner and start]] and [[file:../../crates/controller/src/session.rs][Session::member]].
 
 * Request and grant a package
 
@@ -201,7 +203,7 @@ sequenceDiagram
 #+RESULTS:
 [[file:diagrams/workflows-enable-docker-on-demand.svg]]
 
-This shows approval's successful branch; denial follows the ordinary permission path. Availability is a scope configuration property. Attachment is a session permission. A scope has at most one active engine; approved filesystem grants are combined and conflicting mappings are rejected. Children inherit attachment. Startup =docker.enable= activates Docker as part of the host-chosen launch. See [[file:../../crates/controller/src/scope.rs][scope.rs]], [[file:../../crates/controller/src/docker.rs][docker.rs]] and [[file:../../crates/controller/src/session.rs][Session::enable_docker]].
+This shows approval's successful branch; denial follows the ordinary permission path. Availability is a scope configuration property. Attachment is a session permission. A scope has at most one active engine; approved filesystem grants are combined and conflicting mappings are rejected. Goblins a raid owner runs start attached when it is. Startup =docker.enable= activates Docker as part of the host-chosen launch. See [[file:../../crates/controller/src/scope.rs][scope.rs]], [[file:../../crates/controller/src/docker.rs][docker.rs]] and [[file:../../crates/controller/src/session.rs][Session::enable_docker]].
 
 * Refresh a dev shell
 
@@ -248,7 +250,7 @@ sequenceDiagram
 #+RESULTS:
 [[file:diagrams/workflows-refresh-a-dev-shell.svg]]
 
-A foreign or missing workspace lock fails before evaluation. Approval is only possible once the preview exists; denial is possible during evaluation. Rejection leaves the active generation and workspace lock unchanged. Existing processes retain their environment until they source =/run/goblins/devshell/env.sh=. A refresh changes only the requesting session; new children inherit its current generation. Apply failures are reported and are not a guarantee of rollback of already-mounted approved paths.
+A foreign or missing workspace lock fails before evaluation. Approval is only possible once the preview exists; denial is possible during evaluation. Rejection leaves the active generation and workspace lock unchanged. Existing processes retain their environment until they source =/run/goblins/devshell/env.sh=. A refresh changes only the requesting session; goblins it runs from then on start in its current generation. Apply failures are reported and are not a guarantee of rollback of already-mounted approved paths.
 
 =devshell diff= performs preview work without creating a permission or applying a generation. =flake run= validates the workspace against the trusted generation, builds/mounts the selected app and returns a validated store program for the sandbox client to execute. See [[file:../../crates/controller/src/devshell.rs][devshell.rs]], [[file:../../crates/controller/src/evaluator.rs][evaluator.rs]] and [[file:../adr/0007-flake-dev-shells.md][ADR 0007]].
 
@@ -260,19 +262,19 @@ sequenceDiagram
     participant C as Controller
     participant M as Messaging worker
     participant J as Communications journal
-    participant B as Recipient hooks / native agent
+    participant B as Recipient adapter / native agent
     A->>C: messages.send(key, to, body)
     C->>M: Call with derived actor, directory and ordered events
-    M->>M: Check retry key, target and tree or logged raid authorization
+    M->>M: Check retry key, target and logged raid authorization
     M->>J: Append acceptance audit event
     M->>M: Commit message and operation receipt
     M-->>C: Accepted message and receipt
     C-->>A: Message identity and accepted outcome
-    B->>C: integration.check or integration.tick
-    C->>M: Check integration epoch, activity and inbox revision
-    M-->>C: Notify or defer according to driver/activity
-    C-->>B: Generic inbox prompt through hook, notification or terminal delivery
-    Note over C,B: Notification contains no message body and does not claim it
+    B->>C: inbox.status
+    C->>M: Read inbox head, claim and audit state
+    M-->>C: Inbox status
+    C-->>B: Status, from which the adapter in the goblin decides whether to remind the agent
+    Note over B: The reminder contains no message body and does not claim it
     B->>C: inbox.next(key)
     C->>M: Claim next queued item
     M->>J: Append claim event
@@ -289,9 +291,9 @@ sequenceDiagram
 #+RESULTS:
 [[file:diagrams/workflows-send-notify-claim-and-reply.svg]]
 
-Native integration follows notify-then-fetch. Codex/Claude hooks and monitors prompt the agent to use the inbox; they do not turn untrusted bodies into terminal input. Delivery may be deferred while the user/agent is active. Manual inbox commands remain available without native integration.
+Native integration follows notify-then-fetch. Each agent's adapter runs inside its goblin (=goblins-codex=, or =goblins-claude= with Claude's hooks and plugin monitor), polls =inbox.status= and prompts the agent to use the inbox; it never turns untrusted bodies into terminal input, and the daemon keeps no driver state. Delivery is deferred while the agent is working. Manual inbox commands remain available without native integration.
 
-Mutation keys recover the same accepted result on an identical retry within the daemon instance; conflicting reuse fails. Claim generations prevent an old claimant from completing a later claim. =inbox requeue= returns a claim to the queue, and =inbox complete= finishes without replying. Reply requires current messaging authorization; a dissolved raid can prevent reply even though the recipient can still complete the original claim. Audit acceptance is an append write, not a promise of durability through power loss. See [[file:../../crates/controller/src/mailbox.rs][mailbox.rs]], [[file:../../crates/controller/src/integration.rs][integration.rs]] and [[file:../../crates/protocol/src/messages.rs][protocol/messages.rs]].
+Mutation keys recover the same accepted result on an identical retry within the daemon instance; conflicting reuse fails. Claim generations prevent an old claimant from completing a later claim. =inbox requeue= returns a claim to the queue, and =inbox complete= finishes without replying. Reply requires current messaging authorization; a dissolved raid can prevent reply even though the recipient can still complete the original claim. Audit acceptance is an append write, not a promise of durability through power loss. See [[file:../../crates/controller/src/mailbox.rs][mailbox.rs]], [[file:../../crates/claude/src/lib.rs][claude/lib.rs]], [[file:../../crates/codex/src/lib.rs][codex/lib.rs]] and [[file:../../crates/protocol/src/messages.rs][protocol/messages.rs]].
 
 * Attach and detach a terminal
 
@@ -325,38 +327,37 @@ sequenceDiagram
 #+RESULTS:
 [[file:diagrams/workflows-attach-and-detach-a-terminal.svg]]
 
-Resize/control RPC uses a control connection while the attachment carries the terminal stream. Host attachment uses the private =terminal.sock= path; sandbox attachment uses =sessions.attach= on its request endpoint and switches that connection to terminal frames. Sandbox callers can attach only within their permitted subtree. Terminal detachment and closing approval frontends do not cancel the session. See [[file:../../crates/controller/src/attachment.rs][attachment.rs]] and [[file:../../crates/controller/src/terminal.rs][terminal.rs]].
+Resize/control RPC uses a control connection while the attachment carries the terminal stream. Host attachment uses the private =terminal.sock= path; goblins never attach to each other's terminals. Terminal detachment and closing approval frontends do not cancel the session. See [[file:../../crates/controller/src/attachment.rs][attachment.rs]] and [[file:../../crates/controller/src/terminal.rs][terminal.rs]].
 
-* Stop a subtree and release resources
+A daemon with the =attach-handlers= feature takes attachments on =attach.sock= instead: the frontend first sends =attach.hello= with its version and size, and the daemon answers with =attach.waiting= notifications until it can attach. For a goblin without =onAttach= that is the flow above. For a goblin with =onAttach=, whose agent runs without a terminal, the controller waits until the variables the client needs were set during this run, starts the client as a =goblins-init= exec on a new PTY of the hello's size, and relays that PTY instead of the payload's. Detaching runs =onDetach=, then cancels everything the client's keeper holds; the goblin is detached once init reports the client exited. The client exiting by itself detaches without =onDetach=, and what it left behind is cancelled. See [[file:../../crates/controller/src/controller/attach.rs][controller/attach.rs]].
 
-#+begin_src mermaid :file diagrams/workflows-stop-a-subtree-and-release-resources.svg :background-color "'#282c34'"
+* Stop a goblin and release resources
+
+#+begin_src mermaid :file diagrams/workflows-stop-a-goblin-and-release-resources.svg :background-color "'#282c34'"
 sequenceDiagram
-    participant CLI as Authorized caller
+    participant CLI as Host, or the raid owner
     participant C as Controller
-    participant W as Workers in subtree
+    participant W as Goblin's worker
     participant S as Scope and Docker leases
     participant M as Messaging worker
-    CLI->>C: sessions.stop(session, kill_children)
-    C->>C: Check ownership and live descendants
-    alt Descendants exist and kill_children is false
-        C-->>CLI: Refuse, require explicit subtree stop
-    else Stop permitted
-        C->>C: Mark subtree stopping and close request listeners
-        C->>W: Cancel pending work and session tokens
-        C-->>CLI: Stop accepted
-        W->>W: Stop helper/payload, kill remaining member processes
-        W->>S: Release Docker, namespace, storage and workspace leases
-        opt Last scope member
-            S->>S: Stop live scope resources, delete temporary data
-        end
-        W-->>C: Stopped(exit_code)
-        C->>M: Session exits, operation outcomes and raid removals
-        M->>M: Close recipient claims and update logged membership
-        C->>C: Retain bounded stopped record and terminal output
+    CLI->>C: sessions.stop(session)
+    C->>C: Host, or the owner of the raid the goblin was created in
+    C->>C: Mark it stopping and close its request listener
+    C->>W: Cancel pending work and the session token
+    C-->>CLI: Stop accepted
+    W->>W: Stop helper/payload, kill remaining member processes
+    W->>S: Release Docker, namespace, storage and workspace leases
+    opt Last scope member
+        S->>S: Stop live scope resources, delete temporary data
     end
+    W-->>C: Stopped(exit_code)
+    C->>C: Leave its raid, which pauses if it owned it
+    C->>M: Session exit, operation outcomes and raid changes
+    M->>M: Close recipient claims and update logged membership
+    C->>C: Retain bounded stopped record and terminal output
 #+end_src
 
 #+RESULTS:
-[[file:diagrams/workflows-stop-a-subtree-and-release-resources.svg]]
+[[file:diagrams/workflows-stop-a-goblin-and-release-resources.svg]]
 
-Natural parent exit follows subtree cleanup without requiring a user flag. Raid-owner exit dissolves its raid, leaving peers running. =server.stop= applies cancellation to all sessions and then joins workers during daemon cleanup. Stop acceptance can precede completion; the server management CLI waits for the daemon lock to be released. See [[file:../../crates/controller/src/controller.rs][stop_tree and Controller::drop]], [[file:../../crates/controller/src/session.rs][Session cleanup]] and [[file:../../crates/controller/src/scope.rs][scope leases]].
+A stop, a natural exit or a failure stops only that goblin: the goblins it ran keep running. An owner leaving pauses its raid while members remain, and the host is asked to pick a new owner or dissolve it. =server.stop= applies cancellation to all sessions and then joins workers during daemon cleanup. Stop acceptance can precede completion; the server management CLI waits for the daemon lock to be released. See [[file:../../crates/controller/src/controller.rs][stop and Controller::drop]], [[file:../../crates/controller/src/controller/raids.rs][reconcile_raids]], [[file:../../crates/controller/src/session.rs][Session cleanup]] and [[file:../../crates/controller/src/scope.rs][scope leases]].

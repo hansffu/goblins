@@ -11,6 +11,7 @@ import uuid
 
 from daemon_support import Daemon
 from terminal_support import Terminal
+from build_support import fixture_app
 
 
 def host_processes(marker):
@@ -31,10 +32,43 @@ def host_processes(marker):
 
 
 class ExecTests(unittest.TestCase):
+    SHARED_CASES = {
+        "test_streams_exit_codes_environment_and_errors",
+        "test_control_channel_is_invisible_to_the_goblin",
+        "test_editor_open_is_refused_without_an_editor",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.application = fixture_app("exec-goblins")
+        cls.d = Daemon(cls.application)
+        cls.addClassCleanup(cls.d.close)
+        cls.shared_daemon = None
+
     def setUp(self):
-        self.d = Daemon()
-        self.addCleanup(self.d.close)
+        # These cases only run isolated execs and inspect/refuse requests;
+        # nothing changes the agent's files, grants, shell state or identity.
+        # Keep a separate shared sandbox so lifecycle tests can still stop,
+        # replace and inspect their own fresh sessions in any test order.
+        if self._testMethodName in self.SHARED_CASES:
+            cls = type(self)
+            if cls.shared_daemon is None:
+                cls.shared_daemon = Daemon(cls.application)
+                cls.addClassCleanup(cls.shared_daemon.close)
+                cls.shared_agent = cls.shared_daemon.start(agent_name="gribble")
+            self.d = cls.shared_daemon
+            self.agent = cls.shared_agent
+            self.d.wait(lambda: self.d.get(self.agent["session"])["execs"] == 0)
+            return
+        self.addCleanup(self.stop_sessions)
         self.agent = self.d.start(agent_name="gribble")
+
+    def stop_sessions(self):
+        sessions = self.d.rpc.call("sessions.list", {})
+        for session in sessions:
+            if session["state"] in ("starting", "running"):
+                self.d.rpc.call("sessions.stop", {"session": session["id"]})
+        self.d.wait(lambda: all(not (self.d.state / s["id"] / "resources").exists() for s in sessions))
 
     def command(self, *args):
         return [str(self.d.app), "--state-dir", str(self.d.state), "exec", *args]
@@ -154,7 +188,7 @@ class ExecTests(unittest.TestCase):
         # background jobs in groups of their own) or outlived their command. The agent and what it started keep running.
         agent = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", "gribble"])
         self.addCleanup(agent.close)
-        # The terminal answers fish's queries only while it is read.
+        # Read until the persistent shell has started its background job.
         agent.send(f"sleep {marker}5 &\n")
         agent.send("echo AGENT_STARTED\n")
         agent.expect(r"\nAGENT_STARTED\n")
@@ -248,7 +282,7 @@ ls /run/goblins
         self.assertEqual(listing, {"bin", "packages", "request.sock"})
 
     def test_editor_open_is_refused_without_an_editor(self):
-        r = self.run_exec("gribble", "--", "goblins", "editor", "open", "--no-wait", "/tmp/x")
+        r = self.run_exec("gribble", "--", "goblin", "editor", "open", "--no-wait", "/tmp/x")
         self.assertEqual(r.returncode, 1)
         self.assertIn("no editor is configured", r.stderr)
 

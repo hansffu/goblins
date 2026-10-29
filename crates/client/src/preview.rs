@@ -1,4 +1,4 @@
-//! Plain-text rendering of a dev shell refresh preview for `goblins devshell
+//! Plain-text rendering of a dev shell refresh preview for `goblin devshell
 //! diff`. The daemon sends facts only; wording follows the TUI approval
 //! summary. Every string from the preview is escaped before it is printed.
 use goblins_protocol::{patch::patch_files, plain_text};

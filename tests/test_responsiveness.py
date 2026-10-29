@@ -10,14 +10,20 @@ import tempfile
 import time
 import unittest
 from daemon_support import Daemon, RPC, receive
+from build_support import nix_bin
 
 class ResponsiveTests(unittest.TestCase):
     def slow_daemon(self, kind):
         root = tempfile.TemporaryDirectory(prefix="gs-"); self.addCleanup(root.cleanup)
         root = Path(root.name); bindir = root / "bin"; bindir.mkdir(); marker = root / "owned"
         tool = "nix-store" if kind == "startup" else "nix"
-        real = shutil.which(tool)
-        condition = '"eval" in sys.argv and any(".hello" in a for a in sys.argv)' if kind == "preview" else ('"build" in sys.argv and "--dry-run" not in sys.argv' if kind == "build" else '"--realise" in sys.argv')
+        real = str(nix_bin() / tool)
+        # Manifest leases also realise roots during daemon initialization. Only
+        # pause a session's roots: otherwise setUp sleeps for a minute before
+        # the test even launches A, and the supposed startup race is missed.
+        condition = ('"eval" in sys.argv and any(".hello" in a for a in sys.argv)' if kind == "preview" else
+                     ('"build" in sys.argv and "--dry-run" not in sys.argv' if kind == "build" else
+                      '"--realise" in sys.argv and any("/resources/roots/" in a for a in sys.argv)'))
         script = bindir / tool
         script.write_text(f'''#!{sys.executable}
 import json,os,subprocess,sys,time
@@ -29,7 +35,7 @@ if {condition} and not os.path.exists({str(marker)!r}):
   time.sleep(.01)
 os.execv({real!r},[{real!r},*sys.argv[1:]])
 '''); script.chmod(0o700)
-        d = Daemon(env={**os.environ, "PATH": str(bindir) + ":" + os.environ["PATH"]}); self.addCleanup(d.close)
+        d = Daemon(tool_path=bindir); self.addCleanup(d.close)
         return d, marker
 
     def assert_reaped(self, d, marker):
@@ -37,11 +43,17 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         d.wait(lambda: not Path(f"/proc/{pids[0]}").exists(), timeout=2)
         for pid in pids:
             stat = Path(f"/proc/{pid}/stat")
-            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == "Z")
+            try:
+                state = stat.read_text().rsplit(")", 1)[1].split()[0]
+            except FileNotFoundError:
+                # Reaping between lookup and read is the desired outcome.
+                state = None
+            self.assertIn(state, (None, "Z"), f"owned process {pid} is still running")
 
     def test_slow_startup_does_not_block_other_session(self):
         d, marker = self.slow_daemon("startup")
         a = d.start(wait=False); d.wait(marker.exists)
+        self.assertEqual(d.get(a["session"])["state"], "starting")
         b = d.start()
         peer, record = d.pending(b["session"], "tree"); self.addCleanup(peer.close)
         start = time.monotonic(); d.decide(record, False)
@@ -61,6 +73,7 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         manifest = marker.parent / "resize.json"
         manifest.write_text(json.dumps(config))
         a = d.start(manifest=manifest, wait=False); d.wait(marker.exists)
+        self.assertEqual(d.get(a["session"])["state"], "starting")
         self.assertTrue(d.rpc.call("sessions.resize", {"session":a["session"],"rows":40,"cols":110})["accepted"])
         marker.with_suffix(".release").touch()
         d.wait(lambda: d.get(a["session"])["state"] == "running")
@@ -101,7 +114,7 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         d.wait(lambda: not (d.state / a["session"] / "resources").exists(), timeout=2)
         print("EVIDENCE slow approved build A leaves B responsive; explicit stop reaps only A's owned work", flush=True)
 
-    def test_normal_exit_kills_children_while_package_work_is_blocked(self):
+    def test_normal_exit_while_package_work_is_blocked_leaves_members_running(self):
         for kind in ("preview", "build"):
             with self.subTest(kind=kind):
                 d, marker = self.slow_daemon(kind)
@@ -114,23 +127,22 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
                 ]
                 manifest = marker.parent / "normal-exit.json"
                 manifest.write_text(json.dumps(config))
-                parent = d.start(manifest=manifest)
-                child = d.rpc.call("sessions.start", {
-                    "key": "child", "configuration": d.manifest, "name": "shell",
-                    "parent": parent["session"], "rows": 24, "cols": 80,
-                })
-                d.wait(lambda: d.get(child["session"])["state"] == "running")
-                peer, record = d.pending(parent["session"])
+                owner = d.start(manifest=manifest)
+                # The member runs the same payload, waiting on a terminal
+                # nobody writes to.
+                member = d.member(owner["session"])
+                peer, record = d.pending(owner["session"])
                 self.addCleanup(peer.close)
                 if kind == "build":
                     d.decide(record, True)
                 d.wait(marker.exists)
-                with d.terminal(parent) as terminal:
+                with d.terminal(owner) as terminal:
                     terminal.sendall(b"go\n")
-                    d.wait(lambda: d.get(parent["session"])["state"] == "stopped", timeout=5)
-                d.wait(lambda: d.get(child["session"])["state"] == "stopped", timeout=2)
-                self.assertEqual(d.get(parent["session"])["exit_code"], 7)
+                    d.wait(lambda: d.get(owner["session"])["state"] == "stopped", timeout=5)
+                self.assertEqual(d.get(owner["session"])["exit_code"], 7)
                 self.assert_reaped(d, marker)
+                # Nothing cascades: the owner's exit stops none of its members.
+                self.assertEqual(d.get(member["session"])["state"], "running")
 
     def test_slow_subscriber_disconnects_and_fresh_snapshot_resynchronizes(self):
         d = Daemon(); self.addCleanup(d.close); a = d.start()

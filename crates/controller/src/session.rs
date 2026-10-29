@@ -30,6 +30,13 @@ use std::{
     time::Duration,
 };
 
+/// Why an allowNix goblin gets no package grants.
+pub(crate) const NIX_PACKAGES: &str =
+    "this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request";
+/// Why an allowNix goblin gets no dev shell refreshes or flake runs.
+pub(crate) const NIX_DEV_SHELL: &str =
+    "this goblin has Nix; use nix develop and nix run instead of the Goblins dev shell commands";
+
 fn canonical_store_output(path: &Path) -> bool {
     let name = path.file_name().and_then(|p| p.to_str());
     let Some(name) = name else {
@@ -111,7 +118,13 @@ pub struct Identity {
     pub source_mountns: u64,
     pub mountns: u64,
 }
-struct SessionDirectory(PathBuf);
+struct SessionDirectory(PathBuf, File);
+impl SessionDirectory {
+    fn new(path: PathBuf) -> Result<Self> {
+        let lease = crate::cleanup::resource_lease(&path)?;
+        Ok(Self(path, lease))
+    }
+}
 impl Drop for SessionDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -124,31 +137,53 @@ impl Drop for SessionDirectory {
 }
 struct SharedWorkspace {
     file: File,
-    // Keep snapshot contents alive until every descendant has stopped.
+    // Keep snapshot contents alive until every goblin sharing it has stopped.
     _owner: Arc<SessionDirectory>,
 }
-/// Host-owned launch capability. Children reuse opened mounts, never re-resolve
-/// host paths or read a caller-selected manifest.
+/// Host-owned launch capability. Goblins a raid owner runs reuse its opened
+/// working directory, never re-resolve host paths or read a caller-selected
+/// manifest.
 #[derive(Clone)]
 pub(crate) struct Inheritance {
     launch: Arc<Launch>,
     binds: Arc<crate::binds::Plan>,
     workspace: Arc<SharedWorkspace>,
-    // Weak: a stopped parent's record must not keep its scope alive.
+    // Weak: a stopped session's record must not keep its scope alive.
     scope: Weak<crate::scope::Shared>,
     docker: Arc<AtomicBool>,
-    /// This session's configuration key and the root's branch snapshot.
+    /// This session's configuration key and the configurations it may run.
     configuration: String,
-    branch: Arc<crate::branch::Branch>,
+    run_targets: Arc<[String]>,
     _owner: Arc<SessionDirectory>,
 }
 impl Inheritance {
-    /// The configurations this session may launch as children.
-    pub(crate) fn allowed_children(&self) -> &[String] {
-        self.branch.allowed_children(&self.configuration)
+    /// The configurations this session may run as raid members.
+    pub(crate) fn allowed_run_targets(&self) -> &[String] {
+        &self.run_targets
     }
-    pub(crate) fn permit(&self, child: &str) -> std::result::Result<(), String> {
-        self.branch.permit(&self.configuration, child)
+    pub(crate) fn permit(&self, target: &str) -> std::result::Result<(), String> {
+        let own = &self.configuration;
+        if self.run_targets.is_empty() {
+            return Err(format!("configuration '{own}' permits no run targets"));
+        }
+        if !self.run_targets.iter().any(|t| t == target) {
+            return Err(format!(
+                "configuration '{target}' is not an allowed run target of '{own}'; allowed: {}",
+                self.run_targets.join(", ")
+            ));
+        }
+        Ok(())
+    }
+    /// The live scope, held for a launch accepted while this session runs.
+    pub(crate) fn scope(&self) -> std::result::Result<Option<Arc<crate::scope::Shared>>, String> {
+        match &self.launch.scope {
+            None => Ok(None),
+            Some(_) => self
+                .scope
+                .upgrade()
+                .map(Some)
+                .ok_or_else(|| "the owner's scope has stopped".into()),
+        }
     }
     pub(crate) fn scope_name(&self) -> Option<&str> {
         self.launch.scope.as_ref().map(|s| s.name.as_str())
@@ -174,12 +209,37 @@ impl Inheritance {
     pub(crate) fn initially_available(&self, path: &Path) -> bool {
         self.launch.initial_packages.iter().any(|p| p == path)
     }
+    /// The sandbox runs ordinary Nix commands against the host daemon, so
+    /// package grants and dev shell refreshes do not apply.
+    pub(crate) fn nix(&self) -> bool {
+        self.launch.allow_nix
+    }
+    /// The helper binary, which also supervises host commands.
+    pub(crate) fn helper(&self) -> &Path {
+        &self.launch.helper
+    }
+    /// The sandbox may ask the host to run commands (`goblin host run`).
+    pub(crate) fn host_commands(&self) -> bool {
+        self.launch.host_commands
+    }
+    /// Whether the configuration asks its agent to skip its own permission
+    /// prompts; None for a goblin without an agent.
+    pub(crate) fn permission_bypass(&self) -> Option<bool> {
+        self.launch
+            .integration
+            .as_ref()
+            .map(|_| self.launch.bypass_permissions)
+    }
+    /// The host directory for a host command started at sandbox `path`.
+    pub(crate) fn host_directory(&self, path: &Path) -> Result<(File, PathBuf)> {
+        self.binds.resolve_shared(path)
+    }
 }
 #[cfg(test)]
 impl Inheritance {
     /// A running session's capability without a sandbox, for controller tests.
-    pub(crate) fn fixture(configuration: &str, branch: Arc<crate::branch::Branch>) -> Self {
-        let owner = Arc::new(SessionDirectory(unix::temp_directory().unwrap()));
+    pub(crate) fn fixture(configuration: &str, run_targets: &[&str]) -> Self {
+        let owner = Arc::new(SessionDirectory::new(unix::temp_directory().unwrap()).unwrap());
         let launch: Launch = serde_json::from_value(serde_json::json!({
             "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
             "bwrap": "/unused", "flake": "unused", "client_package": "/unused",
@@ -199,21 +259,9 @@ impl Inheritance {
             scope: Weak::new(),
             docker: Arc::default(),
             configuration: configuration.into(),
-            branch,
+            run_targets: run_targets.iter().map(|t| t.to_string()).collect(),
             _owner: owner,
         }
-    }
-    /// The same capability for a session launched with an agent integration.
-    pub(crate) fn fixture_with_integration(
-        configuration: &str,
-        branch: Arc<crate::branch::Branch>,
-        integration: &str,
-    ) -> Self {
-        let mut fixture = Self::fixture(configuration, branch);
-        let mut launch = (*fixture.launch).clone();
-        launch.integration = Some(integration.into());
-        fixture.launch = Arc::new(launch);
-        fixture
     }
 }
 /// Append to a session directory's diagnostic `events.jsonl`.
@@ -245,6 +293,9 @@ pub struct Session {
     pub directory: PathBuf,
     pub launch: Launch,
     pub mounted: BTreeSet<PathBuf>,
+    // References protected by the retained initial closure file. Grants and
+    // declarations outside this set still acquire their own roots.
+    rooted_closure: BTreeSet<PathBuf>,
     pub packages: BTreeMap<String, PathBuf>,
     pub identity: Option<Identity>,
     pub input: Option<File>,
@@ -256,8 +307,8 @@ pub struct Session {
     network: Option<crate::network::Network>,
     scope: Option<Arc<crate::scope::Shared>>,
     docker: Option<crate::scope::Lease>,
-    // Shared with children's inheritance: they start with Docker attached
-    // when their parent had it at the time they were created.
+    // Shared through inheritance: goblins a raid owner runs start with Docker
+    // attached when the owner had it at the time they were created.
     docker_attached: Arc<AtomicBool>,
     docker_inherit_enabled: Option<bool>,
     docker_filesystem: Vec<String>,
@@ -267,18 +318,19 @@ pub struct Session {
     cancel: Cancellation,
     directory_owner: Arc<SessionDirectory>,
     binds: Option<Arc<crate::binds::Plan>>,
-    // A different-configuration child opens its own binds at start, sharing
-    // only its parent's pinned working directory.
-    parent_binds: Option<Arc<crate::binds::Plan>>,
+    // A goblin a raid owner runs opens its own binds at start, sharing only
+    // the owner's pinned working directory.
+    owner_binds: Option<Arc<crate::binds::Plan>>,
     workspace: Option<Arc<SharedWorkspace>>,
     candidate: Option<crate::devshell::Candidate>,
     pub(crate) configuration: String,
-    pub(crate) branch: Arc<crate::branch::Branch>,
+    /// What this session may run as raid members, from its configuration.
+    pub(crate) run_targets: Arc<[String]>,
     /// A recreated goblin's recorded grants, staged before the agent starts.
-    /// They are this session's own grants: children do not inherit them.
+    /// They are this session's own grants, not initial packages.
     pub(crate) recreated: Vec<(String, PathBuf)>,
     /// The agent's arguments for this sandbox only, instead of
-    /// `launch.shell_args` (a resumed conversation). Children use the latter.
+    /// `launch.shell_args` (a resumed conversation).
     pub(crate) arguments: Option<Vec<String>>,
 }
 impl Session {
@@ -299,10 +351,11 @@ impl Session {
         };
         unix::private_directory(&directory)?;
         let session = Self {
-            directory_owner: Arc::new(SessionDirectory(directory.clone())),
+            directory_owner: Arc::new(SessionDirectory::new(directory.clone())?),
             directory,
             launch,
             mounted: BTreeSet::new(),
+            rooted_closure: BTreeSet::new(),
             packages: BTreeMap::new(),
             identity: None,
             input: None,
@@ -321,11 +374,11 @@ impl Session {
             helper_output: None,
             cancel,
             binds: None,
-            parent_binds: None,
+            owner_binds: None,
             workspace: None,
             candidate: None,
             configuration: String::new(),
-            branch: Arc::default(),
+            run_targets: Arc::new([]),
             recreated: Vec::new(),
             arguments: None,
         };
@@ -350,74 +403,42 @@ impl Session {
         }
         Ok(session)
     }
-    pub(crate) fn child(
-        inherited: Inheritance,
+    /// A goblin a raid owner runs, using a configuration resolved from the
+    /// daemon's current manifest for the owner's scope. It shares the owner's
+    /// workspace, scope, working directory, dev shell and Docker attachment;
+    /// everything else comes from its own definition.
+    pub(crate) fn member(
+        owner: Inheritance,
+        scope: Option<Arc<crate::scope::Shared>>,
+        manifest: &Path,
         configuration: &str,
         cancel: Cancel,
         directory: PathBuf,
     ) -> Result<Self> {
-        if configuration != inherited.configuration {
-            return Self::child_configuration(inherited, configuration, cancel, directory);
-        }
-        let mut launch = (*inherited.launch).clone();
-        launch.cwd = None;
-        let mut session = Self::new_in(launch, None, cancel, directory)?;
-        // new_in canonicalizes cwd for root launches only. Preserve the pinned
-        // parent's namespace path even when its host pathname was renamed.
-        session.launch = (*inherited.launch).clone();
-        if session.launch.scope.is_some() {
-            session.scope = Some(
-                inherited
-                    .scope
-                    .upgrade()
-                    .ok_or("the parent's scope has stopped")?,
-            );
-        }
-        let enabled = inherited.docker.load(Ordering::SeqCst);
-        session.docker_inherit_enabled = Some(enabled);
-        if enabled
-            && let Some(client) = session
-                .launch
-                .docker
-                .as_ref()
-                .and_then(|d| d.client.clone())
-            && !session.launch.initial_packages.contains(&client)
-        {
-            session.launch.initial_packages.push(client);
-        }
-        session.binds = Some(inherited.binds);
-        session.workspace = Some(inherited.workspace);
-        session.configuration = inherited.configuration;
-        session.branch = inherited.branch;
-        Ok(session)
-    }
-    /// A child running another configuration from the branch snapshot. It
-    /// shares the parent's workspace, scope, working directory, dev shell and
-    /// Docker attachment; everything else comes from its own definition.
-    fn child_configuration(
-        inherited: Inheritance,
-        configuration: &str,
-        cancel: Cancel,
-        directory: PathBuf,
-    ) -> Result<Self> {
-        let mut launch = inherited.branch.configuration(configuration)?.launch()?;
+        let manifest = crate::config::Manifest::validate(manifest)?;
+        let editor = manifest.editor()?;
+        let run_targets: Arc<[String]> = manifest.run_targets(configuration).into();
+        let mut launch = manifest
+            .select_inherited(configuration, owner.scope_name())
+            .map_err(|e| format!("configuration '{configuration}' cannot be launched here: {e}"))?
+            .launch()?;
         if launch.initial_packages.len() > 128 {
             return Err("initial package limit is 128".into());
         }
-        launch.protected_paths = inherited.launch.protected_paths.clone();
+        launch.protected_paths = owner.launch.protected_paths.clone();
         let mut session = Self::new_in(launch, None, cancel, directory)?;
-        session.launch.cwd = inherited.launch.cwd.clone();
-        session.launch.dev_shell = inherited.launch.dev_shell.clone();
-        session.launch.editor = inherited.launch.editor.clone();
+        // new_in canonicalizes cwd for host launches only. Keep the owner's
+        // pinned namespace path even when its host pathname was renamed.
+        session.launch.cwd = owner.launch.cwd.clone();
+        session.launch.dev_shell = owner.launch.dev_shell.clone();
+        session.launch.editor = editor;
         if session.launch.scope.is_some() {
-            let scope = inherited
-                .scope
-                .upgrade()
-                .ok_or("the parent's scope has stopped")?;
+            let scope = scope.ok_or("the owner's scope has stopped")?;
+            // A newer definition must not create a different inherited scope.
             scope.compatible(&session.launch)?;
             session.scope = Some(scope);
         }
-        let enabled = inherited.docker.load(Ordering::SeqCst)
+        let enabled = owner.docker.load(Ordering::SeqCst)
             || session.launch.docker.as_ref().is_some_and(|d| d.enabled);
         session.docker_inherit_enabled = Some(enabled);
         if enabled
@@ -430,10 +451,10 @@ impl Session {
         {
             session.launch.initial_packages.push(client);
         }
-        session.parent_binds = Some(inherited.binds);
-        session.workspace = Some(inherited.workspace);
+        session.owner_binds = Some(owner.binds.clone());
+        session.workspace = Some(owner.workspace.clone());
         session.configuration = configuration.to_string();
-        session.branch = inherited.branch;
+        session.run_targets = run_targets;
         Ok(session)
     }
     pub(crate) fn inheritance(&self) -> Inheritance {
@@ -444,7 +465,7 @@ impl Session {
             scope: self.scope.as_ref().map(Arc::downgrade).unwrap_or_default(),
             docker: self.docker_attached.clone(),
             configuration: self.configuration.clone(),
-            branch: self.branch.clone(),
+            run_targets: self.run_targets.clone(),
             _owner: self.directory_owner.clone(),
         }
     }
@@ -456,6 +477,9 @@ impl Session {
     }
     pub fn root(&self, path: &Path) -> Result<PathBuf> {
         let path = store_path(path)?;
+        if self.rooted_closure.contains(&path) {
+            return Ok(path);
+        }
         let link = self.directory.join("roots").join(path.file_name().unwrap());
         if !link.is_symlink() {
             self.command(
@@ -504,10 +528,26 @@ impl Session {
         private.push(crate::scope_storage::root(false)?);
         private.push(self.directory.clone());
         private.extend(etc.iter().map(|(_, destination)| destination.clone()));
+        // allowNix: the host store and the daemon's socket, as (what to bind at
+        // its own path, the socket). The default socket's directory holds
+        // nothing else, and binding it survives the socket being recreated; a
+        // socket elsewhere is bound alone, not its neighbours.
+        let nix_socket = if self.launch.allow_nix {
+            let socket = crate::evaluator::daemon_socket()?;
+            let default = Path::new(crate::evaluator::DAEMON_SOCKET);
+            if socket.parent() == Some(default) {
+                Some((default.to_path_buf(), socket))
+            } else {
+                crate::binds::validate(&socket, &private)?;
+                Some((socket.clone(), socket))
+            }
+        } else {
+            None
+        };
         if self.binds.is_none() {
             let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
-            if let Some(parent) = &self.parent_binds {
-                binds.share_working_directory(parent)?;
+            if let Some(owner) = &self.owner_binds {
+                binds.share_working_directory(owner)?;
             } else if let Some(cwd) = &self.launch.cwd {
                 binds.add_working_directory(cwd, &private)?;
             }
@@ -521,6 +561,16 @@ impl Session {
             }));
         }
         let workspace_fd = self.workspace.as_ref().unwrap().file.as_raw_fd();
+        // A Nix-generated closure listing already references its dependencies.
+        // Retain that output once, rather than invoking nix-store for every
+        // listed path. Query registered references, not the file's assertions:
+        // unreferenced paths still need individual roots. Non-store listings
+        // (including direct Session callers) keep the original behavior.
+        if let Some(file) = &self.launch.initial_closure_file
+            && let Some(output) = containing_store_output(file)
+        {
+            self.rooted_closure = self.closure(&[output])?;
+        }
         // Root selected store-backed config without exposing the full output or
         // its closure. Only the precise declared/linked targets are mounted.
         for root in binds.store_roots()? {
@@ -567,7 +617,9 @@ impl Session {
             roots.push(dev.profile.clone());
         }
         let initial = self.closure(&roots)?;
-        self.placeholders(&initial)?;
+        if !self.launch.allow_nix {
+            self.placeholders(&initial)?;
+        }
         // An empty first generation: the granted-package directory leads PATH
         // from the start, so tools that list PATH once (TRAMP) see later grants.
         let empty = self.directory.join("packages/generation-0");
@@ -686,8 +738,13 @@ impl Session {
             workspace_fd.to_string(),
             "/workspace".into(),
         ]);
+        let store = if self.launch.allow_nix {
+            PathBuf::from("/nix/store")
+        } else {
+            self.directory.join("store")
+        };
         for (flag, source, dest) in [
-            ("--ro-bind", self.directory.join("store"), "/nix/store"),
+            ("--ro-bind", store, "/nix/store"),
             (
                 "--ro-bind",
                 self.directory.join("packages"),
@@ -721,6 +778,16 @@ impl Session {
         for (name, value) in &self.launch.env {
             args.extend(["--setenv".into(), name.clone(), value.clone()]);
         }
+        // After the goblin's env: the launch uses --clearenv, so without these
+        // the client would not find a socket outside the default path.
+        if let Some((_, socket)) = &nix_socket {
+            args.extend(["--setenv", "NIX_REMOTE", "daemon"].map(String::from));
+            args.extend([
+                "--setenv".into(),
+                "NIX_DAEMON_SOCKET_PATH".into(),
+                socket.display().to_string(),
+            ]);
+        }
         if let Some(dev) = &self.launch.dev_shell {
             let directory = self.directory.join("devshell");
             fs::create_dir_all(&directory)?;
@@ -734,14 +801,21 @@ impl Session {
                 dev.reference.clone(),
             ]);
         }
-        for path in &initial {
-            args.extend([
-                "--ro-bind".into(),
-                path.display().to_string(),
-                path.display().to_string(),
-            ]);
+        let staging = self.directory.join("store");
+        if !self.launch.allow_nix {
+            for path in &initial {
+                args.extend([
+                    "--ro-bind".into(),
+                    path.display().to_string(),
+                    path.display().to_string(),
+                ]);
+            }
         }
-        binds.append_args(&mut args, &self.directory.join("store"), &initial)?;
+        binds.append_args(
+            &mut args,
+            (!self.launch.allow_nix).then_some(staging.as_path()),
+            &initial,
+        )?;
         for (source, destination) in &etc {
             args.extend([
                 "--ro-bind".into(),
@@ -757,6 +831,21 @@ impl Session {
         // The engine has its own PID namespace and mounts a fresh /proc.
         self.docker_filesystem
             .extend(["--proc", "/proc"].map(String::from));
+        // Not in the engine's view: containers never reach the Nix daemon.
+        if let Some((mount, _)) = &nix_socket {
+            let mount = mount.display().to_string();
+            args.extend(["--ro-bind".into(), mount.clone(), mount]);
+        }
+        // Host command output, read-only; the daemon writes it as jobs run.
+        if self.launch.host_commands {
+            let jobs = self.directory.join("host-jobs");
+            fs::create_dir_all(&jobs)?;
+            args.extend([
+                "--ro-bind".into(),
+                jobs.display().to_string(),
+                "/run/goblins/host-jobs".into(),
+            ]);
+        }
         if shared_pid {
             // The helper mounted the scope's /proc; a member's own user
             // namespace could not. Keep Bubblewrap's read-only /proc hardening.
@@ -887,6 +976,7 @@ impl Session {
         let parent = unsafe { libc::getpid() };
         let payload_limit = unix::payload_descriptor_limit();
         let mut keep = vec![
+            self.directory_owner.1.as_raw_fd(),
             input.as_raw_fd(),
             output.as_raw_fd(),
             filter.as_raw_fd(),
@@ -972,6 +1062,14 @@ impl Session {
     pub(crate) fn resolve_recorded(&self, names: &[String]) -> Result<Resolved> {
         let mut outputs: Vec<(String, PathBuf)> = vec![];
         let mut skipped: Vec<crate::history::Skipped> = vec![];
+        if self.launch.allow_nix {
+            for name in names {
+                if !skipped.iter().any(|s| s.name == *name) {
+                    skipped.push(crate::history::Skipped::new(name, NIX_PACKAGES));
+                }
+            }
+            return Ok((outputs, skipped));
+        }
         for name in names {
             self.cancel.check()?;
             if outputs.iter().any(|(n, _)| n == name) || skipped.iter().any(|s| s.name == *name) {
@@ -1146,6 +1244,11 @@ impl Session {
         missing: &BTreeSet<PathBuf>,
         before_mount: &mut impl FnMut(usize, &Path) -> Result<()>,
     ) -> Result<()> {
+        // The sandbox and an attached engine already see the whole host store.
+        if self.launch.allow_nix {
+            self.mounted.extend(missing.iter().cloned());
+            return Ok(());
+        }
         self.placeholders(missing)?;
         for (count, item) in missing.iter().enumerate() {
             self.cancel.check()?;
@@ -1496,13 +1599,23 @@ impl Session {
     }
     pub fn stop(&mut self) {
         self.network.take();
-        // SIGKILL is intentional: helper parent-death/PID namespace teardown
-        // ends all sandbox descendants, even while a mount command is pending.
+        // EOF lets the helper kill the sandbox and wait for Bubblewrap to reap
+        // it. Bound this handshake: a stuck mount must not block shutdown.
+        self.helper_input.take();
         if let Some(mut helper) = self.helper.take() {
             if let Ok(Some(status)) = helper.try_wait() {
                 self.exit_code = status.code();
             } else {
-                let _ = helper.kill();
+                let deadline = std::time::Instant::now() + Duration::from_secs(2);
+                while matches!(helper.try_wait(), Ok(None)) {
+                    if std::time::Instant::now() >= deadline {
+                        // Parent-death teardown remains the fallback for a
+                        // helper that cannot finish its current operation.
+                        let _ = helper.kill();
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
                 let _ = helper.wait();
             }
         }
@@ -1514,7 +1627,6 @@ impl Session {
         self.docker.take();
         self.scope.take();
         self.docker_attached.store(false, Ordering::SeqCst);
-        self.helper_input.take();
         self.helper_output.take();
         self.event("stopped", serde_json::json!({}));
     }

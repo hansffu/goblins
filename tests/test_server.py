@@ -1,5 +1,6 @@
-"""Packaged server lifecycle, help and real shell completion scripts."""
+"""Server lifecycle, help and shell scripts, native or Nix-packaged."""
 from pathlib import Path
+import fcntl
 import json
 import os
 import re
@@ -70,10 +71,61 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.cli("server", "logs").count("daemon ready"), 2)
         print("EVIDENCE background server survives launching CLI, stops both agents, retains output and restarts with fresh identity", flush=True)
 
+    def test_stop_waits_for_final_output_before_releasing_the_server(self):
+        # Leave room for the stopping line, then block the final stopped line.
+        # This exposes the lock-release/logging race without relying on load.
+        reader, writer = os.pipe()
+        output = os.fdopen(reader, "rb", buffering=0)
+        self.addCleanup(output.close)
+
+        def reap(process):
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            for stream in (process.stdout, process.stderr):
+                if stream:
+                    stream.close()
+
+        try:
+            foreground = subprocess.Popen(
+                [str(self.app), "--state-dir", str(self.state), "server", "start", "--foreground"],
+                env=self.env, stdout=writer, stderr=subprocess.PIPE)
+            self.addCleanup(reap, foreground)
+            self.assertIn(b"daemon ready", output.readline())
+            self.assertIn(b"Session history", output.readline())
+            capacity = fcntl.fcntl(writer, fcntl.F_GETPIPE_SZ)
+            stopping = b"Goblins server stopping; cleaning up agents\n"
+            os.write(writer, b"x" * (capacity - len(stopping)))
+        finally:
+            os.close(writer)
+        stopper = subprocess.Popen(
+            [str(self.app), "--state-dir", str(self.state), "server", "stop"],
+            env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(reap, stopper)
+        deadline = time.monotonic() + 5
+        while (self.state / "host.sock").exists():
+            self.assertLess(time.monotonic(), deadline, "daemon did not reach final cleanup")
+            time.sleep(.005)
+        self.assertIsNone(foreground.poll(), "final output should still be blocked")
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                stopper.wait(timeout=.2)
+        finally:
+            # Unblock final logging even when the assertion exposes the race.
+            os.read(reader, capacity)
+        foreground.wait(timeout=5)
+        self.assertIn(b"Goblins server stopped\n", output.read())
+        stdout, stderr = stopper.communicate(timeout=5)
+        self.assertEqual(stopper.returncode, 0, stdout + stderr)
+        self.assertIn(b"Server stopped", stdout)
+
     def test_help_removed_aliases_and_completion_installation(self):
+        # Run identical assertions against Cargo's generated launcher/scripts
+        # in native mode and the actual Nix installation under --packaged.
+        # Nix checks also compare installed scripts with generator output.
         for args in [(), ("--help",), ("help",)]:
             text = self.cli(*args)
-            for command in ("server", "tui", "run", "stop", "completions"):
+            for command in ("server", "tui", "run", "stop", "scope", "gc", "completions"):
                 self.assertIn(command, text)
             self.assertNotRegex(text, r"(?m)^  (shell|daemon|serve)\s")
         self.assertIn("--name", self.cli("help", "run"))
@@ -127,6 +179,34 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(target.read_text(), "unchanged")
         self.assertFalse((self.state / "host.sock").exists())
 
+    def test_host_job_completion_only_queries_an_explicitly_selected_server(self):
+        self.state = Path(self.temp.name) / "goblins"
+        self.cli("server", "start")
+        client = RPC(self.state / "host.sock")
+        self.addCleanup(client.close)
+        _, manifest = re.search(r'exec (\S+) --runtime (\S+)', self.app.read_text()).groups()
+        client.call("sessions.start", dict(key="completion", name="shell", agent_name="scout",
+                    configuration=manifest, rows=24, cols=100))
+        env = {**self.env, "GOBLINS_HOST_JOB": "completion-test", "XDG_RUNTIME_DIR": self.temp.name}
+
+        def lookup(outer, words):
+            result = subprocess.run([str(self.app), *outer, "__complete-names", "--", *words],
+                                    env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stderr, "")
+            return result.stdout.splitlines()
+
+        # A live sentinel in the default server proves that implicit lookup is
+        # suppressed, rather than accidentally succeeding against an empty one.
+        self.assertEqual(lookup([], ["goblins", "attach"]), [])
+        self.assertEqual(lookup([], ["goblins", "--state-dir", str(self.state), "attach"]), ["scout"])
+        self.assertEqual(lookup([], ["goblins", "attach", "--state-dir=" + str(self.state)]), ["scout"])
+        self.assertEqual(lookup(["--state-dir", str(self.state)], ["goblins", "attach"]), ["scout"])
+        refused = subprocess.run([str(self.app), "server", "status"], env=env,
+                                 text=True, capture_output=True, timeout=10)
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("pass --state-dir", refused.stderr)
+
     def test_live_names_in_bash_fish_and_zsh_completions(self):
         from terminal_support import Terminal
         self.state = Path(self.temp.name) / "goblins"
@@ -136,6 +216,9 @@ class ServerTests(unittest.TestCase):
                    "zsh": root / "share/zsh/site-functions/_goblins"}
         env = {**self.env, "PATH": str(self.app.parent) + ":" + os.environ["PATH"],
                "XDG_RUNTIME_DIR": self.temp.name}
+        # This fixture owns an isolated default server. Exercise that default
+        # outside the host-job guard; its explicit-state rules have a separate test.
+        env.pop("GOBLINS_HOST_JOB", None)
 
         def complete(shell, words):
             source = "source " + shlex.quote(str(scripts[shell])) + "; "

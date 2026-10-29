@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 import unittest
-import uuid
 
 from daemon_support import Daemon, RPC
 from terminal_support import Terminal
@@ -28,13 +27,6 @@ class MailboxTests(unittest.TestCase):
     def cli(self, *args):
         return subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), *args],
                               capture_output=True, text=True, timeout=10)
-
-    def child(self, parent):
-        launch = self.sandbox(parent, "sessions.start", {
-            "key": uuid.uuid4().hex, "name": "shell", "agent_name": "scout", "detached": True,
-        })
-        self.d.wait(lambda: self.d.get(launch["session"])["state"] == "running")
-        return launch["session"]
 
     def test_host_send_reply_and_audited_retry(self):
         session = self.d.start(agent_name="chief")["session"]
@@ -71,23 +63,23 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(len(logs[0].read_text().splitlines()), len(records))
 
     def test_sender_local_file_crosses_private_tmp_by_contents(self):
-        parent = self.d.start(agent_name="chief")["session"]
-        child = self.child(parent)
-        terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", parent])
+        owner = self.d.start(agent_name="chief")["session"]
+        member = self.d.member(owner, agent_name="scout")["session"]
+        terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", owner])
         self.addCleanup(terminal.close)
         with tempfile.NamedTemporaryFile(prefix="goblins-message-", dir="/tmp", delete=False) as host_file:
             host_file.write(b"host-only contents")
             path = Path(host_file.name)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         # The same pathname refers to different files in the two namespaces.
-        terminal.send(f"printf 'sandbox-only contents' > {path}; goblins send scout --file {path} --key local-file; rm {path}; printf 'MAILBOX_SENT\\n'\n")
+        terminal.send(f"printf 'sandbox-only contents' > {path}; goblin send scout --file {path} --key local-file; rm {path}; printf 'MAILBOX_SENT\\n'\n")
         output = terminal.expect(r"(?s)(.*?)\nMAILBOX_SENT\n").group(1).decode(errors="replace")
         self.assertEqual(path.read_text(), "host-only contents")
         path.unlink()
-        claim = self.sandbox(child, "inbox.next", {"key": "fetch"})
+        claim = self.sandbox(member, "inbox.next", {"key": "fetch"})
         self.assertIsNotNone(claim["message"], output)
         self.assertEqual(claim["message"]["body"], "sandbox-only contents")
-        self.assertEqual(claim["message"]["sender"], parent)
+        self.assertEqual(claim["message"]["sender"], owner)
 
     def test_orderly_shutdown_audits_pending_host_and_sandbox_items(self):
         session = self.d.start(agent_name="chief")["session"]
@@ -116,28 +108,28 @@ class MailboxTests(unittest.TestCase):
 
 
     def test_scope_body_validation_and_recipient_exit(self):
-        parent = self.d.start(agent_name="chief")["session"]
-        child = self.child(parent)
+        owner = self.d.start(agent_name="chief")["session"]
+        member = self.d.member(owner, agent_name="scout")["session"]
+        # A goblin outside the raid is as unreachable as one that never existed.
         other = self.d.start(agent_name="other")["session"]
         for target in [other, "absent"]:
             with self.assertRaises(ValueError) as error:
-                self.sandbox(child, "messages.send", {"key": "denied", "to": target, "body": "x"})
+                self.sandbox(member, "messages.send", {"key": "denied", "to": target, "body": "x"})
             self.assertEqual(error.exception.args[0]["code"], -32004)
         with self.assertRaises(ValueError):
-            self.sandbox(child, "messages.send", {"key": "spoof", "to": "parent", "body": "x", "sender": "host"})
+            self.sandbox(member, "messages.send", {"key": "spoof", "to": "chief", "body": "x", "sender": "host"})
         with self.assertRaises(ValueError) as error:
-            self.sandbox(child, "communications.list", {})
+            self.sandbox(member, "communications.list", {})
         self.assertEqual(error.exception.args[0]["code"], -32601)
         # Worst-case JSON escaping must fit the new messaging frame bound.
-        message = self.sandbox(parent, "messages.send", {"key": "large", "to": child, "body": "\0" * 8192})
-        self.assertEqual(self.sandbox(child, "inbox.next", {"key": "large-fetch"})["message"]["body"], "\0" * 8192)
-        self.d.rpc.call("sessions.stop", {"session": child})
+        message = self.sandbox(owner, "messages.send", {"key": "large", "to": member, "body": "\0" * 8192})
+        self.assertEqual(self.sandbox(member, "inbox.next", {"key": "large-fetch"})["message"]["body"], "\0" * 8192)
+        self.d.rpc.call("sessions.stop", {"session": member})
         failed = self.d.wait(lambda: (m if (m := self.d.rpc.call("messages.get", {"message": message["id"]}))["state"] == "failed" else None))
         self.assertEqual(failed["failure"], "recipient stopped")
         invalid = self.cli("send", "chief", "--message", "x" * 8193)
         self.assertNotEqual(invalid.returncode, 0)
-        self.assertEqual(self.sandbox(parent, "inbox.status", {})["queued"], 0)
-
+        self.assertEqual(self.sandbox(owner, "inbox.status", {})["queued"], 0)
 
 if __name__ == "__main__":
     unittest.main()

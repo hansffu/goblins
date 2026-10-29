@@ -20,7 +20,6 @@ use ratatui::{
     widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap},
 };
 use std::{
-    collections::BTreeSet,
     fs::{File, OpenOptions},
     path::PathBuf,
     sync::atomic::Ordering,
@@ -67,11 +66,7 @@ fn has_diff(request: &PermissionRecord) -> bool {
         .is_some_and(|d| !d.is_empty())
 }
 fn session_label(session: &SessionRecord) -> String {
-    safe(if session.path.is_empty() {
-        &session.agent_name
-    } else {
-        &session.path
-    })
+    safe(&session.agent_name)
 }
 fn request_label(snapshot: &Snapshot, request: &PermissionRecord) -> String {
     snapshot
@@ -86,78 +81,9 @@ enum Focus {
     Sandboxes,
     Requests,
 }
-struct TreeRow<'a> {
-    session: &'a SessionRecord,
-    prefix: String,
-    branch: bool,
-}
-fn session_tree<'a>(
-    sessions: &'a [SessionRecord],
-    collapsed: &BTreeSet<String>,
-) -> Vec<TreeRow<'a>> {
-    struct Tree<'a, 'b> {
-        sessions: &'a [SessionRecord],
-        collapsed: &'b BTreeSet<String>,
-        seen: BTreeSet<String>,
-        rows: Vec<TreeRow<'a>>,
-    }
-    impl<'a> Tree<'a, '_> {
-        fn visit(&mut self, session: &'a SessionRecord, prefix: &str, last: bool, visible: bool) {
-            if !self.seen.insert(session.id.clone()) {
-                return;
-            }
-            let children: Vec<_> = self
-                .sessions
-                .iter()
-                .filter(|s| s.parent.as_deref() == Some(&session.id) && !self.seen.contains(&s.id))
-                .collect();
-            if visible {
-                self.rows.push(TreeRow {
-                    session,
-                    prefix: format!("{prefix}{}", if last { "└─ " } else { "├─ " }),
-                    branch: !children.is_empty(),
-                });
-            }
-            let prefix = format!("{prefix}{}", if last { "   " } else { "│  " });
-            for (i, child) in children.iter().enumerate() {
-                self.visit(
-                    child,
-                    &prefix,
-                    i + 1 == children.len(),
-                    visible && !self.collapsed.contains(&session.id),
-                );
-            }
-        }
-    }
-    let mut tree = Tree {
-        sessions,
-        collapsed,
-        seen: BTreeSet::new(),
-        rows: Vec::new(),
-    };
-    let roots: Vec<_> = sessions
-        .iter()
-        .filter(|s| {
-            s.parent
-                .as_ref()
-                .is_none_or(|p| !sessions.iter().any(|a| &a.id == p))
-        })
-        .collect();
-    for (i, root) in roots.iter().enumerate() {
-        tree.visit(root, "", i + 1 == roots.len(), true);
-    }
-    // A malformed or partial snapshot must neither loop nor hide records.
-    for session in sessions {
-        if !tree.seen.contains(&session.id) {
-            tree.visit(session, "", true, true);
-        }
-    }
-    tree.rows
-}
 struct View {
     sessions: TableState,
     selected_session: Option<String>,
-    collapsed: BTreeSet<String>,
     packages: TableState,
     requests: TableState,
     selected_request: Option<String>,
@@ -173,6 +99,10 @@ struct View {
     /// Full-screen source diff of one request: its ID, scroll offset and
     /// whether non-Nix files are shown.
     diff: Option<DiffView>,
+    /// The member a paused raid's prompt would make owner.
+    owner_choice: usize,
+    /// A raid-owner request whose "stop all" waits for a second press.
+    confirm_stop: Option<String>,
 }
 struct DiffView {
     request: String,
@@ -254,6 +184,67 @@ fn nix_file(path: &str) -> bool {
     path.ends_with(".nix")
 }
 /// A dev shell refresh can be approved only once its preview is shown.
+/// Kind of the request asking the host to resolve a paused raid.
+const RAID_OWNER: &str = "raid-owner";
+/// A goblin's packages as listed in its details: startup, granted, and the
+/// names it would be granted on request without asking, unless granted.
+fn package_rows(s: &SessionRecord) -> Vec<(&str, &'static str)> {
+    s.initial_packages
+        .iter()
+        .map(|p| (p.as_str(), "Startup"))
+        .chain(s.packages.iter().map(|p| (p.as_str(), "Granted")))
+        .chain(
+            s.auto_approve
+                .iter()
+                .filter(|p| !s.packages.contains(p))
+                .map(|p| (p.as_str(), "Auto")),
+        )
+        .collect()
+}
+/// What the host must know when the communications log fails.
+fn messaging_warning(snapshot: &Snapshot) -> Option<&'static str> {
+    if snapshot.messaging.audit_failed {
+        Some("Messaging stopped: the communications log cannot be written")
+    } else if snapshot.messaging.raid_audit_failed {
+        Some("Raid messages stopped: raid events could not be logged (log full)")
+    } else {
+        None
+    }
+}
+fn raid_members(v: &serde_json::Value) -> &[serde_json::Value] {
+    v["members"].as_array().map_or(&[], Vec::as_slice)
+}
+/// The members a paused raid can take as owner, the chosen one marked.
+fn raid_owner_summary(v: &serde_json::Value, choice: usize) -> String {
+    let members: Vec<_> = raid_members(v)
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            format!(
+                "{} {} ({}, {}{})",
+                if i == choice { ">" } else { " " },
+                safe(m["agent_name"].as_str().unwrap_or("?")),
+                safe(m["role"].as_str().unwrap_or("no role")),
+                safe(m["state"].as_str().unwrap_or("?")),
+                if m["created"] == true {
+                    ", created"
+                } else {
+                    ""
+                }
+            )
+        })
+        .collect();
+    format!(
+        "Raid {} is paused: its owner {} left.\nMembers:\n{}",
+        safe(v["name"].as_str().unwrap_or("?")),
+        safe(v["former_owner"]["agent_name"].as_str().unwrap_or("?")),
+        if members.is_empty() {
+            "  none".into()
+        } else {
+            members.join("\n")
+        }
+    )
+}
 fn awaiting_preview(p: &PermissionRecord) -> bool {
     p.kind == "devshell" && p.preview.is_none()
 }
@@ -518,7 +509,6 @@ impl View {
         Self {
             sessions: TableState::default().with_selected(0),
             selected_session: None,
-            collapsed: BTreeSet::new(),
             packages: TableState::default().with_selected(0),
             requests: TableState::default(),
             selected_request: None,
@@ -532,16 +522,19 @@ impl View {
             buttons: [Rect::default(); 2],
             pressed: None,
             diff: None,
+            owner_choice: 0,
+            confirm_stop: None,
         }
     }
     fn sync(&mut self, snapshot: &Snapshot) {
-        let tree = session_tree(&snapshot.sessions, &self.collapsed);
+        let sessions = &snapshot.sessions;
         if self.selected_session.is_none() {
-            self.selected_session = tree.first().map(|r| r.session.id.clone());
+            self.selected_session = sessions.first().map(|s| s.id.clone());
         }
         self.sessions.select(
-            tree.iter()
-                .position(|r| Some(&r.session.id) == self.selected_session.as_ref()),
+            sessions
+                .iter()
+                .position(|s| Some(&s.id) == self.selected_session.as_ref()),
         );
         if self.selected_request.is_none() {
             self.selected_request = snapshot
@@ -653,18 +646,21 @@ impl View {
                 .title(title.to_string())
                 .border_style(style)
         };
-        f.render_widget(
-            Paragraph::new(" Goblins · daemon approvals · sessions survive frontend closure"),
-            areas[0],
-        );
+        let header = match messaging_warning(snapshot) {
+            Some(warning) => {
+                Paragraph::new(format!(" Goblins · {warning}")).style(tone("attention"))
+            }
+            None => {
+                Paragraph::new(" Goblins · daemon approvals · sessions survive frontend closure")
+            }
+        };
+        f.render_widget(header, areas[0]);
         let selected = self.selected_session(snapshot);
         if self.details {
             let rows: Vec<Row> = selected
                 .map(|s| {
-                    s.initial_packages
-                        .iter()
-                        .map(|p| (p, "Startup"))
-                        .chain(s.packages.iter().map(|p| (p, "Granted")))
+                    package_rows(s)
+                        .into_iter()
                         .map(|(package, access)| {
                             Row::new(vec![Cell::from(safe(package)), Cell::from(access)])
                         })
@@ -686,25 +682,9 @@ impl View {
                 .row_highlight_style(Style::default().reversed());
             f.render_stateful_widget(table, areas[1], &mut self.packages);
         } else {
-            let tree = session_tree(&snapshot.sessions, &self.collapsed);
-            let rows = tree.iter().map(|r| {
-                let s = r.session;
+            let rows = snapshot.sessions.iter().map(|s| {
                 Row::new(vec![
-                    Cell::from(format!(
-                        "{}{}{} ({})",
-                        r.prefix,
-                        if r.branch {
-                            if self.collapsed.contains(&s.id) {
-                                "[+] "
-                            } else {
-                                "[-] "
-                            }
-                        } else {
-                            ""
-                        },
-                        safe(&s.agent_name),
-                        safe(&s.name)
-                    )),
+                    Cell::from(format!("{} ({})", safe(&s.agent_name), safe(&s.name))),
                     Cell::from(
                         s.identity
                             .as_ref()
@@ -772,6 +752,7 @@ impl View {
             let parts = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
             if let Some(p) = &self.presented {
                 let preview = match &p.preview {
+                    Some(v) if p.kind == RAID_OWNER => raid_owner_summary(v, self.owner_choice),
                     Some(v) if v["description"].is_string() => {
                         v["description"].as_str().unwrap().into()
                     }
@@ -838,7 +819,14 @@ impl View {
                     Constraint::Min(0),
                 ])
                 .split(parts[1]);
-                if p.state == "pending" {
+                if p.state == "pending" && p.kind == RAID_OWNER {
+                    f.render_widget(
+                        Paragraph::new(
+                            "←/→: choose · o: make owner · x: dissolve · k: stop all and dissolve",
+                        ),
+                        parts[1],
+                    );
+                } else if p.state == "pending" {
                     self.buttons = [buttons[0], buttons[1]];
                     for (i, label) in ["[ No ]", "[ Yes ]"].iter().enumerate() {
                         let mut style = Style::default();
@@ -866,7 +854,7 @@ impl View {
             }
         }
         f.render_widget(Paragraph::new(format!(
-            "Tab: focus · ↑/↓: select · ←/→: fold or No/Yes · Enter: details · y/n: decide{} · q: quit\n{}",
+            "Tab: focus · ↑/↓: select · ←/→: No/Yes · Enter: details · y/n: decide{} · q: quit\n{}",
             if self.presented.as_ref().is_some_and(has_diff) { " · d: diff" } else { "" },
             self.notice)), areas[4]);
     }
@@ -875,27 +863,6 @@ impl View {
             .sessions
             .iter()
             .find(|s| Some(&s.id) == self.selected_session.as_ref())
-    }
-    fn fold(&mut self, expand: bool, snapshot: &Snapshot) {
-        if self.details {
-            return;
-        }
-        let Some(session) = self.selected_session(snapshot) else {
-            return;
-        };
-        if expand {
-            self.collapsed.remove(&session.id);
-        } else if snapshot
-            .sessions
-            .iter()
-            .any(|s| s.parent.as_deref() == Some(&session.id))
-            && !self.collapsed.contains(&session.id)
-        {
-            self.collapsed.insert(session.id.clone());
-        } else if let Some(parent) = &session.parent {
-            self.selected_session = Some(parent.clone());
-        }
-        self.sync(snapshot);
     }
     fn move_selection(&mut self, delta: isize, snapshot: &Snapshot) {
         if self.focus == Focus::Requests {
@@ -911,15 +878,18 @@ impl View {
                 self.yes = false;
                 self.popup_open = true;
                 self.request_scroll = 0;
+                // A raid choice or confirmation belongs to the request shown.
+                self.owner_choice = 0;
+                self.confirm_stop = None;
             }
             return;
         }
         let count = if self.details {
             self.selected_session(snapshot)
-                .map(|s| s.initial_packages.len() + s.packages.len())
+                .map(|s| package_rows(s).len())
                 .unwrap_or(0)
         } else {
-            session_tree(&snapshot.sessions, &self.collapsed).len()
+            snapshot.sessions.len()
         };
         let table = if self.details {
             &mut self.packages
@@ -934,9 +904,10 @@ impl View {
                 .min(count.saturating_sub(1)),
         ));
         if !self.details {
-            self.selected_session = session_tree(&snapshot.sessions, &self.collapsed)
+            self.selected_session = snapshot
+                .sessions
                 .get(self.sessions.selected().unwrap_or(0))
-                .map(|r| r.session.id.clone());
+                .map(|s| s.id.clone());
         }
         self.request_scroll = 0;
     }
@@ -951,6 +922,10 @@ impl View {
         else {
             return;
         };
+        if p.kind == RAID_OWNER {
+            self.notice = "A paused raid takes a new owner or dissolves: o, x or k".into();
+            return;
+        }
         if yes && awaiting_preview(p) {
             self.notice =
                 "The refresh is still being evaluated; decide once its preview is shown".into();
@@ -970,6 +945,80 @@ impl View {
         };
         // No second event in the same input batch can submit this interaction.
         self.presented = None;
+    }
+    /// The pending raid-owner request on screen, only while it is still the
+    /// selected one: keys queued behind a navigation never act on it.
+    fn raid_prompt(&self) -> Option<PermissionRecord> {
+        self.presented.clone().filter(|p| {
+            p.kind == RAID_OWNER
+                && p.state == "pending"
+                && Some(&p.id) == self.selected_request.as_ref()
+        })
+    }
+    fn raid_input(&mut self, key: KeyCode, p: &PermissionRecord, client: &mut Client) -> bool {
+        let Some(action) = self.raid_action(key, p) else {
+            return false;
+        };
+        if let Some((method, params, done)) = action {
+            self.notice = match client.call(method, params) {
+                Ok(_) => done,
+                Err(e) => safe(&e.to_string()),
+            };
+            self.owner_choice = 0;
+            self.presented = None;
+        }
+        true
+    }
+    /// What a key does to a paused raid's prompt: None when it is not one
+    /// of its keys, Some(None) when it only changes the view. A call names
+    /// the raid ID and generation the prompt showed, so a changed raid is
+    /// refused.
+    #[allow(clippy::type_complexity)]
+    fn raid_action(
+        &mut self,
+        key: KeyCode,
+        p: &PermissionRecord,
+    ) -> Option<Option<(&'static str, serde_json::Value, String)>> {
+        let preview = p.preview.as_ref()?;
+        let members = raid_members(preview);
+        let mut params = serde_json::json!({"raid":p.package,"id":preview["raid"],
+            "generation":preview["generation"]});
+        let (method, done) = match key {
+            KeyCode::Left | KeyCode::Right if !members.is_empty() => {
+                let n = members.len();
+                self.owner_choice = if key == KeyCode::Left {
+                    (self.owner_choice + n - 1) % n
+                } else {
+                    (self.owner_choice + 1) % n
+                };
+                return Some(None);
+            }
+            KeyCode::Char('o') => {
+                let member = members.get(self.owner_choice)?;
+                params["session"] = member["id"].clone();
+                let name = member["agent_name"].as_str().unwrap_or("?");
+                (
+                    "raids.set_owner",
+                    format!("{} is the new owner", safe(name)),
+                )
+            }
+            KeyCode::Char('x') => (
+                "raids.destroy",
+                "Dissolved; its goblins keep running".into(),
+            ),
+            KeyCode::Char('k') if self.confirm_stop.as_ref() != Some(&p.id) => {
+                self.confirm_stop = Some(p.id.clone());
+                self.notice = "Press k again to stop every member and dissolve the raid".into();
+                return Some(None);
+            }
+            KeyCode::Char('k') => {
+                params["stop_members"] = serde_json::json!(true);
+                ("raids.destroy", "Stopped every member and dissolved".into())
+            }
+            _ => return None,
+        };
+        self.confirm_stop = None;
+        Some(Some((method, params, done)))
     }
     fn diff_input(&mut self, key: KeyCode, client: &mut Client) {
         let Some(view) = &mut self.diff else {
@@ -1008,6 +1057,14 @@ impl View {
             self.diff_input(key.code, client);
             return true;
         }
+        if let Event::Key(key) = &input
+            && key.kind == KeyEventKind::Press
+            && self.focus == Focus::Requests
+            && let Some(p) = self.raid_prompt()
+            && self.raid_input(key.code, &p, client)
+        {
+            return true;
+        }
         match input {
             Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1026,8 +1083,6 @@ impl View {
                 KeyCode::Down => self.move_selection(1, snapshot),
                 KeyCode::Left if self.focus == Focus::Requests => self.yes = false,
                 KeyCode::Right if self.focus == Focus::Requests => self.yes = true,
-                KeyCode::Left => self.fold(false, snapshot),
-                KeyCode::Right => self.fold(true, snapshot),
                 KeyCode::Enter if self.focus == Focus::Requests => {
                     if self.popup_open {
                         self.decide(client, self.yes);
@@ -1133,9 +1188,9 @@ pub fn serve(state: PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn session(id: &str, parent: Option<&str>) -> SessionRecord {
+    fn session(id: &str) -> SessionRecord {
         serde_json::from_value(serde_json::json!({
-            "id":id,"agent_name":id,"parent":parent,"name":"shell","configuration":"",
+            "id":id,"agent_name":id,"name":"shell","configuration":"",
             "state":"running","initial_packages":[],"packages":[],"terminal":"",
             "pty_eof":false,"terminal_complete":false,"terminal_interrupted":false
         }))
@@ -1226,66 +1281,146 @@ mod tests {
         }
     }
     #[test]
-    fn ownership_tree_preserves_identity_through_insertions_and_folding() {
+    fn raid_prompt_keys_act_only_on_the_selected_request() {
+        let prompt = |id: &str| PermissionRecord {
+            kind: RAID_OWNER.into(),
+            id: id.into(),
+            session: "owner".into(),
+            agent_name: "owner".into(),
+            approval: format!("{id}-a"),
+            package: id.into(),
+            reason: String::new(),
+            state: "pending".into(),
+            approved: None,
+            preview: Some(
+                serde_json::json!({"raid":format!("{id}-raid"),"name":id,"generation":1,
+                "members":[{"id":"m1","agent_name":"kid"},{"id":"m2","agent_name":"other"}]}),
+            ),
+            message: None,
+        };
+        let snapshot = Snapshot {
+            instance: "test".into(),
+            permissions: vec![prompt("alpha"), prompt("beta")],
+            raids: vec![],
+            sessions: vec![],
+            messaging: Default::default(),
+        };
+        let mut view = View::new();
+        view.focus = Focus::Requests;
+        view.selected_request = Some("alpha".into());
+        view.presented = Some(prompt("alpha"));
+        assert_eq!(view.raid_prompt().unwrap().id, "alpha");
+        // k once only asks to confirm; Right chooses the next member.
+        assert_eq!(
+            view.raid_action(KeyCode::Char('k'), &prompt("alpha")),
+            Some(None)
+        );
+        assert_eq!(
+            view.raid_action(KeyCode::Right, &prompt("alpha")),
+            Some(None)
+        );
+        // Navigating forgets both, and keys queued behind it find no prompt.
+        view.requests.select(Some(0));
+        view.move_selection(1, &snapshot);
+        assert_eq!(view.selected_request.as_deref(), Some("beta"));
+        assert!(view.raid_prompt().is_none());
+        assert_eq!((view.owner_choice, &view.confirm_stop), (0, &None));
+        // On the prompt actually shown, the calls name its raid as shown.
+        view.presented = Some(prompt("beta"));
+        let call = view
+            .raid_action(KeyCode::Char('o'), &prompt("beta"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (call.0, call.1),
+            (
+                "raids.set_owner",
+                serde_json::json!({"raid":"beta","id":"beta-raid","generation":1,"session":"m1"})
+            )
+        );
+        assert_eq!(
+            view.raid_action(KeyCode::Char('k'), &prompt("beta")),
+            Some(None)
+        );
+        let call = view
+            .raid_action(KeyCode::Char('k'), &prompt("beta"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(call.1["stop_members"], true);
+        assert_eq!(view.raid_action(KeyCode::Char('y'), &prompt("beta")), None);
+    }
+    #[test]
+    fn a_paused_raid_prompt_marks_the_chosen_member() {
+        let preview = serde_json::json!({"name":"crew","former_owner":{"agent_name":"chief"},
+            "members":[{"agent_name":"kid","role":null,"state":"running","created":true},
+                {"agent_name":"other\u{1b}[2J","role":"reviewer","state":"running","created":false}]});
+        assert_eq!(
+            raid_owner_summary(&preview, 1),
+            "Raid crew is paused: its owner chief left.\nMembers:\n  kid (no role, running, created)\n> other\\u001b[2J (reviewer, running)"
+        );
+    }
+    #[test]
+    fn details_list_auto_approved_packages_not_yet_granted() {
+        let mut s = session("member");
+        s.initial_packages = vec!["coreutils-9.11".into()];
+        s.packages = vec!["hello".into()];
+        s.auto_approve = vec!["hello".into(), "cowsay".into()];
+        assert_eq!(
+            package_rows(&s),
+            [
+                ("coreutils-9.11", "Startup"),
+                ("hello", "Granted"),
+                ("cowsay", "Auto")
+            ]
+        );
         let mut snapshot = Snapshot {
             instance: "test".into(),
             permissions: vec![],
             raids: vec![],
-            sessions: vec![
-                session("leaf", Some("kid")),
-                session("parent", None),
-                session("other", None),
-                session("kid", Some("parent")),
-                session("other-kid", Some("other")),
-            ],
+            sessions: vec![s],
+            messaging: Default::default(),
+        };
+        // Navigation counts the auto-only row too.
+        let mut view = View::new();
+        view.sync(&snapshot);
+        view.details = true;
+        view.move_selection(5, &snapshot);
+        assert_eq!(view.packages.selected(), Some(2));
+        assert_eq!(messaging_warning(&snapshot), None);
+        snapshot.messaging.raid_audit_failed = true;
+        assert!(
+            messaging_warning(&snapshot)
+                .unwrap()
+                .starts_with("Raid messages stopped")
+        );
+        snapshot.messaging.audit_failed = true;
+        assert!(
+            messaging_warning(&snapshot)
+                .unwrap()
+                .starts_with("Messaging stopped")
+        );
+    }
+    #[test]
+    fn selection_keeps_its_identity_through_insertions_and_removals() {
+        let mut snapshot = Snapshot {
+            instance: "test".into(),
+            permissions: vec![],
+            raids: vec![],
+            sessions: vec![session("alpha"), session("beta"), session("gamma")],
+            messaging: Default::default(),
         };
         let mut view = View::new();
         view.sync(&snapshot);
-        let tree = session_tree(&snapshot.sessions, &view.collapsed);
-        assert_eq!(
-            tree.iter()
-                .map(|r| (r.session.id.as_str(), r.prefix.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("parent", "├─ "),
-                ("kid", "│  └─ "),
-                ("leaf", "│     └─ "),
-                ("other", "└─ "),
-                ("other-kid", "   └─ ")
-            ]
-        );
+        assert_eq!(view.selected_session(&snapshot).unwrap().id, "alpha");
         view.move_selection(1, &snapshot);
-        assert_eq!(view.selected_session(&snapshot).unwrap().id, "kid");
-        view.fold(false, &snapshot);
-        assert_eq!(session_tree(&snapshot.sessions, &view.collapsed).len(), 4);
-        view.fold(true, &snapshot);
-        assert_eq!(session_tree(&snapshot.sessions, &view.collapsed).len(), 5);
-        view.move_selection(2, &snapshot);
-        assert_eq!(view.selected_session(&snapshot).unwrap().id, "other");
-        snapshot.sessions.insert(0, session("new", Some("parent")));
+        assert_eq!(view.selected_session(&snapshot).unwrap().id, "beta");
+        snapshot.sessions.insert(0, session("new"));
         view.sync(&snapshot);
-        assert_eq!(view.selected_session(&snapshot).unwrap().id, "other");
-        assert_eq!(view.sessions.selected(), Some(4));
-        snapshot.sessions.retain(|s| s.id != "other");
+        assert_eq!(view.selected_session(&snapshot).unwrap().id, "beta");
+        assert_eq!(view.sessions.selected(), Some(2));
+        snapshot.sessions.retain(|s| s.id != "beta");
         view.sync(&snapshot);
         assert!(view.selected_session(&snapshot).is_none());
         assert_eq!(view.sessions.selected(), None);
-    }
-    #[test]
-    fn incomplete_and_cyclic_trees_do_not_hide_sessions_or_loop() {
-        let sessions = vec![
-            session("orphan", Some("missing")),
-            session("a", Some("b")),
-            session("b", Some("a")),
-        ];
-        let tree = session_tree(&sessions, &BTreeSet::new());
-        assert_eq!(tree.len(), 3);
-        assert_eq!(
-            tree.iter()
-                .map(|r| &r.session.id)
-                .collect::<BTreeSet<_>>()
-                .len(),
-            3
-        );
     }
 }

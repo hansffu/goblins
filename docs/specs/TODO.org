@@ -36,13 +36,8 @@ Where the code lives:
 
 Development notes:
 
-- The project dev shell builds Goblins itself, so =nix develop= fails while
-  the tree does not compile. Keep a profile of the last good commit:
-  =nix develop "git+file://$PWD?rev=$(git rev-parse HEAD)" --profile /tmp/devprof=
-  and use =nix develop /tmp/devprof -c cargo …=.
-- Python tests build the app from =path:.= automatically; run them from
-  =tests/= (for example =python3 -m unittest test_devshell -v=). TUI and
-  Emacs tests need =pyte=, which the dev shell provides.
+- Enter the Git-backed =nix develop= once; its tools do not depend on Goblins compiling. Keep it open while editing.
+- =just test-feature devshell= runs the incremental Cargo controller against Nix-built fixtures. Direct unittest runs use packaged controllers. TUI and Emacs tests need =pyte=, which the dev shell provides. Avoid =path:.=, which copies ignored build artifacts into the store.
 - Test Emacs rendering with =emacs -nw= or =--batch= only. The host Emacs is
   pgtk and opens windows on the user's session even under Xvfb.
 - Host polling in tests: a host RPC connection allows 4096 calls; poll slowly
@@ -50,6 +45,13 @@ Development notes:
 - Nix silently fetches and uses inputs missing from =flake.lock= even with
   =--no-update-lock-file=; any new flake command must keep the completeness
   check in =snapshot= (=metadata.locks= must equal the file).
+
+* DONE Feature-based test tasks for targeted agent validation
+CLOSED: [2026-10-19 Mon]
+
+Implemented in =tests/tasks.py= and =tests/features.toml= without moving test files. =just test-feature FEATURE...= runs a deduplicated union with matching language checks and preserved fixtures/exclusivity. =test-plan= recommends tasks from paths or branch/worktree changes; unknown/shared paths recommend full validation. =test-feature-check= checks complete discovery coverage.
+
+=AGENTS.md= and the =CLAUDE.md= import share the selection policy. Relevant checks are sufficient to present work for review with the full gate pending; =just test-merge= must pass on the final candidate before merging. See [[file:../README.org::*Test][the developer workflow]] and [[file:../RESULTS.org][validation results]].
 
 * TODO Intermittently blank Codex terminal after launch or attachment
 
@@ -319,7 +321,7 @@ use it, and dev shell refresh does not support it.
   snapshot branch in =Session::new_in= and its overlap check.
 - Decide what remains of =SharedWorkspace= and the =/workspace= bind: with
   an explicit =cwd= it is only a scratch alias (see =enable_docker=). Keep
-  the ownership semantics that children share their parent's workspace.
+  the semantics that goblins a raid owner runs share its workspace.
 - Remove the refresh error "not supported with a daemon --workspace
   snapshot" in =Session::prepare_refresh=, and the deferral in ADR 0007.
 - Remove =test_cli_retains_explicit_daemon_snapshot= (=tests/test_workspace.py=)
@@ -328,7 +330,10 @@ use it, and dev shell refresh does not support it.
   (PLAN, DESIGN) and README wherever snapshots are described. Consider a
   short ADR for the removal.
 
-* TODO Recreate children with their root
+* DONE Recreate children with their root
+CLOSED: [2026-10-18 Sun 21:57]
+
+Obsolete: there are no children since [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]. Goblins a raid owner runs get their own records and can be resumed like any goblin; what remains is the raid membership item below.
 
 =goblins resume= starts only the recorded root goblin ([[file:../adr/0010-recreate-not-restore.md][ADR 0010]], [[file:SESSION-RECREATE.org][SESSION-RECREATE.org]]). Children are neither recorded nor recreated, so a coordinator comes back without the reviewers it had launched. Recording a child would need its parent's record id, its configuration name and its own package lists and variables; recreating it would need the parent's branch snapshot, which the recreated root takes from the current manifest. Decide whether children come back automatically, on request, or stay a manual =goblins run --parent=.
 
@@ -339,3 +344,42 @@ Raids end with the daemon and are not recorded. A recreated goblin is in no raid
 * TODO Emacs history view
 
 =M-x goblins-resume= chooses a record by completion (=goblins-record= category, with Marginalia and Embark) and resumes it, and the info view shows a resumed goblin's record and skipped packages. Still CLI only: a view listing the records (=history.list= on the host socket), for example as the Embark export of =goblins-record= candidates, more Embark actions on a record (copy its id, show it), and pruning.
+
+* TODO Opt-in notice when a detached host command starts
+
+A detached =goblin host run= is silent until it finishes, so its agent cannot tell "waiting for approval" from "approved and running" without polling =goblin host status= ([[file:../adr/0012-host-commands.md][ADR 0012]]). Add an opt-in flag, for example =goblin host run --detach --notify-start=, that also queues an operation notice when the host approves and the job starts, so the agent can follow its log or move on. Opt-in because every notice wakes the agent: for short jobs it would be a second turn right after the first. The request would carry the flag in =HostCommand=; =decide_host= in =crates/controller/src/controller/host.rs= would queue the extra notice on approval, and the =goblins-host= skill would say when to use it.
+
+* TODO Cancel host commands from the host side
+
+The daemon accepts =host.cancel= from host connections, but there is no =goblins= command, TUI action or Emacs action for it. Today the human can only deny a pending request; a running job is stopped by its goblin (=goblin host cancel=) or by stopping the goblin. Add a host CLI command and a frontend action for running jobs.
+
+* TODO Remove the hidden goblins alias inside sandboxes
+
+The in-sandbox CLI is =goblin=; =/run/goblins/bin/goblins= stays as a hidden link for conversations recorded before the rename ([[file:NIX-AND-HOST-COMMANDS.org][NIX-AND-HOST-COMMANDS.org]], section 2.3). Remove it, and the test in =tests/test_connected.py= that uses it, once recreated goblins no longer resume such conversations.
+
+* TODO Git identity for goblins
+
+A goblin's home is private and empty, so =git commit= fails without an identity. Each configuration has to bind a git config (=roFiles=) or set =GIT_AUTHOR_*= and =GIT_COMMITTER_*= in =env=. Consider documenting this next to the =goblins-dev= setup, or an option that passes the host's identity in.
+
+* DONE Ship the Codex adapter only with Codex goblins
+CLOSED: [2026-10-28 Wed 14:32]
+
+All Codex code should be what =mkCodexGoblin= passes to =mkGoblin=. The =goblins-codex= adapter is the exception: =nix/packages/internal-goblins.nix= links it into the shared helper bundle that =mkGoblin= adds to every goblin's =allowedPackages= and mounts at =/run/goblins/bin=, so Claude and shell goblins carry it too.
+
+Build it in the Codex Nix code instead (=import ../packages/rust.nix { package = "goblins-codex"; }=) and add it to the launcher's =symlinkJoin=, which =mkCodexGoblin= already puts in =allowedPackages=, so =goblins-codex bind=, =status= and =pause= stay on =PATH=. Have =nix/goblins/codex/launcher.nix= call it by store path (=${adapter}/bin/goblins-codex=) instead of =/run/goblins/bin/goblins-codex= (=profile-args= and =run=), and remove the link from =internal-goblins.nix=. The native smoke tests run the Cargo-built adapter directly (=GOBLINS_CODEX_ADAPTER=, =tests/test_codex_native.py=) and need no change. Update the commands that name =/run/goblins/bin/goblins-codex= to plain =goblins-codex=: in =docs/USAGE.org= (Codex delivery controls), =docs/specs/AGENT-INTEGRATION.org=, and the integration tests that run it inside goblins (=tests/test_codex_config.py=, =tests/test_operation_notices.py=).
+
+* DONE Move the Claude driver into mkClaudeGoblin
+CLOSED: [2026-10-28 Wed 21:42]
+
+All Claude code should be what =mkClaudeGoblin= passes to =mkGoblin=, as Codex now is. Its Nix side already is (launcher, hooks, plugin, monitor, mod, skills under =nix/goblins/claude=), but the daemon and the in-sandbox =goblin= CLI that every goblin carries hold a Claude driver:
+
+- =crates/controller/src/integration.rs= knows Claude's hook vocabulary: =integration.check= gives =SessionStart=, =UserPromptSubmit= and =Stop= their wakeup meaning, including the =Stop= continuation, and =hook_activity= maps =PreToolUse= (=AskUserQuestion=, =ExitPlanMode=), =PermissionRequest=, =Elicitation=, =idle_prompt= and the rest to activity. The wakeup bookkeeping (attempts, retries, claim tracking) lives there too.
+- Claude-only branches: notification delivery requires the =claude= driver (=integration.rs=, =integration.tick=), =claude_activity= in =controller.rs=, and the driver names =codex= and =claude= in =integration.rs=, =controller.rs= (the integration method gate) and =nix/internal/validate.nix=.
+- =goblin integration register|hook|status|watch= (=crates/client/src/cli.rs=, =main.rs=) follow Claude's hook payloads (=--tool=, =--notification=) and print the prompt lines its plugin monitor turns into turns.
+
+Follow the Codex pattern ([[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]): a translator inside =mkClaudeGoblin= turns hook events into the generic =sessions.set-state= and =inbox.status= calls and keeps its own wakeup ledger, as =goblins-codex= does with its =ledger.json=, and the hooks and monitor talk to it instead of the daemon. The daemon then loses the hook vocabulary and the Claude-only branches; with Codex no longer using =integration.*= either (it never registers), the =integration.*= methods, the =goblin integration= commands and the driver name list can go, leaving =integration= in =mkGoblin= at most as "this goblin is an agent" (it gates =bypassPermissions=, =permission_bypass= and approval notifications). Decide whether that warrants an ADR; it changes the API in =docs/API.org=. Dropping =codex= from the daemon's driver names is a small first step on its own.
+
+* DONE Remove the unused terminal delivery path
+CLOSED: [2026-10-28 Wed 21:42]
+
+The daemon can wake an agent by pasting the inbox prompt into its terminal: =integration.tick= with =delivery= =terminal= (the default) returns a revision, and =Terminal::notify= (=crates/controller/src/terminal.rs=, called from =controller.rs=) pastes the prompt once =integration_view= judges the composer empty by reading Claude's screen (the =›=/=❯= prompt cells, "esc to interrupt"). Nothing Goblins ships uses it: Claude's monitor runs =goblin integration watch --delivery notification= (=nix/goblins/claude/monitor.sh=) and Codex never ticks. Remove the terminal mode of =integration.tick= and =goblin integration watch=, =Terminal::notify= and the composer readiness check; keep the input tracking (=input=, =interrupted=, =input_pending=) the =Stop= hook logic uses. Update =docs/API.org= and =AGENT-INTEGRATION.org=. This goes away anyway with the Claude driver move above, so do it first only if that move is far off.

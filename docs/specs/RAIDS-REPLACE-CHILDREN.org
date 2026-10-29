@@ -1,0 +1,167 @@
+#+title: Plan: raids replace children
+#+date: 2026-10-18
+
+Status: approved by review and by the user on 2026-10-18 and implemented on branch =replace-children-with-raid=; the decision is [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]] and the contract is in DAEMON.org ("Raids replace the ownership tree"). Where the implementation differs from the plan below: =raid.dissolved= reasons are =destroyed= and =empty= (no =resolved=); a conversation merge adds another record's auto-approved names unless the merged record denied them, as it already does for approved names; =session.exited= carries the stop reason, which attributes an owner's stop in the log; the raids page and TUI resolve a paused raid with the raid ID and generation; =goblin run= always starts detached. It supersedes the parent/child parts of [[file:CHILDREN-AND-RAIDS.org][CHILDREN-AND-RAIDS.org]] and [[file:CHILDREN-AND-RAIDS-TECHNICAL.org][CHILDREN-AND-RAIDS-TECHNICAL.org]] and the "ownership never moves" rule of [[file:../adr/0008-raids.md][ADR 0008]].
+
+Labels: *[E]* existing behaviour, *[P]* proposed change, *[D]* decision taken with the user on 2026-10-18, *[R]* settled in review.
+
+* 1. Goal
+
+Remove the parent/child ownership tree. Every goblin is a root. A goblin that owns a raid can run new goblins (=goblin run CONFIG=); each new goblin joins the owner's raid as a /created member/. The owner can stop the members created in its raid. Created members inherit what children inherit today (scope, workspace, working directory, dev shell generation, Docker attachment, package approvals as a new auto-approve state), and the =allowedChildren= restriction stays, renamed =allowedRunTargets=. Once created, a member is not a child: its owner exiting does not stop it, it is not part of anyone's subtree, and it communicates only through the raid (and with the host).
+
+* 2. Decisions
+
+From the clarification round:
+- *[D]* Remove children entirely: no =--parent=, =--kill-children=, =--inherit-raid=, tree paths, subtree stop, parent/descendant messaging or the =parent= message alias. The agent name is the address.
+- *[D]* When the owner exits, is stopped, fails, leaves or is kicked, the raid is /paused/ (not dissolved) while it has live members. Members keep working independently. Raid-routed sends and replies between members are rejected with a warning while paused; a sender that got the warning is notified when the raid resumes. The host is prompted to pick a new owner (any live member), dissolve the raid, or stop all members.
+- *[D]* The owner can stop only created members (members that joined by =goblin run= from an owner of this raid), never host-invited ones. A newly selected owner can stop members created by any former owner.
+- *[D]* A created member's configuration is resolved from the current installed manifest, not from the owner's launch-time snapshot. The run-target check uses the owner's =allowedRunTargets=.
+- *[D]* New package approval state *auto-approve*: alongside approved and denied (and "not requested"), a goblin has an auto-approve set. A package in it is granted on request without asking the host. A created member's auto-approve set is the owner's approved packages plus the owner's auto-approve set, copied when the member is created.
+- *[D]* =allowedChildren= is renamed =allowedRunTargets=; =goblin run CONFIG= stays the entry point.
+
+From review round 1:
+- *[R]* "Current manifest" is the daemon's last accepted, validated host manifest (3.2), not the owner's launch manifest.
+- *[R]* A created member that is not the owner cannot =raid leave=. An owner can leave even if it was created (that pauses the raid). A host kick or dissolution ends the created relationship; a later host re-invite is an ordinary invited membership.
+- *[R]* No sandbox terminal attach/resize on other goblins. The owner gets run, stop, list and get only. Today's parent attach would need per-attachment revocation whenever ownership or membership changes; the user asked for create and stop, and the host can attach to any goblin. Sandbox =goblin attach= and =sessions.attach/resize= for other sessions are removed.
+- *[R]* Control rights follow the controller's raid state; message routing follows logged membership (3.6).
+
+* 3. Design
+
+** 3.1 Configuration
+
+- *[P]* =mkGoblin= option =allowedRunTargets ? [ ]= (list of configuration names), exported as =allowed_run_targets=. Same validation, bounds (64 names, 64 characters) and undeclared-name errors as today, with the new name in every message: "allowedRunTargets must be a list of unique goblin names", "mkGoblins: 'X' allowedRunTargets references undeclared goblin 'Y'".
+- *[P]* =config.rs=: =Configuration.allowed_run_targets: Vec<String>= (=#[serde(default)]=, so a manifest without it permits nothing). =allowed_children= is removed, not aliased: the manifest is read by the daemon of the same build, and an older server must be restarted from the new build anyway (=deny_unknown_fields=). No =api=/=helper_api= bump, as in the earlier decision.
+- *[P]* Delete =branch.rs=, =Manifest::branch=, =Manifest::children=, the per-branch GC roots and =Inheritance.branch=. The session keeps its own =allowed_run_targets= (from its configuration at launch). Keep =Manifest::select_inherited= and =resolve= (messages reworded: "'X' requires scope 'S'; its owner has no scope", "'X' does not allow scope 'S'").
+- *[P]* Demo goblins, =flake.nix= test goblins and =tests/checks.nix= switch to the new name.
+
+** 3.2 The current manifest and launch leases
+
+*[E]* The daemon never knows the installed manifest: each host =sessions.start= / resume carries an absolute =configuration= path from the CLI's =--runtime= (the Nix wrapper passes it), and =server start= drops =--runtime=.
+
+*[P]* =Controller.current_manifest: Option<Arc<ManifestLease>>=. A =ManifestLease= is a manifest path plus an indirect GC root under =<state>/manifests/= whose =Drop= removes the root link (a file removal, cheap enough anywhere).
+- Candidates: =--runtime= at server start (passed through =server start= and the background re-exec), and the =configuration= of every host =sessions.start= / resume.
+- Validation: a new =Manifest::validate(path) -> Result<Manifest>= runs =read=, =check= (API/helper versions, scope catalog, run-target bounds) and =editor()= validation. It is the single entry point for host launches, the member path and server start; =select_inherited= keeps running after it for the selected target.
+- Validation and rooting happen off the event loop: a host launch's worker runs =Manifest::validate= first (replacing the separate =read=/=editor()= calls at =worker.rs:170-172=); on success it creates the root and reports =Completed::Manifest { sequence, lease }= before doing anything else. A manifest that fails validation is never published. A manifest that validates is published even if the launch fails later (bad scope for that goblin, a failing bind, sandbox startup): the manifest itself is valid, and the failure belongs to that launch.
+- Ordering: every accepted host =sessions.start= / resume gets a monotonic =manifest_sequence= in the event loop at acceptance, carried by its worker source and returned in =Completed::Manifest=. The controller replaces =current_manifest= only when the reported sequence is greater than the sequence of the currently published lease, so a slower, older candidate never supersedes a newer one that already published, while an older one can still publish while a newer one is unresolved or invalid. Identical launch-key retries are not new acceptances and get no new sequence. Server start validates and roots =--runtime= before the loop begins as sequence 0; a failure leaves =current_manifest= empty and is logged.
+- A newer candidate replaces the =Arc=; the old root goes away only when the last holder drops it.
+- An accepted member launch clones the =Arc= into its worker source, so the manifest it was accepted against stays rooted until the worker has read it and rooted what it mounts (=Session::start=), regardless of later host launches.
+- =goblins server status= shows the current manifest. Without one, =goblin run= fails with "no configuration is known yet; start the server with the installed goblins or run a goblin from the host" (-32009). Documented limitation: "current" means what the host last used; a rebuild reaches created members after the next host launch or a server restart.
+
+** 3.3 Running a created member
+
+=goblin run CONFIG [--name NAME] [--detached]= inside a goblin sends sandbox =sessions.start {key, name, agent_name?, detached}= (=parent= and =inherit_raid= are removed).
+
+Checks, in the event loop, before name allocation (-32602 unless noted):
+1. The caller is the owner of an unpaused raid: "only a raid owner can run goblins; create one with goblin raid create NAME" (-32009).
+2. =CONFIG= is in the caller's own =allowed_run_targets=: "configuration 'Y' permits no run targets", "configuration 'X' is not an allowed run target of 'Y'; allowed: a, b".
+3. =current_manifest= is set (-32009, message above).
+4. The caller is running with a live worker and an =inheritance= (as for children today), and its scope can be upgraded to a strong =Arc<scope::Shared>= now; otherwise conflict.
+5. The approval bounds of 3.5 hold.
+6. Raid member capacity and the raid event budget, as for launch joins today.
+
+The launch is a root launch (no =parent=) with a new worker source =Source::Member { owner: Inheritance, scope: Option<Arc<scope::Shared>>, manifest: Arc<ManifestLease>, name: String, auto: AutoApprove }=. The owner's =Inheritance= holds its =SessionDirectory= (=_owner=), so the owner's roots, including its granted package outputs, stay on disk until the member's worker drops the source after start. The strong scope reference means an owner stopping between acceptance and the worker's start cannot take the scope away.
+
+On the worker, =Manifest::read(lease.path)= and =select_inherited(name, owner's scope)= resolve the target; failure fails only this launch ("configuration 'X' cannot be launched here: …"). The session is built like =child_configuration= today:
+
+| Field | Source |
+|-------+--------|
+| executable, args, env, packages, =/etc=, integration, network policy, =allowed_run_targets= | target configuration in the current manifest |
+| editor | the current manifest's =editor()= (manifest-level, installed like =worker.rs:171-175=) |
+| =cwd=, =protected_paths= | owner's launch; working directory is the owner's pinned fd (=Plan::share_working_directory=) |
+| dev shell | owner's current generation |
+| scope | the strong reference above; =scope::Shared::compatible= still runs, so a changed scope definition or network policy in the newer manifest fails the launch rather than creating a different scope |
+| workspace | owner's =SharedWorkspace= |
+| Docker | attached at start if the owner is attached or the target sets =docker.enable= |
+| auto-approve | 3.5 |
+
+=Session::child= and =child_configuration= become one =Session::member= constructor; =Source::Child= goes away. The member joins the raid in the same event-loop step that inserts it, with =Member.created_by = Some(owner)=; it is a member while =starting=. Launch keys and retries behave as today; the lease is taken after the retry comparison, so a rebuild between identical retries is not a conflict. The sandbox result is ={session, agent_name, state}= (the relative-path stripping that would fail for a root is removed).
+
+A created member records its creator as =SessionRecord.created_by= ={id, agent_name}= (display only; authority comes from raid membership) and gets a history record like any root, so =goblins resume= recreates it as a plain root without a raid (existing TODO "Recreate raid membership").
+
+** 3.4 Owner control over created members
+
+- *[P]* Sandbox =sessions.list=, =sessions.get= and =sessions.stop= accept only created members of the caller's raid while the caller is its unpaused owner, resolved by ID or unique live agent name; anything else is -32004. =goblin list= shows them; =goblin raid members= is the full raid listing.
+- *[P]* Stop reason: "stopped by raid owner NAME (ID)". Stopping a member stops only that member.
+- *[P]* =raids.leave= by a created non-owner member fails with -32009 "goblins created in a raid stay until stopped, kicked by the host or the raid dissolves". The owner may leave (pauses the raid).
+- *[P]* Authority is evaluated on every call from current controller state, so losing ownership (pause, transfer) or the member losing its created membership (kick, dissolution, leave) revokes it immediately. No long-lived capability is handed out (no sandbox attach, 2).
+
+** 3.5 Auto-approve
+
+- *[P]* =Active.auto_approve: BTreeMap<String, PathBuf>= (name to exact store output) and =Active.auto_approve_dev_shells: BTreeSet<String>= (dev-shell identities). For a created member: owner's =granted_outputs= ∪ owner's =auto_approve=, and owner's current =dev_identity= ∪ owner's =auto_approve_dev_shells=, taken in the event loop when the launch is accepted. Host-launched goblins start empty.
+- *[P]* Retention: the member's worker roots every copied output in its own =roots/= (=Session::root=, one =nix-store --add-root= per output, at start, before the source and with it the owner's directory are dropped). Each member therefore keeps its own roots across any number of ownership transfers; an output that cannot be rooted is removed from the set and reported in the session log and as =skipped= (=auto_approve: NAME — REASON=). A copied output is never re-resolved.
+- *[P]* Fast paths, all decided automatically with actor =goblins=:
+  - package: the requester's own =granted_outputs= (repeat request), its =auto_approve= (stored output), or today's =initial_output= shortcut;
+  - dev-shell refresh: the requester's own current =dev_identity= (unchanged refresh) or an identity in =auto_approve_dev_shells=.
+  This replaces =inherits_package= and =inherits_dev_shell= at =controller.rs:1764=, =1850=, =2311= and =1843-1848=. Because the set is copied at creation, a grant given to the owner afterwards does not reach existing members (accepted with the decision).
+- *[P]* A granted package stays in =auto_approve= at runtime (it is harmless and keeps the precedence simple); =granted_outputs= is checked first.
+- *[P]* Bounds, with no silent truncation: =auto_approve= at most 256 names and =auto_approve_dev_shells= at most 32 identities. A member launch whose copied sets would exceed either is refused (-32010 "the owner's approvals exceed the auto-approve limit of 256 packages" / "… 32 dev shells"). A resume whose record exceeds them is refused the same way. Snapshot cost: names only (no outputs) in =SessionRecord.auto_approve: Vec<String>=, at most 16 live × 256 names, well inside the 900 KiB cap; the existing eviction-by-size path covers stopped records.
+- *[P]* Reporting: =SessionRecord.auto_approve= in the host snapshot and the sandbox record; TUI package table and Emacs info page show "auto" next to startup/granted.
+- *[P]* History (=history.rs=):
+  - =VERSION= becomes 2; =Packages= gains =auto_approve: Vec<String>= (=#[serde(default)]=, bounded at 256 like the other lists). A v1 record is read as v2 with an empty =auto_approve= and written back as v2 (=line_record= and every clone set =version = VERSION=). Unsupported versions are rejected. An older daemon fails to deserialize a v2 record (unknown field) before its version check (=history.rs:701-724=); that is still a safe refusal.
+  - The three lists are disjoint. Explicit transitions record final outcomes and always win, whatever list the name was in: =approve(name)= moves it to =approved=; =deny(name)= moves it to =denied=, removing it from =approved= (as =history.rs:221-225= does today, e.g. after an approved name failed to restore on resume and the host then denied it) and from =auto_approve=; =auto(name)= (installing copied authority when a member is created) adds it to =auto_approve= unless it is already =approved=, and clears it from =denied=. =merge= (conversation merge) is a separate rule: when two records disagree it keeps =approved= over =auto_approve= over =denied=.
+  - The member's record is written with its copied =auto_approve= names at =record_started=. On resume they are resolved against the current catalog without mounting and go back into =auto_approve= with their new outputs (rooted like above); a name that fails stays in the record and is listed in =skipped=, like an approved name. Dev-shell identities are not recorded (a resumed goblin re-evaluates its dev shell).
+
+** 3.6 Paused raids and ownership transfer
+
+State (=raid.rs=):
+- *[P]* =Raid.owner: Option<String>=, =Raid.paused: Option<Paused { former_owner, reason, since }>=, and a per-raid =generation: u64= bumped on every pause and every owner change. =Member= gains =created_by: Option<String>=.
+- *[P]* Owner removal (stop, exit, failed launch, =raid leave=, host kick): if live members remain, the raid pauses (=Change::Paused { raid, former_owner, reason }=); otherwise it dissolves as today. A paused raid whose last member leaves dissolves (reason =empty=).
+- *[P]* =Raids::set_owner(raid_id, session, actor)= (host only): the target must be a live member. It clears =paused= and emits =Change::Owner { raid, owner, previous }=. It also works on an unpaused raid (host transfer). Created members keep =created_by= and are controllable by the new owner.
+- *[P]* While paused: host invites and =goblins run --raid= join as members without picking an owner; =raid create= with that name fails (=Exists=); nobody can run members or stop created ones except the host.
+- *[P]* Event classes and log kinds: =raid.paused= ={raid, former_owner, reason}= is a removal (applied in the messaging worker even if unrecorded); =raid.owner= ={raid, owner, previous}= is an addition (authorizes routing only once logged; counts against the budget). Both list every member in =sessions=. =raid.dissolved= reasons are =destroyed=, =empty= and =resolved=.
+
+Two guarantees (narrowing ADR 0008's single rule, recorded in ADR 0014):
+- *Message routing* is authorized only by logged membership, as today. A paused raid routes nothing from the moment the controller emits =Paused= (removal, applied even unrecorded); a resumed raid routes again only after =raid.owner= is logged.
+- *Control rights* (run, stop, list/get of created members) are authorized from the controller's raid state on each call. Revocation is immediate in the event loop: =Paused=, =Owner=, kick, leave and dissolution change controller state before the next call is dispatched. A new owner's rights start when =set_owner= commits in the controller, even if =raid.owner= is logged later or cannot be logged; its actions are themselves attributed in the log (=raid.joined= with =actor= = the owner, =session.exited= with the stop reason), and the outbox keeps events in order, so =raid.owner= precedes them whenever it is recorded. If raid events cannot be recorded (=raid_audit_failed=), routing closes as today but control continues; the host sees =raid_audit_failed= in =inbox.status= and the TUI/Emacs status line.
+
+Messaging (=mailbox.rs=):
+- *[P]* =RaidView= gains =paused: bool= and an optional =owner=; =apply_raid= updates every member's view on =Paused= / =Owner=, so a later =Joined= copies the current owner and state.
+- *[P]* =resolve=: when the only route to a target is a paused raid, fail with -32009 "raid 'R' is paused until the host selects a new owner; you will get a notice when it resumes" (instead of "absent"). Replies get the same check and message; the claim stays outstanding. Messages already delivered stay with their recipient.
+- *[P]* The worker keeps =warned: BTreeMap<raid_id, BTreeSet<session>>= (at most 16 × 16), filled on those rejections (in =execute=, since =prepare= is =&self=), pruned on =Left=/=Dissolved=. When it logs =raid.owner= for a raid, it queues one notice per warned sender that is still a live member, from =goblins=, then clears the set. Text: "Raid R has resumed with owner NAME; messages to its members are allowed again." The notice carries a new optional =Message.raid= field ={id, name, owner, event: "resumed"}= (=operation= unset); replying to it fails like replying to an operation notice ("notices take no reply"). Capacity checks and =undelivered= logging copy =record_operations=.
+- *[P]* Without a tree, a goblin may message the host (by replying to a host message, as today) and live members of its unpaused raid. =route= in =message.accepted= becomes ="host"= or ="raid"=. The =parent= alias is removed.
+
+Host prompt:
+- *[P]* When a raid pauses, the controller adds a =PermissionRecord= with =kind: "raid-owner"=, a fresh request id, =session= = former owner (id kept even after that session is evicted; the record carries =agent_name=), =package= = raid name, and =preview= = ={raid: ID, name, generation, former_owner, members: [{id, agent_name, name, role, created}]}=. State =pending=, no operation notices (no live requester), not tied to =Active.pending=.
+- *[P]* The preview is recomputed whenever the paused raid's membership or member states change. A record is never reused across pauses: a resume or dissolution finishes it (=approved= for a new owner, =denied= for dissolve, =cancelled= when the raid empties), and a later pause creates a new record with the new =generation=.
+- *[P]* =raid-owner= records do not count against the 256-record permission table and are never evicted while pending (at most one per raid, so at most 16). Pausing never fails for lack of space. =goblins raid members= and the snapshot's =raids= also show =paused=, so a paused raid is discoverable without the prompt.
+- *[P]* Resolved only through new host RPCs that name the stable raid ID and the prompt's generation; a mismatch (raid resumed, re-paused or replaced by a new raid with the same name) is -32009 "the raid changed; reload the prompt":
+  - =raids.set_owner {raid, session, generation?}= → resume with that owner (without =generation= it is a plain host transfer, allowed on paused and unpaused raids);
+  - =raids.destroy {raid, generation?, stop_members?: bool}= → dissolve; with =stop_members=, stop every live member ("stopped because raid R was closed by the host").
+  =permissions.decide= rejects =raid-owner= records with -32602 "use goblins raid set-owner or goblins raid destroy". The CLI and UIs resolve =raid= names to IDs from the snapshot and pass the generation shown.
+- *[P]* Host CLI: =goblins raid set-owner RAID GOBLIN=, =goblins raid destroy RAID [--stop-members]=; =goblins raid members= shows =paused= and the former owner.
+- *[P]* TUI: a =raid-owner= request lists the members and offers =o= (pick owner from the member list), =x= dissolve, =k= stop all; =y=/=n=/Enter do nothing for it. Emacs: a =raid-owner= popup insert with the same actions (owner via =completing-read= over the preview's members); =goblins--decide-record= refuses plain accept/deny for it; =goblins-attention-mode= counts it automatically.
+
+** 3.7 Removing the tree
+
+- *[P]* Controller: drop =SessionRecord.parent= and =path=, =descendant=, =relative_path=, subtree =resolve_scoped= (replaced by 3.4's rule on the sandbox endpoint and plain ID/unique-name resolution on the host), =stop_tree=, =owner_exited_reason=, the natural-exit and stopped-parent cascades (=controller.rs:2897-2919=), =Stop.kill_children=, =Start.parent=, =Start.inherit_raid=, =ChildStart.parent/inherit_raid=, the "children inherit" checks, per-parent name allocation (names are unique among live goblins), "keep sessions that have children" in eviction (=controller.rs:1018-1025=, =1429-1436=), the root-only conditions in history (=controller.rs:695=, =721=, =804=, =1586-1589=: every goblin is recorded), the =--parent= refusal in recreate, the sandbox =raids.invite=, and sandbox =sessions.attach/resize= for other sessions. Initialize features drop =allowed-children=, =subtree-control=, =subtree-terminal= and add =run-targets=, =raid-owner=.
+- *[P]* Names replace paths explicitly:
+  - =mailbox::Session= becomes ={id, agent_name, running}=; =message_directory= fills =agent_name= from the trusted record.
+  - =Message.sender_path= / =recipient_path= become =sender_name= / =recipient_name= (agent names from the directory at acceptance; ="host"= and ="goblins"= for those senders).
+  - =resolve= matches a target by ID or by unique live =agent_name=; ambiguity cannot arise among live goblins (names are unique) but the existing ambiguity error stays for safety.
+  - =session.started= logs ={agent_name}= instead of ={parent, path}=. The offline log reader accepts old events: =agent_name= from =agent_name=, else the last segment of =path=; =parent= is ignored. Old =message.accepted= data with =sender_path= is shown as is.
+  - =communications.list --session= matches that session only (no subtree walk, =messaging.rs:376-391=).
+- *[P]* Raid records: =RaidMemberRecord.path= is removed; =created: bool= and =created_by= added; =RaidRecord= gains =paused=, =generation= and an optional =owner=.
+- *[P]* Exec, editor and TRAMP address a goblin by agent name only (=gribble=, no =gribble.snaga=).
+- *[P]* Host CLI: remove =run --parent=, =stop/kill --kill-children=, "(children inherit)" help and tree-path completion. Sandbox CLI: =run= without =--parent=/=--inherit-raid=; =list=/=stop=/=kill= for created members; =attach= and =raid invite= removed; =goblin status= shows "Run targets:" and the raid's paused state.
+- *[P]* TUI: flat goblin list (no folding). Emacs: overview, sidebar and info pages without trees ("Children" section, "Parent" row and descendant prompts removed); the sidebar keeps grouping by raid and shows "created by" in a member's block.
+
+* 4. Implementation steps
+
+Each step is a commit (or a few) on =replace-children-with-raid= that builds, passes =cargo test= and =nix flake check= (new files staged first), and updates every test whose expectations it changes. Python suites run one at a time with output to a log.
+
+1. *Plan and ADR.* This file, ADR 0014 "Raids replace the ownership tree" (the two guarantees of 3.6, superseding parts of ADR 0008), status notes on the two CHILDREN-AND-RAIDS specs.
+2. *Rename to =allowedRunTargets=.* Nix, =config.rs=, =sessions.status=, client status/completion, demo goblins, checks; behaviour still the old child rule.
+3. *Paused raids and ownership transfer.* =raid.rs=, controller wiring, =raids.set_owner=, =raids.destroy= with generation and =stop_members=, the =raid-owner= prompt record (exempt from the table bound), =permissions.decide= refusal, TUI refusing y/n/Enter for it (read-only display), mailbox paused rejection, warned senders and resume notices, new events, host CLI commands. Rust unit tests for every rule (including transfer of an unpaused raid, delayed and failed recording of =raid.owner=, stale generations, a full permission table). All tests that expect owner exit or owner kick to dissolve are updated here (=raid.rs=, =mailbox/tests.rs=, =messaging.rs=, =controller.rs=, =tests/test_raids.py=), plus new Python tests for pause, warning, notice and each prompt resolution.
+4. *Auto-approve.* Copied sets, own fast paths, rooting at member start, bounds, history v2 with transitions, merge precedence and normalization, recreate (tests: a failed approved restore, then a host denial, then the next resume keeps it denied; auto/denied collisions on member creation and merge). Until step 5 the set is filled for children from their parent at launch, which keeps the existing child tests meaningful; tests that rely on the live ancestor walk (=test_ownership.py:324-364=, =545-560=) are rewritten to the copy-at-creation rule.
+5. *Created members and removal of the tree.* =current_manifest= and leases, =Source::Member= with the strong scope reference, owner control and the leave rule, the removal list of 3.7 across controller, mailbox, messaging, protocol and both CLIs, and the minimal flat TUI (no =parent=/=path= access) so the step compiles. Delete =branch.rs=. Port tests: =test_ownership.py= becomes =test_run_targets.py= (including owner exit with the member worker delayed, manifest replacement with a delayed worker, manifest candidates completing in reverse order, an invalid newer candidate, identical retries, an incompatible API version, a malformed editor and an invalid run-target list each leaving a previously valid current manifest in place, a validated manifest staying current after a later launch failure, GC between owner exit and a member's request for an auto-approved package); the tests that only used a child as a second goblin (docker, devshell, codex/claude config, network, nix, host commands, mailbox, editor, scopes, history, recreate, responsiveness, test_emacs.py's stray =kill_children=) switch to created members or host-launched roots.
+6. *TUI and Emacs.* =raid-owner= picker in the TUI; Emacs flat views, =raid-owner= popup, TRAMP by name, =goblins-tests.el=, =test_emacs.py=, =test_tui.py=.
+7. *Skills and docs.* =goblins-spawn= (run a raid member), =goblins-raids= (owner, created members, pause, notices, no invite), =goblins-messaging= (no =parent=/descendants, raid notices), =goblins-docker=, =goblins-devshell=, =goblins-nix=; README, USAGE ("Sandbox ownership" becomes "Running raid members"), DAEMON.org, architecture workflows (child launch and subtree stop replaced), the other specs and ADR mentions from the inventory; TODO.org: "Recreate children with their root" set DONE/CLOSED as obsolete, "Recreate raid membership" kept.
+8. *Full verification.* All Python suites serially; Docker and integration suites through an approved host command; a live check with a Claude owner running a Codex member on a branch-build server (asking before restarting the user's server).
+
+* 5. Risks and notes
+
+- Large mechanical surface: tree paths and =parent= appear in the TUI, Emacs (overview, sidebar, TRAMP, messages), mailbox tests and about 20 Python test files. Steps 5 and 6 are the bulk.
+- A created member outlives its owner but keeps sharing its workspace and scope; the scope stays alive while any member runs (existing scope semantics), and the owner's session directory stays until the last =SharedWorkspace= holder exits, as with children today.
+- =current_manifest= can lag behind the installed build until the next host launch or server restart; documented in USAGE.
+- The 4,096 raid-event budget is cumulative; pause/resume cycles consume it. Unchanged.
+- Older Emacs/TUI builds against a new daemon would miss =path=; both live in this repository and ship together.

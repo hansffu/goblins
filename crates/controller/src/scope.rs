@@ -42,6 +42,9 @@ pub(crate) struct Shared {
     pub net: File,
     pub pid: Option<File>,
     online: bool,
+    /// Whether members see the host store: a shared engine's view of it comes
+    /// from its members, so in a scope with Docker they must agree.
+    nix: bool,
     state: Mutex<State>,
     _keeper: Keeper,
     // Dropped last: temporary data outlives every member process and engine.
@@ -144,9 +147,16 @@ impl Shared {
         let setup_path = path.clone();
         let setup_cancel = cancel.clone();
         let pid = selected.definition.pid;
+        let storage_lease = storage.temporary_lease().map(File::try_clone).transpose()?;
         let thread = std::thread::spawn(move || {
             let setup = || -> Result<(Namespaces, Option<Network>)> {
-                let namespaces = Namespaces::start(&setup_launch, &setup_path, pid, &setup_cancel)?;
+                let namespaces = Namespaces::start(
+                    &setup_launch,
+                    &setup_path,
+                    pid,
+                    storage_lease.as_ref(),
+                    &setup_cancel,
+                )?;
                 let network = setup_launch
                     .pasta
                     .as_ref()
@@ -182,6 +192,7 @@ impl Shared {
             net: namespaces.net.try_clone()?,
             pid: namespaces.pid.as_ref().map(File::try_clone).transpose()?,
             online: launch.pasta.is_some(),
+            nix: launch.allow_nix,
             state: Mutex::new(State {
                 engine: None,
                 users: 0,
@@ -202,6 +213,13 @@ impl Shared {
         if self.online != launch.pasta.is_some() {
             return Err(format!(
                 "scope '{}' has a different network policy (online/offline)",
+                self.name
+            )
+            .into());
+        }
+        if self.definition.docker && self.nix != launch.allow_nix {
+            return Err(format!(
+                "scope '{}' has Docker and a different allowNix setting",
                 self.name
             )
             .into());

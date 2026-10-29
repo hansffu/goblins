@@ -2,7 +2,7 @@
 
 Date: 2026-10-01
 
-Status: Accepted
+Status: Accepted; partly superseded by [ADR 0014](0014-raids-replace-the-ownership-tree.md) (no ownership tree, ownership transfer, paused raids)
 
 This decision extends the messaging rules of
 [ADR 0001](0001-daemon-inboxes-for-agent-communication.md). It is a peer to

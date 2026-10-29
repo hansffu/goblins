@@ -4,7 +4,7 @@ use goblins_controller::{Result, controller::Controller, host::Client, unix};
 use serde_json::json;
 use std::{
     fs::{File, OpenOptions},
-    io,
+    io::{self, Write},
     os::{
         fd::AsRawFd,
         unix::{
@@ -19,8 +19,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub fn foreground(state: &Path, workspace: Option<PathBuf>, keep_sessions: usize) -> Result<()> {
+pub fn foreground(
+    state: &Path,
+    workspace: Option<PathBuf>,
+    keep_sessions: usize,
+    runtime: Option<&Path>,
+) -> Result<()> {
     let mut daemon = Controller::new(state, workspace)?;
+    if let Some(runtime) = runtime {
+        daemon.use_manifest(runtime);
+    }
     daemon.open_history(
         goblins_controller::history::Store::default_directory(),
         keep_sessions,
@@ -42,8 +50,9 @@ pub fn foreground(state: &Path, workspace: Option<PathBuf>, keep_sessions: usize
         thread::sleep(Duration::from_millis(5));
     }
     println!("Goblins server stopping; cleaning up agents");
-    drop(daemon);
+    let _shutdown = daemon.shutdown()?;
     println!("Goblins server stopped");
+    io::stdout().flush()?;
     Ok(())
 }
 
@@ -86,7 +95,12 @@ fn log_file(state: &Path, write: bool) -> Result<File> {
     Ok(file)
 }
 
-pub fn start(state: &Path, workspace: Option<&Path>, keep_sessions: usize) -> Result<()> {
+pub fn start(
+    state: &Path,
+    workspace: Option<&Path>,
+    keep_sessions: usize,
+    runtime: Option<&Path>,
+) -> Result<()> {
     unix::private_directory(state)?;
     let _management = unix::lock(&state.join("server-control.lock"))?;
     if let Some(client) = Client::connect_optional(state)? {
@@ -108,6 +122,9 @@ pub fn start(state: &Path, workspace: Option<&Path>, keep_sessions: usize) -> Re
         .stderr(log);
     if let Some(path) = workspace {
         command.arg("--workspace").arg(path);
+    }
+    if let Some(path) = runtime {
+        command.arg("--runtime").arg(path);
     }
     // Start a new POSIX session so closing the launching terminal leaves the
     // server alive. Only async-signal-safe setsid runs between fork and exec.
@@ -193,6 +210,10 @@ pub fn status(state: &Path) -> Result<i32> {
                 history["reason"].as_str().unwrap_or("unavailable")
             ),
             _ => (),
+        }
+        match status["manifest"].as_str() {
+            Some(manifest) => println!("Raid owners run goblins from {manifest}"),
+            None => println!("No current configuration: raid owners cannot run goblins yet"),
         }
         Ok(0)
     } else if lock_held(state)? {

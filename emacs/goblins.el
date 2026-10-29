@@ -25,7 +25,7 @@
 (declare-function goblins--session-label "goblins-views" (snapshot id))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
-(declare-function goblin-mode "goblins-terminal" (&optional arg))
+(declare-function goblins-goblin-mode "goblins-terminal" (&optional arg))
 
 (defgroup goblins nil "Goblins agent status and approvals." :group 'tools)
 
@@ -49,7 +49,7 @@ Set this to the directory passed to `goblins --state-dir'."
 (defvar-local goblins--notice "Disconnected; r to reconnect")
 (defvar-local goblins--decisions nil)
 (defvar-local goblins--details nil
-  "Details identity as (KIND ID INSTANCE), or nil for the tree overview.")
+  "Details identity as (KIND ID INSTANCE), or nil for the overview.")
 (defvar-local goblins--overview-position nil)
 (defvar-local goblins--overview-folds nil)
 (defvar goblins--terminal-buffers (make-hash-table :test #'equal)
@@ -69,16 +69,27 @@ The last delay repeats until a connection succeeds.  nil disables reconnecting."
 Functions run in the server's status buffer and receive the request record.
 Requests already pending when Emacs first connects are not announced.")
 
+(defvar goblins-approval-hook nil
+  "Abnormal hook run with each goblin whose agent began waiting at its own
+permission prompt (one without `bypassPermissions').  Functions run in the
+server's status buffer and receive the session record.  Goblins already
+waiting when Emacs first connects are not announced.")
+
 (defvar-local goblins--reconnect-timer nil)
 (defvar-local goblins--reconnect-attempt 0)
 (defvar-local goblins--seen-requests 'unset
   "IDs of the pending requests already announced, or `unset' before the first
 snapshot.")
+(defvar-local goblins--seen-approvals 'unset
+  "IDs of the goblins waiting at their agent's own permission prompt at the
+last snapshot, or `unset' before the first.")
 
 (defclass goblins-section (magit-section) ())
 (defclass goblins-agent-section (goblins-section) ())
 (defclass goblins-request-section (goblins-section)
-  ((record :initarg :record :initform nil)))
+  ((record :initarg :record :initform nil)
+   ;; Rendered with its fields and preview, not as a heading only.
+   (details :initarg :details :initform nil)))
 (defclass goblins-fold-section (goblins-section) ()
   "Sections TAB folds, also in the details view.")
 (defclass goblins-summary-section (goblins-fold-section) ())
@@ -316,6 +327,81 @@ all other files in a collapsed section of their own."
 (defun goblins--field (label value)
   (insert (format "    %-12s%s\n" label (goblins--safe value))))
 
+(defun goblins--wrapped-field (label value)
+  "Insert a field like `goblins--field', VALUE wrapped to the window.
+Long values such as host commands break at spaces where they can, and
+continue under the value; no character of VALUE is changed or dropped."
+  (let* ((indent (make-string 16 ?\s))
+         (window (get-buffer-window (current-buffer) t))
+         (width (max 20 (- (if window (window-body-width window) 100) 17)))
+         (rest (goblins--safe value))
+         (first t))
+    (while (or first (not (string-empty-p rest)))
+      (let ((cut (if (<= (length rest) width)
+                     (length rest)
+                   (let ((space (cl-position ?\s rest :end width :from-end t)))
+                     (if (and space (> space 0)) (1+ space) width)))))
+        (insert (if first (format "    %-12s" label) indent)
+                (substring rest 0 cut) "\n")
+        (setq rest (substring rest cut) first nil)))))
+
+(defun goblins--insert-host-command (preview)
+  "Insert a host command's PREVIEW as fields: its warning, command,
+directory, each variable and time limit.  These are the daemon's escaped
+values, so no request text can add a line or a field."
+  (insert "    " (propertize (goblins--safe (car (split-string
+                                                   (or (plist-get preview :description) "")
+                                                   "\n")))
+                               'face 'goblins-dim)
+          "\n")
+  (goblins--wrapped-field "Command:" (plist-get preview :command))
+  (goblins--wrapped-field "Directory:" (plist-get preview :directory))
+  (seq-doseq (variable (plist-get preview :environment))
+    (goblins--wrapped-field "Variable:" variable))
+  (goblins--wrapped-field "Time limit:" (plist-get preview :time_limit)))
+
+(defun goblins--request-subject (record)
+  "What RECORD asks for, on one line.  A host command is cut to 60
+characters: its approval shows it whole.  A paused raid's prompt, whose
+package is the raid's name, says what it waits for."
+  (let ((subject (goblins--safe (plist-get record :package))))
+    (pcase (plist-get record :kind)
+      ("host-command" (truncate-string-to-width subject 60 nil nil "…"))
+      ("raid-owner" (format "raid %s paused%s" subject
+                            (if (equal (plist-get record :state) "pending")
+                                ": pick a new owner" "")))
+      (_ subject))))
+
+(defun goblins--created-by (session)
+  "The name of the raid owner that ran SESSION, or nil if the host started it."
+  (let ((creator (plist-get session :created_by)))
+    (and (listp creator) (plist-get creator :agent_name))))
+
+(defun goblins--raid-owner-member-line (member)
+  "MEMBER of a paused raid's prompt on one line: name, configuration, role,
+state, and whether its owner created it."
+  (concat (goblins--safe (plist-get member :agent_name))
+          (format " (%s)" (goblins--safe (plist-get member :name)))
+          (if-let* ((role (plist-get member :role)) ((stringp role)))
+              (format "  %s" (goblins--safe role)) "")
+          (format "  %s" (goblins--safe (plist-get member :state)))
+          (if (eq (plist-get member :created) t) "  created" "")))
+
+(defun goblins--insert-raid-owner-fields (preview)
+  "Insert a paused raid's PREVIEW as fields: the raid, its former owner and
+each member."
+  (goblins--field "Raid:" (plist-get preview :name))
+  (goblins--field "Former owner:"
+                  (let ((former (plist-get preview :former_owner)))
+                    (and (listp former) (plist-get former :agent_name))))
+  (let ((members (append (plist-get preview :members) nil)))
+    (if (null members)
+        (goblins--field "Members:" "none")
+      (dolist (member members)
+        ;; Already escaped: `goblins--field' would escape it again.
+        (insert (format "    %-12s%s\n" (if (eq member (car members)) "Members:" "")
+                        (goblins--raid-owner-member-line member)))))))
+
 (defun goblins--awaiting-preview-p (record)
   "Whether RECORD is a dev shell refresh whose preview is not ready yet."
   (and (equal (plist-get record :kind) "devshell")
@@ -327,18 +413,27 @@ HIDE starts it folded and HEADING replaces the default heading text."
   (magit-insert-section section
     (goblins-request-section (plist-get record :id) hide)
     (oset section record record)
+    (oset section details details)
     (magit-insert-heading
       (or heading
           (format "  %s  %s  [%s]"
                   (goblins--request-agent-label record)
-                  (goblins--safe (plist-get record :package))
+                  (goblins--request-subject record)
                   (goblins--safe (plist-get record :state)))))
     (when details
       (goblins--field "Reason:" (plist-get record :reason))
       (goblins--field "Session:" (plist-get record :session))
       (goblins--field "Request:" (plist-get record :id))
       (when-let* ((preview (plist-get record :preview))
-                  ((not (equal (plist-get preview :kind) "devshell"))))
+                  ((plist-get preview :command)))
+        (goblins--insert-host-command preview))
+      (when-let* ((preview (plist-get record :preview))
+                  ((equal (plist-get record :kind) "raid-owner")))
+        (goblins--insert-raid-owner-fields preview))
+      (when-let* ((preview (plist-get record :preview))
+                  ((not (equal (plist-get preview :kind) "devshell")))
+                  ((not (equal (plist-get record :kind) "raid-owner")))
+                  ((not (plist-get preview :command))))
         ;; A multi-line description is escaped line by line.
         (let ((lines (split-string
                       (or (plist-get preview :description)
@@ -349,9 +444,9 @@ HIDE starts it folded and HEADING replaces the default heading text."
                                     (or (plist-get preview :download) "unknown")
                                     (if (eq (plist-get preview :build_required) t) "yes" "no"))))
                       "\n")))
-          (goblins--field "Preview:" (car lines))
+          (goblins--wrapped-field "Preview:" (car lines))
           (dolist (line (cdr lines))
-            (goblins--field "" line))))
+            (goblins--wrapped-field "" line))))
       (when (goblins--awaiting-preview-p record)
         (goblins--field "Preview:" "evaluating the refresh; its preview follows"))
       (when-let* ((message (plist-get record :message)))
@@ -367,87 +462,50 @@ HIDE starts it folded and HEADING replaces the default heading text."
       (insert "\n"))))
 
 (defun goblins--request-agent-label (request)
-  "Identify REQUEST's sandbox unambiguously while its session is retained."
+  "Name REQUEST's sandbox, from the snapshot while its session is retained."
   (let ((agent (cl-find (plist-get request :session)
                         (append (plist-get goblins--snapshot :sessions) nil)
                         :key (lambda (s) (plist-get s :id)) :test #'equal)))
-    (goblins--safe (or (plist-get agent :path) (plist-get request :agent_name)))))
+    (goblins--safe (or (plist-get agent :agent_name) (plist-get request :agent_name)))))
 
-(defun goblins--agent-forest (agents)
-  "Group AGENTS by immutable parent ID, retaining sibling snapshot order."
-  (let ((records (make-hash-table :test #'equal))
-        (children (make-hash-table :test #'equal))
-        (seen (make-hash-table :test #'equal)) roots forest)
-    (dolist (agent agents) (puthash (plist-get agent :id) agent records))
-    (dolist (agent agents)
-      (let ((parent (plist-get agent :parent)))
-        (if (gethash parent records)
-            (push agent (gethash parent children))
-          (push agent roots))))
-    (cl-labels ((node (agent)
-                  (let ((id (plist-get agent :id)))
-                    (unless (gethash id seen)
-                      (puthash id t seen)
-                      (cons agent (delq nil (mapcar #'node
-                                                   (reverse (gethash id children)))))))))
-      (dolist (root (nreverse roots)) (push (node root) forest))
-      ;; Partial or malformed snapshots cannot loop or silently hide agents.
-      (dolist (agent agents)
-        (unless (gethash (plist-get agent :id) seen)
-          (push (node agent) forest))))
-    (nreverse forest)))
-
-(defun goblins--tree-live-p (tree)
-  "Whether TREE contains a session which has not finished."
-  (or (not (member (plist-get (car tree) :state) '("stopped" "failed")))
-      (cl-some #'goblins--tree-live-p (cdr tree))))
-
-(defun goblins--tree-count (tree)
-  (+ 1 (apply #'+ (mapcar #'goblins--tree-count (cdr tree)))))
+(defun goblins--finished-p (session)
+  "Whether SESSION has stopped or failed."
+  (member (plist-get session :state) '("stopped" "failed")))
 
 (defun goblins--insert-agent-fields (agent)
   (goblins--field "Session:" (plist-get agent :id))
   (goblins--field "State:" (plist-get agent :state))
   (goblins--field "Activity:" (or (plist-get agent :agent_state) "unknown"))
   (goblins--field "Config:" (plist-get agent :name))
-  (goblins--field "Parent:" (or (plist-get agent :parent) "host"))
+  (when-let* ((creator (goblins--created-by agent)))
+    (goblins--field "Created by:" creator))
   (goblins--field "Startup:" (string-join (append (plist-get agent :initial_packages) nil) ", "))
   (goblins--field "Granted:" (string-join (append (plist-get agent :packages) nil) ", "))
+  (when-let* ((auto (append (plist-get agent :auto_approve) nil)))
+    (goblins--field "Auto:" (string-join auto ", ")))
   (when-let* ((detail (plist-get agent :detail)))
     (goblins--field "Detail:" detail)))
 
-(defun goblins--insert-agent-tree (tree prefix last)
-  "Insert TREE as nested Magit sections below PREFIX; LAST ends its branch."
-  (let* ((agent (car tree))
-         (children (cdr tree))
-         (continuation (concat prefix (if last "   " "│  "))))
-    (magit-insert-section (goblins-agent-section (plist-get agent :id))
-      (magit-insert-heading
-        (format "%s%s%-20s %-12s %-16s %s%s"
-                prefix (if last "└─ " "├─ ")
-                (goblins--safe (plist-get agent :agent_name))
-                (goblins--safe (plist-get agent :state))
-                (goblins--safe (or (plist-get agent :agent_state) "unknown"))
-                (goblins--safe (plist-get agent :name))
-                (if (goblins--terminal-buffer (plist-get agent :id))
-                    "  [t: terminal]" "")))
-      (goblins--insert-forest children continuation))))
+(defun goblins--insert-agent (agent)
+  "Insert AGENT's line as a Magit section."
+  (magit-insert-section (goblins-agent-section (plist-get agent :id))
+    (magit-insert-heading
+      (format "  %-20s %-12s %-16s %s%s"
+              (goblins--safe (plist-get agent :agent_name))
+              (goblins--safe (plist-get agent :state))
+              (goblins--safe (or (plist-get agent :agent_state) "unknown"))
+              (goblins--safe (plist-get agent :name))
+              (if (goblins--terminal-buffer (plist-get agent :id))
+                  "  [t: terminal]" "")))))
 
-(defun goblins--insert-forest (forest prefix)
-  (while forest
-    (goblins--insert-agent-tree (car forest) prefix (null (cdr forest)))
-    (setq forest (cdr forest))))
-
-(defun goblins-toggle-tree ()
-  "Expand or collapse the selected tree branch or diff section.
-Diff sections also fold in the details view."
+(defun goblins-toggle-section ()
+  "Expand or collapse the section at point: a group of the overview, or a
+summary or diff section, which also fold in the details view."
   (interactive)
   (when-let* ((section (magit-current-section)))
-    (cond
-     ((object-of-class-p section 'goblins-fold-section)
-      (magit-section-toggle section))
-     ((and (not goblins--details) (oref section children))
-      (magit-section-toggle section)))))
+    (when (or (object-of-class-p section 'goblins-fold-section)
+              (and (not goblins--details) (oref section children)))
+      (magit-section-toggle section))))
 
 (defun goblins-details ()
   "Show the selected sandbox or request in the details view."
@@ -471,7 +529,7 @@ Diff sections also fold in the details view."
         (goblins--render)))))
 
 (defun goblins-back ()
-  "Return from details to the tree, preserving selection and branch folds."
+  "Return from details to the overview, preserving selection and folds."
   (interactive)
   (when goblins--details
     (setq goblins--details nil)
@@ -499,14 +557,14 @@ Diff sections also fold in the details view."
     (erase-buffer)
     (magit-insert-section (goblins-section 'details-root)
       (insert (propertize "Goblins details\n" 'font-lock-face 'magit-section-heading)
-              (goblins--safe goblins--notice) "\n"
-              "b / q: back to tree    t: terminal    a / d: decide request\n\n")
+              (goblins--safe goblins--notice) "\n")
+      (goblins--insert-messaging-warning goblins--snapshot)
+      (insert "b / q: back to overview    t: terminal    a / d: decide request\n\n")
       (cond
-       ((null record) (insert "This entry is no longer retained. Return to the tree with b.\n"))
+       ((null record) (insert "This entry is no longer retained. Return to the overview with b.\n"))
        ((eq kind 'agent)
         (magit-insert-section (goblins-agent-section id)
-          (magit-insert-heading (goblins--safe (or (plist-get record :path)
-                                                   (plist-get record :agent_name))))
+          (magit-insert-heading (goblins--safe (plist-get record :agent_name)))
           (goblins--insert-agent-fields record)))
        (t (goblins--insert-request record t))))
     (magit-section-show magit-root-section)
@@ -519,13 +577,28 @@ Diff sections also fold in the details view."
         (goto-char (oref section start))))
     (set-buffer-modified-p nil)))
 
+(defun goblins--messaging-warning (snapshot)
+  "What the host must know when SNAPSHOT's communications log fails, or nil.
+Messages stop then, while goblins keep running and raids keep their owners."
+  (let ((health (plist-get snapshot :messaging)))
+    (cond ((eq (plist-get health :audit_failed) t)
+           "Messaging stopped: the communications log cannot be written")
+          ((eq (plist-get health :raid_audit_failed) t)
+           "Raid messages stopped: raid events could not be logged (log full)"))))
+
+(defun goblins--insert-messaging-warning (snapshot)
+  "Insert SNAPSHOT's messaging warning on a line of its own, if any."
+  (when-let* ((warning (goblins--messaging-warning snapshot)))
+    (insert (propertize warning 'font-lock-face 'goblins-attention 'face 'goblins-attention)
+            "\n")))
+
 (defun goblins--update-header ()
   (setq-local header-line-format
               (if goblins--details
-                  " b/q back to tree   t terminal   a/d decide   r refresh"
+                  " b/q back to overview   t terminal   a/d decide   r refresh"
                 (if (bound-and-true-p evil-local-mode)
-                    " R run   RET details   t terminal   a/d decide   TAB tree   j/k navigate   gr refresh   q quit"
-                  " R run   RET details   t terminal   a/d decide   TAB tree   n/p navigate   g refresh   q quit"))))
+                    " R run   RET details   t terminal   a/d decide   TAB fold   j/k navigate   gr refresh   q quit"
+                  " R run   RET details   t terminal   a/d decide   TAB fold   n/p navigate   g refresh   q quit"))))
 
 (defun goblins--render ()
   (goblins--update-header)
@@ -539,9 +612,8 @@ Diff sections also fold in the details view."
          (offset (and section (- (point) (oref section start))))
          (inhibit-read-only t)
          (sessions (append (plist-get goblins--snapshot :sessions) nil))
-         (forest (goblins--agent-forest sessions))
-         (active (cl-remove-if-not #'goblins--tree-live-p forest))
-         (stopped (cl-remove-if #'goblins--tree-live-p forest))
+         (active (cl-remove-if #'goblins--finished-p sessions))
+         (stopped (cl-remove-if-not #'goblins--finished-p sessions))
          (requests (append (plist-get goblins--snapshot :permissions) nil))
          (pending (cl-remove-if-not
                    (lambda (r) (equal (plist-get r :state) "pending")) requests)))
@@ -549,12 +621,13 @@ Diff sections also fold in the details view."
     (magit-insert-section (goblins-section 'root)
       (insert (propertize "Goblins\n" 'font-lock-face 'magit-section-heading)
               (goblins--safe goblins--directory) "\n"
-              (goblins--safe goblins--notice) "\n\n")
+              (goblins--safe goblins--notice) "\n")
+      (goblins--insert-messaging-warning goblins--snapshot)
+      (insert "\n")
       (magit-insert-section (goblins-section 'agents)
-        (magit-insert-heading (format "Agents (%d)" (apply #'+ (mapcar #'goblins--tree-count active))))
+        (magit-insert-heading (format "Agents (%d)" (length active)))
         (unless active (insert "  No active agents\n"))
-        (when active (insert "  host\n"))
-        (goblins--insert-forest active "  ")
+        (mapc #'goblins--insert-agent active)
         (insert "\n"))
       (magit-insert-section (goblins-section 'pending)
         (magit-insert-heading (format "Pending requests (%d)" (length pending)))
@@ -564,9 +637,8 @@ Diff sections also fold in the details view."
         (magit-insert-heading "Recent requests")
         (mapc #'goblins--insert-request (cl-set-difference requests pending)))
       (magit-insert-section (goblins-section 'stopped t)
-        (magit-insert-heading (format "Stopped agents (%d)" (apply #'+ (mapcar #'goblins--tree-count stopped))))
-        (when stopped (insert "  host\n"))
-        (goblins--insert-forest stopped "  ")))
+        (magit-insert-heading (format "Stopped agents (%d)" (length stopped)))
+        (mapc #'goblins--insert-agent stopped)))
     ;; Apply the saved hidden flags to display overlays after insertion.
     (magit-section-show magit-root-section)
     ;; Never fall back to the row now occupying a vanished request's position.
@@ -632,18 +704,43 @@ disconnect; the status buffer's notice already reports it."
                     "; r to reconnect"))))
   (goblins--render))
 
+(defun goblins--announce-new (items seen hook)
+  "Run HOOK with each of ITEMS whose id the buffer-local SEEN did not hold,
+unless it is `unset', and leave SEEN holding ITEMS' ids.  SEEN is updated
+before HOOK runs: a hook that waits, as a desktop notification does, can
+process the next snapshot meanwhile, which must not announce them again."
+  (let ((before (symbol-value seen)))
+    (set seen (mapcar (lambda (item) (plist-get item :id)) items))
+    (unless (eq before 'unset)
+      (dolist (item items)
+        (unless (member (plist-get item :id) before)
+          (condition-case-unless-debug err
+              (run-hook-with-args hook item)
+            (error (message "%s: %S" hook err))))))))
+
 (defun goblins--note-requests ()
-  "Run `goblins-request-hook' for requests that became pending."
-  (let ((pending (cl-remove-if-not
-                  (lambda (r) (equal (plist-get r :state) "pending"))
-                  (append (plist-get goblins--snapshot :permissions) nil))))
-    (unless (eq goblins--seen-requests 'unset)
-      (dolist (record pending)
-        (unless (member (plist-get record :id) goblins--seen-requests)
-          (with-demoted-errors "goblins-request-hook: %S"
-            (run-hook-with-args 'goblins-request-hook record)))))
-    ;; Settled requests never become pending again, so only pending IDs matter.
-    (setq goblins--seen-requests (mapcar (lambda (r) (plist-get r :id)) pending))))
+  "Run `goblins-request-hook' for requests that became pending, and
+`goblins-approval-hook' for goblins that began waiting for approval."
+  ;; Settled requests never become pending again, so only pending IDs matter.
+  (goblins--announce-new (cl-remove-if-not
+                          (lambda (r) (equal (plist-get r :state) "pending"))
+                          (append (plist-get goblins--snapshot :permissions) nil))
+                         'goblins--seen-requests 'goblins-request-hook)
+  (goblins--note-approvals))
+
+(defun goblins--waiting-approval (snapshot)
+  "The running goblins of SNAPSHOT waiting at their agent's own permission
+prompt."
+  (cl-remove-if-not (lambda (s) (and (equal (plist-get s :state) "running")
+                                     (equal (plist-get s :agent_state) "waiting-approval")))
+                    (append (plist-get snapshot :sessions) nil)))
+
+(defun goblins--note-approvals ()
+  "Run `goblins-approval-hook' for goblins that began waiting for approval.
+A goblin that stops waiting and waits again is announced again: it is a new
+prompt."
+  (goblins--announce-new (goblins--waiting-approval goblins--snapshot)
+                         'goblins--seen-approvals 'goblins-approval-hook))
 
 (defun goblins--echo-unless-shown (buffer text)
   "Show TEXT in the echo area when no window shows status BUFFER."
@@ -847,16 +944,24 @@ Daemon refusals become `user-error's and leave the connection alone."
       (jsonrpc-error
        (user-error "%s" (or (alist-get 'jsonrpc-error-message (cdr err)) "Request failed"))))))
 
+(defun goblins--section-shows-p (section)
+  "Whether SECTION, a request section, shows its whole request: rendered
+with its details, and neither it nor a parent folded."
+  (and (object-of-class-p section 'goblins-request-section)
+       (oref section details)
+       (cl-loop for s = section then (oref s parent)
+                while s never (oref s hidden))))
+
 (defun goblins--decide (approved)
-  (let* ((record
+  (let* ((section (and (derived-mode-p 'goblins-status-mode) (magit-current-section)))
+         (record
           (if (derived-mode-p 'goblins-status-mode)
-              (let ((section (magit-current-section)))
-                (and section (object-of-class-p section 'goblins-request-section)
-                     (oref section record)))
+              (and section (object-of-class-p section 'goblins-request-section)
+                   (oref section record))
             (goblins--ensure-connected)
             (goblins--read-request (if approved "Accept request: " "Deny request: ")
                                    (current-buffer)))))
-    (goblins--decide-record record approved)))
+    (goblins--decide-record record approved (and section (goblins--section-shows-p section)))))
 
 (defun goblins--request-candidates (records)
   "RECORDS, pending requests, as completion candidates like \"gribble: jq\",
@@ -867,7 +972,7 @@ request ID as the `goblins-request' property."
               (let* ((label (format "%s: %s"
                                     (goblins--session-label goblins--snapshot
                                                             (plist-get record :session))
-                                    (goblins--safe (plist-get record :package))))
+                                    (goblins--request-subject record)))
                      (count (puthash label (1+ (gethash label seen 0)) seen)))
                 (propertize (if (> count 1) (format "%s <%d>" label count) label)
                             'goblins-request (plist-get record :id))))
@@ -907,13 +1012,28 @@ Candidates are in the `goblins-request' completion category."
       (unless found (user-error "Select a request"))
       (nth (cl-position found candidates :test #'equal) records))))
 
-(defun goblins--decide-record (record approved)
-  "Send the decision APPROVED for RECORD, a pending request, from a status buffer."
+(declare-function goblins--review-request "goblins-views" (source record))
+(declare-function goblins--popup-show "goblins-views" (source id))
+
+(defun goblins--decide-record (record approved &optional shown)
+  "Send the decision APPROVED for RECORD, a pending request, from a status buffer.
+SHOWN means the caller displays the whole request.  A host command is
+accepted only then: its command, directory, variables and time limit are
+what the approval grants, and a list or completion shows only a label.
+Otherwise its details open instead."
   (let ((id (plist-get record :id)))
     (unless (and goblins--connection goblins--subscription)
       (user-error "Disconnected; use M-x goblins-refresh to reconnect"))
     (unless (equal (plist-get record :state) "pending")
       (user-error "Place point on a pending request"))
+    (when (equal (plist-get record :kind) "raid-owner")
+      (when (fboundp 'goblins--popup-show)
+        (goblins--popup-show (current-buffer) (plist-get record :session)))
+      (user-error "A paused raid takes a new owner or dissolves: o, x or k in its request popup"))
+    (when (and approved (equal (plist-get record :kind) "host-command") (not shown))
+      (when (fboundp 'goblins--review-request)
+        (goblins--review-request (current-buffer) record))
+      (user-error "Review the whole host command, then accept it there"))
     ;; The preview is the approver's whole basis for a refresh.
     (when (and approved (goblins--awaiting-preview-p record))
       (user-error "The refresh is still being evaluated; decide once its preview is shown"))
@@ -1076,7 +1196,7 @@ Uses each terminal's immutable session identity, pinned or not."
                                                        :sessions)
                                             nil)
                                     :key (lambda (s) (plist-get s :id)) :test #'equal)))
-        (string-replace "/" "." (plist-get session :path)))))
+        (plist-get session :agent_name))))
 
 (defun goblins--terminal-session ()
   "The session record of this goblin terminal, from its daemon's snapshot."
@@ -1175,15 +1295,17 @@ On other status sections, toggle their visibility."
     name))
 
 ;;;###autoload
-(defun goblins--launch-location ()
+(defun goblins--launch-location (&optional nix)
   "Return (CWD . DEV-SHELL) for a launch from the current buffer.
 Inside a project.el project, launch from its root and, when the root has a
 flake.nix, ask whether to use it as the dev shell.  Otherwise use
-`default-directory' and no dev shell."
+`default-directory' and no dev shell.  NIX non-nil means the configuration
+has allowNix: its agent runs nix develop itself, so there is no question."
   (let* ((project (and (require 'project nil t) (project-current)))
          (cwd (expand-file-name (if project (project-root project) default-directory))))
     (cons cwd
           (and project
+               (not nix)
                (file-exists-p (expand-file-name "flake.nix" cwd))
                (y-or-n-p (format "Use %s as the dev shell? "
                                  (abbreviate-file-name (expand-file-name "flake.nix" cwd))))
@@ -1230,7 +1352,7 @@ On failure the buffer is killed and the error re-signalled."
             (setq-local ghostel-kill-buffer-on-exit nil)
             (when goblins-remove-nobreak-underline
               (face-remap-add-relative 'nobreak-space :underline nil))
-            (goblin-mode 1)
+            (goblins-goblin-mode 1)
             (add-hook 'kill-buffer-hook #'goblins--forget-terminal nil t))
           (puthash key buffer goblins--terminal-buffers)
           (goblins--note-selected (cons (car key) session))
@@ -1265,7 +1387,8 @@ Only launches made here are linked by the terminal command."
                                 (goblins--default-directory)))
            (configs (goblins--configurations))
            (name (goblins--read-configuration (plist-get configs :names)))
-           (location (goblins--launch-location))
+           (location (goblins--launch-location
+                      (member name (plist-get configs :nix))))
            (cwd (car location))
            (dev-shell (cdr location))
            (status (goblins--connect state-directory)))
@@ -1299,8 +1422,8 @@ Only launches made here are linked by the terminal command."
     map))
 
 ;; Update existing keymaps too when this file is reloaded.
-(dolist (binding '(("RET" . goblins-details) ("TAB" . goblins-toggle-tree)
-                   ("<tab>" . goblins-toggle-tree) ("b" . goblins-back)
+(dolist (binding '(("RET" . goblins-details) ("TAB" . goblins-toggle-section)
+                   ("<tab>" . goblins-toggle-section) ("b" . goblins-back)
                    ("t" . goblins-visit)))
   (define-key goblins-status-mode-map (kbd (car binding)) (cdr binding)))
 
@@ -1317,12 +1440,12 @@ Only launches made here are linked by the terminal command."
     (kbd "k") #'magit-section-backward
     (kbd "h") #'magit-section-hide
     (kbd "l") #'magit-section-show
-    (kbd "TAB") #'goblins-toggle-tree
-    (kbd "<tab>") #'goblins-toggle-tree
+    (kbd "TAB") #'goblins-toggle-section
+    (kbd "<tab>") #'goblins-toggle-section
     (kbd "RET") #'goblins-details
     (kbd "b") #'goblins-back
     (kbd "t") #'goblins-visit
-    (kbd "za") #'goblins-toggle-tree
+    (kbd "za") #'goblins-toggle-section
     (kbd "a") #'goblins-accept
     (kbd "d") #'goblins-deny
     (kbd "r") #'goblins-refresh
@@ -1431,7 +1554,8 @@ With a prefix argument, prompt for the daemon state directory."
 (with-eval-after-load 'server
   (advice-add 'server-execute :around #'goblins--server-execute))
 
-;; Terminals turn on `goblin-mode'; loaded last since it builds on this file.
+;; Terminals turn on `goblins-goblin-mode'; loaded last since it builds on this
+;; file.
 (require 'goblins-terminal)
 ;; Commands on a chosen goblin, and what Consult, Embark and Marginalia make
 ;; of goblins once they load.

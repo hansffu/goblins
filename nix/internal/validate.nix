@@ -39,6 +39,13 @@ let
     element:
     builtins.isString element
     && builtins.match "([^{}]|\\{\\{|}}|\\{[a-z][a-z0-9_]{0,31}})*" element != null;
+  # Attach handlers also accept {attach.pid}.
+  handlerElement =
+    element:
+    builtins.isString element
+    && builtins.match "([^{}]|\\{\\{|}}|\\{([a-z][a-z0-9_]{0,31}|attach\\.pid)})*" element != null;
+  handler = command: builtins.isList command && command != [ ] && builtins.all handlerElement command;
+  variableName = name: builtins.isString name && builtins.match "[a-z][a-z0-9_]{0,31}" name != null;
   defaultKeys = [
     "allowedPackages"
     "env"
@@ -77,14 +84,18 @@ in
         roFiles
         args
         resumeCommand
+        onAttach
+        onDetach
         injectedFiles
         devShellInjectedFiles
         env
         docker
+        hostCommands
         scope
         allowedScopes
         scopeStorage
-        allowedChildren
+        allowedRunTargets
+        bypassPermissions
         ;
     in
     if !validName binName || !validName outName then
@@ -113,22 +124,35 @@ in
       || !builtins.isBool docker.enable
     then
       fail "docker accepts only enable (boolean)"
+    else if
+      !builtins.isAttrs hostCommands
+      || builtins.attrNames hostCommands != [ "enable" ]
+      || !builtins.isBool hostCommands.enable
+    then
+      fail "hostCommands accepts only enable (boolean)"
+    else if !builtins.isBool bypassPermissions then
+      fail "bypassPermissions must be a boolean"
+    # Only an agent has permission prompts to bypass.
+    else if bypassPermissions && integration == null then
+      fail "bypassPermissions needs an agent goblin (mkClaudeGoblin or mkCodexGoblin)"
     else if !(scope == null || validScope scope) || !scopes allowedScopes then
       fail "scope must be null or a scope name, and allowedScopes a list of unique scope names"
     else if
       !(
-        allowedChildren == null
-        ||
-          builtins.isList allowedChildren
-          && builtins.all (name: builtins.isString name && validName name) allowedChildren
-          && lib.unique allowedChildren == allowedChildren
+        builtins.isList allowedRunTargets
+        && builtins.all (name: builtins.isString name && validName name) allowedRunTargets
+        && lib.unique allowedRunTargets == allowedRunTargets
       )
     then
-      fail "allowedChildren must be null or a list of unique goblin names"
+      fail "allowedRunTargets must be a list of unique goblin names"
     else if !storageMounts scopeStorage then
       fail "scopeStorage must map storage names to distinct absolute or $HOME paths outside /nix, /proc, /dev and /run/goblins"
-    else if allowNix != false then
-      fail "host Nix access is prohibited; request packages through goblins"
+    else if !builtins.isBool allowNix then
+      fail "allowNix must be a boolean"
+    # The host Nix daemon fetches substitutes and fixed-output derivations over
+    # the host's network, so an offline goblin with Nix would not be offline.
+    else if allowNix && allowedDomains != null then
+      fail "allowNix requires allowedDomains = null: the host Nix daemon downloads over the host network"
     else if allowUnixSockets != true then
       fail "allowUnixSockets must be true for the session request socket"
     else if
@@ -154,6 +178,31 @@ in
       )
     then
       fail "resumeCommand must be null or a list of strings whose placeholders are {key} (key: a lowercase letter, then up to 31 lowercase letters, digits or _), with {{ and }} for literal braces"
+    else if
+      !(
+        onAttach == null
+        || builtins.isAttrs onAttach
+          && builtins.all (name: builtins.elem name [
+            "command"
+            "timeout"
+            "waitFor"
+          ]) (builtins.attrNames onAttach)
+          && handler (onAttach.command or null)
+          && (
+            let
+              timeout = onAttach.timeout or 30;
+            in
+            builtins.isInt timeout && timeout >= 1 && timeout <= 3600
+          )
+          && builtins.isList (onAttach.waitFor or [ ])
+          && builtins.all variableName (onAttach.waitFor or [ ])
+      )
+    then
+      fail "onAttach must be null or { command; timeout ? 30; waitFor ? [ ]; }: command a non-empty list of strings whose placeholders are {key} or {attach.pid}, timeout 1 to 3600 seconds, waitFor variable names"
+    else if !(onDetach == null || handler onDetach) then
+      fail "onDetach must be null or a non-empty list of strings whose placeholders are {key} or {attach.pid}"
+    else if onDetach != null && onAttach == null then
+      fail "onDetach requires onAttach"
     else if !etcFiles injectedFiles || !etcFiles devShellInjectedFiles then
       fail "injectedFiles and devShellInjectedFiles must map relative /etc file names to text or file derivations"
     else if

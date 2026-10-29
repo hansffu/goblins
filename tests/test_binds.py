@@ -5,7 +5,8 @@ import shlex
 import tempfile
 import unittest
 
-from support import FLAKE, command
+from build_support import fixture_app, fixture_path
+from support import FLAKE
 from terminal_support import Terminal
 from daemon_support import Daemon
 
@@ -15,13 +16,11 @@ class BindTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="gb-") as directory:
             root = Path(directory)
             flake = FLAKE
-            app = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "app",
-                                flake + "#checks.x86_64-linux.configured-shell"])) / "bin/goblins"
+            app = fixture_app("configured-shell")
             home = root / "home"
             fish = home / ".config/fish"
             (fish / "functions").mkdir(parents=True)
-            targets = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "targets",
-                                    flake + "#checks.x86_64-linux.bind-targets"]))
+            targets = fixture_path(flake + "#checks.x86_64-linux.bind-targets")
             (fish / "config.fish").symlink_to(targets / "config.fish")
             (fish / "functions/config_probe.fish").symlink_to(targets / "functions/config_probe.fish")
             (home / "unselected-secret").write_text("private-home")
@@ -55,8 +54,7 @@ class BindTests(unittest.TestCase):
                 (root / name).write_text("initial")
             (root / "readonly/host-link").symlink_to(root / "secret")
             flake = FLAKE
-            app = Path(command(["nix", "build", "--print-out-paths", "--out-link", root / "app",
-                                flake + "#checks.x86_64-linux.bound-goblins"])) / "bin/goblins"
+            app = fixture_app("bound-goblins")
             state = root / "control"
             server = Daemon(app, env={**os.environ, "GOBLINS_TEST_ROOT": str(root)})
             self.addCleanup(server.close)

@@ -12,16 +12,15 @@ import unittest
 import uuid
 import zipfile
 
+from build_support import fixture_app
 from daemon_support import Daemon, ROOT
-from support import command
 from terminal_support import Terminal
 
 
 class ScopeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                               f"git+file://{ROOT}#checks.x86_64-linux.scope-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("scope-goblins")
 
     def setUp(self):
         cache = tempfile.TemporaryDirectory(prefix="goblins-scope-cache-", dir=Path.home() / ".cache")
@@ -35,15 +34,13 @@ class ScopeTests(unittest.TestCase):
         self.addCleanup(self.d.close)
         self.counter = 0
 
-    def start(self, name="member", scope=None, parent=None, wait=True, cwd=None):
+    def start(self, name="member", scope=None, wait=True, cwd=None):
         params = {"key": uuid.uuid4().hex, "name": name, "configuration": self.d.manifest,
                   "rows": 24, "cols": 100}
         if cwd:
             params["cwd"] = str(cwd)
         if scope:
             params["scope"] = scope
-        if parent:
-            params["parent"] = parent
         session = self.d.rpc.call("sessions.start", params)["session"]
         if wait:
             record = self.d.wait(lambda: (r if (r := self.d.get(session))["state"] != "starting" else None),
@@ -181,14 +178,17 @@ class ScopeTests(unittest.TestCase):
         record = self.d.wait(lambda: (r if (r := self.d.get(failed))["state"] not in ("starting", "running") else None),
                              timeout=60)
         self.assertIn("not allowed", record["detail"] or "")
-        with self.assertRaises(ValueError) as error:
-            self.start(scope="work", parent=loner)
-        self.assertIn("inherit", str(error.exception))
-        # Children join their parent's scope.
-        parent = self.start(scope="scratch")
-        child = self.start(parent=parent)
-        self.run_in(self.terminal(parent), "echo inherited > /var/cache/probe/file")
-        output, _ = self.run_in(self.terminal(child), "cat /var/cache/probe/file")
+        # A goblin a raid owner runs joins the owner's scope, so an unscoped
+        # owner cannot run a configuration that requires one.
+        failed = self.d.member(loner, "member", wait=False)["session"]
+        record = self.d.wait(lambda: (r if (r := self.d.get(failed))["state"] not in ("starting", "running") else None),
+                             timeout=60)
+        self.assertIn("its owner has no scope", record["detail"] or "")
+        owner = self.start(scope="scratch")
+        member = self.d.member(owner, "member")["session"]
+        self.assertEqual(self.d.get(member)["scope"], "scratch")
+        self.run_in(self.terminal(owner), "echo inherited > /var/cache/probe/file")
+        output, _ = self.run_in(self.terminal(member), "cat /var/cache/probe/file")
         self.assertIn("inherited", output)
 
     def test_gradle_members_share_a_home_without_lock_timeouts(self):

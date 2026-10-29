@@ -8,13 +8,14 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon, ROOT
+from build_support import fixture_app
+from daemon_support import Daemon, RPC
 from support import FLAKE, command
 from terminal_support import Terminal
 # A module import, so its DockerTests are not collected here as well.
 import test_docker
 
-FLAKE = """{
+TEMPLATE = """{
   inputs.nixpkgs.url = "path:NIXPKGS";
   outputs = { nixpkgs, ... }:
     let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {
@@ -33,6 +34,9 @@ FLAKE = """{
 
 
 class DevShellTests(unittest.TestCase):
+    # The configuration a dev shell goblin of this suite runs as a raid member.
+    MEMBER = "shell"
+
     @classmethod
     def setUpClass(cls):
         cls.nixpkgs = command(["nix", "eval", "--impure", "--raw", "--expr",
@@ -47,12 +51,15 @@ class DevShellTests(unittest.TestCase):
         # A Git flake is the common case: only tracked files reach the store.
         command(["git", "-C", str(self.project), "init", "-q"])
         command(["git", "-C", str(self.project), "add", "flake.nix", "flake.lock"])
-        self.d = Daemon()
+        self.d = self.make_daemon()
         self.addCleanup(self.d.close)
+
+    def make_daemon(self):
+        return Daemon()
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
-            FLAKE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker))
+            TEMPLATE.replace("NIXPKGS", self.nixpkgs).replace("@MARKER@", marker))
 
     def run_cli(self, *args):
         terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "run", "shell", *args],
@@ -60,7 +67,15 @@ class DevShellTests(unittest.TestCase):
         self.addCleanup(terminal.close)
         return terminal
 
-    def test_launch_exports_environment_and_children_inherit_the_snapshot(self):
+    def run_member(self, owner, agent_name=None):
+        """A goblin the raid owner `owner` (an agent name) runs, attached
+        through the host CLI; it shares the owner's dev shell and directory."""
+        launch = self.d.member(self.d.get(owner)["id"], self.MEMBER, agent_name=agent_name)
+        terminal = Terminal([str(self.d.app), "--state-dir", str(self.d.state), "attach", launch["session"]])
+        self.addCleanup(terminal.close)
+        return launch["session"], terminal
+
+    def test_launch_exports_environment_and_members_inherit_the_snapshot(self):
         terminal = self.run_cli("--dev-shell", ".", "--name", "dev")
         terminal.expect(rf"(?:^|\n)hook-ran in {self.project}\n")
         terminal.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR; hello; printf 'R=%s\\n' $GOBLINS_DEV_SHELL\n")
@@ -74,21 +89,26 @@ class DevShellTests(unittest.TestCase):
         self.assertEqual(record["dev_shell"], str(self.project))
         self.assertEqual(record["cwd"], str(self.project))
 
-        # Later workspace edits never reach the running generation or children.
+        # Later workspace edits never reach the running generation or members.
         self.write_flake("edited")
-        child = self.run_cli("--parent", "dev")
-        child.expect(r"(?:^|\n)hook-ran in ")
-        child_record = next(r for r in self.d.rpc.call("sessions.list", {}) if r.get("parent") == record["id"])
-        self.assertEqual(child_record["cwd"], str(self.project))
-        child.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR\n")
-        child.expect(r"(?:^|\n)M=original H=from-hook-original\n")
+        member, terminal = self.run_member("dev")
+        terminal.expect(r"(?:^|\n)hook-ran in ")
+        self.assertEqual(self.d.get(member)["cwd"], str(self.project))
+        terminal.send("printf 'M=%s H=%s\\n' $DEV_MARKER $HOOK_VAR\n")
+        terminal.expect(r"(?:^|\n)M=original H=from-hook-original\n")
 
-    def test_children_cannot_choose_a_dev_shell(self):
-        parent = self.d.start()
-        with self.assertRaisesRegex(Exception, "inherit their parent's dev shell"):
-            self.d.rpc.call("sessions.start", {
-                "key": uuid.uuid4().hex, "name": "shell", "configuration": self.d.manifest,
-                "parent": parent["session"], "dev_shell": str(self.project), "rows": 24, "cols": 80})
+    def test_members_cannot_choose_a_dev_shell(self):
+        # A member runs in its owner's dev shell; a run request names none.
+        owner = self.d.start()["session"]
+        # A sandbox connection answers one call after initialize.
+        peer = RPC(self.d.state / owner / "resources/request.sock")
+        peer.call("raids.create", {"raid": "crew"})
+        peer.close()
+        peer = RPC(self.d.state / owner / "resources/request.sock")
+        self.addCleanup(peer.close)
+        with self.assertRaisesRegex(Exception, "unknown field `dev_shell`"):
+            peer.call("sessions.start", {"key": uuid.uuid4().hex, "name": "shell",
+                                         "dev_shell": str(self.project), "detached": True})
 
     def test_launch_requires_a_lock_file(self):
         command(["git", "-C", str(self.project), "rm", "-qf", "flake.lock"])
@@ -150,21 +170,19 @@ class DevShellTests(unittest.TestCase):
 class DevShellSkillTests(DevShellTests):
     """The goblins-devshell skill is mounted only in dev shell sandboxes."""
     SKILL = "/etc/claude-code/.claude/skills/goblins-devshell/SKILL.md"
+    MEMBER = "claude"
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                                FLAKE + "#checks.x86_64-linux.claude-goblins"])) / "bin/goblins"
+        cls.app = fixture_app("claude-goblins")
 
-    def setUp(self):
-        super().setUp()
+    def make_daemon(self):
         temp = tempfile.TemporaryDirectory(prefix="goblin-devshell-home-")
         self.addCleanup(temp.cleanup)
         home = Path(temp.name)
         (home / ".claude").mkdir()
-        self.d = Daemon(self.app, env={**os.environ, "HOME": str(home)})
-        self.addCleanup(self.d.close)
+        return Daemon(self.app, env={**os.environ, "HOME": str(home)})
 
     def run_cli(self, *args):
         terminal = Terminal([str(self.app), "--state-dir", str(self.d.state), "run", "claude", *args],
@@ -180,11 +198,13 @@ class DevShellSkillTests(DevShellTests):
     def test_skill_follows_the_dev_shell(self):
         self.assertFalse(self.skill_mounted(self.run_cli("--name", "plain")))
         self.assertTrue(self.skill_mounted(self.run_cli("--dev-shell", ".", "--name", "dev")))
-        self.assertTrue(self.skill_mounted(self.run_cli("--parent", "dev")))
+        _, member = self.run_member("dev")
+        member.expect("claude-probe>", timeout=120)
+        self.assertTrue(self.skill_mounted(member))
 
     # The launch tests use the plain shell configuration and ran above.
-    test_launch_exports_environment_and_children_inherit_the_snapshot = None
-    test_children_cannot_choose_a_dev_shell = None
+    test_launch_exports_environment_and_members_inherit_the_snapshot = None
+    test_members_cannot_choose_a_dev_shell = None
     test_launch_requires_a_lock_file = None
     test_evaluation_cannot_reach_host_files_outside_the_flake = None
     test_launch_requires_a_working_directory = None
@@ -195,8 +215,8 @@ class DevShellRefreshTests(DevShellTests):
     """Refresh through the in-sandbox CLI with host approval (ADR 0007)."""
 
     # Inherited launch tests already ran in DevShellTests.
-    test_launch_exports_environment_and_children_inherit_the_snapshot = None
-    test_children_cannot_choose_a_dev_shell = None
+    test_launch_exports_environment_and_members_inherit_the_snapshot = None
+    test_members_cannot_choose_a_dev_shell = None
     test_launch_requires_a_lock_file = None
     test_evaluation_cannot_reach_host_files_outside_the_flake = None
     test_launch_requires_a_working_directory = None
@@ -244,7 +264,7 @@ class DevShellRefreshTests(DevShellTests):
         # A tracked non-Nix file is part of the source diff too.
         (self.project / "notes.txt").write_text("new notes\n")
         command(["git", "-C", str(self.project), "add", "notes.txt"])
-        n = self.send(self.terminal, "goblins devshell refresh --reason 'pick up flake.nix'")
+        n = self.send(self.terminal, "goblin devshell refresh --reason 'pick up flake.nix'")
         record = self.pending_refresh()
         # The daemon sends facts; frontends assemble sections and colors.
         preview = record["preview"]
@@ -269,16 +289,16 @@ class DevShellRefreshTests(DevShellTests):
         output, _ = self.run_in("printf 'M=%s\\n' $DEV_MARKER; bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         self.assertIn("M=original", output)
         self.assertIn("N=edited", output)
-        # New children start in the new generation.
-        child = self.run_cli("--parent", "dev")
-        child.expect(r"(?:^|\n)hook-ran in ")
-        output, _ = self.run_in("printf 'C=%s\\n' $DEV_MARKER", terminal=child)
+        # New members start in the new generation.
+        _, member = self.run_member("dev")
+        member.expect(r"(?:^|\n)hook-ran in ")
+        output, _ = self.run_in("printf 'C=%s\\n' $DEV_MARKER", terminal=member)
         self.assertIn("C=edited", output)
 
-    def test_child_refresh_to_an_inherited_generation_needs_no_approval(self):
-        child = self.run_cli("--parent", "dev", "--name", "kid")
-        child.expect(r"(?:^|\n)hook-ran in ")
-        output, code = self.run_in("goblins devshell refresh", terminal=child)
+    def test_member_refresh_to_an_inherited_generation_needs_no_approval(self):
+        _, member = self.run_member("dev", agent_name="kid")
+        member.expect(r"(?:^|\n)hook-ran in ")
+        output, code = self.run_in("goblin devshell refresh", terminal=member)
         self.assertEqual(code, 0, output)
         self.assertIn("Dev shell generation 2 is active", output)
         records = [r for r in self.d.permissions() if r["kind"] == "devshell"]
@@ -293,17 +313,17 @@ class DevShellRefreshTests(DevShellTests):
         edited = json.loads(original)
         edited["nodes"]["nixpkgs"]["locked"]["narHash"] = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
         lock.write_text(json.dumps(edited, indent=2))
-        output, code = self.run_in("goblins devshell refresh")
+        output, code = self.run_in("goblin devshell refresh")
         self.assertEqual(code, 1, output)
         self.assertIn("flake.lock differs from the trusted lock", output)
         self.assertIn("nodes.nixpkgs.locked.narHash", output)
-        self.assertIn("goblins devshell restore-lock", output)
+        self.assertIn("goblin devshell restore-lock", output)
         self.assertEqual([r["state"] for r in self.d.permissions() if r["kind"] == "devshell"], ["failed"])
-        output, code = self.run_in("goblins devshell restore-lock")
+        output, code = self.run_in("goblin devshell restore-lock")
         self.assertEqual(code, 0, output)
         self.assertEqual(json.loads(lock.read_text()), json.loads(original))
         # The restored lock is the current generation, so no approval is needed.
-        output, code = self.run_in("goblins devshell refresh")
+        output, code = self.run_in("goblin devshell refresh")
         self.assertEqual(code, 0, output)
         self.assertEqual([r["state"] for r in self.d.permissions() if r["kind"] == "devshell"],
                          ["failed", "ready"])
@@ -314,11 +334,11 @@ class DevShellRefreshTests(DevShellTests):
             f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
         # Without --lock, an incomplete lock is an error, not an update.
-        output, code = self.run_in("goblins devshell refresh")
+        output, code = self.run_in("goblin devshell refresh")
         self.assertEqual(code, 1, output)
         self.assertIn("does not lock everything flake.nix uses", output)
-        self.assertIn("goblins devshell refresh --lock", output)
-        n = self.send(self.terminal, "goblins devshell refresh --lock")
+        self.assertIn("goblin devshell refresh --lock", output)
+        n = self.send(self.terminal, "goblin devshell refresh --lock")
         record = self.pending_refresh()
         self.assertEqual(record["package"], "refresh --lock")
         preview = record["preview"]
@@ -336,7 +356,7 @@ class DevShellRefreshTests(DevShellTests):
 
     def test_denied_refresh_changes_nothing(self):
         self.write_flake("edited")
-        n = self.send(self.terminal, "goblins devshell refresh")
+        n = self.send(self.terminal, "goblin devshell refresh")
         self.d.decide(self.pending_refresh(), False)
         self.assertEqual(self.end(self.terminal, n)[1], 1)
         output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
@@ -352,7 +372,7 @@ class DevShellRefreshTests(DevShellTests):
 
     def test_refresh_cannot_be_approved_before_its_preview(self):
         self.write_endless_flake()
-        n = self.send(self.terminal, "goblins devshell refresh")
+        n = self.send(self.terminal, "goblin devshell refresh")
         record = self.d.wait(lambda: next((r for r in self.d.permissions(session=self.session)
                                            if r["kind"] == "devshell" and r["state"] == "pending"), None),
                              timeout=60)
@@ -377,7 +397,7 @@ class DevShellRefreshTests(DevShellTests):
         terminal.expect(r"(?:^|\n)hook-ran in ")
         self.write_endless_flake()
         start = time.monotonic()
-        output, code = self.run_in("goblins devshell refresh", terminal=terminal)
+        output, code = self.run_in("goblin devshell refresh", terminal=terminal)
         self.assertLess(time.monotonic() - start, 60)
         self.assertEqual(code, 1, output)
         self.assertIn("evaluation timed out after 5 s", output)
@@ -390,7 +410,7 @@ class DevShellRefreshTests(DevShellTests):
     def test_pending_candidate_source_is_a_gc_root(self):
         before = self.roots()
         self.write_flake("edited")
-        n = self.send(self.terminal, "goblins devshell refresh")
+        n = self.send(self.terminal, "goblin devshell refresh")
         record = self.pending_refresh()
         # The candidate's new source snapshot is rooted while approval waits.
         self.assertEqual(len(self.roots()), len(before) + 1, self.roots())
@@ -407,7 +427,7 @@ class DevShellRefreshTests(DevShellTests):
             'DEV_MARKER = "original";',
             f'DEV_MARKER = builtins.readFile (pkgs.runCommand "{name}" {{}} "echo built > $out");')
         (self.project / "flake.nix").write_text(flake)
-        output, code = self.run_in("goblins devshell refresh")
+        output, code = self.run_in("goblin devshell refresh")
         self.assertEqual(code, 1, output)
         self.assertIn("allow-import-from-derivation", output)
         self.assertFalse(Path(out).exists(), out)
@@ -417,7 +437,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
     """A flake in a subdirectory of its Git repository keeps the repository as source."""
 
     test_approved_refresh_enters_the_edited_flake_and_keeps_running_environment = None
-    test_child_refresh_to_an_inherited_generation_needs_no_approval = None
+    test_member_refresh_to_an_inherited_generation_needs_no_approval = None
     test_hand_edited_lock_is_rejected_until_restored = None
     test_lock_adds_new_inputs_and_writes_the_approved_lock = None
     test_denied_refresh_changes_nothing = None
@@ -448,7 +468,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
 
     def write_flake(self, marker):
         (self.project / "flake.nix").write_text(
-            FLAKE.replace("NIXPKGS", self.nixpkgs)
+            TEMPLATE.replace("NIXPKGS", self.nixpkgs)
             .replace('DEV_MARKER = "@MARKER@";', "DEV_MARKER = builtins.readFile ../marker;"))
 
     def test_subdirectory_flake_uses_files_outside_its_directory(self):
@@ -459,7 +479,7 @@ class DevShellSubdirectoryTests(DevShellRefreshTests):
             "inputs.nixpkgs.url",
             f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
-        n = self.send(self.terminal, "goblins devshell refresh --lock")
+        n = self.send(self.terminal, "goblin devshell refresh --lock")
         record = self.pending_refresh()
         preview = record["preview"]
         self.assertEqual([f["path"] for f in preview["files"]], ["marker", "sub/flake.nix"])
@@ -500,7 +520,7 @@ APPS = """      apps.x86_64-linux = {
 
 
 class DevShellFlakeRunTests(DevShellRefreshTests):
-    """goblins flake run: apps from the trusted generation, with no nix in the sandbox."""
+    """goblin flake run: apps from the trusted generation, with no nix in the sandbox."""
 
     def setUp(self):
         # A Git repository outside the flake that evaluation must not reach.
@@ -515,7 +535,7 @@ class DevShellFlakeRunTests(DevShellRefreshTests):
         super().setUp()
 
     def write_flake(self, marker):
-        flake = FLAKE.replace("let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {",
+        flake = TEMPLATE.replace("let pkgs = nixpkgs.legacyPackages.x86_64-linux; in {",
                               "let pkgs = nixpkgs.legacyPackages.x86_64-linux;\n"
                               "        greet = pkgs.writeShellScriptBin \"greet\" ''echo \"greet:@MARKER@:$*\"'';\n"
                               "    in {")
@@ -525,56 +545,56 @@ class DevShellFlakeRunTests(DevShellRefreshTests):
             .replace("@REPO@", str(self.outside)).replace("@REV@", self.rev))
 
     def test_apps_and_packages_of_the_trusted_generation_run_with_arguments(self):
-        output, code = self.run_in("goblins flake run .#greet -- a 'b c'", timeout=300)
+        output, code = self.run_in("goblin flake run .#greet -- a 'b c'", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn("greet:original:a b c", output)
-        output, code = self.run_in("goblins flake run")
+        output, code = self.run_in("goblin flake run")
         self.assertEqual(code, 0, output)
         self.assertIn("greet:original:", output)
         # A package runs its main program, as with nix run.
-        output, code = self.run_in("goblins flake run '#tool'", timeout=300)
+        output, code = self.run_in("goblin flake run '#tool'", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn("tool-ran", output)
         # Running a trusted app asks nothing of the host.
         self.assertEqual(self.d.permissions(), [])
 
     def test_programs_must_be_built_store_outputs(self):
-        output, code = self.run_in("goblins flake run '#outside'")
+        output, code = self.run_in("goblin flake run '#outside'")
         self.assertEqual(code, 1, output)
         self.assertIn("app program /bin/sh is not a path in the store", output)
-        output, code = self.run_in("goblins flake run '#literal'")
+        output, code = self.run_in("goblin flake run '#literal'")
         self.assertEqual(code, 1, output)
         self.assertIn("does not come from a derivation or store path", output)
-        output, code = self.run_in("goblins flake run '#missing'")
+        output, code = self.run_in("goblin flake run '#missing'")
         self.assertEqual(code, 1, output)
         self.assertIn("has no apps.x86_64-linux.missing or packages.x86_64-linux.missing", output)
 
     def test_only_the_dev_shell_flake_is_served(self):
-        output, code = self.run_in("goblins flake run /tmp#greet")
+        output, code = self.run_in("goblin flake run /tmp#greet")
         self.assertEqual(code, 2, output)
         self.assertIn("serves only this sandbox's dev shell flake", output)
-        output, code = self.run_in("goblins flake run github:NixOS/nixpkgs#hello")
+        output, code = self.run_in("goblin flake run github:NixOS/nixpkgs#hello")
         self.assertEqual(code, 2, output)
         self.assertIn("serves only this sandbox's dev shell flake", output)
-        output, code = self.run_in(f"goblins flake run {self.project}#greet")
+        output, code = self.run_in(f"goblin flake run {self.project}#greet")
         self.assertEqual(code, 0, output)
 
     def test_changed_workspace_flake_needs_a_refresh_first(self):
         self.write_flake("edited")
-        output, code = self.run_in("goblins flake run '#greet'")
+        output, code = self.run_in("goblin flake run '#greet'")
         self.assertEqual(code, 1, output)
         self.assertIn("the workspace flake differs from dev shell generation 1", output)
-        self.assertIn("goblins devshell refresh", output)
-        n = self.send(self.terminal, "goblins devshell refresh")
+        self.assertIn("goblin devshell refresh", output)
+        n = self.send(self.terminal, "goblin devshell refresh")
         self.d.decide(self.pending_refresh(), True)
         self.assertEqual(self.end(self.terminal, n)[1], 0)
-        output, code = self.run_in("goblins flake run '#greet'", timeout=300)
+        output, code = self.run_in("goblin flake run '#greet'", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn("greet:edited:", output)
 
     def test_app_evaluation_cannot_reach_host_files_outside_the_flake(self):
         # The dev shell launched; only the app reads the outside repository.
-        output, code = self.run_in("goblins flake run '#leak'")
+        output, code = self.run_in("goblin flake run '#leak'")
         self.assertEqual(code, 1, output)
         self.assertIn("could not evaluate app leak", output)
         self.assertNotIn("host-secret", output)
@@ -585,19 +605,19 @@ for _name in dir(DevShellRefreshTests):
         setattr(DevShellFlakeRunTests, _name, None)
 
 class DevShellDiffTests(DevShellRefreshTests):
-    """goblins devshell diff: a refresh preview with no request and no change."""
+    """goblin devshell diff: a refresh preview with no request and no change."""
 
     def env_marker(self):
         output, _ = self.run_in("bash -c '. /run/goblins/devshell/env.sh >/dev/null; printf \"N=%s\\n\" $DEV_MARKER'")
         return output
 
     def test_diff_shows_the_edited_flake_and_changes_nothing(self):
-        output, code = self.run_in("goblins devshell diff", timeout=300)
+        output, code = self.run_in("goblin devshell diff", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn("No changes: the workspace flake matches dev shell generation 1.", output)
         roots = self.roots()
         self.write_flake("edited")
-        output, code = self.run_in("goblins devshell diff", timeout=300)
+        output, code = self.run_in("goblin devshell diff", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn("generation 1 → 2 (preview only; nothing was requested or changed)", output)
         self.assertIn("ATTENTION nothing unusual", output)
@@ -617,10 +637,10 @@ class DevShellDiffTests(DevShellRefreshTests):
         edited = json.loads(lock.read_text())
         edited["nodes"]["nixpkgs"]["locked"]["narHash"] = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
         lock.write_text(json.dumps(edited, indent=2))
-        output, code = self.run_in("goblins devshell diff")
+        output, code = self.run_in("goblin devshell diff")
         self.assertEqual(code, 1, output)
         self.assertIn("flake.lock differs from the trusted lock", output)
-        self.assertIn("goblins devshell restore-lock", output)
+        self.assertIn("goblin devshell restore-lock", output)
         self.assertEqual(self.d.permissions(), [])
         self.assertEqual(json.loads(lock.read_text()), edited)
 
@@ -630,10 +650,10 @@ class DevShellDiffTests(DevShellRefreshTests):
             "inputs.nixpkgs.url",
             f'inputs.extra = {{ url = "path:{self.nixpkgs}"; flake = false; }};\n  inputs.nixpkgs.url')
         (self.project / "flake.nix").write_text(flake)
-        output, code = self.run_in("goblins devshell diff")
+        output, code = self.run_in("goblin devshell diff")
         self.assertEqual(code, 1, output)
         self.assertIn("does not lock everything flake.nix uses", output)
-        output, code = self.run_in("goblins devshell diff --lock", timeout=300)
+        output, code = self.run_in("goblin devshell diff --lock", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn(f"ATTENTION ! new input 'extra' from path:{self.nixpkgs}", output)
         self.assertIn(f"INPUTS    [A] extra path:{self.nixpkgs}", output)
@@ -642,13 +662,13 @@ class DevShellDiffTests(DevShellRefreshTests):
 
     def test_diff_while_a_refresh_is_pending_leaves_it_alone(self):
         self.write_flake("edited")
-        output, code = self.run_in("goblins devshell refresh >/tmp/refresh.log 2>&1 &")
+        output, code = self.run_in("goblin devshell refresh >/tmp/refresh.log 2>&1 &")
         self.assertEqual(code, 0, output)
         record = self.pending_refresh()
         roots = self.roots()
         # The workspace moves on; the pending candidate must not.
         self.write_flake("later")
-        output, code = self.run_in("goblins devshell diff", timeout=300)
+        output, code = self.run_in("goblin devshell diff", timeout=300)
         self.assertEqual(code, 0, output)
         self.assertIn("ENV       [C] DEV_MARKER original → later", output)
         self.assertEqual(self.roots(), roots)
@@ -734,7 +754,7 @@ class DevShellDockerTests(test_docker.DockerTests):
 
     def test_engine_sees_a_refreshed_dev_shell(self):
         self.write_flake(added=True)
-        self.terminal.send("goblins devshell refresh --reason 'add a tool'\n")
+        self.terminal.send("goblin devshell refresh --reason 'add a tool'\n")
         record = self.d.wait(lambda: next((r for r in self.d.permissions(session=self.session, state="pending")
                                            if r["kind"] == "devshell" and r.get("preview")), None), timeout=180)
         self.d.decide(record, True)
@@ -745,7 +765,7 @@ class DevShellDockerTests(test_docker.DockerTests):
         self.assertIn(f"added:{self.marker}:{program}", output)
 
     def test_engine_sees_a_flake_app(self):
-        program = self.program(self.output("goblins flake run .#greet"), "greet")
+        program = self.program(self.output("goblin flake run .#greet"), "greet")
         output = self.output(f"docker run --rm -v /nix/store:/nix/store:ro goblins-test {program}")
         self.assertIn(f"greet:{self.marker}:{program}", output)
 

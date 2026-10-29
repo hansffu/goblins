@@ -5,7 +5,7 @@ use std::{
     env,
     ffi::CString,
     fs::{self, File},
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     os::unix::{fs::MetadataExt, process::CommandExt},
     process::{Child, Command, Stdio},
@@ -277,16 +277,39 @@ fn join_pid_namespace(pid: &OwnedFd) -> io::Result<()> {
     }
     Ok(())
 }
-struct Session(Child);
+struct Session(Child, Option<OwnedFd>);
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        // Kill the sandbox init while its Bubblewrap monitor is still alive
+        // to reap it. Killing the monitor first leaves zombies to an external
+        // subreaper, whose next tick can be later than server shutdown.
+        let killed = self.1.as_ref().is_some_and(|init| unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                init.as_raw_fd(),
+                libc::SIGKILL,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            ) == 0
+                || io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        });
+        if !killed {
+            let _ = self.0.kill();
+        }
         let _ = self.0.wait();
     }
 }
+mod cleanup;
 mod docker;
+mod hostjob;
 mod scope;
 fn run() -> io::Result<i32> {
+    if env::args().nth(1).as_deref() == Some("--clean-storage") {
+        return cleanup::run();
+    }
+    if env::args().nth(1).as_deref() == Some("--host-job") {
+        return hostjob::run();
+    }
     if env::args().nth(1).as_deref() == Some("--scope-keeper") {
         return scope::run();
     }
@@ -413,7 +436,6 @@ fn run() -> io::Result<i32> {
     })?;
     let source_ns = own(&proc, "ns/mnt", libc::O_RDONLY)?;
     let own_user = own(&proc, "ns/user", libc::O_RDONLY)?;
-    drop(proc);
     let source_owner = fd(unsafe { libc::ioctl(source_ns.as_raw_fd(), NS_GET_USERNS) })?;
     if inode(&source_owner)? != inode(&own_user)? {
         return Err(io::Error::other("unexpected source mount namespace owner"));
@@ -454,7 +476,7 @@ fn run() -> io::Result<i32> {
             Ok(())
         });
     }
-    let mut session = Session(cmd.spawn()?);
+    let mut session = Session(cmd.spawn()?, None);
     drop(cmd);
     // Bubblewrap consumes and closes bind-fd handles before payload execution.
     // The supervising helper must not retain them either.
@@ -472,6 +494,39 @@ fn run() -> io::Result<i32> {
         }
     }
     let pid = pid.ok_or_else(|| io::Error::other("bubblewrap startup failed"))?;
+    // Bubblewrap's JSON PID belongs to its own namespace, which may be a
+    // shared scope. pidfd_open needs a PID visible to THIS helper. Its direct
+    // child's only child is the blocked sandbox init; use the original /proc
+    // to pin that process, then verify its mount namespace against the JSON PID.
+    let monitor = session.0.id();
+    let mut children = String::new();
+    File::from(fd(unsafe {
+        libc::openat(
+            proc.as_raw_fd(),
+            c(&format!("{monitor}/task/{monitor}/children")).as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    })?)
+    .read_to_string(&mut children)?;
+    let children: Vec<_> = children.split_whitespace().collect();
+    let [child] = children.as_slice() else {
+        return Err(io::Error::other("unexpected Bubblewrap children"));
+    };
+    let host_pid: u32 = child.parse().map_err(io::Error::other)?;
+    session.1 = Some(fd(unsafe {
+        libc::syscall(libc::SYS_pidfd_open, host_pid, 0) as i32
+    })?);
+    let host_mounts = fd(unsafe {
+        libc::openat(
+            proc.as_raw_fd(),
+            c(&format!("{host_pid}/ns/mnt")).as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC,
+        )
+    })?;
+    if inode(&host_mounts)? != inode(&open(&format!("/proc/{pid}/ns/mnt"), libc::O_RDONLY)?)? {
+        return Err(io::Error::other("sandbox PID namespace mapping mismatch"));
+    }
+    drop((proc, host_mounts));
     // info-fd precedes pivot_root. block-fd holds the payload. A trusted mount
     // under the final root identifies completion of the pivot; no agent runs.
     let mut root = None;
@@ -559,7 +614,6 @@ fn run() -> io::Result<i32> {
             continue;
         }
         let mut bytes = Vec::new();
-        use std::io::Read;
         let count = input
             .by_ref()
             .take(MAX_HELPER_COMMAND)

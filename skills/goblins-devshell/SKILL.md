@@ -5,7 +5,7 @@ description: Use and refresh this Goblins sandbox's host-trusted flake dev shell
 
 This sandbox runs in the project flake's dev shell, like `nix develop`: its
 tools, variables and `shellHook` exports are already in your environment.
-`goblins status` shows the flake. Editing project files does not change the
+`goblin status` shows the flake. Editing project files does not change the
 active generation.
 
 There is no Nix executable in the sandbox. Use the Goblins commands below.
@@ -25,11 +25,11 @@ Choose the flags for the task:
 
 `--lock` and `--update` are mutually exclusive.
 
-1. Run `goblins devshell diff` with those flags. It shows the changes a
+1. Run `goblin devshell diff` with those flags. It shows the changes a
    refresh with the same flags would propose: source, inputs, packages,
    environment, `shellHook`, and what will be fetched or built. It asks
    nothing and changes nothing. Fix unexpected changes before requesting.
-2. Run `goblins devshell refresh --reason "WHY THE TASK NEEDS THIS"` with the
+2. Run `goblin devshell refresh --reason "WHY THE TASK NEEDS THIS"` with the
    same flags. A preview is not approval; this asks the host and waits.
    - Exit 0: approved. The new `shellHook` has already run once.
    - Exit 1: denied or a known failure. Report it and continue with the
@@ -40,7 +40,7 @@ Choose the flags for the task:
    as an operation notice in your inbox (see goblins-messaging). If the
    refresh command itself did not finish, for example after exit 2, a ready
    notice means the generation is active but the workspace lock may still be
-   the old one: run `goblins devshell restore-lock` to write the approved lock.
+   the old one: run `goblin devshell restore-lock` to write the approved lock.
 3. Existing processes, including your current shell and any shell it starts,
    keep the old environment. Separate command executions may not keep
    environment changes, so source `env.sh` in the same Bash command that
@@ -57,22 +57,22 @@ sandbox's trusted lock; formatting differences do not matter. An edit, a
 checkout, or another sandbox's approved refresh in the shared workspace can
 make it foreign. Do not try to bypass the check.
 
-`goblins devshell restore-lock` overwrites the workspace lock with this
+`goblin devshell restore-lock` overwrites the workspace lock with this
 sandbox's trusted one. Before running it, inspect and preserve any lock
 changes that still matter. If another goblin's refresh wrote the lock,
 restoring breaks its check in turn, so coordinate with that goblin first,
-through your parent when it is not your parent or child. Then make the
+through the raid's owner when you cannot message it directly. Then make the
 intended change through a refresh with `--lock` or `--update`.
 
 Generations belong to individual sandboxes even though they share files: a
-refresh changes only the sandbox that asked for it. Existing parent and child
-goblins keep their own generation. New children start in their parent's
+refresh changes only the sandbox that asked for it. Other goblins sharing the
+workspace keep their own generation. Raid members you run start in your
 current generation.
 
 ## Run a flake app
 
-Use `goblins flake run '#APP' -- ARGS` instead of `nix run`, and
-`goblins flake run '#default'` for the default app. Quote the selector: an
+Use `goblin flake run '#APP' -- ARGS` instead of `nix run`, and
+`goblin flake run '#default'` for the default app. Quote the selector: an
 unquoted `#` starts a shell comment. Only this dev shell's own flake is served,
 from the current trusted generation, with no approval. If any tracked file in
 the flake's repository changed, it fails until a refresh is approved.
@@ -84,6 +84,6 @@ environment.
 ## Choose a mechanism
 
 - Tools the project needs long-term belong in the flake: edit, diff, refresh.
-- A one-off tool for the current task: `goblins request-package`
+- A one-off tool for the current task: `goblin request-package`
   (goblins-packages).
 - Containers: goblins-docker, not a flake package.

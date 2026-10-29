@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from support import FLAKE, command
+from build_support import daemon_environment, fixture_app
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,12 +63,13 @@ class RPC:
 
 def app():
     if "GOBLINS_APP" not in os.environ:
-        os.environ["GOBLINS_APP"] = str(Path(command(["nix", "build", "--no-link", "--print-out-paths", FLAKE + "#checks.x86_64-linux.demo-goblins"])) / "bin/goblins")
+        os.environ["GOBLINS_APP"] = str(fixture_app("shell-goblins"))
     return Path(os.environ["GOBLINS_APP"])
 
 
 class Daemon:
-    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None, state_home=None, keep=None):
+    def __init__(self, application=None, env=None, workspace=None, preexec_fn=None, state_home=None, keep=None,
+                 tool_path=None):
         self.temp = tempfile.TemporaryDirectory(prefix="gd-")
         self.state = Path(self.temp.name) / "state"
         self.app = application or app()
@@ -77,7 +78,7 @@ class Daemon:
         # unless a test shares one between daemons.
         self.state_home = Path(state_home or Path(self.temp.name) / "xdg-state")
         self.history = self.state_home / "goblins/sessions"
-        self.env = {**(os.environ if env is None else env), "XDG_STATE_HOME": str(self.state_home)}
+        self.env = {**daemon_environment(env, tool_path=tool_path), "XDG_STATE_HOME": str(self.state_home)}
         argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "server", "start", "--foreground"]
         if workspace:
             argv += ["--workspace", str(workspace)]
@@ -112,6 +113,11 @@ class Daemon:
             raise AssertionError(f"goblins {' '.join(map(str, args))} failed ({result.returncode}): {result.stderr}")
         return result
 
+    def wait_record_released(self, record_id):
+        """Wait for live-session cleanup; persisted history can lag or be stale."""
+        return self.wait(lambda: next((r for r in self.rpc.call("history.list", {})["records"]
+                                       if r["id"] == record_id and r["running"] is False), None))
+
     def host(self):
         return RPC(self.state / "host.sock")
 
@@ -133,6 +139,27 @@ class Daemon:
             record = self.wait(lambda: (r if (r := self.get(result["session"]))["state"] != "starting" else None), timeout=60)
             assert record["state"] == "running", record
         return result
+
+    def member(self, owner, name="shell", agent_name=None, key=None, wait=True):
+        """A goblin the raid owner `owner` runs with `goblin run`, sharing its
+        workspace, scope and dev shell. An owner in no raid creates one first.
+        Returns the launch with its host terminal path added."""
+        def call(method, params):
+            # A sandbox connection answers one call after initialize.
+            peer = RPC(self.state / owner / "resources/request.sock")
+            try:
+                return peer.call(method, params)
+            finally:
+                peer.close()
+        if call("sessions.status", {})["raid"] is None:
+            call("raids.create", {"raid": f"crew-{uuid.uuid4().hex[:8]}"})
+        launch = call("sessions.start", {"key": key or uuid.uuid4().hex, "name": name,
+                                         "agent_name": agent_name, "detached": True})
+        if wait:
+            record = self.wait(lambda: (r if (r := self.get(launch["session"]))["state"] != "starting" else None),
+                               timeout=60)
+            assert record["state"] == "running", record
+        return dict(launch, terminal=self.get(launch["session"])["terminal"])
 
     def get(self, id):
         return self.rpc.call("sessions.get", {"session": id})

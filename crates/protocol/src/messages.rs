@@ -266,8 +266,12 @@ pub struct Message {
     pub conversation: String,
     pub sender: String,
     pub recipient: String,
-    pub sender_path: String,
-    pub recipient_path: String,
+    /// Agent names when the message was accepted; `host` and `goblins` for
+    /// those senders.
+    #[serde(alias = "sender_path")]
+    pub sender_name: String,
+    #[serde(alias = "recipient_path")]
+    pub recipient_name: String,
     pub in_reply_to: Option<String>,
     pub body: String,
     pub created_sequence: u64,
@@ -279,6 +283,9 @@ pub struct Message {
     /// Set only on daemon-authored operation completion notices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<Operation>,
+    /// Set only on daemon-authored raid notices.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raid: Option<RaidNotice>,
 }
 
 /// Sender of operation completion notices. Not a session or the host.
@@ -297,6 +304,18 @@ pub struct Operation {
     pub status: String,
     /// The sandbox-facing explanation, never a host diagnostic.
     pub message: Option<String>,
+}
+
+/// A raid change a member asked to hear about, such as a paused raid it
+/// could not message resuming.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaidNotice {
+    pub id: String,
+    pub name: String,
+    /// `resumed`.
+    pub event: String,
+    /// Session ID of the new owner.
+    pub owner: String,
 }
 
 #[cfg(test)]

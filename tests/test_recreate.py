@@ -16,9 +16,8 @@ import time
 import unittest
 import uuid
 
+from build_support import fixture_app, nix_bin
 from daemon_support import Daemon, RPC, receive
-from support import FLAKE, command
-from daemon_support import ROOT
 
 FRESH = ["--no-config", "-c", "printf 'ARGS=fresh\\n'; exec sleep 600"]
 RESUME = ["--no-config", "-c",
@@ -36,8 +35,7 @@ def record(id, configuration="shell", agent_name="morb", **extra):
 
 
 def checks_manifest(name):
-    app = Path(command(["nix", "build", "--no-link", "--print-out-paths",
-                        f"{FLAKE}#checks.x86_64-linux.{name}"])) / "bin/goblins"
+    app = fixture_app(name)
     return re.search(r'exec \S+ --runtime (\S+)', app.read_text()).group(1)
 
 
@@ -114,9 +112,11 @@ class RecreateTests(unittest.TestCase):
                          (["no-such-goblins-package"], "rec-a", None))
         self.assertIn("does not provide attribute", r["skipped"][0]["reason"])
         # The record continues: same lists and variables, the skipped name
-        # kept, and this goblin added to the goblins it ran as.
+        # kept, and this goblin added to the goblins it ran as. The version 1
+        # record is written back as version 2, with an empty auto-approve set.
         own = d.wait(lambda: (r if (r := d.record("rec-a"))["sessions"] == ["rec-a", session] else None))
-        self.assertEqual(own["packages"], source["packages"])
+        self.assertEqual(own["version"], 2)
+        self.assertEqual(own["packages"], dict(source["packages"], auto_approve=[]))
         self.assertEqual(own["variables"], source["variables"])
         self.assertEqual((own["skipped"], own["stopped"]), (r["skipped"], None))
         self.assertFalse((d.history / f"{session}.json").exists())
@@ -140,7 +140,7 @@ class RecreateTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, bindir)
         offline = bindir / "offline"
         offline.touch()
-        real = shutil.which("nix")
+        real = str(nix_bin() / "nix")
         # While 'offline' exists, evaluating 'cowsay' fails like a download.
         (bindir / "nix").write_text(f"""#!{sys.executable}
 import os, sys
@@ -152,8 +152,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         (bindir / "nix").chmod(0o700)
         # unrar is unfree, which the pinned catalog refuses to evaluate.
         approved = ["unrar", "hello", "cowsay"]
-        d = self.daemon(record("rec-best", packages={"approved": approved, "denied": []}),
-                        env={**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}"})
+        d = self.daemon(record("rec-best", packages={"approved": approved, "denied": []}), tool_path=bindir)
         session = self.recreate(d, "rec-best")["session"]
         r = d.get(session)
         self.assertEqual(r["packages"], ["hello"])
@@ -168,6 +167,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertEqual(own["skipped"], r["skipped"])
         d.rpc.call("sessions.stop", {"session": session})
         d.wait(lambda: d.record("rec-best")["stopped"])
+        d.wait_record_released("rec-best")
         offline.unlink()
         again = d.get(self.recreate(d, session)["session"])
         self.assertEqual(again["packages"], ["hello", "cowsay"])
@@ -218,35 +218,40 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         self.assertEqual(line["sessions"], ["rec-f", first, second])
         self.assertEqual(sorted(p.stem for p in d.history.glob("*.json")), ["rec-f", "rec-gone"])
         self.assertIn("no longer exists", self.refused(d, "rec-gone"))
-        self.assertIn("--parent", self.refused(d, "rec-gone", parent=second))
+        # There is no tree to recreate a goblin into.
+        self.assertIn("unknown field `parent`", self.refused(d, "rec-gone", parent=second))
         self.assertIn("no recorded goblin", self.refused(d, "nobody"))
         # Names are labels: they select nothing.
         self.assertIn("no recorded goblin", self.refused(d, "morb"))
 
-    def test_children_neither_inherit_nor_mount_recreated_grants(self):
+    def test_members_auto_approve_but_do_not_mount_recreated_grants(self):
         d = self.daemon(record("rec-c", packages={"approved": ["hello"], "denied": []}))
         manifest = self.probe_manifest(d)
         root = self.recreate(d, "rec-c", manifest)["session"]
         hello = self.exec(d, root, "readlink /run/goblins/packages/current/bin/hello").stdout.strip()
         self.assertRegex(hello, r"^/nix/store/.*-hello-.*/bin/hello$")
-        peer = RPC(d.state / root / "resources/request.sock")
-        child = peer.call("sessions.start", {"key": "child", "name": "shell", "agent_name": "kid", "detached": True})
-        peer.close()
-        d.wait(lambda: d.get(child["session"])["state"] == "running", timeout=60)
-        # Same configuration: its normal arguments, no recorded grant mounted.
-        self.output(d, d.get(child["session"]), rb"ARGS=fresh\n")
-        self.assertEqual(self.exec(d, child["session"],
+        member = d.member(root, agent_name="kid")
+        # Same configuration from the owner's manifest: its normal arguments,
+        # no recorded grant mounted.
+        self.output(d, member, rb"ARGS=fresh\n")
+        self.assertEqual(self.exec(d, member["session"],
                                    f"test -e /run/goblins/packages/current/bin/hello || test -e {hello}; echo $?").stdout,
                          "1\n")
-        # Its request reuses the parent's exact output without asking the host.
-        peer = RPC(d.state / child["session"] / "resources/request.sock")
+        # A record of its own, holding the copied grant as auto-approved.
+        own = d.wait(lambda: d.record(member["session"]))
+        self.assertEqual((own["sessions"], own["packages"]),
+                         ([member["session"]], {"approved": [], "denied": [], "auto_approve": ["hello"]}))
+        # Its request reuses the owner's exact output without asking the host.
+        peer = RPC(d.state / member["session"] / "resources/request.sock")
         peer.peer.settimeout(60)
         peer.send("permissions.request", {"kind": "package", "package": "hello", "reason": "test"})
         self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
         peer.close()
-        self.assertEqual(self.exec(d, child["session"], "readlink /run/goblins/packages/current/bin/hello").stdout.strip(),
+        self.assertEqual(self.exec(d, member["session"], "readlink /run/goblins/packages/current/bin/hello").stdout.strip(),
                          hello)
-        self.assertIsNone(d.record(child["session"]))
+        # Granted, the name moves to the member's approved list.
+        d.wait(lambda: d.record(member["session"])["packages"] == {"approved": ["hello"], "denied": [], "auto_approve": []})
+        self.assertEqual(d.record("rec-c")["packages"]["approved"], ["hello"])
 
     def test_cli_recreate_and_a_workspace_server_refuses(self):
         d = self.daemon(record("rec-cli", agent_name="cli-goblin"))
@@ -262,6 +267,10 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         # Attached, by the goblin's own id.
         d.rpc.call("sessions.stop", {"session": launch["session"]})
         d.wait(lambda: d.record("rec-cli")["stopped"])
+        # Disk history is asynchronous and can still contain the original
+        # stopped record. Wait for the daemon to release the live conversation
+        # before attempting another resume, including worker cleanup.
+        d.wait_record_released("rec-cli")
         from terminal_support import Terminal
         attached = Terminal([d.binary, "--runtime", d.manifest, "--state-dir", str(d.state), "resume",
                              launch["session"]], env=d.env)

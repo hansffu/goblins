@@ -49,21 +49,21 @@ let
       builtins.removeAttrs goblin [
         "scope"
         "allowed_scopes"
-        "allowed_children"
+        "allowed_run_targets"
       ];
-  # Omitted: only the configuration itself. The daemon applies the same bounds.
-  allowedChildren =
+  # The daemon applies the same bounds.
+  allowedRunTargets =
     name: goblin:
     let
-      children = if goblin.allowed_children == null then [ name ] else goblin.allowed_children;
+      children = goblin.allowed_run_targets;
       undeclared = builtins.filter (child: !(goblins ? ${child})) children;
     in
     if builtins.length children > 64 then
-      fail "'${name}' allowedChildren lists more than 64 goblins"
+      fail "'${name}' allowedRunTargets lists more than 64 goblins"
     else if builtins.any (child: builtins.stringLength child > 64) children then
-      fail "'${name}' allowedChildren names must be at most 64 characters"
+      fail "'${name}' allowedRunTargets names must be at most 64 characters"
     else if undeclared != [ ] then
-      fail "'${name}' allowedChildren references undeclared goblin '${builtins.head undeclared}'"
+      fail "'${name}' allowedRunTargets references undeclared goblin '${builtins.head undeclared}'"
     else
       children;
   configurations = lib.mapAttrs (
@@ -87,18 +87,25 @@ let
       value.goblin
       // {
         scopes = lib.genAttrs (names value.goblin) (variant name value);
-        allowed_children = allowedChildren name value.goblin;
+        allowed_run_targets = allowedRunTargets name value.goblin;
       }
   ) goblins;
+  # The values of `field` among the configurations that may join each scope.
+  perScope =
+    field:
+    lib.mapAttrs (
+      scope: _:
+      lib.unique (
+        lib.concatMap (
+          configuration: lib.optional (configuration.scopes ? ${scope}) configuration.${field}
+        ) (builtins.attrValues configurations)
+      )
+    ) scopes;
   # Members share one network namespace, so they must agree on network policy.
-  networks = lib.mapAttrs (
-    scope: _:
-    lib.unique (
-      lib.concatMap (
-        configuration: lib.optional (configuration.scopes ? ${scope}) configuration.network
-      ) (builtins.attrValues configurations)
-    )
-  ) scopes;
+  networks = perScope "network";
+  # A shared Docker engine's store view comes from its members, so they must
+  # agree on allowNix in a scope with Docker.
+  nixAccess = lib.filterAttrs (scope: _: scopes.${scope}.docker) (perScope "nix");
 in
 assert validate.goblins goblins;
 assert lib.assertMsg (
@@ -128,6 +135,9 @@ assert lib.assertMsg (
 assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
   builtins.attrValues networks
 )) "mkGoblins: members of a scope must have the same allowedDomains network policy";
+assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
+  builtins.attrValues nixAccess
+)) "mkGoblins: members of a scope with Docker must have the same allowNix";
 import ../packages/goblins.nix {
   inherit pkgs goblins configurations;
   editor =

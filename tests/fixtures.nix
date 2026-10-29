@@ -26,6 +26,7 @@ in
     }
   );
   inherit (pkgs)
+    nix
     jq
     hello
     tree

@@ -147,27 +147,33 @@ pub mod messages;
 pub mod patch;
 pub mod rpc;
 pub mod terminal;
-/// `raid members` as text: one line per member, leading with the name, role
-/// and full tree path a sender can use as a `send` recipient.
+/// `raid members` as text: one line per member, leading with the name a
+/// sender can use as a `send` recipient and its role.
 pub fn raid_members(record: &serde_json::Value) -> String {
     let text = |v: &serde_json::Value| v.as_str().unwrap_or("-").to_string();
     let mut rows = vec![[
         "NAME".to_string(),
         "ROLE".into(),
-        "PATH".into(),
         "CONFIGURATION".into(),
         "STATE".into(),
         "OWNER".into(),
+        "CREATED".into(),
         "ID".into(),
     ]];
     for m in record["members"].as_array().into_iter().flatten() {
         rows.push([
             text(&m["agent_name"]),
             text(&m["role"]),
-            text(&m["path"]),
             text(&m["name"]),
             text(&m["state"]),
             if m["owner"] == true { "owner" } else { "-" }.into(),
+            // Run by an owner of the raid, which may stop it.
+            if m["created_by"].is_string() {
+                "yes"
+            } else {
+                "-"
+            }
+            .into(),
             text(&m["id"]),
         ]);
     }
@@ -175,6 +181,12 @@ pub fn raid_members(record: &serde_json::Value) -> String {
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
     let mut out = format!("Raid {} ({})\n", text(&record["name"]), text(&record["id"]));
+    if record["paused"] == true {
+        out.push_str(&format!(
+            "Paused: the owner {} left; waiting for the host to select a new owner\n",
+            text(&record["former_owner"])
+        ));
+    }
     for row in rows {
         let line: Vec<_> = row
             .iter()

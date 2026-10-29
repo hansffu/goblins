@@ -5,9 +5,34 @@
 }:
 let
   codex = import ../goblins/codex { inherit pkgs; };
+  inherit (pkgs) lib;
   # Arguments as literal template elements: their braces are text, not
-  # placeholders, as in -c inline tables or --mcp-config JSON.
+  # placeholders, as in -c inline tables.
   literal = map (builtins.replaceStrings [ "{" "}" ] [ "{{" "}}" ]);
+  # args are the App Server's options: -c, --enable, --disable and -p, each
+  # with its value. Prompts, subcommands and permission flags do not apply to
+  # a server.
+  serverOptions =
+    args:
+    let
+      valued = [
+        "-c"
+        "--config"
+        "--enable"
+        "--disable"
+        "-p"
+        "--profile"
+      ];
+      attached = arg: builtins.match "-[cp].+|--(config|enable|disable|profile)=.*" arg != null;
+      check =
+        rest:
+        rest == [ ]
+        || builtins.elem (builtins.head rest) valued
+          && builtins.length rest >= 2
+          && check (lib.drop 2 rest)
+        || attached (builtins.head rest) && check (builtins.tail rest);
+    in
+    builtins.all builtins.isString args && check args;
 in
 {
   pkg ? pkgs.codex,
@@ -19,13 +44,12 @@ in
   filterUnavailableMcp ? false,
   allowedPackages ? commonTools,
   args ? [ ],
-  # `goblins resume` resumes the foreground thread the adapter recorded.
-  # Options before `resume`, such as -p and -c, still reach the App Server.
-  # This default appends to args, so it suits args made of options only: a
-  # goblin whose args contain a prompt, a subcommand or -- sets its own (or
-  # null).
+  # Passed to mkGoblin too, which validates and records it.
+  bypassPermissions ? false,
+  # The App Server's options: -c, --enable, --disable and -p.
+  # `goblins resume` loads the conversation the adapter recorded last.
   resumeCommand ? literal args ++ [
-    "resume"
+    "--thread"
     "{session_id}"
   ],
   rwDirs ? [ ],
@@ -34,6 +58,8 @@ in
   devShellInjectedFiles ? { },
   ...
 }@options:
+assert lib.assertMsg (serverOptions args)
+  "mkCodexGoblin: args are App Server options only: -c, --enable, --disable and -p, each with its value";
 assert codex.validate {
   inherit
     pkg
@@ -43,11 +69,21 @@ assert codex.validate {
     devShellInjectedFiles
     ;
 };
+let
+  launcher = codex.mkLauncher {
+    inherit
+      pkg
+      binName
+      bypassPermissions
+      codexConfigDir
+      filterUnavailableMcp
+      ;
+  };
+in
 mkGoblin (
   codex.goblinOptions options
   // {
     inherit
-      binName
       outName
       description
       args
@@ -55,17 +91,26 @@ mkGoblin (
       env
       ;
     integration = "codex";
-    pkg = codex.mkLauncher {
-      inherit
-        pkg
-        binName
-        codexConfigDir
-        filterUnavailableMcp
-        ;
-    };
-    allowedPackages = allowedPackages ++ codex.packages;
+    # The App Server and the adapter run for the goblin's whole life; each
+    # attach starts the native terminal as a client of that server, on the
+    # conversation the adapter recorded for this run.
+    pkg = launcher;
+    binName = "goblins-codex-server";
+    onAttach.command = [
+      "${launcher}/bin/goblins-codex-attach"
+      "{session_id}"
+    ];
+    # `codex` runs its own engine with the goblin's settings.
+    allowedPackages = allowedPackages ++ codex.packages ++ [ launcher ];
     rwDirs = pkgs.lib.unique (rwDirs ++ [ codexConfigDir ]);
-    injectedFiles = injectedFiles // codex.mkInjectedFiles codexSettings;
-    devShellInjectedFiles = devShellInjectedFiles // codex.devShellInjectedFiles;
+    injectedFiles =
+      injectedFiles
+      // codex.mkInjectedFiles {
+        settings = codexSettings;
+        nix = options.allowNix or false;
+        host = options.hostCommands.enable or false;
+      };
+    devShellInjectedFiles =
+      devShellInjectedFiles // codex.devShellInjectedFiles (options.allowNix or false);
   }
 )

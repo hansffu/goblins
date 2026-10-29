@@ -198,7 +198,7 @@ impl Init {
                 }
             }
             Command::Signal { .. } => (),
-            Command::Cancel { id } => self.cancel(id, false),
+            Command::Cancel { id, everything } => self.cancel(id, everything),
             // Everything any exec started, including processes that left its
             // group, and execs whose command already exited. Never the agent.
             Command::KillAll {} => {

@@ -1,5 +1,283 @@
 #+title: Goblins implementation and verification results
-#+date: 2026-09-13
+#+date: 2026-10-19
+
+* Test-runner review follow-up (2026-10-19)
+
+Both incremental Cargo entry points now use one artifact reader with =json-render-diagnostics=: executable paths remain machine-readable while compiler errors reach stderr. A regression compiles an invalid dependency-free crate through both entry points and checks the actual rustc diagnostics. Suite traversal also has one shared implementation.
+
+The opt-in =HostDockerAcceptance= class gets a separate exclusive scheduling group, alongside the existing engine/frontend exclusions. A four-worker regression verifies that both the ordinary Docker group and this class wait for all ordinary work to finish. The actual host acceptance test passed with its opt-in enabled.
+
+Native launchers and directly started test daemons now use the pinned Nix executable output, selected explicitly as =.#nix^out=. A real-package regression checks that =nix= and =nix-store= cannot silently fall back to ambient tools; synthetic launchers also verify default precedence and the explicit =Daemon(tool_path=...)= override. Bind-race, responsiveness and recreation barriers use that override and delegate to the same pinned tools. Fixture resolution rejects multiple outputs rather than constructing a newline-containing path. The regression run caught that multi-output case during implementation; selecting =^out= fixed it, and all affected cases passed on rerun.
+
+Nix error selection now ignores empty trace headers and retains the least-indented meaningful error, choosing the last at that level. A real =nix eval --show-trace= with =throw "outer failure\n  error: inner tool log"= reproduced the previous loss of the outer cause. Unit tests cover this shape, nested tool output and the existing indented final causes; the import-from-derivation integration assertion still passes. The initial-closure GC ownership optimization is unchanged: its listing root and retained references already have regression assertions.
+
+A controlled warm probe resolved the same two configuration fixtures in four fresh processes (eight Nix calls total). Wall time was 1.127 seconds; individual workers took 0.684–1.087 seconds including lock waits. This is a warm microbenchmark, not a full-suite or cold-build total. Per-process memoization and serialized builds remain in place; a shared per-run cache is deferred pending broader evidence that its benefit warrants added invalidation/lifetime handling.
+
+Review validation: 215 Rust tests passed. The =infrastructure exec host-tools= selection passed all 44 Python cases in 95.119 seconds with four workers and =GOBLINS_TEST_HOST_DOCKER=1=; the exclusive acceptance case took 69.84 seconds. Another 25 wrapper/race/root/server/Session/error regressions passed in 33.888 seconds. All 14 packaged server/exec/root cases passed in 133.505 seconds, including the Nix release rebuild. These selections had no skips; the external Testcontainers opt-in was not enabled. The feature map covers all 238 discovered Python cases. Rust/Nix formatting, Clippy, Python compilation and diff checks passed. Full =just test-merge= validation remains pending before merge.
+
+* Feature tasks and shared agent instructions (2026-10-19)
+
+=tests/features.toml= defines overlapping feature selections and conservative source mappings. =just test-feature FEATURE...= runs the union through one Python invocation and adds the matching Rust/ERT/Nix/packaged checks. Python selectors are deduplicated by test ID and regrouped by class, preserving fixtures in serial as well as parallel mode. Full validation still discovers every test directly, with a separate check that the feature union is complete.
+
+=just test-plan= previews commands and unique test counts without builds or cache changes. It supports explicit paths or branch changes since a Git merge-base, including staged, unstaged, untracked and renamed paths. Shared authority/lifecycle/protocol/fixture changes and unknown files recommend full validation. Agents may justify a narrower selection for review and state that the full gate is pending. Root =AGENTS.md= provides the policy; =CLAUDE.md= imports it. =just test-merge= is required before merging and includes feature coverage, Rust, all Python, ERT, Nix checks and packaged smoke, with Codex configuration tests enabled and existing external opt-ins reported separately.
+
+Review validation: all 214 Rust tests and the 28 Python cases selected by =infrastructure exec= passed; Python took 27.814 seconds. The mapping covers all 236 discovered cases, retaining the previous 226 and adding nine feature checks plus an overlap regression. Checks cover missing/stale mappings, cross-feature deduplication, class setup, conservative routing, Git change coverage, no-build planning and stopping after a failed stage. Full merge-gate commands were previewed but the full gate has not been run for this change; review is permitted before that pass. Python compilation and diff checks pass.
+
+* Test startup, GC roots and bounded workers (2026-10-19)
+
+Session startup now retains the Nix initial-closure listing once, queries its
+registered references, and skips individual roots for paths that listing
+protects. Paths outside that set, including later grants, keep their own roots.
+GC references never add sandbox mounts: a regression fixture references an
+unlisted package and checks that it remains invisible. Direct Session callers
+without a store-backed listing retain the original per-path behavior.
+
+Host command waits use pidfd/output readiness instead of sleeping after every
+short command. Cancellation checks remain bounded by 20 ms, with the existing
+waitid/WNOWAIT process-group cleanup and output limits preserved. Tests cover
+closed streams, timeouts, output limits and background writers. A Nix error
+formatter exposed by the integration run was also corrected to select the
+final error line after warnings and trace headers, preserving the existing
+import-from-derivation refusal assertion.
+
+Controlled warm measurements, using the same fixture and three startups per
+variant (build/fixture preparation excluded):
+
+| Measurement                         | Before | After |
+|-------------------------------------+--------+-------|
+| Demo goblin startup, median          | 5.25 s | 0.20 s |
+| Demo session GC roots               |    138 |      3 |
+| Demo visible store paths            |    136 |    136 |
+| Minimal Fish startup, median        | 2.19 s | 0.16 s |
+| Minimal Bash startup, median        | 0.91 s | 0.15 s |
+| Minimal Bash session GC roots       |     21 |      2 |
+| Same 13 representative Python cases | 120.14 s | 39.33 s |
+| Their waited child CPU time         | 47.86 s | 7.87 s |
+| Their child output block operations | 21,440 | 4,904 |
+
+The child write accounting fell by about 77%; it excludes the shared Nix daemon
+and is not a measurement of all system I/O. Cache state differed for some
+reads. The representative cases include all seven exec checks, two editor
+checks, dev-shell launch/refresh, and Docker activation/bind permissions.
+The earlier 40m58s full pass included cold builds and failures, so it is not a
+controlled baseline for the new full-suite runtime.
+
+Ordinary integration tests now use an offline Fish fixture with core utilities,
+grep and sed. Exec and POSIX raw-socket bind-race probes use minimal Bash.
+Three independent exec cases share a goblin; lifecycle/identity cases keep fresh
+sessions. The complete demo remains covered by the connected-shell and Nix
+packaging checks. Startup-race barriers now pause session roots rather than
+blocking daemon initialization for a minute, and explicitly assert that the
+session is still starting. Bash also avoids Fish negotiation timeouts in raw
+bind-race sockets. The nine race/responsiveness cases passed in 15.88 seconds.
+
+Python defaults to two spawned workers, retaining class fixtures. Private
+dev-shell classes may overlap; Docker, scope, run-target and native frontend
+groups, including the dev-shell Docker class, run exclusively. Fixture builds
+remain serialized, launcher/script writes are atomic, and logs are replaced
+under =target/test-fixtures/last-run/= rather than accumulating per-run files.
+Fail-fast stops scheduling new groups while an active group finishes cleanup.
+The ignored Rust test driver now shares workspace feature selection/artifacts;
+its warm preparation fell from a second 7.75-second compile to 0.05 seconds.
+
+The native edit loop no longer forces a Nix controller build for completion
+installation tests. It keeps all CLI/completion assertions against Cargo's
+generated launcher/scripts. Nix checks compare all three installed scripts
+byte-for-byte with the packaged generator; =just test-packaged= runs the same
+Python assertions against the actual Nix installation.
+
+Final validation:
+
+- A clean Python pass ran all 224 cases in 601.364 seconds (601.629 seconds
+  including runner startup): 222 passed, two existing opt-in skips. The ten
+  Codex configuration checks were enabled with =GOBLINS_TEST_CODEX=1= and use
+  synthetic/local fixtures. Host-Docker and external Testcontainers opt-ins
+  remain skipped. All 219 original IDs/assertion expressions are retained;
+  two root-retention and three runner cases were added.
+- 214 Rust tests passed, with the existing ignored Session driver exercised
+  through Python. All 133 source-loaded Emacs ERT tests passed (3.69 seconds).
+- All Nix checks passed, including exact installed completion contents,
+  production-only construction and the runtime without mandatory Python.
+- Packaged server/exec/root checks: 13 passed in 17.083 seconds.
+- Cargo Clippy, Rust/Nix formatting, Python compilation and diff checks passed.
+
+Disk measurements distinguished retained packages from root metadata. The
+automatic-root directory initially occupied about 169 MiB with 41,924 dangling
+entries; 41,303 pointed at deleted test-session resources. Root enumeration
+during validation and final cleanup reduced it to 4.97 MiB, with zero readable
+dangling entries. Final cleanup preserved all 50 live roots and left one
+unreadable entry untouched. No store outputs were collected. Nix removes
+stale indirect links while [[https://github.com/NixOS/nix/blob/master/src/libstore/gc.cc][finding roots]]; =just test-roots-clean= requests only
+[[https://nix.dev/manual/nix/2.31/command-ref/nix-store/gc][root enumeration]], not deletion of store outputs.
+
+One root retaining the same closure does not reduce retained package bytes.
+Before these changes, the 25 cached fixture roots had a 3.52 GiB combined NAR
+closure (shared paths counted once); minimal Bash's initial closure was 67 MiB
+versus the demo's 478 MiB. Other checks still require their larger dependencies.
+NAR size is not allocated/reclaimable filesystem space. =just test-cache-clean=
+releases fixture roots and removes cached launchers/logs without collecting
+store data; subsequent reclamation follows the user's normal Nix GC policy.
+The local 8.8 GiB Cargo target remains available for incremental builds.
+
+** Parallel execution trial and shutdown follow-up
+
+Compared the same 36 integration cases in =daemon=, =exec=, =attachment=,
+=history=, =binds=, =editor=, =server= and =roots= in one fresh dev shell.
+Worker counts ran in order 1, 2, 2, 1; all 144 case executions passed.
+
+| Workers | First suite time | Second suite time | Sampled peak processes | Sampled peak FDs |
+|---------+------------------+-------------------+------------------------+------------------|
+|       1 |          66.03 s |           57.37 s |                     14 |            80-90 |
+|       2 |          33.37 s |           33.30 s |                  29-31 |          177-179 |
+
+The warm comparison is about 1.72 times faster (42% less elapsed time).
+These are selected ordinary integration groups, not a full-suite speedup:
+engine/frontend groups still run exclusively. Fixture resolution was slower
+in the first serial run. Resource samples cover the runner and observable
+descendants once per second, excluding the shared Nix daemon and reparented
+processes. Summed RSS varied with cache state and shared pages, so it is not
+evidence of a memory reduction. Raw trial logs are under
+=/tmp/goblins-parallel-trial-20261019/=.
+
+A reported missing final shutdown log exposed a real synchronization gap:
+the daemon lock was released before the foreground entry point wrote
+=Goblins server stopped=. A new regression fills an output pipe so the final
+line blocks; the old implementation lets =server stop= return early and
+fails the check. Shutdown now retains the lock through controller field
+destruction and final output flushing; the regression passes.
+
+The other reported failure, empty CLI status output in a run-target test,
+did not reproduce in a fresh-shell run of all 18 original server/run-target
+cases or 20 repetitions of the reported case. Its CLI helper now uses the
+daemon's private environment, enforces a timeout and reports nonzero exit
+codes with stdout/stderr. No retry or assertion relaxation was added.
+
+Follow-up validation in one fresh =nix develop= completed =just test= in
+615.78 seconds, including the incremental Rust test rebuild: 214 Rust tests
+passed, Python ran 225 cases in 596.981 seconds (223 passed, two existing
+opt-in skips), and all 133 ERT tests passed in 3.87 seconds. Codex configuration
+checks were enabled with =GOBLINS_TEST_CODEX=1=. Both previously failing groups
+passed in the full run. Formatting, Clippy and Python compilation passed.
+All pre-existing assertions and test methods in the changed Python files
+remain; one shutdown regression and additional CLI checks were added.
+
+** Four-worker opt-in and I/O investigation
+
+=just test-python -j 4= opts in to four workers; two remains the default.
+Engine/frontend exclusivity, class fixtures, serialized fixture builds and
+the two-job Cargo build limit are retained. Runner checks verify four-way
+overlap, the exclusive-group barrier and fail-fast with both worker counts.
+
+Compared the same 37 integration cases (the earlier selection plus the new
+shutdown regression), in worker-count order 2, 4, 4, 2. All 148 case executions
+passed:
+
+| Workers | First suite time | Second suite time | Sampled peak processes | Sampled peak FDs |
+|---------+------------------+-------------------+------------------------+------------------|
+|       2 |          39.15 s |           36.73 s |                  28-29 |          174-193 |
+|       4 |          27.95 s |           28.49 s |                  40-42 |          272-280 |
+
+The first full four-worker pass attempted all 226 cases in 485.000 seconds,
+but failed one CLI recreation case; it is not a successful full-suite timing.
+That test waited on an asynchronously written history file, which could still
+contain its original stopped record while the previous session was alive.
+The daemon correctly refused to resume the same live conversation. Resume
+tests now also wait for the daemon's =history.list= to report that the record
+has been released, including worker cleanup. Existing filesystem checks and
+assertions remain. The affected CLI case then passed 20 repetitions. The same
+wait is used before the adjacent package and Emacs resume checks.
+
+Live system-wide disk samples during the first run showed write-heavy bursts:
+41-106 MiB/s written with negligible reads, mean NVMe write latency 2.1-5.3 ms
+and mean request queue length 4.7-26.8. In three ten-second windows, I/O PSI
+=some= was 50.7-61.0% and =full= was 47.2-53.0%, while CPU PSI =some= was
+0.3-0.6% and memory PSI =some= was at most 0.09%. These are stall-time shares,
+as described by the [[https://docs.kernel.org/accounting/psi.html][kernel PSI documentation]], not disk bandwidth utilization.
+The counters support storage waiting as a bottleneck during those windows;
+they do not attribute all traffic to the tests or the Nix store. A later
+cgroup sample saw only 1.15 MiB/s of total writes, confirming phase variation.
+
+Process/FD samples cover observable descendants, excluding the shared Nix
+daemon and reparented processes. Summed RSS includes shared pages. Trial logs,
+resource samples and full-run I/O samples are under
+=/tmp/goblins-four-workers-20261019/=.
+
+After correcting the live-session wait, the full four-worker rerun passed all
+226 cases in 498.919 seconds: 224 passed and the same two opt-in cases skipped,
+with Codex configuration checks enabled. This is 16.4% shorter than the earlier
+596.981-second two-worker Python run; that earlier run had one fewer scheduler
+test, and system load/cache state differed. The matched 37-case trials above
+provide the narrower controlled comparison. Sampled full-run peaks were 77
+observable descendant processes, 1,174 total FDs and 1.55 GiB summed RSS.
+All existing assertions in the changed test modules remain.
+
+Ten-second samples throughout the successful rerun averaged about 60% I/O PSI
+=some= and 51% =full=, versus 0.63% CPU PSI =some= and 0.03% memory PSI =some=.
+Some windows had mean write latency above 150 ms and queues above 500 requests.
+Most write bytes in aligned cgroup samples were charged at the root cgroup,
+so the samples do not identify a single application as the cause. Reducing
+temporary-state and filesystem metadata writes is a useful next experiment;
+four-worker execution remains opt-in. Dangling GC-root metadata was pruned
+after the runs without collecting store outputs or releasing fixture roots.
+
+A ten-second sample after completion still reported 77.5% I/O PSI =some= and
+73.5% =full=, while writes fell to 0.63 MiB/s. Thus these system-wide counters
+cannot isolate the suite's contribution or distinguish remaining writeback
+from other activity. The user reported that the machine felt substantially
+more responsive than before the optimizations; pressure readings alone should
+not be treated as a direct measure of interactive responsiveness.
+
+* Test suite build and fixture optimization (2026-10-19)
+
+Historical first iteration; the startup/root counts and validation below are
+superseded by the clean run and controlled measurements above.
+
+The =optimize-test-suite= branch adds =just test= and a Python runner using
+Cargo's incremental host controller. Sandbox executables and closures remain
+Nix-built, with fixture lookups cached once per Python process and indirect GC
+roots retained in =target/test-fixtures/=. The installed CLI/completion check
+still uses the actual Nix package; =just test-packaged= retains the original
+packaged-controller path. Builds are bounded to two Cargo jobs and one Nix job
+with two cores; the runner prevents overlapping runs in one fixture cache.
+
+A controller-only source edit now changes only the controller's Nix derivation.
+A protocol edit still changes the controller, client and Codex adapter, while
+the mount helper stays unchanged. This was checked with controlled source edits
+in a temporary copy and comparisons of all four derivation hashes. Controlled
+Rust, Python and Emacs source edits also left the dev-shell derivation identical.
+
+The checkout had 3.9 MiB of tracked source and an 8.8 GB ignored =target/=.
+Active instructions now use the Git-backed flake instead of =path:.=, which can
+import ignored build output into the store. Neither Rust nor Python/Emacs
+source edits change the development shell's dependencies. Emacs keeps the
+existing configured host installation: the current frontend uses Emacs 31 APIs
+that the root nixpkgs pin's Emacs 30 does not provide. A source-only temporary
+load path avoids stale local .elc files while retaining compiled dependencies.
+
+Validation:
+
+- 211 Rust tests passed; the existing host integration driver remains ignored
+  by Cargo and is exercised by Python's sandbox probes.
+- All 133 ERT tests passed against current source in Emacs 31, including the
+  installed optional frontend integrations.
+- All 219 original Python test IDs and assertion expressions are retained.
+  The full pass exercised all cases with 12 existing optional skips. Its seven
+  exec cleanup failures were corrected and all seven cases passed on rerun;
+  both terminal Emacs failures were resolved by using current source with the
+  configured Emacs. All eight live Emacs integrations then passed, including
+  Ghostel, the workspace, TRAMP and editor approval. Thus 207 distinct Python
+  cases passed across the full pass and focused correction runs.
+- Full Nix checks, including production-only construction and the runtime
+  closure without mandatory Python, passed.
+- Concurrent-run rejection and fail-fast/error exit status were checked.
+
+Warm Cargo workspace startup reported 0.04 seconds in the final live Emacs run;
+its demo/editor manifest resolution took 2.02/1.22 seconds. These are local
+measurements, not a controlled whole-suite speedup comparison. The largest
+remaining startup cost is rooting the demo shell's 136 initial store paths via
+individual =nix-store= invocations; session rooting and sandbox lifecycle
+semantics are unchanged. Exec tests share a daemon with fresh sessions, while
+lifecycle, crash, history and environment-sensitive tests retain isolated ones.
 
 * Shared Docker trust groups (2026-09-22)
 

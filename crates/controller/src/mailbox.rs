@@ -3,7 +3,7 @@
 //! The caller supplies authenticated identity and trusted session metadata.
 //! Execute this core on a serialized host worker: its audit sink may block.
 //! A transition is published only after the sink accepts its audit record.
-use goblins_protocol::messages::{Message, Mutation, NOTICE_SENDER, Operation, State};
+use goblins_protocol::messages::{Message, Mutation, NOTICE_SENDER, Operation, RaidNotice, State};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -26,12 +26,23 @@ fn capacity() -> Fault {
     (-32010, "mailbox capacity reached".into())
 }
 
+/// Messaging that stopped because its log could not be written: every
+/// message (`audit_failed`), or only raid routes (`raid_audit_failed`, raid
+/// events over capacity, while control rights still change).
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Health {
+    pub audit_failed: bool,
+    pub raid_audit_failed: bool,
+}
 /// Host metadata, never deserialized from an agent request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub id: String,
-    pub parent: Option<String>,
-    pub path: String,
+    /// Unique among live goblins.
+    pub agent_name: String,
+    /// Who or what stopped it, as the controller recorded it; logged with
+    /// its exit so the log alone attributes an owner's stop.
+    pub stop_reason: Option<String>,
     /// True while starting/running and eligible to accept messages.
     pub running: bool,
 }
@@ -43,7 +54,10 @@ pub struct RaidView {
     pub id: String,
     pub name: String,
     pub role: Option<String>,
-    pub owner: String,
+    /// None while the raid is paused.
+    pub owner: Option<String>,
+    /// A paused raid routes nothing until the host selects a new owner.
+    pub paused: bool,
 }
 /// Session ID -> logged membership. Built only from recorded raid events,
 /// never from the controller's copy, so a join authorizes nothing until it
@@ -107,8 +121,11 @@ pub struct Mailbox {
     auxiliary_events: usize,
     raids: Logged,
     /// A raid event could not be recorded for lack of log capacity. Raid
-    /// routes stay closed from then on; tree routes are unaffected.
+    /// routes stay closed from then on; host routes are unaffected.
     raid_audit_failed: bool,
+    /// Raid ID -> members refused because the raid was paused, notified
+    /// once a new owner is logged. At most 16 raids of 16 members.
+    warned: BTreeMap<String, BTreeSet<String>>,
     /// Operations requested and not yet finished, as logged.
     operations: BTreeMap<String, Outstanding>,
     /// The last FINISHED requests whose terminal outcome was handled, oldest
@@ -151,6 +168,7 @@ impl Mailbox {
             auxiliary_events: 0,
             raids: Logged::new(),
             raid_audit_failed: false,
+            warned: BTreeMap::new(),
             operations: BTreeMap::new(),
             finished: BTreeSet::new(),
             finished_order: VecDeque::new(),
@@ -222,8 +240,15 @@ impl Mailbox {
     /// the logged membership once it is written. Removals apply even when
     /// their event cannot be written, since they only take access away;
     /// additions apply only when recorded. Raid events do not count against
-    /// the auxiliary-event limit: the controller bounds them.
-    pub fn record_raid(&mut self, events: &[crate::raid::Event], now: u64, audit: &mut impl Audit) {
+    /// the auxiliary-event limit: the controller bounds them. A recorded new
+    /// owner notifies the members a pause refused.
+    pub fn record_raid(
+        &mut self,
+        events: &[crate::raid::Event],
+        directory: &Directory,
+        now: u64,
+        audit: &mut impl Audit,
+    ) {
         for raid in events {
             let addition = raid.addition();
             if addition && (self.audit_failed || self.raid_audit_failed) {
@@ -257,6 +282,105 @@ impl Mailbox {
             };
             if recorded || !addition {
                 apply_raid(&mut self.raids, &raid.change);
+                self.prune_warned(&raid.change);
+            }
+            if recorded && let crate::raid::Change::Owner { raid: id, .. } = &raid.change {
+                self.notify_resumed(id, directory, now, audit);
+            }
+        }
+    }
+
+    fn prune_warned(&mut self, change: &crate::raid::Change) {
+        use crate::raid::Change;
+        match change {
+            Change::Left { raid, session, .. } => {
+                if let Some(warned) = self.warned.get_mut(raid) {
+                    warned.remove(session);
+                }
+            }
+            Change::Dissolved { raid, .. } => {
+                self.warned.remove(raid);
+            }
+            _ => {}
+        }
+    }
+
+    /// One notice per warned sender that is still a live member.
+    fn notify_resumed(
+        &mut self,
+        raid: &str,
+        directory: &Directory,
+        now: u64,
+        audit: &mut impl Audit,
+    ) {
+        let Some(warned) = self.warned.remove(raid) else {
+            return;
+        };
+        for session in warned {
+            let Some(view) = self.raids.get(&session).filter(|v| v.id == raid).cloned() else {
+                continue;
+            };
+            if live(directory, &session).is_err() || self.audit_failed {
+                continue;
+            }
+            let owner = view.owner.clone().unwrap_or_default();
+            let owner_name = directory
+                .get(&owner)
+                .map_or_else(|| owner.clone(), |s| s.agent_name.clone());
+            let sequence = self.sequence + 1;
+            let mut notice = self.new_message(
+                NOTICE_SENDER,
+                &session,
+                &format!(
+                    "Raid {} has resumed with owner {owner_name}; messages to its members are allowed again.",
+                    view.name
+                ),
+                format!("{}-c{sequence}", self.instance),
+                None,
+                directory,
+                sequence,
+                now,
+            );
+            notice.raid = Some(RaidNotice {
+                id: view.id.clone(),
+                name: view.name.clone(),
+                event: "resumed".into(),
+                owner,
+            });
+            let undelivered = match self.check_capacity(std::slice::from_ref(&notice)) {
+                Err(_) => Some("mailbox capacity reached"),
+                Ok(reserved) => {
+                    let event = Event {
+                        instance: self.instance.clone(),
+                        sequence,
+                        timestamp: now,
+                        kind: "raid.notice".into(),
+                        actor: NOTICE_SENDER.into(),
+                        sessions: vec![session.clone()],
+                        data: json!({"raid":view.id,"notice":notice}),
+                    };
+                    match audit.append(&event, reserved * 2048) {
+                        Ok(()) => {
+                            self.sequence = sequence;
+                            self.apply(vec![notice]);
+                            None
+                        }
+                        Err(AuditError::Capacity) => Some("communications log capacity reached"),
+                        Err(error) => {
+                            self.audit_error(error);
+                            None
+                        }
+                    }
+                }
+            };
+            if let Some(reason) = undelivered {
+                let _ = self.record(
+                    &session,
+                    "raid.notice",
+                    json!({"raid":view.id,"notice":null,"undelivered":reason}),
+                    now,
+                    audit,
+                );
             }
         }
     }
@@ -448,6 +572,14 @@ impl Mailbox {
         Ok(())
     }
 
+    /// Whether the log can still be written, for the host to see.
+    pub fn health(&self) -> Health {
+        Health {
+            audit_failed: self.audit_failed,
+            raid_audit_failed: self.raid_audit_failed,
+        }
+    }
+
     /// Queued messages per recipient; recipients with none are absent.
     pub fn queued(&self) -> BTreeMap<String, u64> {
         let mut counts = BTreeMap::new();
@@ -507,7 +639,15 @@ impl Mailbox {
         }
         live(directory, actor)?;
         let sequence = self.sequence.checked_add(1).ok_or_else(capacity)?;
-        let change = self.prepare(actor, &command, directory, sequence, now)?;
+        let change = match self.prepare(actor, &command, directory, sequence, now) {
+            Ok(change) => change,
+            Err(fault) => {
+                if let Some(raid) = self.paused_route(actor, &command, directory) {
+                    self.warned.entry(raid).or_default().insert(actor.into());
+                }
+                return Err(fault);
+            }
+        };
         let reserved = self.check_capacity(&change.messages)?;
         let event = Event {
             instance: self.instance.clone(),
@@ -549,9 +689,15 @@ impl Mailbox {
         match command {
             Mutation::Send(p) => {
                 let (recipient, raid) = resolve(directory, &self.raids, actor, &p.to)?;
-                if raid.is_some() && self.raid_audit_failed {
-                    return Err(raid_unrecorded());
+                if let Some(view) = raid {
+                    if view.paused {
+                        return Err(paused(&view.name));
+                    }
+                    if self.raid_audit_failed {
+                        return Err(raid_unrecorded());
+                    }
                 }
+                let raid = raid.map(|v| v.id.as_str());
                 let conversation = match &p.conversation {
                     Some(id)
                         if self.messages.iter().any(|m| {
@@ -576,7 +722,7 @@ impl Mailbox {
                 // A raid route is one only logged membership authorized.
                 Ok(Change {
                     result: json!(message),
-                    data: json!({"message":message,"route":if raid.is_some() {"raid"} else {"tree"},"raid":raid}),
+                    data: json!({"message":message,"route":if raid.is_some() {"raid"} else {"host"},"raid":raid}),
                     messages: vec![message],
                     kind: "message.accepted",
                 })
@@ -617,28 +763,27 @@ impl Mailbox {
                 if original.sender == NOTICE_SENDER {
                     return Err((
                         -32009,
-                        "operation notices take no reply; complete the claim with goblins inbox complete"
+                        "notices take no reply; complete the claim with goblin inbox complete"
                             .into(),
                     ));
                 }
                 live(directory, &original.sender)?;
-                // A reply is authorized like a send. Tree relations never
-                // change, so only replies that relied on a raid can fail;
-                // the claim stays outstanding to be completed or requeued.
+                // A reply is authorized like a send: between goblins only by
+                // a shared, unpaused raid. When that is gone the claim stays
+                // outstanding to be completed or requeued.
                 let sender = original.sender.as_str();
-                if !(actor == "host"
-                    || sender == "host"
-                    || descendant(directory, actor, sender)
-                    || descendant(directory, sender, actor))
-                {
-                    if shared_raid(&self.raids, actor, sender).is_none() {
+                if !(actor == "host" || sender == "host") {
+                    let Some(view) = shared_raid(&self.raids, actor, sender) else {
                         return Err((
                             -32009,
                             format!(
                                 "not allowed: '{}' is no longer in this goblin's raid",
-                                original.sender_path
+                                original.sender_name
                             ),
                         ));
+                    };
+                    if view.paused {
+                        return Err(paused(&view.name));
                     }
                     if self.raid_audit_failed {
                         return Err(raid_unrecorded());
@@ -697,6 +842,24 @@ impl Mailbox {
         }
     }
 
+    /// The paused raid that was a refused send's or reply's only route.
+    fn paused_route(
+        &self,
+        actor: &str,
+        command: &Mutation,
+        directory: &Directory,
+    ) -> Option<String> {
+        let view = match command {
+            Mutation::Send(p) => resolve(directory, &self.raids, actor, &p.to).ok()?.1?,
+            Mutation::Reply(p) => {
+                let sender = &self.get(actor, &p.message).ok()?.sender;
+                shared_raid(&self.raids, actor, sender)?
+            }
+            _ => return None,
+        };
+        view.paused.then(|| view.id.clone())
+    }
+
     fn claim(&self, actor: &str, id: &str, generation: u64) -> Result<&Message> {
         let message = self.get(actor, id)?;
         if message.recipient != actor {
@@ -720,18 +883,18 @@ impl Mailbox {
         sequence: u64,
         now: u64,
     ) -> Message {
-        let path = |id: &str| {
+        let name = |id: &str| {
             directory
                 .get(id)
-                .map_or_else(|| id.to_owned(), |s| s.path.clone())
+                .map_or_else(|| id.to_owned(), |s| s.agent_name.clone())
         };
         Message {
             id: format!("{}-m{sequence}", self.instance),
             conversation,
             sender: sender.into(),
             recipient: recipient.into(),
-            sender_path: path(sender),
-            recipient_path: path(recipient),
+            sender_name: name(sender),
+            recipient_name: name(recipient),
             in_reply_to,
             body: body.into(),
             created_sequence: sequence,
@@ -740,6 +903,7 @@ impl Mailbox {
             claim_generation: 0,
             failure: None,
             operation: None,
+            raid: None,
         }
     }
 
@@ -855,23 +1019,16 @@ fn live<'a>(directory: &'a Directory, id: &'a str) -> Result<&'a str> {
     }
 }
 
-fn descendant(directory: &Directory, child: &str, ancestor: &str) -> bool {
-    let mut current = child;
-    // Trusted directory corruption must not produce an infinite parent walk.
-    for _ in 0..directory.len() {
-        let Some(parent) = directory.get(current).and_then(|s| s.parent.as_deref()) else {
-            return false;
-        };
-        if parent == ancestor {
-            return true;
-        }
-        current = parent;
-    }
-    false
-}
-
 fn raid_unrecorded() -> Fault {
     (-32009, "raid membership could not be recorded".into())
+}
+fn paused(raid: &str) -> Fault {
+    (
+        -32009,
+        format!(
+            "raid '{raid}' is paused until the host selects a new owner; you will get a notice when it resumes"
+        ),
+    )
 }
 
 fn apply_raid(logged: &mut Logged, change: &crate::raid::Change) {
@@ -884,7 +1041,8 @@ fn apply_raid(logged: &mut Logged, change: &crate::raid::Change) {
                     id: raid.clone(),
                     name: name.clone(),
                     role: None,
-                    owner: owner.clone(),
+                    owner: Some(owner.clone()),
+                    paused: false,
                 },
             );
         }
@@ -892,6 +1050,7 @@ fn apply_raid(logged: &mut Logged, change: &crate::raid::Change) {
             raid,
             session,
             role,
+            ..
         } => {
             // The raid is known once its creation is logged.
             if let Some(view) = logged.values().find(|v| v.id == *raid).cloned() {
@@ -918,53 +1077,56 @@ fn apply_raid(logged: &mut Logged, change: &crate::raid::Change) {
                 logged.remove(session);
             }
         }
+        Change::Paused { raid, .. } => {
+            for view in logged.values_mut().filter(|v| v.id == *raid) {
+                view.owner = None;
+                view.paused = true;
+            }
+        }
+        Change::Owner { raid, owner, .. } => {
+            for view in logged.values_mut().filter(|v| v.id == *raid) {
+                view.owner = Some(owner.clone());
+                view.paused = false;
+            }
+        }
         Change::Dissolved { raid, .. } => logged.retain(|_, v| v.id != *raid),
     }
 }
 
-fn shared_raid<'a>(logged: &'a Logged, a: &str, b: &str) -> Option<&'a str> {
+fn shared_raid<'a>(logged: &'a Logged, a: &str, b: &str) -> Option<&'a RaidView> {
     logged
         .get(a)
         .zip(logged.get(b))
         .filter(|(a, b)| a.id == b.id)
-        .map(|(a, _)| a.id.as_str())
+        .map(|(a, _)| a)
 }
 
-/// The recipient, and the raid when logged raid membership was the only
-/// authorization. Roles are never matched.
+/// The recipient, by ID or agent name, and the raid that authorized it; the
+/// host reaches every goblin, a goblin only members of its logged raid.
+/// Roles are never matched. A paused raid still resolves, so the caller can
+/// explain why it may not send.
 fn resolve<'a>(
     directory: &'a Directory,
     raids: &'a Logged,
     actor: &str,
     target: &str,
-) -> Result<(&'a str, Option<&'a str>)> {
-    let parent = directory.get(actor).and_then(|s| s.parent.as_deref());
-    if actor != "host" && target == "parent" {
-        return Ok((live(directory, parent.ok_or_else(absent)?)?, None));
-    }
-    let tree = |s: &Session| {
-        actor == "host" || parent == Some(s.id.as_str()) || descendant(directory, &s.id, actor)
-    };
+) -> Result<(&'a str, Option<&'a RaidView>)> {
     let allowed = |s: &&Session| {
-        s.running && s.id != actor && (tree(s) || shared_raid(raids, actor, &s.id).is_some())
+        s.running
+            && s.id != actor
+            && (actor == "host" || shared_raid(raids, actor, &s.id).is_some())
     };
-    let mut candidates = directory.values().filter(allowed).filter(|s| {
-        s.id == target
-            || s.path == target
-            || s.path.rsplit('/').next() == Some(target)
-            || directory
-                .get(actor)
-                .is_some_and(|a| s.path.strip_prefix(&format!("{}/", a.path)) == Some(target))
-    });
+    let mut candidates = directory
+        .values()
+        .filter(allowed)
+        .filter(|s| s.id == target || s.agent_name == target);
     let first = candidates.next().ok_or_else(absent)?;
     if candidates.next().is_some() {
-        return Err((-32009, "ambiguous recipient; use a path or ID".into()));
+        return Err((-32009, "ambiguous recipient; use its ID".into()));
     }
-    let raid = if tree(first) {
-        None
-    } else {
-        shared_raid(raids, actor, &first.id)
-    };
+    let raid = (actor != "host")
+        .then(|| shared_raid(raids, actor, &first.id))
+        .flatten();
     Ok((&first.id, raid))
 }
 

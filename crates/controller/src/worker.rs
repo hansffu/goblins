@@ -51,16 +51,26 @@ pub(super) enum Work {
 pub(super) struct Recreate {
     /// Approved package names, in grant order.
     pub packages: Vec<String>,
+    /// Auto-approved names, resolved again but not mounted.
+    pub auto_approve: Vec<String>,
     pub docker: bool,
     pub variables: std::collections::BTreeMap<String, String>,
 }
 /// What recreating staged, for the controller's hand-over.
 pub(super) struct Recreated {
     pub packages: Vec<(String, PathBuf)>,
+    /// Recorded auto-approved names, resolved and rooted.
+    pub auto_approve: Vec<(String, PathBuf)>,
     /// What could not be restored, and why.
     pub skipped: Vec<crate::history::Skipped>,
     /// Why the agent starts a fresh conversation despite a resume command.
     pub fresh: Option<String>,
+}
+/// The auto-approve set a session rooted for itself before it started.
+#[derive(Default)]
+pub(super) struct Auto {
+    pub rooted: Vec<(String, PathBuf)>,
+    pub skipped: Vec<crate::history::Skipped>,
 }
 pub(super) enum Completed {
     Preview {
@@ -73,18 +83,26 @@ pub(super) enum Completed {
         dev_shell: Option<String>,
         dev_identity: Option<String>,
         initial_packages: Vec<String>,
+        /// The agent's PTY, or with attach handlers its output pipe.
         master: OwnedFd,
+        handlers: Option<Box<crate::config::Handlers>>,
         /// The private channel to the sandbox's goblins-init.
         control: OwnedFd,
         listener: UnixListener,
         identity: Identity,
         inheritance: Inheritance,
         exit_watch: OwnedFd,
-        recreated: Option<Recreated>,
+        recreated: Option<Box<Recreated>>,
+        auto: Box<Auto>,
     },
     Progress {
         request: String,
         state: &'static str,
+    },
+    /// Whether the agent will run without a terminal, known before the
+    /// launch's slow work.
+    Mode {
+        server: bool,
     },
     /// Structured approval preview and candidate identity, or why it cannot
     /// refresh.
@@ -98,7 +116,7 @@ pub(super) enum Completed {
         serial: u64,
         result: std::result::Result<serde_json::Value, String>,
     },
-    /// A refresh became the current generation; children inherit it.
+    /// A refresh became the current generation; members it runs later start in it.
     DevShell {
         identity: String,
         inheritance: Inheritance,
@@ -107,6 +125,11 @@ pub(super) enum Completed {
         reply: Reply,
         detail: Option<String>,
         output: Option<PathBuf>,
+    },
+    /// A host launch's manifest validated; `sequence` orders acceptances.
+    Manifest {
+        sequence: u64,
+        lease: std::sync::Arc<crate::config::ManifestLease>,
     },
     Failed(String),
     Stopped {
@@ -131,11 +154,18 @@ pub(super) enum Source {
         /// The history store, protected like the daemon's state.
         history: Option<PathBuf>,
         recreate: Option<Recreate>,
+        /// Order of this acceptance, for the daemon's current manifest.
+        sequence: u64,
     },
-    /// A child of a running session, using a configuration from its branch.
-    Child {
-        inherited: Inheritance,
+    /// A goblin a raid owner runs, from the daemon's current manifest.
+    Member {
+        owner: Inheritance,
+        /// Held from acceptance, so the owner stopping cannot take it away.
+        scope: Option<std::sync::Arc<crate::scope::Shared>>,
+        manifest: std::sync::Arc<crate::config::ManifestLease>,
         configuration: String,
+        /// Approvals copied from the owner, by exact output.
+        auto: std::collections::BTreeMap<String, PathBuf>,
     },
 }
 impl Worker {
@@ -150,12 +180,35 @@ impl Worker {
                 // Disk reads and launch adaptation stay off the event pump.
                 token.check()?;
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
-                let mut recreated = None;
+                let mut recreated: Option<Recreated> = None;
+                let mut copied = std::collections::BTreeMap::new();
+                // Held until the session rooted what it needs: the owner's
+                // directory keeps its grants, the lease the manifest.
+                let mut held = None;
+                let mut held_lease = None;
                 let mut session = match source {
-                    Source::Child {
-                        inherited,
+                    Source::Member {
+                        owner,
+                        scope,
+                        manifest,
                         configuration,
-                    } => Session::child(inherited, &configuration, token.clone(), directory)?,
+                        auto,
+                    } => {
+                        copied = auto;
+                        let session = Session::member(
+                            owner.clone(),
+                            scope,
+                            &manifest.path,
+                            &configuration,
+                            token.clone(),
+                            directory,
+                        )?;
+                        held = Some((owner, manifest));
+                        results.try_send(Completed::Mode {
+                            server: session.launch.handlers.is_some(),
+                        })?;
+                        session
+                    }
                     Source::Host {
                         configuration,
                         name,
@@ -166,10 +219,49 @@ impl Worker {
                         state,
                         history,
                         recreate,
+                        sequence,
                     } => {
+                        // A manifest that does not validate fails the launch. One
+                        // that cannot be rooted only does not become current:
+                        // the launch reports its own errors, such as no Nix daemon.
+                        Manifest::validate(&configuration)?;
+                        // Before the slow work, rooting the manifest included:
+                        // whether older frontends may attach the terminal. A
+                        // configuration that cannot be selected fails below.
+                        if let Ok(config) = Manifest::read(&configuration)
+                            .and_then(|m| m.select(&name, scope.as_deref()))
+                        {
+                            results.try_send(Completed::Mode {
+                                server: config.on_attach.is_some(),
+                            })?;
+                        }
+                        let unrooted = match crate::config::ManifestLease::create(
+                            &configuration,
+                            &state.join("manifests"),
+                            sequence,
+                            &token,
+                        ) {
+                            Ok(lease) => {
+                                let lease = std::sync::Arc::new(lease);
+                                results.try_send(Completed::Manifest {
+                                    sequence,
+                                    lease: lease.clone(),
+                                })?;
+                                // Kept until it started, even once a newer manifest
+                                // replaces it as the daemon's current one.
+                                held_lease = Some(lease);
+                                None
+                            }
+                            Err(error) => {
+                                token.check()?;
+                                Some(error.to_string())
+                            }
+                        };
                         let manifest = Manifest::read(&configuration)?;
                         let editor = manifest.editor()?;
-                        let (config, mut branch) = manifest.branch(&name, scope.as_deref())?;
+                        let run_targets: std::sync::Arc<[String]> =
+                            manifest.run_targets(&name).into();
+                        let config = manifest.select(&name, scope.as_deref())?;
                         token.check()?;
                         let mut launch = config.launch()?;
                         launch.editor = editor;
@@ -187,12 +279,13 @@ impl Worker {
                             token.clone(),
                             directory,
                         )?;
-                        // Children never reopen the manifest; retain what the
-                        // branch may launch against rebuilds and GC.
-                        branch.prepare(&session);
                         token.check()?;
+                        if let Some(error) = unrooted {
+                            session
+                                .event("manifest-not-current", serde_json::json!({"detail":error}));
+                        }
                         session.configuration = name;
-                        session.branch = std::sync::Arc::new(branch);
+                        session.run_targets = run_targets;
                         if let Some(reference) = dev_shell {
                             let cwd = session.launch.cwd.clone().ok_or(
                                 "a dev shell needs a host working directory containing the flake",
@@ -219,18 +312,57 @@ impl Worker {
                         session
                     }
                 };
-                if let Err(error) = session.start(Some(slave)) {
-                    // Bubblewrap writes setup errors to the payload terminal,
-                    // which is not handed to the event pump until Started.
-                    // Preserve that diagnostic instead of losing it on failure.
-                    use std::io::Read;
-                    unix::nonblocking(master.as_raw_fd())?;
-                    let mut output = Vec::new();
-                    let _ = std::fs::File::from(master)
-                        .take(4096)
-                        .read_to_end(&mut output);
-                    return Err(format!("{error}: {}", String::from_utf8_lossy(&output)).into());
+                // Root copied outputs here, while the source still holds the
+                // directory whose roots kept them, so they outlive it.
+                let mut auto = Auto::default();
+                for (name, output) in copied {
+                    token.check()?;
+                    match session.root(&output) {
+                        Ok(output) => auto.rooted.push((name, output)),
+                        Err(error) => auto.skipped.push(crate::history::Skipped::new(
+                            &format!("auto-approve {name}"),
+                            &error.to_string(),
+                        )),
+                    }
                 }
+                if let Some(recreated) = &mut recreated {
+                    auto.rooted.append(&mut recreated.auto_approve);
+                }
+                // With attach handlers the agent runs without a terminal: no
+                // input, and its output goes to the server log.
+                let handlers = session.launch.handlers.clone();
+                let started = if handlers.is_some() {
+                    drop(slave);
+                    session.start(None)
+                } else {
+                    session.start(Some(slave))
+                };
+                let master = match started {
+                    Ok(()) if handlers.is_some() => {
+                        session.input.take();
+                        OwnedFd::from(session.output.take().unwrap())
+                    }
+                    Ok(()) => master,
+                    Err(error) => {
+                        // Bubblewrap writes setup errors to the payload's
+                        // output, which is not handed to the event pump until
+                        // Started. Preserve that diagnostic on failure.
+                        use std::io::Read;
+                        let output = match session.output.take() {
+                            Some(output) => OwnedFd::from(output),
+                            None => master,
+                        };
+                        unix::nonblocking(output.as_raw_fd())?;
+                        let mut text = Vec::new();
+                        let _ = std::fs::File::from(output)
+                            .take(4096)
+                            .read_to_end(&mut text);
+                        return Err(format!("{error}: {}", String::from_utf8_lossy(&text)).into());
+                    }
+                };
+                // Everything it mounts is rooted by now.
+                drop(held);
+                drop(held_lease);
                 results.try_send(Completed::Started {
                     docker_enabled: session.docker_enabled(),
                     scope: session.scope_name(),
@@ -247,12 +379,14 @@ impl Worker {
                         .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
                         .collect(),
                     master,
+                    handlers: handlers.map(Box::new),
                     control: session.control.take().unwrap(),
                     listener: session.listener.take().unwrap(),
                     identity: session.identity.clone().unwrap(),
                     inheritance: session.inheritance(),
                     exit_watch: session.exit_watch()?,
-                    recreated,
+                    recreated: recreated.map(Box::new),
+                    auto: Box::new(auto),
                 })?;
                 loop {
                     if token.check().is_err() || !session.alive() {
@@ -474,6 +608,9 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     }
     let (mut packages, unresolved) = session.resolve_recorded(&recreate.packages)?;
     skipped.extend(unresolved);
+    // Resolved and rooted like grants, but only mounted once requested.
+    let (auto_approve, unresolved) = session.resolve_recorded(&recreate.auto_approve)?;
+    skipped.extend(unresolved);
     let room = 128usize.saturating_sub(session.launch.initial_packages.len());
     if packages.len() > room {
         for (name, _) in packages.split_off(room) {
@@ -500,6 +637,7 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     );
     Ok(Recreated {
         packages,
+        auto_approve,
         skipped,
         fresh,
     })
