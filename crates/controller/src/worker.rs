@@ -9,7 +9,10 @@ use crate::{
 };
 use goblins_protocol::Reply;
 use std::{
-    os::fd::{AsRawFd, OwnedFd},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::net::UnixListener,
+    },
     path::PathBuf,
     sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
@@ -46,7 +49,17 @@ pub(super) struct Worker {
     pub cancel: Cancel,
     pub commands: SyncSender<Work>,
     pub results: Receiver<Event>,
+    /// The running sandbox's endpoints, sent just before `Event::Started`.
+    pub endpoints: Receiver<Box<Endpoints>>,
     pub thread: Option<JoinHandle<()>>,
+}
+/// What the runtime keeps of a started sandbox.
+pub(super) struct Endpoints {
+    /// The private channel to the sandbox's goblins-init.
+    pub control: OwnedFd,
+    pub listener: UnixListener,
+    /// The helper's pidfd.
+    pub exit_watch: OwnedFd,
 }
 pub(super) enum Source {
     Host {
@@ -80,6 +93,7 @@ impl Worker {
         let token = cancel.clone();
         let (tx, commands) = mpsc::sync_channel(4);
         let (results, rx) = mpsc::sync_channel(16);
+        let (endpoints, handed) = mpsc::sync_channel(1);
         let thread = thread::spawn(move || {
             let run = || -> Result<Option<i32>> {
                 // The private host attachment chooses this launch's manifest.
@@ -269,6 +283,11 @@ impl Worker {
                 // Everything it mounts is rooted by now.
                 drop(held);
                 drop(held_lease);
+                endpoints.try_send(Box::new(Endpoints {
+                    control: session.control.take().unwrap(),
+                    listener: session.listener.take().unwrap(),
+                    exit_watch: session.exit_watch()?,
+                }))?;
                 results.try_send(Event::Started {
                     docker_enabled: session.docker_enabled(),
                     scope: session.scope_name(),
@@ -286,11 +305,8 @@ impl Worker {
                         .collect(),
                     master,
                     handlers: handlers.map(Box::new),
-                    control: session.control.take().unwrap(),
-                    listener: session.listener.take().unwrap(),
                     identity: session.identity.clone().unwrap(),
                     inheritance: session.inheritance(),
-                    exit_watch: session.exit_watch()?,
                     recreated: recreated.map(Box::new),
                     auto: Box::new(auto),
                 })?;
@@ -481,6 +497,7 @@ impl Worker {
             cancel,
             commands: tx,
             results: rx,
+            endpoints: handed,
             thread: Some(thread),
         }
     }

@@ -171,7 +171,7 @@ Runs a command inside a running goblin. The request must carry file descriptors 
 
 *** =sessions.kill_execs=
 
-Kills every exec running in a goblin.
+Kills every exec running in a goblin. The kill is best effort: the answer means it was handed to the goblin's runtime, not that every exec has ended; each exec's own call ends when it does. A goblin whose sandbox init has gone answers =conflict=.
 
 - Input :: ={"session"}=
 - Output :: ={"accepted": true}=

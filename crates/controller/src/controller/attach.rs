@@ -3,12 +3,12 @@
 //! attaches its one terminal. A goblin with `onAttach` runs its agent without
 //! a terminal and starts the client on a new PTY for each attachment, once
 //! the variables the client needs were set during this run.
-use super::{Active, Controller};
-use crate::{config, terminal::Terminal, unix};
-use goblins_protocol::{
-    init::{self, Command, Event},
-    rpc,
+use super::{
+    Active, Controller,
+    runtime::{Command, Event, Stdio},
 };
+use crate::{config, terminal::Terminal, unix};
+use goblins_protocol::rpc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -76,7 +76,6 @@ enum Client {
         stream: UnixStream,
         size: (u16, u16),
         exec: u64,
-        master: OwnedFd,
     },
     Running(Box<Running>),
 }
@@ -356,44 +355,53 @@ impl Active {
             .cloned()
             .collect()
     }
-    /// Ask init to run a handler as exec `id`.
-    fn spawn(&self, id: u64, argv: Vec<String>, tty: bool, fds: &[i32]) -> Result<(), String> {
-        let socket = self.init.as_ref().ok_or("the goblin has no init channel")?;
+    /// Ask init to run a handler as exec `id`. Whether it started comes
+    /// back as a process event.
+    fn spawn(&mut self, id: u64, argv: Vec<String>, stdio: Stdio) -> Result<(), String> {
+        if !self.init {
+            return Err("the goblin has no init channel".into());
+        }
         let env = self
             .variables
             .iter()
             .map(|(k, v)| (format!("GOBLIN_VAR_{}", k.to_uppercase()), v.clone()))
             .collect();
-        let command = Command::Spawn {
-            id,
-            argv: Some(argv),
-            cwd: None,
-            env,
-            tty,
-        };
-        let bytes = serde_json::to_vec(&command).map_err(|e| e.to_string())?;
-        init::send(socket.as_raw_fd(), &bytes, fds)
-            .map_err(|e| format!("cannot reach the sandbox's init: {e}"))
+        let runtime = self.runtime.as_mut().ok_or("the goblin has stopped")?;
+        runtime
+            .send(Command::Spawn {
+                id,
+                argv: Some(argv),
+                cwd: None,
+                env,
+                stdio,
+            })
+            .map_err(|_| "the goblin is busy".to_string())
     }
     /// SIGHUP, SIGTERM and SIGCONT to everything exec `id` started, then
     /// SIGKILL after init's grace period.
-    fn cancel(&self, id: u64) {
-        if let Some(socket) = &self.init
-            && let Ok(bytes) = serde_json::to_vec(&Command::Cancel {
+    fn cancel(&mut self, id: u64) {
+        if self.init
+            && let Some(runtime) = &mut self.runtime
+        {
+            let _ = runtime.send(Command::CancelProcess {
                 id,
                 everything: true,
-            })
-        {
-            let _ = init::send(socket.as_raw_fd(), &bytes, &[]);
+            });
         }
     }
-    /// Start the client for a frontend whose variables are ready.
-    fn start_client(&self, id: u64, size: (u16, u16)) -> Result<OwnedFd, String> {
+    /// Start the client for a frontend whose variables are ready, on a PTY
+    /// of its own.
+    fn start_client(&mut self, id: u64, size: (u16, u16)) -> Result<(), String> {
         let handlers = self.handlers.as_ref().ok_or("no attach handlers")?;
         let argv = config::handler_arguments(&handlers.on_attach.command, &self.variables, None)?;
-        let (master, slave) = unix::pty(size.0, size.1).map_err(|e| e.to_string())?;
-        self.spawn(id, argv, true, &[slave.as_raw_fd()])?;
-        Ok(master)
+        self.spawn(
+            id,
+            argv,
+            Stdio::NewPty {
+                rows: size.0,
+                cols: size.1,
+            },
+        )
     }
     /// Begin a detach: run `onDetach` when asked and set, then cancel the
     /// client. `id` is the exec ID `onDetach` would use.
@@ -410,15 +418,19 @@ impl Active {
             .as_ref()
             .and_then(|h| h.on_detach.as_ref())
             .filter(|_| on_detach && !running.exited);
-        let on_detach = command.and_then(|command| {
-            let argv = config::handler_arguments(command, &self.variables, Some(pid)).ok()?;
-            let null = File::options()
-                .read(true)
-                .write(true)
-                .open("/dev/null")
-                .ok()?;
-            let fd = null.as_raw_fd();
-            self.spawn(id, argv, false, &[fd, fd, fd]).ok().map(|()| id)
+        let argv = command.and_then(|command| {
+            config::handler_arguments(command, &self.variables, Some(pid)).ok()
+        });
+        let on_detach = argv.and_then(|argv| {
+            let null = || {
+                File::options()
+                    .read(true)
+                    .write(true)
+                    .open("/dev/null")
+                    .map(|file| OwnedFd::from(file).into())
+            };
+            let stdio = Stdio::Fds([null().ok()?, null().ok()?, null().ok()?]);
+            self.spawn(id, argv, stdio).ok().map(|()| id)
         });
         if on_detach.is_none() {
             self.cancel(exec);
@@ -552,14 +564,7 @@ impl Controller {
                 if missing.is_empty() {
                     let exec = self.number();
                     match a.start_client(exec, size) {
-                        Ok(master) => {
-                            a.attach.client = Some(Client::Starting {
-                                stream,
-                                size,
-                                exec,
-                                master,
-                            })
-                        }
+                        Ok(()) => a.attach.client = Some(Client::Starting { stream, size, exec }),
                         Err(message) => refuse(
                             &mut stream,
                             &format!("cannot start the attach client: {message}"),
@@ -618,31 +623,31 @@ impl Controller {
             }
         }
     }
-    /// An init event for an attach client or its `onDetach`; false when it
-    /// is for another exec.
-    pub(super) fn attach_event(&mut self, session: &str, event: &Event) -> bool {
+    /// A process event for an attach client or its `onDetach`; given back
+    /// when it is for another exec.
+    pub(super) fn attach_event(&mut self, session: &str, event: Event) -> Option<Event> {
         let Some(a) = self.sessions.get_mut(session) else {
-            return false;
+            return Some(event);
         };
-        let consumed = match (a.attach.client.take(), event) {
+        let unconsumed = match (a.attach.client.take(), event) {
             (
-                Some(Client::Starting {
-                    stream,
-                    size,
-                    exec,
-                    master,
-                }),
-                Event::Spawned { id, pid },
-            ) if *id == exec => {
-                let started = Terminal::client(master, size.0, size.1).and_then(|mut terminal| {
-                    terminal.attach(stream, json!(0))?;
-                    Ok(terminal)
-                });
+                Some(Client::Starting { stream, size, exec }),
+                Event::Spawned {
+                    id,
+                    pid,
+                    master: Some(master),
+                },
+            ) if id == exec => {
+                let started =
+                    Terminal::client(master.into(), size.0, size.1).and_then(|mut terminal| {
+                        terminal.attach(stream, json!(0))?;
+                        Ok(terminal)
+                    });
                 match started {
                     Ok(terminal) => {
                         a.attach.client = Some(Client::Running(Box::new(Running {
                             exec,
-                            pid: *pid,
+                            pid,
                             since: crate::messaging::now(),
                             terminal,
                             exited: false,
@@ -651,30 +656,29 @@ impl Controller {
                     }
                     Err(_) => a.cancel(exec),
                 }
-                true
+                None
             }
             (
                 Some(Client::Starting {
                     mut stream, exec, ..
                 }),
-                Event::Failed { id, message, .. },
-            ) if *id == exec => {
+                Event::SpawnFailed { id, message, .. },
+            ) if id == exec => {
                 refuse(
                     &mut stream,
                     &format!("cannot start the attach client: {message}"),
                 );
-                true
+                None
             }
             (Some(Client::Running(mut running)), event) => {
-                let consumed = match *event {
+                let on_detach = running.ending.as_ref().and_then(|e| e.on_detach);
+                let unconsumed = match event {
                     // Detached; what the client left behind goes too, and
                     // so does an onDetach still running.
                     Event::Exited { id, .. } if id == running.exec => {
                         running.exited = true;
                         if !running.ending.as_ref().is_some_and(|e| e.cancelled) {
-                            if let Some(on_detach) =
-                                running.ending.as_ref().and_then(|e| e.on_detach)
-                            {
+                            if let Some(on_detach) = on_detach {
                                 a.cancel(on_detach);
                             }
                             a.cancel(id);
@@ -684,34 +688,30 @@ impl Controller {
                                 cancelled: true,
                             });
                         }
-                        true
+                        None
                     }
-                    Event::Exited { id, .. } | Event::Failed { id, .. }
-                        if running.ending.as_ref().and_then(|e| e.on_detach) == Some(id) =>
+                    Event::Exited { id, .. } | Event::SpawnFailed { id, .. }
+                        if on_detach == Some(id) =>
                     {
                         // onDetach finished: the next tick cancels the client.
                         running.ending.as_mut().unwrap().on_detach = None;
-                        true
+                        None
                     }
-                    Event::Spawned { id, .. }
-                        if running.ending.as_ref().and_then(|e| e.on_detach) == Some(id) =>
-                    {
-                        true
-                    }
-                    _ => false,
+                    Event::Spawned { id, .. } if on_detach == Some(id) => None,
+                    event => Some(event),
                 };
                 a.attach.client = Some(Client::Running(running));
-                consumed
+                unconsumed
             }
-            (client, _) => {
+            (client, event) => {
                 a.attach.client = client;
-                false
+                Some(event)
             }
         };
-        if consumed {
+        if unconsumed.is_none() {
             self.dirty = true;
         }
-        consumed
+        unconsumed
     }
     /// The goblin's init went away: no client is left, and none can start.
     pub(super) fn attach_lost(&mut self, session: &str) {

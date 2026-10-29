@@ -189,14 +189,12 @@ struct Active {
     created: u64,
     record: SessionRecord,
     runtime: Option<Box<dyn Runtime>>,
-    listener: Option<UnixListener>,
     pending: Option<Pending>,
     terminal: Terminal,
     directory: PathBuf,
     inheritance: Option<Inheritance>,
-    exit_watch: Option<OwnedFd>,
-    /// The private channel to the sandbox's goblins-init.
-    init: Option<OwnedFd>,
+    /// The runtime's channel to the sandbox's goblins-init is open.
+    init: bool,
     granted_outputs: BTreeMap<String, PathBuf>,
     /// Auto-approved packages, by exact output, rooted by the session itself.
     auto_approve: BTreeMap<String, PathBuf>,
@@ -1299,7 +1297,6 @@ impl Controller {
             let _ = runtime.send(Command::Stop);
             a.record.state = "stopping".into();
         }
-        a.listener.take();
         a.activity_at = None;
         if a.record.set_agent_state(Default::default()) {
             self.dirty = true;
@@ -1587,8 +1584,7 @@ impl Controller {
             Active {
                 activity_at: None,
                 inheritance: None,
-                exit_watch: None,
-                init: None,
+                init: false,
                 granted_outputs: BTreeMap::new(),
                 auto_approve: approvals.packages,
                 auto_approve_dev_shells: approvals.dev_shells,
@@ -1607,7 +1603,6 @@ impl Controller {
                 created: self.next,
                 record,
                 runtime: Some(Box::new(runtime)),
-                listener: None,
                 pending: None,
                 terminal,
                 directory,
@@ -2536,7 +2531,34 @@ impl Controller {
                 });
             }
         }
-        self.poll_init();
+        // Drain every runtime's round. Process events go first, as they did
+        // when the daemon read every init channel before the sessions, and
+        // in order with the start that opened init.
+        let mut polled = BTreeMap::new();
+        for (id, a) in &mut self.sessions {
+            if let Some(runtime) = &mut a.runtime {
+                let events: Vec<_> = std::iter::from_fn(|| runtime.poll()).collect();
+                polled.insert(id.clone(), (events, runtime.ended()));
+            }
+        }
+        for (id, (events, _)) in &mut polled {
+            for event in std::mem::take(events) {
+                match event {
+                    Event::Spawned { .. }
+                    | Event::SpawnFailed { .. }
+                    | Event::Exited { .. }
+                    | Event::InitLost => self.process_event(id, event),
+                    event => {
+                        if matches!(event, Event::Started { .. })
+                            && let Some(a) = self.sessions.get_mut(id)
+                        {
+                            a.init = true;
+                        }
+                        events.push(event)
+                    }
+                }
+            }
+        }
         self.poll_edits();
         self.poll_host_jobs();
         for _ in 0..HOSTS {
@@ -2560,40 +2582,33 @@ impl Controller {
         let ids: Vec<_> = self.sessions.keys().cloned().collect();
         for id in ids {
             let mut a = self.sessions.remove(&id).unwrap();
-            for _ in 0..8 {
-                let Some(listener) = &a.listener else {
-                    break;
-                };
-                match listener.accept() {
-                    Ok((p, _))
+            let (results, runtime_ended) = polled.remove(&id).unwrap_or_default();
+            let mut payload_exited = false;
+            for result in results {
+                match result {
+                    Event::SandboxConnected(stream) => {
                         if self
                             .connections
                             .iter()
                             .filter(|c| matches!(&c.role,Role::Sandbox(s) if s==&id))
                             .count()
-                            < 8 =>
-                    {
-                        let cid = self.number();
-                        self.connections
-                            .push(Connection::new(cid, Role::Sandbox(id.clone()), p)?);
+                            < 8
+                        {
+                            let cid = self.number();
+                            let stream = UnixStream::from(OwnedFd::from(stream));
+                            self.connections.push(Connection::new(
+                                cid,
+                                Role::Sandbox(id.clone()),
+                                stream,
+                            )?);
+                        }
                     }
-                    Ok(_) => (),
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            let mut results = Vec::new();
-            let mut runtime_ended = false;
-            if let Some(runtime) = &mut a.runtime {
-                while results.len() < 16
-                    && let Some(event) = runtime.poll()
-                {
-                    results.push(event);
-                }
-                runtime_ended = runtime.ended();
-            }
-            for result in results {
-                match result {
+                    Event::PayloadExited => payload_exited = true,
+                    // Handled before the sessions, above.
+                    Event::Spawned { .. }
+                    | Event::SpawnFailed { .. }
+                    | Event::Exited { .. }
+                    | Event::InitLost => (),
                     Event::Started {
                         docker_enabled,
                         scope,
@@ -2602,15 +2617,11 @@ impl Controller {
                         initial_packages,
                         master,
                         handlers,
-                        control,
-                        listener,
                         identity,
                         inheritance,
-                        exit_watch,
                         recreated,
                         auto,
                     } => {
-                        a.init = Some(control);
                         // Recreated grants are this goblin's own: children
                         // asking for them are approved automatically.
                         if let Some(recreated) = recreated {
@@ -2635,7 +2646,6 @@ impl Controller {
                         a.record.dev_shell = dev_shell;
                         a.dev_identity = dev_identity;
                         a.record.description = inheritance.description().to_owned();
-                        a.exit_watch = Some(exit_watch);
                         a.inheritance = Some(inheritance);
                         match handlers {
                             Some(handlers) => a.serve(master, *handlers)?,
@@ -2645,7 +2655,6 @@ impl Controller {
                         a.record.identity = Some(identity);
                         if a.record.state == "starting" {
                             a.record.state = "running".into();
-                            a.listener = Some(listener);
                             self.record_started(&a);
                         }
                         self.dirty = true;
@@ -2817,7 +2826,6 @@ impl Controller {
                             a.record.state = "stopped".into();
                         }
                         a.record.exit_code = exit_code;
-                        a.listener.take();
                         if let Some(p) = a.pending.take() {
                             a.cancel_work(p.serial);
                             if let Some(r) = self.permission_mut(&p.id) {
@@ -2841,8 +2849,7 @@ impl Controller {
             if runtime_ended {
                 a.runtime.take();
                 a.inheritance.take();
-                a.exit_watch.take();
-                a.init.take();
+                a.init = false;
                 // A worker can lose its final try_send when its bounded result
                 // queue is full (or panic). Never retain a live session after
                 // its producer is gone, even without a Stopped result.
@@ -2850,7 +2857,6 @@ impl Controller {
                     a.record.state = "failed".into();
                     a.record.detail =
                         Some("session worker exited without a final lifecycle result".into());
-                    a.listener.take();
                     if a.record.identity.is_none() {
                         a.terminal.failed_start();
                     }
@@ -2898,12 +2904,9 @@ impl Controller {
                 a.record.terminal_detached = a.terminal.detached;
             }
             self.attach_tick(&mut a);
-            // Observe process exit independently of a worker blocked on Nix.
-            // A pidfd pins the process identity, avoiding PID-reuse races.
-            let exited = a.record.state == "running"
-                && a.exit_watch
-                    .as_ref()
-                    .is_some_and(|fd| unix::readable(fd.as_raw_fd(), 0).unwrap_or(true));
+            // The runtime saw the payload exit, even while its worker is
+            // blocked on Nix.
+            let exited = payload_exited && a.record.state == "running";
             let stopped = ["stopped", "failed"].contains(&a.record.state.as_str());
             if a.record.state != "running" {
                 a.activity_at = None;
@@ -3131,8 +3134,7 @@ mod tests {
             Active {
                 activity_at: None,
                 inheritance: None,
-                exit_watch: None,
-                init: None,
+                init: false,
                 granted_outputs: BTreeMap::new(),
                 auto_approve: BTreeMap::new(),
                 auto_approve_dev_shells: BTreeSet::new(),
@@ -3183,7 +3185,6 @@ mod tests {
                     skipped: vec![],
                 },
                 runtime: Some(Box::new(runtime::Fake::ended(results))),
-                listener: None,
                 pending: Some(Pending {
                     initial_output: None,
                     dev_identity: None,
@@ -3222,8 +3223,10 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let id = session_with_results_id(&mut d, "target", vec![]);
-        let (init_daemon, init_sandbox) = goblins_protocol::init::pair().unwrap();
-        d.sessions.get_mut(&id).unwrap().init = Some(init_daemon);
+        let (runtime, events, received) = runtime::Fake::new();
+        let a = d.sessions.get_mut(&id).unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
         let (mut c, mut peer) = connection(Role::Host);
         peer.write_all(
             &rpc::encode(&rpc::request(json!(1), "initialize", json!({"api":1}))).unwrap(),
@@ -3252,11 +3255,40 @@ mod tests {
             d.service(&mut c);
         }
         assert!(c.exec.is_some(), "{:?}", c.output);
-        let mut buffer = vec![0; goblins_protocol::init::MAX_MESSAGE];
-        let (n, received) =
-            goblins_protocol::init::receive(init_sandbox.as_raw_fd(), &mut buffer, 0).unwrap();
-        assert_eq!(received.len(), 3);
-        assert!(String::from_utf8_lossy(&buffer[..n]).contains(&argv[0]));
+        let spawned = received.lock().unwrap().pop_front();
+        let Some(Command::Spawn {
+            argv: Some(sent),
+            stdio: runtime::Stdio::Fds(_),
+            ..
+        }) = spawned
+        else {
+            panic!("expected the exec's spawn with three descriptors: {spawned:?}");
+        };
+        assert_eq!(sent, argv);
+        // Init could not be asked: the client hears so as before.
+        events
+            .send(Event::SpawnFailed {
+                id: c.exec.unwrap(),
+                code: None,
+                message: "cannot reach the sandbox's init: busy".into(),
+            })
+            .unwrap();
+        d.connections.push(c);
+        // One frame a tick: the initialize reply goes out first.
+        let reply = (0..8)
+            .find_map(|_| {
+                d.tick().unwrap();
+                let reply = unix::readable(peer.as_raw_fd(), 10)
+                    .unwrap()
+                    .then(|| rpc::read(&mut peer).unwrap());
+                reply.filter(|reply| reply["id"] == 2)
+            })
+            .expect("the exec's reply");
+        assert_eq!(reply["error"]["code"], -32010);
+        assert_eq!(
+            reply["error"]["message"],
+            "cannot reach the sandbox's init: busy"
+        );
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -3805,6 +3837,41 @@ mod tests {
         assert_eq!(d.sessions[&id].record.state, "stopped");
         assert!(d.sessions[&id].runtime.is_none());
         assert!(d.sessions[&id].record.packages.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn init_lost_in_the_round_that_started_it_stays_lost() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let events = live(&mut d, "a");
+        d.sessions.get_mut("a").unwrap().record.state = "starting".into();
+        events
+            .send(Event::Started {
+                docker_enabled: false,
+                scope: None,
+                dev_shell: None,
+                dev_identity: None,
+                initial_packages: vec![],
+                master: unix::pty(24, 80).unwrap().0,
+                handlers: None,
+                identity: Identity {
+                    pid: 1,
+                    helper_userns: 0,
+                    mount_owner: 0,
+                    source_mountns: 0,
+                    mountns: 0,
+                },
+                inheritance: Inheritance::fixture("shell", &[]),
+                recreated: None,
+                auto: Box::default(),
+            })
+            .unwrap();
+        events.send(Event::InitLost).unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sessions["a"].record.state, "running");
+        assert!(!d.sessions["a"].init);
+        assert_eq!(d.kill_execs("a").unwrap_err(), conflict());
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4598,13 +4665,14 @@ mod tests {
     }
     #[test]
     fn attach_handlers_wait_start_refuse_and_detach_a_client() {
-        use goblins_protocol::init::{self, Command, Event};
+        use runtime::Stdio;
         let mut d = daemon();
         let path = d.state.clone();
         let _results = live(&mut d, "a");
-        let (control, init_peer) = init::pair().unwrap();
+        let (runtime, _events, received) = runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
-        a.init = Some(control);
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
         // As serve leaves it: the agent's own terminal has no frontend.
         a.terminal.detached = true;
         a.variables.insert("session_id".into(), "seeded".into());
@@ -4623,6 +4691,17 @@ mod tests {
             d.attach_tick(&mut a);
             d.sessions.insert("a".into(), a);
         };
+        // Step until the frontend has a frame to read, however slowly its
+        // hello arrives.
+        let answer = |d: &mut Controller, frontend: &mut UnixStream| {
+            for _ in 0..500 {
+                if unix::readable(frontend.as_raw_fd(), 10).unwrap() {
+                    return rpc::read(frontend).unwrap();
+                }
+                step(d);
+            }
+            panic!("the frontend got no answer");
+        };
         let hello = |rows: u16| {
             let mut frontend = UnixStream::connect(&socket).unwrap();
             frontend
@@ -4634,17 +4713,32 @@ mod tests {
                 .unwrap();
             frontend
         };
-        let mut buffer = vec![0; init::MAX_MESSAGE];
-        let mut command = |fds: usize| {
-            let (n, received) = init::receive(init_peer.as_raw_fd(), &mut buffer, 0).unwrap();
-            assert_eq!(received.len(), fds);
-            serde_json::from_slice::<Command>(&buffer[..n]).unwrap()
+        // Step until the runtime was sent a command.
+        let command = |d: &mut Controller| {
+            for _ in 0..500 {
+                if let Some(command) = received.lock().unwrap().pop_front() {
+                    return command;
+                }
+                step(d);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the runtime got no command");
+        };
+        let spawned = |id, pid| Event::Spawned {
+            id,
+            pid,
+            master: Some(unix::pty(20, 80).unwrap().0.into()),
+        };
+        let cancelled = |command| match command {
+            Command::CancelProcess {
+                id,
+                everything: true,
+            } => id,
+            command => panic!("expected a cancellation: {command:?}"),
         };
         // A seeded value is not ready: the frontend hears it waits.
         let mut frontend = hello(30);
-        step(&mut d);
-        step(&mut d);
-        let notice = rpc::read(&mut frontend).unwrap();
+        let notice = answer(&mut d, &mut frontend);
         assert_eq!(notice["method"], "attach.waiting");
         assert_eq!(notice["params"]["missing"], json!(["session_id"]));
         assert!(!d.sessions["a"].record.terminal_attached);
@@ -4655,26 +4749,26 @@ mod tests {
             json!({"variables":{"session_id":"c819"}}),
         )
         .unwrap();
-        step(&mut d);
         let Command::Spawn {
-            id, argv, env, tty, ..
-        } = command(1)
+            id,
+            argv,
+            env,
+            stdio: Stdio::NewPty { rows: 30, cols: 80 },
+            ..
+        } = command(&mut d)
         else {
             panic!("expected the client's spawn");
         };
         assert_eq!(argv, Some(template(&["client", "c819"])));
-        assert!(tty && env.contains(&("GOBLIN_VAR_SESSION_ID".into(), "c819".into())));
-        assert!(d.attach_event("a", &Event::Spawned { id, pid: 42 }));
-        step(&mut d);
-        let reply = rpc::read(&mut frontend).unwrap();
+        assert!(env.contains(&("GOBLIN_VAR_SESSION_ID".into(), "c819".into())));
+        assert!(d.attach_event("a", spawned(id, 42)).is_none());
+        let reply = answer(&mut d, &mut frontend);
         assert_eq!(reply["result"]["attached"], true);
         assert!(d.sessions["a"].record.terminal_attached);
         assert!(d.sessions["a"].attach.since().is_some());
         // One attachment: a second frontend is refused and changes nothing.
         let mut second = hello(10);
-        step(&mut d);
-        step(&mut d);
-        let refused = rpc::read(&mut second).unwrap();
+        let refused = answer(&mut d, &mut second);
         assert_eq!(refused["error"]["message"], "terminal is already attached");
         // Detach runs onDetach with the client's PID, then cancels the
         // client's whole subtree; it is detached once the client exited.
@@ -4682,39 +4776,38 @@ mod tests {
         let Command::Spawn {
             id: on_detach,
             argv,
-            tty,
+            stdio: Stdio::Fds(_),
             ..
-        } = command(3)
+        } = command(&mut d)
         else {
             panic!("expected onDetach's spawn");
         };
-        assert_eq!((argv, tty), (Some(template(&["stop", "42"])), false));
+        assert_eq!(argv, Some(template(&["stop", "42"])));
         step(&mut d);
         assert!(!d.sessions["a"].record.terminal_detached);
-        assert!(d.attach_event(
-            "a",
-            &Event::Exited {
-                id: on_detach,
-                code: Some(0),
-                signal: None
-            }
-        ));
-        step(&mut d);
-        assert_eq!(
-            command(0),
-            Command::Cancel {
-                id,
-                everything: true
-            }
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id: on_detach,
+                    code: Some(0),
+                    signal: None
+                }
+            )
+            .is_none()
         );
-        assert!(d.attach_event(
-            "a",
-            &Event::Exited {
-                id,
-                code: None,
-                signal: Some(1)
-            }
-        ));
+        assert_eq!(cancelled(command(&mut d)), id);
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: None,
+                    signal: Some(1)
+                }
+            )
+            .is_none()
+        );
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
         assert!(!d.sessions["a"].record.terminal_attached);
@@ -4722,15 +4815,12 @@ mod tests {
         drop(frontend);
         step(&mut d);
         let mut next = hello(20);
-        step(&mut d);
-        step(&mut d);
-        let Command::Spawn { id, .. } = command(1) else {
+        let Command::Spawn { id, .. } = command(&mut d) else {
             panic!("expected a new client");
         };
         // A client that exits detaches without onDetach; its leftovers go.
-        assert!(d.attach_event("a", &Event::Spawned { id, pid: 43 }));
-        step(&mut d);
-        assert_eq!(rpc::read(&mut next).unwrap()["result"]["attached"], true);
+        assert!(d.attach_event("a", spawned(id, 43)).is_none());
+        assert_eq!(answer(&mut d, &mut next)["result"]["attached"], true);
         // Its record stays while the client may still deliver output.
         assert!(!d.sessions["a"].can_evict());
         // A settled attachment publishes nothing on unchanged ticks.
@@ -4739,21 +4829,18 @@ mod tests {
         d.tick().unwrap();
         d.tick().unwrap();
         assert_eq!(d.sequence, sequence);
-        assert!(d.attach_event(
-            "a",
-            &Event::Exited {
-                id,
-                code: Some(0),
-                signal: None
-            }
-        ));
-        assert_eq!(
-            command(0),
-            Command::Cancel {
-                id,
-                everything: true
-            }
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: Some(0),
+                    signal: None
+                }
+            )
+            .is_none()
         );
+        assert_eq!(cancelled(command(&mut d)), id);
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
         drop(next);
@@ -4761,54 +4848,75 @@ mod tests {
         assert!(d.sessions["a"].can_evict());
         // A client exiting while onDetach runs takes onDetach with it.
         let mut third = hello(20);
-        step(&mut d);
-        let Command::Spawn { id, .. } = command(1) else {
+        let Command::Spawn { id, .. } = command(&mut d) else {
             panic!("expected a new client");
         };
-        assert!(d.attach_event("a", &Event::Spawned { id, pid: 44 }));
-        step(&mut d);
-        assert_eq!(rpc::read(&mut third).unwrap()["result"]["attached"], true);
+        assert!(d.attach_event("a", spawned(id, 44)).is_none());
+        assert_eq!(answer(&mut d, &mut third)["result"]["attached"], true);
         d.detach("a").unwrap();
-        let Command::Spawn { id: on_detach, .. } = command(3) else {
+        let Command::Spawn { id: on_detach, .. } = command(&mut d) else {
             panic!("expected onDetach's spawn");
         };
-        assert!(d.attach_event(
-            "a",
-            &Event::Exited {
-                id,
-                code: Some(0),
-                signal: None
-            }
-        ));
-        for id in [on_detach, id] {
-            assert_eq!(
-                command(0),
-                Command::Cancel {
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
                     id,
-                    everything: true
+                    code: Some(0),
+                    signal: None
                 }
-            );
+            )
+            .is_none()
+        );
+        for id in [on_detach, id] {
+            assert_eq!(cancelled(command(&mut d)), id);
         }
         drop(third);
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
-        // Init going away fails a starting attachment and frees the slot.
-        let mut fourth = hello(20);
-        step(&mut d);
-        let Command::Spawn { .. } = command(1) else {
+        // A client init cannot start is refused with init's reason.
+        let mut refused = hello(20);
+        let Command::Spawn { id, .. } = command(&mut d) else {
             panic!("expected a new client");
         };
-        d.attach_lost("a");
-        let refused = rpc::read(&mut fourth).unwrap();
+        assert!(
+            d.attach_event(
+                "a",
+                Event::SpawnFailed {
+                    id,
+                    code: Some(127),
+                    message: "not found".into()
+                }
+            )
+            .is_none()
+        );
+        assert_eq!(
+            answer(&mut d, &mut refused)["error"]["message"],
+            "cannot start the attach client: not found"
+        );
+        // Init going away fails a starting attachment and frees the slot.
+        let mut fourth = hello(20);
+        let Command::Spawn { .. } = command(&mut d) else {
+            panic!("expected a new client");
+        };
+        d.process_event("a", Event::InitLost);
+        let refused = answer(&mut d, &mut fourth);
         assert!(
             refused["error"]["message"]
                 .as_str()
                 .unwrap()
                 .contains("init")
         );
-        let _fifth = hello(20);
-        step(&mut d);
-        let Command::Spawn { .. } = command(1) else {
+        // And none can start until it is back.
+        let mut fifth = hello(20);
+        let refused = answer(&mut d, &mut fifth);
+        assert_eq!(
+            refused["error"]["message"],
+            "cannot start the attach client: the goblin has no init channel"
+        );
+        d.sessions.get_mut("a").unwrap().init = true;
+        let _sixth = hello(20);
+        let Command::Spawn { .. } = command(&mut d) else {
             panic!("expected the slot to be free");
         };
         drop(d);

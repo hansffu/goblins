@@ -3,7 +3,7 @@
 #+startup: showall inlineimages hideblocks
 #+property: header-args:mermaid :results file graphics replace :background-color "'#282c34'" :theme dark
 
-Status: draft for discussion. It turns phases 1 and 2 of [[file:PER-GOBLIN-SUPERVISOR.md][PER-GOBLIN-SUPERVISOR.md]] into a sequence of reviewable refactors on Linux. macOS is out of scope: nothing here ports anything to Darwin, but every step leaves the daemon with less Linux knowledge than before, and section 4.4 defines how a second sandbox implementation would describe what it can do. The Nix configuration API stays unchanged throughout. The public JSON-RPC API keeps its methods, fields, codes, messages and limits; the one visible change is which refusal a sandbox request gets when it fails more than one check (section 4.4).
+Status: draft for discussion. It turns phases 1 and 2 of [[file:PER-GOBLIN-SUPERVISOR.md][PER-GOBLIN-SUPERVISOR.md]] into a sequence of reviewable refactors on Linux. macOS is out of scope: nothing here ports anything to Darwin, but every step leaves the daemon with less Linux knowledge than before, and section 4.4 defines how a second sandbox implementation would describe what it can do. The Nix configuration API stays unchanged throughout. The public JSON-RPC API keeps its methods, fields, codes, messages and limits. The visible changes are which refusal a sandbox request gets when it fails more than one check, and how two host methods answer when the sandbox's init cannot take a message (both in section 4.4).
 
 Labels: *[E]* existing behaviour (master, 2026-10-29), *[P]* proposed change, *[Q]* a decision the user has taken, recorded in section 7.
 
@@ -192,6 +192,9 @@ trait Runtime {
     /// Err gives the command back when the runtime's queue is full,
     /// as `try_send` on the worker channel does today.
     fn send(&mut self, command: Command) -> Result<(), Command>;
+    /// The events of one round, then None. The daemon drains one round
+    /// per tick, which bounds what one goblin costs it, as today's
+    /// per-tick limits on results, init messages and accepts do.
     fn poll(&mut self) -> Option<Event>;
     /// True once every event has been polled and the runtime is gone.
     fn ended(&self) -> bool;
@@ -248,9 +251,11 @@ enum Command {
     // allocated by the daemon, as exec and attach ids are today.
     /// argv None runs the sandbox's configured shell, as today.
     Spawn { id: u64, argv: Option<Vec<String>>, env: Vec<(String, String)>,
-            cwd: Option<PathBuf>, stdio: Stdio },
+            cwd: Option<String>, stdio: Stdio },
     Signal { id: u64, signal: i32 },
-    CancelProcess { id: u64 },
+    /// The process group, or with `everything` all the process started
+    /// (attach clients and their onDetach).
+    CancelProcess { id: u64, everything: bool },
     KillAll,
     // Terminals (phase 5). The runtime writes the framed acceptance
     // and then raw bytes to the frontend's stream.
@@ -298,11 +303,23 @@ enum Event {
     /// The new current generation, as devshell.lock and status need it.
     DevShell { identity: String, generation: DevShellSummary },
     Call { serial: u64, result: Result<Value, String> },
-    // From goblins-init. Spawned carries the PTY master until phase 5;
-    // the pid is the {pid} of onDetach's arguments, as today.
-    Spawned { id: u64, pid: i32 },
-    SpawnFailed { id: u64, error: String },
-    Exited { id: u64, status: ExitStatus },
+    // From goblins-init. Spawned carries the PTY master of
+    // Stdio::NewPty until phase 5; the pid is the {pid} of onDetach's
+    // arguments, as today.
+    Spawned { id: u64, pid: i32, master: Option<Fd> },
+    /// code is init's (127 for a missing command, 126 otherwise); None
+    /// when init could not be asked, which goblins exec answers with
+    /// -32010 as today.
+    SpawnFailed { id: u64, code: Option<i32>, message: String },
+    Exited { id: u64, code: Option<i32>, signal: Option<i32> },
+    /// The init channel closed: execs end and no attach client starts.
+    InitLost,
+    /// The payload exited. The daemon decides what follows: it stops the
+    /// goblin, as it does on the pidfd today.
+    PayloadExited,
+    /// A request.sock connection for the daemon to serve. Phase 1 only;
+    /// phase 5 replaces it with SandboxOpened.
+    SandboxConnected(Fd),
     // Terminals (phase 5): the record fields the daemon keeps today.
     Terminal { terminal: TerminalId, status: TerminalStatus },
     // Relayed sandbox calls (phase 5). Connection ids are the runtime's.
@@ -480,6 +497,9 @@ Rules:
 - *The compatibility boundary.* Every sandbox call gets today's answer, with two exceptions. Codes and messages are unchanged, and [[file:../API.org][API.org]] does not specify the order of refusals, so it needs no change. Only phase 5's first commit changes anything.
   1. *Policy before state.* Today's operations do not share one order: =permissions.request= checks for a pending request before =allowNix=, for example. A request that fails both a policy check and a state check now gets the policy refusal. A running =allowNix= goblin with a pending request that asks for a package gets =NIX_PACKAGES= instead of =conflict=.
   2. *A short window at shutdown.* Today a call made while the daemon shuts down is refused with =conflict= before its parameters are read. The runtime learns of a stop or shutdown only when =Stop= reaches it, so in the moment between the daemon starting to stop and =Stop= arriving, a call with bad parameters or one the policy forbids gets that refusal instead of =conflict=. Every call that passes the gate still gets =conflict= from the daemon, as today.
+- *Two host calls, from phase 1.* Process commands go through =Runtime::send= and their failures come back as events, so a failure to hand a message to the sandbox's init is no longer known when the call is answered. The owner accepted both differences:
+  1. =sessions.kill_execs= is best effort, like signals (section 4.1). Today it answers =-32010= when its message to init cannot be sent; now it answers =accepted=, and still =conflict= once init has gone. [[file:../API.org][API.org]] says so in its entry.
+  2. A =sessions.exec= whose =Spawn= cannot be sent to init still gets =-32010= with today's message, but one tick later, through the exec's waiting state, so its connection closes after that answer as it does after any finished exec.
 - *A stopped goblin still answers conflict first.* A sandbox cannot call before =Started=, because the runtime accepts on =request.sock= only after it has sent =Started=. After =Stop=, the runtime answers every new call except =initialize= and messaging with today's =conflict=, right after the transport checks and before the method's own checks, so the =running= check keeps its place. =initialize= and messaging calls are still relayed until =Stopped= and get the daemon's answer, as today, where they branch before the per-goblin =running= check.
 - *Unsupported is new but unreachable on Linux.* When a later backend first reports a smaller =Support=, =Refusal::Unsupported= needs an error code and an entry in [[file:../API.org][API.org]]. That belongs to the change that adds the backend, not to this refactor.
 - *=initialize= features follow support only.* Today's list is fixed for every sandbox, including =package-grants= for an =allowNix= goblin. =sandbox_features= drops only the protocol features whose =Feature= is missing from =Support=, so Linux keeps today's exact list. Policy differences stay visible through =sessions.status=, as now.
@@ -792,9 +812,12 @@ flowchart LR
 
 *[P]* Introduce =Runtime=, =Command=, =Event=, =Fd= and the =Local= and =Fake= implementations (sections 4.1 to 4.3), in a new =controller/runtime.rs=.
 
-- =poll_init=, the per-session =request.sock= accept loop, the pidfd check and =poll_host_jobs= in =tick= collapse into draining each goblin's =Runtime=. The accepted sandbox streams still come to the controller in this phase; phase 5 replaces them with relayed calls.
+- =poll_init=, the per-session =request.sock= accept loop, the pidfd check and =poll_host_jobs= in =tick= collapse into draining each goblin's =Runtime=. The accepted sandbox streams still come to the controller in this phase, as =Event::SandboxConnected=; phase 5 replaces them with relayed calls.
+- The runtime reports the payload's exit as =Event::PayloadExited=, and the controller calls =stop= on it as it does on the pidfd today, so a pending request is still answered at once with today's message.
 - Cancellation becomes =Command::Cancel(id)= instead of shared =Cancel= atomics in =Pending=, =Call= and =Work=. =Local::send= handles it at once, without queueing (section 4.1).
-- The dispatcher, the outbound queue rules, stopping versus dropping, and the retiring set follow section 4.1 from this phase on, so phase 6 changes no ordering or shutdown behaviour.
+- The dispatcher and stopping versus dropping follow section 4.1 from this phase on. =Local='s dispatcher is =send= itself and hands every command to the worker or init at once, so commands already take effect in the order sent and a cancellation already overtakes queued work. The outbound queue of section 4.1 and its ordering tests therefore land in phase 6 with =Supervised=, its only user. An init socket that refuses a message keeps today's answers: =-32010= for =goblins exec= and an attach client that cannot start, and nothing for signals. The exceptions for =sessions.kill_execs= and =sessions.exec= are in section 4.4.
+- An =accept= error on =request.sock= other than =WouldBlock= used to end the daemon's tick with an error. =Local= now stops accepting for that round and tries again in the next.
+- The sessions map plays the retiring set: a stopping goblin's record stays there, polled, until its runtime ends, and is evicted only after. A separate set comes with =Supervised= and its kill deadline.
 - Attach clients ask the runtime for a PTY (=Stdio::NewPty=) instead of the controller allocating one, and get the master back in =Spawned= until phase 5. =goblins exec= passes the frontend's descriptors through unchanged (=Stdio::Fds= or =Stdio::Tty=).
 - Host jobs:
   - =host_spec= sends =PrepareHostJob=; the runtime resolves the directory through the bind descriptors, keeps the pinned descriptor by request ID and returns the display path for the preview.
@@ -972,7 +995,6 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
 *[P]* New tests, added in the phase that makes them possible:
 - *Phase 1:*
   - The =Fake= runtime for the controller unit tests.
-  - Outbound ordering: a queued =Spawn= followed by a =Signal= delivers the signal after the spawn; two different queued signals arrive in order; =KillAll= after a queued =Spawn= also covers that exec; a cancellation for an unsent request removes it.
   - A denial cancels a dev shell evaluation that is blocked in Nix, and a stop cancels a blocked package build, both promptly.
 - *Phase 2:*
   - With a =Fake= reporting reduced =Support=, every operation is refused as =Unsupported=, and =initialize= drops exactly the matching features.
@@ -1015,6 +1037,7 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
   - A supervisor given a =Start= with another =supervisor_api= refuses it, and the launch fails with a clear message.
   - Killing the daemon stops every supervisor and scope process, checked by their PIDs, in addition to the existing daemon-death tests.
   - The control-channel transport tests listed in section 4.7.
+  - Outbound ordering: a queued =Spawn= followed by a =Signal= delivers the signal after the spawn; two different queued signals arrive in order; =KillAll= after a queued =Spawn= also covers that exec; a cancellation for an unsent request removes it.
   - The source check of section 1: no daemon file other than =supervised= uses pidfds or process signals, and none uses Bubblewrap, namespaces, PTYs, SOCK_SEQPACKET, init or =/proc=.
 
 * 9. Out of scope

@@ -2,12 +2,17 @@
 //! out, and neither side waits for the other.
 use crate::{
     session::{Cancel, Identity, Inheritance},
-    worker::{Auto, Recreated, Source, Worker},
+    unix,
+    worker::{Auto, Endpoints, Recreated, Source, Worker},
 };
-use goblins_protocol::{Reply, Request};
+use goblins_protocol::{Reply, Request, init};
 use std::{
-    collections::BTreeMap,
-    os::{fd::OwnedFd, unix::net::UnixListener},
+    collections::{BTreeMap, VecDeque},
+    io,
+    os::{
+        fd::{AsRawFd, OwnedFd, RawFd},
+        unix::net::UnixListener,
+    },
     path::PathBuf,
     sync::mpsc,
 };
@@ -15,11 +20,46 @@ use std::{
 /// The daemon's view of one goblin's runtime. Neither method blocks.
 pub(crate) trait Runtime: Send {
     /// Err gives the command back when the runtime's queue is full.
-    /// Cancellations and `Stop` are never refused.
+    /// Cancellations, process signals and `Stop` are never refused.
     fn send(&mut self, command: Command) -> Result<(), Command>;
+    /// The events of one round, then None; the daemon drains a round per
+    /// tick, which bounds what one goblin costs it.
     fn poll(&mut self) -> Option<Event>;
     /// True once every event has been polled and the runtime is gone.
     fn ended(&self) -> bool;
+}
+
+/// A descriptor inside a command or an event. In-process it moves.
+#[derive(Debug)]
+pub(crate) struct Fd(OwnedFd);
+
+impl From<OwnedFd> for Fd {
+    fn from(fd: OwnedFd) -> Self {
+        Self(fd)
+    }
+}
+
+impl From<Fd> for OwnedFd {
+    fn from(fd: Fd) -> Self {
+        fd.0
+    }
+}
+
+impl AsRawFd for Fd {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+/// A process's terminal or standard streams.
+#[derive(Debug)]
+pub(crate) enum Stdio {
+    /// Frontend-provided stdin, stdout and stderr (`goblins exec`).
+    Fds([Fd; 3]),
+    /// A frontend-provided PTY slave (`goblins exec` with tty).
+    Tty(Fd),
+    /// A new PTY the runtime allocates; its master comes back in `Spawned`.
+    NewPty { rows: u16, cols: u16 },
 }
 
 /// What the daemon asks of a runtime.
@@ -55,6 +95,27 @@ pub(crate) enum Command {
     },
     /// Cancel the work with this approval or serial, queued or running.
     Cancel(u64),
+    /// Start process `id` in the running sandbox through goblins-init. The
+    /// daemon allocates ids; `argv` None runs the sandbox's shell.
+    Spawn {
+        id: u64,
+        argv: Option<Vec<String>>,
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
+        stdio: Stdio,
+    },
+    /// Forward a signal to process `id`'s group.
+    Signal {
+        id: u64,
+        signal: i32,
+    },
+    /// End process `id`'s group, or with `everything` all it started.
+    CancelProcess {
+        id: u64,
+        everything: bool,
+    },
+    /// End every process started with `Spawn`.
+    KillAll,
     Stop,
 }
 
@@ -86,12 +147,8 @@ pub(crate) enum Event {
         /// The agent's PTY, or with attach handlers its output pipe.
         master: OwnedFd,
         handlers: Option<Box<crate::config::Handlers>>,
-        /// The private channel to the sandbox's goblins-init.
-        control: OwnedFd,
-        listener: UnixListener,
         identity: Identity,
         inheritance: Inheritance,
-        exit_watch: OwnedFd,
         recreated: Option<Box<Recreated>>,
         auto: Box<Auto>,
     },
@@ -131,6 +188,31 @@ pub(crate) enum Event {
         sequence: u64,
         lease: std::sync::Arc<crate::config::ManifestLease>,
     },
+    /// Process `id` started; `master` is the PTY `Stdio::NewPty` asked for.
+    Spawned {
+        id: u64,
+        pid: i32,
+        master: Option<Fd>,
+    },
+    /// Process `id` did not start. `code` is what a shell would report, as
+    /// init gives it; None when init could not be asked.
+    SpawnFailed {
+        id: u64,
+        code: Option<i32>,
+        message: String,
+    },
+    Exited {
+        id: u64,
+        code: Option<i32>,
+        signal: Option<i32>,
+    },
+    /// The channel to the sandbox's goblins-init closed: no process can
+    /// start, and none reports any more.
+    InitLost,
+    /// The payload exited. The daemon decides what follows.
+    PayloadExited,
+    /// A connection to the sandbox's `request.sock`, for the daemon to serve.
+    SandboxConnected(Fd),
     Failed(String),
     Stopped {
         exit_code: Option<i32>,
@@ -138,20 +220,211 @@ pub(crate) enum Event {
 }
 
 /// The runtime inside the daemon: a worker thread for Nix-bound work, with
-/// `send` as the dispatcher that never waits for it.
+/// `send` as the dispatcher that never waits for it, and the running
+/// sandbox's init channel, request socket and exit watch.
 pub(crate) struct Local {
     worker: Worker,
     /// Tokens of cancellable work sent to the worker, by cancel id.
     cancels: BTreeMap<u64, Cancel>,
+    /// The private channel to the sandbox's goblins-init, from `Started`.
+    init: Option<OwnedFd>,
+    /// The sandbox's `request.sock`, from `Started` until it stops.
+    listener: Option<UnixListener>,
+    /// The helper's pidfd, until the payload's exit is reported.
+    exit_watch: Option<OwnedFd>,
+    /// PTYs allocated for processes init has not reported started.
+    masters: BTreeMap<u64, OwnedFd>,
+    buffer: Vec<u8>,
+    stopping: bool,
+    /// Events reported and not yet polled.
+    events: VecDeque<Event>,
+    /// A round is being polled: its sources were collected.
+    polling: bool,
     ended: bool,
 }
 
 impl Local {
     pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
+        Self::new(Worker::start(source, directory, dimensions))
+    }
+    fn new(worker: Worker) -> Self {
         Self {
-            worker: Worker::start(source, directory, dimensions),
+            worker,
             cancels: BTreeMap::new(),
+            init: None,
+            listener: None,
+            exit_watch: None,
+            masters: BTreeMap::new(),
+            buffer: vec![],
+            stopping: false,
+            events: VecDeque::new(),
+            polling: false,
             ended: false,
+        }
+    }
+    /// Report an event in the current round, or the next.
+    fn report(&mut self, event: Event) {
+        self.events.push_back(event);
+    }
+    /// Collect a round: worker results, init's events, new request
+    /// connections and the payload's exit.
+    fn collect(&mut self) {
+        for _ in 0..16 {
+            match self.worker.results.try_recv() {
+                Ok(event) => {
+                    match &event {
+                        // Finished work no longer needs its token.
+                        Event::Preview { approval: id, .. }
+                        | Event::Refresh { approval: id, .. }
+                        | Event::Call { serial: id, .. } => {
+                            self.cancels.remove(id);
+                        }
+                        // The worker hands the endpoints over just before.
+                        Event::Started { .. } => {
+                            if let Ok(endpoints) = self.worker.endpoints.try_recv() {
+                                let Endpoints {
+                                    control,
+                                    listener,
+                                    exit_watch,
+                                } = *endpoints;
+                                self.init = Some(control);
+                                self.exit_watch = Some(exit_watch);
+                                self.listener = (!self.stopping).then_some(listener);
+                            }
+                        }
+                        Event::Stopped { .. } => self.listener = None,
+                        _ => (),
+                    }
+                    self.report(event);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                // Completion is usable only after observing the channel
+                // disconnected and empty. Checking thread completion after
+                // an empty read could otherwise discard a final result sent
+                // between those two observations.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.ended = self.worker.finished();
+                    break;
+                }
+            }
+        }
+        self.receive_init();
+        for _ in 0..8 {
+            let Some(listener) = &self.listener else {
+                break;
+            };
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    self.report(Event::SandboxConnected(OwnedFd::from(stream).into()))
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(_) => break,
+            }
+        }
+        // Observe process exit independently of a worker blocked on Nix.
+        // A pidfd pins the process identity, avoiding PID-reuse races.
+        if self
+            .exit_watch
+            .as_ref()
+            .is_some_and(|fd| unix::readable(fd.as_raw_fd(), 0).unwrap_or(true))
+        {
+            self.exit_watch = None;
+            self.report(Event::PayloadExited);
+        }
+    }
+    /// Read init's events without blocking.
+    fn receive_init(&mut self) {
+        if self.init.is_some() && self.buffer.is_empty() {
+            self.buffer = vec![0; init::MAX_MESSAGE];
+        }
+        for _ in 0..256 {
+            let Some(socket) = &self.init else {
+                return;
+            };
+            match init::receive(socket.as_raw_fd(), &mut self.buffer, libc::MSG_DONTWAIT) {
+                // Init never sends descriptors; any that arrive are closed.
+                Ok((n, _)) if n > 0 => {
+                    let Ok(event) = serde_json::from_slice::<init::Event>(&self.buffer[..n]) else {
+                        continue;
+                    };
+                    let event = match event {
+                        init::Event::Spawned { id, pid } => Event::Spawned {
+                            id,
+                            pid,
+                            master: self.masters.remove(&id).map(Fd::from),
+                        },
+                        init::Event::Failed { id, code, message } => {
+                            self.masters.remove(&id);
+                            Event::SpawnFailed {
+                                id,
+                                code: Some(code),
+                                message,
+                            }
+                        }
+                        init::Event::Exited { id, code, signal } => {
+                            Event::Exited { id, code, signal }
+                        }
+                    };
+                    self.report(event);
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+                Ok(_) | Err(_) => {
+                    self.init = None;
+                    self.masters.clear();
+                    self.report(Event::InitLost);
+                    return;
+                }
+            }
+        }
+    }
+    /// Send `command` to init with `fds` attached.
+    fn to_init(&self, command: &init::Command, fds: &[RawFd]) -> Result<(), String> {
+        let socket = self.init.as_ref().ok_or("the goblin has no init channel")?;
+        let bytes = serde_json::to_vec(command).map_err(|e| e.to_string())?;
+        init::send(socket.as_raw_fd(), &bytes, fds)
+            .map_err(|e| format!("cannot reach the sandbox's init: {e}"))
+    }
+    fn spawn(
+        &mut self,
+        id: u64,
+        argv: Option<Vec<String>>,
+        cwd: Option<String>,
+        env: Vec<(String, String)>,
+        stdio: Stdio,
+    ) {
+        let (tty, fds, master): (_, Vec<OwnedFd>, _) = match stdio {
+            Stdio::Fds(fds) => (false, fds.into_iter().map(OwnedFd::from).collect(), None),
+            Stdio::Tty(slave) => (true, vec![slave.into()], None),
+            Stdio::NewPty { rows, cols } => match unix::pty(rows, cols) {
+                Ok((master, slave)) => (true, vec![slave], Some(master)),
+                Err(error) => {
+                    return self.report(Event::SpawnFailed {
+                        id,
+                        code: None,
+                        message: error.to_string(),
+                    });
+                }
+            },
+        };
+        let command = init::Command::Spawn {
+            id,
+            argv,
+            cwd,
+            env,
+            tty,
+        };
+        let raw: Vec<_> = fds.iter().map(AsRawFd::as_raw_fd).collect();
+        match self.to_init(&command, &raw) {
+            Ok(()) => {
+                if let Some(master) = master {
+                    self.masters.insert(id, master);
+                }
+            }
+            Err(message) => self.report(Event::SpawnFailed {
+                id,
+                code: None,
+                message,
+            }),
         }
     }
 }
@@ -163,13 +436,30 @@ impl Runtime for Local {
                 if let Some(cancel) = self.cancels.remove(&id) {
                     cancel.cancel();
                 }
-                Ok(())
             }
             Command::Stop => {
                 // Children of the worker's token see it cancelled too.
                 self.worker.cancel.cancel();
                 self.cancels.clear();
-                Ok(())
+                self.stopping = true;
+                self.listener = None;
+            }
+            Command::Spawn {
+                id,
+                argv,
+                cwd,
+                env,
+                stdio,
+            } => self.spawn(id, argv, cwd, env, stdio),
+            // Best effort, like init's own delivery.
+            Command::Signal { id, signal } => {
+                let _ = self.to_init(&init::Command::Signal { id, signal }, &[]);
+            }
+            Command::CancelProcess { id, everything } => {
+                let _ = self.to_init(&init::Command::Cancel { id, everything }, &[]);
+            }
+            Command::KillAll => {
+                let _ = self.to_init(&init::Command::KillAll {}, &[]);
             }
             command => {
                 let id = command.cancel_id();
@@ -179,52 +469,39 @@ impl Runtime for Local {
                         if let Some(id) = id {
                             self.cancels.insert(id, cancel);
                         }
-                        Ok(())
                     }
-                    Err(error) => Err(super::unsent(error).0),
+                    Err(error) => return Err(super::unsent(error).0),
                 }
             }
         }
+        Ok(())
     }
-    /// Completion is usable only after observing the channel disconnected and
-    /// empty. Checking thread completion after an empty read could otherwise
-    /// discard a final result sent between those two observations.
     fn poll(&mut self) -> Option<Event> {
-        match self.worker.results.try_recv() {
-            Ok(event) => {
-                // Finished work no longer needs its token.
-                match &event {
-                    Event::Preview { approval: id, .. }
-                    | Event::Refresh { approval: id, .. }
-                    | Event::Call { serial: id, .. } => {
-                        self.cancels.remove(id);
-                    }
-                    _ => (),
-                }
-                Some(event)
-            }
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.ended = self.worker.finished();
-                None
-            }
+        // Every round collects every source, behind what `send` reported.
+        if !self.polling {
+            self.collect();
+            self.polling = true;
         }
+        let event = self.events.pop_front();
+        self.polling = event.is_some();
+        event
     }
     fn ended(&self) -> bool {
-        self.ended
+        self.ended && self.events.is_empty()
     }
 }
 
 /// Commands a `Fake` runtime received, shared with the test.
 #[cfg(test)]
-pub(crate) type Received = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Command>>>;
+pub(crate) type Received = std::sync::Arc<std::sync::Mutex<VecDeque<Command>>>;
 
 /// A runtime for tests: it records the commands it is sent and replays the
-/// events the test supplies.
+/// events the test supplies, at most 16 a round.
 #[cfg(test)]
 pub(crate) struct Fake {
     received: Received,
     events: mpsc::Receiver<Event>,
+    round: usize,
     ended: bool,
 }
 
@@ -247,6 +524,7 @@ impl Fake {
         let fake = Self {
             received: received.clone(),
             events,
+            round: 0,
             ended: false,
         };
         (fake, sender, received)
@@ -258,22 +536,37 @@ impl Runtime for Fake {
     fn send(&mut self, command: Command) -> Result<(), Command> {
         let mut received = self.received.lock().unwrap();
         // Requests are bounded like a worker's queue; nothing else is.
-        let requests = |c: &Command| !matches!(c, Command::Cancel(_) | Command::Stop);
-        if requests(&command) && received.iter().filter(|c| requests(c)).count() >= 4 {
+        let request = |c: &Command| {
+            !matches!(
+                c,
+                Command::Cancel(_)
+                    | Command::Signal { .. }
+                    | Command::CancelProcess { .. }
+                    | Command::KillAll
+                    | Command::Stop
+            )
+        };
+        if request(&command) && received.iter().filter(|c| request(c)).count() >= 4 {
             return Err(command);
         }
         received.push_back(command);
         Ok(())
     }
     fn poll(&mut self) -> Option<Event> {
-        match self.events.try_recv() {
-            Ok(event) => Some(event),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.ended = true;
-                None
-            }
+        if self.round == 16 {
+            self.round = 0;
+            return None;
         }
+        match self.events.try_recv() {
+            Ok(event) => {
+                self.round += 1;
+                return Some(event);
+            }
+            Err(mpsc::TryRecvError::Empty) => (),
+            Err(mpsc::TryRecvError::Disconnected) => self.ended = true,
+        }
+        self.round = 0;
+        None
     }
     fn ended(&self) -> bool {
         self.ended
@@ -284,20 +577,30 @@ impl Runtime for Fake {
 mod tests {
     use super::*;
 
+    /// A worker without a thread: the test receives its commands and sends
+    /// its results.
+    fn worker() -> (
+        Worker,
+        mpsc::Receiver<crate::worker::Work>,
+        mpsc::SyncSender<Event>,
+    ) {
+        let (commands, received) = mpsc::sync_channel(4);
+        let (sender, results) = mpsc::sync_channel(16);
+        let (_, endpoints) = mpsc::sync_channel(1);
+        let worker = Worker {
+            cancel: Cancel::default(),
+            commands,
+            results,
+            endpoints,
+            thread: None,
+        };
+        (worker, received, sender)
+    }
+
     #[test]
     fn final_result_after_empty_poll_is_not_discarded() {
-        let (commands, _) = mpsc::sync_channel(4);
-        let (sender, results) = mpsc::sync_channel(16);
-        let mut local = Local {
-            worker: Worker {
-                cancel: Cancel::default(),
-                commands,
-                results,
-                thread: None,
-            },
-            cancels: BTreeMap::new(),
-            ended: false,
-        };
+        let (worker, _, sender) = worker();
+        let mut local = Local::new(worker);
         // Even a finished producer observation cannot make an empty (still
         // connected) channel final. A last message may arrive after this poll.
         assert!(local.poll().is_none());
@@ -310,25 +613,14 @@ mod tests {
             local.poll(),
             Some(Event::Stopped { exit_code: Some(7) })
         ));
-        assert!(!local.ended());
         assert!(local.poll().is_none());
         assert!(local.ended());
     }
 
     #[test]
     fn cancellation_reaches_queued_and_running_work_even_when_the_queue_is_full() {
-        let (commands, received) = mpsc::sync_channel(4);
-        let (_sender, results) = mpsc::sync_channel(16);
-        let mut local = Local {
-            worker: Worker {
-                cancel: Cancel::default(),
-                commands,
-                results,
-                thread: None,
-            },
-            cancels: BTreeMap::new(),
-            ended: false,
-        };
+        let (worker, received, _sender) = worker();
+        let mut local = Local::new(worker);
         let preview = |approval| Command::Preview {
             approval,
             package: "hello".into(),
@@ -379,5 +671,172 @@ mod tests {
         local.send(Command::Stop).unwrap();
         assert!(drain().iter().all(|(_, cancel)| cancel.check().is_err()));
         assert!(local.worker.cancel.check().is_err());
+    }
+
+    #[test]
+    fn local_relays_init_the_payloads_exit_and_request_connections() {
+        let directory = unix::temp_directory().unwrap();
+        let (worker, _, _results) = worker();
+        let mut local = Local::new(worker);
+        let round = |local: &mut Local| std::iter::from_fn(|| local.poll()).collect::<Vec<_>>();
+        // Before Started there is no init to ask.
+        local
+            .send(Command::Spawn {
+                id: 1,
+                argv: None,
+                cwd: None,
+                env: vec![],
+                stdio: Stdio::NewPty { rows: 24, cols: 80 },
+            })
+            .unwrap();
+        assert!(matches!(
+            round(&mut local).as_slice(),
+            [Event::SpawnFailed { id: 1, code: None, message }]
+                if message == "the goblin has no init channel"
+        ));
+        let (control, sandbox) = init::pair().unwrap();
+        let (exit, exited) = unix::pipe().unwrap();
+        let listener = UnixListener::bind(directory.join("request.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        local.init = Some(control);
+        local.exit_watch = Some(exit);
+        local.listener = Some(listener);
+        let mut buffer = vec![0; init::MAX_MESSAGE];
+        let mut sent = || {
+            let (n, fds) = init::receive(sandbox.as_raw_fd(), &mut buffer, 0).unwrap();
+            (
+                serde_json::from_slice::<init::Command>(&buffer[..n]).unwrap(),
+                fds.len(),
+            )
+        };
+        let reply = |event: init::Event| {
+            let bytes = serde_json::to_vec(&event).unwrap();
+            init::send(sandbox.as_raw_fd(), &bytes, &[]).unwrap();
+        };
+        // A new PTY: its slave goes to init, its master comes back with
+        // Spawned.
+        local
+            .send(Command::Spawn {
+                id: 2,
+                argv: Some(vec!["client".into()]),
+                cwd: None,
+                env: vec![],
+                stdio: Stdio::NewPty { rows: 24, cols: 80 },
+            })
+            .unwrap();
+        let (command, fds) = sent();
+        assert!(matches!(
+            command,
+            init::Command::Spawn {
+                id: 2,
+                tty: true,
+                ..
+            }
+        ));
+        assert_eq!(fds, 1);
+        reply(init::Event::Spawned { id: 2, pid: 42 });
+        reply(init::Event::Failed {
+            id: 3,
+            code: 127,
+            message: "not found".into(),
+        });
+        reply(init::Event::Exited {
+            id: 2,
+            code: Some(0),
+            signal: None,
+        });
+        let events = round(&mut local);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::Spawned {
+                    id: 2,
+                    pid: 42,
+                    master: Some(_)
+                },
+                Event::SpawnFailed {
+                    id: 3,
+                    code: Some(127),
+                    ..
+                },
+                Event::Exited {
+                    id: 2,
+                    code: Some(0),
+                    signal: None
+                },
+            ]
+        ));
+        // Signals and cancellations reach init in the order sent.
+        local.send(Command::Signal { id: 2, signal: 2 }).unwrap();
+        local
+            .send(Command::CancelProcess {
+                id: 2,
+                everything: true,
+            })
+            .unwrap();
+        local.send(Command::KillAll).unwrap();
+        assert_eq!(sent().0, init::Command::Signal { id: 2, signal: 2 });
+        assert_eq!(
+            sent().0,
+            init::Command::Cancel {
+                id: 2,
+                everything: true
+            }
+        );
+        assert_eq!(sent().0, init::Command::KillAll {});
+        // A request connection, then the payload's exit, reported once.
+        let _client =
+            std::os::unix::net::UnixStream::connect(directory.join("request.sock")).unwrap();
+        drop(exited);
+        let events = round(&mut local);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::SandboxConnected(_), Event::PayloadExited]
+        ));
+        assert!(round(&mut local).is_empty());
+        // Stop closes the request socket; init's end closes its channel.
+        local.send(Command::Stop).unwrap();
+        assert!(local.listener.is_none());
+        drop(sandbox);
+        assert!(matches!(round(&mut local).as_slice(), [Event::InitLost]));
+        local.send(Command::KillAll).unwrap();
+        assert!(round(&mut local).is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn what_send_reports_never_delays_collecting_a_round() {
+        let (worker, _, results) = worker();
+        let mut local = Local::new(worker);
+        let (exit, exited) = unix::pipe().unwrap();
+        local.exit_watch = Some(exit);
+        // A spawn without init fails between rounds...
+        local
+            .send(Command::Spawn {
+                id: 1,
+                argv: None,
+                cwd: None,
+                env: vec![],
+                stdio: Stdio::NewPty { rows: 24, cols: 80 },
+            })
+            .unwrap();
+        results
+            .try_send(Event::Mode { server: false })
+            .unwrap_or_else(|_| panic!());
+        drop(exited);
+        // ...and the next round still collects every source.
+        let round: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            round.as_slice(),
+            [
+                Event::SpawnFailed {
+                    id: 1,
+                    code: None,
+                    ..
+                },
+                Event::Mode { server: false },
+                Event::PayloadExited,
+            ]
+        ));
     }
 }

@@ -2,14 +2,13 @@
 //! its goblins-init. The client passes stdio or a PTY slave with SCM_RIGHTS
 //! and keeps its connection open for the exec's whole life; when that
 //! connection closes, init cancels the exec.
-use super::{Connection, Controller, Fault, capacity, conflict, params};
-use goblins_protocol::{
-    init::{self, Command, Event},
-    rpc,
+use super::{
+    Connection, Controller, Fault, capacity, conflict, params,
+    runtime::{Command, Event, Stdio},
 };
+use goblins_protocol::{init, rpc};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::os::fd::AsRawFd;
 
 /// Live execs per sandbox; TRAMP, eshell and magit open one per command.
 const EXECS: usize = 64;
@@ -138,25 +137,41 @@ impl Controller {
             return Err(capacity());
         }
         let id = self.number();
-        let a = &self.sessions[&session];
-        let socket = a
-            .init
-            .as_ref()
-            .ok_or((-32009, "the sandbox has no init channel".to_string()))?;
-        let command = Command::Spawn {
+        if !self.sessions[&session].init {
+            return Err((-32009, "the sandbox has no init channel".to_string()));
+        }
+        // What init would be sent must fit its message limit.
+        let command = init::Command::Spawn {
             id,
             argv: p.argv.clone(),
             cwd: p.cwd.clone(),
-            env: p.env,
+            env: p.env.clone(),
             tty: p.tty,
         };
         let bytes = serde_json::to_vec(&command).map_err(|e| invalid(&e.to_string()))?;
         if bytes.len() > init::MAX_MESSAGE {
             return Err(invalid("command too long"));
         }
-        let raw: Vec<_> = fds.iter().map(AsRawFd::as_raw_fd).collect();
-        init::send(socket.as_raw_fd(), &bytes, &raw)
-            .map_err(|e| (-32010, format!("cannot reach the sandbox's init: {e}")))?;
+        let mut fds = fds.into_iter().map(Into::into);
+        let stdio = match (fds.next(), fds.next(), fds.next()) {
+            (Some(tty), None, None) => Stdio::Tty(tty),
+            (Some(stdin), Some(stdout), Some(stderr)) => Stdio::Fds([stdin, stdout, stderr]),
+            _ => unreachable!("the descriptor count was checked"),
+        };
+        self.sessions
+            .get_mut(&session)
+            .unwrap()
+            .runtime
+            .as_mut()
+            .ok_or_else(conflict)?
+            .send(Command::Spawn {
+                id,
+                argv: p.argv.clone(),
+                cwd: p.cwd.clone(),
+                env: p.env,
+                stdio,
+            })
+            .map_err(|_| capacity())?;
         self.execs.insert(
             id,
             Exec {
@@ -180,31 +195,34 @@ impl Controller {
             .flatten()
             .filter(|s| init::forwardable(s.signal));
         match signal {
-            Some(Signal { signal }) => self.exec_command(id, &Command::Signal { id, signal }),
+            Some(Signal { signal }) => self.exec_command(id, Command::Signal { id, signal }),
             None => c.dead = true,
         }
     }
-    fn exec_command(&mut self, id: u64, command: &Command) {
+    /// Send `command` for exec `id` to its sandbox, best effort.
+    fn exec_command(&mut self, id: u64, command: Command) {
         let Some(exec) = self.execs.get(&id) else {
             return;
         };
-        if let Some(socket) = self
-            .sessions
-            .get(&exec.session)
-            .and_then(|a| a.init.as_ref())
-            && let Ok(bytes) = serde_json::to_vec(command)
+        if let Some(a) = self.sessions.get_mut(&exec.session)
+            && a.init
+            && let Some(runtime) = &mut a.runtime
         {
-            let _ = init::send(socket.as_raw_fd(), &bytes, &[]);
+            let _ = runtime.send(command);
         }
     }
     /// `sessions.kill_execs`: cancel every exec in a sandbox.
     pub(super) fn kill_execs(&mut self, session: &str) -> Result<Value, Fault> {
         let id = self.resolve_session(&session.replace('.', "/"))?;
-        let socket = self.sessions[&id].init.as_ref().ok_or_else(conflict)?;
-        let bytes =
-            serde_json::to_vec(&Command::KillAll {}).map_err(|e| invalid(&e.to_string()))?;
-        init::send(socket.as_raw_fd(), &bytes, &[])
-            .map_err(|e| (-32010, format!("cannot reach the sandbox's init: {e}")))?;
+        let a = self.sessions.get_mut(&id).unwrap();
+        if !a.init {
+            return Err(conflict());
+        }
+        let _ = a
+            .runtime
+            .as_mut()
+            .ok_or_else(conflict)?
+            .send(Command::KillAll);
         Ok(json!({"accepted":true}))
     }
     /// The exec's client disconnected: cancel it.
@@ -218,7 +236,7 @@ impl Controller {
         for id in ids {
             self.exec_command(
                 id,
-                &Command::Cancel {
+                Command::CancelProcess {
                     id,
                     everything: false,
                 },
@@ -285,7 +303,7 @@ impl Controller {
     }
     fn exec_event(&mut self, session: &str, event: Event) {
         match event {
-            Event::Spawned { id, pid } => {
+            Event::Spawned { id, pid, .. } => {
                 let Some(exec) = self.execs.get_mut(&id).filter(|e| e.session == session) else {
                     return;
                 };
@@ -307,54 +325,38 @@ impl Controller {
                 }
                 self.dirty = true;
             }
-            Event::Failed { id, code, message } => {
-                if self.execs.get(&id).is_some_and(|e| e.session == session) {
-                    self.exec_finished(id, Some(Ok(json!({"code":code,"message":message}))));
-                }
+            Event::SpawnFailed { id, code, message }
+                if self.execs.get(&id).is_some_and(|e| e.session == session) =>
+            {
+                // Init answered, or could not be asked.
+                let reply = match code {
+                    Some(code) => Ok(json!({"code":code,"message":message})),
+                    None => Err((-32010, message)),
+                };
+                self.exec_finished(id, Some(reply));
             }
-            Event::Exited { id, code, signal } => {
-                if self.execs.get(&id).is_some_and(|e| e.session == session) {
-                    self.exec_finished(id, Some(Ok(json!({"code":code,"signal":signal}))));
-                }
+            Event::Exited { id, code, signal }
+                if self.execs.get(&id).is_some_and(|e| e.session == session) =>
+            {
+                self.exec_finished(id, Some(Ok(json!({"code":code,"signal":signal}))));
             }
+            _ => (),
         }
     }
-    /// Read every sandbox's init channel without blocking.
-    pub(super) fn poll_init(&mut self) {
-        let mut buffer = vec![0; init::MAX_MESSAGE];
-        let sessions: Vec<_> = self
-            .sessions
-            .iter()
-            .filter(|(_, a)| a.init.is_some())
-            .map(|(id, _)| id.clone())
-            .collect();
-        for session in sessions {
-            for _ in 0..256 {
-                let Some(socket) = self.sessions[&session].init.as_ref() else {
-                    break;
-                };
-                match init::receive(socket.as_raw_fd(), &mut buffer, libc::MSG_DONTWAIT) {
-                    Ok((0, _)) => {
-                        self.sessions.get_mut(&session).unwrap().init = None;
-                        self.end_execs(&session, "the goblin has stopped");
-                        self.attach_lost(&session);
-                        break;
-                    }
-                    // Init never sends descriptors; any that arrive are closed.
-                    Ok((n, _)) => {
-                        if let Ok(event) = serde_json::from_slice::<Event>(&buffer[..n])
-                            && !self.attach_event(&session, &event)
-                        {
-                            self.exec_event(&session, event);
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(_) => {
-                        self.sessions.get_mut(&session).unwrap().init = None;
-                        self.end_execs(&session, "the goblin has stopped");
-                        self.attach_lost(&session);
-                        break;
-                    }
+    /// A process event from goblin `session`'s runtime: for an attach
+    /// client, an exec, or the loss of init.
+    pub(super) fn process_event(&mut self, session: &str, event: Event) {
+        match event {
+            Event::InitLost => {
+                if let Some(a) = self.sessions.get_mut(session) {
+                    a.init = false;
+                }
+                self.end_execs(session, "the goblin has stopped");
+                self.attach_lost(session);
+            }
+            event => {
+                if let Some(event) = self.attach_event(session, event) {
+                    self.exec_event(session, event);
                 }
             }
         }
