@@ -237,6 +237,11 @@ impl Inheritance {
 }
 #[cfg(test)]
 impl Inheritance {
+    /// The same capability, allowed to run host commands.
+    pub(crate) fn with_host_commands(mut self) -> Self {
+        Arc::make_mut(&mut self.launch).host_commands = true;
+        self
+    }
     /// A running session's capability without a sandbox, for controller tests.
     pub(crate) fn fixture(configuration: &str, run_targets: &[&str]) -> Self {
         let owner = Arc::new(SessionDirectory::new(unix::temp_directory().unwrap()).unwrap());

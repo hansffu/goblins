@@ -327,8 +327,12 @@ enum Event {
     SandboxCall { connection: u64, call: rpc::Call }, // already checked
     SandboxClosed { connection: u64 },
     // Host jobs and raid members.
-    HostJobPrepared { request: String, cwd: PathBuf },
-    HostJobFinished { request: String, outcome: Outcome },
+    /// The host directory for the approval, or why it cannot be used.
+    HostJobPrepared { request: String, result: Result<PathBuf, String> },
+    /// An approved job could not be started.
+    HostJobFailed { request: String, error: String },
+    /// The supervisor's recorded outcome, or without one its diagnostic.
+    HostJobFinished { request: String, outcome: Result<Outcome, String> },
     Exported { member: String, handoff: Handoff },
     Failed(String),
     Stopped { exit_code: Option<i32> },
@@ -820,8 +824,10 @@ flowchart LR
 - The sessions map plays the retiring set: a stopping goblin's record stays there, polled, until its runtime ends, and is evicted only after. A separate set comes with =Supervised= and its kill deadline.
 - Attach clients ask the runtime for a PTY (=Stdio::NewPty=) instead of the controller allocating one, and get the master back in =Spawned= until phase 5. =goblins exec= passes the frontend's descriptors through unchanged (=Stdio::Fds= or =Stdio::Tty=).
 - Host jobs:
-  - =host_spec= sends =PrepareHostJob=; the runtime resolves the directory through the bind descriptors, keeps the pinned descriptor by request ID and returns the display path for the preview.
-  - =decide_host= sends =RunHostJob=. =withdraw= and =end_host_jobs= send =CancelHostJob=.
+  - =permissions.request= for a host command makes today's checks up to the running-jobs limit, then sends =PrepareHostJob= and parks the call. The parked call holds the goblin's pending slot, so a second request still gets =conflict=. The runtime resolves the directory through the bind descriptors, keeps the pinned descriptor by request ID and answers =HostJobPrepared= with the display path for the preview or why it cannot be used. The daemon then makes the remaining checks in today's order and shows the request, or answers the refusal with today's code and message.
+  - A disconnect while the call is parked releases the slot and sends =CancelHostJob=; a stop answers it =conflict=. A =HostJobPrepared= nobody waits for any more is answered with =CancelHostJob=, so nothing stays pinned.
+  - =decide_host= sends =RunHostJob=; a job that cannot start comes back as =HostJobFailed=, with today's "could not start the host command" answer. =withdraw=, =host.cancel=, a denial and =end_host_jobs= send =CancelHostJob=.
+  - The runtime reads each finished job's =status.json= and reports =HostJobFinished=; the daemon keeps the job's caller, notice and stop reason and answers as today. A runtime ends only once its jobs have finished.
   - The helper's =--host-job= mode and the job directory layout are unchanged.
 - =editor.open= stays in the daemon: it runs =emacsclient= on the host as a frontend integration and never touches the sandbox.
 - =Started= still carries =Inheritance= in this phase; phase 2 removes it.

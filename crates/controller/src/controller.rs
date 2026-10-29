@@ -190,6 +190,8 @@ struct Active {
     record: SessionRecord,
     runtime: Option<Box<dyn Runtime>>,
     pending: Option<Pending>,
+    /// A host command waiting for its directory; it holds the pending slot.
+    preparing: Option<host::Preparing>,
     terminal: Terminal,
     directory: PathBuf,
     inheritance: Option<Inheritance>,
@@ -228,6 +230,28 @@ impl Active {
             let _ = runtime.send(Command::Cancel(id));
         }
     }
+    /// End a parked host command's wait, releasing what its runtime pinned.
+    fn take_preparing(&mut self) -> Option<host::Preparing> {
+        let p = self.preparing.take()?;
+        if let Some(runtime) = &mut self.runtime {
+            let _ = runtime.send(Command::CancelHostJob {
+                request: p.request.clone(),
+            });
+        }
+        Some(p)
+    }
+    /// A pending request ended undecided: its preview or refresh stops, and
+    /// a host command's pinned directory is released.
+    fn cancel_pending(&mut self, p: &Pending) {
+        self.cancel_work(p.serial);
+        if p.host.is_some()
+            && let Some(runtime) = &mut self.runtime
+        {
+            let _ = runtime.send(Command::CancelHostJob {
+                request: p.id.clone(),
+            });
+        }
+    }
     /// Refresh activity freshness; true when the visible activity changed.
     fn report_activity(&mut self, state: goblins_protocol::AgentState) -> bool {
         self.activity_at = Some(Instant::now());
@@ -261,6 +285,20 @@ struct Connection {
     exec: Option<u64>,
 }
 impl Connection {
+    /// Answer call `id` with what handling it gave: nothing yet while the
+    /// call waits. A sandbox connection closes after an error.
+    fn answer(&mut self, id: Value, outcome: std::result::Result<Option<Value>, Fault>) {
+        match outcome {
+            Ok(Some(result)) => self.queue(rpc::result(id, result)),
+            Ok(None) => (),
+            Err((code, message)) => {
+                self.queue(rpc::error(id, code, &message));
+                if matches!(self.role, Role::Sandbox(_)) {
+                    self.close = true;
+                }
+            }
+        }
+    }
     fn new(id: u64, role: Role, peer: UnixStream) -> Result<Self> {
         peer.set_nonblocking(true)?;
         let limit = goblins_protocol::messages::MAX_REQUEST;
@@ -1301,8 +1339,12 @@ impl Controller {
         if a.record.set_agent_state(Default::default()) {
             self.dirty = true;
         }
+        if let Some(p) = a.take_preparing() {
+            self.refuse_preparing(p);
+        }
+        let a = self.sessions.get_mut(id).unwrap();
         if let Some(p) = a.pending.take() {
-            a.cancel_work(p.serial);
+            a.cancel_pending(&p);
             if let Some(r) = self.permission_mut(&p.id) {
                 r.state = "cancelled".into();
             }
@@ -1352,6 +1394,7 @@ impl Controller {
         self.exec_withdraw(connection);
         self.edit_withdraw(connection);
         self.host_withdraw(connection);
+        self.withdraw_preparing(connection);
         // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
             if a.call.as_ref().is_some_and(|w| w.connection == connection) {
@@ -1372,7 +1415,7 @@ impl Controller {
                     .any(|r| r.id == p.id && r.state == "pending")
                 {
                     let p = a.pending.take().unwrap();
-                    a.cancel_work(p.serial);
+                    a.cancel_pending(&p);
                     gone = Some((p.id, p.notify));
                     break;
                 }
@@ -1604,6 +1647,7 @@ impl Controller {
                 record,
                 runtime: Some(Box::new(runtime)),
                 pending: None,
+                preparing: None,
                 terminal,
                 directory,
             },
@@ -2253,7 +2297,7 @@ impl Controller {
                     }
                     let session = session.clone();
                     let a = self.sessions.get(&session).ok_or_else(missing)?;
-                    if a.record.state != "running" || a.pending.is_some() {
+                    if a.record.state != "running" || a.pending.is_some() || a.preparing.is_some() {
                         return Err(conflict());
                     }
                     if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
@@ -2286,17 +2330,34 @@ impl Controller {
                         return Err(capacity());
                     }
                     // The approval shows the resolved host directory, and
-                    // approving runs exactly this.
-                    let host = match &p.host {
-                        Some(command) if p.kind == "host-command" => {
-                            let spec = self.host_spec(&session, command)?;
-                            p.package = spec.subject();
-                            Some(spec)
-                        }
-                        _ => None,
-                    };
-                    let host_preview = host.as_ref().map(host::Spec::preview);
-                    let detached = host.as_ref().is_some_and(|h| h.detach);
+                    // approving runs exactly this: the request waits while
+                    // the runtime resolves and pins it.
+                    if p.kind == "host-command"
+                        && let Some(command) = &p.host
+                    {
+                        self.host_check(&session)?;
+                        let serial = self.number();
+                        let request = format!("{}-r{serial}", self.instance);
+                        let cwd = PathBuf::from(&command.cwd);
+                        let a = self.sessions.get_mut(&session).unwrap();
+                        a.runtime
+                            .as_mut()
+                            .ok_or_else(conflict)?
+                            .send(Command::PrepareHostJob {
+                                request: request.clone(),
+                                cwd,
+                            })
+                            .map_err(|_| capacity())?;
+                        c.waiting = Some((request.clone(), id.clone()));
+                        a.preparing = Some(host::Preparing {
+                            request,
+                            serial,
+                            connection: c.id,
+                            rpc: id.clone(),
+                            params: p,
+                        });
+                        return Ok(None);
+                    }
                     if p.kind == "devshell" {
                         if a.record.dev_shell.is_none() {
                             return Err((
@@ -2313,135 +2374,152 @@ impl Controller {
                             (None, false) => "refresh".into(),
                         };
                     }
-                    // Completions must not be dropped, so a backlog the
-                    // messaging worker has not accepted refuses new requests.
-                    if self.operation_outbox.len() >= 1024 {
-                        return Err(capacity());
-                    }
-                    // Raid-owner prompts (one per raid) never take a slot.
-                    if self
-                        .permissions
-                        .iter()
-                        .filter(|r| r.kind != raids::RAID_OWNER)
-                        .count()
-                        >= 256
-                    {
-                        let index = self
-                            .permissions
-                            .iter()
-                            .position(|r| !UNEVICTABLE.contains(&r.state.as_str()))
-                            .ok_or_else(capacity)?;
-                        let removed = self.permissions.remove(index).unwrap();
-                        self.host_outcomes.remove(&removed.id);
-                    }
-                    let serial = self.number();
-                    let request = format!("{}-r{serial}", self.instance);
-                    let approval = format!("{}-a{serial}", self.instance);
-                    let inherited_output = if p.kind == "package" {
-                        self.auto_output(&session, &p.package)
-                    } else {
-                        None
-                    };
-                    let auto_approve = inherited_output.is_some()
-                        || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
-                    let a = self.sessions.get_mut(&session).unwrap();
-                    let notify = a
-                        .inheritance
-                        .as_ref()
-                        .and_then(|i| i.integration())
-                        .is_some();
-                    let runtime = a.runtime.as_mut().ok_or_else(conflict)?;
-                    if p.kind == "devshell" {
-                        runtime
-                            .send(Command::Refresh {
-                                approval: serial,
-                                changes: crate::devshell::Changes {
-                                    update: p.update.clone(),
-                                    lock: p.lock,
-                                },
-                            })
-                            .map_err(|_| capacity())?;
-                    }
-                    if auto_approve || p.kind == "package" {
-                        runtime
-                            .send(if auto_approve {
-                                Command::Decide {
-                                    request: Request {
-                                        kind: p.kind.clone(),
-                                        id: request.clone(),
-                                        package: p.package.clone(),
-                                        reason: p.reason.clone(),
-                                    },
-                                    approved: true,
-                                    output: inherited_output,
-                                }
-                            } else {
-                                Command::Preview {
-                                    approval: serial,
-                                    package: p.package.clone(),
-                                }
-                            })
-                            .map_err(|_| capacity())?;
-                    }
-                    a.pending = Some(Pending {
-                        initial_output: None,
-                        dev_identity: None,
-                        id: request.clone(),
-                        serial,
-                        connection: c.id,
-                        notify,
-                        host,
-                        detached,
-                    });
-                    self.permissions.push_back(PermissionRecord {
-                        kind: p.kind.clone(),
-                        id: request.clone(),
-                        session,
-                        agent_name: a.record.agent_name.clone(),
-                        approval,
-                        package: p.package,
-                        reason: p.reason,
-                        state: if auto_approve { "realizing" } else { "pending" }.into(),
-                        approved: if auto_approve { Some(true) } else { None },
-                        preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
-                        message: None,
-                    });
-                    let r = self.permissions.back().unwrap();
-                    let change = crate::operation::Change::Requested {
-                        kind: r.kind.clone(),
-                        subject: r.package.clone(),
-                        reason: r.reason.clone(),
-                        automatic: auto_approve,
-                    };
-                    let session = r.session.clone();
-                    let host = r.kind == "host-command";
-                    self.operation(&request, &session, change);
-                    self.dirty = true;
-                    if detached {
-                        // Its outcome arrives as an operation notice.
-                        c.close = true;
-                        return Ok(Some(json!({"request":request,"status":"pending"})));
-                    }
-                    if host {
-                        // The ID comes first: it names the job's output.
-                        c.queue(json!({"jsonrpc":"2.0","method":"host.submitted",
-                            "params":{"request":request}}));
-                    }
-                    c.waiting = Some((request, id.clone()));
-                    Ok(None)
+                    self.submit(c, &id, &session, p, None, None)
                 }
             }
         })();
-        match outcome {
-            Ok(Some(result)) => c.queue(rpc::result(id, result)),
-            Ok(None) => (),
-            Err((code, message)) => {
-                c.queue(rpc::error(id, code, &message));
-                if matches!(c.role, Role::Sandbox(_)) {
-                    c.close = true;
-                }
-            }
+        c.answer(id, outcome);
+    }
+    /// Show a checked permission request from `session` for approval, or
+    /// approve it at once when it is already this goblin's. `serial` is the
+    /// one a parked host command reserved; `host` is its checked command.
+    fn submit(
+        &mut self,
+        c: &mut Connection,
+        id: &Value,
+        session: &str,
+        p: PermissionParams,
+        serial: Option<u64>,
+        host: Option<host::Spec>,
+    ) -> std::result::Result<Option<Value>, Fault> {
+        let (session, mut p) = (session.to_string(), p);
+        if let Some(spec) = &host {
+            p.package = spec.subject();
         }
+        let host_preview = host.as_ref().map(host::Spec::preview);
+        let detached = host.as_ref().is_some_and(|h| h.detach);
+        let docker_scope = self.sessions[&session]
+            .inheritance
+            .as_ref()
+            .filter(|i| i.docker_available())
+            .and_then(|i| i.scope_name())
+            .map(str::to_string);
+        // Completions must not be dropped, so a backlog the
+        // messaging worker has not accepted refuses new requests.
+        if self.operation_outbox.len() >= 1024 {
+            return Err(capacity());
+        }
+        // Raid-owner prompts (one per raid) never take a slot.
+        if self
+            .permissions
+            .iter()
+            .filter(|r| r.kind != raids::RAID_OWNER)
+            .count()
+            >= 256
+        {
+            let index = self
+                .permissions
+                .iter()
+                .position(|r| !UNEVICTABLE.contains(&r.state.as_str()))
+                .ok_or_else(capacity)?;
+            let removed = self.permissions.remove(index).unwrap();
+            self.host_outcomes.remove(&removed.id);
+        }
+        let serial = serial.unwrap_or_else(|| self.number());
+        let request = format!("{}-r{serial}", self.instance);
+        let approval = format!("{}-a{serial}", self.instance);
+        let inherited_output = if p.kind == "package" {
+            self.auto_output(&session, &p.package)
+        } else {
+            None
+        };
+        let auto_approve = inherited_output.is_some()
+            || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
+        let a = self.sessions.get_mut(&session).unwrap();
+        let notify = a
+            .inheritance
+            .as_ref()
+            .and_then(|i| i.integration())
+            .is_some();
+        let runtime = a.runtime.as_mut().ok_or_else(conflict)?;
+        if p.kind == "devshell" {
+            runtime
+                .send(Command::Refresh {
+                    approval: serial,
+                    changes: crate::devshell::Changes {
+                        update: p.update.clone(),
+                        lock: p.lock,
+                    },
+                })
+                .map_err(|_| capacity())?;
+        }
+        if auto_approve || p.kind == "package" {
+            runtime
+                .send(if auto_approve {
+                    Command::Decide {
+                        request: Request {
+                            kind: p.kind.clone(),
+                            id: request.clone(),
+                            package: p.package.clone(),
+                            reason: p.reason.clone(),
+                        },
+                        approved: true,
+                        output: inherited_output,
+                    }
+                } else {
+                    Command::Preview {
+                        approval: serial,
+                        package: p.package.clone(),
+                    }
+                })
+                .map_err(|_| capacity())?;
+        }
+        a.pending = Some(Pending {
+            initial_output: None,
+            dev_identity: None,
+            id: request.clone(),
+            serial,
+            connection: c.id,
+            notify,
+            host,
+            detached,
+        });
+        self.permissions.push_back(PermissionRecord {
+            kind: p.kind.clone(),
+            id: request.clone(),
+            session,
+            agent_name: a.record.agent_name.clone(),
+            approval,
+            package: p.package,
+            reason: p.reason,
+            state: if auto_approve { "realizing" } else { "pending" }.into(),
+            approved: if auto_approve { Some(true) } else { None },
+            preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
+            message: None,
+        });
+        let r = self.permissions.back().unwrap();
+        let change = crate::operation::Change::Requested {
+            kind: r.kind.clone(),
+            subject: r.package.clone(),
+            reason: r.reason.clone(),
+            automatic: auto_approve,
+        };
+        let session = r.session.clone();
+        let host = r.kind == "host-command";
+        self.operation(&request, &session, change);
+        self.dirty = true;
+        if detached {
+            // Its outcome arrives as an operation notice.
+            c.close = true;
+            return Ok(Some(json!({"request":request,"status":"pending"})));
+        }
+        if host {
+            // The ID comes first: it names the job's output.
+            c.queue(json!({"jsonrpc":"2.0","method":"host.submitted",
+                "params":{"request":request}}));
+        }
+        c.waiting = Some((request, id.clone()));
+        Ok(None)
     }
     fn message_directory(&self) -> crate::mailbox::Directory {
         self.sessions
@@ -2548,6 +2626,9 @@ impl Controller {
                     | Event::SpawnFailed { .. }
                     | Event::Exited { .. }
                     | Event::InitLost => self.process_event(id, event),
+                    Event::HostJobPrepared { .. }
+                    | Event::HostJobFailed { .. }
+                    | Event::HostJobFinished { .. } => self.host_event(id, event),
                     event => {
                         if matches!(event, Event::Started { .. })
                             && let Some(a) = self.sessions.get_mut(id)
@@ -2560,7 +2641,6 @@ impl Controller {
             }
         }
         self.poll_edits();
-        self.poll_host_jobs();
         for _ in 0..HOSTS {
             match self.listener.accept() {
                 Ok((p, _))
@@ -2608,7 +2688,10 @@ impl Controller {
                     Event::Spawned { .. }
                     | Event::SpawnFailed { .. }
                     | Event::Exited { .. }
-                    | Event::InitLost => (),
+                    | Event::InitLost
+                    | Event::HostJobPrepared { .. }
+                    | Event::HostJobFailed { .. }
+                    | Event::HostJobFinished { .. } => (),
                     Event::Started {
                         docker_enabled,
                         scope,
@@ -2826,8 +2909,11 @@ impl Controller {
                             a.record.state = "stopped".into();
                         }
                         a.record.exit_code = exit_code;
+                        if let Some(p) = a.take_preparing() {
+                            self.refuse_preparing(p);
+                        }
                         if let Some(p) = a.pending.take() {
-                            a.cancel_work(p.serial);
+                            a.cancel_pending(&p);
                             if let Some(r) = self.permission_mut(&p.id) {
                                 r.state = "cancelled".into();
                             }
@@ -2859,6 +2945,9 @@ impl Controller {
                         Some("session worker exited without a final lifecycle result".into());
                     if a.record.identity.is_none() {
                         a.terminal.failed_start();
+                    }
+                    if let Some(p) = a.take_preparing() {
+                        self.refuse_preparing(p);
                     }
                     if let Some(p) = a.pending.take() {
                         if let Some(r) = self.permission_mut(&p.id) {
@@ -3185,6 +3274,7 @@ mod tests {
                     skipped: vec![],
                 },
                 runtime: Some(Box::new(runtime::Fake::ended(results))),
+                preparing: None,
                 pending: Some(Pending {
                     initial_output: None,
                     dev_identity: None,
@@ -3872,6 +3962,210 @@ mod tests {
         assert_eq!(d.sessions["a"].record.state, "running");
         assert!(!d.sessions["a"].init);
         assert_eq!(d.kill_execs("a").unwrap_err(), conflict());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn host_commands_wait_for_their_directory_and_a_disconnect_releases_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, runtime_events, received) = runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.inheritance = Some(Inheritance::fixture("shell", &[]).with_host_commands());
+        let reply = |c: &mut Connection| {
+            let data = c.output.pop_front().unwrap();
+            let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            rpc::parse(&data[body..]).unwrap()
+        };
+        let request = |d: &mut Controller| {
+            let (mut c, peer) = connection(Role::Sandbox("a".into()));
+            c.id = d.number();
+            c.initialized = true;
+            d.dispatch(
+                &mut c,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: Some(json!(7)),
+                    method: "permissions.request".into(),
+                    params: json!({"kind":"host-command","reason":"test",
+                        "host":{"argv":["make","check"],"cwd":"/work"}}),
+                },
+            );
+            (c, peer)
+        };
+        let next = || received.lock().unwrap().pop_front();
+        let prepare = || match next() {
+            Some(Command::PrepareHostJob { request, cwd }) => {
+                assert_eq!(cwd, PathBuf::from("/work"));
+                request
+            }
+            command => panic!("expected the directory's preparation: {command:?}"),
+        };
+        let shown = |d: &Controller| d.permissions.iter().any(|r| r.kind == "host-command");
+        // The request waits for its directory and holds the slot meanwhile.
+        let (first, _first_peer) = request(&mut d);
+        let first_request = prepare();
+        assert!(first.output.is_empty() && !shown(&d));
+        let (mut second, _peer) = request(&mut d);
+        assert_eq!(reply(&mut second)["error"]["code"], conflict().0);
+        // Its caller going away releases the directory and the slot; a
+        // late answer is not shown.
+        d.connections.push(first);
+        let first_id = d.connections.last().unwrap().id;
+        d.withdraw(first_id);
+        let cancelled = |command: Option<Command>| matches!(command, Some(Command::CancelHostJob { request }) if request == first_request);
+        assert!(cancelled(next()));
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: first_request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!shown(&d));
+        // Whatever an answer nobody waits for pinned is released again.
+        assert!(cancelled(next()));
+        // A directory that cannot be used answers as before.
+        let (third, mut peer) = request(&mut d);
+        let third_request = prepare();
+        d.connections.push(third);
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: third_request,
+                result: Err("/work is not shared with the host".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let refused = rpc::read(&mut peer).unwrap();
+        assert_eq!(refused["error"]["code"], -32602);
+        assert_eq!(
+            refused["error"]["message"],
+            "/work is not shared with the host"
+        );
+        assert!(!shown(&d));
+        // A resolved one is shown with the host directory, approved, run in
+        // the pinned directory and answered with its outcome.
+        let (fourth, mut peer) = request(&mut d);
+        let fourth_request = prepare();
+        d.connections.push(fourth);
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: fourth_request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let record = d
+            .permissions
+            .iter()
+            .find(|r| r.id == fourth_request)
+            .unwrap()
+            .clone();
+        assert_eq!(record.state, "pending");
+        assert_eq!(record.package, "make check (in /host/work)");
+        assert_eq!(rpc::read(&mut peer).unwrap()["method"], "host.submitted");
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: record.id.clone(),
+                approval: record.approval.clone(),
+                approved: true,
+            },
+            "host",
+        )
+        .unwrap();
+        let commands: Vec<_> = received.lock().unwrap().drain(..).collect();
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Cancel(_), Command::RunHostJob { request, argv, .. }]
+                if *request == fourth_request && argv == &["make", "check"]
+        ));
+        runtime_events
+            .send(Event::HostJobFinished {
+                request: fourth_request.clone(),
+                outcome: Ok(runtime::HostOutcome {
+                    exit_code: Some(0),
+                    ..Default::default()
+                }),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let result = rpc::read(&mut peer).unwrap();
+        assert_eq!(result["result"]["status"], "finished");
+        assert_eq!(result["result"]["code"], 0);
+        // An answer that arrives once the daemon is shutting down is refused,
+        // and what it pinned released.
+        let (fifth, mut peer) = request(&mut d);
+        let fifth_request = prepare();
+        d.connections.push(fifth);
+        d.shutdown = Some((0, Instant::now()));
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: fifth_request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["error"]["code"], conflict().0);
+        assert!(
+            matches!(next(), Some(Command::CancelHostJob { request }) if request == fifth_request)
+        );
+        assert!(!d.permissions.iter().any(|r| r.id == fifth_request));
+        d.shutdown = None;
+        // A stop while the request waits answers it and releases its
+        // directory at once.
+        let (sixth, mut peer) = request(&mut d);
+        let sixth_request = prepare();
+        d.connections.push(sixth);
+        d.stop("a", None).unwrap();
+        let commands: Vec<_> = received.lock().unwrap().drain(..).collect();
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Stop, Command::CancelHostJob { request }] if *request == sixth_request
+        ));
+        d.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["error"]["code"], conflict().0);
+        assert!(!d.permissions.iter().any(|r| r.id == sixth_request));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_runtime_stopping_under_a_parked_host_command_releases_its_directory() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, events, received) = runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.inheritance = Some(Inheritance::fixture("shell", &[]).with_host_commands());
+        let (mut c, mut peer) = connection(Role::Sandbox("a".into()));
+        c.initialized = true;
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(7)),
+                method: "permissions.request".into(),
+                params: json!({"kind":"host-command","reason":"test",
+                    "host":{"argv":["make"],"cwd":"/work"}}),
+            },
+        );
+        d.connections.push(c);
+        let command = received.lock().unwrap().pop_front();
+        let Some(Command::PrepareHostJob { request, .. }) = command else {
+            panic!("expected the directory's preparation: {command:?}");
+        };
+        // The payload stops on its own, while the daemon holds `a` apart.
+        events.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        d.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["error"]["code"], conflict().0);
+        let command = received.lock().unwrap().pop_front();
+        assert!(
+            matches!(&command, Some(Command::CancelHostJob { request: r }) if *r == request),
+            "{command:?}"
+        );
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

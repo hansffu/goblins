@@ -6,16 +6,24 @@ use crate::{
     worker::{Auto, Endpoints, Recreated, Source, Worker},
 };
 use goblins_protocol::{Reply, Request, init};
+use serde::Deserialize;
 use std::{
     collections::{BTreeMap, VecDeque},
+    fs::{self, File},
     io,
     os::{
         fd::{AsRawFd, OwnedFd, RawFd},
-        unix::net::UnixListener,
+        unix::{net::UnixListener, process::CommandExt},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::{Child, Stdio as ChildStdio},
     sync::mpsc,
 };
+
+/// Output kept per host job; the rest is discarded with a note.
+const LOG_LIMIT: u64 = 16 * 1024 * 1024;
+/// Finished host jobs whose output stays readable per sandbox.
+const KEPT: usize = 8;
 
 /// The daemon's view of one goblin's runtime. Neither method blocks.
 pub(crate) trait Runtime: Send {
@@ -116,6 +124,23 @@ pub(crate) enum Command {
     },
     /// End every process started with `Spawn`.
     KillAll,
+    /// Resolve and pin the host directory a host command would start in,
+    /// sandbox path `cwd`, for its approval.
+    PrepareHostJob {
+        request: String,
+        cwd: PathBuf,
+    },
+    /// Run an approved host command in the directory its request pinned.
+    RunHostJob {
+        request: String,
+        argv: Vec<String>,
+        env: Vec<(String, String)>,
+        timeout: Option<u64>,
+    },
+    /// Release a prepared directory, or stop a running job.
+    CancelHostJob {
+        request: String,
+    },
     Stop,
 }
 
@@ -213,15 +238,52 @@ pub(crate) enum Event {
     PayloadExited,
     /// A connection to the sandbox's `request.sock`, for the daemon to serve.
     SandboxConnected(Fd),
+    /// The host directory a host command would start in, as approval shows
+    /// it, or why it cannot be used.
+    HostJobPrepared {
+        request: String,
+        result: Result<PathBuf, String>,
+    },
+    /// An approved host command could not be started.
+    HostJobFailed {
+        request: String,
+        error: String,
+    },
+    /// A host job's supervisor exited: the outcome it recorded, or without
+    /// one, its diagnostic.
+    HostJobFinished {
+        request: String,
+        outcome: Result<HostOutcome, String>,
+    },
     Failed(String),
     Stopped {
         exit_code: Option<i32>,
     },
 }
 
+/// What a host job's supervisor records in its `status.json`.
+#[derive(Debug, Deserialize, Default)]
+pub(crate) struct HostOutcome {
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub spawn_error: Option<String>,
+    pub cancelled: bool,
+    pub timed_out: bool,
+    pub truncated: bool,
+}
+
+/// A running host job.
+struct HostJob {
+    request: String,
+    child: Child,
+    /// Dropping it stops the job.
+    lifetime: Option<OwnedFd>,
+    directory: PathBuf,
+}
+
 /// The runtime inside the daemon: a worker thread for Nix-bound work, with
 /// `send` as the dispatcher that never waits for it, and the running
-/// sandbox's init channel, request socket and exit watch.
+/// sandbox's init channel, request socket, exit watch and host jobs.
 pub(crate) struct Local {
     worker: Worker,
     /// Tokens of cancellable work sent to the worker, by cancel id.
@@ -235,6 +297,14 @@ pub(crate) struct Local {
     /// PTYs allocated for processes init has not reported started.
     masters: BTreeMap<u64, OwnedFd>,
     buffer: Vec<u8>,
+    /// The goblin's capability, from `Started`: it resolves host
+    /// directories through the sandbox's binds.
+    inheritance: Option<Inheritance>,
+    /// Where host jobs keep their output and outcome.
+    host_jobs: PathBuf,
+    /// Pinned directories of host commands awaiting approval, by request.
+    prepared: BTreeMap<String, File>,
+    jobs: Vec<HostJob>,
     stopping: bool,
     /// Events reported and not yet polled.
     events: VecDeque<Event>,
@@ -245,11 +315,16 @@ pub(crate) struct Local {
 
 impl Local {
     pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
-        Self::new(Worker::start(source, directory, dimensions))
+        let host_jobs = directory.join("host-jobs");
+        Self::new(Worker::start(source, directory, dimensions), host_jobs)
     }
-    fn new(worker: Worker) -> Self {
+    fn new(worker: Worker, host_jobs: PathBuf) -> Self {
         Self {
             worker,
+            inheritance: None,
+            host_jobs,
+            prepared: BTreeMap::new(),
+            jobs: vec![],
             cancels: BTreeMap::new(),
             init: None,
             listener: None,
@@ -279,8 +354,12 @@ impl Local {
                         | Event::Call { serial: id, .. } => {
                             self.cancels.remove(id);
                         }
+                        Event::DevShell { inheritance, .. } => {
+                            self.inheritance = Some(inheritance.clone());
+                        }
                         // The worker hands the endpoints over just before.
-                        Event::Started { .. } => {
+                        Event::Started { inheritance, .. } => {
+                            self.inheritance = Some(inheritance.clone());
                             if let Ok(endpoints) = self.worker.endpoints.try_recv() {
                                 let Endpoints {
                                     control,
@@ -321,6 +400,7 @@ impl Local {
                 Err(_) => break,
             }
         }
+        self.finish_host_jobs();
         // Observe process exit independently of a worker blocked on Nix.
         // A pidfd pins the process identity, avoiding PID-reuse races.
         if self
@@ -429,6 +509,118 @@ impl Local {
     }
 }
 
+impl Local {
+    /// Start an approved host job under the helper's `--host-job`
+    /// supervisor, in the directory its request pinned.
+    fn run_host_job(
+        &mut self,
+        request: &str,
+        argv: &[String],
+        env: &[(String, String)],
+        timeout: Option<u64>,
+    ) -> crate::Result<()> {
+        let cwd = self
+            .prepared
+            .remove(request)
+            .ok_or("the host command's directory was not prepared")?;
+        let helper = self
+            .inheritance
+            .as_ref()
+            .ok_or("the goblin has stopped")?
+            .helper()
+            .to_path_buf();
+        prune(&self.host_jobs);
+        let directory = self.host_jobs.join(request);
+        fs::create_dir(&directory)?;
+        let (lifetime_read, lifetime_write) = unix::pipe()?;
+        let mut command = std::process::Command::new(helper);
+        command
+            .arg("--host-job")
+            .arg(directory.join("output.log"))
+            .arg(directory.join("status.json"))
+            .arg(LOG_LIMIT.to_string())
+            .arg(timeout.unwrap_or(0).to_string());
+        // The request's variables reach the command only, not the supervisor.
+        for (key, value) in env {
+            command.args(["--env", key, value]);
+        }
+        command
+            .arg("--")
+            .args(argv)
+            // Temporary files go straight to /tmp unless the request says
+            // otherwise: nested daemons and nix develop put sockets beneath
+            // TMPDIR, and Unix socket paths are limited to 107 bytes.
+            .env_remove("TMPDIR")
+            .env("GOBLINS_HOST_JOB", request)
+            .stdin(ChildStdio::from(lifetime_read))
+            .stdout(ChildStdio::null())
+            .stderr(File::create(directory.join("supervisor.log"))?);
+        let cwd = cwd.as_raw_fd();
+        let parent = unsafe { libc::getpid() };
+        unsafe {
+            command.pre_exec(move || {
+                // Lifetime: the pipe closes with the daemon, but also stop
+                // promptly if the daemon dies before reaching it.
+                unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM))?;
+                if libc::getppid() != parent {
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                }
+                unix::cvt(libc::fchdir(cwd))?;
+                // Only stdio crosses: no daemon socket or session descriptor.
+                unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
+                Ok(())
+            });
+        }
+        let child = command.spawn();
+        drop(command);
+        self.jobs.push(HostJob {
+            request: request.to_string(),
+            child: child?,
+            lifetime: Some(lifetime_write),
+            directory,
+        });
+        Ok(())
+    }
+    /// Report jobs whose supervisor has exited.
+    fn finish_host_jobs(&mut self) {
+        let mut index = 0;
+        while index < self.jobs.len() {
+            if matches!(self.jobs[index].child.try_wait(), Ok(None)) {
+                index += 1;
+                continue;
+            }
+            let mut job = self.jobs.remove(index);
+            drop(job.lifetime.take());
+            let _ = job.child.wait();
+            let outcome = fs::read(job.directory.join("status.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .ok_or_else(|| crate::process::diagnostic(&job.directory.join("supervisor.log")));
+            self.report(Event::HostJobFinished {
+                request: job.request,
+                outcome,
+            });
+        }
+    }
+}
+
+/// Keep the output of the most recent finished jobs only.
+fn prune(jobs: &Path) {
+    let Ok(entries) = fs::read_dir(jobs) else {
+        return;
+    };
+    let mut finished: Vec<_> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("status.json").exists())
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    finished.sort();
+    let excess = finished.len().saturating_sub(KEPT - 1);
+    for (_, path) in finished.into_iter().take(excess) {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
 impl Runtime for Local {
     fn send(&mut self, command: Command) -> Result<(), Command> {
         match command {
@@ -461,6 +653,38 @@ impl Runtime for Local {
             Command::KillAll => {
                 let _ = self.to_init(&init::Command::KillAll {}, &[]);
             }
+            Command::PrepareHostJob { request, cwd } => {
+                let result = match &self.inheritance {
+                    Some(inheritance) => inheritance
+                        .host_directory(&cwd)
+                        .map(|(file, path)| {
+                            self.prepared.insert(request.clone(), file);
+                            path
+                        })
+                        .map_err(|e| e.to_string()),
+                    None => Err("the goblin has stopped".into()),
+                };
+                self.report(Event::HostJobPrepared { request, result });
+            }
+            Command::RunHostJob {
+                request,
+                argv,
+                env,
+                timeout,
+            } => {
+                if let Err(error) = self.run_host_job(&request, &argv, &env, timeout) {
+                    self.report(Event::HostJobFailed {
+                        request,
+                        error: error.to_string(),
+                    });
+                }
+            }
+            Command::CancelHostJob { request } => {
+                self.prepared.remove(&request);
+                if let Some(job) = self.jobs.iter_mut().find(|j| j.request == request) {
+                    job.lifetime.take();
+                }
+            }
             command => {
                 let id = command.cancel_id();
                 let cancel = self.worker.cancel.child();
@@ -487,7 +711,7 @@ impl Runtime for Local {
         event
     }
     fn ended(&self) -> bool {
-        self.ended && self.events.is_empty()
+        self.ended && self.events.is_empty() && self.jobs.is_empty()
     }
 }
 
@@ -600,7 +824,7 @@ mod tests {
     #[test]
     fn final_result_after_empty_poll_is_not_discarded() {
         let (worker, _, sender) = worker();
-        let mut local = Local::new(worker);
+        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
         // Even a finished producer observation cannot make an empty (still
         // connected) channel final. A last message may arrive after this poll.
         assert!(local.poll().is_none());
@@ -620,7 +844,7 @@ mod tests {
     #[test]
     fn cancellation_reaches_queued_and_running_work_even_when_the_queue_is_full() {
         let (worker, received, _sender) = worker();
-        let mut local = Local::new(worker);
+        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
         let preview = |approval| Command::Preview {
             approval,
             package: "hello".into(),
@@ -677,7 +901,7 @@ mod tests {
     fn local_relays_init_the_payloads_exit_and_request_connections() {
         let directory = unix::temp_directory().unwrap();
         let (worker, _, _results) = worker();
-        let mut local = Local::new(worker);
+        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
         let round = |local: &mut Local| std::iter::from_fn(|| local.poll()).collect::<Vec<_>>();
         // Before Started there is no init to ask.
         local
@@ -807,7 +1031,7 @@ mod tests {
     #[test]
     fn what_send_reports_never_delays_collecting_a_round() {
         let (worker, _, results) = worker();
-        let mut local = Local::new(worker);
+        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
         let (exit, exited) = unix::pipe().unwrap();
         local.exit_watch = Some(exit);
         // A spawn without init fails between rounds...
