@@ -1,6 +1,10 @@
 """Editor terminal relay uses exact session and daemon identities."""
 import json
+import os
+import signal
 import subprocess
+import termios
+import threading
 import unittest
 
 from daemon_support import Daemon, RPC
@@ -44,6 +48,9 @@ class AttachmentTests(unittest.TestCase):
             client = Terminal([*command, "attach", "snikk"])
             self.addCleanup(client.close)
             d.wait(lambda: d.get(a["session"])["terminal_attached"])
+            # Until the client makes its terminal raw, the line discipline
+            # turns Ctrl-C into SIGINT for the client instead of relaying it.
+            d.wait(lambda: not termios.tcgetattr(client.fd)[3] & termios.ISIG)
             client.send("\x03")
             client.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
             client.expect(r"(?:^|\n)STATE=" + pid.decode() + r",retained\n")
@@ -124,6 +131,32 @@ class AttachmentTests(unittest.TestCase):
         again.send("echo RECONNECTED; exit 0\n")
         again.expect(r"(?:^|\n)RECONNECTED\n")
         self.assertEqual(again.wait(), 0)
+
+    def test_resizes_while_attaching_do_not_end_the_attachment(self):
+        # Each resize sends the client SIGWINCH, which interrupts whatever
+        # system call it is waiting in. Editors resize their window as the
+        # client attaches, so the handshake must carry on.
+        d = Daemon()
+        self.addCleanup(d.close)
+        for attempt in range(3):
+            session = d.start()["session"]
+            client = Terminal([str(d.app), "--state-dir", str(d.state), "attach", session])
+            self.addCleanup(client.close)
+            stop = threading.Event()
+
+            def resize():
+                # The client makes its terminal raw once it has attached.
+                while not stop.is_set() and termios.tcgetattr(client.fd)[3] & termios.ISIG:
+                    os.kill(client.pid, signal.SIGWINCH)
+                    stop.wait(.001)
+            resizer = threading.Thread(target=resize)
+            resizer.start()
+            try:
+                client.send(f"echo ATTACHED_{attempt}\n")
+                client.expect(rf"(?:^|\n)ATTACHED_{attempt}\n")
+            finally:
+                stop.set()
+                resizer.join()
 
     def test_background_output_continues_while_detached_and_attached_kill(self):
         d = Daemon()

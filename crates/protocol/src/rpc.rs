@@ -250,7 +250,22 @@ pub(crate) fn read_started(
             ))?;
         }
         let room = byte.len().min(decoder.remaining());
-        let n = stream.read(&mut byte[..room])?;
+        // With a read timeout a signal interrupts the read even under
+        // SA_RESTART. Retry, but not past the deadline: the timeout above
+        // never drops below 1 ms, so steady signals could otherwise
+        // prolong a stalled frame indefinitely.
+        let n = match stream.read(&mut byte[..room]) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "whole-frame deadline exceeded",
+                    ));
+                }
+                continue;
+            }
+            result => result?,
+        };
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -532,6 +547,38 @@ mod tests {
                 .push(&[], now + TIMEOUT)
                 .is_err()
         );
+    }
+    #[test]
+    fn signals_do_not_extend_a_stalled_frame() {
+        use std::{io::Write, os::unix::net::UnixStream, sync::mpsc, thread};
+        extern "C" fn ignore(_: libc::c_int) {}
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = ignore as *const () as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigaction(libc::SIGUSR1, &action, std::ptr::null_mut());
+        }
+        let (mut reader, mut peer) = UnixStream::pair().unwrap();
+        // Half a frame, then nothing more.
+        peer.write_all(b"Content-Length: 10\r\n\r\n{").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let start = Instant::now();
+        let read = thread::spawn(move || {
+            tx.send(unsafe { libc::pthread_self() }).unwrap();
+            let result = read_started(&mut reader, Some(Instant::now()));
+            (result, start.elapsed())
+        });
+        let thread = rx.recv().unwrap();
+        // Interrupt the read faster than its 1 ms minimum timeout until
+        // well past the deadline.
+        while !read.is_finished() && start.elapsed() < TIMEOUT * 2 {
+            unsafe { libc::pthread_kill(thread, libc::SIGUSR1) };
+            thread::sleep(Duration::from_micros(200));
+        }
+        let (result, elapsed) = read.join().unwrap();
+        assert!(result.is_err());
+        assert!(elapsed < TIMEOUT + Duration::from_secs(1), "{elapsed:?}");
+        drop(peer);
     }
     #[test]
     fn strict_envelope_and_nested_fields() {
