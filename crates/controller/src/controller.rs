@@ -4,12 +4,13 @@ use crate::{
     session::{Cancel, Identity, Inheritance},
     terminal::Terminal,
     unix,
-    worker::{Completed, Source, Work, Worker},
+    worker::Source,
 };
 use goblins_protocol::{
     Request,
     rpc::{self, Decoder, DevShellDiffParams, FlakeRunParams, PermissionParams},
 };
+use runtime::{Command, Event, Local, Runtime};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -30,6 +31,7 @@ mod editor;
 mod exec;
 mod host;
 mod raids;
+pub(crate) mod runtime;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
 
 const HOSTS: usize = 32;
@@ -159,9 +161,9 @@ struct Pending {
     /// Identity of a prepared dev shell refresh candidate.
     dev_identity: Option<String>,
     id: String,
+    /// Also what cancels its preview or refresh evaluation.
     serial: u64,
     connection: u64,
-    cancel: Cancel,
     /// The requester has an agent integration to wake with a completion notice.
     notify: bool,
     /// A host command waiting for the decision.
@@ -172,9 +174,9 @@ struct Pending {
 /// A sandbox call waiting on the worker (`flake.run`, `devshell.diff`). One
 /// at a time per sandbox; the worker runs them in turn with other work.
 struct Call {
+    /// Also what cancels it.
     serial: u64,
     connection: u64,
-    cancel: Cancel,
 }
 fn call_key(serial: u64) -> String {
     format!("call-{serial}")
@@ -186,7 +188,7 @@ struct Active {
     activity_at: Option<Instant>,
     created: u64,
     record: SessionRecord,
-    worker: Option<Worker>,
+    runtime: Option<Box<dyn Runtime>>,
     listener: Option<UnixListener>,
     pending: Option<Pending>,
     terminal: Terminal,
@@ -222,6 +224,12 @@ struct Active {
     line: String,
 }
 impl Active {
+    /// Cancel the runtime's work under `id`, queued or running.
+    fn cancel_work(&mut self, id: u64) {
+        if let Some(runtime) = &mut self.runtime {
+            let _ = runtime.send(Command::Cancel(id));
+        }
+    }
     /// Refresh activity freshness; true when the visible activity changed.
     fn report_activity(&mut self, state: goblins_protocol::AgentState) -> bool {
         self.activity_at = Some(Instant::now());
@@ -762,7 +770,7 @@ impl Controller {
     fn live_lines(&self) -> std::collections::BTreeSet<String> {
         self.sessions
             .values()
-            .filter(|a| a.worker.is_some())
+            .filter(|a| a.runtime.is_some())
             .map(|a| a.line.clone())
             .collect()
     }
@@ -795,7 +803,7 @@ impl Controller {
         };
         for a in self.sessions.values() {
             if a.record.state == "running"
-                && a.worker.is_some()
+                && a.runtime.is_some()
                 && store
                     .records
                     .get(&a.line)
@@ -881,7 +889,7 @@ impl Controller {
     fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
         self.sessions
             .values()
-            .filter(|a| a.worker.is_some())
+            .filter(|a| a.runtime.is_some())
             .find(|a| a.line == record.id)
             .map(|a| {
                 format!(
@@ -1103,7 +1111,7 @@ impl Controller {
             } else if let Some(id) = self
                 .sessions
                 .iter()
-                .filter(|(_, a)| a.worker.is_none() && a.can_evict())
+                .filter(|(_, a)| a.runtime.is_none() && a.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
             {
@@ -1159,7 +1167,7 @@ impl Controller {
             !self
                 .sessions
                 .values()
-                .any(|a| a.worker.is_some() && a.record.agent_name == name)
+                .any(|a| a.runtime.is_some() && a.record.agent_name == name)
         };
         if let Some(name) = requested {
             if !valid_agent_name(name) {
@@ -1189,7 +1197,7 @@ impl Controller {
         }
         self.sessions
             .values()
-            .find(|a| a.worker.is_some() && a.record.agent_name == target)
+            .find(|a| a.runtime.is_some() && a.record.agent_name == target)
             .map(|a| a.record.id.clone())
             .ok_or_else(missing)
     }
@@ -1283,12 +1291,12 @@ impl Controller {
     }
     fn stop(&mut self, id: &str, reason: Option<String>) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
-        if let Some(w) = &a.worker {
+        if let Some(runtime) = &mut a.runtime {
             // Preserve the first cause, including a natural exit with no reason.
             if !["stopping", "stopped", "failed"].contains(&a.record.state.as_str()) {
                 a.record.stop_reason = reason;
             }
-            w.cancel.cancel();
+            let _ = runtime.send(Command::Stop);
             a.record.state = "stopping".into();
         }
         a.listener.take();
@@ -1297,15 +1305,16 @@ impl Controller {
             self.dirty = true;
         }
         if let Some(p) = a.pending.take() {
-            p.cancel.cancel();
+            a.cancel_work(p.serial);
             if let Some(r) = self.permission_mut(&p.id) {
                 r.state = "cancelled".into();
             }
             self.reply_permission(&p.id, "error", Some("session stopped".into()));
             self.operation_finished(&p.id, p.notify, Some("session stopped".into()));
         }
-        if let Some(w) = self.sessions.get_mut(id).and_then(|a| a.call.take()) {
-            w.cancel.cancel();
+        let a = self.sessions.get_mut(id).unwrap();
+        if let Some(w) = a.call.take() {
+            a.cancel_work(w.serial);
             self.reply_waiting(&call_key(w.serial), Err("session stopped".into()));
         }
         let message = format!("goblin {} has stopped", self.sessions[id].record.agent_name);
@@ -1349,7 +1358,8 @@ impl Controller {
         // A disconnected caller no longer wants its app or preview.
         for a in self.sessions.values_mut() {
             if a.call.as_ref().is_some_and(|w| w.connection == connection) {
-                a.call.take().unwrap().cancel.cancel();
+                let serial = a.call.take().unwrap().serial;
+                a.cancel_work(serial);
             }
         }
         let mut gone = None;
@@ -1365,7 +1375,7 @@ impl Controller {
                     .any(|r| r.id == p.id && r.state == "pending")
                 {
                     let p = a.pending.take().unwrap();
-                    p.cancel.cancel();
+                    a.cancel_work(p.serial);
                     gone = Some((p.id, p.notify));
                     break;
                 }
@@ -1444,7 +1454,7 @@ impl Controller {
             || self
                 .sessions
                 .values()
-                .filter(|a| a.worker.is_some())
+                .filter(|a| a.runtime.is_some())
                 .count()
                 >= SESSIONS
         {
@@ -1454,7 +1464,7 @@ impl Controller {
             let old = self
                 .sessions
                 .iter()
-                .filter(|(_, a)| a.worker.is_none() && a.can_evict())
+                .filter(|(_, a)| a.runtime.is_none() && a.can_evict())
                 .min_by_key(|(_, a)| a.created)
                 .map(|(id, _)| id.clone())
                 .ok_or_else(capacity)?;
@@ -1531,7 +1541,7 @@ impl Controller {
                 .unwrap_or_default(),
             None => p.configuration.clone(),
         };
-        let worker = Worker::start(source, directory.join("resources"), (p.rows, p.cols));
+        let runtime = Local::start(source, directory.join("resources"), (p.rows, p.cols));
         let record = SessionRecord {
             agent_state: Default::default(),
             agent_state_since: None,
@@ -1596,7 +1606,7 @@ impl Controller {
                 recreated_from: recorded,
                 created: self.next,
                 record,
-                worker: Some(worker),
+                runtime: Some(Box::new(runtime)),
                 listener: None,
                 pending: None,
                 terminal,
@@ -1623,7 +1633,7 @@ impl Controller {
             ));
         }
         let a = &self.sessions[owner];
-        if a.record.state != "running" || a.worker.is_none() {
+        if a.record.state != "running" || a.runtime.is_none() {
             return Err(conflict());
         }
         let inheritance = a.inheritance.clone().ok_or_else(conflict)?;
@@ -1645,7 +1655,7 @@ impl Controller {
             "sessions.set-state" => {
                 let p: goblins_protocol::SetState = params(value)?;
                 let a = self.sessions.get_mut(scope).ok_or_else(missing)?;
-                if a.record.state != "running" || a.worker.is_none() {
+                if a.record.state != "running" || a.runtime.is_none() {
                     return Err(conflict());
                 }
                 self.dirty |= a.report_activity(p.state);
@@ -1655,7 +1665,7 @@ impl Controller {
                 let p: goblins_protocol::SetVariables = params(value)?;
                 p.validate().map_err(|e| (-32602, e))?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
-                if a.record.state != "running" || a.worker.is_none() {
+                if a.record.state != "running" || a.runtime.is_none() {
                     return Err(conflict());
                 }
                 // Only the caller's own record. Without history the server
@@ -1726,7 +1736,7 @@ impl Controller {
                 Ok(json!(
                     self.sessions
                         .values()
-                        .filter(|a| a.worker.is_some() && self.controls(scope, &a.record.id))
+                        .filter(|a| a.runtime.is_some() && self.controls(scope, &a.record.id))
                         .map(|a| self.sandbox_record(&a.record))
                         .collect::<Vec<_>>()
                 ))
@@ -1838,18 +1848,18 @@ impl Controller {
         };
         let a = self.sessions.get_mut(&p.session).unwrap();
         let pending = a.pending.as_ref().unwrap();
-        let notify = pending.notify;
-        pending.cancel.cancel();
-        if pending.host.is_some() {
+        let (notify, serial, host) = (pending.notify, pending.serial, pending.host.is_some());
+        let output = inherited.or_else(|| pending.initial_output.clone());
+        a.cancel_work(serial);
+        if host {
             return self.decide_host(p, actor);
         }
         if p.approved {
             let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
-            a.worker
-                .as_ref()
+            a.runtime
+                .as_mut()
                 .ok_or_else(conflict)?
-                .commands
-                .try_send(Work::Decide {
+                .send(Command::Decide {
                     request: Request {
                         kind: r.kind.clone(),
                         id: p.request.clone(),
@@ -1857,7 +1867,7 @@ impl Controller {
                         reason: r.reason.clone(),
                     },
                     approved: true,
-                    output: inherited.or_else(|| pending.initial_output.clone()),
+                    output,
                 })
                 .map_err(|_| capacity())?;
         } else {
@@ -1939,7 +1949,7 @@ impl Controller {
             "server.status" => {
                 let _: Empty = params(value)?;
                 Ok(
-                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.worker.is_some()).count(),"history":self.history_status(),
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.runtime.is_some()).count(),"history":self.history_status(),
                         "manifest":self.current_manifest.as_ref().map(|m| &m.path)}),
                 )
             }
@@ -2144,7 +2154,7 @@ impl Controller {
                         || !self
                             .sessions
                             .get(&session)
-                            .is_some_and(|a| a.record.state == "running" && a.worker.is_some())
+                            .is_some_and(|a| a.record.state == "running" && a.runtime.is_some())
                     {
                         return Err(conflict());
                     }
@@ -2183,32 +2193,27 @@ impl Controller {
                             return Err((-32600, "unexpected trailing input".into()));
                         }
                         let serial = self.number();
-                        let work: Box<dyn FnOnce(Cancel) -> Work> = if call.method == "flake.run" {
+                        let command = if call.method == "flake.run" {
                             let p: FlakeRunParams = params(call.params)?;
                             if !p.validate() {
                                 return Err((-32602, "invalid app name".into()));
                             }
                             // The trusted generation's own source and lock grant
                             // no new trust, so nothing is asked of the host.
-                            Box::new(move |cancel| Work::Run {
-                                serial,
-                                app: p.app,
-                                cancel,
-                            })
+                            Command::Run { serial, app: p.app }
                         } else {
                             let p: DevShellDiffParams = params(call.params)?;
                             if !p.validate() {
                                 return Err((-32602, "invalid flake inputs".into()));
                             }
                             // A preview only: no record, no candidate, no change.
-                            Box::new(move |cancel| Work::Diff {
+                            Command::Diff {
                                 serial,
                                 changes: crate::devshell::Changes {
                                     update: p.update,
                                     lock: p.lock,
                                 },
-                                cancel,
-                            })
+                            }
                         };
                         let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
                         if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
@@ -2226,15 +2231,14 @@ impl Controller {
                                 "another flake run or dev shell diff is in progress".into(),
                             ));
                         }
-                        let w = a.worker.as_ref().ok_or_else(conflict)?;
-                        let cancel = w.cancel.child();
-                        w.commands
-                            .try_send(work(cancel.clone()))
+                        a.runtime
+                            .as_mut()
+                            .ok_or_else(conflict)?
+                            .send(command)
                             .map_err(|_| capacity())?;
                         a.call = Some(Call {
                             serial,
                             connection: c.id,
-                            cancel,
                         });
                         c.waiting = Some((call_key(serial), id.clone()));
                         return Ok(None);
@@ -2351,24 +2355,22 @@ impl Controller {
                         .as_ref()
                         .and_then(|i| i.integration())
                         .is_some();
-                    let w = a.worker.as_ref().ok_or_else(conflict)?;
-                    let cancel = w.cancel.child();
+                    let runtime = a.runtime.as_mut().ok_or_else(conflict)?;
                     if p.kind == "devshell" {
-                        w.commands
-                            .try_send(Work::Refresh {
+                        runtime
+                            .send(Command::Refresh {
                                 approval: serial,
                                 changes: crate::devshell::Changes {
                                     update: p.update.clone(),
                                     lock: p.lock,
                                 },
-                                cancel: cancel.clone(),
                             })
                             .map_err(|_| capacity())?;
                     }
                     if auto_approve || p.kind == "package" {
-                        w.commands
-                            .try_send(if auto_approve {
-                                Work::Decide {
+                        runtime
+                            .send(if auto_approve {
+                                Command::Decide {
                                     request: Request {
                                         kind: p.kind.clone(),
                                         id: request.clone(),
@@ -2379,10 +2381,9 @@ impl Controller {
                                     output: inherited_output,
                                 }
                             } else {
-                                Work::Preview {
+                                Command::Preview {
                                     approval: serial,
                                     package: p.package.clone(),
-                                    cancel: cancel.clone(),
                                 }
                             })
                             .map_err(|_| capacity())?;
@@ -2393,7 +2394,6 @@ impl Controller {
                         id: request.clone(),
                         serial,
                         connection: c.id,
-                        cancel,
                         notify,
                         host,
                         detached,
@@ -2582,11 +2582,19 @@ impl Controller {
                     Err(e) => return Err(e.into()),
                 }
             }
-            let (results, worker_finished) =
-                a.worker.as_ref().map(Worker::poll).unwrap_or_default();
+            let mut results = Vec::new();
+            let mut runtime_ended = false;
+            if let Some(runtime) = &mut a.runtime {
+                while results.len() < 16
+                    && let Some(event) = runtime.poll()
+                {
+                    results.push(event);
+                }
+                runtime_ended = runtime.ended();
+            }
             for result in results {
                 match result {
-                    Completed::Started {
+                    Event::Started {
                         docker_enabled,
                         scope,
                         dev_shell,
@@ -2642,17 +2650,17 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
-                    Completed::Mode { server } => match server {
+                    Event::Mode { server } => match server {
                         true => a.terminal.refuse(attach::UPGRADE),
                         false => a.terminal.release(),
                     },
-                    Completed::Manifest { sequence, lease } => {
+                    Event::Manifest { sequence, lease } => {
                         if sequence > self.manifest_published {
                             self.manifest_published = sequence;
                             self.current_manifest = Some(lease);
                         }
                     }
-                    Completed::Preview { approval, result } => {
+                    Event::Preview { approval, result } => {
                         if let Some(p) = &mut a.pending
                             && p.serial == approval
                             && let Some(r) = self.permission_mut(&p.id)
@@ -2676,7 +2684,7 @@ impl Controller {
                             self.dirty = true;
                         }
                     }
-                    Completed::Refresh { approval, result } => {
+                    Event::Refresh { approval, result } => {
                         let Some(p) = a.pending.as_mut().filter(|p| p.serial == approval) else {
                             continue;
                         };
@@ -2698,7 +2706,7 @@ impl Controller {
                                 // A foreign lock or failed evaluation fails the
                                 // request; the agent gets the reason to act on.
                                 let p = a.pending.take().unwrap();
-                                p.cancel.cancel();
+                                a.cancel_work(p.serial);
                                 let r = self.permission_mut(&id).unwrap();
                                 r.state = "failed".into();
                                 r.message = Some(bounded(&error));
@@ -2708,13 +2716,13 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
-                    Completed::Call { serial, result } => {
+                    Event::Call { serial, result } => {
                         if a.call.as_ref().is_some_and(|w| w.serial == serial) {
                             a.call.take();
                             self.reply_waiting(&call_key(serial), result.map_err(|e| bounded(&e)));
                         }
                     }
-                    Completed::DevShell {
+                    Event::DevShell {
                         identity,
                         inheritance,
                     } => {
@@ -2722,7 +2730,7 @@ impl Controller {
                         a.inheritance = Some(inheritance);
                         self.dirty = true;
                     }
-                    Completed::Progress { request, state } => {
+                    Event::Progress { request, state } => {
                         if a.pending.as_ref().is_some_and(|p| p.id == request)
                             && let Some(r) = self.permission_mut(&request)
                             && ["realizing", "mounting", "publishing"].contains(&r.state.as_str())
@@ -2731,14 +2739,14 @@ impl Controller {
                             self.dirty = true;
                         }
                     }
-                    Completed::Granted {
+                    Event::Granted {
                         reply,
                         detail,
                         output,
                     } => {
                         let mut granted = None;
                         if let Some(p) = a.pending.take() {
-                            p.cancel.cancel();
+                            a.cancel_work(p.serial);
                             if let Some(r) = self.permission_mut(&p.id) {
                                 r.state = if reply.status == "ready" {
                                     "ready"
@@ -2795,13 +2803,13 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
-                    Completed::Failed(e) => {
+                    Event::Failed(e) => {
                         a.record.state = "failed".into();
                         a.record.detail = Some(bounded(&e));
                         a.terminal.failed_start();
                         self.dirty = true;
                     }
-                    Completed::Stopped { exit_code } => {
+                    Event::Stopped { exit_code } => {
                         if a.record.identity.is_none() {
                             a.terminal.failed_start();
                         }
@@ -2811,7 +2819,7 @@ impl Controller {
                         a.record.exit_code = exit_code;
                         a.listener.take();
                         if let Some(p) = a.pending.take() {
-                            p.cancel.cancel();
+                            a.cancel_work(p.serial);
                             if let Some(r) = self.permission_mut(&p.id) {
                                 r.state = "cancelled".into();
                             }
@@ -2823,15 +2831,15 @@ impl Controller {
                             );
                         }
                         if let Some(w) = a.call.take() {
-                            w.cancel.cancel();
+                            a.cancel_work(w.serial);
                             self.reply_waiting(&call_key(w.serial), Err("payload stopped".into()));
                         }
                         self.dirty = true;
                     }
                 }
             }
-            if worker_finished {
-                a.worker.take();
+            if runtime_ended {
+                a.runtime.take();
                 a.inheritance.take();
                 a.exit_watch.take();
                 a.init.take();
@@ -2847,7 +2855,6 @@ impl Controller {
                         a.terminal.failed_start();
                     }
                     if let Some(p) = a.pending.take() {
-                        p.cancel.cancel();
                         if let Some(r) = self.permission_mut(&p.id) {
                             r.state = "cancelled".into();
                         }
@@ -3032,10 +3039,13 @@ impl Drop for Controller {
         let pending: Vec<_> = self
             .sessions
             .values_mut()
-            .filter_map(|a| a.pending.take())
+            .filter_map(|a| {
+                let p = a.pending.take()?;
+                a.cancel_work(p.serial);
+                Some(p)
+            })
             .collect();
         for p in pending {
-            p.cancel.cancel();
             if let Some(r) = self.permission_mut(&p.id) {
                 r.state = "cancelled".into();
             }
@@ -3062,16 +3072,14 @@ impl Drop for Controller {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
-        for a in self.sessions.values() {
-            if let Some(w) = &a.worker {
-                w.cancel.cancel();
+        // Stop every runtime before waiting for any of them.
+        for a in self.sessions.values_mut() {
+            if let Some(runtime) = &mut a.runtime {
+                let _ = runtime.send(Command::Stop);
             }
         }
         for (_, mut a) in std::mem::take(&mut self.sessions) {
-            if let Some(p) = a.pending.take() {
-                p.cancel.cancel();
-            }
-            a.worker.take();
+            a.runtime.take();
             drop(a.terminal);
             let _ = fs::remove_dir_all(a.directory);
         }
@@ -3110,10 +3118,10 @@ mod tests {
         let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
         rpc::parse(&data[body..]).unwrap()
     }
-    fn session_with_results(d: &mut Controller, results: Vec<Completed>) -> String {
+    fn session_with_results(d: &mut Controller, results: Vec<Event>) -> String {
         session_with_results_id(d, "test-session", results)
     }
-    fn session_with_results_id(d: &mut Controller, id: &str, results: Vec<Completed>) -> String {
+    fn session_with_results_id(d: &mut Controller, id: &str, results: Vec<Event>) -> String {
         let id = id.to_string();
         let directory = d.state.join(&id);
         unix::private_directory(&directory).unwrap();
@@ -3174,7 +3182,7 @@ mod tests {
                     recreated_from: None,
                     skipped: vec![],
                 },
-                worker: Some(Worker::completed(results)),
+                runtime: Some(Box::new(runtime::Fake::ended(results))),
                 listener: None,
                 pending: Some(Pending {
                     initial_output: None,
@@ -3182,7 +3190,6 @@ mod tests {
                     id: "r".into(),
                     serial: 1,
                     connection: 99,
-                    cancel: Cancel::default(),
                     notify: false,
                     host: None,
                     detached: false,
@@ -3423,7 +3430,7 @@ mod tests {
         session_with_results_id(
             &mut d,
             "newer",
-            vec![Completed::Manifest {
+            vec![Event::Manifest {
                 sequence: 3,
                 lease: lease("newer.json"),
             }],
@@ -3432,12 +3439,12 @@ mod tests {
         session_with_results_id(
             &mut d,
             "older",
-            vec![Completed::Manifest {
+            vec![Event::Manifest {
                 sequence: 2,
                 lease: lease("older.json"),
             }],
         );
-        session_with_results_id(&mut d, "failed", vec![Completed::Failed("bad".into())]);
+        session_with_results_id(&mut d, "failed", vec![Event::Failed("bad".into())]);
         d.tick().unwrap();
         assert_eq!(
             d.current_manifest.as_ref().unwrap().path,
@@ -3456,7 +3463,7 @@ mod tests {
         a.record.agent_name = "kid".into();
         a.record.state = "stopping".into();
         assert_eq!(d.allocate_name(Some("kid")).unwrap_err().0, -32009);
-        d.sessions.get_mut(&goblin).unwrap().worker.take();
+        d.sessions.get_mut(&goblin).unwrap().runtime.take();
         assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
         drop(d);
         fs::remove_dir_all(path).unwrap();
@@ -3604,7 +3611,7 @@ mod tests {
             d.sessions.get_mut(id).unwrap().record.state = state.into();
             assert_eq!(d.allocate_name(Some("shell")).unwrap_err().0, -32009);
         }
-        d.sessions.get_mut(id).unwrap().worker.take();
+        d.sessions.get_mut(id).unwrap().runtime.take();
         assert!(d.resolve_session("shell").is_err());
         let second = d
             .host(&mut c, "sessions.start", launch("second", Some("shell")))
@@ -3633,7 +3640,7 @@ mod tests {
         let detail = "could not build package 'hello': actual Nix diagnostic";
         let id = session_with_results(
             &mut d,
-            vec![Completed::Granted {
+            vec![Event::Granted {
                 reply: goblins_protocol::Reply::new(
                     Some("r".into()),
                     "error",
@@ -3770,20 +3777,20 @@ mod tests {
         let id = session_with_results(
             &mut d,
             vec![
-                Completed::Progress {
+                Event::Progress {
                     request: "r".into(),
                     state: "mounting",
                 },
-                Completed::Progress {
+                Event::Progress {
                     request: "r".into(),
                     state: "publishing",
                 },
-                Completed::Granted {
+                Event::Granted {
                     reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
                     detail: None,
                     output: None,
                 },
-                Completed::Stopped { exit_code: None },
+                Event::Stopped { exit_code: None },
             ],
         );
         d.stop(&id, Some("stopped by host".into())).unwrap();
@@ -3796,7 +3803,7 @@ mod tests {
         );
         assert_eq!(d.permissions[0].state, "cancelled");
         assert_eq!(d.sessions[&id].record.state, "stopped");
-        assert!(d.sessions[&id].worker.is_none());
+        assert!(d.sessions[&id].runtime.is_none());
         assert!(d.sessions[&id].record.packages.is_empty());
         drop(d);
         fs::remove_dir_all(path).unwrap();
@@ -3809,16 +3816,16 @@ mod tests {
         let id = session_with_results(
             &mut d,
             (0..16)
-                .map(|_| Completed::Progress {
+                .map(|_| Event::Progress {
                     request: "r".into(),
                     state: "mounting",
                 })
                 .collect(),
         );
         d.tick().unwrap();
-        assert!(d.sessions[&id].worker.is_some());
+        assert!(d.sessions[&id].runtime.is_some());
         d.tick().unwrap();
-        assert!(d.sessions[&id].worker.is_none());
+        assert!(d.sessions[&id].runtime.is_none());
         assert_eq!(d.sessions[&id].record.state, "failed");
         assert!(
             d.sessions[&id]
@@ -4018,7 +4025,7 @@ mod tests {
         let path = unix::temp_directory().unwrap();
         for (results, status, message) in [
             (
-                vec![Completed::Granted {
+                vec![Event::Granted {
                     reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
                     detail: None,
                     output: None,
@@ -4027,7 +4034,7 @@ mod tests {
                 None,
             ),
             (
-                vec![Completed::Granted {
+                vec![Event::Granted {
                     reply: goblins_protocol::Reply::new(
                         Some("r".into()),
                         "error",
@@ -4040,7 +4047,7 @@ mod tests {
                 Some("grant failed; see tui terminal"),
             ),
             (
-                vec![Completed::Stopped { exit_code: Some(0) }],
+                vec![Event::Stopped { exit_code: Some(0) }],
                 "cancelled",
                 Some("payload stopped"),
             ),
@@ -4092,8 +4099,8 @@ mod tests {
         // A second loss of the same connection reports nothing new.
         d.withdraw(99);
         let shutdown = session_with_results_id(&mut d, "shutdown", vec![]);
-        let (worker, _results) = Worker::idle();
-        d.sessions.get_mut(&shutdown).unwrap().worker = Some(worker);
+        let (runtime, _results, _received) = runtime::Fake::new();
+        d.sessions.get_mut(&shutdown).unwrap().runtime = Some(Box::new(runtime));
         d.permissions.back_mut().unwrap().id = "s".into();
         d.sessions
             .get_mut(&shutdown)
@@ -4163,8 +4170,8 @@ mod tests {
         );
         assert!(!d.history.as_ref().unwrap().records.contains_key("kid"));
         // A host denial, then an approval of the same package.
-        let (worker, sender, _commands) = Worker::listening();
-        d.sessions.get_mut("a").unwrap().worker = Some(worker);
+        let (runtime, sender, _received) = runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
         let request = |d: &mut Controller, kind: &str| {
             let (mut c, peer) = connection(Role::Sandbox("a".into()));
             c.initialized = true;
@@ -4194,7 +4201,7 @@ mod tests {
         assert_eq!(record(&d).packages.denied, ["hello"]);
         let _peer = request(&mut d, "package");
         sender
-            .send(Completed::Granted {
+            .send(Event::Granted {
                 reply: goblins_protocol::Reply::new(None, "ready", None),
                 detail: None,
                 output: None,
@@ -4210,7 +4217,7 @@ mod tests {
         d.sessions.get_mut("a").unwrap().record.packages.clear();
         let _peer = request(&mut d, "package");
         sender
-            .send(Completed::Granted {
+            .send(Event::Granted {
                 reply: goblins_protocol::Reply::new(None, "ready", None),
                 detail: None,
                 output: None,
@@ -4228,9 +4235,7 @@ mod tests {
         );
         assert!(!record(&d).packages.approved.contains(&"hello".to_string()));
         // The stop is recorded once, and the record is final afterwards.
-        sender
-            .send(Completed::Stopped { exit_code: Some(0) })
-            .unwrap();
+        sender.send(Event::Stopped { exit_code: Some(0) }).unwrap();
         d.tick().unwrap();
         let stopped = record(&d).stopped.unwrap();
         assert_eq!(
@@ -4425,11 +4430,11 @@ mod tests {
             assert!(refused(&mut d, &mut start, "k2", target).contains("is live and runs it"));
         }
         // Released when that session ends.
-        d.sessions.get_mut(&id).unwrap().worker.take();
+        d.sessions.get_mut(&id).unwrap().runtime.take();
         // The original goblin running its own record refuses too.
         let _a3 = live(&mut d, "a3");
         assert!(refused(&mut d, &mut start, "k7", "a3").contains("goblin a3 (a3)"));
-        d.sessions.get_mut("a3").unwrap().worker.take();
+        d.sessions.get_mut("a3").unwrap().runtime.take();
         // A goblin already using the name leaves a new name.
         let _morb = live(&mut d, "morb");
         let again = start(&mut d, recreate("k4", "r0")).unwrap();
@@ -4515,8 +4520,8 @@ mod tests {
         let (service, queue) = crate::messaging::Service::detached(1);
         d.messaging = service;
         let _results = live(&mut d, "a");
-        let (worker, _results, _commands) = Worker::listening();
-        d.sessions.get_mut("a").unwrap().worker = Some(worker);
+        let (runtime, _results, _received) = runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
         d.tick().unwrap();
         while queue.try_recv().is_ok() {}
         // Fill the queue so the next batches cannot be handed over.
@@ -4845,7 +4850,7 @@ mod tests {
                 .contains("upgrade Goblins")
         );
         // Stopped, it can be evicted although it was launched attached.
-        a.worker = None;
+        a.runtime = None;
         assert!(a.can_evict());
         // A frontend attaching after it stopped is told where to look.
         a.record.state = "stopped".into();
@@ -5033,11 +5038,11 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
-    fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Completed> {
+    fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Event> {
         session_with_results_id(d, id, vec![]);
-        let (worker, results) = Worker::idle();
+        let (runtime, results, _) = runtime::Fake::new();
         let a = d.sessions.get_mut(id).unwrap();
-        a.worker = Some(worker);
+        a.runtime = Some(Box::new(runtime));
         a.pending = None;
         a.record.agent_name = id.into();
         results
@@ -5099,10 +5104,8 @@ mod tests {
         assert!(d.sessions["w"].record.raid.is_none());
         // Stop, natural exit and failed launch.
         d.stop("c", Some("stopped by host".into())).unwrap();
-        exits
-            .send(Completed::Stopped { exit_code: Some(0) })
-            .unwrap();
-        fails.send(Completed::Failed("boom".into())).unwrap();
+        exits.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        fails.send(Event::Failed("boom".into())).unwrap();
         d.tick().unwrap();
         let left: Vec<_> = sent(&queue)
             .into_iter()

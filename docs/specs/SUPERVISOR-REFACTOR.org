@@ -193,6 +193,8 @@ trait Runtime {
     /// as `try_send` on the worker channel does today.
     fn send(&mut self, command: Command) -> Result<(), Command>;
     fn poll(&mut self) -> Option<Event>;
+    /// True once every event has been polled and the runtime is gone.
+    fn ended(&self) -> bool;
 }
 #+end_src
 
@@ -207,7 +209,7 @@ Rules every implementation follows:
 - *Only Nix work waits.* A runtime has a /dispatcher/ that receives every command, and one worker thread that runs Nix-bound work: =Preview=, =Decide=, =Refresh=, =Run= and =Diff=. The dispatcher handles everything else itself and never waits for the worker: cancellation, =Export=, =Stop=, the process and terminal commands, sandbox traffic and host jobs.
   - In =Local=, the dispatcher is =send= itself.
   - In a supervisor, it is the thread reading the control channel.
-- *Cancellation reaches running work.* Today a =Cancel= atomic is seen inside running Nix work. The dispatcher keeps that: it maps each cancel ID to a local token that the worker's Nix commands observe, and flips it when =Cancel= arrives.
+- *Cancellation reaches running work.* Today a =Cancel= atomic is seen inside running Nix work. The dispatcher keeps that: it maps each cancel ID to a local token that the worker's Nix commands observe, and flips it when =Cancel= arrives. A cancellable command's cancel ID is its own approval or serial, which the daemon already allocates uniquely, so the commands carry no separate ID.
 - *Export never waits for Nix.* =Export= reads the runtime's current published state: the leases it holds, its workspace and working-directory descriptors, the Docker flag and the current dev shell generation. A refresh replaces that generation under a lock at the moment it publishes, so an export carries a complete generation even while a refresh or build is running.
 - *Requests are bounded; cancellation and answers are never refused.* On the daemon side, every command goes into one ordered outbound queue, with these rules:
   - *Requests* can be refused when the runtime is busy, with today's capacity error: =Preview=, =Decide=, =Refresh=, =Run=, =Diff=, =Spawn=, =Attach=, =PrepareHostJob=, =RunHostJob= and =Export=. They keep today's limits (4 commands, 16 events).
@@ -234,13 +236,14 @@ Rules every implementation follows:
 
 #+begin_src rust
 enum Command {
-    // Today's Work, unchanged in meaning; Cancel atomics become ids.
-    Preview { approval: String, package: String, cancel: CancelId },
+    // Today's Work, unchanged in meaning; Cancel atomics become ids. Each
+    // cancellable command is cancelled by its approval or serial.
+    Preview { approval: u64, package: String },
     Decide { request: Request, approved: bool, output: Option<PathBuf> },
-    Refresh { approval: String, changes: Changes, cancel: CancelId },
-    Run { serial: u64, app: String, cancel: CancelId },
-    Diff { serial: u64, changes: Changes, cancel: CancelId },
-    Cancel(CancelId),
+    Refresh { approval: u64, changes: Changes },
+    Run { serial: u64, app: String },
+    Diff { serial: u64, changes: Changes },
+    Cancel(u64),
     // Processes in the running sandbox, through goblins-init. Ids are
     // allocated by the daemon, as exec and attach ids are today.
     /// argv None runs the sandbox's configured shell, as today.

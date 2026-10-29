@@ -2,51 +2,21 @@
 use crate::{
     Result,
     config::Manifest,
+    controller::runtime::{Command, Event},
     process::WORKER_TICK,
-    session::{Cancel, Identity, Inheritance, Session},
+    session::{Cancel, Inheritance, Session},
     unix,
 };
-use goblins_protocol::{Reply, Request};
+use goblins_protocol::Reply;
 use std::{
-    os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::net::UnixListener,
-    },
+    os::fd::{AsRawFd, OwnedFd},
     path::PathBuf,
     sync::mpsc::{self, Receiver, SyncSender},
     thread::{self, JoinHandle},
 };
 
-pub(super) enum Work {
-    Preview {
-        approval: u64,
-        package: String,
-        cancel: Cancel,
-    },
-    Decide {
-        request: Request,
-        approved: bool,
-        output: Option<PathBuf>,
-    },
-    /// Evaluate a dev shell refresh candidate for approval.
-    Refresh {
-        approval: u64,
-        changes: crate::devshell::Changes,
-        cancel: Cancel,
-    },
-    /// Build and mount a flake app from the trusted generation.
-    Run {
-        serial: u64,
-        app: String,
-        cancel: Cancel,
-    },
-    /// Evaluate a refresh candidate for its preview only; nothing is stored.
-    Diff {
-        serial: u64,
-        changes: crate::devshell::Changes,
-        cancel: Cancel,
-    },
-}
+/// A command for the worker, with the token that cancels it.
+pub(super) type Work = (Command, Cancel);
 /// What a recreated goblin takes from its record.
 pub(super) struct Recreate {
     /// Approved package names, in grant order.
@@ -72,75 +42,11 @@ pub(super) struct Auto {
     pub rooted: Vec<(String, PathBuf)>,
     pub skipped: Vec<crate::history::Skipped>,
 }
-pub(super) enum Completed {
-    Preview {
-        approval: u64,
-        result: std::result::Result<crate::catalog::Preview, String>,
-    },
-    Started {
-        docker_enabled: bool,
-        scope: Option<String>,
-        dev_shell: Option<String>,
-        dev_identity: Option<String>,
-        initial_packages: Vec<String>,
-        /// The agent's PTY, or with attach handlers its output pipe.
-        master: OwnedFd,
-        handlers: Option<Box<crate::config::Handlers>>,
-        /// The private channel to the sandbox's goblins-init.
-        control: OwnedFd,
-        listener: UnixListener,
-        identity: Identity,
-        inheritance: Inheritance,
-        exit_watch: OwnedFd,
-        recreated: Option<Box<Recreated>>,
-        auto: Box<Auto>,
-    },
-    Progress {
-        request: String,
-        state: &'static str,
-    },
-    /// Whether the agent will run without a terminal, known before the
-    /// launch's slow work.
-    Mode {
-        server: bool,
-    },
-    /// Structured approval preview and candidate identity, or why it cannot
-    /// refresh.
-    Refresh {
-        approval: u64,
-        result: std::result::Result<(serde_json::Value, String), String>,
-    },
-    /// The reply to a sandbox call waiting on the worker (`Work::Run`,
-    /// `Work::Diff`), or why it failed.
-    Call {
-        serial: u64,
-        result: std::result::Result<serde_json::Value, String>,
-    },
-    /// A refresh became the current generation; members it runs later start in it.
-    DevShell {
-        identity: String,
-        inheritance: Inheritance,
-    },
-    Granted {
-        reply: Reply,
-        detail: Option<String>,
-        output: Option<PathBuf>,
-    },
-    /// A host launch's manifest validated; `sequence` orders acceptances.
-    Manifest {
-        sequence: u64,
-        lease: std::sync::Arc<crate::config::ManifestLease>,
-    },
-    Failed(String),
-    Stopped {
-        exit_code: Option<i32>,
-    },
-}
 pub(super) struct Worker {
     pub cancel: Cancel,
     pub commands: SyncSender<Work>,
-    results: Receiver<Completed>,
-    thread: Option<JoinHandle<()>>,
+    pub results: Receiver<Event>,
+    pub thread: Option<JoinHandle<()>>,
 }
 pub(super) enum Source {
     Host {
@@ -204,7 +110,7 @@ impl Worker {
                             directory,
                         )?;
                         held = Some((owner, manifest));
-                        results.try_send(Completed::Mode {
+                        results.try_send(Event::Mode {
                             server: session.launch.handlers.is_some(),
                         })?;
                         session
@@ -231,7 +137,7 @@ impl Worker {
                         if let Ok(config) = Manifest::read(&configuration)
                             .and_then(|m| m.select(&name, scope.as_deref()))
                         {
-                            results.try_send(Completed::Mode {
+                            results.try_send(Event::Mode {
                                 server: config.on_attach.is_some(),
                             })?;
                         }
@@ -243,7 +149,7 @@ impl Worker {
                         ) {
                             Ok(lease) => {
                                 let lease = std::sync::Arc::new(lease);
-                                results.try_send(Completed::Manifest {
+                                results.try_send(Event::Manifest {
                                     sequence,
                                     lease: lease.clone(),
                                 })?;
@@ -363,7 +269,7 @@ impl Worker {
                 // Everything it mounts is rooted by now.
                 drop(held);
                 drop(held_lease);
-                results.try_send(Completed::Started {
+                results.try_send(Event::Started {
                     docker_enabled: session.docker_enabled(),
                     scope: session.scope_name(),
                     dev_shell: session
@@ -393,11 +299,7 @@ impl Worker {
                         break;
                     }
                     match commands.recv_timeout(WORKER_TICK) {
-                        Ok(Work::Preview {
-                            approval,
-                            package,
-                            cancel,
-                        }) => {
+                        Ok((Command::Preview { approval, package }, cancel)) => {
                             let result = crate::catalog::preview(
                                 &session.launch.flake,
                                 &package,
@@ -406,32 +308,24 @@ impl Worker {
                             )
                             .map_err(|e| e.to_string());
                             if results
-                                .try_send(Completed::Preview { approval, result })
+                                .try_send(Event::Preview { approval, result })
                                 .is_err()
                             {
                                 break;
                             }
                         }
-                        Ok(Work::Refresh {
-                            approval,
-                            changes,
-                            cancel,
-                        }) => {
+                        Ok((Command::Refresh { approval, changes }, cancel)) => {
                             let result = session
                                 .prepare_refresh(&changes, &cancel)
                                 .map_err(|e| e.to_string());
                             if results
-                                .try_send(Completed::Refresh { approval, result })
+                                .try_send(Event::Refresh { approval, result })
                                 .is_err()
                             {
                                 break;
                             }
                         }
-                        Ok(Work::Run {
-                            serial,
-                            app,
-                            cancel,
-                        }) => {
+                        Ok((Command::Run { serial, app }, cancel)) => {
                             // The program to execute and the generation it came from.
                             let result = session
                                 .run_app(&app, &cancel)
@@ -439,33 +333,26 @@ impl Worker {
                                     serde_json::json!({"program":program,"generation":generation})
                                 })
                                 .map_err(|e| e.to_string());
-                            if results
-                                .try_send(Completed::Call { serial, result })
-                                .is_err()
-                            {
+                            if results.try_send(Event::Call { serial, result }).is_err() {
                                 break;
                             }
                         }
-                        Ok(Work::Diff {
-                            serial,
-                            changes,
-                            cancel,
-                        }) => {
+                        Ok((Command::Diff { serial, changes }, cancel)) => {
                             let result = session
                                 .diff_refresh(&changes, &cancel)
                                 .map_err(|e| e.to_string());
-                            if results
-                                .try_send(Completed::Call { serial, result })
-                                .is_err()
-                            {
+                            if results.try_send(Event::Call { serial, result }).is_err() {
                                 break;
                             }
                         }
-                        Ok(Work::Decide {
-                            request: req,
-                            approved,
-                            output,
-                        }) => {
+                        Ok((
+                            Command::Decide {
+                                request: req,
+                                approved,
+                                output,
+                            },
+                            _,
+                        )) => {
                             session.event(
                                 "decision",
                                 serde_json::json!({"request":req,"approved":approved}),
@@ -481,7 +368,7 @@ impl Worker {
                                             .as_ref()
                                             .map(|d| d.identity())
                                             .unwrap_or_default();
-                                        results.try_send(Completed::DevShell {
+                                        results.try_send(Event::DevShell {
                                             identity,
                                             inheritance: session.inheritance(),
                                         })?;
@@ -493,7 +380,7 @@ impl Worker {
                                         output.as_deref(),
                                         |_, _| Ok(()),
                                         |state| {
-                                            results.try_send(Completed::Progress {
+                                            results.try_send(Event::Progress {
                                                 request: req.id.clone(),
                                                 state,
                                             })?;
@@ -557,7 +444,7 @@ impl Worker {
                                 }
                             };
                             if results
-                                .try_send(Completed::Granted {
+                                .try_send(Event::Granted {
                                     reply,
                                     detail,
                                     output,
@@ -567,6 +454,8 @@ impl Worker {
                                 break;
                             }
                         }
+                        // The dispatcher keeps everything else.
+                        Ok(_) => (),
                         Err(mpsc::RecvTimeoutError::Timeout) => (),
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
@@ -578,13 +467,13 @@ impl Worker {
             };
             match run() {
                 Ok(exit_code) => {
-                    let _ = results.try_send(Completed::Stopped { exit_code });
+                    let _ = results.try_send(Event::Stopped { exit_code });
                 }
                 Err(e) => {
                     if token.check().is_ok() {
-                        let _ = results.try_send(Completed::Failed(e.to_string()));
+                        let _ = results.try_send(Event::Failed(e.to_string()));
                     }
-                    let _ = results.try_send(Completed::Stopped { exit_code: None });
+                    let _ = results.try_send(Event::Stopped { exit_code: None });
                 }
             }
         });
@@ -643,66 +532,7 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     })
 }
 impl Worker {
-    /// Completion is usable only after observing the channel disconnected and
-    /// empty. Checking thread completion after an empty read could otherwise
-    /// discard a final result sent between those two observations.
-    pub fn poll(&self) -> (Vec<Completed>, bool) {
-        let mut results = Vec::new();
-        for _ in 0..16 {
-            match self.results.try_recv() {
-                Ok(result) => results.push(result),
-                Err(mpsc::TryRecvError::Empty) => return (results, false),
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return (results, self.finished());
-                }
-            }
-        }
-        (results, false)
-    }
-    #[cfg(test)]
-    pub fn completed(results: Vec<Completed>) -> Self {
-        let (commands, _) = mpsc::sync_channel(4);
-        let (sender, receiver) = mpsc::sync_channel(16);
-        for result in results {
-            sender
-                .try_send(result)
-                .unwrap_or_else(|_| panic!("test result queue full"));
-        }
-        drop(sender);
-        Self {
-            cancel: Cancel::default(),
-            commands,
-            results: receiver,
-            thread: None,
-        }
-    }
-    /// A live worker whose commands the test receives.
-    #[cfg(test)]
-    pub fn listening() -> (Self, mpsc::SyncSender<Completed>, mpsc::Receiver<Work>) {
-        let (commands, received) = mpsc::sync_channel(4);
-        let (sender, results) = mpsc::sync_channel(16);
-        let worker = Self {
-            cancel: Cancel::default(),
-            commands,
-            results,
-            thread: None,
-        };
-        (worker, sender, received)
-    }
-    /// A live worker whose results the test supplies through the sender.
-    #[cfg(test)]
-    pub fn idle() -> (Self, mpsc::SyncSender<Completed>) {
-        let (commands, _) = mpsc::sync_channel(4);
-        let (sender, results) = mpsc::sync_channel(16);
-        let worker = Self {
-            cancel: Cancel::default(),
-            commands,
-            results,
-            thread: None,
-        };
-        (worker, sender)
-    }
-    fn finished(&self) -> bool {
+    pub fn finished(&self) -> bool {
         self.thread.as_ref().is_none_or(|t| t.is_finished())
     }
 }
@@ -712,37 +542,5 @@ impl Drop for Worker {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn final_result_after_empty_poll_is_not_discarded() {
-        let (commands, _) = mpsc::sync_channel(4);
-        let (sender, results) = mpsc::sync_channel(16);
-        let worker = Worker {
-            cancel: Cancel::default(),
-            commands,
-            results,
-            thread: None,
-        };
-        // Even a finished producer observation cannot make an empty (still
-        // connected) channel final. A last message may arrive after this poll.
-        let (results, finished) = worker.poll();
-        assert!(results.is_empty());
-        assert!(!finished);
-        sender
-            .try_send(Completed::Stopped { exit_code: Some(7) })
-            .unwrap_or_else(|_| panic!("send"));
-        drop(sender);
-        let (results, finished) = worker.poll();
-        assert!(finished);
-        assert!(matches!(
-            results.as_slice(),
-            [Completed::Stopped { exit_code: Some(7) }]
-        ));
     }
 }

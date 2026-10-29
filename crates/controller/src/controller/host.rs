@@ -516,7 +516,7 @@ impl Controller {
                         .pending
                         .take_if(|pending| pending.id == p.request)
                         .ok_or_else(conflict)?;
-                    pending.cancel.cancel();
+                    a.cancel_work(pending.serial);
                     if let Some(r) = self.permission_mut(&p.request) {
                         r.state = "withdrawn".into();
                     }

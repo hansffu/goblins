@@ -106,7 +106,7 @@ impl Controller {
             None => self.resolve_session(designator)?,
         };
         let a = &self.sessions[&id];
-        if a.record.state != "running" || a.worker.is_none() {
+        if a.record.state != "running" || a.runtime.is_none() {
             return Err((
                 -32009,
                 format!("goblin {} ({id}) has stopped", a.record.agent_name),

@@ -12,7 +12,8 @@ env = { GOBLINS_TEST_CODEX = "1" }
 broad = [
   "src/*", "crates/protocol/*", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "crates/controller/src/controller.rs", "crates/controller/src/session.rs",
-  "crates/controller/src/worker.rs", "crates/controller/src/config.rs",
+  "crates/controller/src/worker.rs", "crates/controller/src/controller/runtime.rs",
+  "crates/controller/src/config.rs",
   "crates/controller/src/unix.rs", "crates/controller/src/process.rs",
   "crates/controller/src/seccomp.rs", "crates/controller/src/sandbox_etc.rs",
   "crates/controller/src/catalog.rs", "crates/controller/src/terminal.rs", "crates/client/src/init.rs",
