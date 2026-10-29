@@ -48,6 +48,9 @@ class AttachmentTests(unittest.TestCase):
             client = Terminal([*command, "attach", "snikk"])
             self.addCleanup(client.close)
             d.wait(lambda: d.get(a["session"])["terminal_attached"])
+            # Until the client makes its terminal raw, the line discipline
+            # turns Ctrl-C into SIGINT for the client instead of relaying it.
+            d.wait(lambda: not termios.tcgetattr(client.fd)[3] & termios.ISIG)
             client.send("\x03")
             client.send("printf 'STATE=%s,%s\\n' $fish_pid $saved_value\n")
             client.expect(r"(?:^|\n)STATE=" + pid.decode() + r",retained\n")
