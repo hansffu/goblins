@@ -4,7 +4,10 @@ use goblins_unix as unix;
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
-    os::{fd::AsRawFd, unix::process::CommandExt},
+    os::{
+        fd::{AsRawFd, OwnedFd, RawFd},
+        unix::process::CommandExt,
+    },
     path::Path,
     process::{Child, Command, Stdio},
     sync::{
@@ -20,6 +23,9 @@ pub struct Cancellation {
     parent: Option<Arc<AtomicBool>>,
     /// When the work times out, and its time limit for the message.
     deadline: Option<(Instant, Duration)>,
+    /// While a scope handles one startup request, a following request (Leave)
+    /// or EOF cancels it. The socket stays unread for the scope event loop.
+    readable: Option<Arc<OwnedFd>>,
 }
 impl Cancellation {
     pub fn cancel(&self) {
@@ -31,6 +37,7 @@ impl Cancellation {
             cancelled: Arc::default(),
             parent: Some(self.cancelled.clone()),
             deadline: self.deadline,
+            readable: self.readable.clone(),
         }
     }
     /// The same cancellation, which also fails once `limit` has passed.
@@ -40,12 +47,31 @@ impl Cancellation {
             ..self.clone()
         }
     }
+    pub fn until_readable(fd: RawFd) -> Result<Self> {
+        let fd = unix::owned(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) })?;
+        Ok(Self {
+            readable: Some(Arc::new(fd)),
+            ..Self::default()
+        })
+    }
     pub fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Relaxed)
             || self
                 .parent
                 .as_ref()
                 .is_some_and(|p| p.load(Ordering::Relaxed))
+            || self.readable.as_ref().is_some_and(|fd| {
+                let mut poll = libc::pollfd {
+                    fd: fd.as_raw_fd(),
+                    events: libc::POLLIN | libc::POLLRDHUP,
+                    revents: 0,
+                };
+                let n = unsafe { libc::poll(&mut poll, 1, 0) };
+                (n > 0 && poll.revents != 0)
+                    || (n < 0
+                        && std::io::Error::last_os_error().kind()
+                            != std::io::ErrorKind::Interrupted)
+            })
         {
             Err("session cancelled".into())
         } else if let Some((deadline, limit)) = self.deadline
@@ -382,5 +408,25 @@ mod tests {
             limited.check().unwrap_err().to_string(),
             "session cancelled"
         );
+    }
+
+    #[test]
+    fn startup_cancellation_observes_next_request_and_eof_without_consuming_it() {
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+        };
+        let (mut member, mut runtime) = UnixStream::pair().unwrap();
+        let cancel = Cancellation::until_readable(member.as_raw_fd()).unwrap();
+        cancel.check().unwrap();
+        runtime.write_all(b"Leave").unwrap();
+        assert!(cancel.check().is_err());
+        assert!(cancel.child().check().is_err());
+        let mut bytes = [0; 5];
+        member.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"Leave");
+        cancel.check().unwrap();
+        drop(runtime);
+        assert!(cancel.check().is_err());
     }
 }

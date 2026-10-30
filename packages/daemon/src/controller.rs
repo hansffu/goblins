@@ -4847,12 +4847,18 @@ mod tests {
         let mut daemon = Controller::new(&state, None).unwrap();
         let mut senders = vec![];
         let mut received = vec![];
-        for (id, scope) in [("docker", "work"), ("pending", "work"), ("other", "other")] {
+        for (id, scope) in [
+            ("docker", "work"),
+            ("idle", "work"),
+            ("pending", "work"),
+            ("other", "other"),
+        ] {
             session_with_results_id(&mut daemon, id, vec![]);
             let (runtime, events, commands) = goblins_runtime::Fake::new();
             let active = daemon.sessions.get_mut(id).unwrap();
             active.runtime = Some(Box::new(runtime));
             active.member_scope = Some(scope.into());
+            active.record.docker_enabled = id == "docker";
             if id == "pending" {
                 active.policy = None;
                 active.record.state = "starting".into();
@@ -4866,13 +4872,31 @@ mod tests {
             })
             .unwrap();
         daemon.tick().unwrap();
-        for commands in &received[..2] {
+        for commands in &received[..3] {
             assert!(matches!(
                 commands.lock().unwrap().pop_front(),
                 Some(Command::ScopeFailed)
             ));
         }
-        assert!(received[2].lock().unwrap().is_empty());
+        assert!(received[3].lock().unwrap().is_empty());
+        for sender in &senders[..3] {
+            sender
+                .try_send(Event::Stopped { exit_code: Some(1) })
+                .unwrap();
+        }
+        daemon.tick().unwrap();
+        for id in ["docker", "idle", "pending"] {
+            let record = &daemon.sessions[id].record;
+            assert_eq!(record.state, "stopped");
+            assert_eq!(record.exit_code, Some(1));
+            assert_eq!(record.detail, None);
+            assert_eq!(record.stop_reason, None);
+        }
+        let other = &daemon.sessions["other"].record;
+        assert_eq!(other.state, "running");
+        assert_eq!(other.exit_code, None);
+        assert_eq!(other.detail, None);
+        assert_eq!(other.stop_reason, None);
         drop(daemon);
         fs::remove_dir_all(state).unwrap();
     }

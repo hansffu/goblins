@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 goblins-unix = { path = "../../libs/unix" }
+goblins-runtime = { path = "../../libs/runtime" }
 libc = "=0.2.186"
 
 # The --host-job supervisor, run as a separate process like the daemon runs it.

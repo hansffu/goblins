@@ -6,6 +6,125 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader};
 
 #[test]
+fn post_fork_scope_failure_keeps_exit_one_after_helper_sigkill_status() {
+    let _forking = unix::forking();
+    let launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+    let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+    let (stream, peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    session.scope = Some(Arc::new(crate::scope_client::Client::fixture(stream)));
+    let mut helper = Command::new("sh").args(["-c", "exit 137"]).spawn().unwrap();
+    assert_eq!(helper.wait().unwrap().code(), Some(137));
+    session.helper = Some(helper);
+    drop(peer);
+    assert!(!session.alive());
+    assert_eq!(session.exit_code, Some(1));
+    session.stop();
+    assert_eq!(session.exit_code, Some(1));
+}
+
+#[test]
+fn cancelled_docker_reply_does_not_fan_out_scope_failure_but_real_eof_does() {
+    use goblins_runtime::{
+        channel::Channel,
+        scope::{self, Message},
+    };
+    use std::{os::unix::net::UnixStream, sync::mpsc};
+    let _forking = unix::forking();
+    let launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+    let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+    let (runtime, server) = UnixStream::pair().unwrap();
+    let client = Arc::new(crate::scope_client::Client::fixture(runtime));
+    session.launch.scope = Some(goblins_runtime::config::Scope {
+        name: client.name.clone(),
+        definition: client.definition.clone(),
+        mounts: BTreeMap::new(),
+    });
+    session.scope = Some(client.clone());
+    let (critical, received) = mpsc::sync_channel(1);
+    session.scope_broker = Some(crate::scope_client::Broker {
+        events: mpsc::sync_channel(1).0,
+        scope_failures: critical,
+        memberships: mpsc::sync_channel(1).1,
+    });
+    let mut helper = Command::new("sh")
+        .args(["-c", "read value || true"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    session.helper_input = Some(File::from(OwnedFd::from(helper.stdin.take().unwrap())));
+    session.helper = Some(helper);
+    let mut server = Channel::new(server).unwrap();
+    struct Request {
+        cancel: Cancel,
+        worker: Option<std::thread::JoinHandle<Result<PathBuf>>>,
+    }
+    impl Drop for Request {
+        fn drop(&mut self) {
+            self.cancel.cancel();
+            if let Some(worker) = self.worker.take() {
+                let _ = worker.join();
+            }
+        }
+    }
+    let cancel = Cancel::default();
+    let token = cancel.clone();
+    let worker = std::thread::spawn(move || {
+        client.docker(
+            Some(scope::DockerConfig {
+                bwrap: "/unused".into(),
+                helper: "/unused".into(),
+                daemon: "/unused".into(),
+            }),
+            vec![],
+            &token,
+        )
+    });
+    let mut request = Request {
+        cancel,
+        worker: Some(worker),
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(frame) = server.receive().unwrap() {
+            assert!(matches!(
+                scope::decode(frame.value).unwrap(),
+                Message::AttachDocker { more: false, .. }
+            ));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fake scope did not receive attach"
+        );
+        std::thread::yield_now();
+    }
+    request.cancel.cancel();
+    assert!(request.worker.take().unwrap().join().unwrap().is_err());
+    server
+        .queue(
+            &scope::encode(&Message::DockerAttached {
+                socket: "/unused".into(),
+            }),
+            &mut vec![],
+        )
+        .unwrap();
+    server.flush().unwrap();
+    assert!(session.alive());
+    assert_eq!(session.exit_code, None);
+    assert!(matches!(
+        received.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    // EOF is fatal even with that same expected reply still buffered.
+    server.close();
+    assert!(!session.alive());
+    assert_eq!(session.exit_code, Some(1));
+    assert_eq!(received.try_recv().unwrap(), "failed");
+    session.stop();
+    assert_eq!(session.exit_code, Some(1));
+}
+
+#[test]
 fn profiles_preserve_path_precedence_across_duplicate_commands() {
     let fixture = ResourceLease::new(unix::temp_directory().unwrap()).unwrap();
     let package = |name: &str, commands: &[&str]| {

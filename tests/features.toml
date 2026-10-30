@@ -55,7 +55,7 @@ paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "lib
 description = "Sandbox Docker engines and their cross-feature integrations"
 python = ["test_docker", "test_cleanup", "test_devshell.DevShellDockerTests", "test_run_targets.RunTargetDockerTests", "test_host_commands.HostDockerAcceptance"]
 checks = ["rust"]
-paths = ["libs/supervisor/src/docker.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/scope*.rs", "packages/docker/*", "skills/goblins-docker/*"]
+paths = ["libs/supervisor/src/docker.rs", "libs/supervisor/src/docker/*", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/scope*.rs", "packages/docker/*", "skills/goblins-docker/*"]
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"

@@ -184,9 +184,6 @@ impl Inheritance {
             docker: self.docker.load(Ordering::SeqCst),
         })
     }
-    pub(crate) fn resources(&self) -> &ResourceLease {
-        &self.leases[0]
-    }
     /// The helper binary, which also supervises host commands.
     pub(crate) fn helper(&self) -> &Path {
         &self.launch.helper
@@ -295,7 +292,7 @@ pub struct Session {
     network: Option<crate::network::Network>,
     scope: Option<Arc<crate::scope_client::Client>>,
     pub(crate) scope_broker: Option<crate::scope_client::Broker>,
-    docker: Option<crate::scope::Lease>,
+    docker: bool,
     // Shared through inheritance: goblins a raid owner runs start with Docker
     // attached when the owner had it at the time they were created.
     docker_attached: Arc<AtomicBool>,
@@ -359,7 +356,7 @@ impl Session {
             network: None,
             scope: None,
             scope_broker: None,
-            docker: None,
+            docker: false,
             docker_attached: Arc::new(AtomicBool::new(false)),
             docker_inherit_enabled: None,
             docker_filesystem: Vec::new(),
@@ -1320,9 +1317,26 @@ impl Session {
         // An attached engine got the paths mounted when it attached; give it
         // these too, so containers can bind-mount them. A retry would not
         // offer it these paths again, so a failure here is uncertain.
-        if let Some(lease) = &self.docker {
-            lease
-                .extend(&self.launch, missing, &self.cancel)
+        if self.docker {
+            let parts = missing
+                .iter()
+                .map(|path| {
+                    Ok(crate::scope_docker::Part::Grant(
+                        File::open(path)?,
+                        path.clone(),
+                        true,
+                    ))
+                })
+                .chain(
+                    self.leases
+                        .iter()
+                        .map(|lease| Ok(crate::scope_docker::Part::Lease(lease.share()?))),
+                )
+                .collect::<Result<_>>()?;
+            self.scope
+                .as_ref()
+                .ok_or("scope membership lost")?
+                .docker(None, parts, &self.cancel)
                 .map_err(Uncertain)?;
         }
         Ok(())
@@ -1515,7 +1529,7 @@ impl Session {
         Ok((app.program, generation))
     }
     pub fn docker_enabled(&self) -> bool {
-        self.docker.is_some()
+        self.docker
     }
     /// Attach this sandbox to its scope's shared Docker engine.
     pub fn enable_docker(&mut self) -> Result<()> {
@@ -1548,7 +1562,7 @@ impl Session {
         let closure = self.closure(&[package(&config.daemon)?, package(&self.launch.helper)?])?;
         self.placeholders(&closure)?;
         let mut filesystem = self.docker_filesystem.clone();
-        let mut grants: Vec<crate::scope::Grant> = self
+        let mut grants: Vec<(File, PathBuf, bool)> = self
             .binds
             .as_ref()
             .unwrap()
@@ -1577,58 +1591,43 @@ impl Session {
                 path.display().to_string(),
             ]);
         }
-        let sources: Vec<_> = self
-            .binds
-            .as_ref()
-            .ok_or("missing filesystem plan")?
-            .source_fds()
-            .chain(std::iter::once(
-                self.workspace
-                    .as_ref()
-                    .ok_or("missing workspace")?
-                    .file
-                    .as_raw_fd(),
-            ))
-            .collect();
-        let shared = crate::scope::Shared::prepare(&self.launch, &selected, &self.cancel)?;
-        let lease = shared.acquire(
-            &self.launch,
-            crate::docker::Filesystem {
-                args: &filesystem,
-                fds: &sources,
-            },
-            grants,
-            self.inheritance(),
-            self.directory.join("store"),
-            self.scope_broker
-                .as_ref()
-                .ok_or("scope membership broker unavailable")?,
+        let mut parts = crate::scope_docker::filesystem(&filesystem)?;
+        parts.extend(
+            grants
+                .into_iter()
+                .map(|(file, dest, ro)| crate::scope_docker::Part::Grant(file, dest, ro)),
+        );
+        for lease in &self.leases {
+            parts.push(crate::scope_docker::Part::Lease(lease.share()?));
+        }
+        let engine_socket = selected.docker(
+            Some(goblins_runtime::scope::DockerConfig {
+                bwrap: self.launch.bwrap.clone(),
+                helper: self.launch.helper.clone(),
+                daemon: config.daemon,
+            }),
+            parts,
             &self.cancel,
         )?;
         let socket = self.directory.join("docker-socket/docker.sock");
         let staged = self.directory.join("docker-socket/next.sock");
-        fs::hard_link(shared.socket(), &staged)?;
-        fs::rename(staged, socket)?;
-        self.docker = Some(lease);
+        if let Err(error) =
+            fs::hard_link(engine_socket, &staged).and_then(|_| fs::rename(&staged, socket))
+        {
+            let _ = selected.detach_docker(&self.cancel);
+            return Err(error.into());
+        }
+        self.docker = true;
         self.docker_attached.store(true, Ordering::SeqCst);
         self.event("docker-enabled", serde_json::json!({"scope":selected.name}));
         Ok(())
     }
     pub fn alive(&mut self) -> bool {
-        if self
-            .docker
-            .as_ref()
-            .is_some_and(|lease| !lease.shared.alive())
-        {
+        if self.scope.as_ref().is_some_and(|scope| !scope.alive()) {
             if let (Some(broker), Some(scope)) = (&self.scope_broker, &self.launch.scope) {
-                // A full one-slot channel already holds this same scope's
-                // failure. Keep it separate from backpressured worker results.
+                // Keep critical scope failure separate from worker backpressure.
                 let _ = broker.scope_failures.try_send(scope.name.clone());
             }
-            self.exit_code = Some(1);
-            return false;
-        }
-        if self.scope.as_ref().is_some_and(|scope| !scope.alive()) {
             self.exit_code = Some(1);
             return false;
         }
@@ -1658,7 +1657,9 @@ impl Session {
         self.helper_input.take();
         if let Some(mut helper) = self.helper.take() {
             if let Ok(Some(status)) = helper.try_wait() {
-                self.exit_code = status.code();
+                // Scope failure already has its required exit code. Cleanup's
+                // SIGKILL must not overwrite an outcome observed by alive().
+                self.exit_code = self.exit_code.or(status.code());
             } else {
                 while matches!(helper.try_wait(), Ok(None)) {
                     if std::time::Instant::now() >= deadline {
@@ -1673,15 +1674,13 @@ impl Session {
             }
         }
         let deadline = Instant::now() + goblins_runtime::scope::RELEASE_TIMEOUT;
-        // Start member cleanup before engine shutdown; its independent bridge
-        // lease retains all donor resources while the engine winds down.
+        // Leave ends this connection's Docker lease and cleans its namespace.
+        // The scope retains all donor resources until its engine has stopped.
         let leaving = self
             .scope
             .as_ref()
             .is_some_and(|scope| scope.begin_leave().is_ok());
-        if let Some(docker) = self.docker.take() {
-            docker.stop(deadline);
-        }
+        self.docker = false;
         if leaving {
             if let Some(scope) = &self.scope {
                 if let Err(error) = scope.finish_leave(deadline) {

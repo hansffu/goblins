@@ -46,32 +46,51 @@ fn mount(kind: &str, target: &str) -> io::Result<()> {
     Ok(())
 }
 
-fn supervise(child: i32, storage: &Path, keep: bool) -> io::Result<i32> {
-    let result = (|| {
-        loop {
-            let mut status = 0;
-            let ended = cvt(unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) })?;
-            if ended == child {
-                return Ok(if libc::WIFEXITED(status) {
-                    libc::WEXITSTATUS(status)
-                } else {
-                    128 + libc::WTERMSIG(status)
-                });
-            }
-            let mut poll = libc::pollfd {
-                fd: 0,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let n = unsafe { libc::poll(&mut poll, 1, 50) };
-            if n > 0 {
-                return Ok(0);
-            } // Host dropped its private lifetime pipe.
-            if n < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return Err(io::Error::last_os_error());
-            }
+fn supervise(
+    child: i32,
+    storage: &Path,
+    keep: bool,
+    guardian: goblins_runtime::guardian::Bootstrap,
+    ready: OwnedFd,
+) -> io::Result<i32> {
+    guardian.supervise(
+        || writeln!(fs::File::from(ready), "{child}"),
+        |guardian| watch(child, guardian),
+        || cleanup(storage, keep),
+    )
+}
+fn watch(child: i32, guardian: &mut goblins_runtime::guardian::Retainer) -> io::Result<i32> {
+    loop {
+        let mut status = 0;
+        let ended = cvt(unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) })?;
+        if ended == child {
+            return Ok(if libc::WIFEXITED(status) {
+                libc::WEXITSTATUS(status)
+            } else {
+                128 + libc::WTERMSIG(status)
+            });
         }
-    })();
+        guardian
+            .receive()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if guardian.channel.closed() {
+            return Ok(0);
+        }
+        let mut poll = libc::pollfd {
+            fd: guardian
+                .channel
+                .fd()
+                .ok_or_else(|| io::Error::other("guardian channel closed"))?,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let n = unsafe { libc::poll(&mut poll, 1, 50) };
+        if n < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return Err(io::Error::last_os_error());
+        }
+    }
+}
+fn cleanup(storage: &Path, keep: bool) -> io::Result<()> {
     // We are in the outer engine PID namespace. kill(-1) cannot reach host or
     // sibling sessions, excludes this guardian and Bubblewrap's PID 1, and
     // kills the nested PID-namespace init (which tears down all OCI processes).
@@ -97,7 +116,7 @@ fn supervise(child: i32, storage: &Path, keep: bool) -> io::Result<i32> {
         fs::remove_dir_all(storage)
             .map_err(|error| io::Error::other(format!("Docker disk cleanup failed: {error}")))?;
     }
-    result
+    Ok(())
 }
 
 pub fn run() -> io::Result<i32> {
@@ -162,8 +181,36 @@ pub fn run() -> io::Result<i32> {
         return Err(io::Error::other("invalid readiness descriptor"));
     }
     let ready = unsafe { OwnedFd::from_raw_fd(ready_fd) };
-    let resource_lease = fs::File::open("/run/goblins/storage-lease")?;
-    cvt(unsafe { libc::flock(resource_lease.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) })?;
+    let guardian_fd: i32 = env::args()
+        .nth(6)
+        .ok_or_else(|| io::Error::other("missing guardian channel"))?
+        .parse()
+        .map_err(io::Error::other)?;
+    if guardian_fd < 3 || guardian_fd == lock_fd || guardian_fd == ready_fd {
+        return Err(io::Error::other("invalid guardian channel"));
+    }
+    cvt(unsafe { libc::fcntl(guardian_fd, libc::F_SETFD, libc::FD_CLOEXEC) })?;
+    let bootstrap_fds: Vec<i32> = env::args()
+        .nth(7)
+        .ok_or_else(|| io::Error::other("missing bootstrap lease descriptors"))?
+        .split(',')
+        .map(|n| n.parse().map_err(io::Error::other))
+        .collect::<io::Result<_>>()?;
+    let mut seen = std::collections::BTreeSet::new();
+    for &fd in &bootstrap_fds {
+        if fd < 3 || [lock_fd, ready_fd, guardian_fd].contains(&fd) || !seen.insert(fd) {
+            return Err(io::Error::other("invalid bootstrap lease descriptors"));
+        }
+        cvt(unsafe { libc::fcntl(fd, libc::F_GETFD) })?;
+    }
+    let guardian = goblins_runtime::guardian::Bootstrap::with_locks(
+        unsafe { std::os::unix::net::UnixStream::from_raw_fd(guardian_fd) },
+        bootstrap_fds
+            .into_iter()
+            .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+            .collect(),
+    )
+    .map_err(|e| io::Error::other(e.to_string()))?;
     let storage = Path::new("/run/goblins/docker-storage-parent").join(name);
     use std::os::unix::fs::MetadataExt;
     let expected = fs::metadata("/run/docker/data")?;
@@ -184,7 +231,7 @@ pub fn run() -> io::Result<i32> {
     drop(engine_parent);
     let child = cvt(unsafe { libc::fork() })?;
     if child == 0 {
-        drop((ready, lock, resource_lease));
+        drop((ready, lock, guardian));
         // Hide the cleanup authority BEFORE entering the less-privileged user
         // namespace that locks inherited mounts. The guardian alone retains it.
         cvt(unsafe { libc::unshare(libc::CLONE_NEWNS) })?;
@@ -194,7 +241,6 @@ pub fn run() -> io::Result<i32> {
                 libc::MNT_DETACH,
             )
         })?;
-        cvt(unsafe { libc::umount2(c("/run/goblins/storage-lease").as_ptr(), libc::MNT_DETACH) })?;
         let null = fs::File::open("/dev/null")?;
         cvt(unsafe { libc::dup2(null.as_raw_fd(), 0) })?;
         drop(null);
@@ -241,16 +287,15 @@ pub fn run() -> io::Result<i32> {
         drop(socket);
         let process = Command::new(
             env::args()
-                .nth(6)
+                .nth(8)
                 .ok_or_else(|| io::Error::other("missing Docker daemon"))?,
         )
-        .args(env::args().skip(7))
+        .args(env::args().skip(9))
         .spawn()?;
         return wait(process.id() as i32);
     }
     drop(engine_user);
-    writeln!(fs::File::from(ready), "{child}")?;
-    let result = supervise(child, &storage, keep);
+    let result = supervise(child, &storage, keep, guardian, ready);
     drop(lock);
     result
 }

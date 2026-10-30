@@ -16,6 +16,37 @@ pub struct Join {
     pub pasta: Option<PathBuf>,
     pub allow_nix: bool,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DockerConfig {
+    pub bwrap: PathBuf,
+    pub helper: PathBuf,
+    pub daemon: PathBuf,
+}
+/// Each part has at most one capability, so transactions can exceed a frame's
+/// descriptor budget without serializing host fd numbers into argument text.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum DockerPart {
+    Arguments {
+        values: Vec<String>,
+    },
+    Bind {
+        source: Descriptor,
+        destination: PathBuf,
+        readonly: bool,
+    },
+    Store {},
+    Grant {
+        source: Descriptor,
+        destination: PathBuf,
+        readonly: bool,
+    },
+    Lease {
+        directory: PathBuf,
+        lock: Descriptor,
+    },
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", deny_unknown_fields)]
 pub enum Message {
@@ -51,6 +82,21 @@ pub enum Message {
         mountns: Descriptor,
     },
     Registered {},
+    AttachDocker {
+        config: Option<DockerConfig>,
+        parts: Vec<DockerPart>,
+        more: bool,
+    },
+    ExtendDocker {
+        parts: Vec<DockerPart>,
+        more: bool,
+    },
+    DockerPending {},
+    DockerAttached {
+        socket: PathBuf,
+    },
+    DetachDocker {},
+    DockerDetached {},
     Leave {},
     Left {},
     Error {

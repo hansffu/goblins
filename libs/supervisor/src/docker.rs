@@ -1,8 +1,8 @@
 //! A scope-owned engine, initially launched from a member's confined bind plan.
 //! No host Docker socket, user service or global daemon is involved.
 use crate::Result;
-use crate::config::Launch;
 use crate::process;
+use goblins_runtime::{ResourceLease, channel::Channel, guardian, scope::DockerConfig};
 use goblins_unix as unix;
 use std::{
     ffi::{CStr, CString},
@@ -23,7 +23,7 @@ use std::{
 
 pub struct Engine {
     process: Child,
-    lifetime: Option<File>,
+    guardian: Option<Channel>,
     _storage: Storage,
     pub root: File,
     pub mounts: File,
@@ -229,36 +229,29 @@ impl Engine {
     }
 
     pub fn start(
-        launch: &Launch,
+        config: &DockerConfig,
         filesystem: Filesystem,
         storage_root: &Path,
         directory: &Path,
-        lifetime_lease: &goblins_runtime::ResourceLease,
+        leases: &[ResourceLease],
         cancel: &process::Cancellation,
         scope: &crate::scope_keeper::NamespaceFds,
         name: Option<&str>,
     ) -> Result<Self> {
         let storage = Storage::new(storage_root, name)?;
         Self::bootstrap(
-            launch,
-            filesystem,
-            storage,
-            directory,
-            lifetime_lease,
-            cancel,
-            scope,
+            config, filesystem, storage, directory, leases, cancel, scope,
         )
     }
     fn bootstrap(
-        launch: &Launch,
+        config: &DockerConfig,
         filesystem: Filesystem,
         storage: Storage,
         directory: &Path,
-        lifetime_lease: &goblins_runtime::ResourceLease,
+        leases: &[ResourceLease],
         cancel: &process::Cancellation,
         scope: &crate::scope_keeper::NamespaceFds,
     ) -> Result<Self> {
-        let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
         // State paths can exceed sockaddr_un's limit (notably under
         // nix develop's nested TMPDIR). Pin the socket directory and connect
         // through a short procfs path; the daemon uses its short sandbox path.
@@ -276,18 +269,33 @@ impl Engine {
             "root:x:0:0:root:/root:/bin/sh\n",
         )?;
         fs::write(directory.join("docker-group"), "root:x:0:\n")?;
-        let (lifetime_r, lifetime_w) = unix::pipe()?;
+        let (guardian_host, guardian_child) = UnixStream::pair()?;
+        // Fresh OFDs survive fork/exec before the guardian can receive a frame
+        // or report readiness, including scope death during engine bootstrap.
+        let mut bootstrap_locks: Vec<std::os::fd::OwnedFd> = vec![
+            goblins_runtime::lease::flock(&directory.join("lock"), false)?
+                .ok_or("scope runtime is being collected")?
+                .into(),
+        ];
+        for lease in leases {
+            bootstrap_locks.push(lease.share()?.into_parts().1);
+        }
+        let bootstrap_fds = bootstrap_locks
+            .iter()
+            .map(|fd| fd.as_raw_fd().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let (info_r, info_w) = unix::pipe()?;
         let (ready_r, ready_w) = unix::pipe()?;
         let filter = crate::seccomp::docker_filter()?;
-        let mut command = Command::new(&launch.helper);
+        let mut command = Command::new(&config.helper);
         command
             .args([
                 "--docker-enter",
                 &scope.outer.as_raw_fd().to_string(),
                 &scope.net.as_raw_fd().to_string(),
             ])
-            .arg(&launch.bwrap)
+            .arg(&config.bwrap)
             .args([
                 "--unshare-pid",
                 "--unshare-ipc",
@@ -330,9 +338,6 @@ impl Engine {
                 "--ro-bind",
                 &directory.join("docker.json").display().to_string(),
                 "/run/docker/config.json",
-                "--ro-bind-fd",
-                &lifetime_lease.fd().to_string(),
-                "/run/goblins/storage-lease",
                 "--setenv",
                 "XDG_RUNTIME_DIR",
                 "/run/docker",
@@ -343,7 +348,7 @@ impl Engine {
                 &filter.as_raw_fd().to_string(),
                 "--",
             ])
-            .arg(&launch.helper)
+            .arg(&config.helper)
             .arg("--docker-init")
             .arg(storage.path.file_name().unwrap())
             .arg(if storage.persistent { "keep" } else { "delete" })
@@ -355,6 +360,8 @@ impl Engine {
                     .to_string(),
             )
             .arg(ready_w.as_raw_fd().to_string())
+            .arg(guardian_child.as_raw_fd().to_string())
+            .arg(bootstrap_fds)
             .arg(&config.daemon)
             // Keep Docker's bridge, forwarding and NAT defaults. The scope
             // owns the network namespace, so these affect only this
@@ -371,7 +378,7 @@ impl Engine {
                 "--storage-driver=overlay2",
                 "--default-cgroupns-mode=host",
             ])
-            .stdin(Stdio::from(lifetime_r))
+            .stdin(Stdio::null())
             .stdout(File::create(directory.join("docker.log"))?)
             .stderr(
                 File::options()
@@ -379,7 +386,8 @@ impl Engine {
                     .open(directory.join("docker.log"))?,
             );
         let mut keep = filesystem.fds.to_vec();
-        keep.push(lifetime_lease.fd());
+        keep.push(guardian_child.as_raw_fd());
+        keep.extend(bootstrap_locks.iter().map(AsRawFd::as_raw_fd));
         keep.extend([
             scope.outer.as_raw_fd(),
             scope.net.as_raw_fd(),
@@ -392,7 +400,7 @@ impl Engine {
         }
         unsafe {
             command.pre_exec(move || {
-                // EOF on stdin, rather than SIGKILL, lets the trusted guardian
+                // EOF on the private channel lets the trusted guardian
                 // reap containers and clean disk storage even after host death.
                 unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
                 for &fd in &keep {
@@ -401,9 +409,10 @@ impl Engine {
                 Ok(())
             });
         }
+        cancel.check()?;
         let mut child = command.spawn()?;
         drop(command);
-        drop((info_w, ready_w));
+        drop((info_w, ready_w, guardian_child, bootstrap_locks));
         let setup = (|| -> Result<(File, File)> {
             let mut info = File::from(info_r);
             let mut json = String::new();
@@ -423,8 +432,8 @@ impl Engine {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 cancel.check()?;
-                if child.try_wait()?.is_some() {
-                    return Err("Docker engine exited during startup".into());
+                if let Some(status) = child.try_wait()? {
+                    return Err(format!("Docker engine exited during startup: {status}").into());
                 }
                 if ready(&socket_path) {
                     break;
@@ -441,16 +450,22 @@ impl Engine {
             ))
         })();
         match setup {
-            Ok((root, mounts)) => Ok(Self {
-                process: child,
-                lifetime: Some(File::from(lifetime_w)),
-                _storage: storage,
-                root,
-                mounts,
-            }),
+            Ok((root, mounts)) => {
+                let engine = Self {
+                    process: child,
+                    guardian: Some(Channel::new(guardian_host)?),
+                    _storage: storage,
+                    root,
+                    mounts,
+                };
+                Ok(engine)
+            }
             Err(error) => {
-                drop(lifetime_w);
-                let _ = child.wait();
+                drop(guardian_host);
+                let status = match child.wait() {
+                    Ok(status) => status.to_string(),
+                    Err(error) => format!("wait failed: {error}"),
+                };
                 let diagnostic = process::diagnostic(&directory.join("docker.log"));
                 let tail: String = diagnostic
                     .chars()
@@ -460,14 +475,46 @@ impl Engine {
                     .into_iter()
                     .rev()
                     .collect();
-                Err(format!("{error}: {tail}").into())
+                Err(format!("{error}; engine process {status}; stderr: {tail}").into())
             }
+        }
+    }
+    /// The acknowledgement is before publication of any new grant. Each call
+    /// reopens every donor lock; the guardian owns those OFDs through cleanup.
+    pub fn retain(
+        &mut self,
+        leases: &[ResourceLease],
+        cancel: &process::Cancellation,
+    ) -> Result<()> {
+        let channel = self.guardian.as_mut().ok_or("Docker guardian stopped")?;
+        for batch in leases.chunks(goblins_runtime::channel::MAX_FDS) {
+            guardian::queue_retain(channel, batch)?;
+            Self::wait_retention_ack(channel, cancel)?;
+        }
+        Ok(())
+    }
+    fn wait_retention_ack(channel: &mut Channel, cancel: &process::Cancellation) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            cancel.check()?;
+            channel.flush()?;
+            if let Some(frame) = channel.receive()? {
+                guardian::retained(frame.value)?;
+                return Ok(());
+            }
+            if channel.closed() {
+                return Err("Docker guardian exited".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("Docker guardian retention timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
 impl Drop for Engine {
     fn drop(&mut self) {
-        self.lifetime.take();
+        self.guardian.take();
         if let Err(error) = self.process.wait().and_then(|status| {
             if status.success() {
                 Ok(())

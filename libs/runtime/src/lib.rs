@@ -14,6 +14,7 @@ pub mod catalog;
 pub mod channel;
 pub mod config;
 pub mod devshell;
+pub mod guardian;
 pub mod history;
 pub mod lease;
 mod logging;

@@ -457,6 +457,7 @@ dependencies = [
 name = "goblins-mount-helper"
 version = "0.1.0"
 dependencies = [
+ "goblins-runtime",
  "goblins-unix",
  "libc",
 ]

@@ -410,6 +410,7 @@ class DockerTests(unittest.TestCase):
         self.d.close()
         self.d = Daemon(self.app, env=self.env,
                         preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard)))
+        self.addCleanup(self.d.close)
         first, one = self.shell("scoped", cwd=self.rw)
         self.enable(first, one); self.load(one)
         second, two = self.shell("extra", cwd=self.rw)
@@ -459,6 +460,60 @@ class DockerTests(unittest.TestCase):
         self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
         self.run_ok(terminal, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
         self.run_ok(terminal, 'package=$(dirname "$(dirname "$(readlink -f "$(command -v hello)")")"); docker run --rm -v "$package:/granted:ro" goblins-test test -x /granted/bin/hello')
+
+    def inherited_donor_chain_survives(self, crash):
+        import fcntl
+        self.named_storage = True
+        a, one = self.shell("scoped")
+        b = self.d.member(a, "scoped", agent_name="donor")["session"]
+        two = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", b])
+        self.addCleanup(two.close)
+        two.expect("docker-test>", timeout=60)
+        self.enable(b, two)
+        self.load(two)
+        self.run_ok(two, "echo inherited > /workspace/marker")
+        a_resources = self.d.state / a / "resources"
+        b_resources = self.d.state / b / "resources"
+        self.assertEqual((a_resources / "workspace/marker").read_text(), "inherited\n")
+        # This independent member has an explicit working directory and no
+        # lease on A's snapshot. Only Docker retains the whole A -> B chain.
+        survivor, three = self.shell("scoped", cwd=self.rw)
+        self.enable(survivor, three)
+        engine, = self.engines()
+        self.assertTrue((self.d.state / "scopes/work/store").is_dir())
+        one.send("exit\n")
+        self.d.wait(lambda: self.d.get(a)["state"] == "stopped")
+        two.send("kill -KILL $$\n" if crash else "exit\n")
+        self.d.wait(lambda: self.d.get(b)["state"] == "stopped")
+        if crash:
+            self.assertNotEqual(self.d.get(b)["exit_code"], 0)
+        for resources in (a_resources, b_resources):
+            with open(resources / ".gc-lease", "rb") as lease:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        self.d.cli("gc")
+        self.assertEqual(self.engines(), {engine})
+        self.run_ok(three, "docker run --rm -v /workspace:/inherited goblins-test sh -c 'test \"$(cat /inherited/marker)\" = inherited; echo container-write > /inherited/after'")
+        self.assertEqual((a_resources / "workspace/after").read_text(), "container-write\n")
+        # A new store mount must use the scope-owned skeleton after its first
+        # donor stopped. Both package roots and the original workspace stay.
+        peer, request = self.d.pending(survivor, "hello")
+        self.addCleanup(peer.close)
+        self.d.decide(request, True)
+        peer.peer.settimeout(60)
+        self.assertEqual(receive(peer.peer)["result"]["status"], "ready")
+        self.run_ok(three, 'hello=$(readlink -f "$(command -v hello)"); docker run --rm -v /nix/store:/nix/store:ro goblins-test "$hello"')
+        self.assertEqual(self.engines(), {engine})
+        three.send("exit\n")
+        self.d.wait(lambda: self.d.get(survivor)["state"] == "stopped")
+        for resources in (a_resources, b_resources):
+            self.d.wait(lambda resources=resources: not resources.exists())
+
+    def test_inherited_docker_donors_keep_their_chain_and_new_grants_after_stop(self):
+        self.inherited_donor_chain_survives(crash=False)
+
+    def test_inherited_docker_donors_keep_their_chain_and_new_grants_after_payload_crash(self):
+        self.inherited_donor_chain_survives(crash=True)
 
     def test_docker_requires_a_docker_scope(self):
         for name in ("unscoped", "nodocker"):

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File},
     os::{
-        fd::AsRawFd,
+        fd::{AsRawFd, OwnedFd},
         unix::fs::{MetadataExt, OpenOptionsExt},
     },
     path::{Path, PathBuf},
@@ -92,16 +92,47 @@ impl ResourceLease {
     pub fn fd(&self) -> std::os::fd::RawFd {
         self.lock.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
-    #[cfg(any(test, feature = "test-support"))]
     pub fn directory(&self) -> &Path {
         &self.directory
+    }
+    /// Move a fresh lease into a private descriptor-bearing message. The
+    /// receiver assumes cleanup ownership with `from_parts`; closing an
+    /// undelivered descriptor still releases the in-flight shared lock.
+    pub fn into_parts(mut self) -> (PathBuf, OwnedFd) {
+        let lock = self.lock.take().expect("resource lease has a lock");
+        (std::mem::take(&mut self.directory), lock.into())
+    }
+    /// Adopt a transferred lease, checking that its metadata names the lock
+    /// capability received in the same frame. Do not reopen the lease: its
+    /// open file description already protects the directory during handoff.
+    pub fn from_parts(directory: PathBuf, lock: OwnedFd) -> Result<Self> {
+        if !directory.is_absolute() {
+            return Err("resource lease directory must be absolute".into());
+        }
+        let lock = File::from(lock);
+        let actual = lock.metadata()?;
+        let expected = fs::symlink_metadata(directory.join(".gc-lease"))?;
+        if !actual.is_file()
+            || actual.uid() != unsafe { libc::getuid() }
+            || !expected.is_file()
+            || (actual.dev(), actual.ino()) != (expected.dev(), expected.ino())
+        {
+            return Err("resource lease descriptor does not match its directory".into());
+        }
+        Ok(Self {
+            directory,
+            lock: Some(lock),
+        })
     }
 }
 impl Drop for ResourceLease {
     fn drop(&mut self) {
         // Closing our descriptor releases our lock; a copy another process
         // holds, such as the helper's, keeps its own.
-        drop(self.lock.take());
+        let Some(lock) = self.lock.take() else {
+            return;
+        };
+        drop(lock);
         let Ok(Some(_exclusive)) = resource_exclusive(&self.directory) else {
             return;
         };
@@ -111,5 +142,55 @@ impl Drop for ResourceLease {
         {
             let _ = fs::remove_dir(parent);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transferred_fresh_lease_retains_resources_until_the_receiver_releases_it() {
+        let _no_forks = goblins_unix::no_forks();
+        let root = goblins_unix::temp_directory().unwrap();
+        let resources = root.join("resources");
+        fs::create_dir(&resources).unwrap();
+        fs::write(resources.join("root"), "retained").unwrap();
+        let owner = ResourceLease::new(resources.clone()).unwrap();
+        let (directory, fd) = owner.share().unwrap().into_parts();
+        // An independent shared OFD prevents upgrading the owner's lock. A
+        // dup of the owner's descriptor would let this succeed instead.
+        assert_ne!(
+            unsafe { libc::flock(owner.fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        let receiver = ResourceLease::from_parts(directory, fd).unwrap();
+        drop(owner);
+        assert!(resources.join("root").exists());
+        assert!(resource_exclusive(&resources).unwrap().is_none());
+        drop(receiver);
+        assert!(!resources.exists());
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn transferred_lease_rejects_a_different_directory_without_deleting_it() {
+        let _no_forks = goblins_unix::no_forks();
+        let root = goblins_unix::temp_directory().unwrap();
+        let first = root.join("first");
+        let second = root.join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let owner = ResourceLease::new(first.clone()).unwrap();
+        let other = ResourceLease::new(second.clone()).unwrap();
+        let (_, fd) = owner.share().unwrap().into_parts();
+        assert!(ResourceLease::from_parts(second.clone(), fd).is_err());
+        assert!(first.exists());
+        assert!(second.exists());
+        drop((owner, other));
+        fs::remove_dir(root).unwrap();
     }
 }

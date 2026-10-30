@@ -16,6 +16,7 @@ use std::{
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    time::Instant,
 };
 
 const MAX_PENDING: usize = 64;
@@ -28,6 +29,7 @@ struct Process {
 struct Pending {
     fd: OwnedFd,
     executable: PathBuf,
+    release_deadline: Instant,
 }
 #[derive(Default)]
 struct Entry {
@@ -186,6 +188,7 @@ impl Scopes {
         entry.pending.push_back(Pending {
             fd: member.into(),
             executable: program,
+            release_deadline: Instant::now() + scope::RELEASE_TIMEOUT,
         });
         // Count newly accepted AddMember before processing any Idle report;
         // this makes crossing an older Idle safe even if output is blocked.
@@ -219,6 +222,9 @@ impl Scopes {
     pub fn tick(&mut self, state: &Path) {
         self.entries.retain(|name, entry| {
             let result = (|| -> Result<()> {
+                if entry.process.as_ref().is_none_or(|p| p.stopping) {
+                    entry.expire_waiters(Instant::now());
+                }
                 // Queue newer memberships first so Idle cannot stop a scope
                 // whose next lease is waiting in a bounded output queue.
                 entry.send_pending()?;
@@ -248,6 +254,28 @@ impl Scopes {
     }
 }
 impl Entry {
+    fn expire_waiters(&mut self, now: Instant) {
+        while self
+            .pending
+            .front()
+            .is_some_and(|p| now >= p.release_deadline)
+        {
+            let pending = self.pending.pop_front().unwrap();
+            // This endpoint has never sent data. A small nonblocking refusal
+            // fits its empty output queue; closing it remains the EOF fallback.
+            if let Ok(mut channel) = Channel::new(UnixStream::from(pending.fd)) {
+                let _ = queue(
+                    &mut channel,
+                    Message::Error {
+                        message: "scope is still stopping after the 15-second release budget"
+                            .into(),
+                    },
+                    vec![],
+                );
+                let _ = channel.flush();
+            }
+        }
+    }
     fn send_pending(&mut self) -> Result<()> {
         let Some(process) = &mut self.process else {
             return Ok(());
@@ -273,6 +301,7 @@ impl Entry {
                     self.pending.push_front(Pending {
                         fd: fds.pop().unwrap(),
                         executable: pending.executable,
+                        release_deadline: pending.release_deadline,
                     });
                     break;
                 }
@@ -299,6 +328,56 @@ impl Drop for Scopes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_guardian_held_old_runtime_fails_a_new_start_at_the_release_deadline() {
+        let state = unix::temp_directory().unwrap();
+        unix::private_directory(&state.join("scopes")).unwrap();
+        let runtime = state.join("scopes/held");
+        unix::private_directory(&runtime).unwrap();
+        std::fs::create_dir(runtime.join("store")).unwrap();
+        std::fs::write(runtime.join("store/marker"), "old engine").unwrap();
+        let guardian = goblins_runtime::lease::flock(&runtime.join("lock"), false)
+            .unwrap()
+            .unwrap();
+        // This new registry has no child for the previous daemon's scope.
+        // The executable must never run while its guardian still holds lock.
+        let mut scopes = Scopes::default();
+        let fd = scopes
+            .membership(&state, "held", Some(Path::new("/must-not-run")))
+            .unwrap();
+        let mut client = Channel::new(UnixStream::from(OwnedFd::from(fd))).unwrap();
+        scopes.tick(&state);
+        assert!(scopes.entries["held"].process.is_none());
+        assert_eq!(scopes.entries["held"].pending.len(), 1);
+        assert!(client.receive().unwrap().is_none());
+        assert_eq!(
+            std::fs::read_to_string(runtime.join("store/marker")).unwrap(),
+            "old engine"
+        );
+        // Advance the production deadline directly; no 15-second test sleep.
+        scopes
+            .entries
+            .get_mut("held")
+            .unwrap()
+            .pending
+            .front_mut()
+            .unwrap()
+            .release_deadline = Instant::now();
+        scopes.tick(&state);
+        assert!(!scopes.entries.contains_key("held"));
+        let Message::Error { message } =
+            scope::decode(client.receive().unwrap().unwrap().value).unwrap()
+        else {
+            panic!("missing bounded-start refusal");
+        };
+        assert!(message.contains("15-second release budget"));
+        assert!(!scope::remove_stale(&runtime, false).unwrap());
+        assert!(runtime.join("store/marker").exists());
+        drop(guardian);
+        assert!(scope::remove_stale(&runtime, false).unwrap());
+        assert!(!runtime.exists());
+        std::fs::remove_dir_all(state).unwrap();
+    }
     #[test]
     fn idle_crossing_a_new_add_member_does_not_stop_scope() {
         // Exercise the real control channel/counter decision without namespace

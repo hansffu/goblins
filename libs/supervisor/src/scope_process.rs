@@ -111,6 +111,7 @@ fn send(channel: &mut Channel, message: &Message, mut fds: Vec<OwnedFd>) -> Resu
 }
 struct State {
     join: Join,
+    docker: crate::scope_docker::Docker,
     // Drop pasta before the keeper; drop storage last.
     _network: Option<crate::network::Network>,
     namespaces: Namespaces,
@@ -146,6 +147,7 @@ impl State {
             .transpose()?;
         Ok(Self {
             join,
+            docker: crate::scope_docker::Docker::default(),
             _network: network,
             namespaces,
             storage,
@@ -196,6 +198,8 @@ impl State {
 struct Member {
     channel: Channel,
     joined: bool,
+    docker: bool,
+    pending_docker: Option<crate::scope_docker::Transaction>,
     leaving: bool,
     left_sent: bool,
     mountns: Option<File>,
@@ -210,6 +214,9 @@ impl Member {
 }
 impl Drop for Member {
     fn drop(&mut self) {
+        // Publish failure before its cleanup kills payloads. Otherwise a
+        // runtime can observe helper SIGKILL while its scope still looks live.
+        self.channel.close();
         self.cleanup();
     }
 }
@@ -269,6 +276,8 @@ fn run(control: &mut Channel, name: &str, directory: PathBuf) -> Result<()> {
                     members.push(Member {
                         channel: Channel::new(stream)?,
                         joined: false,
+                        docker: false,
+                        pending_docker: None,
                         leaving: false,
                         left_sent: false,
                         mountns: None,
@@ -300,6 +309,12 @@ fn run(control: &mut Channel, name: &str, directory: PathBuf) -> Result<()> {
                 Err(_) => continue,
             };
             let mut frame = request;
+            let docker_request = matches!(
+                scope::decode(frame.value.clone()),
+                Ok(Message::AttachDocker { .. }
+                    | Message::ExtendDocker { .. }
+                    | Message::DetachDocker {})
+            );
             let result = (|| -> Result<()> {
                 match scope::decode(frame.value.clone())? {
                     Message::Join(join) if !member.joined => {
@@ -322,6 +337,10 @@ fn run(control: &mut Channel, name: &str, directory: PathBuf) -> Result<()> {
                     }
                     Message::Leave {} if member.joined && !member.leaving => {
                         member.cleanup();
+                        if std::mem::take(&mut member.docker) {
+                            state.as_mut().unwrap().docker.detach();
+                        }
+                        member.pending_docker.take();
                         member.leaving = true;
                     }
                     Message::OpenStorage { names } if member.joined && !member.leaving => {
@@ -360,6 +379,93 @@ fn run(control: &mut Channel, name: &str, directory: PathBuf) -> Result<()> {
                         member.mountns = Some(namespace);
                         send(&mut member.channel, &Message::Registered {}, vec![])?;
                     }
+                    Message::AttachDocker {
+                        config,
+                        parts,
+                        more,
+                    } if member.joined && !member.leaving && !member.docker => {
+                        let state = state.as_mut().unwrap();
+                        if !state.join.definition.docker {
+                            return Err("scope does not enable Docker".into());
+                        }
+                        if member.pending_docker.is_none() {
+                            member.pending_docker = Some(crate::scope_docker::Transaction {
+                                extending: false,
+                                config,
+                                parts: vec![],
+                            });
+                        } else if config.is_some() {
+                            return Err("duplicate Docker configuration".into());
+                        }
+                        let pending = member.pending_docker.as_mut().unwrap();
+                        if pending.extending {
+                            return Err("overlapping Docker transactions".into());
+                        }
+                        pending
+                            .parts
+                            .extend(crate::scope_docker::Part::decode(parts, frame)?);
+                        if more {
+                            send(&mut member.channel, &Message::DockerPending {}, vec![])?;
+                        } else {
+                            let socket = state.docker.apply(
+                                member.pending_docker.take().unwrap(),
+                                &directory,
+                                &state.namespaces,
+                                state.join.allow_nix,
+                                state.join.definition.persistent.then_some(name),
+                                member.channel.fd().ok_or("scope member channel closed")?,
+                            )?;
+                            member.docker = true;
+                            send(
+                                &mut member.channel,
+                                &Message::DockerAttached { socket },
+                                vec![],
+                            )?;
+                        }
+                    }
+                    Message::ExtendDocker { parts, more }
+                        if member.joined && !member.leaving && member.docker =>
+                    {
+                        let pending = member.pending_docker.get_or_insert_with(|| {
+                            crate::scope_docker::Transaction {
+                                extending: true,
+                                config: None,
+                                parts: vec![],
+                            }
+                        });
+                        if !pending.extending {
+                            return Err("overlapping Docker transactions".into());
+                        }
+                        pending
+                            .parts
+                            .extend(crate::scope_docker::Part::decode(parts, frame)?);
+                        if more {
+                            send(&mut member.channel, &Message::DockerPending {}, vec![])?;
+                        } else {
+                            let state = state.as_mut().unwrap();
+                            let socket = state.docker.apply(
+                                member.pending_docker.take().unwrap(),
+                                &directory,
+                                &state.namespaces,
+                                state.join.allow_nix,
+                                state.join.definition.persistent.then_some(name),
+                                member.channel.fd().ok_or("scope member channel closed")?,
+                            )?;
+                            send(
+                                &mut member.channel,
+                                &Message::DockerAttached { socket },
+                                vec![],
+                            )?;
+                        }
+                    }
+                    Message::DetachDocker {}
+                        if member.joined && !member.leaving && member.docker =>
+                    {
+                        member.pending_docker.take();
+                        member.docker = false;
+                        state.as_mut().unwrap().docker.detach();
+                        send(&mut member.channel, &Message::DockerDetached {}, vec![])?;
+                    }
                     _ => return Err("invalid scope member request".into()),
                 }
                 Ok(())
@@ -373,7 +479,18 @@ fn run(control: &mut Channel, name: &str, directory: PathBuf) -> Result<()> {
                     vec![],
                 );
                 let _ = member.channel.flush();
-                member.channel.close();
+                member.pending_docker.take();
+                if !docker_request {
+                    member.channel.close();
+                }
+            }
+        }
+        for member in &mut members {
+            if member.channel.closed() {
+                member.cleanup();
+                if std::mem::take(&mut member.docker) {
+                    state.as_mut().unwrap().docker.detach();
+                }
             }
         }
         members.retain(|member| !member.channel.closed());
@@ -387,6 +504,9 @@ fn run(control: &mut Channel, name: &str, directory: PathBuf) -> Result<()> {
             send(control, &Message::Idle { added }, vec![])?;
             control.flush()?;
             idle_reported = Some(added);
+        }
+        if state.as_mut().is_some_and(|s| !s.docker.alive()) {
+            return Err("scope Docker engine exited".into());
         }
         if state.as_mut().is_some_and(|s| !s.namespaces.alive()) {
             return Err("scope keeper exited".into());
@@ -453,6 +573,8 @@ mod tests {
             Member {
                 channel: Channel::new(server).unwrap(),
                 joined: true,
+                docker: false,
+                pending_docker: None,
                 leaving,
                 left_sent: false,
                 mountns: None,
