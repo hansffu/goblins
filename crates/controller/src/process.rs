@@ -293,6 +293,7 @@ mod tests {
 
     #[test]
     fn command_drains_output_and_stops_writers_after_the_child_exits() {
+        let _fork = unix::forking();
         let directory = unix::temp_directory().unwrap();
         let mut shell = Command::new("sh");
         shell.current_dir(&directory).args([
@@ -322,6 +323,7 @@ mod tests {
 
     #[test]
     fn a_silent_command_with_closed_streams_still_times_out() {
+        let _fork = unix::forking();
         let directory = unix::temp_directory().unwrap();
         let error = command(
             Command::new("sh").args(["-c", "exec 1>&- 2>&-; sleep 60"]),
@@ -335,6 +337,7 @@ mod tests {
 
     #[test]
     fn command_output_limits_and_failure_diagnostics_are_preserved() {
+        let _fork = unix::forking();
         let directory = unix::temp_directory().unwrap();
         let error = command(
             Command::new("sh").args(["-c", "head -c 8388609 /dev/zero"]),
@@ -362,6 +365,7 @@ mod tests {
 
     #[test]
     fn a_time_limit_fails_checks_once_it_passes() {
+        let _fork = unix::forking();
         let session = Cancellation::default();
         let limited = session.child().with_limit(Duration::ZERO);
         let error = limited.check().unwrap_err().to_string();

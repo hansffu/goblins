@@ -143,18 +143,41 @@ pub struct Identity {
     pub source_mountns: u64,
     pub mountns: u64,
 }
-struct SessionDirectory(PathBuf, File);
-impl SessionDirectory {
-    fn new(path: PathBuf) -> Result<Self> {
-        let lease = crate::cleanup::resource_lease(&path)?;
-        Ok(Self(path, lease))
+/// A shared lock on one goblin's resources directory, and which directory it
+/// protects. The directory goes when the last lease on it is released: a
+/// holder that lets go removes it only if it can then take the lock
+/// exclusively, otherwise the last holder or `goblins gc` removes it later.
+/// Every lease is its own open file description, never a `dup`, because the
+/// exclusive-lock test cannot tell `dup`s apart.
+pub(crate) struct ResourceLease {
+    directory: PathBuf,
+    lock: Option<File>,
+}
+impl ResourceLease {
+    pub(crate) fn new(directory: PathBuf) -> Result<Self> {
+        let lock = Some(crate::cleanup::resource_lease(&directory)?);
+        Ok(Self { directory, lock })
+    }
+    /// A fresh lease on the same directory, for another holder.
+    #[allow(dead_code)]
+    pub(crate) fn share(&self) -> Result<Self> {
+        Self::new(self.directory.clone())
+    }
+    pub(crate) fn fd(&self) -> std::os::fd::RawFd {
+        self.lock.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 }
-impl Drop for SessionDirectory {
+impl Drop for ResourceLease {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-        if self.0.file_name().is_some_and(|n| n == "resources")
-            && let Some(parent) = self.0.parent()
+        // Closing our descriptor releases our lock; a copy another process
+        // holds, such as the helper's, keeps its own.
+        drop(self.lock.take());
+        let Ok(Some(_exclusive)) = crate::cleanup::resource_exclusive(&self.directory) else {
+            return;
+        };
+        let _ = fs::remove_dir_all(&self.directory);
+        if self.directory.file_name().is_some_and(|n| n == "resources")
+            && let Some(parent) = self.directory.parent()
         {
             let _ = fs::remove_dir(parent);
         }
@@ -163,7 +186,7 @@ impl Drop for SessionDirectory {
 struct SharedWorkspace {
     file: File,
     // Keep snapshot contents alive until every goblin sharing it has stopped.
-    _owner: Arc<SessionDirectory>,
+    _owner: Arc<ResourceLease>,
 }
 /// Host-owned launch capability. Goblins a raid owner runs reuse its opened
 /// working directory, never re-resolve host paths or read a caller-selected
@@ -179,7 +202,7 @@ pub(crate) struct Inheritance {
     /// This session's configuration key and the configurations it may run.
     configuration: String,
     run_targets: Arc<[String]>,
-    _owner: Arc<SessionDirectory>,
+    _owner: Arc<ResourceLease>,
 }
 impl Inheritance {
     /// The live scope, held for a launch accepted while this session runs.
@@ -226,7 +249,15 @@ impl Inheritance {
     }
     /// A running session's capability without a sandbox, for controller tests.
     pub(crate) fn fixture(configuration: &str, run_targets: &[&str]) -> Self {
-        let owner = Arc::new(SessionDirectory::new(unix::temp_directory().unwrap()).unwrap());
+        Self::fixture_in(configuration, run_targets, unix::temp_directory().unwrap())
+    }
+    /// The same, holding a lease on resources `directory`.
+    pub(crate) fn fixture_in(
+        configuration: &str,
+        run_targets: &[&str],
+        directory: PathBuf,
+    ) -> Self {
+        let owner = Arc::new(ResourceLease::new(directory).unwrap());
         let launch: Launch = serde_json::from_value(serde_json::json!({
             "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
             "bwrap": "/unused", "flake": "unused", "client_package": "/unused",
@@ -240,7 +271,7 @@ impl Inheritance {
                     .unwrap(),
             ),
             workspace: Arc::new(SharedWorkspace {
-                file: File::open(&owner.0).unwrap(),
+                file: File::open(&owner.directory).unwrap(),
                 _owner: owner.clone(),
             }),
             scope: Weak::new(),
@@ -303,7 +334,7 @@ pub struct Session {
     helper_input: Option<File>,
     helper_output: Option<File>,
     cancel: Cancellation,
-    directory_owner: Arc<SessionDirectory>,
+    directory_owner: Arc<ResourceLease>,
     binds: Option<Arc<crate::binds::Plan>>,
     // A goblin a raid owner runs opens its own binds at start, sharing only
     // the owner's pinned working directory.
@@ -338,7 +369,7 @@ impl Session {
         };
         unix::private_directory(&directory)?;
         let session = Self {
-            directory_owner: Arc::new(SessionDirectory::new(directory.clone())?),
+            directory_owner: Arc::new(ResourceLease::new(directory.clone())?),
             directory,
             launch,
             mounted: BTreeSet::new(),
@@ -967,7 +998,7 @@ impl Session {
         let parent = unsafe { libc::getpid() };
         let payload_limit = unix::payload_descriptor_limit();
         let mut keep = vec![
-            self.directory_owner.1.as_raw_fd(),
+            self.directory_owner.fd(),
             input.as_raw_fd(),
             output.as_raw_fd(),
             filter.as_raw_fd(),

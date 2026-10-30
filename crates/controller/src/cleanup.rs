@@ -71,6 +71,10 @@ pub(crate) fn resource_lease(directory: &Path) -> Result<File> {
     flock(&directory.join(".gc-lease"), false)?
         .ok_or_else(|| "session resources are being collected".into())
 }
+/// The exclusive lock on a resources directory, when no lease holds it.
+pub(crate) fn resource_exclusive(directory: &Path) -> Result<Option<File>> {
+    flock(&directory.join(".gc-lease"), true)
+}
 fn temporary_lock(kind: &str, path: &Path) -> Result<PathBuf> {
     Ok(lock_root()?.join(format!(
         "{kind}-{}",

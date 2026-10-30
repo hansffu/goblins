@@ -3191,8 +3191,14 @@ impl Drop for Controller {
         }
         for (_, mut a) in std::mem::take(&mut self.sessions) {
             a.runtime.take();
+            // What this goblin held of its resources goes with it. They are
+            // removed by whichever holder lets go last, in the daemon or
+            // outside it, or by `goblins gc`; only the goblin's own files and
+            // the then empty session directory are removed here.
+            a.inheritance.take();
             drop(a.terminal);
-            let _ = fs::remove_dir_all(a.directory);
+            attach::remove_files(&a.directory);
+            let _ = fs::remove_dir(&a.directory);
         }
         let _ = fs::remove_file(self.state.join("host.sock"));
     }
@@ -4450,6 +4456,39 @@ mod tests {
         assert_eq!(env, [("A".to_string(), "b".to_string())]);
         drop(d);
         fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn teardown_leaves_the_resources_another_holder_has_to_the_last_holder() {
+        let _no_forks = unix::no_forks();
+        for held in [false, true] {
+            let mut d = daemon();
+            let state = d.state.clone();
+            let id = session_with_results_id(&mut d, "a", vec![]);
+            let session = d.state.join(&id);
+            let resources = session.join("resources");
+            fs::create_dir(&resources).unwrap();
+            fs::write(resources.join("snapshot"), "x").unwrap();
+            // The goblin holds its resources, like its runtime does...
+            d.sessions
+                .get_mut(&id)
+                .unwrap()
+                .set_inheritance(Inheritance::fixture_in("shell", &[], resources.clone()));
+            // ...and maybe another holder does, as a raid member that shares
+            // them or a helper that outlived it.
+            let lease =
+                held.then(|| crate::session::ResourceLease::new(resources.clone()).unwrap());
+            drop(d);
+            // The goblin's own files are gone either way.
+            assert!(!session.join("terminal.sock").exists());
+            assert!(!session.join("attach.sock").exists());
+            if let Some(lease) = lease {
+                assert!(resources.join("snapshot").exists());
+                // The last holder removes the resources and the session.
+                drop(lease);
+            }
+            assert!(!session.exists(), "held: {held}");
+            fs::remove_dir_all(state).unwrap();
+        }
     }
     #[test]
     fn full_result_queue_without_stopped_cannot_leave_session_running() {

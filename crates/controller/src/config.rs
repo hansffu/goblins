@@ -779,6 +779,7 @@ mod tests {
 
     #[test]
     fn a_manifest_lease_roots_its_store_output_until_the_last_holder_drops_it() {
+        let _fork = crate::unix::forking();
         // Needs the host's Nix daemon, which a Nix build sandbox lacks.
         if std::process::Command::new("nix-store")
             .arg("--version")

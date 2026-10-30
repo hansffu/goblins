@@ -7,9 +7,9 @@ use std::io::{BufRead, BufReader};
 
 #[test]
 fn profiles_preserve_path_precedence_across_duplicate_commands() {
-    let fixture = SessionDirectory::new(unix::temp_directory().unwrap()).unwrap();
+    let fixture = ResourceLease::new(unix::temp_directory().unwrap()).unwrap();
     let package = |name: &str, commands: &[&str]| {
-        let path = fixture.0.join(name);
+        let path = fixture.directory.join(name);
         fs::create_dir_all(path.join("bin")).unwrap();
         for command in commands {
             fs::write(path.join("bin").join(command), name).unwrap();
@@ -184,4 +184,75 @@ fn host_driver() {
         println!("DRIVER {response}");
         std::io::stdout().flush().unwrap();
     }
+}
+
+/// A session directory as the daemon lays it out: `<session>/resources`.
+fn resources() -> (PathBuf, PathBuf) {
+    let session = unix::temp_directory().unwrap();
+    let resources = session.join("resources");
+    fs::create_dir(&resources).unwrap();
+    fs::write(resources.join("snapshot"), "x").unwrap();
+    (session, resources)
+}
+
+#[test]
+fn the_last_lease_on_a_directory_removes_it_and_its_session() {
+    let _no_forks = unix::no_forks();
+    let (session, resources) = resources();
+    let first = ResourceLease::new(resources.clone()).unwrap();
+    let second = first.share().unwrap();
+    // Two descriptions of their own: neither is a copy of the other.
+    assert_ne!(first.fd(), second.fd());
+    drop(first);
+    assert!(resources.join("snapshot").exists());
+    drop(second);
+    assert!(!resources.exists());
+    assert!(!session.exists());
+}
+
+#[test]
+fn a_lease_another_process_still_holds_leaves_the_directory_for_the_last_holder() {
+    let _no_forks = unix::no_forks();
+    let (session, resources) = resources();
+    let lease = ResourceLease::new(resources.clone()).unwrap();
+    // The helper holds the lock through a copy of the descriptor.
+    let copy = File::from(unix::owned(unsafe { libc::dup(lease.fd()) }).unwrap());
+    drop(lease);
+    assert!(resources.join("snapshot").exists());
+    // Collecting garbage needs the exclusive lock, which the copy denies.
+    assert!(
+        crate::cleanup::resource_exclusive(&resources)
+            .unwrap()
+            .is_none()
+    );
+    drop(copy);
+    assert!(
+        crate::cleanup::resource_exclusive(&resources)
+            .unwrap()
+            .is_some()
+    );
+    fs::remove_dir_all(session).unwrap();
+}
+
+#[test]
+fn a_directory_collected_meanwhile_is_not_a_problem() {
+    let _no_forks = unix::no_forks();
+    let (session, resources) = resources();
+    let lease = ResourceLease::new(resources.clone()).unwrap();
+    fs::remove_dir_all(&session).unwrap();
+    drop(lease);
+    assert!(!session.exists());
+}
+
+#[test]
+fn a_directory_that_is_being_collected_cannot_be_leased() {
+    let _no_forks = unix::no_forks();
+    let (session, resources) = resources();
+    let collecting = crate::cleanup::resource_exclusive(&resources)
+        .unwrap()
+        .unwrap();
+    assert!(ResourceLease::new(resources.clone()).is_err());
+    drop(collecting);
+    drop(ResourceLease::new(resources).unwrap());
+    assert!(!session.exists());
 }

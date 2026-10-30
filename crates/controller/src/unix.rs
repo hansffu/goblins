@@ -325,3 +325,18 @@ pub fn payload_descriptor_limit() -> Option<libc::rlimit> {
         limit
     })
 }
+
+/// Forking copies every open descriptor until the child executes, for a
+/// moment, and a copy of a lock's descriptor keeps the lock held. Tests that
+/// fork take `forking()`, and tests that need a lock to be free the moment
+/// its holder lets go take `no_forks()`, so the two never overlap.
+#[cfg(test)]
+static FORKS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+#[cfg(test)]
+pub(crate) fn forking() -> std::sync::RwLockWriteGuard<'static, ()> {
+    FORKS.write().unwrap_or_else(|e| e.into_inner())
+}
+#[cfg(test)]
+pub(crate) fn no_forks() -> std::sync::RwLockReadGuard<'static, ()> {
+    FORKS.read().unwrap_or_else(|e| e.into_inner())
+}
