@@ -250,8 +250,10 @@ enum Command {
     // Processes in the running sandbox, through goblins-init. Ids are
     // allocated by the daemon, as exec and attach ids are today.
     /// argv None runs the sandbox's configured shell, as today.
-    Spawn { id: u64, argv: Option<Vec<String>>, env: Vec<(String, String)>,
-            cwd: Option<String>, stdio: Stdio },
+    /// kind says what the process is for (goblins exec, or an attach client
+    /// and its onDetach), so the runtime can check it.
+    Spawn { id: u64, kind: SpawnKind, argv: Option<Vec<String>>,
+            env: Vec<(String, String)>, cwd: Option<String>, stdio: Stdio },
     Signal { id: u64, signal: i32 },
     /// The process group, or with `everything` all the process started
     /// (attach clients and their onDetach).
@@ -293,7 +295,7 @@ enum Event {
     // also carries the main output: the PTY master, or the server-log
     // pipe for goblins with onAttach.
     Started { policy: Policy, support: Support, identity: Identity,
-              state: StartState },
+              dev_shell: Option<DevShellSummary>, state: StartState },
     Mode { server: bool },
     Manifest { sequence: u64, root: Option<PathBuf> },
     Progress { request: String, state: GrantState },
@@ -301,7 +303,7 @@ enum Event {
     Refresh { approval: String, result: Result<Candidate, String> },
     Granted { reply: Reply, detail: String, output: Option<PathBuf> },
     /// The new current generation, as devshell.lock and status need it.
-    DevShell { identity: String, generation: DevShellSummary },
+    DevShell { summary: DevShellSummary },
     Call { serial: u64, result: Result<Value, String> },
     // From goblins-init. Spawned carries the PTY master of
     // Stdio::NewPty until phase 5; the pid is the {pid} of onDetach's
@@ -411,7 +413,8 @@ enum Feature {
     /// new package profile generation (permissions.request package).
     LivePackages,
     /// Evaluate a host dev shell and refresh it in place
-    /// (permissions.request devshell, devshell.diff, devshell.lock).
+    /// (permissions.request devshell, devshell.diff). devshell.lock only
+    /// shows the daemon's state, so it needs no feature.
     DevShells,
     /// Build a flake app and mount its closure (flake.run).
     FlakeApps,
@@ -470,25 +473,33 @@ struct Capabilities<'a> {
 }
 enum Operation {
     Package, DevShellRefresh, DevShellDiff, FlakeRun, Docker,
-    HostCommand, Exec, Attach, RunMember { configuration: String },
+    HostCommand, Exec,
+    /// Start an attach client or its onDetach (a Spawn of kind Attach).
+    /// Attaching a goblin's own terminal is baseline and no operation.
+    Attach,
+    RunMember { configuration: String },
 }
 enum Refusal {
     /// The configuration does not allow it; today's code and message.
-    Policy { code: i64, message: &'static str },
+    Policy { code: i32, message: String },
     /// This sandbox implementation cannot do it.
     Unsupported(Feature),
 }
 impl Capabilities<'_> {
     /// Policy first, then Support.
     fn check(&self, operation: &Operation) -> Result<(), Refusal>;
-    /// The `features` list in a sandbox's `initialize` result.
+}
+impl Support {
+    /// The `features` list in a sandbox's `initialize` result. It lives on
+    /// =Support=, not =Capabilities=: the daemon has the list before it has
+    /// a =Policy=.
     fn sandbox_features(&self) -> Vec<&'static str>;
 }
 #+end_src
 
 Who checks what:
 - *The supervisor's request gate checks every sandbox call* (from phase 5, section 4.8). After the transport and parameter checks it maps the call to an =Operation= and calls =check=. Only calls that pass reach the daemon. =initialize= and the messaging calls (=messages.*=, =inbox.*=) map to no operation and pass after the transport checks, as they skip the policy checks today.
-- *The daemon checks host operations* with the =Policy= and =Support= from =Started=: =goblins exec= (=Exec=) and attaching (=Attach=) come from frontends, not from the sandbox. It also builds =initialize= results with =sandbox_features= and =sessions.status= from all three inputs.
+- *The daemon checks host operations* with the =Policy= and =Support= from =Started=: =goblins exec= (=Exec=) and starting an attach client (=Attach=, refused for a goblin without handlers with =no attach handlers=) come from frontends, not from the sandbox. It also builds =initialize= results with =sandbox_features= and =sessions.status= from all three inputs.
 - *The daemon does not repeat the gate's checks* for relayed calls. The control channel is trusted, and the runtime re-checks every =Command= it is sent.
 - *Phase 2 introduces =Capabilities= in the daemon,* replacing the scattered checks in their current positions, so today's order holds until phase 5 moves the sandbox-side checks into the gate.
 
@@ -839,10 +850,15 @@ Tests: =Fake= replaces =Worker::idle=, =Worker::completed= and =Worker::listenin
 
 ** Phase 2: =Policy=, =Support=, =Capabilities= and =Handoff=
 
-*[P]* Split =Inheritance= (sections 4.4 and 4.5). This phase can land as two commits.
+*[P]* Split =Inheritance= (sections 4.4 and 4.5). It lands as three commits: the first below, then the second split in two, the leases (B1) and the handoff (B2).
+
+=Inheritance= stays, as a type internal to the runtime, until phase 4: =scope.rs= keeps its owners as =Inheritance= values (section 4.6) and =Local= resolves host directories through one. It only stops crossing to the daemon.
 
 1. *What a goblin may do.*
-   - =Started= carries =Policy= and =Support= instead of =Inheritance=.
+   - =Started= carries =Policy=, =Support= and the launch's =DevShellSummary=. Until B2 it also carries =Inheritance=, which the daemon uses only for member launches (=member_owner=, =Source::Member=). B2 removes it, together with a transitional =ScopeHandle(Weak<scope::Shared>)= that lets the daemon keep upgrading the owner's scope at acceptance, so that the =-32009= "the owner's scope has stopped" stays synchronous. Phase 4 deletes the handle.
+   - The daemon keeps the live =DevShellSummary= (lock, generation and identity as =devshell.lock= and =status= show them) in its state, replaced by =Event::DevShell=; =Policy= keeps only the configured source and lock path.
+   - =Local= re-checks every command against its =Policy= and =Support=; a command the goblin may not be sent reports =Failed= and stops it (fail closed). Before =Started= the runtime knows no policy, so it refuses every command that needs a capability the same way; cancellations, signals, =KillAll= and =Stop= are never refused. A configuration that needs a feature the implementation lacks (nix, host commands, a scope or shared PID, attach handlers, a dev shell) fails the launch before the sandbox starts. The Docker features of an inherited goblin, and of a configuration that attaches Docker at start, are enforced in B2, where the inherited flag is read.
+   - =Operation::Exec= and =Operation::Attach= are checked in =exec_start= and when an attach client starts. =Refusal::Unsupported= answers =-32009= "not supported by this sandbox: FEATURE". Its code and its API.org entry belong to the first backend that reports reduced =Support=.
    - Every policy check in =dispatch=, =host_spec= and =sandbox_control= moves into =Capabilities::check=, still called by the daemon in today's positions, with today's messages and today's order.
    - =initialize= and =sessions.status= use =sandbox_features= and the three inputs.
    - =Local= reports full =Support=.

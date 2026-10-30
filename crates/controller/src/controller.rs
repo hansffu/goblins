@@ -10,6 +10,7 @@ use goblins_protocol::{
     Request,
     rpc::{self, Decoder, DevShellDiffParams, FlakeRunParams, PermissionParams},
 };
+use policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
 use runtime::{Command, Event, Local, Runtime};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -30,6 +31,7 @@ mod attach;
 mod editor;
 mod exec;
 mod host;
+pub(crate) mod policy;
 mod raids;
 pub(crate) mod runtime;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
@@ -194,6 +196,14 @@ struct Active {
     preparing: Option<host::Preparing>,
     terminal: Terminal,
     directory: PathBuf,
+    /// What the configuration allows and the sandbox implementation can do,
+    /// known once started and fixed for the goblin's life.
+    policy: Option<Box<Policy>>,
+    support: Support,
+    /// The current dev shell generation, replaced by each refresh.
+    dev_shell: Option<DevShellSummary>,
+    /// The runtime's capability, which only member launches use until a
+    /// raid member takes a handoff from its owner.
     inheritance: Option<Inheritance>,
     /// The runtime's channel to the sandbox's goblins-init is open.
     init: bool,
@@ -229,6 +239,30 @@ impl Active {
         if let Some(runtime) = &mut self.runtime {
             let _ = runtime.send(Command::Cancel(id));
         }
+    }
+    /// Give the goblin the capability of a started session, as `Started`
+    /// does.
+    #[cfg(test)]
+    fn set_inheritance(&mut self, inheritance: Inheritance) {
+        self.policy = Some(Box::new(inheritance.policy()));
+        self.dev_shell = inheritance.dev_shell_summary();
+        self.inheritance = Some(inheritance);
+    }
+    /// May this goblin do `operation`? A goblin that has not started has no
+    /// policy, and conflicts.
+    fn allow(&self, operation: &Operation) -> std::result::Result<(), Fault> {
+        let policy = self.policy.as_deref().ok_or_else(conflict)?;
+        Capabilities {
+            policy,
+            support: &self.support,
+        }
+        .check(operation)
+        .map_err(Into::into)
+    }
+    /// The scope whose Docker engine this goblin may use.
+    fn docker_scope(&self) -> Option<&str> {
+        let scope = self.policy.as_deref()?.scope.as_ref()?;
+        scope.docker.then_some(scope.name.as_str())
     }
     /// End a parked host command's wait, releasing what its runtime pinned.
     fn take_preparing(&mut self) -> Option<host::Preparing> {
@@ -1627,6 +1661,9 @@ impl Controller {
             Active {
                 activity_at: None,
                 inheritance: None,
+                policy: None,
+                support: Support::linux(),
+                dev_shell: None,
                 init: false,
                 granted_outputs: BTreeMap::new(),
                 auto_approve: approvals.packages,
@@ -1676,7 +1713,9 @@ impl Controller {
             return Err(conflict());
         }
         let inheritance = a.inheritance.clone().ok_or_else(conflict)?;
-        inheritance.permit(target).map_err(|e| (-32602, e))?;
+        a.allow(&Operation::RunMember {
+            configuration: target.into(),
+        })?;
         let scope = inheritance.scope().map_err(|e| (-32009, e))?;
         Ok(Owner {
             id: owner.into(),
@@ -1745,11 +1784,11 @@ impl Controller {
                     "dev_shell":record.dev_shell,
                     "attached":record.terminal_attached,
                     "attached_since":self.sessions[scope].attach.since(),
-                    "nix":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.nix()),
-                    "host_commands":self.sessions[scope].inheritance.as_ref().is_some_and(|i| i.host_commands()),
-                    "permission_bypass":self.sessions[scope].inheritance.as_ref().and_then(|i| i.permission_bypass()),
-                    "allowed_run_targets":self.sessions[scope].inheritance.as_ref()
-                        .map_or(&[][..], |i| i.allowed_run_targets()),
+                    "nix":self.sessions[scope].policy.as_ref().is_some_and(|p| p.nix),
+                    "host_commands":self.sessions[scope].policy.as_ref().is_some_and(|p| p.host_commands),
+                    "permission_bypass":self.sessions[scope].policy.as_ref().and_then(|p| p.integration.as_ref().map(|_| p.bypass_permissions)),
+                    "allowed_run_targets":self.sessions[scope].policy.as_ref()
+                        .map_or(&[][..], |p| &p.run_targets[..]),
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
                         "role":r.role,"owner":r.owner,"paused":r.paused,
                         "owner_name":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.agent_name)})),
@@ -1757,16 +1796,20 @@ impl Controller {
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
-                let dev = self.sessions[scope]
-                    .inheritance
-                    .as_ref()
-                    .and_then(|i| i.dev_shell())
-                    .ok_or((
+                let a = &self.sessions[scope];
+                let (Some(policy), Some(dev)) = (
+                    a.policy.as_ref().and_then(|p| p.dev_shell.as_ref()),
+                    a.dev_shell.as_ref(),
+                ) else {
+                    return Err((
                         -32602,
                         "this sandbox was not started with a dev shell".to_string(),
-                    ))?;
-                Ok(json!({"path":dev.path.join("flake.lock"),"lock":dev.lock,
-                    "generation":dev.generation}))
+                    ));
+                };
+                Ok(
+                    json!({"path":policy.path.join("flake.lock"),"lock":dev.lock,
+                    "generation":dev.generation}),
+                )
             }
             // A raid owner sees and stops only the members created in its
             // raid, while it owns it. No goblin attaches to another's terminal.
@@ -2138,7 +2181,7 @@ impl Controller {
                     Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
                 };
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{vec!["scopes","docker-enable","package-grants","terminal-detach","sandbox-status","agent-activity-v1","agent-inbox-v1","flake-run","devshell-diff","run-targets","raids","raid-owner","editor-open","variables","host-commands"]},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{match &c.role { Role::Sandbox(id) => self.sessions.get(id).map_or_else(|| Support::linux().sandbox_features(), |a| a.support.sandbox_features()), Role::Host => vec![] }},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2255,15 +2298,11 @@ impl Controller {
                             }
                         };
                         let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
-                        if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
-                            return Err((-32602, crate::session::NIX_DEV_SHELL.into()));
-                        }
-                        if a.record.dev_shell.is_none() {
-                            return Err((
-                                -32602,
-                                "this sandbox was not started with a dev shell".into(),
-                            ));
-                        }
+                        a.allow(&if call.method == "flake.run" {
+                            Operation::FlakeRun
+                        } else {
+                            Operation::DevShellDiff
+                        })?;
                         if a.call.is_some() {
                             return Err((
                                 -32009,
@@ -2300,31 +2339,15 @@ impl Controller {
                     if a.record.state != "running" || a.pending.is_some() || a.preparing.is_some() {
                         return Err(conflict());
                     }
-                    if a.inheritance.as_ref().is_some_and(|i| i.nix()) {
-                        match p.kind.as_str() {
-                            "package" => {
-                                return Err((-32602, crate::session::NIX_PACKAGES.into()));
-                            }
-                            "devshell" => {
-                                return Err((-32602, crate::session::NIX_DEV_SHELL.into()));
-                            }
-                            _ => (),
+                    match p.kind.as_str() {
+                        "package" => a.allow(&Operation::Package)?,
+                        "devshell" => a.allow(&Operation::DevShellRefresh)?,
+                        "docker" => {
+                            a.allow(&Operation::Docker)?;
+                            p.package =
+                                format!("Docker scope: {}", a.docker_scope().unwrap_or_default());
                         }
-                    }
-                    let docker_scope = a
-                        .inheritance
-                        .as_ref()
-                        .filter(|i| i.docker_available())
-                        .and_then(|i| i.scope_name())
-                        .map(str::to_string);
-                    if p.kind == "docker" {
-                        let Some(scope) = &docker_scope else {
-                            return Err((
-                                -32602,
-                                "Docker requires a scope with docker.enable".into(),
-                            ));
-                        };
-                        p.package = format!("Docker scope: {scope}");
+                        _ => (),
                     }
                     if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
@@ -2359,12 +2382,6 @@ impl Controller {
                         return Ok(None);
                     }
                     if p.kind == "devshell" {
-                        if a.record.dev_shell.is_none() {
-                            return Err((
-                                -32602,
-                                "this sandbox was not started with a dev shell".into(),
-                            ));
-                        }
                         p.package = match (&p.update, p.lock) {
                             (Some(inputs), _) if inputs.is_empty() => {
                                 "refresh --update (all inputs)".into()
@@ -2398,12 +2415,7 @@ impl Controller {
         }
         let host_preview = host.as_ref().map(host::Spec::preview);
         let detached = host.as_ref().is_some_and(|h| h.detach);
-        let docker_scope = self.sessions[&session]
-            .inheritance
-            .as_ref()
-            .filter(|i| i.docker_available())
-            .and_then(|i| i.scope_name())
-            .map(str::to_string);
+        let docker_scope = self.sessions[&session].docker_scope().map(str::to_string);
         // Completions must not be dropped, so a backlog the
         // messaging worker has not accepted refuses new requests.
         if self.operation_outbox.len() >= 1024 {
@@ -2437,9 +2449,9 @@ impl Controller {
             || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
         let a = self.sessions.get_mut(&session).unwrap();
         let notify = a
-            .inheritance
+            .policy
             .as_ref()
-            .and_then(|i| i.integration())
+            .and_then(|p| p.integration.as_ref())
             .is_some();
         let runtime = a.runtime.as_mut().ok_or_else(conflict)?;
         if p.kind == "devshell" {
@@ -2694,12 +2706,10 @@ impl Controller {
                     | Event::HostJobFinished { .. } => (),
                     Event::Started {
                         docker_enabled,
-                        scope,
+                        policy,
+                        support,
                         dev_shell,
-                        dev_identity,
-                        initial_packages,
                         master,
-                        handlers,
                         identity,
                         inheritance,
                         recreated,
@@ -2725,16 +2735,23 @@ impl Controller {
                         a.record.auto_approve = a.auto_approve.keys().cloned().collect();
                         a.record.skipped.extend(auto.skipped);
                         a.record.docker_enabled = docker_enabled;
-                        a.record.scope = scope;
-                        a.record.dev_shell = dev_shell;
-                        a.dev_identity = dev_identity;
-                        a.record.description = inheritance.description().to_owned();
+                        a.record.scope = policy.scope.as_ref().map(|s| s.name.clone());
+                        a.record.dev_shell = policy.dev_shell.as_ref().map(|d| d.reference.clone());
+                        a.dev_identity = dev_shell.as_ref().map(|d| d.identity.clone());
+                        a.dev_shell = dev_shell;
+                        a.record.description = policy.description.clone();
                         a.inheritance = Some(inheritance);
-                        match handlers {
-                            Some(handlers) => a.serve(master, *handlers)?,
+                        match policy.handlers.clone() {
+                            Some(handlers) => a.serve(master, handlers)?,
                             None => a.terminal.master(master)?,
                         }
-                        a.record.initial_packages = initial_packages;
+                        a.record.initial_packages = policy
+                            .initial_packages
+                            .iter()
+                            .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
+                            .collect();
+                        a.policy = Some(policy);
+                        a.support = support;
                         a.record.identity = Some(identity);
                         if a.record.state == "starting" {
                             a.record.state = "running".into();
@@ -2764,9 +2781,9 @@ impl Controller {
                                         .output_path
                                         .as_ref()
                                         .filter(|path| {
-                                            a.inheritance
-                                                .as_ref()
-                                                .is_some_and(|i| i.initially_available(path))
+                                            a.policy.as_ref().is_some_and(|p| {
+                                                p.initial_packages.iter().any(|i| i == *path)
+                                            })
                                         })
                                         .cloned();
                                     json!(preview)
@@ -2815,10 +2832,11 @@ impl Controller {
                         }
                     }
                     Event::DevShell {
-                        identity,
+                        summary,
                         inheritance,
                     } => {
-                        a.dev_identity = Some(identity);
+                        a.dev_identity = Some(summary.identity.clone());
+                        a.dev_shell = Some(summary);
                         a.inheritance = Some(inheritance);
                         self.dirty = true;
                     }
@@ -2935,6 +2953,7 @@ impl Controller {
             if runtime_ended {
                 a.runtime.take();
                 a.inheritance.take();
+                a.policy.take();
                 a.init = false;
                 // A worker can lose its final try_send when its bounded result
                 // queue is full (or panic). Never retain a live session after
@@ -3223,6 +3242,9 @@ mod tests {
             Active {
                 activity_at: None,
                 inheritance: None,
+                policy: Some(Box::new(Policy::fixture("shell", &[]))),
+                support: Support::linux(),
+                dev_shell: None,
                 init: false,
                 granted_outputs: BTreeMap::new(),
                 auto_approve: BTreeMap::new(),
@@ -3396,7 +3418,7 @@ mod tests {
             a.record.name = name.into();
             a.record.agent_name = id.clone();
             a.record.cwd = Some("/project".into());
-            a.inheritance = Some(Inheritance::fixture(name, targets));
+            a.set_inheritance(Inheritance::fixture(name, targets));
         }
         let keys = std::cell::Cell::new(0);
         let start = |name: &str| {
@@ -3936,15 +3958,14 @@ mod tests {
         let path = d.state.clone();
         let events = live(&mut d, "a");
         d.sessions.get_mut("a").unwrap().record.state = "starting".into();
+        let inheritance = Inheritance::fixture("shell", &[]);
         events
             .send(Event::Started {
                 docker_enabled: false,
-                scope: None,
+                policy: Box::new(inheritance.policy()),
+                support: Support::linux(),
                 dev_shell: None,
-                dev_identity: None,
-                initial_packages: vec![],
                 master: unix::pty(24, 80).unwrap().0,
-                handlers: None,
                 identity: Identity {
                     pid: 1,
                     helper_userns: 0,
@@ -3952,7 +3973,7 @@ mod tests {
                     source_mountns: 0,
                     mountns: 0,
                 },
-                inheritance: Inheritance::fixture("shell", &[]),
+                inheritance,
                 recreated: None,
                 auto: Box::default(),
             })
@@ -3973,7 +3994,7 @@ mod tests {
         let (runtime, runtime_events, received) = runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
-        a.inheritance = Some(Inheritance::fixture("shell", &[]).with_host_commands());
+        a.set_inheritance(Inheritance::fixture("shell", &[]).with_host_commands());
         let reply = |c: &mut Connection| {
             let data = c.output.pop_front().unwrap();
             let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
@@ -4139,7 +4160,7 @@ mod tests {
         let (runtime, events, received) = runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
-        a.inheritance = Some(Inheritance::fixture("shell", &[]).with_host_commands());
+        a.set_inheritance(Inheritance::fixture("shell", &[]).with_host_commands());
         let (mut c, mut peer) = connection(Role::Sandbox("a".into()));
         c.initialized = true;
         d.dispatch(
@@ -4166,6 +4187,267 @@ mod tests {
             matches!(&command, Some(Command::CancelHostJob { request: r }) if *r == request),
             "{command:?}"
         );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    /// A started goblin whose configuration allows everything, on a sandbox
+    /// implementation that reports `support`.
+    fn capable(d: &mut Controller, id: &str, support: Support) {
+        let a = d.sessions.get_mut(id).unwrap();
+        let mut policy = Policy::fixture("shell", &["shell"]);
+        policy.host_commands = true;
+        policy.scope = Some(policy::ScopePolicy {
+            name: "net".into(),
+            docker: true,
+            pid: false,
+        });
+        policy.dev_shell = Some(policy::DevShellPolicy {
+            reference: ".".into(),
+            path: "/work".into(),
+        });
+        policy.handlers = Some(crate::config::Handlers {
+            on_attach: crate::config::OnAttach {
+                command: vec!["client".into()],
+                timeout: 30,
+                wait_for: vec![],
+            },
+            on_detach: None,
+        });
+        a.policy = Some(Box::new(policy));
+        a.support = support;
+        a.pending = None;
+        a.preparing = None;
+    }
+    /// A call from goblin `id`'s sandbox: its immediate answer, or null while
+    /// the call waits.
+    fn sandbox_call(d: &mut Controller, id: &str, method: &str, params: Value) -> Value {
+        let (mut c, _peer) = connection(Role::Sandbox(id.into()));
+        c.initialized = true;
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(1)),
+                method: method.into(),
+                params,
+            },
+        );
+        let Some(data) = c.output.pop_back() else {
+            return Value::Null;
+        };
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        rpc::parse(&data[body..]).unwrap()
+    }
+    #[test]
+    fn a_sandbox_without_a_feature_refuses_its_operations_and_does_not_list_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let request = |d: &mut Controller, params: Value| {
+            let reply = sandbox_call(d, "a", "permissions.request", params);
+            (
+                reply["error"]["code"].clone(),
+                reply["error"]["message"].clone(),
+            )
+        };
+        let kinds = [
+            (
+                json!({"kind":"package","package":"hello","reason":"t"}),
+                "live-packages",
+            ),
+            (json!({"kind":"devshell","reason":"t"}), "dev-shells"),
+            (json!({"kind":"docker","reason":"t"}), "docker"),
+            (
+                json!({"kind":"host-command","reason":"t",
+                    "host":{"argv":["true"],"cwd":"/work"}}),
+                "host-jobs",
+            ),
+        ];
+        // Full support: nothing is refused for its feature.
+        capable(&mut d, "a", Support::linux());
+        for (params, _) in &kinds {
+            let (code, _) = request(&mut d, params.clone());
+            assert_ne!(code, json!(-32009), "{params}");
+            capable(&mut d, "a", Support::linux());
+            d.permissions.clear();
+        }
+        // Without support, each is refused as unsupported, whatever the
+        // configuration allows, and flake.run and devshell.diff with it.
+        capable(&mut d, "a", Support(Default::default()));
+        for (params, feature) in &kinds {
+            let (code, message) = request(&mut d, params.clone());
+            assert_eq!(code, -32009, "{params}");
+            assert_eq!(message, format!("not supported by this sandbox: {feature}"));
+        }
+        for (method, params, feature) in [
+            ("flake.run", json!({"app":"hello"}), "flake-apps"),
+            ("devshell.diff", json!({}), "dev-shells"),
+        ] {
+            let reply = sandbox_call(&mut d, "a", method, params);
+            assert_eq!(reply["error"]["code"], -32009, "{method}");
+            assert_eq!(
+                reply["error"]["message"],
+                format!("not supported by this sandbox: {feature}")
+            );
+        }
+        let a = &d.sessions["a"];
+        assert!(a.allow(&Operation::Exec).is_err());
+        assert!(a.allow(&Operation::Attach).is_err());
+        // The initialize list drops exactly what the implementation lacks.
+        let features = |d: &mut Controller| {
+            let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+            let reply = dispatch(d, &mut c, "initialize", json!({"api":1}), Some(json!(1)));
+            reply["result"]["features"].as_array().unwrap().clone()
+        };
+        let reduced = features(&mut d);
+        assert_eq!(reduced.len(), 15 - 6);
+        for dropped in [
+            "scopes",
+            "docker-enable",
+            "package-grants",
+            "flake-run",
+            "devshell-diff",
+            "host-commands",
+        ] {
+            assert!(!reduced.contains(&json!(dropped)), "{dropped}");
+        }
+        let mut support = Support::linux();
+        support.0.remove(&policy::Feature::DevShells);
+        capable(&mut d, "a", support);
+        let some = features(&mut d);
+        assert_eq!(some.len(), 14);
+        assert!(!some.contains(&json!("devshell-diff")));
+        // Linux lists today's literal, in today's order.
+        capable(&mut d, "a", Support::linux());
+        assert_eq!(
+            features(&mut d),
+            [
+                "scopes",
+                "docker-enable",
+                "package-grants",
+                "terminal-detach",
+                "sandbox-status",
+                "agent-activity-v1",
+                "agent-inbox-v1",
+                "flake-run",
+                "devshell-diff",
+                "run-targets",
+                "raids",
+                "raid-owner",
+                "editor-open",
+                "variables",
+                "host-commands"
+            ]
+            .map(|f| json!(f))
+        );
+        // The feature checks do not hold up initialize while the goblin
+        // starts or stops.
+        for state in ["starting", "stopping"] {
+            d.sessions.get_mut("a").unwrap().record.state = state.into();
+            assert_eq!(features(&mut d).len(), 15, "{state}");
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn policy_refusals_keep_todays_order_against_state_checks() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        {
+            let a = d.sessions.get_mut("a").unwrap();
+            a.policy.as_mut().unwrap().nix = true;
+            // A request is pending.
+            a.pending = Some(Pending {
+                initial_output: None,
+                dev_identity: None,
+                id: "r".into(),
+                serial: 1,
+                connection: 99,
+                notify: false,
+                host: None,
+                detached: false,
+            });
+        }
+        let reply = sandbox_call(
+            &mut d,
+            "a",
+            "permissions.request",
+            json!({"kind":"package","package":"hello","reason":"t"}),
+        );
+        // Until the runtime owns the gate, state is checked before policy.
+        assert_eq!(reply["error"]["code"], conflict().0);
+        d.sessions.get_mut("a").unwrap().pending = None;
+        let reply = sandbox_call(
+            &mut d,
+            "a",
+            "permissions.request",
+            json!({"kind":"package","package":"hello","reason":"t"}),
+        );
+        assert_eq!(reply["error"]["message"], crate::session::NIX_PACKAGES);
+        let reply = sandbox_call(&mut d, "a", "flake.run", json!({"app":"hello"}));
+        assert_eq!(reply["error"]["message"], crate::session::NIX_DEV_SHELL);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn exec_passes_a_pty_or_three_descriptors_and_runs_the_shell_without_argv() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let spawn = |d: &mut Controller, fds: usize, params: Value| {
+            let (mut c, _peer) = connection(Role::Host);
+            c.initialized = true;
+            c.fds = (0..fds)
+                .map(|_| unix::pipe().unwrap().0)
+                .collect::<Vec<_>>();
+            d.dispatch(
+                &mut c,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: Some(json!(5)),
+                    method: "sessions.exec".into(),
+                    params,
+                },
+            );
+            assert!(c.exec.is_some(), "{:?}", c.output);
+            received.lock().unwrap().pop_front()
+        };
+        // A PTY slave and no argv: the sandbox's own shell.
+        let command = spawn(&mut d, 1, json!({"session":"a","tty":true}));
+        assert!(matches!(
+            command,
+            Some(Command::Spawn {
+                argv: None,
+                stdio: runtime::Stdio::Tty(_),
+                ..
+            })
+        ));
+        // Three descriptors, an argument vector and the rest.
+        let command = spawn(
+            &mut d,
+            3,
+            json!({"session":"a","argv":["ls","-l"],"cwd":"/work","env":[["A","b"]]}),
+        );
+        let Some(Command::Spawn {
+            argv,
+            cwd,
+            env,
+            stdio: runtime::Stdio::Fds(_),
+            ..
+        }) = command
+        else {
+            panic!("expected a spawn with three descriptors: {command:?}");
+        };
+        assert_eq!(argv, Some(vec!["ls".into(), "-l".into()]));
+        assert_eq!(cwd.as_deref(), Some("/work"));
+        assert_eq!(env, [("A".to_string(), "b".to_string())]);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4983,12 +5265,17 @@ mod tests {
             },
             on_detach: Some(template(&["stop", "{attach.pid}"])),
         });
+        // As Started leaves it: the policy has the handlers too.
+        a.policy.as_mut().unwrap().handlers = a.handlers.clone();
         let socket = d.sessions["a"].directory.join("attach.sock");
         let step = |d: &mut Controller| {
             let mut a = d.sessions.remove("a").unwrap();
             d.attach_tick(&mut a);
             d.sessions.insert("a".into(), a);
         };
+        // Hang up for good: shut the connection down, so the daemon sees the
+        // end whatever process another test forks holds a copy of it.
+        let close = |frontend: UnixStream| frontend.shutdown(std::net::Shutdown::Both).unwrap();
         // Step until the frontend has a frame to read, however slowly its
         // hello arrives.
         let answer = |d: &mut Controller, frontend: &mut UnixStream| {
@@ -5110,7 +5397,7 @@ mod tests {
         assert!(d.sessions["a"].record.terminal_detached);
         assert!(!d.sessions["a"].record.terminal_attached);
         // The frontend closing frees the slot for the next attachment.
-        drop(frontend);
+        close(frontend);
         step(&mut d);
         let mut next = hello(20);
         let Command::Spawn { id, .. } = command(&mut d) else {
@@ -5141,7 +5428,7 @@ mod tests {
         assert_eq!(cancelled(command(&mut d)), id);
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
-        drop(next);
+        close(next);
         step(&mut d);
         assert!(d.sessions["a"].can_evict());
         // A client exiting while onDetach runs takes onDetach with it.
@@ -5169,7 +5456,7 @@ mod tests {
         for id in [on_detach, id] {
             assert_eq!(cancelled(command(&mut d)), id);
         }
-        drop(third);
+        close(third);
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
         // A client init cannot start is refused with init's reason.
@@ -5811,7 +6098,7 @@ mod tests {
         live(&mut d, "other");
         for id in ["root", "other"] {
             let a = d.sessions.get_mut(id).unwrap();
-            a.inheritance = Some(Inheritance::fixture("shell", &["shell"]));
+            a.set_inheritance(Inheritance::fixture("shell", &["shell"]));
         }
         d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
             &path.join("current.json"),

@@ -4,6 +4,7 @@ pub use crate::process::Cancellation as Cancel;
 use crate::{
     Result,
     config::Launch,
+    controller::policy::{DevShellPolicy, DevShellSummary, Policy, ScopePolicy},
     process::{self, Cancellation},
     seccomp, snapshot, unix,
 };
@@ -68,6 +69,30 @@ impl std::fmt::Display for Uncertain {
 }
 impl std::error::Error for Uncertain {}
 
+/// What a launch's configuration allows.
+fn policy(launch: &Launch, configuration: &str, run_targets: &[String]) -> Policy {
+    Policy {
+        configuration: configuration.to_string(),
+        description: launch.description.clone(),
+        run_targets: run_targets.to_vec(),
+        integration: launch.integration.clone(),
+        bypass_permissions: launch.bypass_permissions,
+        editor: launch.editor.clone(),
+        nix: launch.allow_nix,
+        host_commands: launch.host_commands,
+        scope: launch.scope.as_ref().map(|s| ScopePolicy {
+            name: s.name.clone(),
+            docker: s.definition.docker,
+            pid: s.definition.pid,
+        }),
+        dev_shell: launch.dev_shell.as_ref().map(|d| DevShellPolicy {
+            reference: d.reference.clone(),
+            path: d.path.clone(),
+        }),
+        initial_packages: launch.initial_packages.clone(),
+        handlers: launch.handlers.clone(),
+    }
+}
 pub(crate) fn containing_store_output(path: &Path) -> Option<PathBuf> {
     let name = path.strip_prefix("/nix/store").ok()?.components().next()?;
     let root = Path::new("/nix/store").join(name);
@@ -157,23 +182,6 @@ pub(crate) struct Inheritance {
     _owner: Arc<SessionDirectory>,
 }
 impl Inheritance {
-    /// The configurations this session may run as raid members.
-    pub(crate) fn allowed_run_targets(&self) -> &[String] {
-        &self.run_targets
-    }
-    pub(crate) fn permit(&self, target: &str) -> std::result::Result<(), String> {
-        let own = &self.configuration;
-        if self.run_targets.is_empty() {
-            return Err(format!("configuration '{own}' permits no run targets"));
-        }
-        if !self.run_targets.iter().any(|t| t == target) {
-            return Err(format!(
-                "configuration '{target}' is not an allowed run target of '{own}'; allowed: {}",
-                self.run_targets.join(", ")
-            ));
-        }
-        Ok(())
-    }
     /// The live scope, held for a launch accepted while this session runs.
     pub(crate) fn scope(&self) -> std::result::Result<Option<Arc<crate::scope::Shared>>, String> {
         match &self.launch.scope {
@@ -188,47 +196,21 @@ impl Inheritance {
     pub(crate) fn scope_name(&self) -> Option<&str> {
         self.launch.scope.as_ref().map(|s| s.name.as_str())
     }
-    pub(crate) fn docker_available(&self) -> bool {
-        self.launch
-            .scope
-            .as_ref()
-            .is_some_and(|s| s.definition.docker)
-    }
-    pub(crate) fn description(&self) -> &str {
-        &self.launch.description
-    }
-    pub(crate) fn integration(&self) -> Option<&str> {
-        self.launch.integration.as_deref()
-    }
-    pub(crate) fn editor(&self) -> Option<&crate::config::Editor> {
-        self.launch.editor.as_ref()
-    }
-    pub(crate) fn dev_shell(&self) -> Option<&crate::devshell::DevShell> {
-        self.launch.dev_shell.as_ref()
-    }
-    pub(crate) fn initially_available(&self, path: &Path) -> bool {
-        self.launch.initial_packages.iter().any(|p| p == path)
-    }
-    /// The sandbox runs ordinary Nix commands against the host daemon, so
-    /// package grants and dev shell refreshes do not apply.
-    pub(crate) fn nix(&self) -> bool {
-        self.launch.allow_nix
-    }
     /// The helper binary, which also supervises host commands.
     pub(crate) fn helper(&self) -> &Path {
         &self.launch.helper
     }
-    /// The sandbox may ask the host to run commands (`goblin host run`).
-    pub(crate) fn host_commands(&self) -> bool {
-        self.launch.host_commands
+    /// What this session's configuration allows, for the daemon.
+    pub(crate) fn policy(&self) -> Policy {
+        policy(&self.launch, &self.configuration, &self.run_targets)
     }
-    /// Whether the configuration asks its agent to skip its own permission
-    /// prompts; None for a goblin without an agent.
-    pub(crate) fn permission_bypass(&self) -> Option<bool> {
-        self.launch
-            .integration
-            .as_ref()
-            .map(|_| self.launch.bypass_permissions)
+    /// The current dev shell generation, if the session has a dev shell.
+    pub(crate) fn dev_shell_summary(&self) -> Option<DevShellSummary> {
+        self.launch.dev_shell.as_ref().map(|d| DevShellSummary {
+            identity: d.identity(),
+            generation: d.generation,
+            lock: d.lock.clone(),
+        })
     }
     /// The host directory for a host command started at sandbox `path`.
     pub(crate) fn host_directory(&self, path: &Path) -> Result<(File, PathBuf)> {
@@ -461,6 +443,10 @@ impl Session {
         session.configuration = configuration.to_string();
         session.run_targets = run_targets;
         Ok(session)
+    }
+    /// What this session's configuration allows; known before it starts.
+    pub(crate) fn policy(&self) -> Policy {
+        policy(&self.launch, &self.configuration, &self.run_targets)
     }
     pub(crate) fn inheritance(&self) -> Inheritance {
         Inheritance {

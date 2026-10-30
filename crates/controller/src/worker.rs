@@ -2,7 +2,10 @@
 use crate::{
     Result,
     config::Manifest,
-    controller::runtime::{Command, Event},
+    controller::{
+        policy::Support,
+        runtime::{Command, Event},
+    },
     process::WORKER_TICK,
     session::{Cancel, Inheritance, Session},
     unix,
@@ -248,6 +251,16 @@ impl Worker {
                 if let Some(recreated) = &mut recreated {
                     auto.rooted.append(&mut recreated.auto_approve);
                 }
+                // A configuration that needs what this sandbox implementation
+                // cannot do fails before anything starts.
+                let support = Support::linux();
+                if let Some(feature) = support.lacks(&session.policy()) {
+                    return Err(format!(
+                        "this sandbox does not support {}, which the configuration needs",
+                        serde_json::to_value(feature)?.as_str().unwrap_or_default()
+                    )
+                    .into());
+                }
                 // With attach handlers the agent runs without a terminal: no
                 // input, and its output goes to the server log.
                 let handlers = session.launch.handlers.clone();
@@ -288,25 +301,15 @@ impl Worker {
                     listener: session.listener.take().unwrap(),
                     exit_watch: session.exit_watch()?,
                 }))?;
+                let inheritance = session.inheritance();
                 results.try_send(Event::Started {
                     docker_enabled: session.docker_enabled(),
-                    scope: session.scope_name(),
-                    dev_shell: session
-                        .launch
-                        .dev_shell
-                        .as_ref()
-                        .map(|d| d.reference.clone()),
-                    dev_identity: session.launch.dev_shell.as_ref().map(|d| d.identity()),
-                    initial_packages: session
-                        .launch
-                        .initial_packages
-                        .iter()
-                        .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
-                        .collect(),
+                    policy: Box::new(inheritance.policy()),
+                    support,
+                    dev_shell: inheritance.dev_shell_summary(),
                     master,
-                    handlers: handlers.map(Box::new),
                     identity: session.identity.clone().unwrap(),
-                    inheritance: session.inheritance(),
+                    inheritance,
                     recreated: recreated.map(Box::new),
                     auto: Box::new(auto),
                 })?;
@@ -378,15 +381,12 @@ impl Worker {
                                     session.enable_docker()
                                 } else if req.kind == "devshell" {
                                     session.apply_refresh().and_then(|()| {
-                                        let identity = session
-                                            .launch
-                                            .dev_shell
-                                            .as_ref()
-                                            .map(|d| d.identity())
-                                            .unwrap_or_default();
+                                        let inheritance = session.inheritance();
                                         results.try_send(Event::DevShell {
-                                            identity,
-                                            inheritance: session.inheritance(),
+                                            summary: inheritance
+                                                .dev_shell_summary()
+                                                .ok_or("the dev shell is gone")?,
+                                            inheritance,
                                         })?;
                                         Ok(())
                                     })

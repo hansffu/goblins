@@ -4,7 +4,8 @@
 //! connection closes, init cancels the exec.
 use super::{
     Connection, Controller, Fault, capacity, conflict, params,
-    runtime::{Command, Event, Stdio},
+    policy::Operation,
+    runtime::{Command, Event, SpawnKind, Stdio},
 };
 use goblins_protocol::{init, rpc};
 use serde::Deserialize;
@@ -133,6 +134,7 @@ impl Controller {
             ));
         }
         let session = self.exec_target(&p.session, p.pin.as_deref())?;
+        self.sessions[&session].allow(&Operation::Exec)?;
         if self.execs.values().filter(|e| e.session == session).count() >= EXECS {
             return Err(capacity());
         }
@@ -166,6 +168,7 @@ impl Controller {
             .ok_or_else(conflict)?
             .send(Command::Spawn {
                 id,
+                kind: SpawnKind::Exec,
                 argv: p.argv.clone(),
                 cwd: p.cwd.clone(),
                 env: p.env,

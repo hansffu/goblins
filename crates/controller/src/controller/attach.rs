@@ -5,7 +5,8 @@
 //! the variables the client needs were set during this run.
 use super::{
     Active, Controller,
-    runtime::{Command, Event, Stdio},
+    policy::Operation,
+    runtime::{Command, Event, SpawnKind, Stdio},
 };
 use crate::{config, terminal::Terminal, unix};
 use goblins_protocol::rpc;
@@ -370,6 +371,7 @@ impl Active {
         runtime
             .send(Command::Spawn {
                 id,
+                kind: SpawnKind::Attach,
                 argv: Some(argv),
                 cwd: None,
                 env,
@@ -392,6 +394,8 @@ impl Active {
     /// Start the client for a frontend whose variables are ready, on a PTY
     /// of its own.
     fn start_client(&mut self, id: u64, size: (u16, u16)) -> Result<(), String> {
+        self.allow(&Operation::Attach)
+            .map_err(|(_, message)| message)?;
         let handlers = self.handlers.as_ref().ok_or("no attach handlers")?;
         let argv = config::handler_arguments(&handlers.on_attach.command, &self.variables, None)?;
         self.spawn(

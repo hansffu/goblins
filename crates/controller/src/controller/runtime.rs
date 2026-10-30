@@ -1,5 +1,6 @@
 //! The daemon's handle to one goblin's runtime: commands go in, events come
 //! out, and neither side waits for the other.
+use super::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
 use crate::{
     session::{Cancel, Identity, Inheritance},
     unix,
@@ -70,6 +71,15 @@ pub(crate) enum Stdio {
     NewPty { rows: u16, cols: u16 },
 }
 
+/// What a spawned process is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpawnKind {
+    /// `goblins exec`.
+    Exec,
+    /// An attach client or its `onDetach`.
+    Attach,
+}
+
 /// What the daemon asks of a runtime.
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -104,9 +114,11 @@ pub(crate) enum Command {
     /// Cancel the work with this approval or serial, queued or running.
     Cancel(u64),
     /// Start process `id` in the running sandbox through goblins-init. The
-    /// daemon allocates ids; `argv` None runs the sandbox's shell.
+    /// daemon allocates ids; `argv` None runs the sandbox's shell. `kind`
+    /// says what the process is for, so the runtime can check it.
     Spawn {
         id: u64,
+        kind: SpawnKind,
         argv: Option<Vec<String>>,
         cwd: Option<String>,
         env: Vec<(String, String)>,
@@ -145,6 +157,34 @@ pub(crate) enum Command {
 }
 
 impl Command {
+    /// What this command asks of the sandbox, for the runtime's own check of
+    /// its policy; None for commands any goblin may be sent.
+    fn operation(&self) -> Option<Operation> {
+        match self {
+            Command::Preview { .. } => Some(Operation::Package),
+            Command::Decide { request, .. } => match request.kind.as_str() {
+                "package" => Some(Operation::Package),
+                "docker" => Some(Operation::Docker),
+                "devshell" => Some(Operation::DevShellRefresh),
+                _ => None,
+            },
+            Command::Refresh { .. } => Some(Operation::DevShellRefresh),
+            Command::Run { .. } => Some(Operation::FlakeRun),
+            Command::Diff { .. } => Some(Operation::DevShellDiff),
+            Command::Spawn {
+                kind: SpawnKind::Exec,
+                ..
+            } => Some(Operation::Exec),
+            Command::Spawn {
+                kind: SpawnKind::Attach,
+                ..
+            } => Some(Operation::Attach),
+            Command::PrepareHostJob { .. } | Command::RunHostJob { .. } => {
+                Some(Operation::HostCommand)
+            }
+            _ => None,
+        }
+    }
     /// The id a `Cancel` names this command by, when it can be cancelled.
     fn cancel_id(&self) -> Option<u64> {
         match self {
@@ -165,14 +205,16 @@ pub(crate) enum Event {
     },
     Started {
         docker_enabled: bool,
-        scope: Option<String>,
-        dev_shell: Option<String>,
-        dev_identity: Option<String>,
-        initial_packages: Vec<String>,
+        /// What the configuration allows and what this implementation can
+        /// do, fixed for the goblin's life.
+        policy: Box<Policy>,
+        support: Support,
+        /// The launch's dev shell generation, when it has one.
+        dev_shell: Option<DevShellSummary>,
         /// The agent's PTY, or with attach handlers its output pipe.
         master: OwnedFd,
-        handlers: Option<Box<crate::config::Handlers>>,
         identity: Identity,
+        /// Only member launches use it, until a raid member takes a handoff.
         inheritance: Inheritance,
         recreated: Option<Box<Recreated>>,
         auto: Box<Auto>,
@@ -200,7 +242,7 @@ pub(crate) enum Event {
     },
     /// A refresh became the current generation; members it runs later start in it.
     DevShell {
-        identity: String,
+        summary: DevShellSummary,
         inheritance: Inheritance,
     },
     Granted {
@@ -300,6 +342,8 @@ pub(crate) struct Local {
     /// The goblin's capability, from `Started`: it resolves host
     /// directories through the sandbox's binds.
     inheritance: Option<Inheritance>,
+    /// What the goblin may do, from `Started`.
+    capabilities: Option<(Policy, Support)>,
     /// Where host jobs keep their output and outcome.
     host_jobs: PathBuf,
     /// Pinned directories of host commands awaiting approval, by request.
@@ -322,6 +366,7 @@ impl Local {
         Self {
             worker,
             inheritance: None,
+            capabilities: None,
             host_jobs,
             prepared: BTreeMap::new(),
             jobs: vec![],
@@ -358,8 +403,14 @@ impl Local {
                             self.inheritance = Some(inheritance.clone());
                         }
                         // The worker hands the endpoints over just before.
-                        Event::Started { inheritance, .. } => {
+                        Event::Started {
+                            inheritance,
+                            policy,
+                            support,
+                            ..
+                        } => {
                             self.inheritance = Some(inheritance.clone());
+                            self.capabilities = Some(((**policy).clone(), support.clone()));
                             if let Ok(endpoints) = self.worker.endpoints.try_recv() {
                                 let Endpoints {
                                     control,
@@ -623,6 +674,22 @@ fn prune(jobs: &Path) {
 
 impl Runtime for Local {
     fn send(&mut self, command: Command) -> Result<(), Command> {
+        // The daemon checks too; a command the goblin may not be sent fails
+        // the goblin closed instead of running, and so does one that needs a
+        // capability before `Started` has reported them.
+        if let Some(operation) = command.operation() {
+            let refused = match &self.capabilities {
+                Some((policy, support)) => (Capabilities { policy, support })
+                    .check(&operation)
+                    .err()
+                    .map(|refusal| super::Fault::from(refusal).1),
+                None => Some("the goblin has not started".to_string()),
+            };
+            if let Some(message) = refused {
+                self.report(Event::Failed(message));
+                return self.send(Command::Stop);
+            }
+        }
         match command {
             Command::Cancel(id) => {
                 if let Some(cancel) = self.cancels.remove(&id) {
@@ -642,6 +709,7 @@ impl Runtime for Local {
                 cwd,
                 env,
                 stdio,
+                ..
             } => self.spawn(id, argv, cwd, env, stdio),
             // Best effort, like init's own delivery.
             Command::Signal { id, signal } => {
@@ -824,7 +892,7 @@ mod tests {
     #[test]
     fn final_result_after_empty_poll_is_not_discarded() {
         let (worker, _, sender) = worker();
-        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
+        let mut local = ready(worker);
         // Even a finished producer observation cannot make an empty (still
         // connected) channel final. A last message may arrive after this poll.
         assert!(local.poll().is_none());
@@ -844,7 +912,7 @@ mod tests {
     #[test]
     fn cancellation_reaches_queued_and_running_work_even_when_the_queue_is_full() {
         let (worker, received, _sender) = worker();
-        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
+        let mut local = ready(worker);
         let preview = |approval| Command::Preview {
             approval,
             package: "hello".into(),
@@ -901,12 +969,13 @@ mod tests {
     fn local_relays_init_the_payloads_exit_and_request_connections() {
         let directory = unix::temp_directory().unwrap();
         let (worker, _, _results) = worker();
-        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
+        let mut local = ready(worker);
         let round = |local: &mut Local| std::iter::from_fn(|| local.poll()).collect::<Vec<_>>();
         // Before Started there is no init to ask.
         local
             .send(Command::Spawn {
                 id: 1,
+                kind: SpawnKind::Exec,
                 argv: None,
                 cwd: None,
                 env: vec![],
@@ -942,6 +1011,7 @@ mod tests {
         local
             .send(Command::Spawn {
                 id: 2,
+                kind: SpawnKind::Exec,
                 argv: Some(vec!["client".into()]),
                 cwd: None,
                 env: vec![],
@@ -1042,13 +1112,14 @@ mod tests {
     #[test]
     fn what_send_reports_never_delays_collecting_a_round() {
         let (worker, _, results) = worker();
-        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
+        let mut local = ready(worker);
         let (exit, exited) = unix::pipe().unwrap();
         local.exit_watch = Some(exit);
         // A spawn without init fails between rounds...
         local
             .send(Command::Spawn {
                 id: 1,
+                kind: SpawnKind::Exec,
                 argv: None,
                 cwd: None,
                 env: vec![],
@@ -1078,5 +1149,154 @@ mod tests {
                 Event::PayloadExited,
             ]
         ));
+    }
+
+    /// A `Started` for the fixture configuration on `support`, with attach
+    /// handlers when asked.
+    fn started(support: Support, handlers: bool) -> Event {
+        let inheritance = Inheritance::fixture("shell", &[]);
+        let mut policy = inheritance.policy();
+        if handlers {
+            policy.handlers = Some(crate::config::Handlers {
+                on_attach: crate::config::OnAttach {
+                    command: vec!["client".into()],
+                    timeout: 30,
+                    wait_for: vec![],
+                },
+                on_detach: None,
+            });
+        }
+        Event::Started {
+            docker_enabled: false,
+            policy: Box::new(policy),
+            support,
+            dev_shell: None,
+            master: unix::pty(24, 80).unwrap().0,
+            identity: Identity {
+                pid: 1,
+                helper_userns: 0,
+                mount_owner: 0,
+                source_mountns: 0,
+                mountns: 0,
+            },
+            inheritance,
+            recreated: None,
+            auto: Box::default(),
+        }
+    }
+    /// A local runtime that has started on a plain configuration.
+    fn ready(worker: Worker) -> Local {
+        let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
+        local.capabilities = Some((Policy::fixture("shell", &[]), Support::linux()));
+        local
+    }
+    fn spawn(kind: SpawnKind) -> Command {
+        Command::Spawn {
+            id: 1,
+            kind,
+            argv: None,
+            cwd: None,
+            env: vec![],
+            stdio: Stdio::NewPty { rows: 24, cols: 80 },
+        }
+    }
+
+    #[test]
+    fn a_command_the_goblin_may_not_be_sent_fails_it_closed() {
+        let (worker, received, results) = worker();
+        let mut local = ready(worker);
+        results
+            .try_send(started(Support::linux(), false))
+            .unwrap_or_else(|_| panic!());
+        assert!(matches!(local.poll(), Some(Event::Started { .. })));
+        // The fixture's configuration allows no host commands: the command
+        // is not run, the goblin fails and stops.
+        local
+            .send(Command::RunHostJob {
+                request: "r1".into(),
+                argv: vec!["true".into()],
+                env: vec![],
+                timeout: None,
+            })
+            .unwrap();
+        assert!(local.jobs.is_empty());
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Failed(message)] if message.contains("host commands")
+        ));
+        assert!(local.worker.cancel.check().is_err());
+        // What the policy allows still reaches the worker.
+        local
+            .send(Command::Preview {
+                approval: 1,
+                package: "hello".into(),
+            })
+            .unwrap();
+        assert!(received.try_recv().is_ok());
+    }
+
+    #[test]
+    fn spawns_are_checked_by_what_they_are_for_and_nothing_runs_before_started() {
+        use crate::controller::policy::Feature;
+        // Before Started the runtime knows nothing it could allow.
+        let (idle, _received, _results) = worker();
+        let mut local = Local::new(idle, PathBuf::from("/nonexistent"));
+        local.send(spawn(SpawnKind::Exec)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Failed(message)] if message == "the goblin has not started"
+        ));
+        // Cancelling and stopping are never refused.
+        local.send(Command::Cancel(1)).unwrap();
+        local.send(Command::KillAll).unwrap();
+        local.send(Command::Stop).unwrap();
+        assert!(std::iter::from_fn(|| local.poll()).next().is_none());
+        // Each kind needs its own feature; a client also needs handlers.
+        let unsupported = |name: &str| format!("not supported by this sandbox: {name}");
+        let mut cases = vec![];
+        for (kind, missing, handlers, name) in [
+            (SpawnKind::Exec, Some(Feature::Exec), false, Some("exec")),
+            (SpawnKind::Exec, None, false, None),
+            (SpawnKind::Attach, None, false, Some("no attach handlers")),
+            (
+                SpawnKind::Attach,
+                Some(Feature::AttachClients),
+                true,
+                Some("attach-clients"),
+            ),
+            (SpawnKind::Attach, None, true, None),
+        ] {
+            let (idle, _received, results) = worker();
+            let mut local = Local::new(idle, PathBuf::from("/nonexistent"));
+            let mut support = Support::linux();
+            if let Some(missing) = missing {
+                support.0.remove(&missing);
+            }
+            results
+                .try_send(started(support, handlers))
+                .unwrap_or_else(|_| panic!());
+            assert!(matches!(local.poll(), Some(Event::Started { .. })));
+            local.send(spawn(kind)).unwrap();
+            let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            cases.push(match (events.as_slice(), name) {
+                ([Event::Failed(message)], Some(name)) => {
+                    // The goblin fails closed with the refusal's message.
+                    assert!(
+                        *message == unsupported(name) || message == name,
+                        "{message}"
+                    );
+                    "refused"
+                }
+                // Allowed through, so it reaches init, which is not there.
+                ([Event::SpawnFailed { .. }], None) => "allowed",
+                (events, name) => panic!("{kind:?} {name:?}: {} events", events.len()),
+            });
+        }
+        assert_eq!(
+            cases,
+            ["refused", "allowed", "refused", "refused", "allowed"]
+        );
     }
 }

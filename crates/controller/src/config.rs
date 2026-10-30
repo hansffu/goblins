@@ -1,5 +1,5 @@
 use crate::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::OpenOptions,
@@ -103,7 +103,7 @@ pub struct Manifest {
     pub editor: Option<Editor>,
 }
 /// A host editor command, run without a shell with editor-specific arguments.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Editor {
     /// Only `emacs` exists: `command` is emacsclient-compatible.
@@ -350,7 +350,7 @@ impl Manifest {
     }
 }
 /// mkGoblin's `onAttach`: the client started on a new terminal at each attach.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OnAttach {
     pub command: Vec<String>,
@@ -371,7 +371,7 @@ impl OnAttach {
     }
 }
 /// The attach handlers of a goblin that has `onAttach`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Handlers {
     pub on_attach: OnAttach,
     pub on_detach: Option<Vec<String>>,

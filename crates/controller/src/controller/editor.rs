@@ -101,9 +101,9 @@ impl Controller {
         open.validate().map_err(|e| (-32602, e))?;
         let a = &self.sessions[session];
         let command = a
-            .inheritance
+            .policy
             .as_ref()
-            .and_then(|i| i.editor())
+            .and_then(|p| p.editor.as_ref())
             .ok_or((
                 -32009,
                 "no editor is configured; enable editor.emacs in mkGoblins".to_string(),

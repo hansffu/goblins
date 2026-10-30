@@ -6,6 +6,7 @@
 //! stops the job and everything it started when its lifetime pipe closes.
 use super::{
     Controller, Fault, conflict, missing, params,
+    policy::Operation,
     runtime::{Command, HostOutcome},
 };
 use goblins_protocol::rpc::{self, HostCommand};
@@ -156,13 +157,7 @@ impl Controller {
     /// resolves the directory.
     pub(super) fn host_check(&self, session: &str) -> Result<(), Fault> {
         let a = self.sessions.get(session).ok_or_else(missing)?;
-        let inheritance = a.inheritance.as_ref().ok_or_else(conflict)?;
-        if !inheritance.host_commands() {
-            return Err((
-                -32602,
-                "this goblin may not run host commands (mkGoblin hostCommands.enable)".into(),
-            ));
-        }
+        a.allow(&Operation::HostCommand)?;
         let active = self
             .host_jobs
             .iter()
