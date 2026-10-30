@@ -33,6 +33,37 @@ pub(super) struct Edit {
     open: Option<Vec<String>>,
 }
 
+impl Edit {
+    fn drain_diagnostic(&mut self) {
+        if let Some(stderr) = &mut self.child.stderr {
+            let mut bytes = [0; 1024];
+            while self.diagnostic.len() < 4096
+                && let Ok(n @ 1..) = stderr.read(&mut bytes)
+            {
+                self.diagnostic.extend_from_slice(&bytes[..n]);
+            }
+        }
+    }
+    fn outcome(&mut self, code: i32) -> Value {
+        // Called after observing exit. The live drain may have seen WouldBlock
+        // just before the child wrote its final refusal and exited.
+        self.drain_diagnostic();
+        let mut result = json!({"code":code});
+        if code != 0 {
+            // emacsclient explains a missing server or an abort.
+            let text = String::from_utf8_lossy(&self.diagnostic);
+            let message = text
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with("Waiting for Emacs"))
+                .map(|l| l.trim_start_matches("*ERROR*: "))
+                .collect::<Vec<_>>()
+                .join("; ");
+            result["message"] = json!(super::bounded(&message));
+        }
+        result
+    }
+}
+
 /// An Emacs Lisp string literal.
 fn elisp_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
@@ -103,7 +134,6 @@ impl Controller {
         value: Value,
     ) -> Result<(), Fault> {
         let open: editor::Open = params(value)?;
-        open.validate().map_err(|e| (-32602, e))?;
         let a = &self.sessions[session];
         let command = a
             .policy
@@ -145,14 +175,7 @@ impl Controller {
         let mut index = 0;
         while index < self.edits.len() {
             let edit = &mut self.edits[index];
-            if let Some(stderr) = &mut edit.child.stderr {
-                let mut bytes = [0; 1024];
-                while edit.diagnostic.len() < 4096
-                    && let Ok(n @ 1..) = stderr.read(&mut bytes)
-                {
-                    edit.diagnostic.extend_from_slice(&bytes[..n]);
-                }
-            }
+            edit.drain_diagnostic();
             match edit.child.try_wait() {
                 Ok(None) => index += 1,
                 status => {
@@ -174,19 +197,8 @@ impl Controller {
                         }
                         continue;
                     }
-                    let edit = self.edits.remove(index);
-                    let mut result = json!({"code":code});
-                    if code != 0 {
-                        // emacsclient explains a missing server or an abort.
-                        let text = String::from_utf8_lossy(&edit.diagnostic);
-                        let message = text
-                            .lines()
-                            .filter(|l| !l.trim().is_empty() && !l.starts_with("Waiting for Emacs"))
-                            .map(|l| l.trim_start_matches("*ERROR*: "))
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        result["message"] = json!(super::bounded(&message));
-                    }
+                    let mut edit = self.edits.remove(index);
+                    let result = edit.outcome(code);
                     self.reply_edit(edit, Ok(result));
                 }
             }
@@ -227,6 +239,37 @@ impl Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn stderr_after_the_live_drain_is_preserved_in_the_finished_editor_outcome() {
+        use std::io::Write;
+        let _fork = goblins_unix::forking();
+        let child = Command::new("sh")
+            .args(["-c", "read gate; printf '*ERROR*: Goblins: opening the files in Emacs was refused\\n' >&2; exit 7"])
+            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped())
+            .spawn().unwrap();
+        goblins_unix::nonblocking(child.stderr.as_ref().unwrap().as_raw_fd()).unwrap();
+        let mut edit = Edit {
+            session: "a".into(),
+            connection: 1,
+            rpc: json!(2),
+            child,
+            diagnostic: vec![],
+            command: "sh".into(),
+            open: None,
+        };
+        // Force the exact interleaving: the live nonblocking read finds no
+        // output, then the editor writes its diagnostic and exits before wait.
+        edit.drain_diagnostic();
+        assert!(edit.diagnostic.is_empty());
+        edit.child.stdin.take().unwrap().write_all(b"go\n").unwrap();
+        let status = edit.child.wait().unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(
+            edit.outcome(7),
+            json!({"code":7,
+            "message":"Goblins: opening the files in Emacs was refused"})
+        );
+    }
     #[test]
     fn pins_are_quoted_elisp_strings() {
         assert_eq!(

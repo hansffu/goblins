@@ -19,6 +19,7 @@ pub mod history;
 pub mod lease;
 mod logging;
 pub mod policy;
+pub mod sandbox;
 pub mod scope;
 pub use logging::log_event;
 /// Why an allowNix goblin gets no package grants.
@@ -90,7 +91,8 @@ pub enum Source {
 /// The daemon's view of one goblin's runtime. Neither method blocks.
 pub trait Runtime: Send {
     /// Err gives the command back when the runtime's queue is full.
-    /// Cancellations, process signals and `Stop` are never refused.
+    /// Cancellations, process signals, `Stop`, `SandboxSend` and
+    /// `SandboxClose` are never refused.
     fn send(&mut self, command: Command) -> Result<(), Command>;
     /// The events of one round, then None; the daemon drains a round per
     /// tick, which bounds what one goblin costs it.
@@ -174,6 +176,15 @@ pub enum SpawnKind {
 /// What the daemon asks of a runtime.
 #[derive(Debug)]
 pub enum Command {
+    /// Answer or notify a sandbox connection owned by this runtime.
+    SandboxSend {
+        connection: u64,
+        message: serde_json::Value,
+    },
+    /// Close after queued output has drained. Never refused.
+    SandboxClose {
+        connection: u64,
+    },
     /// Preserve the scope-wide exit outcome after an unexpected engine death.
     ScopeFailed,
     /// Membership requested by a worker after resolving its scope.
@@ -396,8 +407,19 @@ pub enum Event {
     InitLost,
     /// The payload exited. The daemon decides what follows.
     PayloadExited,
-    /// A connection to the sandbox's `request.sock`, for the daemon to serve.
-    SandboxConnected(Fd),
+    /// Connection IDs are local to this runtime, not daemon-global.
+    SandboxOpened {
+        connection: u64,
+    },
+    /// A call that passed transport, parameters, Policy and Support.
+    SandboxCall {
+        connection: u64,
+        call: goblins_jsonrpc::Call,
+    },
+    /// EOF, unexpected input, output overflow or runtime shutdown.
+    SandboxClosed {
+        connection: u64,
+    },
     /// The host directory a host command would start in, as approval shows
     /// it, or why it cannot be used.
     HostJobPrepared {
@@ -489,6 +511,8 @@ impl Runtime for Fake {
             !matches!(
                 c,
                 Command::Cancel(_)
+                    | Command::SandboxSend { .. }
+                    | Command::SandboxClose { .. }
                     | Command::Signal { .. }
                     | Command::CancelProcess { .. }
                     | Command::KillAll

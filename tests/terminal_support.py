@@ -19,6 +19,11 @@ import unittest
 from support import command
 
 ANSI = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][\s\S]*?(?:\x07|\x1b\\)|\x1bP[\s\S]*?\x1b\\")
+QUERY_REPLIES = ((b"\x1b[0c", b"\x1b[?1;2c"), (b"\x1b[6n", b"\x1b[1;1R"))
+# A shell can restore cooked mode after emitting a query but before our reply.
+# ECHOCTL then prints ESC as ^[; these are still terminal replies, not output.
+ECHOED_REPLIES = re.compile(b"|".join(re.escape(reply.replace(b"\x1b", b"^["))
+                                      for _, reply in QUERY_REPLIES))
 
 
 class Terminal:
@@ -42,7 +47,7 @@ class Terminal:
         deadline = time.monotonic() + timeout
         regex = re.compile(pattern.encode())
         while True:
-            plain = ANSI.sub(b"", self.buffer).replace(b"\r", b"")
+            plain = ECHOED_REPLIES.sub(b"", ANSI.sub(b"", self.buffer)).replace(b"\r", b"")
             match = regex.search(plain)
             if match:
                 self.buffer = plain[match.end():]
@@ -65,7 +70,7 @@ class Terminal:
         # Fish queries device attributes and cursor position before prompts.
         # Respond like a terminal, including queries split across reads.
         queries = self.query_tail + chunk
-        for query, reply in ((b"\x1b[0c", b"\x1b[?1;2c"), (b"\x1b[6n", b"\x1b[1;1R")):
+        for query, reply in QUERY_REPLIES:
             for _ in range(queries.count(query)):
                 os.write(self.fd, reply)
         self.query_tail = queries[-3:]

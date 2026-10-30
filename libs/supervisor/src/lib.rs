@@ -13,6 +13,7 @@ pub mod maintenance;
 pub mod manifest;
 mod network;
 mod process;
+mod relay;
 mod sandbox_etc;
 mod scope_client;
 mod scope_docker;
@@ -53,6 +54,7 @@ pub struct Local {
     init: Option<OwnedFd>,
     /// The sandbox's `request.sock`, from `Started` until it stops.
     listener: Option<UnixListener>,
+    relay: relay::Relay,
     /// The helper's pidfd, until the payload's exit is reported.
     exit_watch: Option<OwnedFd>,
     /// PTYs allocated for processes init has not reported started.

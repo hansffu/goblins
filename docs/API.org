@@ -340,6 +340,8 @@ Pages through the communications audit log. Host only.
 
 A sandbox sees only itself and the goblins it controls. Results never contain host paths, process identities or terminal sockets.
 
+Sandbox requests pass transport and parameter validation, then configuration policy and implementation support, before live state and capacity checks. A running =allowNix= goblin that requests a package while another request is pending therefore gets =-32602= with =this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request=, rather than a pending-request conflict. Likewise, a non-owner whose configuration permits no run targets gets =-32602= with =configuration 'reviewer' permits no run targets= when its configuration is =reviewer=, before the live raid-owner check; a non-owner requesting a permitted target still gets the raid-owner =-32009= refusal. After stop is requested and before the goblin stops, calls other than =initialize= and messaging get =conflict= before their method checks; calls before initialization still get =-32001=.
+
 ** Self
 
 *** =sessions.status=

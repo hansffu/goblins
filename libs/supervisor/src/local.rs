@@ -72,6 +72,7 @@ impl Local {
             cancels: BTreeMap::new(),
             init: None,
             listener: None,
+            relay: Default::default(),
             exit_watch: None,
             masters: BTreeMap::new(),
             buffer: vec![],
@@ -115,10 +116,13 @@ impl Local {
                                 } = *endpoints;
                                 self.init = Some(control);
                                 self.exit_watch = Some(exit_watch);
-                                self.listener = (!self.stopping).then_some(listener);
+                                self.listener = Some(listener);
                             }
                         }
-                        Event::Stopped { .. } => self.listener = None,
+                        Event::Stopped { .. } => {
+                            self.listener = None;
+                            self.relay.end(&mut self.events);
+                        }
                         _ => (),
                     }
                     self.report(event);
@@ -130,6 +134,10 @@ impl Local {
                 // between those two observations.
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.ended = self.worker.finished();
+                    if self.ended {
+                        self.listener = None;
+                        self.relay.end(&mut self.events);
+                    }
                     break;
                 }
             }
@@ -146,11 +154,18 @@ impl Local {
             };
             match listener.accept() {
                 Ok((stream, _)) => {
-                    self.report(Event::SandboxConnected(OwnedFd::from(stream).into()))
+                    self.relay.open(stream, &mut self.events);
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
                 Err(_) => break,
             }
+        }
+        if let Some((policy, support)) = &self.capabilities {
+            self.relay.tick(
+                &Capabilities { policy, support },
+                self.stopping,
+                &mut self.events,
+            );
         }
         self.finish_host_jobs();
         // Observe process exit independently of a worker blocked on Nix.
@@ -391,6 +406,11 @@ impl Runtime for Local {
             }
         }
         match command {
+            Command::SandboxSend {
+                connection,
+                message,
+            } => self.relay.send(connection, message),
+            Command::SandboxClose { connection } => self.relay.close(connection),
             Command::ScopeFailed => {
                 self.worker
                     .failed_scope
@@ -417,7 +437,6 @@ impl Runtime for Local {
                 self.worker.cancel.cancel();
                 self.cancels.clear();
                 self.stopping = true;
-                self.listener = None;
             }
             Command::Spawn {
                 id,
@@ -803,12 +822,13 @@ mod tests {
         let events = round(&mut local);
         assert!(matches!(
             events.as_slice(),
-            [Event::SandboxConnected(_), Event::PayloadExited]
+            [Event::SandboxOpened { .. }, Event::PayloadExited]
         ));
         assert!(round(&mut local).is_empty());
-        // Stop closes the request socket; init's end closes its channel.
+        // Stop retains the request socket for initialize/messaging until Stopped;
+        // init's end closes its channel.
         local.send(Command::Stop).unwrap();
-        assert!(local.listener.is_none());
+        assert!(local.listener.is_some());
         // Shut the peer down, so init's end reads as closed at once, even
         // while a process another test forks holds a copy of the descriptor.
         assert_eq!(
@@ -901,6 +921,132 @@ mod tests {
         let mut local = Local::new(worker, PathBuf::from("/nonexistent"));
         local.capabilities = Some((Policy::fixture("shell", &[]), Support::linux()));
         local
+    }
+
+    #[test]
+    fn relay_endpoints_wait_for_started_and_survive_stop_until_stopped() {
+        use std::io::Write;
+        let directory = unix::temp_directory().unwrap();
+        let listener = UnixListener::bind(directory.join("request.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut client =
+            std::os::unix::net::UnixStream::connect(directory.join("request.sock")).unwrap();
+        let (mut worker, _, results) = worker();
+        let (sender, endpoints) = mpsc::sync_channel(1);
+        worker.endpoints = endpoints;
+        let (control, _sandbox) = init::pair().unwrap();
+        let (exit_watch, _exit) = unix::pipe().unwrap();
+        sender
+            .send(Box::new(Endpoints {
+                control,
+                listener,
+                exit_watch,
+            }))
+            .unwrap();
+        let mut local = Local::new(worker, directory.join("host-jobs"));
+        assert!(
+            std::iter::from_fn(|| local.poll())
+                .collect::<Vec<_>>()
+                .is_empty()
+        );
+        results.send(started(Support::linux(), false)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::Started { .. },
+                Event::SandboxOpened { connection: 1 }
+            ]
+        ));
+        local.send(Command::Stop).unwrap();
+        client
+            .write_all(
+                &goblins_jsonrpc::encode(&goblins_jsonrpc::request(
+                    serde_json::json!(1),
+                    "initialize",
+                    serde_json::json!({"api":1}),
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(
+            matches!(events.as_slice(), [Event::SandboxCall { call, .. }] if call.method == "initialize")
+        );
+        local
+            .send(Command::SandboxSend {
+                connection: 1,
+                message: goblins_jsonrpc::result(
+                    serde_json::json!(1),
+                    serde_json::json!({"api":1}),
+                ),
+            })
+            .unwrap();
+        assert!(
+            std::iter::from_fn(|| local.poll())
+                .collect::<Vec<_>>()
+                .is_empty()
+        );
+        assert_eq!(
+            goblins_jsonrpc::read_started(&mut client, Some(std::time::Instant::now())).unwrap()["result"]
+                ["api"],
+            1
+        );
+        client
+            .write_all(
+                &goblins_jsonrpc::encode(&goblins_jsonrpc::request(
+                    serde_json::json!(2),
+                    "inbox.status",
+                    serde_json::json!({}),
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(
+            matches!(events.as_slice(), [Event::SandboxCall { call, .. }] if call.method == "inbox.status")
+        );
+        results.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::SandboxClosed { connection: 1 },
+                Event::Stopped { .. }
+            ]
+        ));
+        assert!(local.listener.is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn relay_send_and_close_are_not_refused_by_a_full_worker_queue() {
+        let (worker, _received, _results) = worker();
+        let mut local = ready(worker);
+        for approval in 0..4 {
+            local
+                .send(Command::Preview {
+                    approval,
+                    package: "hello".into(),
+                })
+                .unwrap();
+        }
+        assert!(
+            local
+                .send(Command::Preview {
+                    approval: 5,
+                    package: "hello".into()
+                })
+                .is_err()
+        );
+        local
+            .send(Command::SandboxSend {
+                connection: 1,
+                message: serde_json::json!({}),
+            })
+            .unwrap();
+        local.send(Command::SandboxClose { connection: 1 }).unwrap();
+        assert!(!local.stopping);
     }
     fn spawn(kind: SpawnKind) -> Command {
         Command::Spawn {

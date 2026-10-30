@@ -222,10 +222,20 @@ fn relay(
     pipes: &mut [Pipe],
     master: Option<&OwnedFd>,
 ) -> Result<Value> {
+    relay_with_clock(stream, id, pipes, master, Instant::now)
+}
+
+fn relay_with_clock(
+    stream: &mut std::os::unix::net::UnixStream,
+    id: &Value,
+    pipes: &mut [Pipe],
+    master: Option<&OwnedFd>,
+    mut clock: impl FnMut() -> Instant,
+) -> Result<Value> {
     let mut decoder = Decoder::new(rpc::MAX_BODY, None);
     let mut reply: Option<Value> = None;
     let mut finished: Option<Instant> = None;
-    let mut last_output = Instant::now();
+    let mut last_output = clock();
     loop {
         for (flag, signal) in [
             (&INT, libc::SIGINT),
@@ -249,7 +259,7 @@ fn relay(
         }
         if let Some(at) = finished {
             let outputs_done = pipes.iter().skip(1).all(Pipe::done);
-            let now = Instant::now();
+            let now = clock();
             if outputs_done
                 || now.duration_since(last_output) >= DRAIN_IDLE
                 || now.duration_since(at) >= DRAIN_LIMIT
@@ -302,12 +312,16 @@ fn relay(
             match stream.read(&mut bytes) {
                 Ok(0) => return Err("lost the connection to the daemon".into()),
                 Ok(n) => {
-                    let (_, body) = decoder.push(&bytes[..n], Instant::now())?;
+                    let (_, body) = decoder.push(&bytes[..n], clock())?;
                     if let Some(body) = body {
                         let value = rpc::parse(&body)?;
                         rpc::validate_response(&value, id)?;
                         reply = Some(value);
-                        finished = Some(Instant::now());
+                        let at = clock();
+                        finished = Some(at);
+                        // Pre-exit silence is not part of the post-exit drain.
+                        // Output readiness can follow the exit-status poll.
+                        last_output = at;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => (),
@@ -325,7 +339,7 @@ fn relay(
                 if n > 0 {
                     pipe.buffer.extend_from_slice(&bytes[..n as usize]);
                     if i > 0 {
-                        last_output = Instant::now();
+                        last_output = clock();
                     }
                 } else {
                     let error = io::Error::last_os_error();
@@ -391,4 +405,166 @@ fn write_all(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        fs::File,
+        os::unix::net::UnixStream,
+        process::{Child, Command, Stdio},
+    };
+
+    #[test]
+    fn finished_relay_stops_at_the_idle_bound_even_with_a_retained_writer() {
+        let _no_forks = unix::no_forks();
+        let (mut stream, mut daemon) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (input, _retained_writer) = unix::pipe().unwrap();
+        let (_captured, output) = unix::pipe().unwrap();
+        unix::nonblocking(input.as_raw_fd()).unwrap();
+        let expected = rpc::result(json!(1), json!({"code":7}));
+        daemon.write_all(&rpc::encode(&expected).unwrap()).unwrap();
+        let mut pipes = [
+            Pipe {
+                from: None,
+                to: None,
+                buffer: vec![],
+                close: None,
+            },
+            Pipe::new(input.as_raw_fd(), output.as_raw_fd()),
+        ];
+        let at = Instant::now();
+        let mut reads = 0;
+        let reply = relay_with_clock(&mut stream, &json!(1), &mut pipes, None, || {
+            reads += 1;
+            match reads {
+                1..=3 => at,
+                4 => at + DRAIN_IDLE,
+                _ => at + DRAIN_LIMIT,
+            }
+        })
+        .unwrap();
+        assert_eq!(reply, expected);
+        assert_eq!(reads, 4, "idle bound waited for EOF or the absolute bound");
+        assert!(pipes[1].from.is_some());
+    }
+
+    #[test]
+    fn finished_relay_stops_at_the_absolute_bound_despite_recent_output() {
+        let _no_forks = unix::no_forks();
+        let (mut stream, mut daemon) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (input, writer) = unix::pipe().unwrap();
+        let mut writer = File::from(writer);
+        unix::nonblocking(input.as_raw_fd()).unwrap();
+        let (captured, output) = unix::pipe().unwrap();
+        writer.write_all(b"x").unwrap();
+        let expected = rpc::result(json!(1), json!({"code":7}));
+        daemon.write_all(&rpc::encode(&expected).unwrap()).unwrap();
+        let mut pipes = [
+            Pipe {
+                from: None,
+                to: None,
+                buffer: vec![],
+                close: None,
+            },
+            Pipe::new(input.as_raw_fd(), output.as_raw_fd()),
+        ];
+        let at = Instant::now();
+        let mut reads = 0;
+        let reply = relay_with_clock(&mut stream, &json!(1), &mut pipes, None, || {
+            reads += 1;
+            match reads {
+                1..=3 => at,
+                4 => at + Duration::from_millis(100),
+                5 => {
+                    writer.write_all(b"y").unwrap();
+                    at + Duration::from_millis(150)
+                }
+                6 => at + DRAIN_LIMIT - Duration::from_millis(100),
+                7 => at + DRAIN_LIMIT,
+                _ => at + DRAIN_LIMIT + DRAIN_IDLE,
+            }
+        })
+        .unwrap();
+        assert_eq!(reply, expected);
+        assert_eq!(reads, 7, "fresh output bypassed the absolute drain bound");
+        assert!(pipes[1].from.is_some());
+        drop(output);
+        let mut text = vec![];
+        File::from(captured).read_to_end(&mut text).unwrap();
+        assert_eq!(text, b"xy");
+    }
+
+    #[test]
+    fn silent_command_status_does_not_discard_pty_output_ready_after_the_poll() {
+        let _fork = unix::forking();
+        let (mut stream, mut daemon) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        unix::nonblocking(master.as_raw_fd()).unwrap();
+        let (captured, output) = unix::pipe().unwrap();
+        struct Running {
+            child: Child,
+            reaped: bool,
+        }
+        impl Drop for Running {
+            fn drop(&mut self) {
+                if !self.reaped {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                }
+            }
+        }
+        let mut child = Running { child: Command::new("sh")
+            .args(["-c", "read gate; printf 'goblins: opening the files in Emacs was refused\\n' >&2; exit 7"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::from(File::from(slave.try_clone().unwrap())))
+            .stderr(Stdio::from(File::from(slave)))
+            .spawn().unwrap(), reaped: false };
+        let expected = rpc::result(json!(1), json!({"code":7}));
+        daemon.write_all(&rpc::encode(&expected).unwrap()).unwrap();
+        let mut pipes = [
+            Pipe {
+                from: None,
+                to: None,
+                buffer: vec![],
+                close: None,
+            },
+            Pipe::new(master.as_raw_fd(), output.as_raw_fd()),
+        ];
+        let started = Instant::now();
+        let after_silence = started + DRAIN_IDLE * 2;
+        let mut clock_reads = 0;
+        let reply = relay_with_clock(&mut stream, &json!(1), &mut pipes, Some(&master), || {
+            clock_reads += 1;
+            if clock_reads == 3 {
+                // This is exit observation, after poll took its readiness
+                // snapshot with no PTY output. Make final output ready now.
+                child
+                    .child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(b"go\n")
+                    .unwrap();
+                assert_eq!(child.child.wait().unwrap().code(), Some(7));
+                child.reaped = true;
+            }
+            if clock_reads == 1 {
+                started
+            } else {
+                after_silence
+            }
+        })
+        .unwrap();
+        assert!(child.reaped);
+        assert_eq!(reply, expected);
+        drop(output);
+        let mut text = vec![];
+        File::from(captured).read_to_end(&mut text).unwrap();
+        assert_eq!(text, b"goblins: opening the files in Emacs was refused\r\n");
+    }
 }

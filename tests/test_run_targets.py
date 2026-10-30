@@ -498,14 +498,17 @@ class RunTargetTests(RunTargetFixture):
         self.refused(root, "unlisted", "configuration 'unlisted' is not an allowed run target of 'coordinator'; "
                                        "allowed: coordinator, reviewer, shell, broken, unscoped")
         reviewer = self.launch(root, "reviewer")
-        # Only the owner runs members; as owner, an empty list permits nothing.
-        self.refused(reviewer, "reviewer",
-                     "only a raid owner can run goblins; create one with goblin raid create NAME", -32009)
+        # Approved refusal-order exception: policy precedes live raid state.
+        # An empty list refuses the target even while the caller isn't owner.
+        self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no run targets", -32602)
         self.owner(reviewer)
         self.refused(reviewer, "reviewer", "configuration 'reviewer' permits no run targets")
         # Ownership moves on; a shell owner may run only what its list names.
         self.owner(root)
         shell = self.launch(root, "shell")
+        # A permitted target still requires ownership: the gate grants none.
+        self.refused(shell, "reviewer",
+                     "only a raid owner can run goblins; create one with goblin raid create NAME", -32009)
         self.owner(shell)
         leaf = self.launch(shell, "reviewer", "leaf")
         self.assertEqual(self.d.get(leaf["session"])["created_by"]["id"], shell["session"])

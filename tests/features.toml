@@ -13,7 +13,7 @@ broad = [
   "packages/mount-helper/*", "packages/supervisor-bwrap/*", "packages/daemon/src/scopes.rs", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
   "libs/supervisor/src/lib.rs", "libs/supervisor/src/manifest.rs", "libs/supervisor/src/maintenance.rs", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "packages/daemon/src/controller.rs", "libs/supervisor/src/session.rs",
-  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "packages/daemon/src/controller/policy.rs",
+  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
   "libs/supervisor/src/config.rs",
   "libs/unix/src/lib.rs", "libs/supervisor/src/process.rs",
   "libs/supervisor/src/seccomp.rs", "libs/supervisor/src/sandbox_etc.rs",
@@ -41,7 +41,7 @@ paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "pac
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
-python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected"]
+python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected", "test_terminal_support"]
 checks = ["rust"]
 paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs"]
 
@@ -114,7 +114,7 @@ paths = ["emacs/*.el", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
-python = ["test_runner", "test_features", "test_dependencies"]
+python = ["test_runner", "test_features", "test_dependencies", "test_terminal_support"]
 checks = []
 paths = []
 

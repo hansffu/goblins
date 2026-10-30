@@ -13,7 +13,6 @@ use goblins_jsonrpc as rpc;
 use goblins_protocol::rpc::HostCommand;
 use goblins_runtime::Command;
 use goblins_runtime::HostOutcome;
-use goblins_runtime::policy::Operation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -160,8 +159,7 @@ impl Controller {
     /// Check a `host-command` request from `session` before its runtime
     /// resolves the directory.
     pub(super) fn host_check(&self, session: &str) -> Result<(), Fault> {
-        let a = self.sessions.get(session).ok_or_else(missing)?;
-        a.allow(&Operation::HostCommand)?;
+        self.sessions.get(session).ok_or_else(missing)?;
         let active = self
             .host_jobs
             .iter()

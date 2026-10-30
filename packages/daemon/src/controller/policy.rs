@@ -1,27 +1,10 @@
-use super::Fault;
-use goblins_runtime::policy::*;
-pub fn fault(refusal: Refusal) -> Fault {
-    match refusal {
-        Refusal::Policy { code, message } => (code, message),
-        // Unreachable on Linux, which supports every feature. The code
-        // and its API.org entry belong to the first backend that reports
-        // reduced Support (plan 4.4), not to this refactor.
-        Refusal::Unsupported(feature) => (
-            -32009,
-            format!(
-                "not supported by this sandbox: {}",
-                serde_json::to_value(feature)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default()
-            ),
-        ),
-    }
-}
+pub use goblins_runtime::sandbox::fault;
 #[cfg(test)]
 mod tests {
+    use super::super::Fault;
     use super::*;
     use goblins_runtime::config::Handlers;
+    use goblins_runtime::policy::*;
     use goblins_runtime::{NIX_DEV_SHELL, NIX_PACKAGES};
 
     pub(crate) fn policy() -> Policy {

@@ -325,7 +325,11 @@ enum Role {
 struct Connection {
     id: u64,
     role: Role,
-    peer: UnixStream,
+    /// Host transport only; relayed sandbox connections own no socket.
+    peer: Option<UnixStream>,
+    relay: Option<u64>,
+    incoming: Option<rpc::Call>,
+    messages: VecDeque<Value>,
     decoder: Decoder,
     input: Vec<u8>,
     output: VecDeque<Vec<u8>>,
@@ -360,11 +364,22 @@ impl Connection {
     }
     fn new(id: u64, role: Role, peer: UnixStream) -> Result<Self> {
         peer.set_nonblocking(true)?;
+        Ok(Self::base(id, role, Some(peer)))
+    }
+    fn relayed(id: u64, session: String, connection: u64) -> Self {
+        let mut peer = Self::base(id, Role::Sandbox(session), None);
+        peer.relay = Some(connection);
+        peer
+    }
+    fn base(id: u64, role: Role, peer: Option<UnixStream>) -> Self {
         let limit = goblins_protocol::messages::MAX_REQUEST;
-        Ok(Self {
+        Self {
             id,
             role,
             peer,
+            relay: None,
+            incoming: None,
+            messages: VecDeque::new(),
             decoder: Decoder::new(limit, Some(Instant::now())),
             input: vec![],
             output: VecDeque::new(),
@@ -379,9 +394,13 @@ impl Connection {
             subscription: None,
             fds: Vec::new(),
             exec: None,
-        })
+        }
     }
     fn queue(&mut self, value: Value) {
+        if self.relay.is_some() {
+            self.messages.push_back(value);
+            return;
+        }
         match rpc::encode(&value) {
             Ok(data) if self.queued + data.len() <= QUEUE => {
                 self.queued += data.len();
@@ -391,9 +410,10 @@ impl Connection {
         }
     }
     fn flush(&mut self) {
+        let Some(peer) = &mut self.peer else { return };
         // One bounded write per tick; a slow subscriber cannot hold authority.
         if let Some(front) = self.output.front() {
-            match self.peer.write(&front[self.offset..]) {
+            match peer.write(&front[self.offset..]) {
                 Ok(0) => self.dead = true,
                 Ok(n) => {
                     self.offset += n;
@@ -419,9 +439,12 @@ impl Connection {
         if self.close || self.dead {
             return None;
         }
+        let Some(peer) = &self.peer else {
+            return self.incoming.take();
+        };
         let mut bytes = [0; 16384];
         let waiting = self.waiting.is_some() && self.exec.is_none();
-        match goblins_init::receive(self.peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT) {
+        match goblins_init::receive(peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT) {
             Ok((0, _)) => {
                 self.dead = true;
                 return None;
@@ -457,19 +480,14 @@ impl Connection {
                 if let Some(body) = body {
                     self.body_bytes = body.len();
                     self.calls += 1;
-                    let limit = if matches!(self.role, Role::Host) {
-                        4096
-                    } else {
-                        2
-                    };
-                    if self.calls > limit {
+                    if self.calls > 4096 {
                         self.dead = true;
                         return None;
                     }
                     let limit = goblins_protocol::messages::MAX_REQUEST;
                     self.decoder = Decoder::new(
                         limit,
-                        if matches!(self.role, Role::Sandbox(_)) || !self.initialized {
+                        if !self.initialized {
                             Some(Instant::now())
                         } else {
                             None
@@ -527,15 +545,7 @@ struct Start {
     #[serde(skip)]
     recorded: Option<Box<crate::history::Record>>,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MemberStart {
-    key: String,
-    name: String,
-    agent_name: Option<String>,
-    #[serde(default)]
-    detached: bool,
-}
+use goblins_runtime::sandbox::MemberStart;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stop {
@@ -1811,7 +1821,7 @@ impl Controller {
     /// The checks a raid owner's run passes before anything is allocated:
     /// it owns an unpaused raid, runs, and its configuration permits the
     /// target. Its live scope is held from here on.
-    fn member_owner(&mut self, owner: &str, target: &str) -> std::result::Result<Owner, Fault> {
+    fn member_owner(&mut self, owner: &str, _target: &str) -> std::result::Result<Owner, Fault> {
         let raid = self.raids.of(owner);
         if raid.is_none_or(|r| r.owner.as_deref() != Some(owner)) {
             return Err((
@@ -1823,9 +1833,6 @@ impl Controller {
         if a.record.state != "running" || a.runtime.is_none() {
             return Err(conflict());
         }
-        a.allow(&Operation::RunMember {
-            configuration: target.into(),
-        })?;
         let policy = a.policy.as_deref().ok_or_else(conflict)?;
         let scope = match &policy.scope {
             None => None,
@@ -1846,6 +1853,35 @@ impl Controller {
             scope_name: policy.scope.as_ref().map(|s| s.name.clone()),
         })
     }
+    #[cfg(test)]
+    fn sandbox_control_for_test(
+        &mut self,
+        session: &str,
+        method: &str,
+        value: Value,
+    ) -> std::result::Result<Value, Fault> {
+        let a = self.sessions.get(session).ok_or_else(missing)?;
+        let policy = a.policy.as_deref().ok_or_else(conflict)?;
+        let call = rpc::Call {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: method.into(),
+            params: value.clone(),
+        };
+        goblins_runtime::sandbox::check(
+            &Capabilities {
+                policy,
+                support: &a.support,
+            },
+            &call,
+            0,
+            true,
+            a.record.state != "running",
+            false,
+        )
+        .map_err(policy::fault)?;
+        self.sandbox_control(session, method, value)
+    }
     fn sandbox_control(
         &mut self,
         scope: &str,
@@ -1864,7 +1900,6 @@ impl Controller {
             }
             "sessions.set-variables" => {
                 let p: goblins_protocol::SetVariables = params(value)?;
-                p.validate().map_err(|e| (-32602, e))?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
                 if a.record.state != "running" || a.runtime.is_none() {
                     return Err(conflict());
@@ -2025,24 +2060,17 @@ impl Controller {
                     .into(),
             ));
         }
-        // Order a decision against bytes/EOF already present, consuming
-        // unexpected input instead of letting it hide a disconnected peer.
-        if pending.detached {
-            // No connection waits for a detached host command.
-        } else if let Some(peer) = self
-            .connections
-            .iter_mut()
-            .find(|c| c.id == pending.connection)
+        // The runtime reports EOF/unexpected input in SandboxClosed. An
+        // unobserved hang-up has the same outcome as a hang-up just after
+        // this synchronous decision: its reply has no reader.
+        if !pending.detached
+            && !self
+                .connections
+                .iter()
+                .any(|c| c.id == pending.connection && !c.dead)
         {
-            let mut byte = [0];
-            if !matches!(peer.peer.read(&mut byte),Err(e) if matches!(e.kind(),io::ErrorKind::WouldBlock|io::ErrorKind::Interrupted))
-            {
-                peer.dead = true;
-                let id = peer.id;
-                self.withdraw(id);
-                return Err(conflict());
-            }
-        } else {
+            let connection = pending.connection;
+            self.withdraw(connection);
             return Err(conflict());
         }
         let request = self.permissions.iter().find(|r| r.id == p.request).unwrap();
@@ -2254,6 +2282,33 @@ impl Controller {
         }
     }
     fn dispatch(&mut self, c: &mut Connection, call: rpc::Call) {
+        // Older controller fixtures dispatch a sandbox call directly. Feed
+        // those through the real gate; production calls arrive already gated.
+        #[cfg(test)]
+        if c.relay.is_none()
+            && call.id.is_some()
+            && let Role::Sandbox(session) = &c.role
+        {
+            let fallback = Policy::fixture("shell", &[]);
+            let a = self.sessions.get(session);
+            let linux = Support::linux();
+            let capabilities = Capabilities {
+                policy: a.and_then(|a| a.policy.as_deref()).unwrap_or(&fallback),
+                support: a.map_or(&linux, |a| &a.support),
+            };
+            if let Err(refusal) = goblins_runtime::sandbox::check(
+                &capabilities,
+                &call,
+                c.body_bytes,
+                c.initialized,
+                a.is_some_and(|a| a.record.state != "running"),
+                !c.input.is_empty(),
+            ) {
+                c.answer(call.id.unwrap(), Err(policy::fault(refusal)));
+                return;
+            }
+        }
+
         // Every authorization below sees current membership.
         self.reconcile_raids();
         // JSON-RPC notifications get no response and cannot authorize mutations.
@@ -2274,16 +2329,8 @@ impl Controller {
             );
             // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
             // Host commands carry argument lists (goblins_protocol::rpc::MAX_HOST_COMMAND).
-            let legacy_limit = if matches!(c.role, Role::Host)
-                || matches!(
-                    call.method.as_str(),
-                    "sessions.set-variables" | "permissions.request"
-                ) {
-                16384
-            } else {
-                4096
-            };
-            if !messaging && c.body_bytes > legacy_limit {
+            let legacy_limit = 16384;
+            if matches!(c.role, Role::Host) && !messaging && c.body_bytes > legacy_limit {
                 return Err((-32602, "request exceeds method frame limit".into()));
             }
             if call.method == "initialize" {
@@ -2295,14 +2342,9 @@ impl Controller {
                     return Err((-32002, "unsupported Goblins API".into()));
                 }
                 c.initialized = true;
-                c.decoder = if matches!(c.role, Role::Sandbox(_)) {
-                    Decoder::new(
-                        goblins_protocol::messages::MAX_REQUEST,
-                        Some(Instant::now()),
-                    )
-                } else {
-                    Decoder::new(goblins_protocol::messages::MAX_REQUEST, None)
-                };
+                if matches!(c.role, Role::Host) {
+                    c.decoder = Decoder::new(goblins_protocol::messages::MAX_REQUEST, None);
+                }
                 return Ok(Some(
                     json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{match &c.role { Role::Sandbox(id) => self.sessions.get(id).map_or_else(|| Support::linux().sandbox_features(), |a| a.support.sandbox_features()), Role::Host => vec![] }},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
@@ -2365,10 +2407,6 @@ impl Controller {
                     }
                     if call.method == "sessions.detach" {
                         let _: Empty = params(call.params)?;
-                        if !c.input.is_empty() {
-                            c.dead = true;
-                            return Err((-32600, "unexpected trailing input".into()));
-                        }
                         // Endpoint identity selects this sandbox. No caller-
                         // supplied session/name can affect another sandbox.
                         let session = session.clone();
@@ -2384,33 +2422,19 @@ impl Controller {
                         ));
                     }
                     if call.method == "editor.open" {
-                        if !c.input.is_empty() {
-                            c.dead = true;
-                            return Err((-32600, "unexpected trailing input".into()));
-                        }
                         return self
                             .editor_open(c, &session, id.clone(), call.params)
                             .map(|()| None);
                     }
                     if matches!(call.method.as_str(), "flake.run" | "devshell.diff") {
-                        if !c.input.is_empty() {
-                            c.dead = true;
-                            return Err((-32600, "unexpected trailing input".into()));
-                        }
                         let serial = self.number();
                         let command = if call.method == "flake.run" {
                             let p: FlakeRunParams = params(call.params)?;
-                            if !p.validate() {
-                                return Err((-32602, "invalid app name".into()));
-                            }
                             // The trusted generation's own source and lock grant
                             // no new trust, so nothing is asked of the host.
                             Command::Run { serial, app: p.app }
                         } else {
                             let p: DevShellDiffParams = params(call.params)?;
-                            if !p.validate() {
-                                return Err((-32602, "invalid flake inputs".into()));
-                            }
                             // A preview only: no record, no candidate, no change.
                             Command::Diff {
                                 serial,
@@ -2421,11 +2445,6 @@ impl Controller {
                             }
                         };
                         let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
-                        a.allow(&if call.method == "flake.run" {
-                            Operation::FlakeRun
-                        } else {
-                            Operation::DevShellDiff
-                        })?;
                         if a.call.is_some() {
                             return Err((
                                 -32009,
@@ -2449,28 +2468,15 @@ impl Controller {
                         c.close = true;
                         return Ok(Some(result));
                     }
-                    if !c.input.is_empty() {
-                        c.dead = true;
-                        return Err((-32600, "unexpected trailing input".into()));
-                    }
                     let mut p: PermissionParams = params(call.params)?;
-                    if !p.validate() {
-                        return Err((-32602, "invalid permission request or reason".into()));
-                    }
                     let session = session.clone();
                     let a = self.sessions.get(&session).ok_or_else(missing)?;
                     if a.record.state != "running" || a.pending.is_some() || a.preparing.is_some() {
                         return Err(conflict());
                     }
-                    match p.kind.as_str() {
-                        "package" => a.allow(&Operation::Package)?,
-                        "devshell" => a.allow(&Operation::DevShellRefresh)?,
-                        "docker" => {
-                            a.allow(&Operation::Docker)?;
-                            p.package =
-                                format!("Docker scope: {}", a.docker_scope().unwrap_or_default());
-                        }
-                        _ => (),
+                    if p.kind == "docker" {
+                        p.package =
+                            format!("Docker scope: {}", a.docker_scope().unwrap_or_default());
                     }
                     if p.kind == "package" && a.record.packages.len() >= 64 {
                         return Err(capacity());
@@ -2824,21 +2830,35 @@ impl Controller {
                             }
                         }
                     }
-                    Event::SandboxConnected(stream) => {
-                        if self
-                            .connections
-                            .iter()
-                            .filter(|c| matches!(&c.role,Role::Sandbox(s) if s==&id))
-                            .count()
-                            < 8
-                        {
+                    Event::SandboxOpened { connection } => {
+                        if !["stopped", "failed"].contains(&a.record.state.as_str()) {
                             let cid = self.number();
-                            let stream = UnixStream::from(OwnedFd::from(stream));
-                            self.connections.push(Connection::new(
-                                cid,
-                                Role::Sandbox(id.clone()),
-                                stream,
-                            )?);
+                            self.connections
+                                .push(Connection::relayed(cid, id.clone(), connection));
+                        } else if let Some(runtime) = &mut a.runtime {
+                            let _ = runtime.send(Command::SandboxClose { connection });
+                        }
+                    }
+                    Event::SandboxCall { connection, call } => {
+                        if !["stopped", "failed"].contains(&a.record.state.as_str())
+                            && let Some(c) = self.connections.iter_mut().find(|c| {
+                                matches!(&c.role, Role::Sandbox(s) if s == &id)
+                                    && c.relay == Some(connection)
+                                    && !c.dead
+                            })
+                            && c.incoming.is_none()
+                        {
+                            c.incoming = Some(call);
+                        } else if let Some(runtime) = &mut a.runtime {
+                            let _ = runtime.send(Command::SandboxClose { connection });
+                        }
+                    }
+                    Event::SandboxClosed { connection } => {
+                        if let Some(c) = self.connections.iter_mut().find(|c| {
+                            matches!(&c.role, Role::Sandbox(s) if s == &id)
+                                && c.relay == Some(connection)
+                        }) {
+                            c.dead = true;
                         }
                     }
                     Event::PayloadExited => payload_exited = true,
@@ -3103,6 +3123,11 @@ impl Controller {
                 }
             }
             if runtime_ended {
+                for c in &mut self.connections {
+                    if matches!(&c.role, Role::Sandbox(session) if session == &id) {
+                        c.dead = true;
+                    }
+                }
                 a.runtime.take();
                 a.policy.take();
                 a.launch_manifest = None;
@@ -3240,8 +3265,33 @@ impl Controller {
                 continue;
             };
             let mut c = self.connections.remove(index);
-            self.service(&mut c);
-            c.flush();
+            if !c.dead {
+                self.service(&mut c);
+            }
+            if let (Role::Sandbox(session), Some(connection)) = (&c.role, c.relay) {
+                if let Some(runtime) = self
+                    .sessions
+                    .get_mut(session)
+                    .and_then(|a| a.runtime.as_mut())
+                {
+                    if !c.dead {
+                        for message in c.messages.drain(..) {
+                            let _ = runtime.send(Command::SandboxSend {
+                                connection,
+                                message,
+                            });
+                        }
+                    }
+                    if c.close || c.dead {
+                        let _ = runtime.send(Command::SandboxClose { connection });
+                        c.close = false;
+                    }
+                } else {
+                    c.dead = true;
+                }
+            } else {
+                c.flush();
+            }
             if c.dead {
                 self.withdraw(c.id);
             } else {
@@ -3596,6 +3646,48 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn run_target_policy_precedes_ownership_without_granting_raid_authority() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        for (targets, target, expected) in [
+            (
+                &[][..],
+                "reviewer",
+                (-32602, "configuration 'reviewer' permits no run targets"),
+            ),
+            (
+                &["reviewer"][..],
+                "reviewer",
+                (
+                    -32009,
+                    "only a raid owner can run goblins; create one with goblin raid create NAME",
+                ),
+            ),
+            (
+                &["reviewer"][..],
+                "other",
+                (
+                    -32602,
+                    "configuration 'other' is not an allowed run target of 'reviewer'; allowed: reviewer",
+                ),
+            ),
+        ] {
+            d.sessions
+                .get_mut("a")
+                .unwrap()
+                .set_policy(policy_fixture("reviewer", targets));
+            let error = d
+                .sandbox_control_for_test("a", "sessions.start", json!({"key":"k","name":target}))
+                .unwrap_err();
+            assert_eq!((error.0, error.1.as_str()), expected);
+            assert!(d.launches.is_empty());
+            assert_eq!(d.sessions.len(), 1);
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn raid_owners_run_their_own_targets_from_the_current_manifest() {
         let mut d = daemon();
         let path = d.state.clone();
@@ -3617,7 +3709,8 @@ mod tests {
             json!({"key": format!("k{}", keys.get()), "name": name, "agent_name": null})
         };
         let refused = |d: &mut Controller, scope: &str, p: Value| {
-            d.sandbox_control(scope, "sessions.start", p).unwrap_err()
+            d.sandbox_control_for_test(scope, "sessions.start", p)
+                .unwrap_err()
         };
         // Only the owner of an unpaused raid runs goblins.
         let not_owner = (
@@ -3626,7 +3719,7 @@ mod tests {
                 .to_string(),
         );
         assert_eq!(refused(&mut d, &root, start("shell")), not_owner);
-        d.sandbox_control(&root, "raids.create", json!({"raid":"crew"}))
+        d.sandbox_control_for_test(&root, "raids.create", json!({"raid":"crew"}))
             .unwrap();
         let (mut host, _peer) = host_connection();
         d.host(
@@ -3658,7 +3751,7 @@ mod tests {
             .granted_outputs
             .insert("jq".into(), "/nix/store/x-jq".into());
         let accepted = d
-            .sandbox_control(&root, "sessions.start", start("shell"))
+            .sandbox_control_for_test(&root, "sessions.start", start("shell"))
             .unwrap();
         assert_eq!(accepted.as_object().unwrap().len(), 3);
         let id = accepted["session"].as_str().unwrap();
@@ -3687,7 +3780,7 @@ mod tests {
         for id in ["owner", "made", "invited", "other"] {
             live(&mut d, id);
         }
-        d.sandbox_control("owner", "raids.create", json!({"raid":"crew"}))
+        d.sandbox_control_for_test("owner", "raids.create", json!({"raid":"crew"}))
             .unwrap();
         let mut next = d.raids.clone();
         let events = next.run("owner", "made").unwrap();
@@ -3699,7 +3792,7 @@ mod tests {
         )
         .unwrap();
         let listed = d
-            .sandbox_control("owner", "sessions.list", json!({}))
+            .sandbox_control_for_test("owner", "sessions.list", json!({}))
             .unwrap();
         assert_eq!(
             listed
@@ -3713,7 +3806,7 @@ mod tests {
         for target in ["invited", "other", "owner"] {
             for method in ["sessions.get", "sessions.stop"] {
                 assert_eq!(
-                    d.sandbox_control("owner", method, json!({"session":target}))
+                    d.sandbox_control_for_test("owner", method, json!({"session":target}))
                         .unwrap_err()
                         .0,
                     -32004,
@@ -3723,7 +3816,7 @@ mod tests {
         }
         // A created member cannot leave; host-invited ones can.
         assert_eq!(
-            d.sandbox_control("made", "raids.leave", json!({}))
+            d.sandbox_control_for_test("made", "raids.leave", json!({}))
                 .unwrap_err()
                 .0,
             -32009
@@ -3736,12 +3829,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            d.sandbox_control("owner", "sessions.get", json!({"session":"made"}))
+            d.sandbox_control_for_test("owner", "sessions.get", json!({"session":"made"}))
                 .unwrap_err()
                 .0,
             -32004
         );
-        d.sandbox_control("invited", "sessions.stop", json!({"session":"made"}))
+        d.sandbox_control_for_test("invited", "sessions.stop", json!({"session":"made"}))
             .unwrap();
         assert_eq!(d.sessions["made"].record.state, "stopping");
         assert_eq!(
@@ -4039,28 +4132,31 @@ mod tests {
             json!({"state":"idle","session":id}),
             json!({"state":"idle","target":"other"}),
         ] {
-            assert!(d.sandbox_control(&id, "sessions.set-state", value).is_err());
+            assert!(
+                d.sandbox_control_for_test(&id, "sessions.set-state", value)
+                    .is_err()
+            );
         }
-        d.sandbox_control(&id, "sessions.set-state", json!({"state":"working"}))
+        d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"working"}))
             .unwrap();
         assert!(d.dirty);
         assert_eq!(d.sessions[&id].record.state, "running");
         assert_eq!(d.sessions[&id].record.agent_state, AgentState::Working);
         let at = d.sessions[&id].activity_at.unwrap();
         d.dirty = false;
-        d.sandbox_control(&id, "sessions.set-state", json!({"state":"working"}))
+        d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"working"}))
             .unwrap();
         assert!(!d.dirty); // heartbeats refresh freshness without publishing
         assert!(d.sessions[&id].activity_at.unwrap() >= at);
         d.expire_activity(at + std::time::Duration::from_secs(31));
         assert!(d.dirty);
         assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
-        d.sandbox_control(&id, "sessions.set-state", json!({"state":"waiting-input"}))
+        d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"waiting-input"}))
             .unwrap();
         d.stop(&id, None).unwrap();
         assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
         assert!(
-            d.sandbox_control(&id, "sessions.set-state", json!({"state":"idle"}))
+            d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"idle"}))
                 .is_err()
         );
         drop(d);
@@ -4570,7 +4666,7 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn policy_refusals_keep_todays_order_against_state_checks() {
+    fn sandbox_policy_refusals_precede_live_state_checks() {
         let mut d = daemon();
         let path = d.state.clone();
         live(&mut d, "a");
@@ -4596,8 +4692,9 @@ mod tests {
             "permissions.request",
             json!({"kind":"package","package":"hello","reason":"t"}),
         );
-        // Until the runtime owns the gate, state is checked before policy.
-        assert_eq!(reply["error"]["code"], conflict().0);
+        // The runtime gate now refuses policy before the daemon sees pending.
+        assert_eq!(reply["error"]["code"], -32602);
+        assert_eq!(reply["error"]["message"], goblins_runtime::NIX_PACKAGES);
         d.sessions.get_mut("a").unwrap().pending = None;
         let reply = sandbox_call(
             &mut d,
@@ -4919,7 +5016,7 @@ mod tests {
         a.record.name = "coordinator".into();
         a.record.agent_name = "boss".into();
         a.set_policy(policy_fixture("coordinator", &["shell"]));
-        d.sandbox_control(&root, "raids.create", json!({"raid":"crew"}))
+        d.sandbox_control_for_test(&root, "raids.create", json!({"raid":"crew"}))
             .unwrap();
         d.current_manifest = Some(std::sync::Arc::new(
             goblins_runtime::config::ManifestLease::unrooted(&d.state.join("current.json")),
@@ -4928,7 +5025,7 @@ mod tests {
     }
     fn run_member(d: &mut Controller, owner: &str, key: &str) -> String {
         let accepted = d
-            .sandbox_control(
+            .sandbox_control_for_test(
                 owner,
                 "sessions.start",
                 json!({"key": key, "name": "shell", "agent_name": null}),
@@ -5491,7 +5588,7 @@ mod tests {
         });
         // Variables: only the caller's own record, all keys together.
         let set = |d: &mut Controller, id: &str, variables: Value| {
-            d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
+            d.sandbox_control_for_test(id, "sessions.set-variables", json!({"variables":variables}))
         };
         assert_eq!(
             set(
@@ -5639,7 +5736,7 @@ mod tests {
         assert!(record(&d, "s5").is_none());
         // It resumes o1's conversation: one record per conversation.
         assert_eq!(
-            d.sandbox_control(
+            d.sandbox_control_for_test(
                 "s5",
                 "sessions.set-variables",
                 json!({"variables":{"session_id":"c2"}})
@@ -5831,7 +5928,7 @@ mod tests {
         for id in ["g", "kid"] {
             assert_eq!(
                 second
-                    .sandbox_control(
+                    .sandbox_control_for_test(
                         id,
                         "sessions.set-variables",
                         json!({"variables":{"session_id":"c819"}})
@@ -6029,7 +6126,7 @@ mod tests {
         assert_eq!(notice["params"]["missing"], json!(["session_id"]));
         assert!(!d.sessions["a"].record.terminal_attached);
         // Set during this run: the client starts on a PTY of its own.
-        d.sandbox_control(
+        d.sandbox_control_for_test(
             "a",
             "sessions.set-variables",
             json!({"variables":{"session_id":"c819"}}),
@@ -6385,7 +6482,7 @@ mod tests {
             )
         };
         let set = |d: &mut Controller, id: &str, variables: Value| {
-            d.sandbox_control(id, "sessions.set-variables", json!({"variables":variables}))
+            d.sandbox_control_for_test(id, "sessions.set-variables", json!({"variables":variables}))
                 .unwrap()["recorded"]
                 .clone()
         };
@@ -6440,6 +6537,170 @@ mod tests {
         a.pending = None;
         a.record.agent_name = id.into();
         results
+    }
+    fn sandbox_event(connection: u64, id: u64, method: &str, params: Value) -> Event {
+        Event::SandboxCall {
+            connection,
+            call: rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(id)),
+                method: method.into(),
+                params,
+            },
+        }
+    }
+    #[test]
+    fn relayed_ids_are_scoped_and_closed_calls_withdraw_before_a_later_decision() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let mut peers = vec![];
+        for session in ["a", "b"] {
+            live(&mut d, session);
+            let (runtime, events, received) = goblins_runtime::Fake::new();
+            d.sessions.get_mut(session).unwrap().runtime = Some(Box::new(runtime));
+            events.send(Event::SandboxOpened { connection: 1 }).unwrap();
+            events
+                .send(sandbox_event(1, 1, "initialize", json!({"api":1})))
+                .unwrap();
+            peers.push((events, received));
+        }
+        d.tick().unwrap();
+        assert_eq!(d.connections.len(), 2);
+        assert_ne!(d.connections[0].id, d.connections[1].id);
+        assert!(
+            d.connections
+                .iter()
+                .all(|c| c.peer.is_none() && c.relay == Some(1))
+        );
+        for (events, received) in &peers {
+            assert!(
+                matches!(received.lock().unwrap().pop_front(), Some(Command::SandboxSend { message, .. }) if message["result"]["role"] == "sandbox")
+            );
+            events
+                .send(sandbox_event(
+                    1,
+                    2,
+                    "permissions.request",
+                    json!({"kind":"package","package":"hello","reason":"t"}),
+                ))
+                .unwrap();
+        }
+        d.tick().unwrap();
+        let pending = d.sessions["a"].pending.as_ref().unwrap();
+        let request = d
+            .permissions
+            .iter()
+            .find(|r| r.id == pending.id)
+            .unwrap()
+            .clone();
+        assert_eq!(request.state, "pending");
+        let other_request = d.sessions["b"].pending.as_ref().unwrap().id.clone();
+        peers[0]
+            .0
+            .send(Event::SandboxClosed { connection: 1 })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(d.sessions["a"].pending.is_none());
+        assert_eq!(d.sessions["b"].pending.as_ref().unwrap().id, other_request);
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request.id)
+                .unwrap()
+                .state,
+            "withdrawn"
+        );
+        assert_eq!(
+            d.decide(
+                Decision {
+                    session: "a".into(),
+                    request: request.id,
+                    approval: request.approval,
+                    approved: false
+                },
+                "host"
+            )
+            .unwrap_err(),
+            conflict()
+        );
+        assert!(
+            peers[0]
+                .1
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::Cancel(_)))
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_decision_before_closed_is_observed_stands_and_post_stopped_calls_are_ignored() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        events.send(Event::SandboxOpened { connection: 1 }).unwrap();
+        events
+            .send(sandbox_event(1, 1, "initialize", json!({"api":1})))
+            .unwrap();
+        d.tick().unwrap();
+        received.lock().unwrap().clear();
+        events
+            .send(sandbox_event(
+                1,
+                2,
+                "permissions.request",
+                json!({"kind":"package","package":"hello","reason":"t"}),
+            ))
+            .unwrap();
+        d.tick().unwrap();
+        let request = d.permissions.back().unwrap().clone();
+        events.send(Event::SandboxClosed { connection: 1 }).unwrap();
+        // One-hop observation window: the runtime closure has not been polled.
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: request.id.clone(),
+                approval: request.approval,
+                approved: false,
+            },
+            "host",
+        )
+        .unwrap();
+        d.tick().unwrap();
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request.id)
+                .unwrap()
+                .state,
+            "denied"
+        );
+        received.lock().unwrap().clear();
+        events.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        events.send(Event::SandboxOpened { connection: 2 }).unwrap();
+        events
+            .send(sandbox_event(
+                2,
+                1,
+                "permissions.request",
+                json!({"kind":"package","package":"late","reason":"t"}),
+            ))
+            .unwrap();
+        d.tick().unwrap();
+        assert!(d.connections.is_empty());
+        assert!(!d.permissions.iter().any(|r| r.package == "late"));
+        assert!(
+            received
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| matches!(c, Command::SandboxClose { connection: 2 }))
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
     fn host_connection() -> (Connection, UnixStream) {
         let (mut c, peer) = connection(Role::Host);
@@ -6805,11 +7066,11 @@ mod tests {
             goblins_runtime::config::ManifestLease::unrooted(&path.join("current.json")),
         ));
         let member = |key: &str| json!({"key":key,"name":"shell","agent_name":null});
-        d.sandbox_control("root", "raids.create", json!({"raid":"review"}))
+        d.sandbox_control_for_test("root", "raids.create", json!({"raid":"review"}))
             .unwrap();
         let before = d.raid_outbox.len();
         let accepted = d
-            .sandbox_control("root", "sessions.start", member("k1"))
+            .sandbox_control_for_test("root", "sessions.start", member("k1"))
             .unwrap();
         let id = accepted["session"].as_str().unwrap().to_string();
         assert_eq!(d.sessions[&id].record.state, "starting");
@@ -6826,20 +7087,20 @@ mod tests {
         assert_eq!(d.raid_outbox.len(), before + 1);
         // An identical retry returns the original acceptance without joining.
         assert_eq!(
-            d.sandbox_control("root", "sessions.start", member("k1"))
+            d.sandbox_control_for_test("root", "sessions.start", member("k1"))
                 .unwrap(),
             accepted
         );
         assert_eq!(d.raid_outbox.len(), before + 1);
         // Sandboxes invite nobody: the host invites, owners run members.
         assert_eq!(
-            d.sandbox_control("root", "raids.invite", json!({"sessions":["other"]}))
+            d.sandbox_control_for_test("root", "raids.invite", json!({"sessions":["other"]}))
                 .unwrap_err()
                 .0,
             -32601
         );
         // A goblin in another raid cannot be moved.
-        d.sandbox_control("other", "raids.create", json!({"raid":"elsewhere"}))
+        d.sandbox_control_for_test("other", "raids.create", json!({"raid":"elsewhere"}))
             .unwrap();
         let (mut host, _peer) = host_connection();
         assert_eq!(
@@ -6943,23 +7204,25 @@ mod tests {
             );
         }
         assert_eq!(
-            d.sandbox_control("b", "raids.create", json!({"raid":"another"}))
+            d.sandbox_control_for_test("b", "raids.create", json!({"raid":"another"}))
                 .unwrap_err()
                 .1,
             "goblin 'b' is already in raid 'review'"
         );
         assert_eq!(
-            d.sandbox_control("b", "raids.leave", json!({})).unwrap(),
+            d.sandbox_control_for_test("b", "raids.leave", json!({}))
+                .unwrap(),
             json!({"accepted":true,"dissolved":false,"paused":false})
         );
         assert_eq!(
-            d.sandbox_control("b", "raids.members", json!({}))
+            d.sandbox_control_for_test("b", "raids.members", json!({}))
                 .unwrap_err()
                 .0,
             -32009
         );
         assert_eq!(
-            d.sandbox_control("a", "raids.leave", json!({})).unwrap(),
+            d.sandbox_control_for_test("a", "raids.leave", json!({}))
+                .unwrap(),
             json!({"accepted":true,"dissolved":true,"paused":false})
         );
         assert_eq!(d.sessions["b"].record.state, "running");
@@ -7003,7 +7266,7 @@ mod tests {
             json!({"raid":"one","sessions":["b"]}),
         )
         .unwrap();
-        d.sandbox_control("b", "raids.set_role", json!({"role":"builder"}))
+        d.sandbox_control_for_test("b", "raids.set_role", json!({"role":"builder"}))
             .unwrap();
         d.tick().unwrap();
         assert_eq!(d.raid_outbox.len(), 2);
@@ -7024,12 +7287,13 @@ mod tests {
         d.raid_outbox
             .extend(std::iter::repeat_n(filler, raids::RAID_OUTBOX));
         assert_eq!(
-            d.sandbox_control("b", "raids.set_role", json!({"role":"reviewer"}))
+            d.sandbox_control_for_test("b", "raids.set_role", json!({"role":"reviewer"}))
                 .unwrap_err()
                 .0,
             -32010
         );
-        d.sandbox_control("b", "raids.leave", json!({})).unwrap();
+        d.sandbox_control_for_test("b", "raids.leave", json!({}))
+            .unwrap();
         assert_eq!(d.raid_outbox.len(), raids::RAID_OUTBOX + 1);
         d.raid_outbox.clear();
         d.raid_events = 4096;
