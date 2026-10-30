@@ -17,7 +17,7 @@ broad = [
   "libs/supervisor/src/config.rs",
   "libs/unix/src/lib.rs", "libs/supervisor/src/process.rs",
   "libs/supervisor/src/seccomp.rs", "libs/supervisor/src/sandbox_etc.rs",
-  "libs/supervisor/src/catalog.rs", "packages/daemon/src/terminal.rs", "packages/sandbox-cli/src/init.rs",
+  "libs/supervisor/src/catalog.rs", "libs/supervisor/src/terminal.rs", "libs/supervisor/src/terminals.rs", "libs/supervisor/src/server_log.rs", "packages/sandbox-cli/src/init.rs",
   "packages/daemon/src/main.rs", "packages/daemon/src/lib.rs",
   "packages/daemon/src/cli.rs", "packages/sandbox-cli/src/main.rs", "packages/sandbox-cli/src/cli.rs",
   "tests/daemon_support.py", "tests/build_support.py", "tests/support.py",

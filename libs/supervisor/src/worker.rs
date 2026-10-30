@@ -37,6 +37,8 @@ pub(super) struct Worker {
 }
 /// What the runtime keeps of a started sandbox.
 pub(super) struct Endpoints {
+    /// The main PTY or log pipe never leaves the runtime implementation.
+    pub master: OwnedFd,
     /// The private channel to the sandbox's goblins-init.
     pub control: OwnedFd,
     pub listener: UnixListener,
@@ -278,6 +280,7 @@ impl Worker {
                 };
                 // Everything it mounts is rooted by now.
                 endpoints.try_send(Box::new(Endpoints {
+                    master,
                     control: session.control.take().unwrap(),
                     listener: session.listener.take().unwrap(),
                     exit_watch: session.exit_watch()?,
@@ -288,7 +291,6 @@ impl Worker {
                     policy: Box::new(inheritance.policy()),
                     support,
                     dev_shell: inheritance.dev_shell_summary(),
-                    master,
                     identity: session.identity.clone().unwrap(),
                     recreated: recreated.map(Box::new),
                     auto: Box::new(auto),

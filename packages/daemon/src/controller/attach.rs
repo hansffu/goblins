@@ -5,7 +5,6 @@
 //! the variables the client needs were set during this run.
 use super::Active;
 use super::Controller;
-use crate::terminal::Terminal;
 use goblins_jsonrpc as rpc;
 use goblins_runtime::Command;
 use goblins_runtime::Event;
@@ -13,7 +12,7 @@ use goblins_runtime::SpawnKind;
 use goblins_runtime::Stdio;
 use goblins_runtime::config;
 use goblins_runtime::policy::Operation;
-use goblins_unix as unix;
+use goblins_runtime::{TerminalId, TerminalStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -22,7 +21,7 @@ use std::{
     os::{
         fd::{AsRawFd, OwnedFd},
         unix::{
-            fs::{OpenOptionsExt, PermissionsExt},
+            fs::PermissionsExt,
             net::{UnixListener, UnixStream},
         },
     },
@@ -38,12 +37,6 @@ const HELLOS: usize = 8;
 const NOTICE: Duration = Duration::from_secs(1);
 /// What `onDetach` may take before the client is cancelled.
 const ON_DETACH: Duration = Duration::from_secs(5);
-/// The server log rotates to `server.log.1` beyond this size.
-const LOG: u64 = 1 << 20;
-/// What a goblin with attach handlers answers on `terminal.sock`.
-pub(super) const UPGRADE: &str =
-    "this goblin starts a client at each attach; upgrade Goblins to attach";
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HelloParams {
@@ -90,7 +83,7 @@ struct Running {
     pid: i32,
     /// When the client started, in Unix milliseconds.
     since: u64,
-    terminal: Terminal,
+    terminal: TerminalStatus,
     /// The client's command exited: the goblin is detached.
     exited: bool,
     ending: Option<Ending>,
@@ -101,14 +94,6 @@ struct Ending {
     on_detach: Option<u64>,
     deadline: Instant,
     cancelled: bool,
-}
-
-/// The output of an agent without a terminal, kept in a bounded log.
-pub(super) struct ServerLog {
-    pipe: Option<File>,
-    path: PathBuf,
-    file: File,
-    size: u64,
 }
 
 fn frame(stream: &mut UnixStream, value: &Value) -> bool {
@@ -169,10 +154,15 @@ impl Attach {
     }
     /// Nothing is left to deliver to a frontend: no client, or one that
     /// exited and whose terminal may go.
-    fn can_evict(&self) -> bool {
+    pub(super) fn can_evict(&self) -> bool {
         match &self.client {
             None => true,
-            Some(Client::Running(running)) => running.exited && running.terminal.can_evict(),
+            Some(Client::Running(running)) => {
+                running.exited
+                    && (!running.terminal.connected
+                        || running.terminal.complete
+                        || running.terminal.interrupted)
+            }
             Some(_) => false,
         }
     }
@@ -180,11 +170,9 @@ impl Attach {
     pub(super) fn since(&self) -> Option<u64> {
         self.running().filter(|_| self.attached()).map(|r| r.since)
     }
-    pub(super) fn resize(&mut self, rows: u16, cols: u16) -> crate::Result<()> {
-        match &mut self.client {
-            Some(Client::Running(running)) => running.terminal.resize(rows, cols),
-            _ => Err("no client is attached".into()),
-        }
+    pub(super) fn terminal(&self) -> Option<TerminalId> {
+        self.running()
+            .map(|running| TerminalId::Process(running.exec))
     }
     /// Accept frontends and read their hellos.
     fn accept(&mut self) {
@@ -261,64 +249,6 @@ impl Drop for Attach {
     }
 }
 
-impl ServerLog {
-    pub(super) fn new(pipe: OwnedFd, path: PathBuf) -> crate::Result<Self> {
-        unix::nonblocking(pipe.as_raw_fd())?;
-        Ok(Self {
-            pipe: Some(File::from(pipe)),
-            file: Self::create(&path)?,
-            path,
-            size: 0,
-        })
-    }
-    fn create(path: &Path) -> io::Result<File> {
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-    }
-    pub(super) fn path(&self) -> &Path {
-        &self.path
-    }
-    /// Move what the agent wrote into the log, without blocking.
-    pub(super) fn tick(&mut self) {
-        let mut bytes = [0; 8192];
-        for _ in 0..8 {
-            let Some(pipe) = &mut self.pipe else {
-                return;
-            };
-            let n = match pipe.read(&mut bytes) {
-                Ok(0) => {
-                    self.pipe = None;
-                    return;
-                }
-                Ok(n) => n,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
-                Err(_) => {
-                    self.pipe = None;
-                    return;
-                }
-            };
-            if self.size + n as u64 > LOG {
-                let mut old = self.path.clone().into_os_string();
-                old.push(".1");
-                let _ = fs::rename(&self.path, old);
-                match Self::create(&self.path) {
-                    Ok(file) => self.file = file,
-                    Err(_) => continue,
-                }
-                self.size = 0;
-            }
-            if self.file.write_all(&bytes[..n]).is_ok() {
-                self.size += n as u64;
-            }
-        }
-    }
-}
-
 /// Remove an evicted goblin's sockets and server log. Its directory goes
 /// once nothing else is left in it.
 pub(super) fn remove_files(directory: &Path) {
@@ -331,22 +261,14 @@ impl Active {
     /// A stopped goblin's record may go: its terminal, or its attached
     /// client's, has nothing left to deliver.
     pub(super) fn can_evict(&self) -> bool {
-        self.terminal.can_evict() && self.attach.can_evict()
+        self.runtime.is_none() && self.attach.can_evict()
     }
     /// The agent started without a terminal: its output goes to the server
     /// log, and its own terminal refuses older frontends.
-    pub(super) fn serve(
-        &mut self,
-        output: OwnedFd,
-        handlers: config::Handlers,
-    ) -> crate::Result<()> {
-        let path = self.directory.join("server.log");
-        self.server_log = Some(ServerLog::new(output, path.clone())?);
-        self.record.server_log = Some(path.display().to_string());
-        self.terminal.refuse(UPGRADE);
+    pub(super) fn serve(&mut self, handlers: config::Handlers) {
+        self.record.server_log = Some(self.directory.join("server.log").display().to_string());
         self.terminal.detached = true;
         self.handlers = Some(handlers);
-        Ok(())
     }
     /// The variables `needs` names that are not ready: set to a value during
     /// this run.
@@ -458,9 +380,6 @@ impl Controller {
     /// session map for the tick.
     pub(super) fn attach_tick(&mut self, a: &mut Active) {
         a.attach.accept();
-        if let Some(log) = &mut a.server_log {
-            log.tick();
-        }
         let now = Instant::now();
         match a.record.state.as_str() {
             "running" => (),
@@ -479,8 +398,8 @@ impl Controller {
                     .clone()
                     .unwrap_or_else(|| "the goblin has stopped".into());
                 // Why it stopped is in its server log.
-                if let Some(log) = &a.server_log {
-                    message = format!("{message}; its server log is {}", log.path().display());
+                if let Some(log) = &a.record.server_log {
+                    message = format!("{message}; its server log is {log}");
                 }
                 for mut hello in a.attach.hellos.drain(..) {
                     refuse(&mut hello.stream, &message);
@@ -490,7 +409,7 @@ impl Controller {
                     | Some(Client::Starting { mut stream, .. }) => refuse(&mut stream, &message),
                     Some(Client::Running(mut running)) => {
                         running.exited = true;
-                        if running.terminal.connected() {
+                        if running.terminal.connected {
                             a.attach.client = Some(Client::Running(running));
                         }
                     }
@@ -509,20 +428,37 @@ impl Controller {
                 let size = hello.size.unwrap();
                 match &a.handlers {
                     None => {
-                        let attached = hello
-                            .stream
-                            .try_clone()
-                            .map_err(|e| e.to_string())
-                            .and_then(|writer| {
-                                a.terminal
-                                    .attach(writer, json!(0))
-                                    .map_err(|e| e.to_string())
-                            });
-                        match attached {
-                            Ok(()) => {
-                                let _ = a.terminal.resize(size.0, size.1);
+                        if a.terminal.connected || a.terminal.complete {
+                            refuse(
+                                &mut hello.stream,
+                                if a.terminal.complete {
+                                    "terminal already completed"
+                                } else {
+                                    "terminal is already attached"
+                                },
+                            );
+                        } else if let Some(runtime) = &mut a.runtime {
+                            // Reserve before sending, so another hello in this
+                            // same batch cannot acquire the terminal.
+                            a.terminal.connected = true;
+                            a.terminal.attached = true;
+                            a.terminal.detached = false;
+                            if let Err(Command::Attach { stream, .. }) =
+                                runtime.send(Command::Attach {
+                                    terminal: TerminalId::Main,
+                                    stream: OwnedFd::from(hello.stream).into(),
+                                    rows: size.0,
+                                    cols: size.1,
+                                })
+                            {
+                                let mut stream =
+                                    UnixStream::from(std::os::fd::OwnedFd::from(stream));
+                                refuse(&mut stream, "the goblin cannot take more work right now");
+                                a.terminal.connected = false;
+                                a.terminal.attached = false;
                             }
-                            Err(message) => refuse(&mut hello.stream, &message),
+                        } else {
+                            refuse(&mut hello.stream, "the goblin has stopped");
                         }
                     }
                     Some(_) if a.attach.client.is_some() => {
@@ -543,7 +479,7 @@ impl Controller {
         self.client_tick(a, now);
         let (attached, detached) = match a.handlers {
             Some(_) => (a.attach.attached(), a.attach.detached()),
-            None => (a.terminal.attached(), a.terminal.detached),
+            None => (a.terminal.attached, a.terminal.detached),
         };
         if (attached, detached) != (a.record.terminal_attached, a.record.terminal_detached) {
             a.record.terminal_attached = attached;
@@ -579,11 +515,7 @@ impl Controller {
                         ),
                     }
                 } else if now >= deadline {
-                    let log = a
-                        .server_log
-                        .as_ref()
-                        .map(|l| l.path().display().to_string())
-                        .unwrap_or_default();
+                    let log = a.record.server_log.clone().unwrap_or_default();
                     refuse(
                         &mut stream,
                         &format!(
@@ -601,11 +533,8 @@ impl Controller {
                 }
             }
             Some(client @ Client::Starting { .. }) => a.attach.client = Some(client),
-            Some(Client::Running(mut running)) => {
-                if let Err(e) = running.terminal.tick() {
-                    a.record.detail = Some(super::bounded(&e.to_string()));
-                }
-                let left = !running.terminal.connected();
+            Some(Client::Running(running)) => {
+                let left = !running.terminal.connected;
                 if running.exited && left {
                     self.dirty = true;
                     return;
@@ -638,31 +567,36 @@ impl Controller {
             return Some(event);
         };
         let unconsumed = match (a.attach.client.take(), event) {
-            (
-                Some(Client::Starting { stream, size, exec }),
-                Event::Spawned {
-                    id,
+            (Some(Client::Starting { stream, size, exec }), Event::Spawned { id, pid })
+                if id == exec =>
+            {
+                // Reserve the client and its physical stream before Attach.
+                // An authoritative runtime status clears a failed reservation.
+                a.attach.client = Some(Client::Running(Box::new(Running {
+                    exec,
                     pid,
-                    master: Some(master),
-                },
-            ) if id == exec => {
-                let started =
-                    Terminal::client(master.into(), size.0, size.1).and_then(|mut terminal| {
-                        terminal.attach(stream, json!(0))?;
-                        Ok(terminal)
-                    });
-                match started {
-                    Ok(terminal) => {
-                        a.attach.client = Some(Client::Running(Box::new(Running {
-                            exec,
-                            pid,
-                            since: crate::messaging::now(),
-                            terminal,
-                            exited: false,
-                            ending: None,
-                        })))
-                    }
-                    Err(_) => a.cancel(exec),
+                    since: crate::messaging::now(),
+                    terminal: TerminalStatus {
+                        connected: true,
+                        attached: true,
+                        ..Default::default()
+                    },
+                    exited: false,
+                    ending: None,
+                })));
+                let sent = a.runtime.as_mut().is_some_and(|runtime| {
+                    runtime
+                        .send(Command::Attach {
+                            terminal: TerminalId::Process(exec),
+                            stream: OwnedFd::from(stream).into(),
+                            rows: size.0,
+                            cols: size.1,
+                        })
+                        .is_ok()
+                });
+                if !sent {
+                    a.attach.client = None;
+                    a.cancel(exec);
                 }
                 None
             }
@@ -681,6 +615,17 @@ impl Controller {
             (Some(Client::Running(mut running)), event) => {
                 let on_detach = running.ending.as_ref().and_then(|e| e.on_detach);
                 let unconsumed = match event {
+                    Event::Terminal {
+                        terminal: TerminalId::Process(id),
+                        status,
+                        error,
+                    } if id == running.exec => {
+                        running.terminal = status;
+                        if let Some(error) = error {
+                            a.record.detail = Some(super::bounded(&error));
+                        }
+                        None
+                    }
                     // Detached; what the client left behind goes too, and
                     // so does an onDetach still running.
                     Event::Exited { id, .. } if id == running.exec => {
@@ -748,7 +693,13 @@ impl Controller {
         }
         a.end_client(id, true);
         if let Some(Client::Running(running)) = &mut a.attach.client {
-            let _ = running.terminal.detach();
+            if let Some(runtime) = &mut a.runtime {
+                let _ = runtime.send(Command::Detach {
+                    terminal: TerminalId::Process(running.exec),
+                });
+            }
+            running.terminal.attached = false;
+            running.terminal.detached = true;
         }
         a.record.terminal_attached = false;
         self.dirty = true;

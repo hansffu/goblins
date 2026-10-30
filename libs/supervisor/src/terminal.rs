@@ -1,4 +1,4 @@
-//! Daemon-owned PTY with one terminal consumer at a time.
+//! Runtime-owned PTY with one terminal consumer at a time.
 //! A framed acceptance precedes raw bytes; detach half-closes that stream.
 use crate::Result;
 use goblins_unix as unix;
@@ -19,7 +19,7 @@ const CAP: usize = 65536;
 
 pub struct Terminal {
     /// The socket frontends attach through; none for an attach client's
-    /// terminal, which the daemon hands its attachment.
+    /// terminal, which the runtime hands its attachment.
     listener: Option<(PathBuf, UnixListener)>,
     /// Why the socket refuses every attachment.
     refusal: Option<String>,
@@ -86,6 +86,16 @@ fn write(dest: &mut impl Write, bytes: &mut Vec<u8>) -> io::Result<()> {
     }
 }
 impl Terminal {
+    pub fn status(&self) -> goblins_runtime::TerminalStatus {
+        goblins_runtime::TerminalStatus {
+            eof: self.eof,
+            complete: self.complete,
+            interrupted: self.interrupted,
+            attached: self.attached(),
+            detached: self.detached,
+            connected: self.connected(),
+        }
+    }
     pub fn new(path: &Path) -> Result<Self> {
         let listener = UnixListener::bind(path)?;
         listener.set_nonblocking(true)?;

@@ -97,6 +97,12 @@ pub trait Runtime: Send {
     /// The events of one round, then None; the daemon drains a round per
     /// tick, which bounds what one goblin costs it.
     fn poll(&mut self) -> Option<Event>;
+    /// The sandbox, host jobs and their resources are gone. A runtime may
+    /// still serve retained terminal output after this becomes true. Release
+    /// is monotonic: later terminal events never make the sandbox live again.
+    fn released(&self) -> bool {
+        self.ended()
+    }
     /// True once every event has been polled and the runtime is gone.
     fn ended(&self) -> bool;
 }
@@ -160,8 +166,27 @@ pub enum Stdio {
     Fds([Fd; 3]),
     /// A frontend-provided PTY slave (`goblins exec` with tty).
     Tty(Fd),
-    /// A new PTY the runtime allocates; its master comes back in `Spawned`.
+    /// A new PTY the runtime allocates and keeps for `TerminalId::Process`.
     NewPty { rows: u16, cols: u16 },
+}
+
+/// A runtime-owned terminal, distinct from frontend-provided exec descriptors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TerminalId {
+    Main,
+    Process(u64),
+}
+
+/// A descriptor-free snapshot. `connected` includes a half-closed frontend
+/// still holding its outcome, while `attached` excludes a detached stream.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TerminalStatus {
+    pub eof: bool,
+    pub complete: bool,
+    pub interrupted: bool,
+    pub attached: bool,
+    pub detached: bool,
+    pub connected: bool,
 }
 
 /// What a spawned process is for.
@@ -176,6 +201,21 @@ pub enum SpawnKind {
 /// What the daemon asks of a runtime.
 #[derive(Debug)]
 pub enum Command {
+    /// The runtime writes framed acceptance/refusal, then raw terminal bytes.
+    Attach {
+        terminal: TerminalId,
+        stream: Fd,
+        rows: u16,
+        cols: u16,
+    },
+    Detach {
+        terminal: TerminalId,
+    },
+    Resize {
+        terminal: TerminalId,
+        rows: u16,
+        cols: u16,
+    },
     /// Answer or notify a sandbox connection owned by this runtime.
     SandboxSend {
         connection: u64,
@@ -294,6 +334,10 @@ impl Command {
                 kind: SpawnKind::Attach,
                 ..
             } => Some(Operation::Attach),
+            Command::Attach {
+                terminal: TerminalId::Process(_),
+                ..
+            } => Some(Operation::Attach),
             Command::PrepareHostJob { .. } | Command::RunHostJob { .. } => {
                 Some(Operation::HostCommand)
             }
@@ -335,8 +379,6 @@ pub enum Event {
         support: Support,
         /// The launch's dev shell generation, when it has one.
         dev_shell: Option<DevShellSummary>,
-        /// The agent's PTY, or with attach handlers its output pipe.
-        master: OwnedFd,
         identity: Identity,
         recreated: Option<Box<Recreated>>,
         auto: Box<Auto>,
@@ -384,11 +426,15 @@ pub enum Event {
         /// root when it is dropped, and the daemon shares it with `Arc`.
         lease: crate::config::ManifestLease,
     },
-    /// Process `id` started; `master` is the PTY `Stdio::NewPty` asked for.
+    /// Process `id` started; any allocated PTY stays in the runtime.
     Spawned {
         id: u64,
         pid: i32,
-        master: Option<Fd>,
+    },
+    Terminal {
+        terminal: TerminalId,
+        status: TerminalStatus,
+        error: Option<String>,
     },
     /// Process `id` did not start. `code` is what a shell would report, as
     /// init gives it; None when init could not be asked.
@@ -511,6 +557,8 @@ impl Runtime for Fake {
             !matches!(
                 c,
                 Command::Cancel(_)
+                    | Command::Detach { .. }
+                    | Command::Resize { .. }
                     | Command::SandboxSend { .. }
                     | Command::SandboxClose { .. }
                     | Command::Signal { .. }

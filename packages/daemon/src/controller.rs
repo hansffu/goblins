@@ -1,6 +1,5 @@
 //! Single authority/event loop, with independent blocking workers per session.
 use crate::Result;
-use crate::terminal::Terminal;
 use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::{
     Request,
@@ -10,6 +9,7 @@ use goblins_runtime::Identity;
 use goblins_runtime::Source;
 use goblins_runtime::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
 use goblins_runtime::{Command, Event, Runtime};
+use goblins_runtime::{TerminalId, TerminalStatus};
 use goblins_supervisor::Local;
 use goblins_unix as unix;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -195,7 +195,7 @@ struct Active {
     pending: Option<Pending>,
     /// A host command waiting for its directory; it holds the pending slot.
     preparing: Option<host::Preparing>,
-    terminal: Terminal,
+    terminal: TerminalStatus,
     directory: PathBuf,
     /// What the configuration allows and the sandbox implementation can do,
     /// known once started and fixed for the goblin's life.
@@ -231,12 +231,17 @@ struct Active {
     /// Known once started: the agent runs without a terminal and each attach
     /// starts a client.
     handlers: Option<goblins_runtime::config::Handlers>,
-    server_log: Option<attach::ServerLog>,
     /// The history record this goblin writes: the record it was recreated
     /// from, otherwise its own id.
     line: String,
 }
 impl Active {
+    /// A terminal-only runtime does not reserve a live name or conversation.
+    fn live(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.released())
+    }
     fn fail_launch(&mut self, message: &str) {
         self.exporting = None;
         self.launch_manifest = None;
@@ -244,7 +249,8 @@ impl Active {
             self.record.state = "failed".into();
             self.record.detail = Some(bounded(&message));
             if self.record.identity.is_none() {
-                self.terminal.failed_start();
+                self.terminal.eof = true;
+                self.terminal.interrupted = true;
             }
         }
         if let Some(runtime) = &mut self.runtime {
@@ -253,7 +259,7 @@ impl Active {
     }
 
     fn scope_failed(&mut self, name: &str) {
-        if self.member_scope.as_deref() == Some(name) {
+        if self.live() && self.member_scope.as_deref() == Some(name) {
             if let Some(runtime) = &mut self.runtime {
                 let _ = runtime.send(Command::ScopeFailed);
             }
@@ -870,7 +876,7 @@ impl Controller {
     fn live_lines(&self) -> std::collections::BTreeSet<String> {
         self.sessions
             .values()
-            .filter(|a| a.runtime.is_some())
+            .filter(|a| a.live())
             .map(|a| a.line.clone())
             .collect()
     }
@@ -903,7 +909,7 @@ impl Controller {
         };
         for a in self.sessions.values() {
             if a.record.state == "running"
-                && a.runtime.is_some()
+                && a.live()
                 && store
                     .records
                     .get(&a.line)
@@ -989,7 +995,7 @@ impl Controller {
     fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
         self.sessions
             .values()
-            .filter(|a| a.runtime.is_some())
+            .filter(|a| a.live())
             .find(|a| a.line == record.id)
             .map(|a| {
                 format!(
@@ -1267,7 +1273,7 @@ impl Controller {
             !self
                 .sessions
                 .values()
-                .any(|a| a.runtime.is_some() && a.record.agent_name == name)
+                .any(|a| a.live() && a.record.agent_name == name)
         };
         if let Some(name) = requested {
             if !valid_agent_name(name) {
@@ -1297,7 +1303,7 @@ impl Controller {
         }
         self.sessions
             .values()
-            .find(|a| a.runtime.is_some() && a.record.agent_name == target)
+            .find(|a| a.live() && a.record.agent_name == target)
             .map(|a| a.record.id.clone())
             .ok_or_else(missing)
     }
@@ -1383,8 +1389,19 @@ impl Controller {
             self.detach_client(id).map_err(|e| (-32009, e))?;
             return Ok(json!({"accepted":true}));
         }
-        a.terminal.detach().map_err(|e| (-32009, e.to_string()))?;
-        a.record.terminal_attached = a.terminal.attached();
+        if !a.terminal.connected || a.terminal.detached || a.terminal.complete {
+            return Err((-32009, "terminal is not attached".into()));
+        }
+        a.runtime
+            .as_mut()
+            .ok_or_else(conflict)?
+            .send(Command::Detach {
+                terminal: TerminalId::Main,
+            })
+            .map_err(|_| capacity())?;
+        a.terminal.attached = false;
+        a.terminal.detached = true;
+        a.record.terminal_attached = a.terminal.attached;
         a.record.terminal_detached = a.terminal.detached;
         self.dirty = true;
         Ok(json!({"accepted":true}))
@@ -1394,7 +1411,9 @@ impl Controller {
         // A member that stops no longer waits for its owner's handoff; one
         // that arrives later is nobody's, and dropping it releases its leases.
         a.exporting = None;
-        if let Some(runtime) = &mut a.runtime {
+        if a.live()
+            && let Some(runtime) = &mut a.runtime
+        {
             // Preserve the first cause, including a natural exit with no reason.
             if !["stopping", "stopped", "failed"].contains(&a.record.state.as_str()) {
                 a.record.stop_reason = reason;
@@ -1558,12 +1577,7 @@ impl Controller {
         let join = self.launch_raid(&p, owner.as_ref().map(|o| o.id.as_str()))?;
         let agent_name = self.allocate_name(p.agent_name.as_deref())?;
         if self.launches.len() >= 4096
-            || self
-                .sessions
-                .values()
-                .filter(|a| a.runtime.is_some())
-                .count()
-                >= SESSIONS
+            || self.sessions.values().filter(|a| a.live()).count() >= SESSIONS
         {
             return Err(capacity());
         }
@@ -1596,12 +1610,10 @@ impl Controller {
         }
         let directory = self.state.join(&id);
         unix::private_directory(&directory).map_err(|e| (-32010, e.to_string()))?;
-        let path = directory.join("terminal.sock");
-        let mut terminal = Terminal::new(&path).map_err(|e| (-32010, e.to_string()))?;
-        terminal.detached = p.detached;
-        // Older frontends attach here; a goblin with attach handlers refuses
-        // them, which is known once its worker read the configuration.
-        terminal.hold();
+        let terminal = TerminalStatus {
+            detached: p.detached,
+            ..Default::default()
+        };
         let attach_path = directory.join("attach.sock");
         let attach = attach::Attach::new(&attach_path).map_err(|e| (-32010, e.to_string()))?;
         let recorded = p.recorded.take();
@@ -1668,7 +1680,13 @@ impl Controller {
                 .unwrap_or_default(),
             None => p.configuration.clone(),
         };
-        let runtime = Local::start(source, directory.join("resources"), (p.rows, p.cols));
+        let runtime = Local::start(
+            source,
+            directory.join("resources"),
+            (p.rows, p.cols),
+            p.detached,
+        )
+        .map_err(|e| (-32010, e.to_string()))?;
         let record = SessionRecord {
             agent_state: Default::default(),
             agent_state_since: None,
@@ -1691,7 +1709,7 @@ impl Controller {
             initial_packages: vec![],
             packages: vec![],
             auto_approve: approvals.packages.keys().cloned().collect(),
-            terminal: path.display().to_string(),
+            terminal: directory.join("terminal.sock").display().to_string(),
             attach: attach_path.display().to_string(),
             server_log: None,
             pty_eof: false,
@@ -1732,7 +1750,6 @@ impl Controller {
                 fresh: BTreeSet::new(),
                 attach,
                 handlers: None,
-                server_log: None,
                 line,
                 recreated_from: recorded,
                 created: self.next,
@@ -1830,7 +1847,7 @@ impl Controller {
             ));
         }
         let a = &self.sessions[owner];
-        if a.record.state != "running" || a.runtime.is_none() {
+        if a.record.state != "running" || !a.live() {
             return Err(conflict());
         }
         let policy = a.policy.as_deref().ok_or_else(conflict)?;
@@ -1892,7 +1909,7 @@ impl Controller {
             "sessions.set-state" => {
                 let p: goblins_protocol::SetState = params(value)?;
                 let a = self.sessions.get_mut(scope).ok_or_else(missing)?;
-                if a.record.state != "running" || a.runtime.is_none() {
+                if a.record.state != "running" || !a.live() {
                     return Err(conflict());
                 }
                 self.dirty |= a.report_activity(p.state);
@@ -1901,7 +1918,7 @@ impl Controller {
             "sessions.set-variables" => {
                 let p: goblins_protocol::SetVariables = params(value)?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
-                if a.record.state != "running" || a.runtime.is_none() {
+                if a.record.state != "running" || !a.live() {
                     return Err(conflict());
                 }
                 // Only the caller's own record. Without history the server
@@ -1976,7 +1993,7 @@ impl Controller {
                 Ok(json!(
                     self.sessions
                         .values()
-                        .filter(|a| a.runtime.is_some() && self.controls(scope, &a.record.id))
+                        .filter(|a| a.live() && self.controls(scope, &a.record.id))
                         .map(|a| self.sandbox_record(&a.record))
                         .collect::<Vec<_>>()
                 ))
@@ -2182,7 +2199,7 @@ impl Controller {
             "server.status" => {
                 let _: Empty = params(value)?;
                 Ok(
-                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.runtime.is_some()).count(),"history":self.history_status(),
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.live()).count(),"history":self.history_status(),
                         "manifest":self.current_manifest.as_ref().map(|m| &m.path)}),
                 )
             }
@@ -2230,11 +2247,20 @@ impl Controller {
                     return Err((-32602, "invalid dimensions".into()));
                 }
                 let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
-                match a.handlers {
-                    Some(_) => a.attach.resize(p.rows, p.cols),
-                    None => a.terminal.resize(p.rows, p.cols),
+                let terminal = if a.handlers.is_some() {
+                    a.attach.terminal().ok_or_else(conflict)?
+                } else {
+                    TerminalId::Main
+                };
+                if let Some(runtime) = &mut a.runtime {
+                    runtime
+                        .send(Command::Resize {
+                            terminal,
+                            rows: p.rows,
+                            cols: p.cols,
+                        })
+                        .map_err(|_| capacity())?;
                 }
-                .map_err(|_| conflict())?;
                 Ok(json!({"accepted":true}))
             }
             "permissions.list" => {
@@ -2401,7 +2427,7 @@ impl Controller {
                         || !self
                             .sessions
                             .get(&session)
-                            .is_some_and(|a| a.record.state == "running" && a.runtime.is_some())
+                            .is_some_and(|a| a.record.state == "running" && a.live())
                     {
                         return Err(conflict());
                     }
@@ -2726,13 +2752,6 @@ impl Controller {
         self.expire_activity(Instant::now());
         self.poll_history();
         self.poll_deletes();
-        // Drain human input and native output.
-        for a in self.sessions.values_mut() {
-            if let Err(e) = a.terminal.tick() {
-                a.record.detail = Some(bounded(&e.to_string()));
-                a.terminal.interrupted = true;
-            }
-        }
         if let Some(report) = self.messaging.inbox.try_iter().last() {
             self.messaging_report(&report);
         }
@@ -2764,7 +2783,11 @@ impl Controller {
         for (id, (events, _)) in &mut polled {
             for event in std::mem::take(events) {
                 match event {
-                    Event::Spawned { .. }
+                    Event::Terminal {
+                        terminal: TerminalId::Process(_),
+                        ..
+                    }
+                    | Event::Spawned { .. }
                     | Event::SpawnFailed { .. }
                     | Event::Exited { .. }
                     | Event::InitLost => self.process_event(id, event),
@@ -2876,7 +2899,6 @@ impl Controller {
                         policy,
                         support,
                         dev_shell,
-                        master,
                         identity,
                         recreated,
                         auto,
@@ -2910,9 +2932,8 @@ impl Controller {
                         a.dev_identity = dev_shell.as_ref().map(|d| d.identity.clone());
                         a.dev_shell = dev_shell;
                         a.record.description = policy.description.clone();
-                        match policy.handlers.clone() {
-                            Some(handlers) => a.serve(master, handlers)?,
-                            None => a.terminal.master(master)?,
+                        if let Some(handlers) = policy.handlers.clone() {
+                            a.serve(handlers);
                         }
                         a.record.initial_packages = policy
                             .initial_packages
@@ -2928,10 +2949,23 @@ impl Controller {
                         }
                         self.dirty = true;
                     }
-                    Event::Mode { server } => match server {
-                        true => a.terminal.refuse(attach::UPGRADE),
-                        false => a.terminal.release(),
-                    },
+                    Event::Mode { .. } => (),
+                    Event::Terminal {
+                        terminal: TerminalId::Main,
+                        status,
+                        error,
+                    } => {
+                        self.dirty |= a.terminal != status;
+                        a.terminal = status;
+                        if let Some(error) = error {
+                            a.record.detail = Some(bounded(&error));
+                            self.dirty = true;
+                        }
+                    }
+                    Event::Terminal {
+                        terminal: TerminalId::Process(_),
+                        ..
+                    } => (),
                     Event::Manifest { sequence, lease } => {
                         let lease = std::sync::Arc::new(lease);
                         if sequence > self.manifest_published {
@@ -3086,14 +3120,16 @@ impl Controller {
                         a.launch_manifest = None;
                         a.record.state = "failed".into();
                         a.record.detail = Some(bounded(&e));
-                        a.terminal.failed_start();
+                        a.terminal.eof = true;
+                        a.terminal.interrupted = true;
                         self.dirty = true;
                     }
                     Event::Stopped { exit_code } => {
                         a.launch_manifest = None;
                         a.exporting = None;
                         if a.record.identity.is_none() {
-                            a.terminal.failed_start();
+                            a.terminal.eof = true;
+                            a.terminal.interrupted = true;
                         }
                         if a.record.state != "failed" {
                             a.record.state = "stopped".into();
@@ -3143,7 +3179,8 @@ impl Controller {
                     a.record.detail =
                         Some("session worker exited without a final lifecycle result".into());
                     if a.record.identity.is_none() {
-                        a.terminal.failed_start();
+                        a.terminal.eof = true;
+                        a.terminal.interrupted = true;
                     }
                     if let Some(p) = a.take_preparing() {
                         self.refuse_preparing(p);
@@ -3162,33 +3199,11 @@ impl Controller {
                     self.dirty = true;
                 }
             }
-            let old = (
-                a.terminal.eof,
-                a.terminal.complete,
-                a.terminal.interrupted,
-                a.terminal.attached(),
-                a.terminal.detached,
-            );
-            if let Err(e) = a.terminal.tick() {
-                a.record.detail = Some(bounded(&e.to_string()));
-                a.terminal.interrupted = true;
-            }
-            if old
-                != (
-                    a.terminal.eof,
-                    a.terminal.complete,
-                    a.terminal.interrupted,
-                    a.terminal.attached(),
-                    a.terminal.detached,
-                )
-            {
-                self.dirty = true;
-            }
             a.record.pty_eof = a.terminal.eof;
             a.record.terminal_complete = a.terminal.complete;
             a.record.terminal_interrupted = a.terminal.interrupted;
             if a.handlers.is_none() {
-                a.record.terminal_attached = a.terminal.attached();
+                a.record.terminal_attached = a.terminal.attached;
                 a.record.terminal_detached = a.terminal.detached;
             }
             self.attach_tick(&mut a);
@@ -3404,7 +3419,6 @@ impl Drop for Controller {
             // daemon or outside it, or by `goblins gc`; only the goblin's
             // own files and the then empty session directory are removed
             // here.
-            drop(a.terminal);
             attach::remove_files(&a.directory);
             let _ = fs::remove_dir(&a.directory);
         }
@@ -3475,7 +3489,7 @@ mod tests {
         let id = id.to_string();
         let directory = d.state.join(&id);
         unix::private_directory(&directory).unwrap();
-        let terminal = Terminal::new(&directory.join("terminal.sock")).unwrap();
+        let terminal = TerminalStatus::default();
         d.sessions.insert(
             id.clone(),
             Active {
@@ -3497,7 +3511,6 @@ mod tests {
                 fresh: BTreeSet::new(),
                 attach: attach::Attach::new(&directory.join("attach.sock")).unwrap(),
                 handlers: None,
-                server_log: None,
                 line: id.clone(),
                 created: 0,
                 record: SessionRecord {
@@ -3925,6 +3938,97 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn retained_terminal_output_does_not_reserve_names_history_or_live_capacity() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        struct Retained {
+            fake: goblins_runtime::Fake,
+            released: Arc<AtomicBool>,
+        }
+        impl Runtime for Retained {
+            fn send(&mut self, command: Command) -> std::result::Result<(), Command> {
+                self.fake.send(command)
+            }
+            fn poll(&mut self) -> Option<Event> {
+                self.fake.poll()
+            }
+            fn released(&self) -> bool {
+                self.released.load(Ordering::SeqCst)
+            }
+            fn ended(&self) -> bool {
+                false
+            }
+        }
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results_id(&mut d, "retained", vec![]);
+        let (fake, sender, _) = goblins_runtime::Fake::new();
+        let released = Arc::new(AtomicBool::new(false));
+        let a = d.sessions.get_mut(&id).unwrap();
+        a.runtime = Some(Box::new(Retained {
+            fake,
+            released: released.clone(),
+        }));
+        a.record.agent_name = "kid".into();
+        a.record.state = "stopped".into();
+        let record = line_record(a, None);
+        let (mut c, _peer) = connection(Role::Host);
+        // A lifecycle label alone cannot release authority while cleanup is
+        // still in progress; starting/running use this same live predicate.
+        assert_eq!(d.allocate_name(Some("kid")).unwrap_err().0, -32009);
+        assert_eq!(d.resolve_session("kid").unwrap(), id);
+        assert!(d.recreate_conflict(&record).is_some());
+        assert!(d.live_lines().contains(&record.id));
+        assert_eq!(
+            d.host(&mut c, "server.status", json!({})).unwrap()["sessions"],
+            1
+        );
+        released.store(true, Ordering::SeqCst);
+        sender
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        // A queued late detach/status update cannot restore name/history
+        // authority or make Stop-by-ID revive an already stopped record.
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
+        assert!(d.resolve_session("kid").is_err());
+        assert_eq!(d.resolve_session(&id).unwrap(), id);
+        assert!(d.recreate_conflict(&record).is_none());
+        assert!(!d.live_lines().contains(&record.id));
+        assert_eq!(
+            d.host(&mut c, "server.status", json!({})).unwrap()["sessions"],
+            0
+        );
+        d.stop(&id, None).unwrap();
+        assert_eq!(
+            d.sessions[&id].record.state, "stopped",
+            "stopping a released terminal must not revive cleanup"
+        );
+        assert!(
+            d.sessions[&id].runtime.is_some(),
+            "late terminal output is still served"
+        );
+        d.tick().unwrap();
+        assert_eq!(d.sessions[&id].record.state, "stopped");
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
+        assert!(d.recreate_conflict(&record).is_none());
+        assert!(
+            !d.sessions[&id].can_evict(),
+            "the retained runtime still owns its terminal buffer"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn agent_name_grammar_and_pool_cover_session_limit() {
         let names: std::collections::BTreeSet<_> = GOBLIN_NAMES.lines().collect();
         assert_eq!(names.len(), GOBLIN_NAMES.lines().count());
@@ -4280,7 +4384,6 @@ mod tests {
                 policy: Box::new(inheritance),
                 support: Support::linux(),
                 dev_shell: None,
-                master: unix::pty(24, 80).unwrap().0,
                 identity: Identity {
                     pid: 1,
                     helper_userns: 0,
@@ -6066,10 +6169,71 @@ mod tests {
         // As Started leaves it: the policy has the handlers too.
         a.policy.as_mut().unwrap().handlers = a.handlers.clone();
         let socket = d.sessions["a"].directory.join("attach.sock");
+        // The fake runtime owns frontend streams. This test exercises the
+        // daemon's command/status boundary; real framing, PTYs and retention
+        // are covered by the supervisor's terminal tests.
+        let streams = std::cell::RefCell::new(BTreeMap::<TerminalId, (UnixStream, bool)>::new());
         let step = |d: &mut Controller| {
             let mut a = d.sessions.remove("a").unwrap();
             d.attach_tick(&mut a);
             d.sessions.insert("a".into(), a);
+            let mut commands = received.lock().unwrap();
+            let mut pending = std::collections::VecDeque::new();
+            for command in commands.drain(..) {
+                match command {
+                    Command::Attach {
+                        terminal,
+                        stream,
+                        rows,
+                        cols,
+                    } => {
+                        assert!([20, 30].contains(&rows));
+                        assert_eq!(cols, 80);
+                        let mut stream = UnixStream::from(std::os::fd::OwnedFd::from(stream));
+                        stream
+                            .write_all(
+                                &rpc::encode(&rpc::result(json!(0), json!({"attached":true})))
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                        streams.borrow_mut().insert(terminal, (stream, false));
+                    }
+                    Command::Detach { terminal } => {
+                        let mut held = streams.borrow_mut();
+                        let (stream, detached) = held.get_mut(&terminal).unwrap();
+                        stream.shutdown(std::net::Shutdown::Write).unwrap();
+                        *detached = true;
+                    }
+                    command => pending.push_back(command),
+                }
+            }
+            *commands = pending;
+            drop(commands);
+            for (terminal, (stream, detached)) in streams.borrow().iter() {
+                let mut state = libc::pollfd {
+                    fd: stream.as_raw_fd(),
+                    events: libc::POLLRDHUP,
+                    revents: 0,
+                };
+                unsafe {
+                    libc::poll(&mut state, 1, 0);
+                }
+                let connected =
+                    state.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) == 0;
+                d.attach_event(
+                    "a",
+                    Event::Terminal {
+                        terminal: *terminal,
+                        status: TerminalStatus {
+                            connected,
+                            attached: connected && !detached,
+                            detached: *detached,
+                            ..Default::default()
+                        },
+                        error: None,
+                    },
+                );
+            }
         };
         // Hang up for good: shut the connection down, so the daemon sees the
         // end whatever process another test forks holds a copy of it.
@@ -6099,6 +6263,7 @@ mod tests {
         // Step until the runtime was sent a command.
         let command = |d: &mut Controller| {
             for _ in 0..500 {
+                step(d);
                 if let Some(command) = received.lock().unwrap().pop_front() {
                     return command;
                 }
@@ -6107,11 +6272,7 @@ mod tests {
             }
             panic!("the runtime got no command");
         };
-        let spawned = |id, pid| Event::Spawned {
-            id,
-            pid,
-            master: Some(unix::pty(20, 80).unwrap().0.into()),
-        };
+        let spawned = |id, pid| Event::Spawned { id, pid };
         let cancelled = |command| match command {
             Command::CancelProcess {
                 id,
@@ -6197,6 +6358,7 @@ mod tests {
         // The frontend closing frees the slot for the next attachment.
         close(frontend);
         step(&mut d);
+        step(&mut d);
         let mut next = hello(20);
         let Command::Spawn { id, .. } = command(&mut d) else {
             panic!("expected a new client");
@@ -6228,7 +6390,12 @@ mod tests {
         assert!(d.sessions["a"].record.terminal_detached);
         close(next);
         step(&mut d);
-        assert!(d.sessions["a"].can_evict());
+        step(&mut d);
+        assert!(d.sessions["a"].attach.can_evict());
+        assert!(
+            !d.sessions["a"].can_evict(),
+            "a live runtime retains its record"
+        );
         // A client exiting while onDetach runs takes onDetach with it.
         let mut third = hello(20);
         let Command::Spawn { id, .. } = command(&mut d) else {
@@ -6255,6 +6422,7 @@ mod tests {
             assert_eq!(cancelled(command(&mut d)), id);
         }
         close(third);
+        step(&mut d);
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
         // A client init cannot start is refused with init's reason.
@@ -6311,35 +6479,16 @@ mod tests {
         let path = d.state.clone();
         let _results = live(&mut d, "a");
         let directory = d.sessions["a"].directory.clone();
-        // As an attached launch creates it: not detached, answering nothing
-        // until the goblin started.
         let a = d.sessions.get_mut("a").unwrap();
         a.terminal.detached = false;
-        a.terminal.hold();
-        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
-        a.terminal.tick().unwrap();
-        assert!(!unix::readable(old.as_raw_fd(), 50).unwrap());
-        let (output, _input) = unix::pipe().unwrap();
-        a.serve(
-            output,
-            goblins_runtime::config::Handlers {
-                on_attach: goblins_runtime::config::OnAttach {
-                    command: vec!["client".into()],
-                    timeout: 30,
-                    wait_for: vec![],
-                },
-                on_detach: None,
+        a.serve(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
+                command: vec!["client".into()],
+                timeout: 30,
+                wait_for: vec![],
             },
-        )
-        .unwrap();
-        a.terminal.tick().unwrap();
-        let refused = rpc::read(&mut old).unwrap();
-        assert!(
-            refused["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("upgrade Goblins")
-        );
+            on_detach: None,
+        });
         // Stopped, it can be evicted although it was launched attached.
         a.runtime = None;
         assert!(a.can_evict());
@@ -6370,60 +6519,89 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
-    fn a_single_terminal_goblin_attaches_through_either_socket() {
+    fn a_single_terminal_goblin_reserves_before_runtime_acceptance() {
         let mut d = daemon();
         let path = d.state.clone();
         let _results = live(&mut d, "a");
-        let directory = d.sessions["a"].directory.clone();
-        let step = |d: &mut Controller| {
-            let mut a = d.sessions.remove("a").unwrap();
-            let _ = a.terminal.tick();
-            d.attach_tick(&mut a);
-            let _ = a.terminal.tick();
-            d.sessions.insert("a".into(), a);
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        let hello = |version| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":version,"rows":24,"cols":80}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
         };
-        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
-        frontend
-            .write_all(
-                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
-                    "params":{"version":1,"rows":24,"cols":80}}))
-                .unwrap(),
-            )
-            .unwrap();
-        step(&mut d);
-        assert_eq!(
-            rpc::read(&mut frontend).unwrap()["result"]["attached"],
-            true
-        );
+        let _first = hello(1);
+        let mut second = hello(1);
+        d.tick().unwrap();
         assert!(d.sessions["a"].record.terminal_attached);
-        // terminal.sock keeps today's protocol: refused while attached.
-        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
-        step(&mut d);
         assert_eq!(
-            rpc::read(&mut old).unwrap()["error"]["message"],
+            rpc::read(&mut second).unwrap()["error"]["message"],
             "terminal is already attached"
         );
-        // A hello that is not one is refused.
-        let mut wrong = UnixStream::connect(directory.join("attach.sock")).unwrap();
-        wrong
-            .write_all(
-                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
-                "params":{"version":2,"rows":24,"cols":80}}))
-                .unwrap(),
-            )
+        let Command::Attach {
+            terminal: TerminalId::Main,
+            stream,
+            rows: 24,
+            cols: 80,
+        } = received.lock().unwrap().pop_front().unwrap()
+        else {
+            panic!("expected main attachment");
+        };
+        drop(stream);
+        assert!(received.lock().unwrap().is_empty());
+        // A detached frontend still holding its outcome reserves the slot.
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
             .unwrap();
-        step(&mut d);
+        d.tick().unwrap();
+        let mut held = hello(1);
+        d.tick().unwrap();
+        assert_eq!(
+            rpc::read(&mut held).unwrap()["error"]["message"],
+            "terminal is already attached"
+        );
+        assert!(!d.sessions["a"].record.terminal_attached);
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let _next = hello(1);
+        d.tick().unwrap();
+        assert!(matches!(
+            received.lock().unwrap().pop_front(),
+            Some(Command::Attach {
+                terminal: TerminalId::Main,
+                ..
+            })
+        ));
+        let mut wrong = hello(2);
+        d.tick().unwrap();
         assert_eq!(
             rpc::read(&mut wrong).unwrap()["error"]["message"],
             "unsupported attach.hello version"
         );
-        // A goblin with attach handlers refuses terminal.sock outright.
-        drop(frontend);
-        step(&mut d);
-        d.sessions.get_mut("a").unwrap().terminal.refuse("upgrade");
-        let mut old = UnixStream::connect(directory.join("terminal.sock")).unwrap();
-        step(&mut d);
-        assert_eq!(rpc::read(&mut old).unwrap()["error"]["message"], "upgrade");
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

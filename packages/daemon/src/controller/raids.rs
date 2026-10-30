@@ -352,8 +352,7 @@ impl Controller {
             .members()
             .filter_map(|id| match self.sessions.get(id) {
                 Some(a)
-                    if a.runtime.is_some()
-                        && matches!(a.record.state.as_str(), "starting" | "running") =>
+                    if a.live() && matches!(a.record.state.as_str(), "starting" | "running") =>
                 {
                     None
                 }
@@ -407,7 +406,7 @@ impl Controller {
     }
     fn live(&self, session: &str) -> Result<(), Fault> {
         let a = &self.sessions[session];
-        if a.runtime.is_some() && matches!(a.record.state.as_str(), "starting" | "running") {
+        if a.live() && matches!(a.record.state.as_str(), "starting" | "running") {
             Ok(())
         } else {
             Err((

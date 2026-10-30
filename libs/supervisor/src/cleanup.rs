@@ -32,17 +32,29 @@ fn lock_root() -> Result<PathBuf> {
 /// Serializes temporary-store creation against GC's enumeration and deletion.
 /// Held only until a store owns its lifetime lease, not while members run.
 pub(crate) fn storage_gate() -> Result<File> {
-    flock(&lock_root()?.join("storage.lock"), false)?
+    storage_gate_at(&lock_root()?)
+}
+
+pub(crate) fn storage_gate_at(locks: &Path) -> Result<File> {
+    flock(&locks.join("storage.lock"), false)?
         .ok_or_else(|| "Goblins storage maintenance is running; try again shortly".into())
 }
 
 pub(crate) fn temporary_lease(kind: &str, path: &Path) -> Result<File> {
-    flock(&temporary_lock(kind, path)?, false)?
+    temporary_lease_at(&lock_root()?, kind, path)
+}
+
+pub(crate) fn temporary_lease_at(locks: &Path, kind: &str, path: &Path) -> Result<File> {
+    flock(&temporary_lock_at(locks, kind, path)?, false)?
         .ok_or_else(|| "temporary storage is being collected".into())
 }
 
 fn temporary_lock(kind: &str, path: &Path) -> Result<PathBuf> {
-    Ok(lock_root()?.join(format!(
+    temporary_lock_at(&lock_root()?, kind, path)
+}
+
+fn temporary_lock_at(locks: &Path, kind: &str, path: &Path) -> Result<PathBuf> {
+    Ok(locks.join(format!(
         "{kind}-{}",
         path.file_name()
             .ok_or("missing storage name")?

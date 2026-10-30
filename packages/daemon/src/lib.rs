@@ -8,6 +8,5 @@ pub mod host;
 pub mod mailbox;
 pub mod messaging;
 pub mod operation;
-mod terminal;
 
 mod scopes;

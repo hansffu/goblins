@@ -44,6 +44,36 @@ impl Storage {
         }
         let _gate = crate::cleanup::storage_gate()?;
         let root = root(true)?;
+        Self::open_at(&root, name, definition, |path| {
+            crate::cleanup::temporary_lease("scopes", path)
+        })
+    }
+    /// Exercise real storage/GC lock and lease behavior without resolving a
+    /// test runner's process-wide user cache.
+    #[cfg(test)]
+    pub(crate) fn open_in(
+        cache: &Path,
+        name: &str,
+        definition: &ScopeDefinition,
+    ) -> Result<Option<Self>> {
+        if !goblins_protocol::scope_name(name) {
+            return Err("invalid scope name".into());
+        }
+        let locks = cache.join("locks");
+        unix::private_directory(&locks)?;
+        let _gate = crate::cleanup::storage_gate_at(&locks)?;
+        let root = cache.join("scopes");
+        unix::private_directory(&root)?;
+        Self::open_at(&root, name, definition, |path| {
+            crate::cleanup::temporary_lease_at(&locks, "scopes", path)
+        })
+    }
+    fn open_at(
+        root: &Path,
+        name: &str,
+        definition: &ScopeDefinition,
+        lease: impl FnOnce(&Path) -> Result<File>,
+    ) -> Result<Option<Self>> {
         let (path, lock) = if definition.persistent {
             let locks = root.join("locks");
             unix::private_directory(&locks)?;
@@ -65,7 +95,7 @@ impl Storage {
             }
             template.pop();
             let path = PathBuf::from(OsString::from_vec(template));
-            let lease = crate::cleanup::temporary_lease("scopes", &path)?;
+            let lease = lease(&path)?;
             (path, Some(lease))
         };
         let mut storage = Self {

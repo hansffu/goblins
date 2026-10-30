@@ -22,8 +22,11 @@ mod scope_process;
 pub use scope_process::main as scope_main;
 mod scope_storage;
 mod seccomp;
+mod server_log;
 mod session;
 mod snapshot;
+mod terminal;
+mod terminals;
 mod worker;
 // Legacy descriptor fixtures travel with the ignored Session driver.
 #[cfg(test)]
@@ -57,8 +60,7 @@ pub struct Local {
     relay: relay::Relay,
     /// The helper's pidfd, until the payload's exit is reported.
     exit_watch: Option<OwnedFd>,
-    /// PTYs allocated for processes init has not reported started.
-    masters: BTreeMap<u64, OwnedFd>,
+    terminals: terminals::Terminals,
     buffer: Vec<u8>,
     /// The goblin's capability, published by its worker at `Started` and by
     /// each dev shell refresh: it resolves host directories through the
@@ -79,4 +81,11 @@ pub struct Local {
     /// A round is being polled: its sources were collected.
     polling: bool,
     ended: bool,
+    /// A failure or final lifecycle result was observed, so worker loss
+    /// must not overwrite its diagnostic.
+    settled: bool,
+    sandbox_stopped: bool,
+    /// Monotonic cleanup boundary, independent of later terminal events.
+    released: bool,
+    pending_stop: Option<Option<i32>>,
 }

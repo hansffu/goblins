@@ -324,6 +324,10 @@ pub struct Session {
 }
 impl Session {
     #[cfg(test)]
+    pub(crate) fn fixture_scope(&mut self, scope: crate::scope_client::Client) {
+        self.scope = Some(Arc::new(scope));
+    }
+    #[cfg(test)]
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
         Self::new_in(launch, workspace, cancel, unix::temp_directory()?)
     }

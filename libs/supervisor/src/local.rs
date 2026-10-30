@@ -25,7 +25,7 @@ const LOG_LIMIT: u64 = 16 * 1024 * 1024;
 /// Finished host jobs whose output stays readable per sandbox.
 const KEPT: usize = 8;
 
-use goblins_runtime::{Command, Event, Fd, Runtime, Stdio};
+use goblins_runtime::{Command, Event, Runtime, Stdio};
 
 /// The goblin's current capability, replaced under the lock whenever a dev
 /// shell refresh publishes, so an export never waits for Nix work.
@@ -43,7 +43,16 @@ pub(crate) struct HostJob {
 use crate::Local;
 
 impl Local {
-    pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
+    pub fn start(
+        source: Source,
+        directory: PathBuf,
+        dimensions: (u16, u16),
+        detached: bool,
+    ) -> crate::Result<Self> {
+        let terminals = crate::terminals::Terminals::new(
+            directory.parent().ok_or("missing goblin directory")?,
+            detached,
+        )?;
         let host_jobs = directory.join("host-jobs");
         let published = Published::default();
         // A member's worker waits for the handoff before it builds anything.
@@ -58,7 +67,8 @@ impl Local {
         let mut local = Self::new(worker, host_jobs);
         local.published = published;
         local.start = start;
-        local
+        local.terminals = terminals;
+        Ok(local)
     }
     fn new(worker: Worker, host_jobs: PathBuf) -> Self {
         Self {
@@ -74,25 +84,65 @@ impl Local {
             listener: None,
             relay: Default::default(),
             exit_watch: None,
-            masters: BTreeMap::new(),
+            terminals: Default::default(),
             buffer: vec![],
             stopping: false,
             events: VecDeque::new(),
             polling: false,
             ended: false,
+            settled: false,
+            sandbox_stopped: false,
+            released: false,
+            pending_stop: None,
         }
     }
     /// The goblin's current capability, once it has started.
     fn capability(&self) -> Option<Inheritance> {
+        if self.ended || self.sandbox_stopped || self.pending_stop.is_some() {
+            return None;
+        }
         self.published.lock().ok()?.clone()
     }
     /// Report an event in the current round, or the next.
     fn report(&mut self, event: Event) {
         self.events.push_back(event);
     }
+    /// A terminal buffer must not retain sandbox resources. A host job's
+    /// output stays available until its queued result has been delivered.
+    fn release_resources(&mut self) {
+        self.prepared.clear();
+        if self.jobs.is_empty()
+            && !self
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::HostJobFinished { .. }))
+        {
+            self.published
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take();
+        }
+    }
+    fn finish_stop(&mut self) {
+        if self.pending_stop.is_some()
+            && self.jobs.is_empty()
+            && !self
+                .events
+                .iter()
+                .any(|event| matches!(event, Event::HostJobFinished { .. }))
+        {
+            self.release_resources();
+            self.sandbox_stopped = true;
+            let exit_code = self.pending_stop.take().unwrap();
+            self.report(Event::Stopped { exit_code });
+        }
+    }
     /// Collect a round: worker results, init's events, new request
     /// connections and the payload's exit.
     fn collect(&mut self) {
+        if self.ended {
+            self.release_resources();
+        }
         for _ in 0..16 {
             match self.worker.results.try_recv() {
                 Ok(event) => {
@@ -113,19 +163,42 @@ impl Local {
                                     control,
                                     listener,
                                     exit_watch,
+                                    master,
                                 } = *endpoints;
+                                if let Err(error) =
+                                    self.terminals.started(master, policy.handlers.is_some())
+                                {
+                                    self.report(Event::Failed(error.to_string()));
+                                    let _ = self.send(Command::Stop);
+                                }
                                 self.init = Some(control);
                                 self.exit_watch = Some(exit_watch);
                                 self.listener = Some(listener);
                             }
                         }
-                        Event::Stopped { .. } => {
+                        Event::Mode { server } => self.terminals.mode(*server),
+                        Event::Failed(_) => {
+                            self.settled = true;
+                            self.terminals.failed();
+                        }
+                        Event::Stopped { exit_code } => {
+                            self.pending_stop = Some(*exit_code);
+                            // The worker sends this after Session/scope
+                            // teardown. Release its last publication before
+                            // the daemon can observe the stopped state.
+                            self.release_resources();
+                            self.settled = true;
+                            if self.capabilities.is_none() {
+                                self.terminals.failed();
+                            }
                             self.listener = None;
                             self.relay.end(&mut self.events);
                         }
                         _ => (),
                     }
-                    self.report(event);
+                    if !matches!(event, Event::Stopped { .. }) {
+                        self.report(event);
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
                 // Completion is usable only after observing the channel
@@ -135,6 +208,19 @@ impl Local {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.ended = self.worker.finished();
                     if self.ended {
+                        self.release_resources();
+                        if !self.settled {
+                            self.settled = true;
+                            self.report(Event::Failed(
+                                "session worker exited without a final lifecycle result".into(),
+                            ));
+                            self.pending_stop = Some(None);
+                        } else if self.pending_stop.is_none() {
+                            self.sandbox_stopped = true;
+                        }
+                        if self.capabilities.is_none() {
+                            self.terminals.failed();
+                        }
                         self.listener = None;
                         self.relay.end(&mut self.events);
                     }
@@ -168,6 +254,8 @@ impl Local {
             );
         }
         self.finish_host_jobs();
+        self.finish_stop();
+        self.terminals.tick(self.ended, &mut self.events);
         // Observe process exit independently of a worker blocked on Nix.
         // A pidfd pins the process identity, avoiding PID-reuse races.
         if self
@@ -195,13 +283,9 @@ impl Local {
                         continue;
                     };
                     let event = match event {
-                        init::Event::Spawned { id, pid } => Event::Spawned {
-                            id,
-                            pid,
-                            master: self.masters.remove(&id).map(Fd::from),
-                        },
+                        init::Event::Spawned { id, pid } => Event::Spawned { id, pid },
                         init::Event::Failed { id, code, message } => {
-                            self.masters.remove(&id);
+                            self.terminals.spawn_failed(id);
                             Event::SpawnFailed {
                                 id,
                                 code: Some(code),
@@ -209,6 +293,7 @@ impl Local {
                             }
                         }
                         init::Event::Exited { id, code, signal } => {
+                            self.terminals.exited(id);
                             Event::Exited { id, code, signal }
                         }
                     };
@@ -217,7 +302,7 @@ impl Local {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Ok(_) | Err(_) => {
                     self.init = None;
-                    self.masters.clear();
+                    self.terminals.init_lost();
                     self.report(Event::InitLost);
                     return;
                 }
@@ -239,6 +324,10 @@ impl Local {
         env: Vec<(String, String)>,
         stdio: Stdio,
     ) {
+        let size = match &stdio {
+            Stdio::NewPty { rows, cols } => Some((*rows, *cols)),
+            _ => None,
+        };
         let (tty, fds, master): (_, Vec<OwnedFd>, _) = match stdio {
             Stdio::Fds(fds) => (false, fds.into_iter().map(OwnedFd::from).collect(), None),
             Stdio::Tty(slave) => (true, vec![slave.into()], None),
@@ -264,7 +353,22 @@ impl Local {
         match self.to_init(&command, &raw) {
             Ok(()) => {
                 if let Some(master) = master {
-                    self.masters.insert(id, master);
+                    if let Some((rows, cols)) = size {
+                        if let Err(error) = self.terminals.process(id, master, rows, cols) {
+                            let _ = self.to_init(
+                                &init::Command::Cancel {
+                                    id,
+                                    everything: true,
+                                },
+                                &[],
+                            );
+                            self.report(Event::SpawnFailed {
+                                id,
+                                code: None,
+                                message: error.to_string(),
+                            });
+                        }
+                    }
                 }
             }
             Err(message) => self.report(Event::SpawnFailed {
@@ -406,6 +510,26 @@ impl Runtime for Local {
             }
         }
         match command {
+            Command::Attach {
+                terminal,
+                stream,
+                rows,
+                cols,
+            } => self.terminals.attach(
+                terminal,
+                OwnedFd::from(stream).into(),
+                rows,
+                cols,
+                &mut self.events,
+            ),
+            Command::Detach { terminal } => self.terminals.detach(terminal, &mut self.events),
+            Command::Resize {
+                terminal,
+                rows,
+                cols,
+            } => self
+                .terminals
+                .resize(terminal, rows, cols, &mut self.events),
             Command::SandboxSend {
                 connection,
                 message,
@@ -536,10 +660,27 @@ impl Runtime for Local {
         }
         let event = self.events.pop_front();
         self.polling = event.is_some();
+        // Once the initial lifecycle/results have drained, later terminal
+        // status notifications cannot acquire sandbox authority again.
+        if event.is_none()
+            && self.sandbox_stopped
+            && self.jobs.is_empty()
+            && self.prepared.is_empty()
+            && self
+                .published
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .is_none()
+        {
+            self.released = true;
+        }
         event
     }
+    fn released(&self) -> bool {
+        self.released
+    }
     fn ended(&self) -> bool {
-        self.ended && self.events.is_empty() && self.jobs.is_empty()
+        self.ended && self.released && self.events.is_empty() && self.terminals.drained()
     }
 }
 
@@ -642,6 +783,393 @@ mod tests {
     }
 
     #[test]
+    fn a_reported_worker_failure_survives_a_lost_stopped_result() {
+        let (worker, _, sender) = worker();
+        let mut local = ready(worker);
+        sender
+            .send(Event::Failed("the original failure".into()))
+            .unwrap();
+        drop(sender);
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(
+            matches!(events.as_slice(), [Event::Failed(message)] if message == "the original failure")
+        );
+        assert!(local.ended());
+    }
+
+    #[test]
+    fn lost_worker_reports_failure_before_retained_terminal_output_is_read() {
+        use std::io::{Read, Write};
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (worker, _, sender) = worker();
+        let mut local = ready(worker);
+        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        local.terminals.started(master, false).unwrap();
+        let mut slave = File::from(slave);
+        slave.write_all(b"late output").unwrap();
+        drop(slave);
+        let resources = directory.join("resources");
+        std::fs::create_dir(&resources).unwrap();
+        *local.published.lock().unwrap() =
+            Some(Inheritance::fixture_in("shell", &[], resources.clone()));
+        local
+            .prepared
+            .insert("pending".into(), File::open(&resources).unwrap());
+        drop(sender);
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(events.iter().any(|event| matches!(event, Event::Failed(message) if message == "session worker exited without a final lifecycle result")));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Stopped { exit_code: None }))
+        );
+        assert!(!local.ended(), "terminal output outlives worker completion");
+        assert!(
+            local.capability().is_none(),
+            "a finished worker cannot export its sandbox"
+        );
+        assert!(local.released(), "retained output is not a live sandbox");
+        assert!(local.prepared.is_empty());
+        assert!(
+            !resources.exists(),
+            "retained terminal bytes must not retain resource leases"
+        );
+        let mut frontend =
+            std::os::unix::net::UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        for _ in 0..4 {
+            while local.poll().is_some() {}
+        }
+        assert_eq!(
+            goblins_jsonrpc::read(&mut frontend).unwrap()["result"]["attached"],
+            true
+        );
+        let mut output = vec![];
+        frontend.read_to_end(&mut output).unwrap();
+        assert_eq!(output, b"late output");
+        assert!(local.ended());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stopped_is_visible_only_after_unused_resources_are_released() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let resources = directory.join("resources");
+        std::fs::create_dir(&resources).unwrap();
+        let (worker, _, sender) = worker();
+        let mut local = ready(worker);
+        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        *local.published.lock().unwrap() =
+            Some(Inheritance::fixture_in("shell", &[], resources.clone()));
+        local
+            .prepared
+            .insert("pending".into(), File::open(&resources).unwrap());
+        sender.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        // Keep the producer alive: Stopped itself must release the unused
+        // publication, independently of the next disconnected observation.
+        assert!(matches!(
+            local.poll(),
+            Some(Event::Stopped { exit_code: Some(0) })
+        ));
+        assert!(!resources.exists());
+        assert!(local.prepared.is_empty());
+        assert!(local.poll().is_none());
+        assert!(
+            local.released(),
+            "Stopped released its sandbox even while the producer holds its channel"
+        );
+        assert!(!local.ended(), "the producer has not exited");
+        drop(sender);
+        while local.poll().is_some() {}
+        assert!(local.released());
+        assert!(!local.ended(), "unread terminal still retains its runtime");
+        drop(local);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn late_terminal_commands_never_reacquire_released_sandbox_authority() {
+        use goblins_runtime::TerminalId;
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+        };
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (worker, _, sender) = worker();
+        let mut local = ready(worker);
+        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        local.terminals.started(master, false).unwrap();
+        let mut slave = File::from(slave);
+        slave.write_all(b"retained output").unwrap();
+        sender.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        drop(sender);
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Stopped { .. }))
+        );
+        assert!(local.released());
+        assert!(!local.ended());
+        let (stream, mut frontend) = UnixStream::pair().unwrap();
+        local
+            .send(Command::Attach {
+                terminal: TerminalId::Main,
+                stream: OwnedFd::from(stream).into(),
+                rows: 30,
+                cols: 100,
+            })
+            .unwrap();
+        assert!(
+            !local.events.is_empty(),
+            "Attach queues its actual terminal status"
+        );
+        assert!(
+            local.released(),
+            "queued late attachment status cannot reserve names/history again"
+        );
+        assert!(
+            !local.ended(),
+            "queued terminal events must still be delivered"
+        );
+        while local.poll().is_some() {}
+        assert_eq!(
+            goblins_jsonrpc::read(&mut frontend).unwrap()["result"]["attached"],
+            true
+        );
+        let mut output = [0; 15];
+        frontend.read_exact(&mut output).unwrap();
+        assert_eq!(&output, b"retained output");
+        local
+            .send(Command::Resize {
+                terminal: TerminalId::Main,
+                rows: 40,
+                cols: 120,
+            })
+            .unwrap();
+        assert!(local.released());
+        local
+            .send(Command::Detach {
+                terminal: TerminalId::Main,
+            })
+            .unwrap();
+        assert!(!local.events.is_empty());
+        assert!(
+            local.released(),
+            "Detach cannot revive sandbox authority either"
+        );
+        assert!(!local.ended());
+        frontend.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(slave);
+        for _ in 0..4 {
+            while local.poll().is_some() {}
+        }
+        assert!(local.released());
+        assert!(local.ended());
+        drop(local);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stopped_waits_for_an_active_host_job_and_its_queued_result() {
+        let _forking = unix::forking();
+        let directory = unix::temp_directory().unwrap();
+        let resources = directory.join("resources");
+        let job = resources.join("job");
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(job.join("status.json"), serde_json::to_vec(&serde_json::json!({
+            "exit_code":0,"signal":null,"spawn_error":null,"cancelled":false,"timed_out":false,"truncated":false
+        })).unwrap()).unwrap();
+        let (worker, _, sender) = worker();
+        let mut local = ready(worker);
+        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        *local.published.lock().unwrap() =
+            Some(Inheritance::fixture_in("shell", &[], resources.clone()));
+        // EOF is a deterministic completion barrier; no timing/retry loop.
+        let child = std::process::Command::new("cat")
+            .stdin(ChildStdio::piped())
+            .stdout(ChildStdio::null())
+            .stderr(ChildStdio::null())
+            .spawn()
+            .unwrap();
+        local.jobs.push(HostJob {
+            request: "r1".into(),
+            child,
+            lifetime: None,
+            directory: job.clone(),
+        });
+        sender.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        drop(sender);
+        let early: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        let active_kept = resources.exists() && !local.released();
+        drop(local.jobs[0].child.stdin.take());
+        local.jobs[0].child.wait().unwrap();
+        let completed: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        let result_kept = job.join("status.json").exists();
+        let final_events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        // Assert after reaping the child, including on the negative control.
+        assert!(
+            !early
+                .iter()
+                .any(|event| matches!(event, Event::Stopped { .. }))
+        );
+        assert!(active_kept);
+        assert!(
+            matches!(completed.as_slice(), [Event::HostJobFinished { request, outcome: Ok(outcome) }] if request == "r1" && outcome.exit_code == Some(0))
+        );
+        assert!(
+            result_kept,
+            "the daemon may read the job's files while consuming its result"
+        );
+        assert!(matches!(
+            final_events.as_slice(),
+            [Event::Stopped { exit_code: Some(0) }]
+        ));
+        assert!(!resources.exists());
+        assert!(local.released());
+        assert!(
+            !local.ended(),
+            "terminal retention is independent of job completion"
+        );
+        drop(local);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stopped_follows_scope_leave_storage_cleanup_and_lease_release_with_unread_output() {
+        use goblins_runtime::{
+            channel::Channel,
+            scope::{self, Message},
+        };
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+        };
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let resources = directory.join("resources");
+        unix::private_directory(&resources).unwrap();
+        let storage = crate::scope_storage::Storage::open_in(
+            &directory.join("cache"),
+            "retained-output",
+            &goblins_runtime::config::ScopeDefinition {
+                persistent: false,
+                pid: false,
+                docker: false,
+                storage: vec!["data".into()],
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let storage_path = std::fs::read_link(format!(
+            "/proc/self/fd/{}",
+            storage.directory("data").unwrap().as_raw_fd()
+        ))
+        .unwrap();
+        assert!(storage_path.starts_with(directory.join("cache/scopes")));
+        let lease_path = directory.join("cache/locks").join(format!(
+            "scopes-{}",
+            storage_path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        ));
+        let lease_held = goblins_runtime::lease::flock(&lease_path, true)
+            .unwrap()
+            .is_none();
+        let (client, server) = UnixStream::pair().unwrap();
+        let mut server = Channel::new(server).unwrap();
+        let (mut worker, _, sender) = worker();
+        let launch = serde_json::from_value(serde_json::json!({
+            "shell":"/unused","posix_shell":"/unused","helper":"/unused",
+            "bwrap":"/unused","flake":"unused","client_package":"/unused"
+        }))
+        .unwrap();
+        let mut session =
+            crate::session::Session::new_in(launch, None, Cancel::default(), resources.clone())
+                .unwrap();
+        session.fixture_scope(crate::scope_client::Client::fixture(client));
+        let publication = Inheritance::fixture_in("shell", &[], resources.clone());
+        worker.thread = Some(std::thread::spawn(move || {
+            // This is the production worker's ordering: Session::drop waits
+            // for Left and drops its scope before sending Stopped.
+            drop(session);
+            sender.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        }));
+        let mut local = ready(worker);
+        *local.published.lock().unwrap() = Some(publication);
+        local.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        local.terminals.started(master, false).unwrap();
+        File::from(slave).write_all(b"scope output").unwrap();
+        assert!(unix::readable(server.fd().unwrap(), 1000).unwrap());
+        assert!(matches!(
+            scope::decode(server.receive().unwrap().unwrap().value).unwrap(),
+            Message::Leave {}
+        ));
+        let before: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        let held_before_left = resources.exists() && storage_path.exists() && !local.released();
+        drop(storage);
+        let lease_released = goblins_runtime::lease::flock(&lease_path, true)
+            .unwrap()
+            .is_some();
+        server
+            .queue(&scope::encode(&Message::Left {}), &mut vec![])
+            .unwrap();
+        server.flush().unwrap();
+        local.worker.thread.take().unwrap().join().unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(
+            !before
+                .iter()
+                .any(|event| matches!(event, Event::Stopped { .. }))
+        );
+        assert!(held_before_left);
+        assert!(lease_held, "real temporary storage holds its GC lease");
+        assert!(
+            lease_released,
+            "Storage::drop releases that lease before Left"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::Stopped { exit_code: Some(0) }))
+        );
+        assert!(!storage_path.exists());
+        assert!(
+            !resources.exists(),
+            "Stopped cannot precede actual ResourceLease deletion"
+        );
+        let _ = server.receive().unwrap();
+        assert!(server.closed(), "the Session released its scope membership");
+        assert!(local.released());
+        assert!(
+            !local.ended(),
+            "scope cleanup must not discard buffered output"
+        );
+        let mut frontend = UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        for _ in 0..4 {
+            while local.poll().is_some() {}
+        }
+        assert_eq!(
+            goblins_jsonrpc::read(&mut frontend).unwrap()["result"]["attached"],
+            true
+        );
+        let mut output = vec![];
+        frontend.read_to_end(&mut output).unwrap();
+        assert_eq!(output, b"scope output");
+        assert!(local.ended());
+        drop(local);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn cancellation_reaches_queued_and_running_work_even_when_the_queue_is_full() {
         let (worker, received, _sender) = worker();
         let mut local = ready(worker);
@@ -738,8 +1266,8 @@ mod tests {
             let bytes = serde_json::to_vec(&event).unwrap();
             init::send(sandbox.as_raw_fd(), &bytes, &[]).unwrap();
         };
-        // A new PTY: its slave goes to init, its master comes back with
-        // Spawned.
+        // A new PTY: its slave goes to init; its master stays in Local
+        // while Spawned reports only process metadata.
         local
             .send(Command::Spawn {
                 id: 2,
@@ -775,11 +1303,7 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                Event::Spawned {
-                    id: 2,
-                    pid: 42,
-                    master: Some(_)
-                },
+                Event::Spawned { id: 2, pid: 42 },
                 Event::SpawnFailed {
                     id: 3,
                     code: Some(127),
@@ -904,7 +1428,6 @@ mod tests {
             policy: Box::new(policy),
             support,
             dev_shell: None,
-            master: unix::pty(24, 80).unwrap().0,
             identity: Identity {
                 pid: 1,
                 helper_userns: 0,
@@ -941,6 +1464,7 @@ mod tests {
                 control,
                 listener,
                 exit_watch,
+                master: unix::pty(24, 80).unwrap().0,
             }))
             .unwrap();
         let mut local = Local::new(worker, directory.join("host-jobs"));
