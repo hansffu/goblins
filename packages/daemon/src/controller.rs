@@ -1,18 +1,17 @@
 //! Single authority/event loop, with independent blocking workers per session.
-use crate::{
-    Result,
-    session::{Cancel, Identity},
-    terminal::Terminal,
-    unix,
-    worker::Source,
-};
+use crate::Result;
+use crate::terminal::Terminal;
 use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::{
     Request,
     rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams},
 };
-use policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
-use runtime::{Command, Event, Local, Runtime, ScopeHandle};
+use goblins_runtime::Identity;
+use goblins_runtime::Source;
+use goblins_runtime::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
+use goblins_runtime::{Command, Event, Runtime, ScopeHandle};
+use goblins_supervisor::Local;
+use goblins_unix as unix;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -34,7 +33,6 @@ mod exec;
 mod host;
 pub(crate) mod policy;
 mod raids;
-pub(crate) mod runtime;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
 
 const HOSTS: usize = 32;
@@ -114,7 +112,7 @@ pub struct SessionRecord {
     pub recreated_from: Option<String>,
     /// What could not be restored when it was recreated, and why.
     #[serde(default)]
-    pub skipped: Vec<crate::history::Skipped>,
+    pub skipped: Vec<goblins_runtime::history::Skipped>,
 }
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
@@ -208,7 +206,7 @@ struct Active {
     scope: ScopeHandle,
     /// The manifest this launch was accepted against, which stays rooted
     /// until the launch has started.
-    launch_manifest: Option<std::sync::Arc<crate::config::ManifestLease>>,
+    launch_manifest: Option<std::sync::Arc<goblins_runtime::config::ManifestLease>>,
     /// The raid owner whose handoff this member still waits for.
     exporting: Option<String>,
     /// The runtime's channel to the sandbox's goblins-init is open.
@@ -233,7 +231,7 @@ struct Active {
     attach: attach::Attach,
     /// Known once started: the agent runs without a terminal and each attach
     /// starts a client.
-    handlers: Option<crate::config::Handlers>,
+    handlers: Option<goblins_runtime::config::Handlers>,
     server_log: Option<attach::ServerLog>,
     /// The history record this goblin writes: the record it was recreated
     /// from, otherwise its own id.
@@ -246,13 +244,12 @@ impl Active {
             let _ = runtime.send(Command::Cancel(id));
         }
     }
-    /// Give the goblin the capability of a started session, as `Started`
-    /// does.
+    /// Give a test goblin the plain policy a Started event would carry.
     #[cfg(test)]
-    fn set_inheritance(&mut self, inheritance: crate::session::Inheritance) {
-        self.policy = Some(Box::new(inheritance.policy()));
-        self.dev_shell = inheritance.dev_shell_summary();
-        self.scope = ScopeHandle(inheritance.scope_handle());
+    fn set_policy(&mut self, policy: Policy) {
+        self.policy = Some(Box::new(policy));
+        self.dev_shell = None;
+        self.scope = ScopeHandle::default();
     }
     /// May this goblin do `operation`? A goblin that has not started has no
     /// policy, and conflicts.
@@ -678,7 +675,7 @@ pub struct Controller {
     history_token: std::sync::Arc<()>,
     /// The last validated manifest the host used: what raid owners run
     /// members from. Its root goes once nothing holds the lease.
-    current_manifest: Option<std::sync::Arc<crate::config::ManifestLease>>,
+    current_manifest: Option<std::sync::Arc<goblins_runtime::config::ManifestLease>>,
     /// The order of the last accepted host launch, and of the published
     /// manifest: a slower, older launch never replaces a newer manifest.
     manifest_sequence: u64,
@@ -753,12 +750,7 @@ impl Controller {
     /// Start with the manifest the server was started with as current, once
     /// it validates. Call before the first launch.
     pub fn use_manifest(&mut self, path: &Path) {
-        match crate::config::lease_manifest(
-            path,
-            &self.state.join("manifests"),
-            0,
-            &Cancel::default(),
-        ) {
+        match goblins_supervisor::manifest::lease(path, &self.state.join("manifests"), 0) {
             Ok(lease) => self.current_manifest = Some(std::sync::Arc::new(lease)),
             Err(e) => eprintln!(
                 "goblins: no current configuration from {}: {e}",
@@ -1500,7 +1492,7 @@ impl Controller {
                 .is_some_and(|s| !goblins_protocol::scope_name(s))
             || p.dev_shell
                 .as_deref()
-                .is_some_and(|d| crate::devshell::parse_reference(d).is_err())
+                .is_some_and(|d| goblins_runtime::devshell::parse_reference(d).is_err())
             || !dimensions(p.rows, p.cols)
         {
             return Err((-32602, "invalid launch parameters".into()));
@@ -1613,7 +1605,7 @@ impl Controller {
                 cwd: p.cwd.clone(),
                 state: self.state.clone(),
                 history: self.history_directory.clone(),
-                recreate: recorded.as_ref().map(|r| crate::worker::Recreate {
+                recreate: recorded.as_ref().map(|r| goblins_runtime::Recreate {
                     packages: r.packages.approved.clone(),
                     auto_approve: r.packages.auto_approve.clone(),
                     docker: r.docker_enabled,
@@ -1727,7 +1719,7 @@ impl Controller {
         &mut self,
         owner: &str,
         member: String,
-        result: std::result::Result<Box<runtime::Handoff>, String>,
+        result: std::result::Result<Box<goblins_runtime::Handoff>, String>,
     ) {
         let Some(a) = self
             .sessions
@@ -2400,7 +2392,7 @@ impl Controller {
                             // A preview only: no record, no candidate, no change.
                             Command::Diff {
                                 serial,
-                                changes: crate::devshell::Changes {
+                                changes: goblins_runtime::devshell::Changes {
                                     update: p.update,
                                     lock: p.lock,
                                 },
@@ -2567,7 +2559,7 @@ impl Controller {
             runtime
                 .send(Command::Refresh {
                     approval: serial,
-                    changes: crate::devshell::Changes {
+                    changes: goblins_runtime::devshell::Changes {
                         update: p.update.clone(),
                         lock: p.lock,
                     },
@@ -3327,7 +3319,31 @@ impl Drop for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Inheritance;
+
+    fn policy_fixture(configuration: &str, targets: &[&str]) -> Policy {
+        let mut policy = Policy::fixture(configuration, targets);
+        // The old implementation fixture had an empty launch description.
+        policy.description.clear();
+        policy
+    }
+    fn host_policy_fixture(configuration: &str, targets: &[&str]) -> Policy {
+        let mut policy = policy_fixture(configuration, targets);
+        policy.host_commands = true;
+        policy
+    }
+    fn handoff_fixture(directory: Option<PathBuf>) -> goblins_runtime::Handoff {
+        let directory = directory.unwrap_or_else(|| unix::temp_directory().unwrap());
+        let lease = goblins_runtime::ResourceLease::new(directory.clone()).unwrap();
+        let workspace = std::os::fd::OwnedFd::from(File::open(&directory).unwrap()).into();
+        goblins_runtime::Handoff {
+            leases: vec![lease],
+            workspace,
+            working_directory: None,
+            dev_shell: None,
+            docker: false,
+        }
+    }
+
     fn daemon() -> Controller {
         let path = unix::temp_directory().unwrap();
         Controller::new(&path, None).unwrap()
@@ -3424,7 +3440,7 @@ mod tests {
                     recreated_from: None,
                     skipped: vec![],
                 },
-                runtime: Some(Box::new(runtime::Fake::ended(results))),
+                runtime: Some(Box::new(goblins_runtime::Fake::ended(results))),
                 preparing: None,
                 pending: Some(Pending {
                     initial_output: None,
@@ -3464,7 +3480,7 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let id = session_with_results_id(&mut d, "target", vec![]);
-        let (runtime, events, received) = runtime::Fake::new();
+        let (runtime, events, received) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut(&id).unwrap();
         a.runtime = Some(Box::new(runtime));
         a.init = true;
@@ -3499,7 +3515,7 @@ mod tests {
         let spawned = received.lock().unwrap().pop_front();
         let Some(Command::Spawn {
             argv: Some(sent),
-            stdio: runtime::Stdio::Fds(_),
+            stdio: goblins_runtime::Stdio::Fds(_),
             ..
         }) = spawned
         else {
@@ -3547,7 +3563,7 @@ mod tests {
             a.record.name = name.into();
             a.record.agent_name = id.clone();
             a.record.cwd = Some("/project".into());
-            a.set_inheritance(Inheritance::fixture(name, targets));
+            a.set_policy(policy_fixture(name, targets));
         }
         let keys = std::cell::Cell::new(0);
         let start = |name: &str| {
@@ -3587,9 +3603,9 @@ mod tests {
         assert!(d.launches.is_empty());
         assert_eq!(d.sessions.len(), 2);
         let manifest = path.join("current.json");
-        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
-            &manifest,
-        )));
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&manifest),
+        ));
         d.sessions
             .get_mut(&root)
             .unwrap()
@@ -3708,7 +3724,7 @@ mod tests {
             "newer",
             vec![Event::Manifest {
                 sequence: 3,
-                lease: crate::config::ManifestLease::adopt(
+                lease: goblins_runtime::config::ManifestLease::adopt(
                     path.join("newer.json"),
                     Some(roots[0].clone()),
                 ),
@@ -3720,7 +3736,7 @@ mod tests {
             "older",
             vec![Event::Manifest {
                 sequence: 2,
-                lease: crate::config::ManifestLease::adopt(
+                lease: goblins_runtime::config::ManifestLease::adopt(
                     path.join("older.json"),
                     Some(roots[1].clone()),
                 ),
@@ -3744,7 +3760,10 @@ mod tests {
             "newest",
             vec![Event::Manifest {
                 sequence: 4,
-                lease: crate::config::ManifestLease::adopt(path.join("newest.json"), None),
+                lease: goblins_runtime::config::ManifestLease::adopt(
+                    path.join("newest.json"),
+                    None,
+                ),
             }],
         );
         d.tick().unwrap();
@@ -4112,11 +4131,11 @@ mod tests {
         let path = d.state.clone();
         let events = live(&mut d, "a");
         d.sessions.get_mut("a").unwrap().record.state = "starting".into();
-        let inheritance = Inheritance::fixture("shell", &[]);
+        let inheritance = policy_fixture("shell", &[]);
         events
             .send(Event::Started {
                 docker_enabled: false,
-                policy: Box::new(inheritance.policy()),
+                policy: Box::new(inheritance),
                 support: Support::linux(),
                 dev_shell: None,
                 master: unix::pty(24, 80).unwrap().0,
@@ -4145,10 +4164,10 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         live(&mut d, "a");
-        let (runtime, runtime_events, received) = runtime::Fake::new();
+        let (runtime, runtime_events, received) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
-        a.set_inheritance(Inheritance::fixture("shell", &[]).with_host_commands());
+        a.set_policy(host_policy_fixture("shell", &[]));
         let reply = |c: &mut Connection| {
             let data = c.output.pop_front().unwrap();
             let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
@@ -4260,7 +4279,7 @@ mod tests {
         runtime_events
             .send(Event::HostJobFinished {
                 request: fourth_request.clone(),
-                outcome: Ok(runtime::HostOutcome {
+                outcome: Ok(goblins_runtime::HostOutcome {
                     exit_code: Some(0),
                     ..Default::default()
                 }),
@@ -4311,10 +4330,10 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         live(&mut d, "a");
-        let (runtime, events, received) = runtime::Fake::new();
+        let (runtime, events, received) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
-        a.set_inheritance(Inheritance::fixture("shell", &[]).with_host_commands());
+        a.set_policy(host_policy_fixture("shell", &[]));
         let (mut c, mut peer) = connection(Role::Sandbox("a".into()));
         c.initialized = true;
         d.dispatch(
@@ -4350,17 +4369,17 @@ mod tests {
         let a = d.sessions.get_mut(id).unwrap();
         let mut policy = Policy::fixture("shell", &["shell"]);
         policy.host_commands = true;
-        policy.scope = Some(policy::ScopePolicy {
+        policy.scope = Some(goblins_runtime::policy::ScopePolicy {
             name: "net".into(),
             docker: true,
             pid: false,
         });
-        policy.dev_shell = Some(policy::DevShellPolicy {
+        policy.dev_shell = Some(goblins_runtime::policy::DevShellPolicy {
             reference: ".".into(),
             path: "/work".into(),
         });
-        policy.handlers = Some(crate::config::Handlers {
-            on_attach: crate::config::OnAttach {
+        policy.handlers = Some(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
                 command: vec!["client".into()],
                 timeout: 30,
                 wait_for: vec![],
@@ -4466,7 +4485,9 @@ mod tests {
             assert!(!reduced.contains(&json!(dropped)), "{dropped}");
         }
         let mut support = Support::linux();
-        support.0.remove(&policy::Feature::DevShells);
+        support
+            .0
+            .remove(&goblins_runtime::policy::Feature::DevShells);
         capable(&mut d, "a", support);
         let some = features(&mut d);
         assert_eq!(some.len(), 14);
@@ -4539,9 +4560,9 @@ mod tests {
             "permissions.request",
             json!({"kind":"package","package":"hello","reason":"t"}),
         );
-        assert_eq!(reply["error"]["message"], crate::session::NIX_PACKAGES);
+        assert_eq!(reply["error"]["message"], goblins_runtime::NIX_PACKAGES);
         let reply = sandbox_call(&mut d, "a", "flake.run", json!({"app":"hello"}));
-        assert_eq!(reply["error"]["message"], crate::session::NIX_DEV_SHELL);
+        assert_eq!(reply["error"]["message"], goblins_runtime::NIX_DEV_SHELL);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -4551,7 +4572,7 @@ mod tests {
         let path = d.state.clone();
         live(&mut d, "a");
         capable(&mut d, "a", Support::linux());
-        let (runtime, _events, received) = runtime::Fake::new();
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
         a.init = true;
@@ -4579,7 +4600,7 @@ mod tests {
             command,
             Some(Command::Spawn {
                 argv: None,
-                stdio: runtime::Stdio::Tty(_),
+                stdio: goblins_runtime::Stdio::Tty(_),
                 ..
             })
         ));
@@ -4593,7 +4614,7 @@ mod tests {
             argv,
             cwd,
             env,
-            stdio: runtime::Stdio::Fds(_),
+            stdio: goblins_runtime::Stdio::Fds(_),
             ..
         }) = command
         else {
@@ -4617,14 +4638,14 @@ mod tests {
             fs::create_dir(&resources).unwrap();
             fs::write(resources.join("snapshot"), "x").unwrap();
             // The goblin's runtime holds its resources...
-            let (runtime, _events, _received) = runtime::Fake::new();
+            let (runtime, _events, _received) = goblins_runtime::Fake::new();
             d.sessions.get_mut(&id).unwrap().runtime = Some(Box::new(
-                runtime.holding(Inheritance::fixture_in("shell", &[], resources.clone())),
+                runtime.holding(goblins_runtime::ResourceLease::new(resources.clone()).unwrap()),
             ));
             // ...and maybe another holder does, as a raid member that shares
             // them or a helper that outlived it.
             let lease =
-                held.then(|| crate::session::ResourceLease::new(resources.clone()).unwrap());
+                held.then(|| goblins_runtime::ResourceLease::new(resources.clone()).unwrap());
             drop(d);
             // The goblin's own files are gone either way.
             assert!(!session.join("terminal.sock").exists());
@@ -4646,21 +4667,21 @@ mod tests {
     ) -> (
         String,
         std::sync::mpsc::SyncSender<Event>,
-        runtime::Received,
+        goblins_runtime::Received,
     ) {
         let root = session_with_results_id(d, "root", vec![]);
-        let (runtime, events, received) = runtime::Fake::new();
+        let (runtime, events, received) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut(&root).unwrap();
         a.runtime = Some(Box::new(runtime));
         a.pending = None;
         a.record.name = "coordinator".into();
         a.record.agent_name = "boss".into();
-        a.set_inheritance(Inheritance::fixture("coordinator", &["shell"]));
+        a.set_policy(policy_fixture("coordinator", &["shell"]));
         d.sandbox_control(&root, "raids.create", json!({"raid":"crew"}))
             .unwrap();
-        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
-            &d.state.join("current.json"),
-        )));
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&d.state.join("current.json")),
+        ));
         (root, events, received)
     }
     fn run_member(d: &mut Controller, owner: &str, key: &str) -> String {
@@ -4700,7 +4721,7 @@ mod tests {
         // The answer reaches the member, which goes on to read its
         // configuration: the manifest does not exist, so it fails for that,
         // not for want of a handoff.
-        let handoff = Inheritance::fixture("coordinator", &[]).handoff().unwrap();
+        let handoff = handoff_fixture(None);
         events
             .send(Event::Exported {
                 member: member.clone(),
@@ -4756,9 +4777,7 @@ mod tests {
         // which letting go of the answer releases.
         let resources = path.join("late-resources");
         fs::create_dir(&resources).unwrap();
-        let handoff = Inheritance::fixture_in("coordinator", &[], resources.clone())
-            .handoff()
-            .unwrap();
+        let handoff = handoff_fixture(Some(resources.clone()));
         events
             .send(Event::Exported {
                 member: "nobody".into(),
@@ -4776,7 +4795,7 @@ mod tests {
         let path = d.state.clone();
         let (owner, events, _received) = raid_owner(&mut d);
         let member = run_member(&mut d, &owner, "k1");
-        let handoff = Inheritance::fixture("coordinator", &[]).handoff().unwrap();
+        let handoff = handoff_fixture(None);
         events
             .send(Event::Exported {
                 member: member.clone(),
@@ -4807,9 +4826,7 @@ mod tests {
         // The owner's answer arrives afterwards, and nobody wants it.
         let resources = path.join("late-resources");
         fs::create_dir(&resources).unwrap();
-        let handoff = Inheritance::fixture_in("coordinator", &[], resources.clone())
-            .handoff()
-            .unwrap();
+        let handoff = handoff_fixture(Some(resources.clone()));
         events
             .send(Event::Exported {
                 member: member.clone(),
@@ -4829,15 +4846,13 @@ mod tests {
         let (owner, events, _received) = raid_owner(&mut d);
         let member = run_member(&mut d, &owner, "k1");
         // The member's runtime records what it is sent and does not run.
-        let (runtime, _member_events, sent) = runtime::Fake::new();
+        let (runtime, _member_events, sent) = goblins_runtime::Fake::new();
         d.sessions.get_mut(&member).unwrap().runtime = Some(Box::new(runtime));
         d.stop(&member, None).unwrap();
         assert!(d.sessions[&member].exporting.is_none());
         let resources = path.join("late-resources");
         fs::create_dir(&resources).unwrap();
-        let handoff = Inheritance::fixture_in("coordinator", &[], resources.clone())
-            .handoff()
-            .unwrap();
+        let handoff = handoff_fixture(Some(resources.clone()));
         events
             .send(Event::Exported {
                 member: member.clone(),
@@ -4870,7 +4885,7 @@ mod tests {
         let (owner, events, _received) = raid_owner(&mut d);
         let member = run_member(&mut d, &owner, "k1");
         // A member runtime whose queue is full refuses a Start.
-        let (runtime, _member_events, sent) = runtime::Fake::new();
+        let (runtime, _member_events, sent) = goblins_runtime::Fake::new();
         for approval in 0..4 {
             sent.lock().unwrap().push_back(Command::Preview {
                 approval,
@@ -4881,9 +4896,7 @@ mod tests {
         events
             .send(Event::Exported {
                 member: member.clone(),
-                result: Ok(Box::new(
-                    Inheritance::fixture("coordinator", &[]).handoff().unwrap(),
-                )),
+                result: Ok(Box::new(handoff_fixture(None))),
             })
             .unwrap();
         d.tick().unwrap();
@@ -5191,7 +5204,7 @@ mod tests {
         // A second loss of the same connection reports nothing new.
         d.withdraw(99);
         let shutdown = session_with_results_id(&mut d, "shutdown", vec![]);
-        let (runtime, _results, _received) = runtime::Fake::new();
+        let (runtime, _results, _received) = goblins_runtime::Fake::new();
         d.sessions.get_mut(&shutdown).unwrap().runtime = Some(Box::new(runtime));
         d.permissions.back_mut().unwrap().id = "s".into();
         d.sessions
@@ -5262,7 +5275,7 @@ mod tests {
         );
         assert!(!d.history.as_ref().unwrap().records.contains_key("kid"));
         // A host denial, then an approval of the same package.
-        let (runtime, sender, _received) = runtime::Fake::new();
+        let (runtime, sender, _received) = goblins_runtime::Fake::new();
         d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
         let request = |d: &mut Controller, kind: &str| {
             let (mut c, peer) = connection(Role::Sandbox("a".into()));
@@ -5403,7 +5416,8 @@ mod tests {
     }
     #[test]
     fn a_resumed_record_is_bounded_like_copied_approvals() {
-        use crate::history::{MAX_NAMES, Record};
+        use crate::history::MAX_NAMES;
+        use crate::history::Record;
         let mut d = daemon();
         let path = d.state.clone();
         d.open_history(Ok(path.join("history")), 100);
@@ -5612,7 +5626,7 @@ mod tests {
         let (service, queue) = crate::messaging::Service::detached(1);
         d.messaging = service;
         let _results = live(&mut d, "a");
-        let (runtime, _results, _received) = runtime::Fake::new();
+        let (runtime, _results, _received) = goblins_runtime::Fake::new();
         d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
         d.tick().unwrap();
         while queue.try_recv().is_ok() {}
@@ -5690,11 +5704,11 @@ mod tests {
     }
     #[test]
     fn attach_handlers_wait_start_refuse_and_detach_a_client() {
-        use runtime::Stdio;
+        use goblins_runtime::Stdio;
         let mut d = daemon();
         let path = d.state.clone();
         let _results = live(&mut d, "a");
-        let (runtime, _events, received) = runtime::Fake::new();
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
         a.init = true;
@@ -5702,8 +5716,8 @@ mod tests {
         a.terminal.detached = true;
         a.variables.insert("session_id".into(), "seeded".into());
         let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
-        a.handlers = Some(crate::config::Handlers {
-            on_attach: crate::config::OnAttach {
+        a.handlers = Some(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
                 command: template(&["client", "{session_id}"]),
                 timeout: 30,
                 wait_for: vec![],
@@ -5969,8 +5983,8 @@ mod tests {
         let (output, _input) = unix::pipe().unwrap();
         a.serve(
             output,
-            crate::config::Handlers {
-                on_attach: crate::config::OnAttach {
+            goblins_runtime::config::Handlers {
+                on_attach: goblins_runtime::config::OnAttach {
                     command: vec!["client".into()],
                     timeout: 30,
                     wait_for: vec![],
@@ -6079,8 +6093,8 @@ mod tests {
         let mut d = daemon();
         let path = d.state.clone();
         let _results = live(&mut d, "a");
-        d.sessions.get_mut("a").unwrap().handlers = Some(crate::config::Handlers {
-            on_attach: crate::config::OnAttach {
+        d.sessions.get_mut("a").unwrap().handlers = Some(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
                 command: vec!["client".into(), "{session_id}".into()],
                 timeout: 1,
                 wait_for: vec!["ready".into()],
@@ -6178,7 +6192,7 @@ mod tests {
     }
     fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Event> {
         session_with_results_id(d, id, vec![]);
-        let (runtime, results, _) = runtime::Fake::new();
+        let (runtime, results, _) = goblins_runtime::Fake::new();
         let a = d.sessions.get_mut(id).unwrap();
         a.runtime = Some(Box::new(runtime));
         a.pending = None;
@@ -6543,11 +6557,11 @@ mod tests {
         live(&mut d, "other");
         for id in ["root", "other"] {
             let a = d.sessions.get_mut(id).unwrap();
-            a.set_inheritance(Inheritance::fixture("shell", &["shell"]));
+            a.set_policy(policy_fixture("shell", &["shell"]));
         }
-        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
-            &path.join("current.json"),
-        )));
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&path.join("current.json")),
+        ));
         let member = |key: &str| json!({"key":key,"name":"shell","agent_name":null});
         d.sandbox_control("root", "raids.create", json!({"raid":"review"}))
             .unwrap();

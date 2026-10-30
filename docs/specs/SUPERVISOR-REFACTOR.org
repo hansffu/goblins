@@ -45,7 +45,7 @@ The end state is reached when:
 
 * 2. Where the code stands
 
-The session worker ([[file:../../packages/daemon/src/worker.rs][worker.rs]]) is already a message boundary: =Source= and =Work= go in, =Completed= comes out. It is the seed of the supervisor. Four things keep it from being a process boundary.
+The session worker ([[file:../../libs/supervisor/src/worker.rs][worker.rs]]) is already a message boundary: =Source= and =Work= go in, =Completed= comes out. It is the seed of the supervisor. Four things keep it from being a process boundary.
 
 #+begin_src mermaid :file diagrams/supervisor-today.svg :background-color "'#282c34'"
 flowchart TB
@@ -93,7 +93,7 @@ The controller also spawns host jobs itself (=helper --host-job=, [[file:../../p
 
 ** 2.2 =Inheritance= mixes policy with capabilities *[E]*
 
-=Inheritance= ([[file:../../packages/daemon/src/session.rs][session.rs]]) carries plain policy (configuration key, run targets, description, =allowNix=, host commands, editor, integration) next to =Arc<Launch>=, =Arc<binds::Plan>= with O_PATH descriptors, the workspace snapshot descriptor, =Weak<scope::Shared>=, a live =Arc<AtomicBool>= for Docker, and =Arc<SessionDirectory>=, which keeps the owner's =resources/= alive after it stops.
+=Inheritance= ([[file:../../libs/supervisor/src/session.rs][session.rs]]) carries plain policy (configuration key, run targets, description, =allowNix=, host commands, editor, integration) next to =Arc<Launch>=, =Arc<binds::Plan>= with O_PATH descriptors, the workspace snapshot descriptor, =Weak<scope::Shared>=, a live =Arc<AtomicBool>= for Docker, and =Arc<SessionDirectory>=, which keeps the owner's =resources/= alive after it stops.
 
 The checks that decide what a goblin may do are scattered through =Controller::dispatch=: =allowNix= refuses package and dev shell requests, Docker requires a scope with =docker.enable=, host commands require =hostCommands.enable=, =devshell.diff= requires a dev shell. The sandbox's =initialize= result lists a fixed set of features for every goblin.
 
@@ -103,7 +103,7 @@ A member launch (=Source::Member=) carries the owner's =Inheritance=, an upgrade
 
 ** 2.4 Scopes are per-daemon shared state *[E]*
 
-[[file:../../packages/daemon/src/scope.rs][scope.rs]] keeps a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
+[[file:../../libs/supervisor/src/scope.rs][scope.rs]] keeps a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
 - =State._owner=, the first member's =Inheritance=;
 - =State.owners=, one =Inheritance= per Docker user.
 
@@ -800,12 +800,13 @@ This table describes the end state. =Terminal= and =ServerLog= stay in the daemo
 | =libs/api= | the public host and sandbox endpoints, their parameter types and limits, the client terminal relay and the shared validators | the rest of =libs/api=, including the method types of =rpc.rs= |
 | =libs/init= | the supervisor's channel to =goblins-init= | =libs/init/src/lib.rs= |
 | =libs/runtime= | =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff=, the scope messages, and the plain data both sides use: the manifest, =Skipped=, the dev shell generation and summary, =ResourceLease= with its flock helpers, and =ManifestLease= with its path and drop | new, and the data halves of =config=, =binds=, =history= and =devshell= |
-| =libs/unix= | the generic POSIX descriptor and filesystem helpers shared by the daemon and supervisor, including the fork-test guard | the generic parts of =packages/daemon/src/unix.rs= |
+| =libs/unix= | the generic POSIX descriptor and filesystem helpers shared by the daemon and supervisor, including the fork-test guard | the generic parts of =libs/unix/src/lib.rs= |
 | =libs/supervisor= | the runtime: session, worker, binds, Nix work, scopes, Docker, terminals and the request relay | the runtime modules of =packages/daemon= |
 
 Rules:
 - *Packages depend on libraries, never on each other.* Any package or library may use =libs/unix=; it depends on no other workspace member.
 - *Sandbox-side packages never link host authority.* =sandbox-cli= and the adapters link =jsonrpc=, =api= and =init=, never =runtime= or =supervisor=.
+- *The phase 3 to 5 implementation boundary.* The daemon imports contract data directly from =libs/runtime= and the in-process runtime through =Local=. Two temporary public facade modules also exist: =goblins_supervisor::maintenance::{gc, clear_scope}= and =goblins_supervisor::manifest::{read, select_configuration, allows_nix, lease}=. They take plain paths and data; =lease= creates its own default cancellation, while workers keep using their real cancellation token. All other supervisor modules stay private, with no public re-exports.
 - *The daemon links =supervisor= only while =Local= exists* (phases 3 to 5). From phase 6 it links =runtime= and the public libraries, so the end state in section 1 is a compile-time fact.
 - *Public and internal differ in how they change.* =jsonrpc= and =api= have clients outside the Rust build (Emacs, the Python tests, scripts) and are documented in [[file:../API.org][API.org]]; the schema-first plan in [[file:API-SCHEMA.org][API-SCHEMA.org]] covers them. =init=, =runtime= and =supervisor= connect two ends from the same build, may change in any commit, and are described by ADRs and the architecture documents.
 - *One Linux runtime library for now.* Until the launch split in section 9, the whole runtime is Linux code in =libs/supervisor=. The Darwin work later splits out its platform-neutral core, and =packages/supervisor-darwin= would link that core and its own backend.
@@ -897,7 +898,7 @@ Tests: =Fake= replaces =Worker::idle=, =Worker::completed= and =Worker::listenin
 4. *D: the runtime implementation gets its own library.*
    - The runtime modules move to =libs/supervisor=: =session=, =worker=, =binds=, =snapshot=, =seccomp= and =sandbox_etc=; =devshell=, =evaluator= and =catalog=; =scope*=, =network= and =docker=; =process= and the Linux parts of =unix=. =Local= and the launcher move with them. The host CLI frontend =exec.rs= stays in =packages/daemon=.
    - The generic POSIX helpers shared by the daemon and supervisor move to =libs/unix=, including the fork-test guard.
-   - The daemon reaches the runtime only through =libs/runtime= and =Local=. A daemon module that reaches further fails to compile.
+   - The daemon reaches the runtime through =libs/runtime= and =Local=, with the two temporary maintenance and manifest preflight modules specified in section 4.10. Cleanup moves privately into =libs/supervisor= beside storage. A daemon module that reaches any other implementation module fails to compile. The pure =parse_reference= validator moves into =libs/runtime=; staged data aliases become direct contract imports.
    - The Python =sandbox= harness's ignored =session::tests::host_driver= test moves with =Session=.
 
 Tests: the =cargo metadata= dependency check of section 4.10, and =nix flake check= building every package on its own. The metadata check does not compare Nix library lists; missing library sources already fail package builds.
@@ -965,6 +966,7 @@ sequenceDiagram
 
 - *Versioning.* =mkGoblins= pins the daemon and the supervisor from one build, so in a packaged install they always match. The control protocol carries a =supervisor_api= number, like =helper_api=, and a supervisor refuses a =Start= with another number. That catches a mismatched pair during development, such as a Cargo-built daemon with an older supervisor.
 - *Exec event logging.* The daemon stops writing =events.jsonl= in a goblin's resources directory through the transitional =libs/runtime= writer; it asks the supervisor to record the event instead.
+- *Maintenance and preflight.* Before the daemon stops linking =libs/supervisor=, replace the temporary =maintenance= and =manifest= entry points from section 4.10. Their replacement is designed in phase 6, not in phase 3.
 - *The daemon stops linking =libs/supervisor=* once =Local= is deleted. =Supervised= lives in the daemon's =supervised= module, the one place that launches, watches and kills its children (section 1).
 - *Lifetime and failure.* See section 6.
 

@@ -1,17 +1,18 @@
 //! One live instance per named scope: namespaces, network, managed storage
 //! and an optional Docker engine. Members hold strong references; the
 //! registry only a weak one, so the last member leaving stops the scope.
-use crate::{
-    Result,
-    config::{Launch, ScopeDefinition},
-    docker::{Engine, storage_root},
-    network::Network,
-    process::{self, Cancellation},
-    scope_keeper::Namespaces,
-    scope_storage::Storage,
-    session::Inheritance,
-    unix,
-};
+use crate::Result;
+use crate::config::Launch;
+use crate::docker::Engine;
+use crate::docker::storage_root;
+use crate::network::Network;
+use crate::process;
+use crate::process::Cancellation;
+use crate::scope_keeper::Namespaces;
+use crate::scope_storage::Storage;
+use crate::session::Inheritance;
+use goblins_runtime::config::ScopeDefinition;
+use goblins_unix as unix;
 use std::{
     collections::BTreeMap,
     fs::{self, File},

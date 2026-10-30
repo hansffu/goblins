@@ -186,9 +186,9 @@ demonstrate the tested workflows, not universal Docker compatibility.
 The initial implementation is commit `366ec01`; disk storage, networking and
 compatibility follow-ups are committed in `190ef55`. See
 [usage](../USAGE.org), [verification results](../RESULTS.org),
-[engine lifecycle](../../packages/daemon/src/docker.rs),
+[engine lifecycle](../../libs/supervisor/src/docker.rs),
 [native bootstrap](../../packages/mount-helper/src/docker.rs),
-[engine filter](../../packages/daemon/src/seccomp.rs) and
+[engine filter](../../libs/supervisor/src/seccomp.rs) and
 [integration tests](../../tests/test_docker.py).
 
 Operational details and new compatibility evidence belong in usage and results.

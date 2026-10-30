@@ -2,10 +2,9 @@
 //! Bubblewrap with the store, the daemon socket, the flake source and a
 //! private state directory only: no host home, SSH agent, netrc, access tokens
 //! or system Nix configuration. Builds still go through the host daemon.
-use crate::{
-    Result,
-    process::{self, Cancellation},
-};
+use crate::Result;
+use crate::process;
+use crate::process::Cancellation;
 use std::{
     ffi::OsString,
     fs,
@@ -177,8 +176,8 @@ impl Evaluator {
                 keep.extend([user, net]);
                 unsafe {
                     command.pre_exec(move || {
-                        crate::unix::cvt(libc::setns(user, libc::CLONE_NEWUSER))?;
-                        crate::unix::cvt(libc::setns(net, libc::CLONE_NEWNET))?;
+                        goblins_unix::cvt(libc::setns(user, libc::CLONE_NEWUSER))?;
+                        goblins_unix::cvt(libc::setns(net, libc::CLONE_NEWNET))?;
                         Ok(())
                     });
                 }

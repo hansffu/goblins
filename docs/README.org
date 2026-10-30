@@ -119,8 +119,10 @@ The development shell includes pyte for fullscreen terminal regression tests. Te
 | =libs/jsonrpc/= | JSON-RPC values, envelopes, framing and deadlines |
 | =libs/init/= | Private init protocol and descriptor transport |
 | =libs/runtime/= | Internal runtime contract, policy and lease data |
+| =libs/supervisor/= | Private Linux runtime implementation with Local and temporary facades |
+| =libs/unix/= | Shared POSIX descriptor and filesystem helpers |
 | =packages/sandbox-cli/=                    | Restricted Rust sandbox request executable                               |
-| =packages/daemon/=                | Rust session library, event pump, worker and tui/run frontend            |
+| =packages/daemon/=                | Rust event pump, authority and tui/run frontend            |
 | =nix/builders/rust.nix=             | Shared Rust build derivation with separate package selection             |
 | =tests/=                            | Python black-box payload and terminal tests; Nix checks                  |
 | =emacs/=                            | Emacs status, workspace, terminal and TRAMP frontend                     |

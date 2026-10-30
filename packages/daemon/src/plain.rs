@@ -3,8 +3,8 @@ use crate::STOP;
 use goblins_controller::{
     Result,
     host::{Client, decision},
-    unix,
 };
+use goblins_unix as unix;
 use std::{
     fs::OpenOptions,
     io::{Read, Write},

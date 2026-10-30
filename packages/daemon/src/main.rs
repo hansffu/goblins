@@ -70,7 +70,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 all: _,
                 dry_run,
             } => {
-                goblins_controller::cleanup::clear_scope(
+                goblins_supervisor::maintenance::clear_scope(
                     cli.runtime.as_deref(),
                     name.as_deref(),
                     dry_run,
@@ -78,7 +78,7 @@ fn execute(cli: Cli) -> Result<i32> {
             }
         },
         Command::Gc { dry_run } => {
-            goblins_controller::cleanup::gc(cli.runtime.as_deref(), &state, dry_run)?;
+            goblins_supervisor::maintenance::gc(cli.runtime.as_deref(), &state, dry_run)?;
         }
         Command::Send {
             recipient,
@@ -268,7 +268,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            let manifest = goblins_controller::config::read(&runtime)?;
+            let manifest = goblins_supervisor::manifest::read(&runtime)?;
             if !manifest.goblins.contains_key(&config) {
                 return Err(format!(
                     "unknown configuration '{config}'; available: {}",
@@ -282,7 +282,11 @@ fn execute(cli: Cli) -> Result<i32> {
                 .into());
             }
             // Report an unknown or disallowed scope before starting.
-            goblins_controller::config::select(manifest, &config, scope.as_deref())?;
+            goblins_supervisor::manifest::select_configuration(
+                manifest,
+                &config,
+                scope.as_deref(),
+            )?;
             // Resolve a relative flake path against the caller's directory.
             let dev_shell = dev_shell
                 .map(|reference| -> goblins_controller::Result<String> {
@@ -295,7 +299,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         Some(attr) => format!("{}#{attr}", path.display()),
                         None => path.display().to_string(),
                     };
-                    goblins_controller::devshell::parse_reference(&reference)?;
+                    goblins_runtime::devshell::parse_reference(&reference)?;
                     Ok(reference)
                 })
                 .transpose()?;
@@ -348,12 +352,12 @@ fn execute(cli: Cli) -> Result<i32> {
             let runtime = cli
                 .runtime
                 .ok_or("configurations requires --runtime (use the Nix-built goblins command)")?;
-            let manifest = goblins_controller::config::read(&runtime)?;
+            let manifest = goblins_supervisor::manifest::read(&runtime)?;
             // Configurations with allowNix use Nix rather than a Goblins dev
             // shell, so frontends don't offer one for them.
             let mut nix = Vec::new();
             for (name, config) in &manifest.goblins {
-                if goblins_controller::config::allows_nix(config)? {
+                if goblins_supervisor::manifest::allows_nix(config)? {
                     nix.push(name);
                 }
             }
@@ -405,7 +409,7 @@ fn execute(cli: Cli) -> Result<i32> {
     Ok(0)
 }
 fn main() {
-    goblins_controller::unix::raise_descriptor_limit();
+    goblins_unix::raise_descriptor_limit();
     signals();
     let code = match execute(Cli::parse()) {
         Ok(code) => code,

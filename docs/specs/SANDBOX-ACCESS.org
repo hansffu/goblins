@@ -38,7 +38,7 @@ Implementation review (2026-10-10): five findings were fixed, see Implementation
 * Non-goals (for now)
 
 - An sshd or any inbound networking. Pasta forwards nothing inbound (=-t/-u/-T/-U none=, =--no-map-gw=), and
-  port grants are rejected (=packages/daemon/src/config.rs:320-324=).
+  port grants are rejected (=libs/supervisor/src/config.rs:320-324=).
 - Detachable shells owned by the daemon, or multiple observers on a terminal ([[file:DAEMON.org][DAEMON.org]] still defers
   multiplexing).
 - Agents running commands inside their child goblins (=exec= over =request.sock=). The protocol is designed
@@ -52,7 +52,7 @@ Implementation review (2026-10-10): five findings were fixed, see Implementation
   - PID 1 is bwrap's reaper.
   - In a scope with a shared PID namespace, PID 1 is the scope keeper instead (=packages/mount-helper/src/scope.rs:65-88=).
 - *Payload:* =launch.shell= plus its args. With a dev shell it is wrapped as
-  =sh -c '. /run/goblins/devshell/env.sh; exec "$@"'= (=packages/daemon/src/session.rs:766-812=).
+  =sh -c '. /run/goblins/devshell/env.sh; exec "$@"'= (=libs/supervisor/src/session.rs:766-812=).
 - *Agent terminal:*
   - The daemon opens a PTY on the host (=worker.rs:131=), and the slave becomes the payload's stdio.
   - The helper's =pre_exec= calls =setsid= and =TIOCSCTTY= (=packages/mount-helper/src/main.rs:349-356=).
@@ -61,7 +61,7 @@ Implementation review (2026-10-10): five findings were fixed, see Implementation
   - Emacs runs =goblins attach= inside Ghostel (=emacs/goblins.el:987-1060=).
 - *File descriptors* are whitelisted twice: by the daemon (=session.rs=, =keep=) and by the helper
   (=packages/mount-helper/src/main.rs=, =keep= plus =close_range(CLOEXEC)=).
-- =unix::send_terminal= and =unix::receive_terminal= (SCM_RIGHTS, =packages/daemon/src/unix.rs:145-212=)
+- =unix::send_terminal= and =unix::receive_terminal= (SCM_RIGHTS, =libs/unix/src/lib.rs:145-212=)
   exist but are unused.
 - *Seccomp* returns EPERM inside the sandbox for =setns=, =unshare=, the =mount= family and =ptrace=
   (=seccomp.rs:25-44=).

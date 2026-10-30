@@ -1,6 +1,7 @@
 //! Immutable /etc files supplied by the trusted Nix launch configuration.
 //! These are mounted inside bwrap only; no host destination is created.
-use crate::{Result, session::store_path};
+use crate::Result;
+use crate::session::store_path;
 use std::{collections::BTreeMap, path::PathBuf};
 
 /// `dev_shell` holds the files mounted only in a dev shell sandbox; they may

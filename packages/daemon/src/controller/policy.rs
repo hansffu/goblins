@@ -1,5 +1,5 @@
 use super::Fault;
-pub use goblins_runtime::policy::*;
+use goblins_runtime::policy::*;
 pub fn fault(refusal: Refusal) -> Fault {
     match refusal {
         Refusal::Policy { code, message } => (code, message),
@@ -21,7 +21,7 @@ pub fn fault(refusal: Refusal) -> Fault {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Handlers;
+    use goblins_runtime::config::Handlers;
     use goblins_runtime::{NIX_DEV_SHELL, NIX_PACKAGES};
 
     pub(crate) fn policy() -> Policy {
@@ -45,7 +45,7 @@ mod tests {
             }),
             initial_packages: vec![],
             handlers: Some(Handlers {
-                on_attach: crate::config::OnAttach {
+                on_attach: goblins_runtime::config::OnAttach {
                     command: vec!["client".into()],
                     timeout: 30,
                     wait_for: vec![],

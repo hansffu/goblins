@@ -1,5 +1,7 @@
 //! Open internet via agent-sandbox's pasta dependency, in a private namespace.
-use crate::{Result, process, unix};
+use crate::Result;
+use crate::process;
+use goblins_unix as unix;
 use std::{
     fs::{self, File},
     os::{fd::AsRawFd, unix::process::CommandExt},

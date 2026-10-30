@@ -1,6 +1,9 @@
 //! A scope-owned engine, initially launched from a member's confined bind plan.
 //! No host Docker socket, user service or global daemon is involved.
-use crate::{Result, config::Launch, process, unix};
+use crate::Result;
+use crate::config::Launch;
+use crate::process;
+use goblins_unix as unix;
 use std::{
     ffi::{CStr, CString},
     fs::{self, File},

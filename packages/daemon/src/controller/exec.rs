@@ -2,13 +2,19 @@
 //! its goblins-init. The client passes stdio or a PTY slave with SCM_RIGHTS
 //! and keeps its connection open for the exec's whole life; when that
 //! connection closes, init cancels the exec.
-use super::{
-    Connection, Controller, Fault, capacity, conflict, params,
-    policy::Operation,
-    runtime::{Command, Event, SpawnKind, Stdio},
-};
+use super::Connection;
+use super::Controller;
+use super::Fault;
+use super::capacity;
+use super::conflict;
+use super::params;
 use goblins_init as init;
 use goblins_jsonrpc as rpc;
+use goblins_runtime::Command;
+use goblins_runtime::Event;
+use goblins_runtime::SpawnKind;
+use goblins_runtime::Stdio;
+use goblins_runtime::policy::Operation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -276,7 +282,7 @@ impl Controller {
                 Some(Err((_, message))) => json!({"error":message}),
                 None => json!({"cancelled":true}),
             };
-            crate::session::log_event(
+            goblins_runtime::log_event(
                 &a.directory.join("resources"),
                 "exec-exited",
                 json!({"exec":id,"outcome":outcome}),
@@ -324,7 +330,7 @@ impl Controller {
                     a.record.shells += 1;
                     // Interactive shells only: TRAMP and eshell would flood
                     // the size-capped log and crowd out lifecycle events.
-                    crate::session::log_event(
+                    goblins_runtime::log_event(
                         &a.directory.join("resources"),
                         "exec-started",
                         json!({"exec":id,"argv":argv,"cwd":cwd,"pid":pid}),

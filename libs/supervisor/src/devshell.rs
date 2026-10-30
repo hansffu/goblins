@@ -1,12 +1,13 @@
 //! Host-trusted flake dev shells (ADR 0007). The host snapshots the flake
 //! source into the store and evaluates that immutable copy, so later workspace
 //! edits never change what a sandbox received at launch.
-use crate::{
-    Result,
-    evaluator::{Evaluator, source_tree},
-    process::Cancellation,
-    session::{containing_store_output, store_path},
-};
+use crate::Result;
+use crate::evaluator::Evaluator;
+use crate::evaluator::source_tree;
+use crate::process::Cancellation;
+use crate::session::containing_store_output;
+use crate::session::store_path;
+use goblins_runtime::devshell::parse_reference;
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -63,29 +64,7 @@ pub const PREPENDED: &[&str] = &["PATH", "PKG_CONFIG_PATH", "XDG_DATA_DIRS"];
 const SYSTEM: &str = "x86_64-linux";
 const MAX_DIFF_BYTES: usize = 128 * 1024;
 
-pub use goblins_runtime::devshell::{Changes, DevShell, Summary, identity};
-
-/// Split `PATH[#ATTR]` into an absolute flake directory and an attribute.
-pub fn parse_reference(reference: &str) -> Result<(PathBuf, Option<&str>)> {
-    let (path, attr) = match reference.split_once('#') {
-        Some((path, attr)) => (path, Some(attr)),
-        None => (reference, None),
-    };
-    let path = Path::new(path);
-    if !path.is_absolute() || path.as_os_str().to_str().is_none_or(|p| p.contains('?')) {
-        return Err("dev shell must be an absolute local flake path".into());
-    }
-    if let Some(attr) = attr
-        && (attr.is_empty()
-            || attr.len() > 256
-            || !attr
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_-+'".contains(&b)))
-    {
-        return Err("invalid dev shell attribute".into());
-    }
-    Ok((path.to_path_buf(), attr))
-}
+use goblins_runtime::devshell::{Changes, DevShell, Summary, identity};
 
 /// Launch and refresh never write or update the workspace lock.
 fn nix(subcommand: &[&str]) -> Vec<OsString> {

@@ -3,13 +3,17 @@
 //! attaches its one terminal. A goblin with `onAttach` runs its agent without
 //! a terminal and starts the client on a new PTY for each attachment, once
 //! the variables the client needs were set during this run.
-use super::{
-    Active, Controller,
-    policy::Operation,
-    runtime::{Command, Event, SpawnKind, Stdio},
-};
-use crate::{config, terminal::Terminal, unix};
+use super::Active;
+use super::Controller;
+use crate::terminal::Terminal;
 use goblins_jsonrpc as rpc;
+use goblins_runtime::Command;
+use goblins_runtime::Event;
+use goblins_runtime::SpawnKind;
+use goblins_runtime::Stdio;
+use goblins_runtime::config;
+use goblins_runtime::policy::Operation;
+use goblins_unix as unix;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{

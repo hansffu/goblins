@@ -67,7 +67,7 @@ pub fn docker_filter() -> Result<File> {
 }
 
 fn write_filter(code: Vec<Instruction>) -> Result<File> {
-    let raw = crate::unix::cvt(unsafe {
+    let raw = goblins_unix::cvt(unsafe {
         libc::memfd_create(c"goblins-seccomp".as_ptr(), libc::MFD_CLOEXEC)
     })?;
     let mut file = unsafe { File::from_raw_fd(raw) };

@@ -10,13 +10,14 @@ env = { GOBLINS_TEST_CODEX = "1" }
 # These affect shared authority, lifecycle or test execution. Unknown paths
 # also recommend full validation; agents can present targeted review earlier.
 broad = [
-  "packages/mount-helper/*", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
-  "packages/daemon/src/controller.rs", "packages/daemon/src/session.rs",
-  "packages/daemon/src/worker.rs", "packages/daemon/src/controller/runtime.rs", "packages/daemon/src/controller/policy.rs",
-  "packages/daemon/src/config.rs",
-  "packages/daemon/src/unix.rs", "packages/daemon/src/process.rs",
-  "packages/daemon/src/seccomp.rs", "packages/daemon/src/sandbox_etc.rs",
-  "packages/daemon/src/catalog.rs", "packages/daemon/src/terminal.rs", "packages/sandbox-cli/src/init.rs",
+  "packages/mount-helper/*", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
+  "libs/supervisor/src/lib.rs", "libs/supervisor/src/manifest.rs", "libs/supervisor/src/maintenance.rs", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
+  "packages/daemon/src/controller.rs", "libs/supervisor/src/session.rs",
+  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "packages/daemon/src/controller/policy.rs",
+  "libs/supervisor/src/config.rs",
+  "libs/unix/src/lib.rs", "libs/supervisor/src/process.rs",
+  "libs/supervisor/src/seccomp.rs", "libs/supervisor/src/sandbox_etc.rs",
+  "libs/supervisor/src/catalog.rs", "packages/daemon/src/terminal.rs", "packages/sandbox-cli/src/init.rs",
   "packages/daemon/src/main.rs", "packages/daemon/src/lib.rs",
   "packages/daemon/src/cli.rs", "packages/sandbox-cli/src/main.rs", "packages/sandbox-cli/src/cli.rs",
   "tests/daemon_support.py", "tests/build_support.py", "tests/support.py",
@@ -30,13 +31,13 @@ docs = ["docs/*", "README.org", "emacs/README.org", "AGENTS.md", "CLAUDE.md"]
 description = "Filesystem isolation, binds, snapshots and GC retention"
 python = ["test_integration", "test_binds", "test_bind_race", "test_workspace", "test_roots"]
 checks = ["rust"]
-paths = ["packages/daemon/src/binds.rs", "packages/daemon/src/snapshot.rs", "packages/daemon/src/session/*"]
+paths = ["libs/supervisor/src/binds.rs", "libs/supervisor/src/snapshot.rs", "libs/supervisor/src/session/*"]
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
 python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness"]
 checks = ["rust"]
-paths = ["packages/daemon/src/server.rs", "packages/daemon/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
+paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
@@ -48,19 +49,19 @@ paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs"
 description = "Shared namespaces, networking and scope storage"
 python = ["test_scopes", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
 checks = ["rust"]
-paths = ["packages/daemon/src/scope*.rs", "packages/daemon/src/cleanup.rs", "packages/daemon/src/network.rs", "packages/daemon/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
+paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
 [features.docker]
 description = "Sandbox Docker engines and their cross-feature integrations"
 python = ["test_docker", "test_cleanup", "test_devshell.DevShellDockerTests", "test_run_targets.RunTargetDockerTests", "test_host_commands.HostDockerAcceptance"]
 checks = ["rust"]
-paths = ["packages/daemon/src/docker.rs", "packages/daemon/src/cleanup.rs", "packages/daemon/src/scope*.rs", "packages/docker/*", "skills/goblins-docker/*"]
+paths = ["libs/supervisor/src/docker.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/scope*.rs", "packages/docker/*", "skills/goblins-docker/*"]
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"
 python = ["test_nix", "test_devshell", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
 checks = ["rust"]
-paths = ["packages/daemon/src/devshell.rs", "packages/daemon/src/evaluator.rs", "packages/sandbox-cli/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
+paths = ["libs/supervisor/src/devshell.rs", "libs/supervisor/src/evaluator.rs", "packages/sandbox-cli/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
 
 [features.raids]
 description = "Raid membership, ownership and spawning run targets"

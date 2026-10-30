@@ -1,8 +1,10 @@
 //! Host terminal relay; the daemon retains the PTY and owns sandbox lifetime.
-use crate::{RESIZE, STOP};
+use crate::RESIZE;
+use crate::STOP;
+use goblins_controller::Result;
 use goblins_controller::host::Client;
-use goblins_controller::{Result, unix};
 use goblins_protocol::terminal::size;
+use goblins_unix as unix;
 use serde::Serialize;
 use serde_json::json;
 use std::{os::fd::AsRawFd, path::PathBuf, sync::atomic::Ordering};

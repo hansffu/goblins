@@ -8,7 +8,7 @@ Labels: *[E]* existing functionality, *[P]* proposed change, *[V]* assumption th
 
 ** allowNix launch path
 
-- *[E]* =mkGoblin= passes =allowNix= to =sandbox.mkSandbox= (=nix/builders/mk-goblin.nix:76=). Two places then reject it: =nix/internal/validate.nix:130= and =packages/daemon/src/config.rs:349= (=spec["allow_nix"] != false=).
+- *[E]* =mkGoblin= passes =allowNix= to =sandbox.mkSandbox= (=nix/builders/mk-goblin.nix:76=). Two places then reject it: =nix/internal/validate.nix:130= and =libs/supervisor/src/config.rs:349= (=spec["allow_nix"] != false=).
 - *[E]* Goblins never runs agent-sandbox's Python launcher. =packages/daemon/wrapper.nix= strips the launcher fields from the build spec. The Rust launcher in =session.rs= then reads only =sandbox_path=, =closure_paths_file=, the bind lists, =cacert_*=, =bwrap=, =pasta=, =shell= and =sandboxed_binary=.
 - What we can reuse from agent-sandbox:
   - =pkgs.nix= from =mkImplicitPackages=. It reaches =sandbox_path=, so it is already on PATH through =initial_packages=.

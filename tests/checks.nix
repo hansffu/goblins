@@ -305,6 +305,8 @@ let
 in
 {
   # Each runnable Rust package builds with only its listed library sources.
+  rust-supervisor = import ../libs/supervisor { inherit pkgs; };
+  rust-unix = import ../libs/unix { inherit pkgs; };
   rust-runtime = import ../libs/runtime { inherit pkgs; };
   rust-api = import ../libs/api { inherit pkgs; };
   rust-jsonrpc = import ../libs/jsonrpc { inherit pkgs; };

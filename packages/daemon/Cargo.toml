@@ -13,6 +13,8 @@ libc = "=0.2.186"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 goblins-runtime = { path = "../../libs/runtime" }
+goblins-supervisor = { path = "../../libs/supervisor" }
+goblins-unix = { path = "../../libs/unix" }
 goblins-protocol = { path = "../../libs/api" }
 goblins-jsonrpc = { path = "../../libs/jsonrpc" }
 goblins-init = { path = "../../libs/init" }
@@ -23,3 +25,4 @@ clap_complete = "4.6.9"
 
 [dev-dependencies]
 goblins-runtime = { path = "../../libs/runtime", features = ["test-support"] }
+goblins-unix = { path = "../../libs/unix", features = ["test-support"] }

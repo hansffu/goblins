@@ -1,5 +1,6 @@
 //! Host API approval frontend. Interactions retain the last displayed request.
-use crate::{STOP, plain::escaped_json};
+use crate::STOP;
+use crate::plain::escaped_json;
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
     execute,

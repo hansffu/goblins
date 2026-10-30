@@ -1,6 +1,9 @@
 //! Startup grants from trusted mkSandbox declarations. These are ordinary host
 //! bind mounts, never snapshots or paths supplied by the sandbox request client.
-use crate::{Result, process::Cancellation, session::store_path, unix};
+use crate::Result;
+use crate::process::Cancellation;
+use crate::session::store_path;
+use goblins_unix as unix;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::CString,
@@ -12,7 +15,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub use goblins_runtime::binds::Declarations;
+use goblins_runtime::binds::Declarations;
 pub struct Mount {
     // Pin the object, not merely its current pathname. This descriptor remains
     // CLOEXEC in the daemon and is inherited only by this launch's helper/bwrap.

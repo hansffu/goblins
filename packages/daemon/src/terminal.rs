@@ -1,6 +1,7 @@
 //! Daemon-owned PTY with one terminal consumer at a time.
 //! A framed acceptance precedes raw bytes; detach half-closes that stream.
-use crate::{Result, unix};
+use crate::Result;
+use goblins_unix as unix;
 use std::{
     fs::{self, File},
     io::{self, Read, Write},

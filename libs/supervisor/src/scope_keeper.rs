@@ -1,12 +1,12 @@
 //! A scope's user, network and optional PID namespaces, owned by a trusted
 //! keeper independently of Docker engine activation.
-use crate::{
-    Result,
-    config::Launch,
-    docker::{map_ids, subordinate},
-    process::{self, Cancellation},
-    unix,
-};
+use crate::Result;
+use crate::config::Launch;
+use crate::docker::map_ids;
+use crate::docker::subordinate;
+use crate::process;
+use crate::process::Cancellation;
+use goblins_unix as unix;
 use std::{
     fs::{self, File},
     io::Write,

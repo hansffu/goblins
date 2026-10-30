@@ -1,8 +1,7 @@
 //! Host API client shared by approval presentation and the launch CLI.
-use crate::{
-    Result,
-    controller::{PermissionRecord, Snapshot},
-};
+use crate::Result;
+use crate::controller::PermissionRecord;
+use crate::controller::Snapshot;
 use goblins_jsonrpc::{self as rpc, Decoder};
 use serde_json::{Value, json};
 use std::{

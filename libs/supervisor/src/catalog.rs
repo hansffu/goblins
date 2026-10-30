@@ -1,9 +1,8 @@
 //! Pinned host Nix lookup and advisory pre-approval cost estimates. A preview
 //! evaluates metadata and runs --dry-run; it never realizes or mounts a package.
-use crate::{
-    Result,
-    process::{self, Cancellation},
-};
+use crate::Result;
+use crate::process;
+use crate::process::Cancellation;
 use goblins_protocol::package_name;
 use serde::Deserialize;
 use std::{
@@ -11,7 +10,7 @@ use std::{
     process::Command,
 };
 
-pub use goblins_runtime::catalog::Preview;
+use goblins_runtime::catalog::Preview;
 #[derive(Deserialize)]
 pub struct Selection {
     pub output: String,

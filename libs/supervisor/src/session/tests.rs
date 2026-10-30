@@ -99,13 +99,13 @@ fn host_driver() {
                     let s = session.as_mut().unwrap();
                     s.start(None)?;
                     let socket =
-                        unix::seqpacket(Path::new(req["socket"].as_str().unwrap()), false)?;
+                        crate::unix::seqpacket(Path::new(req["socket"].as_str().unwrap()), false)?;
                     for fd in [
                         s.input.as_ref().unwrap().as_raw_fd(),
                         s.output.as_ref().unwrap().as_raw_fd(),
                         s.listener.as_ref().unwrap().as_raw_fd(),
                     ] {
-                        unix::send_terminal(socket.as_raw_fd(), fd)?;
+                        crate::unix::send_terminal(socket.as_raw_fd(), fd)?;
                     }
                     Ok(json!(null))
                 }
@@ -221,13 +221,13 @@ fn a_lease_another_process_still_holds_leaves_the_directory_for_the_last_holder(
     assert!(resources.join("snapshot").exists());
     // Collecting garbage needs the exclusive lock, which the copy denies.
     assert!(
-        crate::cleanup::resource_exclusive(&resources)
+        goblins_runtime::lease::resource_exclusive(&resources)
             .unwrap()
             .is_none()
     );
     drop(copy);
     assert!(
-        crate::cleanup::resource_exclusive(&resources)
+        goblins_runtime::lease::resource_exclusive(&resources)
             .unwrap()
             .is_some()
     );
@@ -248,7 +248,7 @@ fn a_directory_collected_meanwhile_is_not_a_problem() {
 fn a_directory_that_is_being_collected_cannot_be_leased() {
     let _no_forks = unix::no_forks();
     let (session, resources) = resources();
-    let collecting = crate::cleanup::resource_exclusive(&resources)
+    let collecting = goblins_runtime::lease::resource_exclusive(&resources)
         .unwrap()
         .unwrap();
     assert!(ResourceLease::new(resources.clone()).is_err());

@@ -2,8 +2,9 @@
 //! the stdio relay (or the PTY master with -t); the daemon only hands the
 //! sandbox ends to goblins-init and reports the exit status. This
 //! connection stays open for the exec's life: closing it cancels the exec.
-use goblins_controller::{Result, host::Client, unix};
+use goblins_controller::{Result, host::Client};
 use goblins_jsonrpc::{self as rpc, Decoder};
+use goblins_unix as unix;
 use serde_json::{Value, json};
 use std::{
     io::{self, Read, Write},

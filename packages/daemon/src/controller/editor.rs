@@ -5,7 +5,11 @@
 //! from this goblin of this daemon, whatever daemon Emacs is configured for.
 //! The sandbox's request stays open until the editor is done; closing it
 //! kills the client.
-use super::{Connection, Controller, Fault, capacity, params};
+use super::Connection;
+use super::Controller;
+use super::Fault;
+use super::capacity;
+use super::params;
 use goblins_jsonrpc as rpc;
 use goblins_protocol::editor;
 use serde_json::{Value, json};
@@ -65,7 +69,7 @@ fn spawn(command: &str, args: &[String]) -> Result<Child, Fault> {
         .spawn()
         .map_err(|e| (-32009, format!("cannot run the editor {command}: {e}")))?;
     if let Some(stderr) = &child.stderr {
-        let _ = crate::unix::nonblocking(stderr.as_raw_fd());
+        let _ = goblins_unix::nonblocking(stderr.as_raw_fd());
     }
     Ok(child)
 }

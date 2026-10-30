@@ -3,7 +3,8 @@
 //! was granted. Nothing here pins store paths. The owning daemon keeps the
 //! records in memory and a writer thread persists them, so disk I/O never
 //! runs on the event loop and every write, retention and prune is ordered.
-use crate::{Result, unix};
+use crate::Result;
+use goblins_unix as unix;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -67,7 +68,7 @@ pub struct Record {
     /// Informational: a goblin that died with its daemon never gets it.
     pub stopped: Option<u64>,
 }
-pub use goblins_runtime::history::Skipped;
+use goblins_runtime::history::Skipped;
 /// A short random record id: 8 characters of lowercase Crockford base32
 /// (40 bits), easy to read and type. `taken` rejects ids in use.
 pub fn new_id(taken: impl Fn(&str) -> bool) -> Result<String> {

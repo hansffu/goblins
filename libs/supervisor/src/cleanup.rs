@@ -1,6 +1,10 @@
 //! Host CLI maintenance. Persistent stores require explicit scope selection;
 //! GC only collects temporary stores and resources of a stopped server.
-use crate::{Result, docker, process, scope_storage, unix};
+use crate::Result;
+use crate::docker;
+use crate::process;
+use crate::scope_storage;
+use goblins_unix as unix;
 use std::{
     collections::BTreeSet,
     ffi::CString,
@@ -20,8 +24,6 @@ use std::{
 };
 
 use goblins_runtime::lease::flock;
-#[cfg(test)]
-pub(crate) use goblins_runtime::lease::resource_exclusive;
 
 fn lock_root() -> Result<PathBuf> {
     unix::cache_directory("locks", true)

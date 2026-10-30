@@ -4,12 +4,16 @@ import ../../nix/builders/rust.nix {
   package = "goblins-controller";
   source = ./.;
   libs = [
+    ../../libs/supervisor
+    ../../libs/unix
     ../../libs/runtime
     ../../libs/api
     ../../libs/jsonrpc
     ../../libs/init
   ];
   testPackages = [
+    "goblins-supervisor"
+    "goblins-unix"
     "goblins-runtime"
     "goblins-protocol"
     "goblins-jsonrpc"

@@ -1,19 +1,19 @@
 //! The daemon's handle to one goblin's runtime: commands go in, events come
 //! out, and neither side waits for the other.
-use super::policy::{Capabilities, Policy, Support};
-use crate::{
-    session::{Cancel, Inheritance},
-    unix,
-    worker::{Endpoints, Source, Worker},
-};
+use crate::session::Inheritance;
+use crate::worker::Endpoints;
+use crate::worker::Worker;
 use goblins_init as init;
+use goblins_runtime::Source;
+use goblins_runtime::policy::Capabilities;
+use goblins_unix as unix;
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::{self, File},
     io,
     os::{
         fd::{AsRawFd, OwnedFd, RawFd},
-        unix::{net::UnixListener, process::CommandExt},
+        unix::process::CommandExt,
     },
     path::{Path, PathBuf},
     process::{Child, Stdio as ChildStdio},
@@ -25,19 +25,14 @@ const LOG_LIMIT: u64 = 16 * 1024 * 1024;
 /// Finished host jobs whose output stays readable per sandbox.
 const KEPT: usize = 8;
 
-pub use goblins_runtime::{
-    Command, Event, Fd, Handoff, HostOutcome, Runtime, ScopeHandle, SpawnKind, Stdio,
-    WorkingDirectory,
-};
-#[cfg(test)]
-pub use goblins_runtime::{Fake, Received};
+use goblins_runtime::{Command, Event, Fd, Runtime, Stdio};
 
 /// The goblin's current capability, replaced under the lock whenever a dev
 /// shell refresh publishes, so an export never waits for Nix work.
 pub(crate) type Published = std::sync::Arc<std::sync::Mutex<Option<Inheritance>>>;
 
 /// A running host job.
-struct HostJob {
+pub(crate) struct HostJob {
     request: String,
     child: Child,
     /// Dropping it stops the job.
@@ -45,42 +40,7 @@ struct HostJob {
     directory: PathBuf,
 }
 
-/// The runtime inside the daemon: a worker thread for Nix-bound work, with
-/// `send` as the dispatcher that never waits for it, and the running
-/// sandbox's init channel, request socket, exit watch and host jobs.
-pub(crate) struct Local {
-    worker: Worker,
-    /// Tokens of cancellable work sent to the worker, by cancel id.
-    cancels: BTreeMap<u64, Cancel>,
-    /// The private channel to the sandbox's goblins-init, from `Started`.
-    init: Option<OwnedFd>,
-    /// The sandbox's `request.sock`, from `Started` until it stops.
-    listener: Option<UnixListener>,
-    /// The helper's pidfd, until the payload's exit is reported.
-    exit_watch: Option<OwnedFd>,
-    /// PTYs allocated for processes init has not reported started.
-    masters: BTreeMap<u64, OwnedFd>,
-    buffer: Vec<u8>,
-    /// The goblin's capability, published by its worker at `Started` and by
-    /// each dev shell refresh: it resolves host directories through the
-    /// sandbox's binds and is what an export hands over.
-    published: Published,
-    /// Where a member's `Start` goes, to the worker that waits for it.
-    start: Option<mpsc::SyncSender<Handoff>>,
-    /// What the goblin may do, from `Started`.
-    capabilities: Option<(Policy, Support)>,
-    /// Where host jobs keep their output and outcome.
-    host_jobs: PathBuf,
-    /// Pinned directories of host commands awaiting approval, by request.
-    prepared: BTreeMap<String, File>,
-    jobs: Vec<HostJob>,
-    stopping: bool,
-    /// Events reported and not yet polled.
-    events: VecDeque<Event>,
-    /// A round is being polled: its sources were collected.
-    polling: bool,
-    ended: bool,
-}
+use crate::Local;
 
 impl Local {
     pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
@@ -417,7 +377,7 @@ impl Runtime for Local {
                 Some((policy, support)) => (Capabilities { policy, support })
                     .check(&operation)
                     .err()
-                    .map(|refusal| super::policy::fault(refusal).1),
+                    .map(|refusal| refusal_message(refusal)),
                 None => Some("the goblin has not started".to_string()),
             };
             if let Some(message) = refused {
@@ -522,7 +482,7 @@ impl Runtime for Local {
                             self.cancels.insert(id, cancel);
                         }
                     }
-                    Err(error) => return Err(super::unsent(error).0),
+                    Err(error) => return Err(unsent(error).0),
                 }
             }
         }
@@ -546,7 +506,11 @@ impl Runtime for Local {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::Identity;
+    use crate::process::Cancellation as Cancel;
+    use goblins_runtime::Identity;
+    use goblins_runtime::policy::{Policy, Support};
+    use goblins_runtime::{ScopeHandle, SpawnKind};
+    use std::os::unix::net::UnixListener;
 
     /// A worker without a thread: the test receives its commands and sends
     /// its results.
@@ -836,8 +800,8 @@ mod tests {
         let inheritance = Inheritance::fixture("shell", &[]);
         let mut policy = inheritance.policy();
         if handlers {
-            policy.handlers = Some(crate::config::Handlers {
-                on_attach: crate::config::OnAttach {
+            policy.handlers = Some(goblins_runtime::config::Handlers {
+                on_attach: goblins_runtime::config::OnAttach {
                     command: vec!["client".into()],
                     timeout: 30,
                     wait_for: vec![],
@@ -917,7 +881,7 @@ mod tests {
 
     #[test]
     fn spawns_are_checked_by_what_they_are_for_and_nothing_runs_before_started() {
-        use crate::controller::policy::Feature;
+        use goblins_runtime::policy::Feature;
         // Before Started the runtime knows nothing it could allow.
         let (idle, _received, _results) = worker();
         let mut local = Local::new(idle, PathBuf::from("/nonexistent"));
@@ -1121,7 +1085,10 @@ mod tests {
         std::fs::write(&root, "").unwrap();
         let event = |name: &str| Event::Manifest {
             sequence: 1,
-            lease: crate::config::ManifestLease::adopt(directory.join(name), Some(root.clone())),
+            lease: goblins_runtime::config::ManifestLease::adopt(
+                directory.join(name),
+                Some(root.clone()),
+            ),
         };
         // Queued and never read: the queue's end takes the event with it.
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -1145,5 +1112,25 @@ mod tests {
         drop(refused);
         assert!(!root.exists());
         std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+fn unsent<T>(error: std::sync::mpsc::TrySendError<T>) -> T {
+    match error {
+        std::sync::mpsc::TrySendError::Full(value)
+        | std::sync::mpsc::TrySendError::Disconnected(value) => value,
+    }
+}
+fn refusal_message(refusal: goblins_runtime::policy::Refusal) -> String {
+    use goblins_runtime::policy::Refusal;
+    match refusal {
+        Refusal::Policy { message, .. } => message,
+        Refusal::Unsupported(feature) => format!(
+            "not supported by this sandbox: {}",
+            serde_json::to_value(feature)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default()
+        ),
     }
 }

@@ -1,8 +1,7 @@
 use crate::Result;
 use goblins_runtime::config::Launch as Definition;
-pub use goblins_runtime::config::{
-    Configuration, Docker, Editor, Handlers, MAX_RUN_TARGETS, Manifest, ManifestLease, OnAttach,
-    Scope, ScopeDefinition, handler_arguments, placeholders, resume_arguments,
+use goblins_runtime::config::{
+    Configuration, Editor, Handlers, MAX_RUN_TARGETS, Manifest, ManifestLease, Scope,
 };
 use serde::Deserialize;
 use std::{
@@ -44,7 +43,7 @@ pub fn root_manifest(
     Ok(match crate::session::containing_store_output(path) {
         None => None,
         Some(output) => {
-            crate::unix::private_directory(directory)?;
+            goblins_unix::private_directory(directory)?;
             let name = output.file_name().unwrap().to_string_lossy();
             let link = directory.join(format!("{sequence}-{name}"));
             crate::process::command(
@@ -246,7 +245,7 @@ pub struct Launch {
     #[serde(skip)]
     pub scope: Option<Scope>,
     #[serde(skip)]
-    pub dev_shell: Option<crate::devshell::DevShell>,
+    pub dev_shell: Option<goblins_runtime::devshell::DevShell>,
     #[serde(skip)]
     pub editor: Option<Editor>,
 }
@@ -359,6 +358,7 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goblins_runtime::config::{OnAttach, handler_arguments, resume_arguments};
     use serde_json::{Value, json};
 
     fn goblin(extra: Value) -> Value {
@@ -387,7 +387,7 @@ mod tests {
     }
     /// Validate a manifest written to a file, as the daemon reads it.
     fn validated(value: &Value) -> Result<Manifest> {
-        let directory = crate::unix::temp_directory().unwrap();
+        let directory = goblins_unix::temp_directory().unwrap();
         let path = directory.join("manifest.json");
         std::fs::write(&path, value.to_string()).unwrap();
         let result = crate::config::validate(&path);
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn a_manifest_lease_roots_its_store_output_until_the_last_holder_drops_it() {
-        let _fork = crate::unix::forking();
+        let _fork = goblins_unix::forking();
         // Needs the host's Nix daemon, which a Nix build sandbox lacks.
         if std::process::Command::new("nix-store")
             .arg("--version")
@@ -480,7 +480,7 @@ mod tests {
         {
             return;
         }
-        let directory = crate::unix::temp_directory().unwrap();
+        let directory = goblins_unix::temp_directory().unwrap();
         let file = directory.join("goblins-config.json");
         std::fs::write(
             &file,

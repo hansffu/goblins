@@ -1,6 +1,7 @@
 //! Local server management. Stop uses the authenticated host connection, never a PID file.
 use crate::STOP;
-use goblins_controller::{Result, controller::Controller, host::Client, unix};
+use goblins_controller::{Result, controller::Controller, host::Client};
+use goblins_unix as unix;
 use serde_json::json;
 use std::{
     fs::{File, OpenOptions},

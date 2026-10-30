@@ -1,6 +1,8 @@
 //! Descriptor-relative snapshot: never follow source links, skip .git and
 //! special files. Destination is private and not yet exposed to the payload.
-use crate::{Result, process::Cancellation, unix};
+use crate::Result;
+use crate::process::Cancellation;
+use goblins_unix as unix;
 use std::{
     ffi::CString,
     fs::{self, File},

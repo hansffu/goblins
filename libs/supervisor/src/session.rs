@@ -1,17 +1,20 @@
 //! The host worker owns one session, including Nix, roots and private helper
 //! pipes. Namespace operations themselves always run in the separate helper.
-pub use crate::process::Cancellation as Cancel;
-use crate::{
-    Result,
-    config::Launch,
-    controller::{
-        policy::{DevShellPolicy, DevShellSummary, Policy, ScopePolicy},
-        runtime::{Handoff, WorkingDirectory},
-    },
-    process::{self, Cancellation},
-    seccomp, snapshot, unix,
-};
+use crate::Result;
+use crate::config::Launch;
+use crate::process;
+use crate::process::Cancellation as Cancel;
+use crate::process::Cancellation;
+use crate::seccomp;
+use crate::snapshot;
 use goblins_protocol::package_name;
+use goblins_runtime::Handoff;
+use goblins_runtime::WorkingDirectory;
+use goblins_runtime::policy::DevShellPolicy;
+use goblins_runtime::policy::DevShellSummary;
+use goblins_runtime::policy::Policy;
+use goblins_runtime::policy::ScopePolicy;
+use goblins_unix as unix;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -33,7 +36,7 @@ use std::{
     time::Duration,
 };
 
-pub use goblins_runtime::{NIX_DEV_SHELL, NIX_PACKAGES};
+use goblins_runtime::NIX_PACKAGES;
 
 fn canonical_store_output(path: &Path) -> bool {
     let name = path.file_name().and_then(|p| p.to_str());
@@ -132,7 +135,7 @@ pub fn store_path(path: &Path) -> Result<PathBuf> {
     }
     Err("store output must be a regular file, directory, or store-contained symlink".into())
 }
-pub use goblins_runtime::{Identity, ResourceLease};
+use goblins_runtime::{Identity, ResourceLease};
 /// The pinned snapshot directory. Its contents live in the resources of the
 /// goblin that made it, which every goblin sharing it holds a lease on.
 struct SharedWorkspace {
@@ -210,11 +213,6 @@ impl Inheritance {
 }
 #[cfg(test)]
 impl Inheritance {
-    /// The same capability, allowed to run host commands.
-    pub(crate) fn with_host_commands(mut self) -> Self {
-        Arc::make_mut(&mut self.launch).host_commands = true;
-        self
-    }
     /// A running session's capability without a sandbox, for controller tests.
     pub(crate) fn fixture(configuration: &str, run_targets: &[&str]) -> Self {
         Self::fixture_in(configuration, run_targets, unix::temp_directory().unwrap())
@@ -248,7 +246,7 @@ impl Inheritance {
             launch: Arc::new(launch),
             binds: Arc::new(
                 crate::binds::plan(
-                    &crate::binds::Declarations::default(),
+                    &goblins_runtime::binds::Declarations::default(),
                     &[],
                     &Cancel::default(),
                 )
@@ -266,7 +264,7 @@ impl Inheritance {
     }
 }
 /// Append to a session directory's diagnostic `events.jsonl`.
-pub use goblins_runtime::log_event;
+use goblins_runtime::log_event;
 /// What a goblin a raid owner runs starts from.
 pub(crate) struct Member<'a> {
     pub handoff: Handoff,
@@ -279,7 +277,10 @@ pub(crate) struct Member<'a> {
     pub configuration: &'a str,
 }
 /// Recorded grants that resolved, in order, and the names that did not.
-pub(crate) type Resolved = (Vec<(String, PathBuf)>, Vec<crate::history::Skipped>);
+pub(crate) type Resolved = (
+    Vec<(String, PathBuf)>,
+    Vec<goblins_runtime::history::Skipped>,
+);
 pub struct Session {
     pub directory: PathBuf,
     pub launch: Launch,
@@ -328,6 +329,7 @@ pub struct Session {
     pub(crate) arguments: Option<Vec<String>>,
 }
 impl Session {
+    #[cfg(test)]
     pub fn new(launch: Launch, workspace: Option<&Path>, cancel: Cancel) -> Result<Self> {
         Self::new_in(launch, workspace, cancel, unix::temp_directory()?)
     }
@@ -1075,11 +1077,11 @@ impl Session {
     /// failure for one package skips it, and only cancellation aborts.
     pub(crate) fn resolve_recorded(&self, names: &[String]) -> Result<Resolved> {
         let mut outputs: Vec<(String, PathBuf)> = vec![];
-        let mut skipped: Vec<crate::history::Skipped> = vec![];
+        let mut skipped: Vec<goblins_runtime::history::Skipped> = vec![];
         if self.launch.allow_nix {
             for name in names {
                 if !skipped.iter().any(|s| s.name == *name) {
-                    skipped.push(crate::history::Skipped::new(name, NIX_PACKAGES));
+                    skipped.push(goblins_runtime::history::Skipped::new(name, NIX_PACKAGES));
                 }
             }
             return Ok((outputs, skipped));
@@ -1098,7 +1100,7 @@ impl Session {
                         serde_json::json!({"package":name,"detail":error.to_string()}),
                     );
                     let reason = crate::devshell::cause(&error.to_string());
-                    skipped.push(crate::history::Skipped::new(name, &reason));
+                    skipped.push(goblins_runtime::history::Skipped::new(name, &reason));
                 }
             }
         }
@@ -1349,7 +1351,7 @@ impl Session {
     /// directory is reused, which is safe because the worker is serial.
     fn evaluate_candidate(
         &self,
-        changes: &crate::devshell::Changes,
+        changes: &goblins_runtime::devshell::Changes,
         cancel: &Cancellation,
     ) -> Result<crate::devshell::Candidate> {
         let current = self
@@ -1381,7 +1383,7 @@ impl Session {
     /// the structured approval preview and the candidate's identity.
     pub fn prepare_refresh(
         &mut self,
-        changes: &crate::devshell::Changes,
+        changes: &goblins_runtime::devshell::Changes,
         cancel: &Cancellation,
     ) -> Result<(serde_json::Value, String)> {
         self.candidate = None;
@@ -1401,7 +1403,7 @@ impl Session {
     /// refresh's candidate is left alone.
     pub fn diff_refresh(
         &self,
-        changes: &crate::devshell::Changes,
+        changes: &goblins_runtime::devshell::Changes,
         cancel: &Cancellation,
     ) -> Result<serde_json::Value> {
         let candidate = self.evaluate_candidate(changes, cancel)?;
@@ -1487,6 +1489,7 @@ impl Session {
     pub fn docker_enabled(&self) -> bool {
         self.docker.is_some()
     }
+    #[allow(dead_code)]
     pub fn scope_name(&self) -> Option<String> {
         self.launch.scope.as_ref().map(|s| s.name.clone())
     }

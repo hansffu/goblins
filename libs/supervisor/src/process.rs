@@ -1,5 +1,6 @@
 //! Sequential, cancellable host commands. No shell evaluates request text.
-use crate::{Result, unix};
+use crate::Result;
+use goblins_unix as unix;
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},

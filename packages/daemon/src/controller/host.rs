@@ -4,13 +4,16 @@
 //! supervisor writes the job's output and outcome to the session's host-jobs
 //! directory, which the sandbox sees read-only at /run/goblins/host-jobs, and
 //! stops the job and everything it started when its lifetime pipe closes.
-use super::{
-    Controller, Fault, conflict, missing, params,
-    policy::Operation,
-    runtime::{Command, HostOutcome},
-};
+use super::Controller;
+use super::Fault;
+use super::conflict;
+use super::missing;
+use super::params;
 use goblins_jsonrpc as rpc;
 use goblins_protocol::rpc::HostCommand;
+use goblins_runtime::Command;
+use goblins_runtime::HostOutcome;
+use goblins_runtime::policy::Operation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;

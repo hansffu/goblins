@@ -1,0 +1,11 @@
+[package]
+name = "goblins-unix"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+libc = "0.2"

@@ -339,7 +339,7 @@ Whole-frame silent/drip/fragmentation tests also pass.
 At the review baseline, the pending connection used =MSG_PEEK= without consuming
 extra data. One extra byte after a valid request followed by close hid
 the disconnect, retaining the abandoned request/preview and blocking the next
-request. See [[file:../../packages/daemon/src/unix.rs][socket disconnect detection]] and
+request. See [[file:../../libs/unix/src/lib.rs][socket disconnect detection]] and
 [[file:../../packages/daemon/src/controller.rs][pending-request lifecycle]].
 
 Daemon/protocol acceptance criterion: reject unexpected trailing input or detect

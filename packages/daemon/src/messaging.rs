@@ -1,5 +1,11 @@
 //! Serialized mailbox and audit IO worker. The controller never waits on disk.
-use crate::mailbox::{self, Audit, AuditError, Directory, Event, Limits, Mailbox};
+use crate::mailbox;
+use crate::mailbox::Audit;
+use crate::mailbox::AuditError;
+use crate::mailbox::Directory;
+use crate::mailbox::Event;
+use crate::mailbox::Limits;
+use crate::mailbox::Mailbox;
 use goblins_protocol::messages::Mutation;
 use serde::Deserialize;
 use serde_json::{Value, json};

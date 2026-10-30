@@ -56,3 +56,25 @@ pub struct Changes {
     pub update: Option<Vec<String>>,
     pub lock: bool,
 }
+
+/// Split `PATH[#ATTR]` into an absolute flake directory and an attribute.
+pub fn parse_reference(reference: &str) -> crate::Result<(PathBuf, Option<&str>)> {
+    let (path, attr) = match reference.split_once('#') {
+        Some((path, attr)) => (path, Some(attr)),
+        None => (reference, None),
+    };
+    let path = Path::new(path);
+    if !path.is_absolute() || path.as_os_str().to_str().is_none_or(|p| p.contains('?')) {
+        return Err("dev shell must be an absolute local flake path".into());
+    }
+    if let Some(attr) = attr
+        && (attr.is_empty()
+            || attr.len() > 256
+            || !attr
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-+'".contains(&b)))
+    {
+        return Err("invalid dev shell attribute".into());
+    }
+    Ok((path.to_path_buf(), attr))
+}

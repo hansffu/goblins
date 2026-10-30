@@ -7,16 +7,16 @@ trusted), the evaluator sandbox and the approval preview. Usage is in the
 
 Where the code lives:
 
-- =packages/daemon/src/devshell.rs= :: snapshot, lock checks
+- =libs/supervisor/src/devshell.rs= :: snapshot, lock checks
   (=check_lock=, =validate_lock=, completeness in =snapshot=), candidate
   evaluation (=candidate=), apply (=apply=), the structured =Preview= sent to
   frontends.
-- =packages/daemon/src/evaluator.rs= :: Bubblewrap evaluator: store, daemon
+- =libs/supervisor/src/evaluator.rs= :: Bubblewrap evaluator: store, daemon
   socket, source tree, private state; =Network= (host, none, goblin
   namespaces).
-- =packages/daemon/src/session.rs= :: =prepare_refresh=, =apply_refresh=,
+- =libs/supervisor/src/session.rs= :: =prepare_refresh=, =apply_refresh=,
   =mount_paths= (live mounts through the helper), =evaluation_network=.
-- =packages/daemon/src/worker.rs= :: =Work::Refresh=, the =devshell= case
+- =libs/supervisor/src/worker.rs= :: =Work::Refresh=, the =devshell= case
   of =Work::Decide=, =Completed::Refresh= / =Completed::DevShell=.
 - =packages/daemon/src/controller.rs= :: =permissions.request= with kind
   =devshell=, =Completed::Refresh= handling, =inherits_dev_shell= (automatic
@@ -176,7 +176,7 @@ A flake that hangs during evaluation keeps the request pending until it is
 denied (denial cancels it).
 
 - Add a deadline to evaluator commands: =process::command_with_fds=
-  (=packages/daemon/src/process.rs=) loops on =cancel.check()= every
+  (=libs/supervisor/src/process.rs=) loops on =cancel.check()= every
   =WORKER_TICK=; add an optional deadline there, or wrap the cancellation.
 - Apply it to pre-approval work (=devshell::candidate= and =prepare=:
   metadata, lock, =derivation show=, dry run). Builds after approval
@@ -209,7 +209,7 @@ bind-mounting them fail.
 
 - First verify whether package grants already have the same gap (likely);
   if so, fix both together.
-- Look at =packages/daemon/src/scope.rs= (=acquire=, =Lease=) and
+- Look at =libs/supervisor/src/scope.rs= (=acquire=, =Lease=) and
   =docker.rs= for how grants reach the engine, and add a way to push new
   store paths to an attached engine, or document the limitation.
 - Only matters when containers need those paths; lower priority.
@@ -254,12 +254,12 @@ too.
 =cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in
 USAGE "Reproducible checks") fails on master and this branch with:
 
-- =packages/daemon/src/docker.rs:111= :: =collapsible_if=
-- =packages/daemon/src/docker.rs:215= :: =too_many_arguments= (8/7)
-- =packages/daemon/src/scope.rs:294= :: =too_many_arguments= (8/7,
+- =libs/supervisor/src/docker.rs:111= :: =collapsible_if=
+- =libs/supervisor/src/docker.rs:215= :: =too_many_arguments= (8/7)
+- =libs/supervisor/src/scope.rs:294= :: =too_many_arguments= (8/7,
   =Shared::acquire=)
-- =packages/daemon/src/session.rs:96= :: =collapsible_if=
-- =packages/daemon/src/session.rs:254= :: =collapsible_if=
+- =libs/supervisor/src/session.rs:96= :: =collapsible_if=
+- =libs/supervisor/src/session.rs:254= :: =collapsible_if=
 
 Collapse the =if=s with =let= chains (the code already uses them). For the
 argument counts, group related parameters into a struct rather than adding
@@ -317,7 +317,7 @@ use it, and dev shell refresh does not support it.
 
 - Remove the =--workspace= option (=packages/daemon/src/cli.rs=
   =ServerCommand=, =Controller::new(state, workspace)=, the =workspace=
-  field passed in =Source::Host=), =packages/daemon/src/snapshot.rs=, the
+  field passed in =Source::Host=), =libs/supervisor/src/snapshot.rs=, the
   snapshot branch in =Session::new_in= and its overlap check.
 - Decide what remains of =SharedWorkspace= and the =/workspace= bind: with
   an explicit =cwd= it is only a scratch alias (see =enable_docker=). Keep

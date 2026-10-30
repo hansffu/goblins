@@ -1,6 +1,8 @@
 //! Managed scope storage under `$XDG_CACHE_HOME/goblins/scopes`. Members see
 //! only the named storage directories they mount, never this host tree.
-use crate::{Result, config::ScopeDefinition, unix};
+use crate::Result;
+use goblins_runtime::config::ScopeDefinition;
+use goblins_unix as unix;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::{CString, OsString},

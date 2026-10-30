@@ -1,15 +1,17 @@
 //! One session worker: blocking host work is kept off the controller event pump.
-use crate::{
-    Result,
-    controller::{
-        policy::Support,
-        runtime::{Command, Event, Handoff, Published, ScopeHandle},
-    },
-    process::WORKER_TICK,
-    session::{Cancel, Member, Session},
-    unix,
-};
+use crate::Result;
+use crate::local::Published;
+use crate::process::Cancellation as Cancel;
+use crate::process::WORKER_TICK;
+use crate::session::Member;
+use crate::session::Session;
 use goblins_protocol::Reply;
+use goblins_runtime::Command;
+use goblins_runtime::Event;
+use goblins_runtime::Handoff;
+use goblins_runtime::ScopeHandle;
+use goblins_runtime::policy::Support;
+use goblins_unix as unix;
 use std::{
     os::{
         fd::{AsRawFd, OwnedFd},
@@ -22,7 +24,7 @@ use std::{
 
 /// A command for the worker, with the token that cancels it.
 pub(super) type Work = (Command, Cancel);
-pub use goblins_runtime::{Auto, Recreate, Recreated, Source};
+use goblins_runtime::{Auto, Recreate, Recreated, Source};
 pub(super) struct Worker {
     pub cancel: Cancel,
     pub commands: SyncSender<Work>,
@@ -212,7 +214,7 @@ impl Worker {
                     token.check()?;
                     match session.root(&output) {
                         Ok(output) => auto.rooted.push((name, output)),
-                        Err(error) => auto.skipped.push(crate::history::Skipped::new(
+                        Err(error) => auto.skipped.push(goblins_runtime::history::Skipped::new(
                             &format!("auto-approve {name}"),
                             &error.to_string(),
                         )),
@@ -486,7 +488,10 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     if recreate.docker
         && let Err(reason) = session.attach_docker_at_start()
     {
-        skipped.push(crate::history::Skipped::new("docker", &reason.to_string()));
+        skipped.push(goblins_runtime::history::Skipped::new(
+            "docker",
+            &reason.to_string(),
+        ));
     }
     let (mut packages, unresolved) = session.resolve_recorded(&recreate.packages)?;
     skipped.extend(unresolved);
@@ -496,7 +501,7 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     let room = 128usize.saturating_sub(session.launch.initial_packages.len());
     if packages.len() > room {
         for (name, _) in packages.split_off(room) {
-            skipped.push(crate::history::Skipped::new(
+            skipped.push(goblins_runtime::history::Skipped::new(
                 &name,
                 "initial package limit is 128, resumed grants included",
             ));
@@ -505,13 +510,15 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
     session.recreated = packages.clone();
     let fresh = match &session.launch.resume_command {
         None => None,
-        Some(template) => match crate::config::resume_arguments(template, &recreate.variables) {
-            Ok(arguments) => {
-                session.arguments = Some(arguments);
-                None
+        Some(template) => {
+            match goblins_runtime::config::resume_arguments(template, &recreate.variables) {
+                Ok(arguments) => {
+                    session.arguments = Some(arguments);
+                    None
+                }
+                Err(reason) => Some(reason),
             }
-            Err(reason) => Some(reason),
-        },
+        }
     };
     session.event(
         "recreate",

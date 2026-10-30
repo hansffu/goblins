@@ -88,6 +88,6 @@ Existing build, Compose, user-switching, cgroup and controller-death checks also
 exercise the refactored startup path.
 
 See [usage](../USAGE.org), [scope keeper](../../packages/mount-helper/src/scope.rs),
-[scope lifecycle](../../packages/daemon/src/docker_scope.rs),
-[engine manager](../../packages/daemon/src/docker.rs) and
+[scope lifecycle](../../libs/supervisor/src/docker_scope.rs),
+[engine manager](../../libs/supervisor/src/docker.rs) and
 [integration tests](../../tests/test_docker.py).
