@@ -4342,11 +4342,11 @@ mod tests {
             vec![
                 Event::Progress {
                     request: "r".into(),
-                    state: "mounting",
+                    state: "mounting".into(),
                 },
                 Event::Progress {
                     request: "r".into(),
-                    state: "publishing",
+                    state: "publishing".into(),
                 },
                 Event::Granted {
                     reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
@@ -5361,7 +5361,7 @@ mod tests {
             (0..16)
                 .map(|_| Event::Progress {
                     request: "r".into(),
-                    state: "mounting",
+                    state: "mounting".into(),
                 })
                 .collect(),
         );

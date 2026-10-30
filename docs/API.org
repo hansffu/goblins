@@ -632,3 +632,115 @@ After engine fork, channel-setup and readiness-write errors also run the existin
 Startup failure reports both the engine process exit status and the tail of =STATE/scopes/NAME/docker.log=, including failures before readiness.
 
 The bootstrap runtime lock keeps the scope-owned store skeleton protected from stale collection while the guardian outlives the scope. It is a raw lock capability, with no resource-directory removal on drop. The guardian cannot resolve host donor paths inside its confined filesystem; directory metadata identifies the transferred locks while the descriptor itself retains authority. EOF or a malformed guardian request starts existing engine teardown without releasing accepted leases early. This keeps all donor resources protected from GC after scope or daemon death, through the guardian's final cleanup. The first donor's directory is never inferred from scope runtime paths.
+
+* Private supervisor channel (API 1)
+
+This same-build protocol is defined in =goblins_runtime::supervisor=. Phase 6 first adds the codec while =Local= remains active; subsequent commits connect the process dispatcher. It reuses the private scope =Channel= framing, deadlines, descriptor accounting and queue budgets above without changing that transport or the public three-descriptor limit. Every message is a JSON-RPC 2.0 notification with exactly =jsonrpc=, =method= and object =params=; there are no JSON-RPC request IDs or JSON-RPC result/error envelopes. All parameter fields listed below are emitted, including nullable fields. Unknown methods, extra envelope or parameter fields, missing required fields, invalid typed values, descriptor aliases, unused descriptors, malformed ownership and incompatible versions fail the channel; the implementation reports the diagnostic locally and drops pending ownership guards.
+
+=DESCRIPTOR= means ={"$fd":INDEX}=, indexing exactly one attached descriptor in that frame. =Result<T,String>= means ={"Ok":T}= or ={"Err":TEXT}=; an optional value is its normal value or =null=. String/path pairs and environment entries are two-element JSON arrays. An opaque field contains a JSON /string/ whose contents are a serialized JSON value; it is decoded once by the vocabulary codec, after the transport has checked descriptors. Raw calls, replies and trusted lock-file JSON use this form so literal =$fd= keys in data neither forge capabilities nor collide with the descriptor scanner.
+
+** Bootstrap and ownership notifications
+
+| Direction | Method | Parameters | Effect |
+|-----------+--------+------------+--------|
+| Daemon to supervisor | =SupervisorStart= | ={"supervisor_api":1,"source":Source,"directory":ABSOLUTE_PATH,"dimensions":[ROWS,COLS],"detached":BOOL,"handoff":Handoff_OR_NULL}= | First message in supervisor mode. ROWS and COLS are 1 through 1000. Host sources require null handoff; member sources require a complete handoff before launch. This is distinct from the later =Command.Start=. |
+| Either direction | =Leases= | ={"transfer":U64,"leases":[ResourceLease,...],"more":BOOL}= | Continues one pending handoff. Transfer must match, the batch must be nonempty, and =more= must match its declared total count. No overlapping handoff is permitted. Other complete control messages may interleave. |
+| Supervisor to daemon | =Stopping= | ={}= | Stop reached the dispatcher; cleanup has not yet completed. |
+| Supervisor to daemon | =Released= | ={}= | Sandbox, host jobs and resources have been released and final events drained; the boundary is monotonic and retained terminal output cannot make the goblin live again. |
+| Either direction | =Adopted= | ={"transfer":U64}= | The receiver has adopted a complete owned Handoff or Manifest. It is an ownership acknowledgement, not a request-admission credit. |
+
+=Source= has a =kind= discriminator. =Host= has =configuration:PATH=, =name:STRING=, =scope:STRING_OR_NULL=, =dev_shell:STRING_OR_NULL=, =workspace:PATH_OR_NULL=, =cwd:PATH_OR_NULL=, =state:PATH=, =history:PATH_OR_NULL=, =recreate:Recreate_OR_NULL= and =sequence:U64=. =Member= has =scope:DESCRIPTOR_OR_NULL=, =owner_scope:STRING_OR_NULL=, =manifest:PATH=, =configuration:STRING=, =auto:{PACKAGE:PATH,...}=, =state:PATH= and =history:PATH_OR_NULL=. The scope descriptor is the membership held from acceptance, not a namespace path. Source variants reject unknown fields.
+
+=Handoff= has =transfer:NONZERO_U64=, =count:USIZE=, =workspace:DESCRIPTOR=, =working_directory:WorkingDirectory_OR_NULL=, =dev_shell:OPAQUE_OPTIONAL_DEV_SHELL=, =docker:BOOL=, =leases:[ResourceLease,...]= and =more:BOOL=. =count= is the total number of leases, including following =Leases= notifications. =ResourceLease= is ={"directory":ABSOLUTE_PATH,"lock":DESCRIPTOR}=; adoption verifies that the regular, user-owned lock descriptor matches that directory's =.gc-lease= inode. =WorkingDirectory= is ={"fd":DESCRIPTOR,"source":PATH,"destination":PATH}=. Its descriptor pins the host working directory. The workspace and directory descriptors precede lease descriptors in the first frame; subsequent batches have frame-local indices. Every frame has at most 240 descriptors. The combined serialized bodies of one handoff have at most 8 MiB, so batching increases descriptor capacity without increasing the logical byte budget or imposing a smaller public ancestry limit.
+
+The sender retains the original typed message through actual transmission, then keeps the complete typed leases in a =PendingTransfer= (or retains =Prepared=) until =Adopted= or channel teardown. Transmission alone never disarms cleanup ownership. The receiver adopts resource leases batch by batch, retaining cleanup ownership while the handoff is incomplete. Partial EOF, invalid continuation, failed adoption and abandoned complete messages drop these guards; unsent descriptors are closed before the sender releases its original message. Every complete Handoff and =Event.Manifest= yields an adoption token; acknowledge only after typed ownership is adopted, before subsequently publishing or discarding a logical result. Rooted manifest sender and receiver use independent shared ownership locks on a stable private sibling =ROOT.ownership= inode. Either live peer protects the root across lost acknowledgement; the last graceful owner removes it. The lock inode remains stable as with other GC leases. An unrooted manifest carries neither root nor owner descriptor. Ownership decode/adoption failure is a protocol error, with no =Rejected= notification. Dispose raw Frame descriptors and =Decoder.pending= before explicitly closing =Channel=; the channel disposes its received/unsent descriptors before socket shutdown. The sender then drops pending typed leases on teardown. The supervisor receive path treats =ECONNRESET= from a peer closing with unread data/SCM_RIGHTS as the same closed-channel outcome as EOF, including incomplete-handoff disposal. Normal Drop makes one nonblocking exclusive-lock attempt; a racing/half-dead peer retaining a copy, raw framing-error auto-close before external decoder disposal, or actual process death uses existing stopped-server GC/startup cleanup. There is no new wait, cleanup service or process-wide owner. Actors in phase 6 commits 3/4 keep pending transfers by ID through acknowledgement, closure, errors and retirement; supervisor-death release waits for pidfd exit. A stale logical result can be adopted and dropped without publication. Failed bootstrap, undelivered output and shutdown preserve this same ownership ordering.
+
+** Daemon commands
+
+All methods in this table are daemon-to-supervisor notifications. Approval, serial, process and connection identifiers retain the current runtime meaning; =Command.Cancel= uses the approval or serial of its target.
+
+| Method | Parameters | Effect |
+|--------+------------+--------|
+| =Command.Attach= | ={"terminal":TerminalId,"stream":DESCRIPTOR,"rows":U16,"cols":U16}= | Transfers the frontend stream; the runtime writes framed acceptance/refusal then raw terminal bytes. |
+| =Command.Detach= | ={"terminal":TerminalId}= | Detaches that terminal's frontend. |
+| =Command.Resize= | ={"terminal":TerminalId,"rows":U16,"cols":U16}= | Updates terminal dimensions. |
+| =Command.SandboxSend= | ={"connection":U64,"message":OPAQUE_JSON}= | Replies or notifies a previously relayed sandbox connection. |
+| =Command.SandboxClose= | ={"connection":U64}= | Closes after queued output drains. |
+| =Command.ScopeFailed= | ={}= | Preserves scope-wide engine failure outcome. |
+| =Command.ScopeMembership= | ={"result":Result<DESCRIPTOR,String>}= | Returns the requested scope membership or diagnostic. |
+| =Command.Preview= | ={"approval":U64,"package":STRING}= | Resolves a package approval preview. |
+| =Command.Decide= | ={"request":Request,"approved":BOOL,"output":PATH_OR_NULL}= | Applies an approval decision to the request. |
+| =Command.Refresh= | ={"approval":U64,"changes":Changes}= | Evaluates a candidate dev shell generation. |
+| =Command.Run= | ={"serial":U64,"app":STRING}= | Builds and runs the requested flake app. |
+| =Command.Diff= | ={"serial":U64,"changes":Changes}= | Computes a dev shell preview. |
+| =Command.Cancel= | ={"id":U64}= | Cancels work by approval/serial. |
+| =Command.Spawn= | ={"id":U64,"kind":SpawnKind,"argv":[STRING,...]_OR_NULL,"cwd":STRING_OR_NULL,"env":[[KEY,VALUE],...],"stdio":Stdio}= | Starts an exec or attach client; null argv selects the configured shell. |
+| =Command.Signal= | ={"id":U64,"signal":I32}= | Signals that sandbox process. |
+| =Command.CancelProcess= | ={"id":U64,"everything":BOOL}= | Cancels its process group, optionally every process it started. |
+| =Command.KillAll= | ={}= | Kills accepted sandbox execs. |
+| =Command.Export= | ={"member":STRING}= | Exports the published generation and fresh resource lease chain without waiting for Nix work. |
+| =Command.Start= | ={"handoff":Handoff}= | Gives the owner's handoff to an already accepted member runtime. Process-mode member bootstrap carries it in =SupervisorStart= instead. |
+| =Command.PrepareHostJob= | ={"request":STRING,"cwd":PATH}= | Resolves a permitted host directory for approval. |
+| =Command.RunHostJob= | ={"request":STRING,"argv":[STRING,...],"env":[[KEY,VALUE],...],"timeout":U64_OR_NULL}= | Runs the approved host job; timeout is seconds. |
+| =Command.CancelHostJob= | ={"request":STRING}= | Cancels a host job. |
+| =Command.Stop= | ={}= | Begins cancellation and teardown. |
+
+=TerminalId= is ="Main"= or ={"Process":U64}=. =SpawnKind= is ="Exec"= or ="Attach"=. =Stdio= uses =kind:"Fds"= with =fds:[DESCRIPTOR,DESCRIPTOR,DESCRIPTOR]=, =kind:"Tty"= with =slave:DESCRIPTOR=, or =kind:"NewPty"= with =rows:U16= and =cols:U16=. NewPty allocates a terminal owned by the runtime; no master comes back to the daemon. =Changes= has =update:[INPUT_NAME,...]_OR_NULL= and =lock:BOOL=; a non-null empty update array selects all inputs. =Request= is the existing permission request record, with =id=, =kind=, =package= and =reason= strings.
+
+** Supervisor events
+
+All methods in this table are supervisor-to-daemon notifications. There is no coalescing or lossy replacement of semantic results; event backpressure is implemented by the dispatcher in the following queue commit.
+
+| Method | Parameters | Effect |
+|--------+------------+--------|
+| =Event.ScopeFailed= | ={"name":STRING}= | Reports scope failure. |
+| =Event.ScopeNeeded= | ={"name":STRING,"executable":PATH}= | Requests scope membership. =executable= is transitional and is removed when the daemon-wide executable pin lands. |
+| =Event.Preview= | ={"approval":U64,"result":Result<Preview,String>}= | Returns a package preview including the private output path. |
+| =Event.Started= | ={"docker_enabled":BOOL,"policy":Policy,"support":Support,"dev_shell":OPAQUE_OPTIONAL_DEV_SHELL_SUMMARY,"identity":Identity,"recreated":Recreated_OR_NULL,"auto":Auto}= | Publishes descriptor-free launch metadata; every PTY remains in the runtime. |
+| =Event.Progress= | ={"request":STRING,"state":STRING}= | Reports grant progress without restricting state to a compile-time string. |
+| =Event.Mode= | ={"server":BOOL}= | Announces whether the payload runs without a terminal. |
+| =Event.Refresh= | ={"approval":U64,"result":OPAQUE_RESULT}= | Contains =Result<[JSON_PREVIEW,CANDIDATE_ID],String>=. |
+| =Event.Call= | ={"serial":U64,"result":OPAQUE_RESULT}= | Contains =Result<JSON,String>= for Run/Diff. |
+| =Event.DevShell= | ={"summary":OPAQUE_DEV_SHELL_SUMMARY}= | Publishes the now-current generation. |
+| =Event.Exported= | ={"member":STRING,"result":Result<Handoff,String>}= | Returns an owned handoff or the owner's failure. Successful handoffs may span batches. |
+| =Event.Granted= | ={"reply":Reply,"detail":STRING_OR_NULL,"output":PATH_OR_NULL}= | Reports the permission result and optional rooted output. |
+| =Event.Manifest= | ={"sequence":U64,"path":PATH,"root":PATH_OR_NULL,"owner":DESCRIPTOR_OR_NULL,"transfer":NONZERO_U64}= | Transfers a validated manifest's GC-root lease; acknowledge only after adopting it. Root and owner must both be present or both null. |
+| =Event.Spawned= | ={"id":U64,"pid":I32}= | Reports the sandbox process PID for existing exec/onDetach behavior, with no terminal master or supervisor PID. |
+| =Event.Terminal= | ={"terminal":TerminalId,"status":TerminalStatus,"error":STRING_OR_NULL}= | Publishes a descriptor-free terminal snapshot and optional diagnostic. |
+| =Event.SpawnFailed= | ={"id":U64,"code":I32_OR_NULL,"message":STRING}= | Reports init's shell code or null when init could not be asked. |
+| =Event.Exited= | ={"id":U64,"code":I32_OR_NULL,"signal":I32_OR_NULL}= | Reports sandbox process completion. |
+| =Event.InitLost= | ={}= | The init channel closed. |
+| =Event.PayloadExited= | ={}= | The main payload exited; the daemon decides the session outcome. |
+| =Event.SandboxOpened= | ={"connection":U64}= | Opens a connection identity local to this runtime. |
+| =Event.SandboxCall= | ={"connection":U64,"call":OPAQUE_CALL}= | Relays an already validated call, containing =jsonrpc=, =id=, =method= and =params=. The ID and parameters remain arbitrary JSON. |
+| =Event.SandboxClosed= | ={"connection":U64}= | Reports closure or refusal. |
+| =Event.HostJobPrepared= | ={"request":STRING,"result":Result<PATH,String>}= | Returns the host directory shown by approval. |
+| =Event.HostJobFailed= | ={"request":STRING,"error":STRING}= | Reports failure to start an approved job. |
+| =Event.HostJobFinished= | ={"request":STRING,"outcome":Result<HostOutcome,String>}= | Returns the supervisor's recorded outcome or its diagnostic. |
+| =Event.Failed= | ={"error":STRING}= | Reports launch/runtime failure. |
+| =Event.Stopped= | ={"exit_code":I32_OR_NULL}= | Reports sandbox, host-job and resource cleanup complete, independently of retained terminal output. |
+
+** Wire records
+
+| Record | Fields |
+|--------+--------|
+| =Reply= | =id:STRING_OR_NULL=, =status:STRING=, and optional =message:STRING= (omitted when absent), matching permission reply serialization. |
+| =Preview= | =output_path:PATH_OR_NULL= (private selected store output), =in_store:BOOL=, =download:STRING_OR_NULL=, =build_required:BOOL=. Public preview serialization still omits output_path. |
+| =TerminalStatus= | =eof:BOOL=, =complete:BOOL=, =interrupted:BOOL=, =attached:BOOL=, =detached:BOOL=, =connected:BOOL=. Connected includes a half-closed frontend that still holds its outcome; attached excludes a detached stream. |
+| =Identity= | =pid:U32=, =helper_userns:U64=, =mount_owner:U64=, =source_mountns:U64=, =mountns:U64=. These identify the payload/helper namespaces, not the supervisor process. |
+| =Recreate= | =packages:[STRING,...]=, =auto_approve:[STRING,...]=, =docker:BOOL=, =variables:{KEY:STRING,...}=. |
+| =Recreated= | =packages:[[NAME,PATH],...]=, =auto_approve:[[NAME,PATH],...]=, =skipped:[Skipped,...]=, =fresh:STRING_OR_NULL=. |
+| =Auto= | =rooted:[[NAME,PATH],...]=, =skipped:[Skipped,...]=. |
+| =Skipped= | =name:STRING= and =reason:STRING=, existing bounded plain-text history diagnostics. |
+| =HostOutcome= | =exit_code:I32_OR_NULL=, =signal:I32_OR_NULL=, =spawn_error:STRING_OR_NULL=, =cancelled:BOOL=, =timed_out:BOOL=, =truncated:BOOL=. |
+| =DevShellSummary= | =identity:STRING=, =generation:U32=, =lock:JSON=. The entire summary is opaque on the transport. |
+| =DevShell= | =reference:STRING=, =path:PATH=, =attr:STRING=, =generation:U32=, =source:PATH=, =flake:PATH=, =lock:JSON=, =profile:PATH=, =variables:[[KEY,VALUE],...]=, =script:STRING=, =summary:Summary=. Handoff contains an opaque optional DevShell. |
+| =Summary= | =packages:{PACKAGE:[PATH,...],...}=, =env:{KEY:STRING,...}=, =derivation:PATH=. |
+| =Policy= | =configuration:STRING=, =description:STRING=, =run_targets:[STRING,...]=, =integration:STRING_OR_NULL=, =bypass_permissions:BOOL=, =editor:Editor_OR_NULL=, =nix:BOOL=, =host_commands:BOOL=, =scope:ScopePolicy_OR_NULL=, =dev_shell:DevShellPolicy_OR_NULL=, =initial_packages:[PATH,...]=, =handlers:Handlers_OR_NULL=. |
+| =Editor= | =kind:STRING= and =command:STRING=; currently kind is emacs. |
+| =ScopePolicy= | =name:STRING=, =docker:BOOL=, =pid:BOOL=. |
+| =DevShellPolicy= | =reference:STRING= and =path:PATH=. |
+| =Handlers= | =on_attach:OnAttach= and =on_detach:[STRING,...]_OR_NULL=. |
+| =OnAttach= | =command:[STRING,...]=, =timeout:U64= (seconds), =wait_for:[VARIABLE,...]=. |
+
+=Support= is a set serialized as an array of feature names: =live-packages=, =dev-shells=, =flake-apps=, =nix-daemon=, =host-jobs=, =exec=, =attach-clients=, =scopes=, =shared-pid= and =docker=. The private codec preserves the existing permission reply serialization.

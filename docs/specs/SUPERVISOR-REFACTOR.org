@@ -36,7 +36,7 @@ flowchart TB
 [[file:diagrams/supervisor-target.svg]]
 
 The end state is reached when:
-- No daemon module uses Bubblewrap, namespaces, PTYs, SOCK_SEQPACKET, the init protocol, the mount helper or =/proc=. The daemon's only process handling is starting, watching and killing the supervisors and scope processes it started: one module, =supervised=, uses =posix_spawn=-style launch, a pidfd and =pidfd_send_signal= on those children, and nothing else. Two checks enforce this: the daemon package does not link the supervisor library at all (section 4.10), and a source check fails if any daemon file other than =supervised= names one of these interfaces.
+- No daemon module uses Bubblewrap, namespaces, PTYs, SOCK_SEQPACKET, the init protocol, the mount helper or =/proc=. The daemon's goblin/scope process handling lives in one module, =supervised=, with a platform-neutral interface: start a child with an inherited control socket, notify on exit, kill and reap. Its Linux implementation uses =posix_spawn=-style launch, pidfds and =pidfd_send_signal= internally. It is the daemon's one platform-specific module; a future Darwin daemon reimplements those internals without changing its callers. Two checks enforce this: the daemon package does not link the supervisor library at all (section 4.10), and a source check fails if any daemon file other than =supervised= names one of these interfaces.
 - The daemon holds no descriptor that reaches into a sandbox. Every sandbox request reaches it as a validated message from that goblin's supervisor, and terminal bytes go between the supervisor and the frontend.
 - No Rust value (=Arc=, =Weak=, =AtomicBool=, =Inheritance=, =Cancel=) is shared between the daemon and a goblin's runtime or between two goblins' runtimes. Everything crossing that line is serialisable data plus passed descriptors.
 - What a goblin may do comes from three explicit inputs (section 4.4). The supervisor enforces the two that are fixed for the goblin's life on every sandbox request; the daemon decides with the third, the goblin's live state, and with the user's approvals.
@@ -196,10 +196,15 @@ trait Runtime {
     /// per tick, which bounds what one goblin costs it, as today's
     /// per-tick limits on results, init messages and accepts do.
     fn poll(&mut self) -> Option<Event>;
+    /// Monotonic sandbox, host-job and resource release, after final events.
+    /// Retained terminal output does not keep the goblin live.
+    fn released(&self) -> bool;
     /// True once every event has been polled and the runtime is gone.
     fn ended(&self) -> bool;
 }
 #+end_src
+
+The supervised child interface is platform-neutral: start a child with an inherited control socket, notify on exit, kill and reap. Pidfds and =pidfd_send_signal= are Linux implementation details internal to =supervised=, the daemon's one platform-specific module. A future Darwin daemon replaces only those internals. Phase 6 commit 4 implements that interface, removes the =Runtime::released()= default so every implementation states its release boundary, gives =Fake= an explicit released state independent of terminal-service lifetime, and moves the controller test wrapper onto that state. Tests can then model a released goblin whose terminal service is still alive.
 
 Three implementations, never more than two at once:
 - =Local= (phases 1 to 5): today's worker thread plus the init socket, pidfd, listener and host jobs, all inside the daemon. From phase 3 it lives in =libs/supervisor=.
@@ -236,7 +241,7 @@ Rules every implementation follows:
 
 ** 4.2 =Command= and =Event=
 
-*[P]* One vocabulary for everything the daemon asks of a runtime and everything a runtime reports. Today's =Work= and =Completed= become a subset; init's commands and events, host jobs, member export, terminals and relayed sandbox calls join them. The sketch shows the end state; the comments say which phase adds or removes a part.
+*[P]* One vocabulary for everything the daemon asks of a runtime and everything a runtime reports. Today's =Work= and =Completed= become a subset; init's commands and events, host jobs, member export, terminals and relayed sandbox calls join them. The sketch below records the contract implemented through phase 5 and the phase 6 wire codec; later phase 6 commits switch process ownership without putting terminal masters back in these messages.
 
 #+begin_src rust
 enum Command {
@@ -273,8 +278,11 @@ enum Command {
     RunHostJob { request: String, argv: Vec<String>, env: Vec<(String, String)>,
                  timeout: Option<u64> },
     CancelHostJob { request: String },
-    // Raid members.
+    // Raid members: Start is a handoff to an accepted member, not bootstrap.
     Export { member: String },
+    Start(Box<Handoff>),
+    ScopeFailed,
+    ScopeMembership { result: Result<Fd, String> },
     Stop,
 }
 
@@ -286,30 +294,30 @@ enum Stdio {
     Fds([Fd; 3]),
     /// A frontend-provided PTY slave (`goblins exec` with tty).
     Tty(Fd),
-    /// A new PTY the runtime allocates (attach clients). Until phase 5
-    /// the master comes back in `Spawned`; from phase 5 the runtime keeps it.
+    /// A new PTY the runtime allocates and keeps (attach clients).
     NewPty { rows: u16, cols: u16 },
 }
 
 enum Event {
-    // Today's Completed, with Started reshaped. Until phase 5 Started
-    // also carries the main output: the PTY master, or the server-log
-    // pipe for goblins with onAttach.
-    Started { policy: Policy, support: Support, identity: Identity,
-              dev_shell: Option<DevShellSummary>, state: StartState },
+    // No PTY master, init socket, listener or pidfd crosses Started.
+    Started { docker_enabled: bool, policy: Box<Policy>, support: Support,
+              identity: Identity, dev_shell: Option<DevShellSummary>,
+              recreated: Option<Box<Recreated>>, auto: Box<Auto> },
+    ScopeFailed { name: String },
+    // executable is transitional until the daemon pins one executable.
+    ScopeNeeded { name: String, executable: PathBuf },
     Mode { server: bool },
-    Manifest { sequence: u64, root: Option<PathBuf> },
-    Progress { request: String, state: GrantState },
-    Preview { approval: String, result: Result<catalog::Preview, String> },
-    Refresh { approval: String, result: Result<Candidate, String> },
-    Granted { reply: Reply, detail: String, output: Option<PathBuf> },
+    Manifest { sequence: u64, lease: ManifestLease },
+    Progress { request: String, state: String },
+    Preview { approval: u64, result: Result<catalog::Preview, String> },
+    Refresh { approval: u64, result: Result<(Value, String), String> },
+    Granted { reply: Reply, detail: Option<String>, output: Option<PathBuf> },
     /// The new current generation, as devshell.lock and status need it.
     DevShell { summary: DevShellSummary },
     Call { serial: u64, result: Result<Value, String> },
-    // From goblins-init. Spawned carries the PTY master of
-    // Stdio::NewPty until phase 5; the pid is the {pid} of onDetach's
-    // arguments, as today.
-    Spawned { id: u64, pid: i32, master: Option<Fd> },
+    // From goblins-init; the runtime keeps every allocated PTY.
+    // pid supplies onDetach placeholders, never a public supervisor pid.
+    Spawned { id: u64, pid: i32 },
     /// code is init's (127 for a missing command, 126 otherwise); None
     /// when init could not be asked, which goblins exec answers with
     /// -32010 as today.
@@ -320,11 +328,9 @@ enum Event {
     /// The payload exited. The daemon decides what follows: it stops the
     /// goblin, as it does on the pidfd today.
     PayloadExited,
-    /// A request.sock connection for the daemon to serve. Phase 1 only;
-    /// phase 5 replaces it with SandboxOpened.
-    SandboxConnected(Fd),
     // Terminals (phase 5): the record fields the daemon keeps today.
-    Terminal { terminal: TerminalId, status: TerminalStatus },
+    Terminal { terminal: TerminalId, status: TerminalStatus,
+               error: Option<String> },
     // Relayed sandbox calls (phase 5). Connection ids are the runtime's.
     SandboxOpened { connection: u64 },
     SandboxCall { connection: u64, call: rpc::Call }, // already checked
@@ -336,22 +342,23 @@ enum Event {
     HostJobFailed { request: String, error: String },
     /// The supervisor's recorded outcome, or without one its diagnostic.
     HostJobFinished { request: String, outcome: Result<Outcome, String> },
-    Exported { member: String, handoff: Handoff },
+    Exported { member: String, result: Result<Box<Handoff>, String> },
     Failed(String),
     Stopped { exit_code: Option<i32> },
 }
 
 /// What `tick` copies into the record today: pty_eof, terminal_complete,
-/// terminal_interrupted, terminal_attached and terminal_detached.
+/// terminal_interrupted, terminal_attached, terminal_detached and whether
+/// a frontend remains physically connected (including a half-closed stream).
 struct TerminalStatus { eof: bool, complete: bool, interrupted: bool,
-                        attached: bool, detached: bool }
+                        attached: bool, detached: bool, connected: bool }
 #+end_src
 
 What changes against today:
 - =Completed::Started= no longer carries =Inheritance=, the init socket, the listener or the pidfd. It carries =Policy= and =Support= (section 4.4). It carries the output descriptor until phase 5 moves terminals into the runtime (section 4.9).
 - =Completed::DevShell= no longer carries an =Inheritance=. The daemon gets the identity and a serialisable summary of the generation, which is what =devshell.lock= and =status= read today through =Inheritance::dev_shell=. The runtime keeps the generation itself and replaces it under a lock when a refresh publishes, so =Export= always carries the generation current at that moment without waiting for a refresh in progress (section 4.1).
 - Resizing: until phase 5, =sessions.resize= keeps calling =TIOCSWINSZ= on the masters the daemon holds. From phase 5 it sends =Resize=.
-- =Completed::Manifest= carries the path of the GC root instead of an =Arc<ManifestLease>=. The root stays under the daemon's state directory, so the daemon wraps it in a =ManifestLease= that removes it as today.
+- =Event::Manifest= carries an owned =ManifestLease= in process. The phase 6 wire codec carries its path, root and ownership descriptor; the sender retains its guard until =Adopted=, and the receiver wraps its guard in the same lease type before acknowledgement. The root stays under the daemon's state directory.
 - The daemon decides what an init event means (attach client or exec), as it does now in =attach_event= and =exec_event=, but receives it as an =Event= instead of reading the init socket.
 - Sandbox calls arrive as =SandboxCall= messages instead of on a socket the daemon accepted (section 4.8).
 
@@ -659,6 +666,16 @@ flowchart TB
 
 *[P]* One SOCK_STREAM Unix socket pair per supervisor and per scope process, created by the daemon. Frames use the JSON-RPC Content-Length framing of =libs/jsonrpc= ([[file:../../libs/jsonrpc/src/lib.rs][framing]]), with SCM_RIGHTS descriptors attached as described in section 4.3. It is not SOCK_SEQPACKET, because the daemon's side must stay portable. The message types live in =libs/runtime=, which no sandbox-side package links (section 4.10).
 
+*** Phase 6 commit 1: bootstrap and ownership contract
+
+The approved bootstrap is =SupervisorStart{supervisor_api:1,source,directory,dimensions,detached,handoff}=. It is distinct from =Command::Start(Handoff)=. A host start has no handoff; a member start requires the complete handoff. The daemon retains an accepted member placeholder, its name, receipt, manifest and scope until that handoff arrives, and may stop the placeholder before spawning anything. The process dispatcher that enforces the first-message rule and selects scope, supervisor or one-shot mode is introduced with the executable in a later commit; this commit defines and tests the wire types without changing the active =Local= runtime.
+
+The codec is =goblins_runtime::supervisor= and uses the existing =Channel= unchanged: 240 descriptors per frame, 8 MiB per body, and its existing bounded output buffers. One logical handoff may span =Leases= frames but its cumulative serialized bodies still fit 8 MiB; batching extends only the descriptor budget. Every batch names its transfer, total count is declared in the header, descriptor indices are local to their frame, and a second handoff may not overlap one in progress. Cancellation and control messages can pass while a handoff is incomplete. Adopted resource leases own cleanup as soon as each batch decodes; partial EOF, malformed continuation and abandoned messages drop these guards. Transmission alone never releases sender cleanup ownership. After actual transmission, =Prepared::into_pending= returns a =PendingTransfer= retaining the complete original typed message and every resource lease. The actor keeps that value by transfer ID until typed =Adopted= or channel closure/error; phases 6 commits 3 and 4 integrate the per-handle pending map, including retirement. Supervisor-death release in commit 4 waits for pidfd exit, rather than socket EOF alone.
+
+Raw sandbox calls, answers, dev shell lock JSON and summaries are encoded as opaque JSON strings, so a literal ={"$fd":...}= in user data cannot become a transport capability. Only typed descriptor fields participate in the scanner. The codec carries the actual Rust contract, including private preview output paths, =released=, =TerminalStatus.connected=, and the absence of terminal masters in =Started= and =Spawned=. =ScopeNeeded.executable= remains a transitional field until the daemon-wide executable pin is implemented and removes it.
+
+Manifest transfer uses =Event.Manifest{sequence,path,root,owner,transfer}= and =Adopted{transfer}=. Both manifest and complete handoff receivers return an adoption token only with the fully decoded owned message; the actor acknowledges after typed adoption. A stale logical result may be adopted and then dropped without publishing it. The sender keeps its full typed guard until acknowledgement, independently of the wire frames. Independent shared ownership locks on a stable private sibling inode protect the root across a lost acknowledgement: either live peer retains it, and the last graceful owner removes it. The inode remains stable like other GC lock files. An ownership protocol/adoption failure is a protocol error, with no =Rejected= notification: the receiver drops raw frame descriptors and =Decoder.pending= before explicitly closing =Channel=; =Channel.close= drops its received and unsent descriptors before socket shutdown. The sender observes teardown and drops its pending typed guards. The supervisor receive path treats =ECONNRESET= from a peer closing with unread data/SCM_RIGHTS as the same closed-channel outcome as EOF, including incomplete-handoff disposal. Guard drop keeps the existing single =LOCK_NB= exclusive-cleanup attempt; there is no wait, retry service, ticket or process-wide owner. A racing/half-dead peer retaining a copy, actual process death, or a raw framing error that auto-closes =Channel= before external decoder state can be dropped uses the existing stopped-server GC/startup-cleanup fallback. Raw framing errors mean a sender wrote invalid bytes or died mid-write. Undelivered output, failed bootstrap and shutdown retain the same guard/teardown ordering. =Stopping= acknowledges stop dispatch without claiming cleanup complete; =Released= carries the monotonic resource-release boundary independently of retained terminal output. These acknowledgements are not request-admission credits.
+
 Neither existing descriptor path is a general transport: =init::send= treats a short write as an error and uses fixed ancillary buffers, and the host =Connection= receiver accepts descriptors for one request. The control channel needs its own, specified and tested on its own:
 - *Its own budget.* A private per-frame descriptor limit sized for the largest message (=Exported=), with batching if that is ever exceeded. =init::MAX_FDS= stays 3, because it also bounds what host connections may send, which is a public limit.
 - *Association.* Each frame's header declares its descriptor count, and the sender attaches that frame's descriptors to the frame's first =sendmsg=. The receiver reads at most the current frame boundary (one byte at a time until its header is complete), because =recvmsg= does not report an ancillary-data byte offset in a coalesced buffer. Descriptors are accepted only with that frame's first byte, and the declared count must exactly match the frame's received descriptors; no later frame may consume an earlier attachment. A count that does not match the indices in the frame, or descriptors left over at EOF, is a protocol error: the channel closes and every queued descriptor is closed.
@@ -745,7 +762,7 @@ sequenceDiagram
 - *The daemon keeps* =attach.sock= and the handshake: the 3-second =attach.hello=, =attach.waiting= while variables are missing, the one-attachment rule and its refusals, and =onAttach= and =onDetach= through =Spawn= and =Signal=. On success it passes the frontend's stream in =Attach=; the runtime writes the framed acceptance and then raw bytes, as =Terminal::attach= does today.
 - *One attachment, reserved by the daemon.* The daemon marks the terminal attached when it sends =Attach=, before the runtime answers, so a second =attach.hello= is refused at once, as today. The physical attachment reservation clears when =Event::Terminal= reports =connected=false=. Its descriptor-free =TerminalStatus= distinguishes =attached= from =connected=: a detached frontend can still hold the half-closed stream while reading its outcome, and a second attachment remains refused until it closes. The status also carries =eof=, =complete=, =interrupted= and =detached=; terminal I/O errors carry a diagnostic alongside the snapshot. That includes an =Attach= the runtime cannot carry out because the terminal has ended; the runtime then writes today's refusal to the frontend's stream itself. =attached_since= and the rest of the attach state stay in the daemon's =attach::Attach=, and an attach client's pid comes in =Spawned=, as today.
 - *Ordering.* Commands for one terminal are carried out in the order sent. =Resize= is coalesced in place and never overtakes the =Attach= before it, and =Detach= follows it. A frontend that closes its stream before or after the runtime has attached it is reported as detached once the runtime sees the closed stream.
-- *After the payload ends.* Today a stopped goblin's =Terminal= stays in the daemon until it can be evicted, so a frontend that attaches late still gets the buffered output. The runtime keeps that: after =Stopped= it keeps serving its terminals, =terminal.sock= included, until each can be evicted and the server log has drained, and only then ends (section 4.1). The daemon continues refusing new =attach.sock= handshakes for stopped or failed goblins; late buffered output remains available through =terminal.sock=. Worker completion without a final lifecycle result is reported as failure immediately, independently of retained terminal output. A stopped goblin whose output nobody reads keeps its record today; it now also keeps a supervisor holding that buffer and no sandbox. The worker's stop result makes its published launch capability unavailable. The local runtime defers delivery of =Stopped= until any active host jobs and their queued results have finished, then releases its published resource leases and prepared host directories before exposing that lifecycle result; unread terminal output does not retain those resources.
+- *After the payload ends.* Today a stopped goblin's =Terminal= stays in the daemon until it can be evicted, so a frontend that attaches late still gets the buffered output. The runtime keeps that: after =Stopped= it keeps serving its terminals, =terminal.sock= included, until each can be evicted and the server log has drained, and only then ends (section 4.1). The daemon continues refusing new =attach.sock= handshakes for stopped or failed goblins; late buffered output remains available through =terminal.sock=. Worker completion without a final lifecycle result is reported as failure immediately, independently of retained terminal output. A stopped goblin whose output nobody reads keeps its record today; it now also keeps a supervisor holding that buffer and no sandbox. This is intentional and bounded by today's eviction rule; handing the buffer back to the daemon would put terminal code back into the daemon. The worker's stop result makes its published launch capability unavailable. The local runtime defers delivery of =Stopped= until any active host jobs and their queued results have finished, then releases its published resource leases and prepared host directories before exposing that lifecycle result; unread terminal output does not retain those resources.
 - *Records.* The runtime reports changes with =Event::Terminal=. The daemon copies them into the record fields, as =tick= copies them from =Terminal= today.
 - *Detaching.* =sessions.detach= sends =Detach=. A frontend closing its stream is seen by the runtime and reported as detached.
 - =goblins exec= keeps passing the frontend's own descriptors (=Stdio::Fds= or =Stdio::Tty=); those never were the daemon's PTYs.
@@ -1079,7 +1096,10 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
   - =initialize= pipelined with the next call in one write, a failed =initialize= followed by a call, and a call without an ID all get today's answers.
   - A goblin flooding its terminal does not slow host RPC or another goblin's terminal.
 - *Phase 6:*
-  - Killing one supervisor fails only that goblin. Its sandbox and host jobs are gone, while another goblin, including a raid member it created, keeps running and messaging. An attached frontend sees its stream end, and the record shows the terminal detached.
+  - Killing one supervisor fails only that goblin. Its sandbox and host jobs are gone, while another goblin, including a raid member it created, keeps running and messaging. An attached frontend sees its stream end, and the record shows the terminal interrupted with =attached=false= and =connected=false=, not detached.
+  - The owner's supervisor is killed while an =Export= is in flight. The member launch fails with an error naming the owner, and every lease and the manifest root held for it are released. Phase 6 commit 4 adds this test.
+  - A supervisor serving only retained terminal output after =Stopped= is killed. The goblin's name, record and history reservations are not revived. Phase 6 commit 4 adds this test.
+  - A supervisor exits once its terminals are evictable and the log has drained, checked by its PID. Phase 6 commit 4 adds this test.
   - Two members share a PID namespace, and one has =setsid= descendants. Killing that member's supervisor removes its descendants, and the other member keeps running.
   - A supervisor stopped with =SIGSTOP= while enough commands are queued to fill its channel does not block the daemon's tick, host RPC or other goblins, and the excess requests get capacity errors.
   - With its outbound queue full, a goblin's sandbox caller disconnects, a host job is cancelled and the goblin is stopped. The supervisor gets =SIGCONT= before the stop deadline; then no host job is orphaned, no cancelled build keeps running, and the goblin stops. Without =SIGCONT=, the supervisor is killed at the deadline and the same holds.
@@ -1092,6 +1112,7 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
 * 9. Out of scope
 
 - Darwin, Seatbelt and per-platform skill selection.
+- The public record field =identity= (payload PID and Linux namespace IDs, documented in [[file:../API.org][API.org]]) is Linux-shaped data that the daemon passes through. A second backend needs it to be backend-defined or optional; that public API decision belongs to the macOS work.
 - Splitting =Session::start= into a platform-neutral launch plan and a Linux launcher. This is a natural follow-up once the runtime has its own library, and it is where a second implementation of =Support= would plug in.
 - Daemon restart recovery: supervisors still die with the daemon.
 - Any change to raids, messaging, approvals or the public API beyond the refusal order in section 4.4.

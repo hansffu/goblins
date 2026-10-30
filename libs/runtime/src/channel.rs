@@ -161,9 +161,11 @@ impl Channel {
         Ok(())
     }
     pub fn close(&mut self) {
-        if let Some(stream) = self.stream.take() {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
+        self.close_before_shutdown(|| {});
+    }
+    fn close_before_shutdown(&mut self, before_shutdown: impl FnOnce()) {
+        // A peer may release its typed leases as soon as EOF is observable.
+        // Close all received/unsent capabilities before publishing that EOF.
         self.input.clear();
         self.received.clear();
         self.output.clear();
@@ -171,6 +173,10 @@ impl Channel {
         self.queued_fds = 0;
         self.partial = false;
         self.decoder = decoder();
+        before_shutdown();
+        if let Some(stream) = self.stream.take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
     }
     pub fn flush(&mut self) -> io::Result<()> {
         let result = self.flush_inner();
@@ -707,5 +713,37 @@ mod tests {
         drop(peer);
         assert!(channel.flush().is_err());
         eof(&mut reader);
+    }
+
+    #[test]
+    fn close_drops_received_and_unsent_capabilities_before_socket_shutdown() {
+        let _no_forks = goblins_unix::no_forks();
+        let (mut peer, stream) = UnixStream::pair().unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let mut channel = Channel::new(stream).unwrap();
+        let socket = channel.fd().unwrap();
+        let (mut received_reader, received_writer) = pipe();
+        send_fds(&peer, b"C", &[received_writer.as_raw_fd()]);
+        drop(received_writer);
+        assert!(channel.receive().unwrap().is_none());
+        assert_eq!(channel.received.len(), 1);
+        let (mut unsent_reader, unsent_writer) = pipe();
+        channel
+            .queue(&json!({"fd":{"$fd":0}}), &mut vec![unsent_writer])
+            .unwrap();
+        channel.close_before_shutdown(|| {
+            // Production close boundary: both capability queues are empty
+            // while the control socket still exists and has not exposed EOF.
+            assert!(unsafe { libc::fcntl(socket, libc::F_GETFD) } >= 0);
+            let mut byte = [0];
+            assert_eq!(
+                peer.read(&mut byte).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            eof(&mut received_reader);
+            eof(&mut unsent_reader);
+        });
+        let mut byte = [0];
+        assert_eq!(peer.read(&mut byte).unwrap(), 0);
     }
 }

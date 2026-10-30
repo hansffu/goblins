@@ -51,7 +51,7 @@ pub fn identity(flake: &Path, attr: &str, lock: &Value) -> String {
 }
 
 /// Inputs to update (`Some(empty)` means all) or new inputs to lock.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Changes {
     pub update: Option<Vec<String>>,
     pub lock: bool,

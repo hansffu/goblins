@@ -2,7 +2,7 @@
 pub use crate::lease::{Identity, ResourceLease};
 use crate::policy::{DevShellSummary, Operation, Policy, Support};
 use goblins_protocol::{Reply, Request};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     os::fd::{AsRawFd, OwnedFd, RawFd},
     path::PathBuf,
@@ -21,6 +21,7 @@ mod logging;
 pub mod policy;
 pub mod sandbox;
 pub mod scope;
+pub mod supervisor;
 pub use logging::log_event;
 /// Why an allowNix goblin gets no package grants.
 pub const NIX_PACKAGES: &str =
@@ -30,6 +31,7 @@ pub const NIX_DEV_SHELL: &str =
     "this goblin has Nix; use nix develop and nix run instead of the Goblins dev shell commands";
 
 /// What a recreated goblin takes from its record.
+#[derive(Serialize, Deserialize)]
 pub struct Recreate {
     /// Approved package names, in grant order.
     pub packages: Vec<String>,
@@ -39,6 +41,7 @@ pub struct Recreate {
     pub variables: std::collections::BTreeMap<String, String>,
 }
 /// What recreating staged, for the controller's hand-over.
+#[derive(Serialize, Deserialize)]
 pub struct Recreated {
     pub packages: Vec<(String, PathBuf)>,
     /// Recorded auto-approved names, resolved and rooted.
@@ -49,7 +52,7 @@ pub struct Recreated {
     pub fresh: Option<String>,
 }
 /// The auto-approve set a session rooted for itself before it started.
-#[derive(Default)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Auto {
     pub rooted: Vec<(String, PathBuf)>,
     pub skipped: Vec<crate::history::Skipped>,
@@ -171,7 +174,7 @@ pub enum Stdio {
 }
 
 /// A runtime-owned terminal, distinct from frontend-provided exec descriptors.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TerminalId {
     Main,
     Process(u64),
@@ -179,7 +182,7 @@ pub enum TerminalId {
 
 /// A descriptor-free snapshot. `connected` includes a half-closed frontend
 /// still holding its outcome, while `attached` excludes a detached stream.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalStatus {
     pub eof: bool,
     pub complete: bool,
@@ -190,7 +193,7 @@ pub struct TerminalStatus {
 }
 
 /// What a spawned process is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpawnKind {
     /// `goblins exec`.
     Exec,
@@ -385,7 +388,7 @@ pub enum Event {
     },
     Progress {
         request: String,
-        state: &'static str,
+        state: String,
     },
     /// Whether the agent will run without a terminal, known before the
     /// launch's slow work.
@@ -490,7 +493,7 @@ pub enum Event {
 }
 
 /// What a host job's supervisor records in its `status.json`.
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct HostOutcome {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,

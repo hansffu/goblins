@@ -388,7 +388,7 @@ impl Worker {
                                         |state| {
                                             results.try_send(Event::Progress {
                                                 request: req.id.clone(),
-                                                state,
+                                                state: state.into(),
                                             })?;
                                             Ok(())
                                         },

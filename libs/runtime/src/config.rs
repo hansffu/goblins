@@ -116,12 +116,74 @@ pub const MAX_RUN_TARGETS: usize = 64;
 pub struct ManifestLease {
     pub path: PathBuf,
     root: Option<PathBuf>,
+    // Used only across the supervisor channel: both peers retain a shared
+    // ownership lock until adoption/cleanup, so a lost acknowledgement can
+    // neither unroot a live receiver nor leak a rejected root.
+    transfer: Option<std::fs::File>,
 }
 impl ManifestLease {
     /// A lease on `path` that removes its `root`, if it has one, once the last
     /// holder drops it.
     pub fn adopt(path: PathBuf, root: Option<PathBuf>) -> Self {
-        Self { path, root }
+        Self {
+            path,
+            root,
+            transfer: None,
+        }
+    }
+}
+impl ManifestLease {
+    fn transfer_path(root: &std::path::Path) -> PathBuf {
+        let mut path = root.as_os_str().to_os_string();
+        path.push(".ownership");
+        path.into()
+    }
+    pub(crate) fn root(&self) -> Option<&std::path::Path> {
+        self.root.as_deref()
+    }
+    pub(crate) fn prepare_transfer(&mut self) -> crate::Result<Option<std::os::fd::OwnedFd>> {
+        let Some(root) = &self.root else {
+            return Ok(None);
+        };
+        let path = Self::transfer_path(root);
+        if self.transfer.is_none() {
+            self.transfer =
+                Some(crate::lease::flock(&path, false)?.ok_or("manifest root is being collected")?);
+        }
+        Ok(Some(
+            crate::lease::flock(&path, false)?
+                .ok_or("manifest root is being collected")?
+                .into(),
+        ))
+    }
+    pub(crate) fn from_transfer(
+        path: PathBuf,
+        root: Option<PathBuf>,
+        lock: Option<std::os::fd::OwnedFd>,
+    ) -> crate::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let transfer = match (&root, lock) {
+            (None, None) => None,
+            (Some(root), Some(lock)) => {
+                let file = std::fs::File::from(lock);
+                let actual = file.metadata()?;
+                let expected = std::fs::symlink_metadata(Self::transfer_path(root))?;
+                if !actual.is_file()
+                    || !expected.is_file()
+                    || actual.uid() != unsafe { libc::getuid() }
+                    || (actual.dev(), actual.ino()) != (expected.dev(), expected.ino())
+                {
+                    return Err("invalid manifest ownership descriptor".into());
+                }
+                Some(file)
+            }
+            _ => return Err("manifest root ownership descriptor missing or unexpected".into()),
+        };
+        Ok(Self {
+            path,
+            root,
+            transfer,
+        })
     }
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -131,12 +193,24 @@ impl ManifestLease {
         Self {
             path: path.to_path_buf(),
             root: None,
+            transfer: None,
         }
     }
 }
 impl Drop for ManifestLease {
     fn drop(&mut self) {
         if let Some(root) = &self.root {
+            let _exclusive = if let Some(lock) = self.transfer.take() {
+                drop(lock);
+                // Keep the lock inode stable, as with other GC leases, and
+                // retain exclusivity through the actual root removal.
+                match crate::lease::flock(&Self::transfer_path(root), true) {
+                    Ok(Some(lock)) => Some(lock),
+                    _ => return,
+                }
+            } else {
+                None
+            };
             let _ = std::fs::remove_file(root);
         }
     }
