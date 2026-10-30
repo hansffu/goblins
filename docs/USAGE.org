@@ -540,7 +540,7 @@ reused, even while the previous session's terminal output is still draining.
 There is no renaming operation.
 
 The daemon randomly chooses among the available names in
-[[file:../crates/controller/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
+[[file:../packages/daemon/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
 16 live sessions; the larger pool adds variety without changing that limit. If
 none is available, launch fails immediately with a resource-limit error;
 allocation never spins or silently collides. Custom names do not consume list
@@ -808,7 +808,7 @@ mkGoblins {
 =injectedFiles= entries to the supplied options. Attribute-set =//= merges are shallow;
 merge nested =env= or =codexSettings= sets explicitly when extending them.
 
-The host and inner binary definitions live under =nix/packages/=.
+The host and inner binary definitions live under =packages/=.
 
 =editor.emacs.enable = true;= on =mkGoblins= applies to every goblin: it adds
 the TRAMP tools and =EDITOR=/=VISUAL= (=goblins-editor=) to each one, scope

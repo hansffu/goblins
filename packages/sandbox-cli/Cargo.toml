@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-goblins-protocol = { path = "../protocol" }
+goblins-protocol = { path = "../../libs/api" }
 serde_json = "1"
 clap = { version = "4.6.6", features = ["derive", "string"] }
 clap_complete = "4.6.9"

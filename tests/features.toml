@@ -10,19 +10,19 @@ env = { GOBLINS_TEST_CODEX = "1" }
 # These affect shared authority, lifecycle or test execution. Unknown paths
 # also recommend full validation; agents can present targeted review earlier.
 broad = [
-  "src/*", "crates/protocol/*", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
-  "crates/controller/src/controller.rs", "crates/controller/src/session.rs",
-  "crates/controller/src/worker.rs", "crates/controller/src/controller/runtime.rs", "crates/controller/src/controller/policy.rs",
-  "crates/controller/src/config.rs",
-  "crates/controller/src/unix.rs", "crates/controller/src/process.rs",
-  "crates/controller/src/seccomp.rs", "crates/controller/src/sandbox_etc.rs",
-  "crates/controller/src/catalog.rs", "crates/controller/src/terminal.rs", "crates/client/src/init.rs",
-  "crates/controller/src/main.rs", "crates/controller/src/lib.rs",
-  "crates/controller/src/cli.rs", "crates/client/src/main.rs", "crates/client/src/cli.rs",
+  "packages/mount-helper/*", "libs/api/*", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
+  "packages/daemon/src/controller.rs", "packages/daemon/src/session.rs",
+  "packages/daemon/src/worker.rs", "packages/daemon/src/controller/runtime.rs", "packages/daemon/src/controller/policy.rs",
+  "packages/daemon/src/config.rs",
+  "packages/daemon/src/unix.rs", "packages/daemon/src/process.rs",
+  "packages/daemon/src/seccomp.rs", "packages/daemon/src/sandbox_etc.rs",
+  "packages/daemon/src/catalog.rs", "packages/daemon/src/terminal.rs", "packages/sandbox-cli/src/init.rs",
+  "packages/daemon/src/main.rs", "packages/daemon/src/lib.rs",
+  "packages/daemon/src/cli.rs", "packages/sandbox-cli/src/main.rs", "packages/sandbox-cli/src/cli.rs",
   "tests/daemon_support.py", "tests/build_support.py", "tests/support.py",
   "tests/terminal_support.py", "tests/run.py", "tests/tasks.py", "tests/features.toml",
   "tests/checks.nix", "justfile", "nix/lib.nix", "nix/builders/mk-goblin.nix",
-  "nix/builders/mk-goblins.nix", "nix/internal/*", "crates/*/Cargo.toml",
+  "nix/builders/mk-goblins.nix", "nix/internal/*", "packages/*/Cargo.toml", "libs/*/Cargo.toml",
 ]
 docs = ["docs/*", "README.org", "emacs/README.org", "AGENTS.md", "CLAUDE.md"]
 
@@ -30,80 +30,80 @@ docs = ["docs/*", "README.org", "emacs/README.org", "AGENTS.md", "CLAUDE.md"]
 description = "Filesystem isolation, binds, snapshots and GC retention"
 python = ["test_integration", "test_binds", "test_bind_race", "test_workspace", "test_roots"]
 checks = ["rust"]
-paths = ["crates/controller/src/binds.rs", "crates/controller/src/snapshot.rs", "crates/controller/src/session/*"]
+paths = ["packages/daemon/src/binds.rs", "packages/daemon/src/snapshot.rs", "packages/daemon/src/session/*"]
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
 python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness"]
 checks = ["rust"]
-paths = ["crates/controller/src/server.rs", "crates/controller/src/cleanup.rs", "crates/controller/src/goblin-names.txt"]
+paths = ["packages/daemon/src/server.rs", "packages/daemon/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
 
 [features.exec]
 description = "Command execution, signals, terminals and attachment"
 python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected"]
 checks = ["rust"]
-paths = ["crates/controller/src/exec.rs", "crates/controller/src/controller/exec.rs", "crates/controller/src/attachment.rs", "crates/controller/src/controller/attach.rs"]
+paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs"]
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"
 python = ["test_scopes", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
 checks = ["rust"]
-paths = ["crates/controller/src/scope*.rs", "crates/controller/src/cleanup.rs", "crates/controller/src/network.rs", "crates/controller/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
+paths = ["packages/daemon/src/scope*.rs", "packages/daemon/src/cleanup.rs", "packages/daemon/src/network.rs", "packages/daemon/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 
 [features.docker]
 description = "Sandbox Docker engines and their cross-feature integrations"
 python = ["test_docker", "test_cleanup", "test_devshell.DevShellDockerTests", "test_run_targets.RunTargetDockerTests", "test_host_commands.HostDockerAcceptance"]
 checks = ["rust"]
-paths = ["crates/controller/src/docker.rs", "crates/controller/src/cleanup.rs", "crates/controller/src/scope*.rs", "nix/packages/docker*", "skills/goblins-docker/*"]
+paths = ["packages/daemon/src/docker.rs", "packages/daemon/src/cleanup.rs", "packages/daemon/src/scope*.rs", "packages/docker/*", "skills/goblins-docker/*"]
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"
 python = ["test_nix", "test_devshell", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
 checks = ["rust"]
-paths = ["crates/controller/src/devshell.rs", "crates/controller/src/evaluator.rs", "crates/client/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
+paths = ["packages/daemon/src/devshell.rs", "packages/daemon/src/evaluator.rs", "packages/sandbox-cli/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
 
 [features.raids]
 description = "Raid membership, ownership and spawning run targets"
 python = ["test_raids", "test_run_targets"]
 checks = ["rust"]
-paths = ["crates/controller/src/raid.rs", "crates/controller/src/controller/raids.rs", "skills/goblins-raids/*", "skills/goblins-spawn/*"]
+paths = ["packages/daemon/src/raid.rs", "packages/daemon/src/controller/raids.rs", "skills/goblins-raids/*", "skills/goblins-spawn/*"]
 
 [features.messaging]
 description = "Mailboxes, activity and operation completion notices"
 python = ["test_mailbox", "test_activity", "test_operation_notices"]
 checks = ["rust"]
-paths = ["crates/controller/src/mailbox*", "crates/controller/src/messaging.rs", "crates/controller/src/operation.rs", "skills/goblins-messaging/*"]
+paths = ["packages/daemon/src/mailbox*", "packages/daemon/src/messaging.rs", "packages/daemon/src/operation.rs", "skills/goblins-messaging/*"]
 
 [features.history]
 description = "Persistence, recreation and CLI/native/Emacs resume"
 python = ["test_history", "test_recreate", "test_codex_native.NativeProtocol.test_a_recorded_conversation_gets_the_goblins_policy_and_a_missing_one_fails", "test_codex_native.NativeProtocol.test_a_terminal_resuming_the_conversation_draws_its_history", "test_codex_config.CodexConfigTests.test_recreate_loads_the_recorded_thread_with_the_goblins_policy", "test_emacs.EmacsTests.test_live_resume_chooses_a_recorded_conversation"]
 checks = ["rust"]
-paths = ["crates/controller/src/history.rs", "crates/controller/src/records.rs"]
+paths = ["packages/daemon/src/history.rs", "packages/daemon/src/records.rs"]
 
 [features.codex]
 description = "Codex configuration, native adapter and operation notices"
 python = ["test_codex_native", "test_codex_config", "test_operation_notices.CodexNotices"]
 checks = ["rust"]
-paths = ["crates/codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix"]
+paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix"]
 env = { GOBLINS_TEST_CODEX = "1" }
 
 [features.claude]
 description = "Claude configuration, hooks, mod and operation notices"
 python = ["test_claude_config", "test_claude_mod", "test_operation_notices.ClaudeNotices"]
 checks = ["rust"]
-paths = ["crates/claude/*", "nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py"]
+paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-claude.nix", "tests/fake_claude.py"]
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"
 python = ["test_host_commands", "test_editor", "test_operation_notices.HostCommandNotices"]
 checks = ["rust"]
-paths = ["crates/controller/src/controller/host.rs", "crates/controller/src/controller/editor.rs", "crates/client/src/host.rs", "skills/goblins-host/*"]
+paths = ["packages/daemon/src/controller/host.rs", "packages/daemon/src/controller/editor.rs", "packages/sandbox-cli/src/host.rs", "skills/goblins-host/*"]
 
 [features.tui]
 description = "Terminal UI, approval rendering and navigation"
 python = ["test_tui"]
 checks = ["rust"]
-paths = ["crates/controller/src/tui.rs", "crates/controller/src/plain.rs", "crates/client/src/preview.rs"]
+paths = ["packages/daemon/src/tui.rs", "packages/daemon/src/plain.rs", "packages/sandbox-cli/src/preview.rs"]
 
 [features.emacs]
 description = "Live Emacs integration and the complete fast ERT suite"
@@ -113,7 +113,7 @@ paths = ["emacs/*.el", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
-python = ["test_runner", "test_features"]
+python = ["test_runner", "test_features", "test_dependencies"]
 checks = []
 paths = []
 
@@ -121,7 +121,7 @@ paths = []
 description = "All Nix checks and packaged server/exec/root smoke tests"
 python = []
 checks = ["nix", "packaged"]
-paths = ["nix/packages/*", "nix/builders/default.nix", "nix/goblins/skills.nix", "nix/demo-goblins/default.nix", "nix/demo-goblins/shell.nix"]
+paths = ["packages/*/*.nix", "packages/docker/*", "nix/builders/rust.nix", "nix/builders/default.nix", "nix/goblins/skills.nix", "nix/demo-goblins/default.nix", "nix/demo-goblins/shell.nix"]
 
 [features.docs]
 description = "Documentation review; no runtime checks until the merge gate"

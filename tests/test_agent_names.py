@@ -47,7 +47,7 @@ class AgentNameTests(unittest.TestCase):
         allocated = self.concurrent(automatic)
         self.assertTrue(all("session" in r for r in allocated), allocated)
         names = {r["agent_name"] for r in allocated} | {"snikk", "grib"}
-        expected = set((ROOT / "crates/controller/src/goblin-names.txt").read_text().splitlines())
+        expected = set((ROOT / "packages/daemon/src/goblin-names.txt").read_text().splitlines())
         self.assertEqual(len(names), 16)
         self.assertTrue(names <= expected)
         self.assertGreater(len(expected), 16)
@@ -118,7 +118,7 @@ class AgentNameTests(unittest.TestCase):
             if requested:
                 self.assertEqual(record["agent_name"], requested)
             else:
-                self.assertIn(record["agent_name"], (ROOT / "crates/controller/src/goblin-names.txt").read_text().splitlines())
+                self.assertIn(record["agent_name"], (ROOT / "packages/daemon/src/goblin-names.txt").read_text().splitlines())
             target = requested or record["id"]
             stopped = subprocess.check_output([str(d.app), "--state-dir", str(d.state), "stop", target], text=True)
             self.assertEqual(json.loads(stopped), {"accepted": True})

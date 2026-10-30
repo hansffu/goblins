@@ -6,7 +6,7 @@ Status: proposed 2026-10-28, to be recorded as [[file:../adr/0017-claude-integra
 
 Codex goblins keep all Codex code in =mkCodexGoblin=: =goblins-codex= keeps its own wakeup ledger and talks to the daemon only through generic calls (=inbox.status=, =sessions.set-state=, =sessions.set-variables=). Claude goblins do not. Their hooks and plugin monitor call =goblin integration hook|watch=, and the daemon interprets them:
 
-- =crates/controller/src/integration.rs= knows Claude's hook vocabulary (=SessionStart=, =UserPromptSubmit=, =Stop= and the activity-only events), keeps the wakeup bookkeeping (lifecycle state, attempts, retry timing, claim tracking, pause) and maps hooks to activity.
+- =packages/daemon/src/integration.rs= knows Claude's hook vocabulary (=SessionStart=, =UserPromptSubmit=, =Stop= and the activity-only events), keeps the wakeup bookkeeping (lifecycle state, attempts, retry timing, claim tracking, pause) and maps hooks to activity.
 - =controller.rs= takes Claude's activity from those results (=claude_activity=) and gates =integration.*= on the driver names =codex= and =claude=.
 - The daemon's terminal reads Claude's screen to judge the composer empty (=integration_view=), pastes the inbox prompt into it (=Terminal::notify=, =Work::Delivery=, =integration.wake_result=), and tracks human input (=InputEvents=, =input=, =interrupted=, =input_pending=) so that Esc or Ctrl-C pauses wakeups. Nothing Goblins ships uses terminal delivery: Claude's monitor uses notification delivery, and Codex never registers.
 - The sandbox CLI every goblin carries has =goblin integration register|hook|status|watch=, which follow Claude's hook payloads; the host CLI has =goblins integration status|pause|resume=.
@@ -23,7 +23,7 @@ Agreed with the user on 2026-10-28:
 
 ** goblins-claude
 
-A new crate, =crates/claude=, builds =goblins-claude=, as =crates/codex= builds =goblins-codex=. It is in the Claude goblin's packages, not in the generic =goblin= CLI. Its subcommands:
+A new crate, =packages/adapter-claude=, builds =goblins-claude=, as =packages/adapter-codex= builds =goblins-codex=. It is in the Claude goblin's packages, not in the generic =goblin= CLI. Its subcommands:
 
 - =start= :: run by the launcher before it executes Claude. Starts a fresh ledger for this run, replacing =goblin integration register= and =GOBLINS_INTEGRATION_EPOCH=. A monitor of an earlier run in the same goblin exits when it sees a newer run.
 - =hook= :: run by every managed hook. Reads Claude's hook input from stdin, updates the ledger and the activity, and prints the hook's output. It replaces =goblin integration hook= and the decision part of =hook.sh=; the =session_id= and =session_name= reporting in =hook.sh= stays as it is.
@@ -56,7 +56,7 @@ The Goblins mod reads the health it shows from =goblins-claude status= instead o
 - =claude_activity= in =controller.rs=; Claude reports activity through =sessions.set-state= like any agent.
 - =Terminal::notify=, =integration_view= with its composer reading, =InputEvents= and the input revision, =Work::Delivery= and =integration.wake_result=.
 - The communications log events =integration.registered=, =integration.hook=, =integration.wake_attempt=, =integration.paused= and =integration.resumed=. As for Codex, wakeup attempts are local diagnostics.
-- =goblin integration register|hook|status|watch= (=crates/client=) and =goblins integration status|pause|resume= (=crates/controller/src/main.rs=).
+- =goblin integration register|hook|status|watch= (=packages/sandbox-cli=) and =goblins integration status|pause|resume= (=packages/daemon/src/main.rs=).
 
 =mkGoblin='s =integration= attribute stays as "this goblin is an agent", with the values =codex= and =claude=: the daemon uses only whether it is set, to allow =bypassPermissions= and to send operation completion notices.
 

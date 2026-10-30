@@ -110,15 +110,15 @@ The development shell includes pyte for fullscreen terminal regression tests. Te
 | =nix/goblins/claude/=               | Claude Code launcher, hooks and managed config                           |
 | =skills/=                           | Goblins agent skills mounted into Codex and Claude Code sandboxes        |
 | =nix/internal/=                     | Shared Nix argument validation                                           |
-| =nix/packages/goblins.nix=          | Host binary, including its Rust helper, controller, and pinned catalog   |
-| =nix/packages/internal-goblins.nix= | Restricted in-sandbox =goblins= binary                                   |
+| =packages/daemon/wrapper.nix=          | Host binary, including its Rust helper, controller, and pinned catalog   |
+| =packages/sandbox-cli/default.nix= | Restricted in-sandbox =goblins= binary                                   |
 | =tests/fixtures.nix=                | Runtime dependency fixtures and agent-sandbox baselines                  |
 | =tests/checks.nix=                  | Nix API validation and named configuration test build                    |
-| =src/=                              | Namespace mount helper, scope keeper and Docker launcher                 |
-| =crates/protocol/=                  | Bounded request/reply types, validation and deadline                     |
-| =crates/client/=                    | Restricted Rust sandbox request executable                               |
-| =crates/controller/=                | Rust session library, event pump, worker and tui/run frontend            |
-| =nix/packages/rust.nix=             | Shared Rust build derivation with separate package selection             |
+| =packages/mount-helper/src/=                              | Namespace mount helper, scope keeper and Docker launcher                 |
+| =libs/api/=                  | Bounded request/reply types, validation and deadline                     |
+| =packages/sandbox-cli/=                    | Restricted Rust sandbox request executable                               |
+| =packages/daemon/=                | Rust session library, event pump, worker and tui/run frontend            |
+| =nix/builders/rust.nix=             | Shared Rust build derivation with separate package selection             |
 | =tests/=                            | Python black-box payload and terminal tests; Nix checks                  |
 | =emacs/=                            | Emacs status, workspace, terminal and TRAMP frontend                     |
 | =prototypes/=                       | Earlier experiments                                                      |

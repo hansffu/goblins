@@ -87,7 +87,7 @@ unchanged networking, private stores, filesystem confinement and cleanup.
 Existing build, Compose, user-switching, cgroup and controller-death checks also
 exercise the refactored startup path.
 
-See [usage](../USAGE.org), [scope keeper](../../src/scope.rs),
-[scope lifecycle](../../crates/controller/src/docker_scope.rs),
-[engine manager](../../crates/controller/src/docker.rs) and
+See [usage](../USAGE.org), [scope keeper](../../packages/mount-helper/src/scope.rs),
+[scope lifecycle](../../packages/daemon/src/docker_scope.rs),
+[engine manager](../../packages/daemon/src/docker.rs) and
 [integration tests](../../tests/test_docker.py).

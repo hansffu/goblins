@@ -7,27 +7,27 @@ trusted), the evaluator sandbox and the approval preview. Usage is in the
 
 Where the code lives:
 
-- =crates/controller/src/devshell.rs= :: snapshot, lock checks
+- =packages/daemon/src/devshell.rs= :: snapshot, lock checks
   (=check_lock=, =validate_lock=, completeness in =snapshot=), candidate
   evaluation (=candidate=), apply (=apply=), the structured =Preview= sent to
   frontends.
-- =crates/controller/src/evaluator.rs= :: Bubblewrap evaluator: store, daemon
+- =packages/daemon/src/evaluator.rs= :: Bubblewrap evaluator: store, daemon
   socket, source tree, private state; =Network= (host, none, goblin
   namespaces).
-- =crates/controller/src/session.rs= :: =prepare_refresh=, =apply_refresh=,
+- =packages/daemon/src/session.rs= :: =prepare_refresh=, =apply_refresh=,
   =mount_paths= (live mounts through the helper), =evaluation_network=.
-- =crates/controller/src/worker.rs= :: =Work::Refresh=, the =devshell= case
+- =packages/daemon/src/worker.rs= :: =Work::Refresh=, the =devshell= case
   of =Work::Decide=, =Completed::Refresh= / =Completed::DevShell=.
-- =crates/controller/src/controller.rs= :: =permissions.request= with kind
+- =packages/daemon/src/controller.rs= :: =permissions.request= with kind
   =devshell=, =Completed::Refresh= handling, =inherits_dev_shell= (automatic
   approval), sandbox method =devshell.lock=.
-- =crates/protocol/src/rpc.rs= :: =PermissionParams= (=update=, =lock=,
+- =libs/api/src/rpc.rs= :: =PermissionParams= (=update=, =lock=,
   =validate=, =input_name=), =DevShellDiffParams=. =plain_text= (escaping)
   in =lib.rs= and =patch_files= in =patch.rs= are shared by frontends.
-- =crates/client/src/{cli,main}.rs= :: in-sandbox =goblins devshell
+- =packages/sandbox-cli/src/{cli,main}.rs= :: in-sandbox =goblins devshell
   refresh|diff|restore-lock=; =preview.rs= renders a diff's preview as text.
 - Frontends assemble all wording and colors from the structured preview:
-  =crates/controller/src/tui.rs= (=devshell_summary=, =diff_lines=, =d=
+  =packages/daemon/src/tui.rs= (=devshell_summary=, =diff_lines=, =d=
   diff view) and =emacs/goblins.el= (=goblins--insert-devshell-summary=,
   =goblins--insert-diff=).
 - Tests :: =tests/test_devshell.py= (real daemon; =DevShellTests= launch,
@@ -77,7 +77,7 @@ terminal dimensions and Ghostel rendering state before switching focus or
 resizing. Check whether those events cause a redraw. Add a native Codex
 detach/reattach regression that requires the existing full-screen interface
 to appear without sending a prompt or resizing. Inspect the daemon's terminal
-replay path (=crates/controller/src/terminal.rs=) as well as native startup:
+replay path (=packages/daemon/src/terminal.rs=) as well as native startup:
 it currently forwards buffered output rather than replaying the retained
 screen when a new consumer attaches. This is an investigation lead, not a
 confirmed root cause or a fixed bug.
@@ -142,7 +142,7 @@ waiting sandbox method like =flake.run= (both share one =Call= slot per
 sandbox and reply through =Completed::Call=), =Session::diff_refresh= shares
 =evaluate_candidate= with =prepare_refresh= but never touches
 =Session::candidate=, so a diff may run while a refresh is pending. The client
-renders the preview as plain text (=crates/client/src/preview.rs=) with the
+renders the preview as plain text (=packages/sandbox-cli/src/preview.rs=) with the
 TUI's wording; =plain_text= and =patch_files= moved to =goblins_protocol= so
 both share them. See ADR 0007, Refresh (=DevShellDiffTests=).
 
@@ -160,7 +160,7 @@ Lets an agent see the approval preview before asking.
   either refuse while a refresh is pending or evaluate without storing.
 - The client prints the preview as text. Frontend rules still apply: the
   daemon returns the structured =Preview=, and the in-sandbox client
-  (=crates/client=) formats it, escaping control and bidi characters.
+  (=packages/sandbox-cli=) formats it, escaping control and bidi characters.
 - Update the skill =skills/goblins-packages/SKILL.md= to suggest checking
   the diff before refreshing.
 
@@ -176,7 +176,7 @@ A flake that hangs during evaluation keeps the request pending until it is
 denied (denial cancels it).
 
 - Add a deadline to evaluator commands: =process::command_with_fds=
-  (=crates/controller/src/process.rs=) loops on =cancel.check()= every
+  (=packages/daemon/src/process.rs=) loops on =cancel.check()= every
   =WORKER_TICK=; add an optional deadline there, or wrap the cancellation.
 - Apply it to pre-approval work (=devshell::candidate= and =prepare=:
   metadata, lock, =derivation show=, dry run). Builds after approval
@@ -209,7 +209,7 @@ bind-mounting them fail.
 
 - First verify whether package grants already have the same gap (likely);
   if so, fix both together.
-- Look at =crates/controller/src/scope.rs= (=acquire=, =Lease=) and
+- Look at =packages/daemon/src/scope.rs= (=acquire=, =Lease=) and
   =docker.rs= for how grants reach the engine, and add a way to push new
   store paths to an attached engine, or document the limitation.
 - Only matters when containers need those paths; lower priority.
@@ -254,12 +254,12 @@ too.
 =cargo clippy --workspace --all-targets --locked -- -D warnings= (listed in
 USAGE "Reproducible checks") fails on master and this branch with:
 
-- =crates/controller/src/docker.rs:111= :: =collapsible_if=
-- =crates/controller/src/docker.rs:215= :: =too_many_arguments= (8/7)
-- =crates/controller/src/scope.rs:294= :: =too_many_arguments= (8/7,
+- =packages/daemon/src/docker.rs:111= :: =collapsible_if=
+- =packages/daemon/src/docker.rs:215= :: =too_many_arguments= (8/7)
+- =packages/daemon/src/scope.rs:294= :: =too_many_arguments= (8/7,
   =Shared::acquire=)
-- =crates/controller/src/session.rs:96= :: =collapsible_if=
-- =crates/controller/src/session.rs:254= :: =collapsible_if=
+- =packages/daemon/src/session.rs:96= :: =collapsible_if=
+- =packages/daemon/src/session.rs:254= :: =collapsible_if=
 
 Collapse the =if=s with =let= chains (the code already uses them). For the
 argument counts, group related parameters into a struct rather than adding
@@ -315,9 +315,9 @@ merged, not on the dev shell branch.
 copy at =/workspace= (no =.git=, sockets, FIFOs or devices). The user does not
 use it, and dev shell refresh does not support it.
 
-- Remove the =--workspace= option (=crates/controller/src/cli.rs=
+- Remove the =--workspace= option (=packages/daemon/src/cli.rs=
   =ServerCommand=, =Controller::new(state, workspace)=, the =workspace=
-  field passed in =Source::Host=), =crates/controller/src/snapshot.rs=, the
+  field passed in =Source::Host=), =packages/daemon/src/snapshot.rs=, the
   snapshot branch in =Session::new_in= and its overlap check.
 - Decide what remains of =SharedWorkspace= and the =/workspace= bind: with
   an explicit =cwd= it is only a scratch alias (see =enable_docker=). Keep
@@ -347,7 +347,7 @@ Raids end with the daemon and are not recorded. A recreated goblin is in no raid
 
 * TODO Opt-in notice when a detached host command starts
 
-A detached =goblin host run= is silent until it finishes, so its agent cannot tell "waiting for approval" from "approved and running" without polling =goblin host status= ([[file:../adr/0012-host-commands.md][ADR 0012]]). Add an opt-in flag, for example =goblin host run --detach --notify-start=, that also queues an operation notice when the host approves and the job starts, so the agent can follow its log or move on. Opt-in because every notice wakes the agent: for short jobs it would be a second turn right after the first. The request would carry the flag in =HostCommand=; =decide_host= in =crates/controller/src/controller/host.rs= would queue the extra notice on approval, and the =goblins-host= skill would say when to use it.
+A detached =goblin host run= is silent until it finishes, so its agent cannot tell "waiting for approval" from "approved and running" without polling =goblin host status= ([[file:../adr/0012-host-commands.md][ADR 0012]]). Add an opt-in flag, for example =goblin host run --detach --notify-start=, that also queues an operation notice when the host approves and the job starts, so the agent can follow its log or move on. Opt-in because every notice wakes the agent: for short jobs it would be a second turn right after the first. The request would carry the flag in =HostCommand=; =decide_host= in =packages/daemon/src/controller/host.rs= would queue the extra notice on approval, and the =goblins-host= skill would say when to use it.
 
 * TODO Cancel host commands from the host side
 
@@ -364,22 +364,22 @@ A goblin's home is private and empty, so =git commit= fails without an identity.
 * DONE Ship the Codex adapter only with Codex goblins
 CLOSED: [2026-10-28 Wed 14:32]
 
-All Codex code should be what =mkCodexGoblin= passes to =mkGoblin=. The =goblins-codex= adapter is the exception: =nix/packages/internal-goblins.nix= links it into the shared helper bundle that =mkGoblin= adds to every goblin's =allowedPackages= and mounts at =/run/goblins/bin=, so Claude and shell goblins carry it too.
+All Codex code should be what =mkCodexGoblin= passes to =mkGoblin=. The =goblins-codex= adapter is the exception: =packages/sandbox-cli/default.nix= links it into the shared helper bundle that =mkGoblin= adds to every goblin's =allowedPackages= and mounts at =/run/goblins/bin=, so Claude and shell goblins carry it too.
 
-Build it in the Codex Nix code instead (=import ../packages/rust.nix { package = "goblins-codex"; }=) and add it to the launcher's =symlinkJoin=, which =mkCodexGoblin= already puts in =allowedPackages=, so =goblins-codex bind=, =status= and =pause= stay on =PATH=. Have =nix/goblins/codex/launcher.nix= call it by store path (=${adapter}/bin/goblins-codex=) instead of =/run/goblins/bin/goblins-codex= (=profile-args= and =run=), and remove the link from =internal-goblins.nix=. The native smoke tests run the Cargo-built adapter directly (=GOBLINS_CODEX_ADAPTER=, =tests/test_codex_native.py=) and need no change. Update the commands that name =/run/goblins/bin/goblins-codex= to plain =goblins-codex=: in =docs/USAGE.org= (Codex delivery controls), =docs/specs/AGENT-INTEGRATION.org=, and the integration tests that run it inside goblins (=tests/test_codex_config.py=, =tests/test_operation_notices.py=).
+Build it in the Codex Nix code instead (=import ../../../packages/adapter-codex { inherit pkgs; }=) and add it to the launcher's =symlinkJoin=, which =mkCodexGoblin= already puts in =allowedPackages=, so =goblins-codex bind=, =status= and =pause= stay on =PATH=. Have =nix/goblins/codex/launcher.nix= call it by store path (=${adapter}/bin/goblins-codex=) instead of =/run/goblins/bin/goblins-codex= (=profile-args= and =run=), and remove the link from =internal-goblins.nix=. The native smoke tests run the Cargo-built adapter directly (=GOBLINS_CODEX_ADAPTER=, =tests/test_codex_native.py=) and need no change. Update the commands that name =/run/goblins/bin/goblins-codex= to plain =goblins-codex=: in =docs/USAGE.org= (Codex delivery controls), =docs/specs/AGENT-INTEGRATION.org=, and the integration tests that run it inside goblins (=tests/test_codex_config.py=, =tests/test_operation_notices.py=).
 
 * DONE Move the Claude driver into mkClaudeGoblin
 CLOSED: [2026-10-28 Wed 21:42]
 
 All Claude code should be what =mkClaudeGoblin= passes to =mkGoblin=, as Codex now is. Its Nix side already is (launcher, hooks, plugin, monitor, mod, skills under =nix/goblins/claude=), but the daemon and the in-sandbox =goblin= CLI that every goblin carries hold a Claude driver:
 
-- =crates/controller/src/integration.rs= knows Claude's hook vocabulary: =integration.check= gives =SessionStart=, =UserPromptSubmit= and =Stop= their wakeup meaning, including the =Stop= continuation, and =hook_activity= maps =PreToolUse= (=AskUserQuestion=, =ExitPlanMode=), =PermissionRequest=, =Elicitation=, =idle_prompt= and the rest to activity. The wakeup bookkeeping (attempts, retries, claim tracking) lives there too.
+- =packages/daemon/src/integration.rs= knows Claude's hook vocabulary: =integration.check= gives =SessionStart=, =UserPromptSubmit= and =Stop= their wakeup meaning, including the =Stop= continuation, and =hook_activity= maps =PreToolUse= (=AskUserQuestion=, =ExitPlanMode=), =PermissionRequest=, =Elicitation=, =idle_prompt= and the rest to activity. The wakeup bookkeeping (attempts, retries, claim tracking) lives there too.
 - Claude-only branches: notification delivery requires the =claude= driver (=integration.rs=, =integration.tick=), =claude_activity= in =controller.rs=, and the driver names =codex= and =claude= in =integration.rs=, =controller.rs= (the integration method gate) and =nix/internal/validate.nix=.
-- =goblin integration register|hook|status|watch= (=crates/client/src/cli.rs=, =main.rs=) follow Claude's hook payloads (=--tool=, =--notification=) and print the prompt lines its plugin monitor turns into turns.
+- =goblin integration register|hook|status|watch= (=packages/sandbox-cli/src/cli.rs=, =main.rs=) follow Claude's hook payloads (=--tool=, =--notification=) and print the prompt lines its plugin monitor turns into turns.
 
 Follow the Codex pattern ([[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]): a translator inside =mkClaudeGoblin= turns hook events into the generic =sessions.set-state= and =inbox.status= calls and keeps its own wakeup ledger, as =goblins-codex= does with its =ledger.json=, and the hooks and monitor talk to it instead of the daemon. The daemon then loses the hook vocabulary and the Claude-only branches; with Codex no longer using =integration.*= either (it never registers), the =integration.*= methods, the =goblin integration= commands and the driver name list can go, leaving =integration= in =mkGoblin= at most as "this goblin is an agent" (it gates =bypassPermissions=, =permission_bypass= and approval notifications). Decide whether that warrants an ADR; it changes the API in =docs/API.org=. Dropping =codex= from the daemon's driver names is a small first step on its own.
 
 * DONE Remove the unused terminal delivery path
 CLOSED: [2026-10-28 Wed 21:42]
 
-The daemon can wake an agent by pasting the inbox prompt into its terminal: =integration.tick= with =delivery= =terminal= (the default) returns a revision, and =Terminal::notify= (=crates/controller/src/terminal.rs=, called from =controller.rs=) pastes the prompt once =integration_view= judges the composer empty by reading Claude's screen (the =›=/=❯= prompt cells, "esc to interrupt"). Nothing Goblins ships uses it: Claude's monitor runs =goblin integration watch --delivery notification= (=nix/goblins/claude/monitor.sh=) and Codex never ticks. Remove the terminal mode of =integration.tick= and =goblin integration watch=, =Terminal::notify= and the composer readiness check; keep the input tracking (=input=, =interrupted=, =input_pending=) the =Stop= hook logic uses. Update =docs/API.org= and =AGENT-INTEGRATION.org=. This goes away anyway with the Claude driver move above, so do it first only if that move is far off.
+The daemon can wake an agent by pasting the inbox prompt into its terminal: =integration.tick= with =delivery= =terminal= (the default) returns a revision, and =Terminal::notify= (=packages/daemon/src/terminal.rs=, called from =controller.rs=) pastes the prompt once =integration_view= judges the composer empty by reading Claude's screen (the =›=/=❯= prompt cells, "esc to interrupt"). Nothing Goblins ships uses it: Claude's monitor runs =goblin integration watch --delivery notification= (=nix/goblins/claude/monitor.sh=) and Codex never ticks. Remove the terminal mode of =integration.tick= and =goblin integration watch=, =Terminal::notify= and the composer readiness check; keep the input tracking (=input=, =interrupted=, =input_pending=) the =Stop= hook logic uses. Update =docs/API.org= and =AGENT-INTEGRATION.org=. This goes away anyway with the Claude driver move above, so do it first only if that move is far off.

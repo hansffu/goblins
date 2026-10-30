@@ -1,8 +1,10 @@
 { pkgs }:
 let
-  client = import ./rust.nix {
+  client = import ../../nix/builders/rust.nix {
     inherit pkgs;
     package = "goblins-client";
+    source = ./.;
+    libs = [ ../../libs/api ];
   };
 in
 pkgs.runCommand "goblins-request-client" { nativeBuildInputs = [ pkgs.installShellFiles ]; } ''

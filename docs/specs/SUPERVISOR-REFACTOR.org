@@ -45,7 +45,7 @@ The end state is reached when:
 
 * 2. Where the code stands
 
-The session worker ([[file:../../crates/controller/src/worker.rs][worker.rs]]) is already a message boundary: =Source= and =Work= go in, =Completed= comes out. It is the seed of the supervisor. Four things keep it from being a process boundary.
+The session worker ([[file:../../packages/daemon/src/worker.rs][worker.rs]]) is already a message boundary: =Source= and =Work= go in, =Completed= comes out. It is the seed of the supervisor. Four things keep it from being a process boundary.
 
 #+begin_src mermaid :file diagrams/supervisor-today.svg :background-color "'#282c34'"
 flowchart TB
@@ -79,7 +79,7 @@ flowchart TB
 
 ** 2.1 The controller holds runtime handles *[E]*
 
-=Completed::Started= moves OS handles into =Active= ([[file:../../crates/controller/src/controller.rs][controller.rs]], the =Worker::poll= arm of =tick=):
+=Completed::Started= moves OS handles into =Active= ([[file:../../packages/daemon/src/controller.rs][controller.rs]], the =Worker::poll= arm of =tick=):
 
 | Handle | Created by | Used by the controller for |
 |--------+------------+----------------------------|
@@ -89,11 +89,11 @@ flowchart TB
 | helper pidfd (=exit_watch=) | =Session= | noticing exit while the worker is blocked on Nix |
 | =Inheritance= | =Session::inheritance()= | raid permits and metadata, member launches, host-job working directory |
 
-The controller also spawns host jobs itself (=helper --host-job=, [[file:../../crates/controller/src/controller/host.rs][controller/host.rs]]), resolving their working directory through the pinned bind descriptors in =Inheritance=.
+The controller also spawns host jobs itself (=helper --host-job=, [[file:../../packages/daemon/src/controller/host.rs][controller/host.rs]]), resolving their working directory through the pinned bind descriptors in =Inheritance=.
 
 ** 2.2 =Inheritance= mixes policy with capabilities *[E]*
 
-=Inheritance= ([[file:../../crates/controller/src/session.rs][session.rs]]) carries plain policy (configuration key, run targets, description, =allowNix=, host commands, editor, integration) next to =Arc<Launch>=, =Arc<binds::Plan>= with O_PATH descriptors, the workspace snapshot descriptor, =Weak<scope::Shared>=, a live =Arc<AtomicBool>= for Docker, and =Arc<SessionDirectory>=, which keeps the owner's =resources/= alive after it stops.
+=Inheritance= ([[file:../../packages/daemon/src/session.rs][session.rs]]) carries plain policy (configuration key, run targets, description, =allowNix=, host commands, editor, integration) next to =Arc<Launch>=, =Arc<binds::Plan>= with O_PATH descriptors, the workspace snapshot descriptor, =Weak<scope::Shared>=, a live =Arc<AtomicBool>= for Docker, and =Arc<SessionDirectory>=, which keeps the owner's =resources/= alive after it stops.
 
 The checks that decide what a goblin may do are scattered through =Controller::dispatch=: =allowNix= refuses package and dev shell requests, Docker requires a scope with =docker.enable=, host commands require =hostCommands.enable=, =devshell.diff= requires a dev shell. The sandbox's =initialize= result lists a fixed set of features for every goblin.
 
@@ -103,7 +103,7 @@ A member launch (=Source::Member=) carries the owner's =Inheritance=, an upgrade
 
 ** 2.4 Scopes are per-daemon shared state *[E]*
 
-[[file:../../crates/controller/src/scope.rs][scope.rs]] keeps a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
+[[file:../../packages/daemon/src/scope.rs][scope.rs]] keeps a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
 - =State._owner=, the first member's =Inheritance=;
 - =State.owners=, one =Inheritance= per Docker user.
 
@@ -651,7 +651,7 @@ flowchart TB
 
 ** 4.7 The control channel
 
-*[P]* One SOCK_STREAM Unix socket pair per supervisor and per scope process, created by the daemon. Frames use the JSON-RPC Content-Length framing of =libs/jsonrpc= (today's [[file:../../crates/protocol/src/rpc.rs][rpc.rs]]), with SCM_RIGHTS descriptors attached as described in section 4.3. It is not SOCK_SEQPACKET, because the daemon's side must stay portable. The message types live in =libs/runtime=, which no sandbox-side package links (section 4.10).
+*[P]* One SOCK_STREAM Unix socket pair per supervisor and per scope process, created by the daemon. Frames use the JSON-RPC Content-Length framing of =libs/jsonrpc= (today's [[file:../../libs/api/src/rpc.rs][rpc.rs]]), with SCM_RIGHTS descriptors attached as described in section 4.3. It is not SOCK_SEQPACKET, because the daemon's side must stay portable. The message types live in =libs/runtime=, which no sandbox-side package links (section 4.10).
 
 Neither existing descriptor path is a general transport: =init::send= treats a short write as an error and uses fixed ancillary buffers, and the host =Connection= receiver accepts descriptors for one request. The control channel needs its own, specified and tested on its own:
 - *Its own budget.* A private per-frame descriptor limit sized for the largest message (=Exported=), with batching if that is ever exceeded. =init::MAX_FDS= stays 3, because it also bounds what host connections may send, which is a public limit.
@@ -786,32 +786,35 @@ flowchart LR
 #+RESULTS:
 [[file:diagrams/supervisor-layout.svg]]
 
-| Directory | Holds | Today |
+This table describes the end state. =Terminal= and =ServerLog= stay in the daemon until phase 5.
+
+| Directory | Holds | Before extraction |
 |-----------+-------+-------|
-| =packages/daemon= | the =goblins= binary: daemon, host CLI and TUI | =crates/controller= minus the runtime |
+| =packages/daemon= | the =goblins= binary: daemon, host CLI and TUI | =packages/daemon= minus the runtime |
 | =packages/supervisor-bwrap= | the supervisor and scope-process binary for Linux; a thin =main= over =libs/supervisor= | new |
-| =packages/mount-helper= | the supervisor's private helper | the root =src/= |
-| =packages/sandbox-cli= | the =goblin= binary, with =goblins-init= and =goblins-editor= | =crates/client= and =nix/packages/internal-goblins.nix= |
-| =packages/adapter-codex=, =packages/adapter-claude= | the agent adapters | =crates/codex=, =crates/claude= |
-| =packages/docker= | patched rootless Docker, Nix only | =nix/packages/docker.nix= |
-| =libs/jsonrpc= | JSON-RPC values and Content-Length framing, with no methods | the method-free half of =crates/protocol/src/rpc.rs= |
-| =libs/api= | the public host and sandbox endpoints, their parameter types and limits, the client terminal relay and the shared validators | the rest of =crates/protocol=, including the method types of =rpc.rs= |
-| =libs/init= | the supervisor's channel to =goblins-init= | =crates/protocol/src/init.rs= |
-| =libs/runtime= | =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff=, the scope messages, and the plain data both sides use: the manifest, =Skipped=, the dev shell generation and summary | new, and the data halves of =config=, =binds=, =history= and =devshell= |
-| =libs/supervisor= | the runtime: session, worker, binds, Nix work, scopes, Docker, terminals and the request relay | the runtime modules of =crates/controller= |
+| =packages/mount-helper= | the supervisor's private helper | =packages/mount-helper/src/= |
+| =packages/sandbox-cli= | the =goblin= binary, with =goblins-init= and =goblins-editor= | =packages/sandbox-cli= and =packages/sandbox-cli/default.nix= |
+| =packages/adapter-codex=, =packages/adapter-claude= | the agent adapters | =packages/adapter-codex=, =packages/adapter-claude= |
+| =packages/docker= | patched rootless Docker, Nix only | =packages/docker/default.nix= |
+| =libs/jsonrpc= | JSON-RPC values and Content-Length framing, with no methods | the method-free half of =libs/api/src/rpc.rs= |
+| =libs/api= | the public host and sandbox endpoints, their parameter types and limits, the client terminal relay and the shared validators | the rest of =libs/api=, including the method types of =rpc.rs= |
+| =libs/init= | the supervisor's channel to =goblins-init= | =libs/api/src/init.rs= |
+| =libs/runtime= | =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff=, the scope messages, and the plain data both sides use: the manifest, =Skipped=, the dev shell generation and summary, =ResourceLease= with its flock helpers, and =ManifestLease= with its path and drop | new, and the data halves of =config=, =binds=, =history= and =devshell= |
+| =libs/unix= | the generic POSIX descriptor and filesystem helpers shared by the daemon and supervisor, including the fork-test guard | the generic parts of =packages/daemon/src/unix.rs= |
+| =libs/supervisor= | the runtime: session, worker, binds, Nix work, scopes, Docker, terminals and the request relay | the runtime modules of =packages/daemon= |
 
 Rules:
-- *Packages depend on libraries, never on each other.*
+- *Packages depend on libraries, never on each other.* Any package or library may use =libs/unix=; it depends on no other workspace member.
 - *Sandbox-side packages never link host authority.* =sandbox-cli= and the adapters link =jsonrpc=, =api= and =init=, never =runtime= or =supervisor=.
 - *The daemon links =supervisor= only while =Local= exists* (phases 3 to 5). From phase 6 it links =runtime= and the public libraries, so the end state in section 1 is a compile-time fact.
 - *Public and internal differ in how they change.* =jsonrpc= and =api= have clients outside the Rust build (Emacs, the Python tests, scripts) and are documented in [[file:../API.org][API.org]]; the schema-first plan in [[file:API-SCHEMA.org][API-SCHEMA.org]] covers them. =init=, =runtime= and =supervisor= connect two ends from the same build, may change in any commit, and are described by ADRs and the architecture documents.
 - *One Linux runtime library for now.* Until the launch split in section 9, the whole runtime is Linux code in =libs/supervisor=. The Darwin work later splits out its platform-neutral core, and =packages/supervisor-darwin= would link that core and its own backend.
-- *Nix.* Each package has its =default.nix= beside its =Cargo.toml=, sharing one Rust builder that replaces =nix/packages/rust.nix=. =nix/= keeps the builders, =lib.nix= and the goblin definitions; the adapters' settings and skills stay in =nix/goblins=. =mkGoblins= pins the daemon, the supervisor and the helper by store path in the runtime configuration, as it pins the helper today.
+- *Nix.* Each package has its =default.nix= beside its =Cargo.toml=, sharing =nix/builders/rust.nix=. Each package lists its library sources explicitly; a missing dependency fails its standalone build. =nix/= keeps the builders, =lib.nix= and the goblin definitions; the adapters' settings and skills stay in =nix/goblins=. =mkGoblins= pins the daemon, the supervisor and the helper by store path in the runtime configuration, as it pins the helper today.
 - *Checked.* A test over =cargo metadata= fails when a dependency breaks these rules.
 
 * 5. Phases
 
-Every phase is one or more commits, each reviewed and gated as AGENTS.md requires. All of them touch broad-routed paths (=controller.rs=, =session.rs=, =worker.rs=, =src/=, =crates/protocol= and, after phase 3, their new homes), so every commit needs =just test-merge=.
+Every phase is one or more commits, each reviewed and gated as AGENTS.md requires. All of them touch broad-routed paths (=controller.rs=, =session.rs=, =worker.rs=, =packages/mount-helper/=, =libs/api= and, after phase 3, their new homes), so every commit needs =just test-merge=.
 
 #+begin_src mermaid :file diagrams/supervisor-phases.svg :background-color "'#282c34'"
 flowchart LR
@@ -878,21 +881,26 @@ Tests: =Fake= replaces =Worker::idle=, =Worker::completed= and =Worker::listenin
 
 ** Phase 3: packages and libraries
 
-*[P]* Move to the layout of section 4.10, still one process and with no behaviour change. Two commits:
-1. *Mechanical moves.*
-   - =crates/= becomes =packages/= and =libs/=, and the root =src/= becomes =packages/mount-helper=, so the root =Cargo.toml= is a pure workspace.
-   - =crates/protocol= splits three ways. =libs/jsonrpc= takes the method-free half of =rpc.rs=: values, envelope, =Decoder=, framing and its limits. =libs/api= takes everything that names a method or a public limit: =PermissionParams=, =HostCommand= and its limits, =FlakeRunParams=, =DevShellDiffParams=, =input_name=, and the argument and environment limits =HostCommand= checks, which move there from =init.rs= because API.org publishes them. =libs/init= takes the rest of =init.rs= and uses those limits from =libs/api=.
-   - Each package's Nix expression moves beside it, over one shared Rust builder. The adapters' Rust builds move out of =nix/goblins=, which keeps their settings and skills.
-   - The routing in =tests/features.toml=, =tests/build_support.py=, the =justfile= and document links follow.
-2. *The runtime gets its own libraries.*
-   - =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities= and =Handoff= move to =libs/runtime=, with the plain data both sides use: the manifest as Nix writes it (=Manifest=, =Launch='s serialised fields, =Editor=, =Handlers=, =binds::Declarations=), =history::Skipped=, the serialisable dev shell generation and its summary, and =ManifestLease='s path and drop.
-   - Only data moves down. A type whose inherent methods need OS or Nix services is split: the data goes to =libs/runtime=, and each such method becomes a free function in =libs/supervisor= that takes the data. =Launch::etc_mounts= becomes a =sandbox_etc= function; =ManifestLease::create=, which validates and roots the manifest, becomes a supervisor function that returns the root path the daemon wraps (section 4.2). =Launch='s fields that the runtime fills in at launch (=scope=, =dev_shell=, =protected_paths=, the current =editor=) leave =Launch= for a supervisor-side launch struct, and =binds::Plan= with its descriptors stays in the supervisor.
+*[P]* Move to the layout of section 4.10, still one process and with no behaviour change. Four commits, each reviewed and gated on its own:
+1. *A: mechanical moves.*
+   - =crates/= becomes =packages/= and =libs/=, and the root =src/= becomes =packages/mount-helper/src/=, so the root =Cargo.toml= is a pure workspace. The unsplit =goblins-protocol= crate moves to =libs/api= for now. Cargo package names and binary names stay unchanged.
+   - Each package's Nix expression moves beside it, over =nix/builders/rust.nix=, with explicit library source lists. The adapters' Rust builds move out of =nix/goblins=, which keeps their settings and skills.
+   - The routing in =tests/features.toml=, fixture/build scripts, the =justfile= and document links follow where they name moved paths. Compare =just test-plan --paths= output before and after for representative paths of every feature. Add the =cargo metadata= dependency-rule check from section 4.10.
+2. *B: the protocol splits three ways.*
+   - =libs/jsonrpc= takes the method-free half of =rpc.rs=: values, envelope, =Decoder=, framing and its limits. =libs/api= keeps everything that names a method or a public limit: =PermissionParams=, =HostCommand= and its limits, =FlakeRunParams=, =DevShellDiffParams=, =input_name=, and the argument and environment limits =HostCommand= checks, which move there from =init.rs= because API.org publishes them. =libs/init= takes the rest of =init.rs= and uses those limits from =libs/api=.
+3. *C: the runtime contract gets its own library.*
+   - =Runtime=, =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff= and the =Fake= test implementation move to =libs/runtime=, with the plain data both sides use: the manifest as Nix writes it (=Manifest=, =Launch='s serialised fields, =Editor=, =Handlers=, =binds::Declarations=), =history::Skipped=, the serialisable dev shell generation and its summary, =ManifestLease='s path and drop, and =ResourceLease= with its flock helpers.
+   - Only data and the lease/logging helpers move down. A type whose inherent methods need OS or Nix services is split: the data goes to =libs/runtime=, and each such method becomes a free function in the implementation that takes the data. =Launch::etc_mounts= becomes a =sandbox_etc= function; =ManifestLease::create=, which validates and roots the manifest, becomes an implementation function that returns the root path the daemon wraps (section 4.2). =Launch='s fields that the runtime fills in at launch (=scope=, =dev_shell=, =protected_paths=, the current =editor=) leave =Launch= for an implementation-side launch struct, and =binds::Plan= with its descriptors stays in the implementation. D moves these functions and structs to =libs/supervisor=.
+   - Until phase 4, =libs/runtime= has an opaque =ScopePin: Any + Send + Sync= marker, =ScopeHandle(Weak<dyn ScopePin>)= and an =Arc<dyn ScopePin>= for member launches. The implementation pins and downcasts =scope::Shared=; the daemon still upgrades at acceptance with the same synchronous refusal. Phase 4 deletes both =ScopePin= and =ScopeHandle=.
+   - A one-function =events.jsonl= writer moves to =libs/runtime= for the daemon's exec events; phase 6 replaces those writes with an event.
    - =libs/runtime= depends on neither the daemon nor =libs/supervisor=, so there is no cycle.
-   - The runtime modules move to =libs/supervisor=: =session=, =worker=, =binds=, =seccomp= and =sandbox_etc=; =devshell=, =evaluator= and =catalog=; =scope*=, =network= and =docker=; =process=, =exec= and the Linux parts of =unix=. =Local= and the launcher move with them.
+4. *D: the runtime implementation gets its own library.*
+   - The runtime modules move to =libs/supervisor=: =session=, =worker=, =binds=, =snapshot=, =seccomp= and =sandbox_etc=; =devshell=, =evaluator= and =catalog=; =scope*=, =network= and =docker=; =process= and the Linux parts of =unix=. =Local= and the launcher move with them. The host CLI frontend =exec.rs= stays in =packages/daemon=.
+   - The generic POSIX helpers shared by the daemon and supervisor move to =libs/unix=, including the fork-test guard.
    - The daemon reaches the runtime only through =libs/runtime= and =Local=. A daemon module that reaches further fails to compile.
    - The Python =sandbox= harness's ignored =session::tests::host_driver= test moves with =Session=.
 
-Tests: the =cargo metadata= dependency check of section 4.10, and =nix flake check= building every package on its own.
+Tests: the =cargo metadata= dependency check of section 4.10, and =nix flake check= building every package on its own. The metadata check does not compare Nix library lists; missing library sources already fail package builds.
 
 ** Phase 4: scope processes
 
@@ -956,6 +964,7 @@ sequenceDiagram
 [[file:diagrams/supervisor-launch.svg]]
 
 - *Versioning.* =mkGoblins= pins the daemon and the supervisor from one build, so in a packaged install they always match. The control protocol carries a =supervisor_api= number, like =helper_api=, and a supervisor refuses a =Start= with another number. That catches a mismatched pair during development, such as a Cargo-built daemon with an older supervisor.
+- *Exec event logging.* The daemon stops writing =events.jsonl= in a goblin's resources directory through the transitional =libs/runtime= writer; it asks the supervisor to record the event instead.
 - *The daemon stops linking =libs/supervisor=* once =Local= is deleted. =Supervised= lives in the daemon's =supervised= module, the one place that launches, watches and kills its children (section 1).
 - *Lifetime and failure.* See section 6.
 

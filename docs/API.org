@@ -2,7 +2,7 @@
 
 This is the reference for the daemon's JSON-RPC API 1: every method on the host and sandbox endpoints, with its parameters and result. [[file:specs/DAEMON.org][specs/DAEMON.org]] records why the protocol is shaped this way; this file records what it is now. Keep it current when a method, parameter, result or record field changes (see =AGENTS.md=).
 
-The handlers live in =crates/controller/src/controller.rs= (=host=, =sandbox_control= and =dispatch=), =controller/raids.rs=, =controller/host.rs=, =controller/exec.rs=, =controller/editor.rs=, =messaging.rs= and =mailbox.rs=. Parameter types are in those files and in =crates/protocol/src=.
+The handlers live in =packages/daemon/src/controller.rs= (=host=, =sandbox_control= and =dispatch=), =controller/raids.rs=, =controller/host.rs=, =controller/exec.rs=, =controller/editor.rs=, =messaging.rs= and =mailbox.rs=. Parameter types are in those files and in =libs/api/src=.
 
 * Transport
 

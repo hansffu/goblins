@@ -304,6 +304,12 @@ let
   '';
 in
 {
+  # Each runnable Rust package builds with only its listed library sources.
+  rust-daemon = import ../packages/daemon { inherit pkgs; };
+  rust-mount-helper = import ../packages/mount-helper { inherit pkgs; };
+  rust-sandbox-cli = import ../packages/sandbox-cli { inherit pkgs; };
+  rust-adapter-codex = import ../packages/adapter-codex { inherit pkgs; };
+  rust-adapter-claude = import ../packages/adapter-claude { inherit pkgs; };
   # Build without this repository's flake, lock or tests in the source tree.
   production-only =
     let
@@ -314,8 +320,8 @@ in
           ../skills
           ../Cargo.toml
           ../Cargo.lock
-          ../src
-          ../crates
+          ../packages
+          ../libs
         ];
       };
       api = import "${source}/nix/lib.nix" { inherit pkgs sandbox; };

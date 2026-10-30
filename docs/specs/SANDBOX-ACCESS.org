@@ -38,7 +38,7 @@ Implementation review (2026-10-10): five findings were fixed, see Implementation
 * Non-goals (for now)
 
 - An sshd or any inbound networking. Pasta forwards nothing inbound (=-t/-u/-T/-U none=, =--no-map-gw=), and
-  port grants are rejected (=crates/controller/src/config.rs:320-324=).
+  port grants are rejected (=packages/daemon/src/config.rs:320-324=).
 - Detachable shells owned by the daemon, or multiple observers on a terminal ([[file:DAEMON.org][DAEMON.org]] still defers
   multiplexing).
 - Agents running commands inside their child goblins (=exec= over =request.sock=). The protocol is designed
@@ -48,20 +48,20 @@ Implementation review (2026-10-10): five findings were fixed, see Implementation
 
 * Current architecture (relevant facts)
 
-- *Process chain:* daemon worker → =goblins-mount-helper= (=src/main.rs:218-495=) → bwrap → payload.
+- *Process chain:* daemon worker → =goblins-mount-helper= (=packages/mount-helper/src/main.rs:218-495=) → bwrap → payload.
   - PID 1 is bwrap's reaper.
-  - In a scope with a shared PID namespace, PID 1 is the scope keeper instead (=src/scope.rs:65-88=).
+  - In a scope with a shared PID namespace, PID 1 is the scope keeper instead (=packages/mount-helper/src/scope.rs:65-88=).
 - *Payload:* =launch.shell= plus its args. With a dev shell it is wrapped as
-  =sh -c '. /run/goblins/devshell/env.sh; exec "$@"'= (=crates/controller/src/session.rs:766-812=).
+  =sh -c '. /run/goblins/devshell/env.sh; exec "$@"'= (=packages/daemon/src/session.rs:766-812=).
 - *Agent terminal:*
   - The daemon opens a PTY on the host (=worker.rs:131=), and the slave becomes the payload's stdio.
-  - The helper's =pre_exec= calls =setsid= and =TIOCSCTTY= (=src/main.rs:349-356=).
+  - The helper's =pre_exec= calls =setsid= and =TIOCSCTTY= (=packages/mount-helper/src/main.rs:349-356=).
   - The daemon keeps the master and relays it over =<state>/<id>/terminal.sock= (=terminal.rs=), one attacher at
     a time.
   - Emacs runs =goblins attach= inside Ghostel (=emacs/goblins.el:987-1060=).
 - *File descriptors* are whitelisted twice: by the daemon (=session.rs=, =keep=) and by the helper
-  (=src/main.rs=, =keep= plus =close_range(CLOEXEC)=).
-- =unix::send_terminal= and =unix::receive_terminal= (SCM_RIGHTS, =crates/controller/src/unix.rs:145-212=)
+  (=packages/mount-helper/src/main.rs=, =keep= plus =close_range(CLOEXEC)=).
+- =unix::send_terminal= and =unix::receive_terminal= (SCM_RIGHTS, =packages/daemon/src/unix.rs:145-212=)
   exist but are unused.
 - *Seccomp* returns EPERM inside the sandbox for =setns=, =unshare=, the =mount= family and =ptrace=
   (=seccomp.rs:25-44=).
@@ -121,7 +121,7 @@ Emacs/CLI ─host.sock─▶ daemon ─socketpair─▶ goblins-init ─▶ agen
   impersonated by the agent, which has the same uid.
 - Init marks the descriptor close-on-exec and sets =PR_SET_DUMPABLE 0=. Without that, the agent could open
   =/proc/<init>/fd/N= as the same uid. Yama blocks this on this host, but the design must not rely on it.
-- The protocol is framed JSON-RPC as in =crates/protocol=. Stdio and PTY descriptors travel as SCM_RIGHTS,
+- The protocol is framed JSON-RPC as in =libs/api=. Stdio and PTY descriptors travel as SCM_RIGHTS,
   extending =unix::send_terminal=.
 - Messages:
   - daemon → init: =spawn {argv, cwd, env, tty}= with descriptors, plus =signal= and =kill-all=;
@@ -239,7 +239,7 @@ goblins [--state-dir DIR] exec [-t] [-e K=V]... [-w DIR] [--instance I] [--sessi
   - =goblins editor open [--no-wait] [+LINE[:COL]] FILE [[+LINE[:COL]] FILE]...= is the in-sandbox client.
     As with emacsclient, a position applies to the file that follows it.
   - =/run/goblins/bin/goblins-editor= is an argv[0] alias for =goblins editor open=, a symlink to the client
-    like =goblins-request= (=nix/packages/internal-goblins.nix=). =EDITOR= and =VISUAL= point at the alias,
+    like =goblins-request= (=packages/sandbox-cli/default.nix=). =EDITOR= and =VISUAL= point at the alias,
     because some programs run =$EDITOR= as a single path without splitting it on spaces.
   - Relative paths resolve against the caller's cwd.
 - *Blocking:* it blocks by default, because Claude's Ctrl-G prompt editor and =git commit= depend on that.
@@ -311,13 +311,13 @@ goblins [--state-dir DIR] exec [-t] [-e K=V]... [-w DIR] [--instance I] [--sessi
 * Implementation notes
 
 Where the code lives:
-- =crates/client/src/init.rs= :: =goblins-init= (an argv[0] alias of the in-sandbox client).
-- =crates/protocol/src/init.rs=, =editor.rs= :: the init channel's messages and descriptor passing;
+- =packages/sandbox-cli/src/init.rs= :: =goblins-init= (an argv[0] alias of the in-sandbox client).
+- =libs/api/src/init.rs=, =editor.rs= :: the init channel's messages and descriptor passing;
   =editor.open= parameters, argument parsing and path rules.
-- =crates/controller/src/controller/exec.rs=, =editor.rs= :: =sessions.exec=, =sessions.kill_execs= and
+- =packages/daemon/src/controller/exec.rs=, =editor.rs= :: =sessions.exec=, =sessions.kill_execs= and
   =editor.open= in the daemon.
-- =crates/controller/src/exec.rs= :: the host =goblins exec= client.
-- =src/main.rs= :: the helper's =--init-control= argument; =session.rs= creates the channel.
+- =packages/daemon/src/exec.rs= :: the host =goblins exec= client.
+- =packages/mount-helper/src/main.rs= :: the helper's =--init-control= argument; =session.rs= creates the channel.
 - =nix/builders/mk-goblins.nix= :: =editor.emacs.enable=.
 - =emacs/goblins-tramp.el= :: the method, pinning, release on stop, file safety and =goblins-shell=.
 - Tests: =tests/test_exec.py=, =tests/test_editor.py=, the shared-PID case in =tests/test_scopes.py=,

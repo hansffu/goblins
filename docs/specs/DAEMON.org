@@ -692,7 +692,7 @@ unchanged. Existing API launch requests remain valid.
 
 Explicit names match =[a-z][a-z0-9-]{0,31}=. Invalid names return -32602;
 explicit-name collisions return -32009 with an already-in-use message.
-Automatic allocation filters the checked-in =crates/controller/src/goblin-names.txt=
+Automatic allocation filters the checked-in =packages/daemon/src/goblin-names.txt=
 to available entries and picks one uniformly at random. Its 128 unique names
 provide variety beyond the unchanged 16-worker limit. OS randomness from
 =/dev/urandom= is sampled with rejection to avoid modulo bias, bounded at eight
@@ -962,7 +962,7 @@ See [[file:../adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]] and [[fil
 
 * Session history and recreate (2026-10-16)
 
-Design: [[file:SESSION-RECREATE.org][SESSION-RECREATE.org]], [[file:../adr/0010-recreate-not-restore.md][ADR 0010]]. The store is =crates/controller/src/history.rs=; the controller keeps its records in memory and a writer thread persists them.
+Design: [[file:SESSION-RECREATE.org][SESSION-RECREATE.org]], [[file:../adr/0010-recreate-not-restore.md][ADR 0010]]. The store is =packages/daemon/src/history.rs=; the controller keeps its records in memory and a writer thread persists them.
 
 - Host methods :: =history.list {}= -> ={directory,records,truncated}=, records newest first, each a full record plus =running=, within the response size. =history.prune {older_than?,before?,keep?,dry_run?}= (milliseconds of age, a Unix millisecond, a count) -> ={removed,failed:[{id,reason}],dry_run}=, answered once the writer has deleted the files durably; a record that could not be deleted stays and is listed in =failed=. With no criterion -32602; running records are never removed. Host =sessions.start= gains =recreate= (record id, a goblin id the record ran as, the agent's conversation id, or a unique id prefix), which takes =name=, =agent_name=, =cwd=, =scope=, =dev_shell= from the record and refuses them as parameters (-32602), as well as =parent= (-32602). =server.status= adds =history= ={directory,owner,keep?,recording?,reason?}=. The host advertises =recreate=.
 - Sandbox method :: =sessions.set-variables {variables}= -> ={accepted,recorded}= sets keys of the caller's own record together, an empty value removing its key; children and goblins without a record succeed with =recorded: false=. Invalid keys or values -> -32602, a record that would exceed its limits -> -32010. Its frame limit is 16 KiB. The sandbox advertises =variables=.

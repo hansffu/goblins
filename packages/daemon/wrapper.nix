@@ -7,14 +7,8 @@
 }:
 let
   inherit (pkgs) lib;
-  helper = import ./rust.nix {
-    inherit pkgs;
-    package = "goblins-mount-helper";
-  };
-  controller = import ./rust.nix {
-    inherit pkgs;
-    package = "goblins-controller";
-  };
+  helper = import ../mount-helper { inherit pkgs; };
+  controller = import ./. { inherit pkgs; };
   prepare =
     configuration:
     builtins.removeAttrs configuration [ "nix" ]

@@ -138,7 +138,7 @@ assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
 assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
   builtins.attrValues nixAccess
 )) "mkGoblins: members of a scope with Docker must have the same allowNix";
-import ../packages/goblins.nix {
+import ../../packages/daemon/wrapper.nix {
   inherit pkgs goblins configurations;
   editor =
     if emacs.enable then

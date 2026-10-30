@@ -255,7 +255,7 @@ Before implementing PTY persistence, compare using an existing session backendâ€
 5. Is persistence required for the first Emacs release, or the immediately following milestone?
 6. Which second frontend best tests the API after Emacs is useful?
 
-The reproducible shell experiment, isolation probes, and result record are now implemented directly on this branch. See =src/main.rs=, =crates/=, =tests/=, and [[file:../RESULTS.org][the results]]. Package definitions and the configurable Goblins API live in =nix/=; the root =flake.nix= wires inputs and outputs. Terminal multiplexing and agent-state notifications remain deferred.
+The reproducible shell experiment, isolation probes, and result record are now implemented directly on this branch. See =packages/mount-helper/src/main.rs=, =packages/= and =libs/=, =tests/=, and [[file:../RESULTS.org][the results]]. Package definitions and the configurable Goblins API live in =nix/=; the root =flake.nix= wires inputs and outputs. Terminal multiplexing and agent-state notifications remain deferred.
 
 * Per-launch configuration selection
 
@@ -304,7 +304,7 @@ At the review baseline, queued terminal input for an old request could authorize
 a replacement: the frontend replaced pending state before consuming input and gave
 that input the new request's approval token. The review reproduced an approval
 for =tree= after =hello= was the displayed request when input was queued.
-See [[file:../../crates/controller/src/tui.rs][the TUI event loop and approval handling]].
+See [[file:../../packages/daemon/src/tui.rs][the TUI event loop and approval handling]].
 
 Daemon/frontend acceptance criterion: decisions identify an immutable pending
 request/generation; withdrawn, superseded, stale or duplicate decisions cannot
@@ -322,7 +322,7 @@ finishes. Immediate short output passes; /dev/full output reports failure.
 At the review baseline, PTY EOF/EIO completed teardown while output remained queued.
 The review's slow-reader reproduction delivered 16,384 of 50,000 bytes, lost the
 final marker and exited successfully. A short configured command also lost its
-output. See [[file:../../crates/controller/src/attachment.rs][the PTY attachment relay]].
+output. See [[file:../../packages/daemon/src/attachment.rs][the PTY attachment relay]].
 
 Daemon/attachment acceptance criterion: separate process exit, PTY EOF and client
 output completion. Drain already-buffered bytes before normal completion, handle
@@ -339,8 +339,8 @@ Whole-frame silent/drip/fragmentation tests also pass.
 At the review baseline, the pending connection used =MSG_PEEK= without consuming
 extra data. One extra byte after a valid request followed by close hid
 the disconnect, retaining the abandoned request/preview and blocking the next
-request. See [[file:../../crates/controller/src/unix.rs][socket disconnect detection]] and
-[[file:../../crates/controller/src/controller.rs][pending-request lifecycle]].
+request. See [[file:../../packages/daemon/src/unix.rs][socket disconnect detection]] and
+[[file:../../packages/daemon/src/controller.rs][pending-request lifecycle]].
 
 Daemon/protocol acceptance criterion: reject unexpected trailing input or detect
 hangup despite unread data; cancel abandoned pending requests/previews and allow

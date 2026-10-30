@@ -1,17 +1,3 @@
-[package]
-name = "goblins-mount-helper"
-version = "0.1.0"
-edition = "2024"
-publish = false
-
-[dependencies]
-libc = "=0.2.186"
-
 [workspace]
-members = ["crates/protocol", "crates/client", "crates/controller", "crates/codex", "crates/claude"]
+members = ["packages/mount-helper", "libs/api", "packages/sandbox-cli", "packages/daemon", "packages/adapter-codex", "packages/adapter-claude"]
 resolver = "3"
-
-# The --host-job supervisor, run as a separate process like the daemon runs it.
-[[test]]
-name = "host-job"
-path = "src/host_job_tests.rs"
