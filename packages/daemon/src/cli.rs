@@ -1,6 +1,6 @@
 //! One command tree supplies parsing, help and packaged shell completions.
 use clap::{CommandFactory, Parser, Subcommand, ValueHint};
-use goblins_controller::{Result, config::Manifest};
+use goblins_controller::Result;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -446,7 +446,7 @@ fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
 pub fn completions(shell: clap_complete::Shell, runtime: Option<&Path>) -> Result<()> {
     let mut command = Cli::command();
     let configurations: Vec<_> = runtime
-        .map(Manifest::read)
+        .map(goblins_controller::config::read)
         .transpose()?
         .map(|m| m.goblins.into_keys().collect())
         .unwrap_or_default();

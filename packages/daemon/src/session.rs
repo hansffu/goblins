@@ -12,7 +12,6 @@ use crate::{
     seccomp, snapshot, unix,
 };
 use goblins_protocol::package_name;
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
@@ -34,12 +33,7 @@ use std::{
     time::Duration,
 };
 
-/// Why an allowNix goblin gets no package grants.
-pub(crate) const NIX_PACKAGES: &str =
-    "this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request";
-/// Why an allowNix goblin gets no dev shell refreshes or flake runs.
-pub(crate) const NIX_DEV_SHELL: &str =
-    "this goblin has Nix; use nix develop and nix run instead of the Goblins dev shell commands";
+pub use goblins_runtime::{NIX_DEV_SHELL, NIX_PACKAGES};
 
 fn canonical_store_output(path: &Path) -> bool {
     let name = path.file_name().and_then(|p| p.to_str());
@@ -138,58 +132,7 @@ pub fn store_path(path: &Path) -> Result<PathBuf> {
     }
     Err("store output must be a regular file, directory, or store-contained symlink".into())
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Identity {
-    pub pid: u32,
-    pub helper_userns: u64,
-    pub mount_owner: u64,
-    pub source_mountns: u64,
-    pub mountns: u64,
-}
-/// A shared lock on one goblin's resources directory, and which directory it
-/// protects. The directory goes when the last lease on it is released: a
-/// holder that lets go removes it only if it can then take the lock
-/// exclusively, otherwise the last holder or `goblins gc` removes it later.
-/// Every lease is its own open file description, never a `dup`, because the
-/// exclusive-lock test cannot tell `dup`s apart.
-#[derive(Debug)]
-pub(crate) struct ResourceLease {
-    directory: PathBuf,
-    lock: Option<File>,
-}
-impl ResourceLease {
-    pub(crate) fn new(directory: PathBuf) -> Result<Self> {
-        let lock = Some(crate::cleanup::resource_lease(&directory)?);
-        Ok(Self { directory, lock })
-    }
-    /// A fresh lease on the same directory, for another holder.
-    pub(crate) fn share(&self) -> Result<Self> {
-        Self::new(self.directory.clone())
-    }
-    pub(crate) fn fd(&self) -> std::os::fd::RawFd {
-        self.lock.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-    }
-    #[cfg(test)]
-    pub(crate) fn directory(&self) -> &Path {
-        &self.directory
-    }
-}
-impl Drop for ResourceLease {
-    fn drop(&mut self) {
-        // Closing our descriptor releases our lock; a copy another process
-        // holds, such as the helper's, keeps its own.
-        drop(self.lock.take());
-        let Ok(Some(_exclusive)) = crate::cleanup::resource_exclusive(&self.directory) else {
-            return;
-        };
-        let _ = fs::remove_dir_all(&self.directory);
-        if self.directory.file_name().is_some_and(|n| n == "resources")
-            && let Some(parent) = self.directory.parent()
-        {
-            let _ = fs::remove_dir(parent);
-        }
-    }
-}
+pub use goblins_runtime::{Identity, ResourceLease};
 /// The pinned snapshot directory. Its contents live in the resources of the
 /// goblin that made it, which every goblin sharing it holds a lease on.
 struct SharedWorkspace {
@@ -241,7 +184,7 @@ impl Inheritance {
         })
     }
     /// The scope, held weakly.
-    pub(crate) fn scope_handle(&self) -> Weak<crate::scope::Shared> {
+    pub(crate) fn scope_handle(&self) -> Weak<dyn goblins_runtime::ScopePin> {
         self.scope.clone()
     }
     /// The helper binary, which also supervises host commands.
@@ -304,12 +247,15 @@ impl Inheritance {
         Self {
             launch: Arc::new(launch),
             binds: Arc::new(
-                crate::binds::Declarations::default()
-                    .plan(&[], &Cancel::default())
-                    .unwrap(),
+                crate::binds::plan(
+                    &crate::binds::Declarations::default(),
+                    &[],
+                    &Cancel::default(),
+                )
+                .unwrap(),
             ),
             workspace: Arc::new(SharedWorkspace {
-                file: File::open(&owner.directory).unwrap(),
+                file: File::open(owner.directory()).unwrap(),
             }),
             scope: Weak::new(),
             docker: Arc::default(),
@@ -320,28 +266,7 @@ impl Inheritance {
     }
 }
 /// Append to a session directory's diagnostic `events.jsonl`.
-pub(crate) fn log_event(directory: &Path, event: &str, fields: serde_json::Value) {
-    // Logging must never interrupt teardown or turn a completed grant into
-    // an unreported mount failure. Directory is host-only, mode 0700.
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join("events.jsonl"))
-    {
-        if file.metadata().is_ok_and(|m| m.len() >= 1024 * 1024) {
-            return;
-        }
-        let time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        let _ = writeln!(
-            file,
-            "{}",
-            serde_json::json!({"time":time,"event":event,"fields":fields})
-        );
-    }
-}
+pub use goblins_runtime::log_event;
 /// What a goblin a raid owner runs starts from.
 pub(crate) struct Member<'a> {
     pub handoff: Handoff,
@@ -487,13 +412,13 @@ impl Session {
             manifest,
             configuration,
         } = member;
-        let manifest = crate::config::Manifest::validate(manifest)?;
-        let editor = manifest.editor()?;
-        let run_targets: Arc<[String]> = manifest.run_targets(configuration).into();
-        let mut launch = manifest
-            .select_inherited(configuration, owner_scope)
-            .map_err(|e| format!("configuration '{configuration}' cannot be launched here: {e}"))?
-            .launch()?;
+        let manifest = crate::config::validate(manifest)?;
+        let editor = crate::config::editor(&manifest)?;
+        let run_targets: Arc<[String]> =
+            crate::config::run_targets(&manifest, configuration).into();
+        let config = crate::config::select_inherited(&manifest, configuration, owner_scope)
+            .map_err(|e| format!("configuration '{configuration}' cannot be launched here: {e}"))?;
+        let mut launch = crate::config::launch(&config)?;
         if launch.initial_packages.len() > 128 {
             return Err("initial package limit is 128".into());
         }
@@ -615,7 +540,7 @@ impl Session {
         Ok(())
     }
     pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
-        let etc = self.launch.etc_mounts()?;
+        let etc = crate::sandbox_etc::launch_mounts(&self.launch)?;
         let mut private = self.launch.protected_paths.clone();
         private.push(crate::docker::storage_root(false)?);
         private.push(crate::scope_storage::root(false)?);
@@ -638,7 +563,7 @@ impl Session {
             None
         };
         if self.binds.is_none() {
-            let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
+            let mut binds = crate::binds::plan(&self.launch.binds, &private, &self.cancel)?;
             if let Some((fd, source, destination)) = self.inherited_cwd.take() {
                 binds.use_working_directory(fd, source, destination);
             } else if let Some(cwd) = &self.launch.cwd {
@@ -1612,7 +1537,7 @@ impl Session {
                 false,
             ));
         }
-        for (source, destination) in self.launch.etc_mounts()? {
+        for (source, destination) in crate::sandbox_etc::launch_mounts(&self.launch)? {
             grants.push((File::open(source)?, destination, true));
         }
         for path in self.mounted.union(&closure) {

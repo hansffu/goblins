@@ -1,7 +1,6 @@
 //! One session worker: blocking host work is kept off the controller event pump.
 use crate::{
     Result,
-    config::Manifest,
     controller::{
         policy::Support,
         runtime::{Command, Event, Handoff, Published, ScopeHandle},
@@ -23,31 +22,7 @@ use std::{
 
 /// A command for the worker, with the token that cancels it.
 pub(super) type Work = (Command, Cancel);
-/// What a recreated goblin takes from its record.
-pub(super) struct Recreate {
-    /// Approved package names, in grant order.
-    pub packages: Vec<String>,
-    /// Auto-approved names, resolved again but not mounted.
-    pub auto_approve: Vec<String>,
-    pub docker: bool,
-    pub variables: std::collections::BTreeMap<String, String>,
-}
-/// What recreating staged, for the controller's hand-over.
-pub(super) struct Recreated {
-    pub packages: Vec<(String, PathBuf)>,
-    /// Recorded auto-approved names, resolved and rooted.
-    pub auto_approve: Vec<(String, PathBuf)>,
-    /// What could not be restored, and why.
-    pub skipped: Vec<crate::history::Skipped>,
-    /// Why the agent starts a fresh conversation despite a resume command.
-    pub fresh: Option<String>,
-}
-/// The auto-approve set a session rooted for itself before it started.
-#[derive(Default)]
-pub(super) struct Auto {
-    pub rooted: Vec<(String, PathBuf)>,
-    pub skipped: Vec<crate::history::Skipped>,
-}
+pub use goblins_runtime::{Auto, Recreate, Recreated, Source};
 pub(super) struct Worker {
     pub cancel: Cancel,
     pub commands: SyncSender<Work>,
@@ -63,40 +38,6 @@ pub(super) struct Endpoints {
     pub listener: UnixListener,
     /// The helper's pidfd.
     pub exit_watch: OwnedFd,
-}
-pub(super) enum Source {
-    Host {
-        configuration: PathBuf,
-        name: String,
-        scope: Option<String>,
-        dev_shell: Option<String>,
-        workspace: Option<PathBuf>,
-        cwd: Option<PathBuf>,
-        state: PathBuf,
-        /// The history store, protected like the daemon's state.
-        history: Option<PathBuf>,
-        recreate: Option<Recreate>,
-        /// Order of this acceptance, for the daemon's current manifest.
-        sequence: u64,
-    },
-    /// A goblin a raid owner runs, from the daemon's current manifest. It
-    /// starts once the owner's handoff arrives.
-    Member {
-        /// Held from acceptance, so the owner stopping cannot take it away.
-        scope: Option<std::sync::Arc<crate::scope::Shared>>,
-        /// The scope the owner is in, which the configuration must be able to
-        /// join.
-        owner_scope: Option<String>,
-        /// The current manifest, which the daemon keeps leased until the
-        /// launch started.
-        manifest: PathBuf,
-        configuration: String,
-        /// Approvals copied from the owner, by exact output.
-        auto: std::collections::BTreeMap<String, PathBuf>,
-        state: PathBuf,
-        /// The history store, protected like the daemon's state.
-        history: Option<PathBuf>,
-    },
 }
 impl Worker {
     pub fn start(
@@ -149,7 +90,7 @@ impl Worker {
                         let session = Session::member(
                             Member {
                                 handoff,
-                                scope,
+                                scope: scope.map(crate::scope::from_pin),
                                 owner_scope: owner_scope.as_deref(),
                                 protected_paths: protected,
                                 manifest: &manifest,
@@ -178,18 +119,18 @@ impl Worker {
                         // A manifest that does not validate fails the launch. One
                         // that cannot be rooted only does not become current:
                         // the launch reports its own errors, such as no Nix daemon.
-                        Manifest::validate(&configuration)?;
+                        crate::config::validate(&configuration)?;
                         // Before the slow work, rooting the manifest included:
                         // whether older frontends may attach the terminal. A
                         // configuration that cannot be selected fails below.
-                        if let Ok(config) = Manifest::read(&configuration)
-                            .and_then(|m| m.select(&name, scope.as_deref()))
+                        if let Ok(config) = crate::config::read(&configuration)
+                            .and_then(|m| crate::config::select(m, &name, scope.as_deref()))
                         {
                             results.try_send(Event::Mode {
                                 server: config.on_attach.is_some(),
                             })?;
                         }
-                        let unrooted = match crate::config::ManifestLease::create(
+                        let unrooted = match crate::config::lease_manifest(
                             &configuration,
                             &state.join("manifests"),
                             sequence,
@@ -209,13 +150,13 @@ impl Worker {
                                 Some(error.to_string())
                             }
                         };
-                        let manifest = Manifest::read(&configuration)?;
-                        let editor = manifest.editor()?;
+                        let manifest = crate::config::read(&configuration)?;
+                        let editor = crate::config::editor(&manifest)?;
                         let run_targets: std::sync::Arc<[String]> =
-                            manifest.run_targets(&name).into();
-                        let config = manifest.select(&name, scope.as_deref())?;
+                            crate::config::run_targets(&manifest, &name).into();
+                        let config = crate::config::select(manifest, &name, scope.as_deref())?;
                         token.check()?;
-                        let mut launch = config.launch()?;
+                        let mut launch = crate::config::launch(&config)?;
                         launch.editor = editor;
                         launch.cwd = cwd;
                         if launch.initial_packages.len() > 128 {

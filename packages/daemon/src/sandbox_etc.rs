@@ -72,3 +72,13 @@ mod tests {
         );
     }
 }
+
+pub(crate) fn launch_mounts(
+    launch: &crate::config::Launch,
+) -> crate::Result<Vec<(PathBuf, PathBuf)>> {
+    let dev_shell = match launch.dev_shell {
+        Some(_) => &launch.dev_shell_sandbox_etc,
+        None => &std::collections::BTreeMap::new(),
+    };
+    mounts(&launch.sandbox_etc, dev_shell)
+}

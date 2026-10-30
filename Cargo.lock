@@ -425,6 +425,7 @@ dependencies = [
  "goblins-init",
  "goblins-jsonrpc",
  "goblins-protocol",
+ "goblins-runtime",
  "libc",
  "ratatui",
  "serde",
@@ -462,6 +463,16 @@ name = "goblins-protocol"
 version = "0.1.0"
 dependencies = [
  "goblins-jsonrpc",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "goblins-runtime"
+version = "0.1.0"
+dependencies = [
+ "goblins-protocol",
  "libc",
  "serde",
  "serde_json",

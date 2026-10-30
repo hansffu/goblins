@@ -9,7 +9,7 @@ mod server;
 mod tui;
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Command, ServerCommand};
-use goblins_controller::{Result, config::Manifest, host::Client};
+use goblins_controller::{Result, host::Client};
 use std::{
     fs,
     path::PathBuf,
@@ -268,7 +268,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            let manifest = Manifest::read(&runtime)?;
+            let manifest = goblins_controller::config::read(&runtime)?;
             if !manifest.goblins.contains_key(&config) {
                 return Err(format!(
                     "unknown configuration '{config}'; available: {}",
@@ -282,7 +282,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 .into());
             }
             // Report an unknown or disallowed scope before starting.
-            manifest.select(&config, scope.as_deref())?;
+            goblins_controller::config::select(manifest, &config, scope.as_deref())?;
             // Resolve a relative flake path against the caller's directory.
             let dev_shell = dev_shell
                 .map(|reference| -> goblins_controller::Result<String> {
@@ -348,12 +348,12 @@ fn execute(cli: Cli) -> Result<i32> {
             let runtime = cli
                 .runtime
                 .ok_or("configurations requires --runtime (use the Nix-built goblins command)")?;
-            let manifest = Manifest::read(&runtime)?;
+            let manifest = goblins_controller::config::read(&runtime)?;
             // Configurations with allowNix use Nix rather than a Goblins dev
             // shell, so frontends don't offer one for them.
             let mut nix = Vec::new();
             for (name, config) in &manifest.goblins {
-                if config.allows_nix()? {
+                if goblins_controller::config::allows_nix(config)? {
                     nix.push(name);
                 }
             }

@@ -490,3 +490,13 @@ impl Drop for Lease {
         }
     }
 }
+
+// Transitional opaque scope pin; phase 4 deletes the pin and handle.
+impl goblins_runtime::ScopePin for Shared {}
+pub(crate) fn from_pin(
+    pin: std::sync::Arc<dyn goblins_runtime::ScopePin>,
+) -> std::sync::Arc<Shared> {
+    let pin: std::sync::Arc<dyn std::any::Any + Send + Sync> = pin;
+    pin.downcast::<Shared>()
+        .unwrap_or_else(|_| panic!("scope pin has the wrong implementation"))
+}

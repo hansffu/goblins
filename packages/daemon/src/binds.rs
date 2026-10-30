@@ -1,7 +1,6 @@
 //! Startup grants from trusted mkSandbox declarations. These are ordinary host
 //! bind mounts, never snapshots or paths supplied by the sandbox request client.
 use crate::{Result, process::Cancellation, session::store_path, unix};
-use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::CString,
@@ -13,14 +12,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Declarations {
-    pub rw_dirs: Vec<String>,
-    pub rw_files: Vec<String>,
-    pub ro_dirs: Vec<String>,
-    pub ro_files: Vec<String>,
-}
+pub use goblins_runtime::binds::Declarations;
 pub struct Mount {
     // Pin the object, not merely its current pathname. This descriptor remains
     // CLOEXEC in the daemon and is inherited only by this launch's helper/bwrap.
@@ -136,92 +128,94 @@ pub(crate) fn validate(path: &Path, private: &[PathBuf]) -> Result<()> {
     }
     Ok(())
 }
-impl Declarations {
-    pub fn plan(&self, private: &[PathBuf], cancel: &Cancellation) -> Result<Plan> {
-        let env = |name: &str| std::env::var(name).ok();
-        let home = expand("$HOME", env)?;
-        validate(&home, &[])?;
-        let mut plan = Plan {
-            home,
-            working_directory: None,
-            mounts: vec![],
-            store_targets: BTreeMap::new(),
-        };
-        for (paths, directory, readonly) in [
-            (&self.rw_dirs, true, false),
-            (&self.ro_dirs, true, true),
-            (&self.rw_files, false, false),
-            (&self.ro_files, false, true),
-        ] {
-            for raw in paths {
-                cancel.check()?;
-                let destination = expand(raw, env)?;
-                validate(&destination, private)?;
-                let source_fd = open_source(&destination)
-                    .map_err(|e| format!("host bind {}: {e}", destination.display()))?;
-                // Read the resolved location of the OPENED object. Resolving a
-                // name first and opening it afterwards would introduce another
-                // race during validation, including in any ancestor component.
-                let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
-                // A declared symlink into the immutable store may select an exact
-                // file/directory, but it cannot make that store content writable.
-                if source.starts_with("/nix/store") {
-                    store_root(&source)?;
-                    if !readonly {
-                        return Err("Nix store bind sources must be read-only".into());
-                    }
-                } else {
-                    validate(&source, private)?;
+pub fn plan(
+    declarations: &Declarations,
+    private: &[PathBuf],
+    cancel: &Cancellation,
+) -> Result<Plan> {
+    let env = |name: &str| std::env::var(name).ok();
+    let home = expand("$HOME", env)?;
+    validate(&home, &[])?;
+    let mut plan = Plan {
+        home,
+        working_directory: None,
+        mounts: vec![],
+        store_targets: BTreeMap::new(),
+    };
+    for (paths, directory, readonly) in [
+        (&declarations.rw_dirs, true, false),
+        (&declarations.ro_dirs, true, true),
+        (&declarations.rw_files, false, false),
+        (&declarations.ro_files, false, true),
+    ] {
+        for raw in paths {
+            cancel.check()?;
+            let destination = expand(raw, env)?;
+            validate(&destination, private)?;
+            let source_fd = open_source(&destination)
+                .map_err(|e| format!("host bind {}: {e}", destination.display()))?;
+            // Read the resolved location of the OPENED object. Resolving a
+            // name first and opening it afterwards would introduce another
+            // race during validation, including in any ancestor component.
+            let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
+            // A declared symlink into the immutable store may select an exact
+            // file/directory, but it cannot make that store content writable.
+            if source.starts_with("/nix/store") {
+                store_root(&source)?;
+                if !readonly {
+                    return Err("Nix store bind sources must be read-only".into());
                 }
-                let meta = source_fd.metadata()?;
-                if if directory {
-                    !meta.is_dir()
-                } else {
-                    !meta.is_file()
-                } {
-                    return Err(format!(
-                        "host bind {} must be a {}",
-                        destination.display(),
-                        if directory {
-                            "directory"
-                        } else {
-                            "regular file"
-                        }
-                    )
-                    .into());
-                }
-                if plan
-                    .mounts
-                    .iter()
-                    .any(|m| overlaps(&destination, &m.destination))
-                {
-                    return Err(format!(
-                        "overlapping host bind destinations are not supported: {}",
-                        destination.display()
-                    )
-                    .into());
-                }
-                if directory {
-                    let dot = CString::new(".")?;
-                    let dir = unix::owned(unsafe {
-                        libc::openat(
-                            source_fd.as_raw_fd(),
-                            dot.as_ptr(),
-                            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
-                        )
-                    })?;
-                    scan(dir.as_raw_fd(), &source, &mut plan.store_targets, cancel)?;
-                }
-                plan.mounts.push(Mount {
-                    source_fd,
-                    source,
-                    destination,
-                    readonly,
-                });
+            } else {
+                validate(&source, private)?;
             }
+            let meta = source_fd.metadata()?;
+            if if directory {
+                !meta.is_dir()
+            } else {
+                !meta.is_file()
+            } {
+                return Err(format!(
+                    "host bind {} must be a {}",
+                    destination.display(),
+                    if directory {
+                        "directory"
+                    } else {
+                        "regular file"
+                    }
+                )
+                .into());
+            }
+            if plan
+                .mounts
+                .iter()
+                .any(|m| overlaps(&destination, &m.destination))
+            {
+                return Err(format!(
+                    "overlapping host bind destinations are not supported: {}",
+                    destination.display()
+                )
+                .into());
+            }
+            if directory {
+                let dot = CString::new(".")?;
+                let dir = unix::owned(unsafe {
+                    libc::openat(
+                        source_fd.as_raw_fd(),
+                        dot.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    )
+                })?;
+                scan(dir.as_raw_fd(), &source, &mut plan.store_targets, cancel)?;
+            }
+            plan.mounts.push(Mount {
+                source_fd,
+                source,
+                destination,
+                readonly,
+            });
         }
-        Ok(plan)
     }
+    Ok(plan)
 }
 #[repr(C)]
 struct OpenHow {
@@ -530,11 +524,14 @@ mod tests {
         }
         std::os::unix::fs::symlink(&outside, work.join("escape")).unwrap();
         let cancel = Cancellation::default();
-        let mut plan = Declarations {
-            ro_dirs: vec![inner.display().to_string()],
-            ..Default::default()
-        }
-        .plan(&[], &cancel)
+        let mut plan = plan(
+            &Declarations {
+                ro_dirs: vec![inner.display().to_string()],
+                ..Default::default()
+            },
+            &[],
+            &cancel,
+        )
         .unwrap();
         plan.add_working_directory(&work, &[]).unwrap();
         assert_eq!(plan.resolve_shared(&work).unwrap().1, work);
@@ -562,14 +559,17 @@ mod tests {
         fs::create_dir(&work).unwrap();
         fs::create_dir(&declared).unwrap();
         let cancel = Cancellation::default();
-        let mut parent = Declarations::default().plan(&[], &cancel).unwrap();
+        let mut parent = plan(&Declarations::default(), &[], &cancel).unwrap();
         parent.add_working_directory(&work, &[]).unwrap();
         // The child's own declared bind, opened by the child's launch.
-        let mut child = Declarations {
-            ro_dirs: vec![declared.display().to_string()],
-            ..Default::default()
-        }
-        .plan(&[], &cancel)
+        let mut child = plan(
+            &Declarations {
+                ro_dirs: vec![declared.display().to_string()],
+                ..Default::default()
+            },
+            &[],
+            &cancel,
+        )
         .unwrap();
         // Replace the pathname: the child must get the parent's object.
         let moved = root.join("moved");

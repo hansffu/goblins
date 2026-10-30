@@ -263,7 +263,7 @@ impl Active {
             support: &self.support,
         }
         .check(operation)
-        .map_err(Into::into)
+        .map_err(policy::fault)
     }
     /// The scope whose Docker engine this goblin may use.
     fn docker_scope(&self) -> Option<&str> {
@@ -574,7 +574,7 @@ const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing",
 #[derive(Clone)]
 struct Owner {
     id: String,
-    scope: Option<std::sync::Arc<crate::scope::Shared>>,
+    scope: Option<std::sync::Arc<dyn goblins_runtime::ScopePin>>,
     /// The scope the owner is in, which a member must be able to join.
     scope_name: Option<String>,
 }
@@ -753,7 +753,7 @@ impl Controller {
     /// Start with the manifest the server was started with as current, once
     /// it validates. Call before the first launch.
     pub fn use_manifest(&mut self, path: &Path) {
-        match crate::config::ManifestLease::create(
+        match crate::config::lease_manifest(
             path,
             &self.state.join("manifests"),
             0,

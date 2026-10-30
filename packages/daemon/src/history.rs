@@ -67,34 +67,7 @@ pub struct Record {
     /// Informational: a goblin that died with its daemon never gets it.
     pub stopped: Option<u64>,
 }
-/// A recorded package (or `docker`) a recreate could not restore.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Skipped {
-    pub name: String,
-    /// One line of at most 256 bytes: whitespace runs become one space,
-    /// other control characters are escaped.
-    pub reason: String,
-}
-impl Skipped {
-    pub fn new(name: &str, reason: &str) -> Self {
-        let text = |s: &str| {
-            let mut bounded = String::new();
-            let line = s.split_whitespace().collect::<Vec<_>>().join(" ");
-            for c in goblins_protocol::plain_text(&line).chars() {
-                if bounded.len() + c.len_utf8() > 256 {
-                    break;
-                }
-                bounded.push(c);
-            }
-            bounded
-        };
-        Self {
-            name: text(name),
-            reason: text(reason),
-        }
-    }
-}
+pub use goblins_runtime::history::Skipped;
 /// A short random record id: 8 characters of lowercase Crockford base32
 /// (40 bits), easy to read and type. `taken` rejects ids in use.
 pub fn new_id(taken: impl Fn(&str) -> bool) -> Result<String> {

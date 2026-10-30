@@ -1,6 +1,6 @@
 //! Host CLI maintenance. Persistent stores require explicit scope selection;
 //! GC only collects temporary stores and resources of a stopped server.
-use crate::{Result, config::Manifest, docker, process, scope_storage, unix};
+use crate::{Result, docker, process, scope_storage, unix};
 use std::{
     collections::BTreeSet,
     ffi::CString,
@@ -19,37 +19,9 @@ use std::{
     time::Duration,
 };
 
-fn flock(path: &Path, exclusive: bool) -> Result<Option<File>> {
-    let file = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    let meta = file.metadata()?;
-    if !meta.is_file() || meta.uid() != unsafe { libc::getuid() } {
-        return Err(format!("unsafe cleanup lock {}", path.display()).into());
-    }
-    if unsafe {
-        libc::flock(
-            file.as_raw_fd(),
-            (if exclusive {
-                libc::LOCK_EX
-            } else {
-                libc::LOCK_SH
-            }) | libc::LOCK_NB,
-        )
-    } == 0
-    {
-        Ok(Some(file))
-    } else if std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
-        Ok(None)
-    } else {
-        Err(std::io::Error::last_os_error().into())
-    }
-}
+use goblins_runtime::lease::flock;
+#[cfg(test)]
+pub(crate) use goblins_runtime::lease::resource_exclusive;
 
 fn lock_root() -> Result<PathBuf> {
     unix::cache_directory("locks", true)
@@ -67,14 +39,6 @@ pub(crate) fn temporary_lease(kind: &str, path: &Path) -> Result<File> {
         .ok_or_else(|| "temporary storage is being collected".into())
 }
 
-pub(crate) fn resource_lease(directory: &Path) -> Result<File> {
-    flock(&directory.join(".gc-lease"), false)?
-        .ok_or_else(|| "session resources are being collected".into())
-}
-/// The exclusive lock on a resources directory, when no lease holds it.
-pub(crate) fn resource_exclusive(directory: &Path) -> Result<Option<File>> {
-    flock(&directory.join(".gc-lease"), true)
-}
 fn temporary_lock(kind: &str, path: &Path) -> Result<PathBuf> {
     Ok(lock_root()?.join(format!(
         "{kind}-{}",
@@ -379,7 +343,7 @@ fn remove(
     }
     let runtime =
         runtime.ok_or("cleanup requires --runtime (use the Nix-built goblins command)")?;
-    let manifest = Manifest::validate(runtime)?;
+    let manifest = crate::config::validate(runtime)?;
     let helper = &manifest
         .goblins
         .values()

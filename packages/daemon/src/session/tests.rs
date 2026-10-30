@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 fn profiles_preserve_path_precedence_across_duplicate_commands() {
     let fixture = ResourceLease::new(unix::temp_directory().unwrap()).unwrap();
     let package = |name: &str, commands: &[&str]| {
-        let path = fixture.directory.join(name);
+        let path = fixture.directory().join(name);
         fs::create_dir_all(path.join("bin")).unwrap();
         for command in commands {
             fs::write(path.join("bin").join(command), name).unwrap();
