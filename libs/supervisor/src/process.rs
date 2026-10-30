@@ -416,6 +416,8 @@ mod tests {
             io::{Read, Write},
             os::unix::net::UnixStream,
         };
+        // A concurrent test's fork must not inherit the peer and delay EOF.
+        let _no_forks = unix::no_forks();
         let (mut member, mut runtime) = UnixStream::pair().unwrap();
         let cancel = Cancellation::until_readable(member.as_raw_fd()).unwrap();
         cancel.check().unwrap();
@@ -428,5 +430,22 @@ mod tests {
         cancel.check().unwrap();
         drop(runtime);
         assert!(cancel.check().is_err());
+    }
+
+    #[test]
+    fn startup_cancellation_requires_the_last_peer_descriptor_to_close() {
+        use std::{io::Read, os::unix::net::UnixStream};
+        let _no_forks = unix::no_forks();
+        let (mut member, runtime) = UnixStream::pair().unwrap();
+        let retained = runtime.try_clone().unwrap();
+        let cancel = Cancellation::until_readable(member.as_raw_fd()).unwrap();
+        drop(runtime);
+        // As with a peer copied by fork, the retained descriptor is still live.
+        cancel.check().unwrap();
+        drop(retained);
+        assert!(cancel.check().is_err());
+        assert!(cancel.child().check().is_err());
+        // The cancellation probe left real EOF for the scope event loop.
+        assert_eq!(member.read(&mut [0]).unwrap(), 0);
     }
 }
