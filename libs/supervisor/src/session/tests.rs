@@ -164,6 +164,10 @@ fn host_driver() {
                     session.as_mut().unwrap().launch.flake = req["value"].as_str().unwrap().into();
                     Ok(json!(null))
                 }
+                "remove-stale" => Ok(json!(goblins_runtime::scope::remove_stale(
+                    Path::new(req["path"].as_str().ok_or("missing stale scope path")?),
+                    false,
+                )?)),
                 "state" => Ok(json!(null)),
                 "close" => {
                     session.take();

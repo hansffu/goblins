@@ -1,57 +1,14 @@
 //! Descriptor-relative deletion. Only the controller selects the parent/name;
 //! a mapped worker can remove Docker's subordinate-owned files without sudo.
-use super::{cvt, fd};
+use super::cvt;
 use std::{
     env,
-    ffi::{CString, OsStr},
-    fs::{self, File},
+    fs::File,
     io::{self, Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::{ffi::OsStrExt, fs::MetadataExt},
-    },
+    os::unix::ffi::OsStrExt,
 };
 
-fn remove(parent: &File, name: &OsStr) -> io::Result<()> {
-    let name = CString::new(name.as_bytes())?;
-    // O_PATH pins even a mode-000 directory without following a symlink.
-    // NO_XDEV also refuses bind mounts, including mounts on the same device.
-    let how = super::OpenHow {
-        flags: (libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC) as u64,
-        mode: 0,
-        resolve: super::RESOLVE_BENEATH | super::RESOLVE_NO_MAGICLINKS | 0x01,
-    };
-    let entry = File::from(fd(unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            &how,
-            size_of::<super::OpenHow>(),
-        ) as i32
-    })?);
-    let meta = entry.metadata()?;
-    let flags = if meta.is_dir() {
-        let path = format!("/proc/self/fd/{}", entry.as_raw_fd());
-        // This procfs link names our pinned directory, never a tree symlink.
-        // File modes are not changed: hard links outside the tree stay intact.
-        cvt(unsafe {
-            libc::chmod(
-                CString::new(path.as_bytes())?.as_ptr(),
-                (meta.mode() | 0o700) & 0o7777,
-            )
-        })?;
-        let directory = File::open(&path)?;
-        for child in fs::read_dir(&path)? {
-            remove(&directory, &child?.file_name())?;
-        }
-        libc::AT_REMOVEDIR
-    } else {
-        0
-    };
-    cvt(unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), flags) })?;
-    Ok(())
-}
+use goblins_unix::cleanup::remove_at as remove;
 
 pub fn run() -> io::Result<i32> {
     let args: Vec<_> = env::args_os().collect();
@@ -90,7 +47,8 @@ use std::os::fd::FromRawFd;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    use std::{ffi::OsStr, fs};
 
     #[test]
     fn deletion_preserves_link_targets_and_handles_restricted_directories() {

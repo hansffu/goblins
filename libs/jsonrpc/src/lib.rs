@@ -64,7 +64,11 @@ impl<'de> Deserialize<'de> for Unique {
     }
 }
 pub fn parse(bytes: &[u8]) -> Result<Value, String> {
-    if bytes.len() > MAX_BODY {
+    parse_with_limit(bytes, MAX_BODY)
+}
+/// Parse a private endpoint with its own body limit.
+pub fn parse_with_limit(bytes: &[u8], limit: usize) -> Result<Value, String> {
+    if bytes.len() > limit {
         return Err("body too large".into());
     }
     let mut depth = 0usize;
@@ -155,15 +159,32 @@ pub struct Decoder {
     body: Option<(usize, usize)>,
     deadline: Option<Instant>,
     limit: usize,
+    allowed_headers: &'static [&'static str],
+    headers: std::collections::BTreeMap<String, String>,
 }
 impl Decoder {
     pub fn new(limit: usize, start: Option<Instant>) -> Self {
+        Self::with_headers(limit, start, &[])
+    }
+    /// Permit additional private framing headers; duplicate headers still fail.
+    pub fn with_headers(
+        limit: usize,
+        start: Option<Instant>,
+        allowed_headers: &'static [&'static str],
+    ) -> Self {
         Self {
             data: vec![],
             body: None,
             deadline: start.map(|n| n + TIMEOUT),
             limit,
+            allowed_headers,
+            headers: Default::default(),
         }
+    }
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
     }
     pub fn remaining(&self) -> usize {
         self.body
@@ -213,6 +234,14 @@ impl Decoder {
                             .contains(&value)
                         {
                             content_type = true;
+                        } else if self
+                            .allowed_headers
+                            .iter()
+                            .any(|h| key.eq_ignore_ascii_case(h))
+                            && !self.headers.contains_key(&key.to_ascii_lowercase())
+                        {
+                            self.headers
+                                .insert(key.to_ascii_lowercase(), value.to_string());
                         } else {
                             return Err(io::Error::other("invalid or duplicate header"));
                         }

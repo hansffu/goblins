@@ -11,12 +11,14 @@ use std::{
 pub type Result<T, E = Box<dyn std::error::Error + Send + Sync>> = std::result::Result<T, E>;
 pub mod binds;
 pub mod catalog;
+pub mod channel;
 pub mod config;
 pub mod devshell;
 pub mod history;
 pub mod lease;
 mod logging;
 pub mod policy;
+pub mod scope;
 pub use logging::log_event;
 /// Why an allowNix goblin gets no package grants.
 pub const NIX_PACKAGES: &str =
@@ -69,7 +71,7 @@ pub enum Source {
     /// starts once the owner's handoff arrives.
     Member {
         /// Held from acceptance, so the owner stopping cannot take it away.
-        scope: Option<std::sync::Arc<dyn crate::ScopePin>>,
+        scope: Option<Fd>,
         /// The scope the owner is in, which the configuration must be able to
         /// join.
         owner_scope: Option<String>,
@@ -148,20 +150,6 @@ pub struct WorkingDirectory {
     pub destination: PathBuf,
 }
 
-/// Transitional pin to scope::Shared, opaque to the contract and daemon.
-/// Phase 4 removes ScopePin and ScopeHandle together.
-pub trait ScopePin: std::any::Any + Send + Sync {}
-
-#[derive(Clone)]
-pub struct ScopeHandle(pub std::sync::Weak<dyn ScopePin>);
-impl Default for ScopeHandle {
-    fn default() -> Self {
-        struct Absent;
-        impl ScopePin for Absent {}
-        Self(std::sync::Weak::<Absent>::new())
-    }
-}
-
 /// A process's terminal or standard streams.
 #[derive(Debug)]
 pub enum Stdio {
@@ -185,6 +173,12 @@ pub enum SpawnKind {
 /// What the daemon asks of a runtime.
 #[derive(Debug)]
 pub enum Command {
+    /// Preserve the scope-wide exit outcome after an unexpected engine death.
+    ScopeFailed,
+    /// Membership requested by a worker after resolving its scope.
+    ScopeMembership {
+        result: std::result::Result<Fd, String>,
+    },
     /// Resolve a package for its approval preview; cancelled by `approval`.
     Preview {
         approval: u64,
@@ -308,6 +302,15 @@ impl Command {
 
 /// What a runtime reports.
 pub enum Event {
+    /// Transitional daemon-side Docker bridge failure, until phase 4B.
+    ScopeFailed {
+        name: String,
+    },
+    /// Resolve a private scope membership without blocking the event pump.
+    ScopeNeeded {
+        name: String,
+        executable: PathBuf,
+    },
     Preview {
         approval: u64,
         result: std::result::Result<crate::catalog::Preview, String>,
@@ -323,8 +326,6 @@ pub enum Event {
         /// The agent's PTY, or with attach handlers its output pipe.
         master: OwnedFd,
         identity: Identity,
-        /// Until phase 4, how the daemon finds the owner's scope for a member.
-        scope: ScopeHandle,
         recreated: Option<Box<Recreated>>,
         auto: Box<Auto>,
     },

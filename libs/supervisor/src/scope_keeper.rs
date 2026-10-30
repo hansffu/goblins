@@ -1,7 +1,6 @@
 //! A scope's user, network and optional PID namespaces, owned by a trusted
 //! keeper independently of Docker engine activation.
 use crate::Result;
-use crate::config::Launch;
 use crate::docker::map_ids;
 use crate::docker::subordinate;
 use crate::process;
@@ -22,6 +21,9 @@ use std::{
 pub struct Namespaces {
     process: Child,
     lifetime: Option<File>,
+    pub fds: NamespaceFds,
+}
+pub struct NamespaceFds {
     pub outer: File,
     pub user: File,
     pub net: File,
@@ -30,8 +32,10 @@ pub struct Namespaces {
 }
 impl Namespaces {
     pub fn start(
-        launch: &Launch,
+        bwrap: &Path,
+        helper: &Path,
         directory: &Path,
+        runtime_lease: &Path,
         share_pid: bool,
         storage_lease: Option<&File>,
         cancel: &Cancellation,
@@ -48,7 +52,7 @@ impl Namespaces {
         let (info_r, info_w) = unix::pipe()?;
         let (gate_r, gate_w) = unix::pipe()?;
         let (life_r, life_w) = unix::pipe()?;
-        let mut command = Command::new(&launch.bwrap);
+        let mut command = Command::new(bwrap);
         command.args([
             "--unshare-all",
             "--unshare-user",
@@ -76,12 +80,7 @@ impl Namespaces {
             &state.display().to_string(),
             "/run/goblins-scope",
             "--ro-bind",
-            &directory
-                .parent()
-                .ok_or("missing scope resource directory")?
-                .join(".gc-lease")
-                .display()
-                .to_string(),
+            &runtime_lease.display().to_string(),
             "/run/goblins-scope/lease",
         ]);
         if let Some(lease) = storage_lease {
@@ -93,7 +92,7 @@ impl Namespaces {
         }
         command
             .args(["--remount-ro", "/", "--"])
-            .arg(&launch.helper)
+            .arg(helper)
             .arg("--scope-keeper")
             .arg(if share_pid { "pid" } else { "private" })
             .arg(if storage_lease.is_some() {
@@ -170,11 +169,13 @@ impl Namespaces {
             Ok((outer, user, net, pid, net_path)) => Ok(Self {
                 process: child,
                 lifetime: Some(File::from(life_w)),
-                outer,
-                user,
-                net,
-                pid,
-                net_path,
+                fds: NamespaceFds {
+                    outer,
+                    user,
+                    net,
+                    pid,
+                    net_path,
+                },
             }),
             Err(error) => {
                 drop(life_w);
@@ -196,5 +197,12 @@ impl Drop for Namespaces {
     fn drop(&mut self) {
         self.lifetime.take();
         let _ = self.process.wait();
+    }
+}
+
+impl std::ops::Deref for Namespaces {
+    type Target = NamespaceFds;
+    fn deref(&self) -> &Self::Target {
+        &self.fds
     }
 }

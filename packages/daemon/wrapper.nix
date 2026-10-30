@@ -9,6 +9,7 @@ let
   inherit (pkgs) lib;
   helper = import ../mount-helper { inherit pkgs; };
   controller = import ./. { inherit pkgs; };
+  supervisor = import ../supervisor-bwrap { inherit pkgs; };
   prepare =
     configuration:
     builtins.removeAttrs configuration [ "nix" ]
@@ -21,6 +22,7 @@ let
           ${configuration.build_spec} > $out
       '';
       helper = "${helper}/bin/goblins-mount-helper";
+      scope_runtime = "${supervisor}/bin/goblins-supervisor-bwrap";
       # Resolve approved attributes directly from our pinned nixpkgs source.
       flake = "path:${pkgs.path}";
     };
@@ -55,4 +57,4 @@ let
         '';
       });
 in
-package // { inherit config goblins helper; }
+package // { inherit config goblins helper supervisor; }

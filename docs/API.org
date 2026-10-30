@@ -560,3 +560,38 @@ A communications log entry: ={"instance", "sequence", "timestamp", "kind", "acto
 ** HistoryRecord
 
 ={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "created", "updated", "stopped"}=
+
+* Private scope channel (API 1)
+
+This channel is internal to the daemon and its pinned =goblins-supervisor-bwrap= executable; host and sandbox endpoints do not accept these methods. The types live in =libs/runtime/src/scope.rs= and the transport in =libs/runtime/src/channel.rs=. The scope executable accepts only inherited descriptor 3, establishes parent-death handling, verifies its daemon parent through the socket's =SO_PEERCRED= and closes other inherited descriptors before reading setup.
+
+Each message is a JSON-RPC 2.0 notification, ={"jsonrpc":"2.0","method":METHOD,"params":OBJECT}=. A member connection performs one request/reply exchange at a time. The stream has =Content-Length= and =Descriptor-Count= headers, at most 256 header bytes and an 8 MiB body; the whole-frame deadline is 3 seconds from the first byte. JSON nesting is at most 32, and duplicate keys and unknown message fields fail the channel. A frame carries at most 240 descriptors, independently of the sandbox endpoint's three-descriptor limit. A descriptor reference is ={"$fd":INDEX}=, with exactly one reference for each attached descriptor. Descriptors are attached to the first successful =sendmsg= for their frame, received close-on-exec, and closed on malformed, truncated or abandoned input. Reads stop at each frame boundary; ancillary data is accepted only at the frame's first byte and must exactly match that frame's declared count. A subsequent frame cannot consume an earlier frame's attachment. Output queues hold at most 64 frames, 16 MiB of unsent bytes and 480 unsent descriptors; a full queue returns capacity to its caller.
+
+** Daemon control connection
+
+| Direction | Method | Parameters | Effect |
+|-----------+--------+------------+--------|
+| Daemon to scope | =Setup= | ={"api":1,"name":SCOPE,"directory":ABSOLUTE_PATH}= | Required first message. Creates private runtime state under =STATE/scopes/NAME/= and holds its shared lifetime lock; a version mismatch or invalid setup exits. |
+| Daemon to scope | =AddMember= | ={"fd":DESCRIPTOR}= | Adopts one end of a new member socketpair and increments the received membership count. |
+| Daemon to scope | =Stop= | ={}= | Reports =Stopping= and exits, cleaning registered members before namespace/storage teardown. |
+| Scope to daemon | =Idle= | ={"added":COUNT}= | No membership connections remain. COUNT is the total number of =AddMember= messages received by this process. |
+| Scope to daemon | =Stopping= | ={}= | Process teardown has begun; its entry stays registered until process exit and storage-lock release. |
+| Scope to daemon | =Error= | ={"message":TEXT}= | Scope setup or control processing failed; the process exits. |
+
+The daemon counts queued =AddMember= messages and sends =Stop= only when an =Idle= count matches its own count. An older =Idle= crossing a newer membership cannot stop that scope. A stopping entry accepts no new raid-member lease; other launches wait for exit before a replacement scope starts. Control EOF also tears the process down. Before replacement or collection, the directory and lock are opened relative to pinned descriptors without crossing mount points, and an exclusive lock must succeed on the old runtime directory's lock file. Deletion uses the same descriptor-relative no-mount-crossing walk as storage cleanup, including same-device bind mounts; persistent and temporary storage under the cache have separate lifetime rules.
+
+** Member connection
+
+| Direction | Method | Parameters | Effect |
+|-----------+--------+------------+--------|
+| Runtime to scope | =Join= | ={"definition":{"persistent":BOOL,"pid":BOOL,"storage":[NAME...],"docker":BOOL},"bwrap":PATH,"helper":PATH,"pasta":PATH_OR_NULL,"allow_nix":BOOL}= | Initializes the scope on its first successful join, or checks definition, online/offline policy and, for Docker scopes, allowNix compatibility. |
+| Scope to runtime | =Joined= | ={"outer":DESCRIPTOR,"user":DESCRIPTOR,"net":DESCRIPTOR,"pid":DESCRIPTOR_OR_NULL,"directory":PATH}= | Returns the outer user, shared user/network and optional shared PID namespaces, plus the scope runtime directory. |
+| Runtime to scope | =OpenStorage= | ={"names":[NAME...]}= | Opens named scope storage directories in batches of at most 240 names; names must be declared and unique within the request. |
+| Scope to runtime | =Storage= | ={"directories":{NAME:DESCRIPTOR,...}}= | Returns one directory descriptor for each requested name. |
+| Runtime to scope | =RegisterMember= | ={"mountns":DESCRIPTOR}= | Pins the created sandbox mount namespace before Bubblewrap's payload gate is released; accepted once after =Join=. |
+| Scope to runtime | =Registered= | ={}= | Confirms cleanup ownership. Only then may the runtime tell the helper to release its payload gate. |
+| Runtime to scope | =Leave= | ={}= | Begins orderly member cleanup before its runtime releases resources. |
+| Scope to runtime | =Left= | ={}= | Cleanup is complete; when it was the last member, namespace/storage teardown also completed before this acknowledgement. |
+| Scope to runtime | =Error= | ={"message":TEXT}= | The request was refused or invalid. The member connection closes and its runtime fails the launch/operation. |
+
+Closing a member connection removes processes in its registered mount namespace from the shared PID namespace. EOF before registration has no released payload to clean up. On normal stop the runtime sends =Leave=, starts cleanup and waits for =Left= within a separate 15-second scope-release deadline after helper shutdown (which retains its own two-second fallback). Member and bridge release share that scope deadline; expiry closes the membership rather than blocking indefinitely. The last leaver is acknowledged only after storage teardown; another active member permits immediate acknowledgement. The daemon-side Docker bridge temporarily holds a separate, unregistered membership while its engine runs; it leaves after stopping the engine and before releasing donor resources. Docker attachment methods remain in-process until phase 4B.

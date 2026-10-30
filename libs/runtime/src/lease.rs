@@ -18,6 +18,18 @@ pub fn flock(path: &Path, exclusive: bool) -> Result<Option<File>> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
+    flock_file(file, exclusive, path)
+}
+/// Open a lifetime lock relative to a pinned directory, without crossing a
+/// bind mount or following a symlink while opening the lock itself.
+pub fn flock_at(parent: &File, name: &std::ffi::OsStr, exclusive: bool) -> Result<Option<File>> {
+    flock_file(
+        goblins_unix::cleanup::open_lock_at(parent, name)?,
+        exclusive,
+        Path::new(name),
+    )
+}
+fn flock_file(file: File, exclusive: bool, path: &Path) -> Result<Option<File>> {
     let meta = file.metadata()?;
     if !meta.is_file() || meta.uid() != unsafe { libc::getuid() } {
         return Err(format!("unsafe cleanup lock {}", path.display()).into());

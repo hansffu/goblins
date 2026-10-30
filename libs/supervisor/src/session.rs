@@ -30,10 +30,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Weak,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use goblins_runtime::NIX_PACKAGES;
@@ -149,8 +149,6 @@ pub(crate) struct Inheritance {
     launch: Arc<Launch>,
     binds: Arc<crate::binds::Plan>,
     workspace: Arc<SharedWorkspace>,
-    // Weak: a stopped session's record must not keep its scope alive.
-    scope: Weak<crate::scope::Shared>,
     docker: Arc<AtomicBool>,
     /// This session's configuration key and the configurations it may run.
     configuration: String,
@@ -186,9 +184,8 @@ impl Inheritance {
             docker: self.docker.load(Ordering::SeqCst),
         })
     }
-    /// The scope, held weakly.
-    pub(crate) fn scope_handle(&self) -> Weak<dyn goblins_runtime::ScopePin> {
-        self.scope.clone()
+    pub(crate) fn resources(&self) -> &ResourceLease {
+        &self.leases[0]
     }
     /// The helper binary, which also supervises host commands.
     pub(crate) fn helper(&self) -> &Path {
@@ -255,7 +252,6 @@ impl Inheritance {
             workspace: Arc::new(SharedWorkspace {
                 file: File::open(owner.directory()).unwrap(),
             }),
-            scope: Weak::new(),
             docker: Arc::default(),
             configuration: configuration.into(),
             run_targets: run_targets.iter().map(|t| t.to_string()).collect(),
@@ -269,7 +265,7 @@ use goblins_runtime::log_event;
 pub(crate) struct Member<'a> {
     pub handoff: Handoff,
     /// The owner's scope, held from the launch's acceptance.
-    pub scope: Option<Arc<crate::scope::Shared>>,
+    pub scope: Option<goblins_runtime::Fd>,
     /// The scope the owner is in, which the configuration must be able to join.
     pub owner_scope: Option<&'a str>,
     pub protected_paths: Vec<PathBuf>,
@@ -297,7 +293,8 @@ pub struct Session {
     pub control: Option<OwnedFd>,
     helper: Option<Child>,
     network: Option<crate::network::Network>,
-    scope: Option<Arc<crate::scope::Shared>>,
+    scope: Option<Arc<crate::scope_client::Client>>,
+    pub(crate) scope_broker: Option<crate::scope_client::Broker>,
     docker: Option<crate::scope::Lease>,
     // Shared through inheritance: goblins a raid owner runs start with Docker
     // attached when the owner had it at the time they were created.
@@ -361,6 +358,7 @@ impl Session {
             helper: None,
             network: None,
             scope: None,
+            scope_broker: None,
             docker: None,
             docker_attached: Arc::new(AtomicBool::new(false)),
             docker_inherit_enabled: None,
@@ -437,8 +435,11 @@ impl Session {
         if session.launch.scope.is_some() {
             let scope = scope.ok_or("the owner's scope has stopped")?;
             // A newer definition must not create a different inherited scope.
-            scope.compatible(&session.launch)?;
-            session.scope = Some(scope);
+            session.scope = Some(Arc::new(crate::scope_client::Client::join(
+                scope.into(),
+                &session.launch,
+                &session.cancel,
+            )?));
         }
         let enabled = handoff.docker || session.launch.docker.as_ref().is_some_and(|d| d.enabled);
         session.docker_inherit_enabled = Some(enabled);
@@ -482,7 +483,6 @@ impl Session {
             launch: Arc::new(self.launch.clone()),
             binds: self.binds.as_ref().unwrap().clone(),
             workspace: self.workspace.as_ref().unwrap().clone(),
-            scope: self.scope.as_ref().map(Arc::downgrade).unwrap_or_default(),
             docker: self.docker_attached.clone(),
             configuration: self.configuration.clone(),
             run_targets: self.run_targets.clone(),
@@ -663,12 +663,12 @@ impl Session {
         listener.set_nonblocking(true)?;
         self.listener = Some(listener);
         if self.launch.scope.is_some() && self.scope.is_none() {
-            self.scope = Some(crate::scope::Shared::prepare(
-                &self.launch,
-                self.inheritance(),
-                &self.directory,
-                &self.cancel,
-            )?);
+            self.scope = Some(Arc::new(
+                self.scope_broker
+                    .as_ref()
+                    .ok_or("scope membership broker unavailable")?
+                    .request(&self.launch, &self.cancel)?,
+            ));
         }
         if docker {
             fs::create_dir(self.directory.join("docker-socket"))?;
@@ -684,7 +684,10 @@ impl Session {
             }
             fs::write(self.directory.join("resolv.conf"), "nameserver 10.0.2.3\n")?;
         }
-        let shared_pid = self.scope.as_ref().is_some_and(|s| s.pid.is_some());
+        let shared_pid = self
+            .scope
+            .as_ref()
+            .is_some_and(|s| s.namespaces.pid.is_some());
         let mut path = vec![
             "/run/goblins/packages/current/bin".into(),
             "/run/goblins/bin".into(),
@@ -935,6 +938,9 @@ impl Session {
         let (init_control, init_peer) = goblins_init::pair()?;
         let mut command = Command::new(&self.launch.helper);
         command.args(["--init-control".into(), init_peer.as_raw_fd().to_string()]);
+        if self.scope.is_some() {
+            command.arg("--register-scope");
+        }
         let namespaces = self
             .network
             .as_ref()
@@ -1032,7 +1038,29 @@ impl Session {
         drop(binds);
         self.helper_input = Some(File::from(control_w));
         self.helper_output = Some(File::from(reply_r));
-        let ready = self.helper_reply(Duration::from_secs(15))?;
+        let startup_deadline = Instant::now() + Duration::from_secs(15);
+        if let Some(scope) = self.scope.clone() {
+            let registration =
+                self.helper_reply(startup_deadline.saturating_duration_since(Instant::now()))?;
+            let fields: Vec<_> = registration.split_whitespace().collect();
+            if fields.len() != 3 || fields[0] != "MOUNTNS" {
+                return Err("invalid helper scope registration".into());
+            }
+            let pid: u32 = fields[1].parse()?;
+            let inode: u64 = fields[2].parse()?;
+            let namespace = File::open(format!("/proc/{pid}/ns/mnt"))?;
+            use std::os::unix::fs::MetadataExt;
+            if namespace.metadata()?.ino() != inode {
+                return Err("helper mount namespace changed".into());
+            }
+            scope.register(namespace, &self.cancel, startup_deadline)?;
+            self.helper_input
+                .as_mut()
+                .ok_or("helper not started")?
+                .write_all(b"RELEASE\n")?;
+        }
+        let ready =
+            self.helper_reply(startup_deadline.saturating_duration_since(Instant::now()))?;
         let fields: Vec<_> = ready.split_whitespace().collect();
         if fields.len() != 6 || fields[0] != "READY2" {
             return Err(format!("invalid helper startup reply: {ready}").into());
@@ -1489,10 +1517,6 @@ impl Session {
     pub fn docker_enabled(&self) -> bool {
         self.docker.is_some()
     }
-    #[allow(dead_code)]
-    pub fn scope_name(&self) -> Option<String> {
-        self.launch.scope.as_ref().map(|s| s.name.clone())
-    }
     /// Attach this sandbox to its scope's shared Docker engine.
     pub fn enable_docker(&mut self) -> Result<()> {
         if self.docker_enabled() {
@@ -1566,7 +1590,8 @@ impl Session {
                     .as_raw_fd(),
             ))
             .collect();
-        let lease = selected.acquire(
+        let shared = crate::scope::Shared::prepare(&self.launch, &selected, &self.cancel)?;
+        let lease = shared.acquire(
             &self.launch,
             crate::docker::Filesystem {
                 args: &filesystem,
@@ -1575,11 +1600,14 @@ impl Session {
             grants,
             self.inheritance(),
             self.directory.join("store"),
+            self.scope_broker
+                .as_ref()
+                .ok_or("scope membership broker unavailable")?,
             &self.cancel,
         )?;
         let socket = self.directory.join("docker-socket/docker.sock");
         let staged = self.directory.join("docker-socket/next.sock");
-        fs::hard_link(selected.socket(), &staged)?;
+        fs::hard_link(shared.socket(), &staged)?;
         fs::rename(staged, socket)?;
         self.docker = Some(lease);
         self.docker_attached.store(true, Ordering::SeqCst);
@@ -1587,12 +1615,20 @@ impl Session {
         Ok(())
     }
     pub fn alive(&mut self) -> bool {
-        if self.scope.as_ref().is_some_and(|scope| !scope.alive())
-            || self
-                .docker
-                .as_ref()
-                .is_some_and(|lease| !lease.shared.alive())
+        if self
+            .docker
+            .as_ref()
+            .is_some_and(|lease| !lease.shared.alive())
         {
+            if let (Some(broker), Some(scope)) = (&self.scope_broker, &self.launch.scope) {
+                // A full one-slot channel already holds this same scope's
+                // failure. Keep it separate from backpressured worker results.
+                let _ = broker.scope_failures.try_send(scope.name.clone());
+            }
+            self.exit_code = Some(1);
+            return false;
+        }
+        if self.scope.as_ref().is_some_and(|scope| !scope.alive()) {
             self.exit_code = Some(1);
             return false;
         }
@@ -1615,6 +1651,7 @@ impl Session {
         self.helper.as_ref().map(Child::id)
     }
     pub fn stop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
         self.network.take();
         // EOF lets the helper kill the sandbox and wait for Bubblewrap to reap
         // it. Bound this handshake: a stuck mount must not block shutdown.
@@ -1623,7 +1660,6 @@ impl Session {
             if let Ok(Some(status)) = helper.try_wait() {
                 self.exit_code = status.code();
             } else {
-                let deadline = std::time::Instant::now() + Duration::from_secs(2);
                 while matches!(helper.try_wait(), Ok(None)) {
                     if std::time::Instant::now() >= deadline {
                         // Parent-death teardown remains the fallback for a
@@ -1636,12 +1672,23 @@ impl Session {
                 let _ = helper.wait();
             }
         }
-        // Daemons this member started must not outlive it in the shared PID
-        // namespace, retaining its mounts and writable grants.
-        if let (Some(scope), Some(identity)) = (&self.scope, &self.identity) {
-            scope.kill_member(identity.mountns);
+        let deadline = Instant::now() + goblins_runtime::scope::RELEASE_TIMEOUT;
+        // Start member cleanup before engine shutdown; its independent bridge
+        // lease retains all donor resources while the engine winds down.
+        let leaving = self
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.begin_leave().is_ok());
+        if let Some(docker) = self.docker.take() {
+            docker.stop(deadline);
         }
-        self.docker.take();
+        if leaving {
+            if let Some(scope) = &self.scope {
+                if let Err(error) = scope.finish_leave(deadline) {
+                    eprintln!("scope shutdown: {error}");
+                }
+            }
+        }
         self.scope.take();
         self.docker_attached.store(false, Ordering::SeqCst);
         self.helper_output.take();

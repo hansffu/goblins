@@ -134,6 +134,11 @@ impl Local {
                 }
             }
         }
+        // Read after results too: Stopped must not hide a failure that the
+        // worker published immediately before it, even with a full result queue.
+        if let Ok(name) = self.worker.scope_failures.try_recv() {
+            self.report(Event::ScopeFailed { name });
+        }
         self.receive_init();
         for _ in 0..8 {
             let Some(listener) = &self.listener else {
@@ -377,7 +382,7 @@ impl Runtime for Local {
                 Some((policy, support)) => (Capabilities { policy, support })
                     .check(&operation)
                     .err()
-                    .map(|refusal| refusal_message(refusal)),
+                    .map(refusal_message),
                 None => Some("the goblin has not started".to_string()),
             };
             if let Some(message) = refused {
@@ -386,6 +391,22 @@ impl Runtime for Local {
             }
         }
         match command {
+            Command::ScopeFailed => {
+                self.worker
+                    .failed_scope
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                return self.send(Command::Stop);
+            }
+            Command::ScopeMembership { result } => {
+                if !self.stopping {
+                    if let Err(
+                        mpsc::TrySendError::Full(result) | mpsc::TrySendError::Disconnected(result),
+                    ) = self.worker.memberships.try_send(result)
+                    {
+                        return Err(Command::ScopeMembership { result });
+                    }
+                }
+            }
             Command::Cancel(id) => {
                 if let Some(cancel) = self.cancels.remove(&id) {
                     cancel.cancel();
@@ -508,8 +529,8 @@ mod tests {
     use super::*;
     use crate::process::Cancellation as Cancel;
     use goblins_runtime::Identity;
+    use goblins_runtime::SpawnKind;
     use goblins_runtime::policy::{Policy, Support};
-    use goblins_runtime::{ScopeHandle, SpawnKind};
     use std::os::unix::net::UnixListener;
 
     /// A worker without a thread: the test receives its commands and sends
@@ -524,12 +545,61 @@ mod tests {
         let (_, endpoints) = mpsc::sync_channel(1);
         let worker = Worker {
             cancel: Cancel::default(),
+            failed_scope: Default::default(),
+            scope_failures: mpsc::sync_channel(1).1,
             commands,
+            memberships: mpsc::sync_channel(1).0,
             results,
             endpoints,
             thread: None,
         };
         (worker, received, sender)
+    }
+
+    #[test]
+    fn a_scope_allocation_error_reaches_the_worker_without_stopping_a_running_goblin() {
+        let (mut worker, _, _sender) = worker();
+        let (memberships, received) = mpsc::sync_channel(1);
+        worker.memberships = memberships;
+        let mut local = ready(worker);
+        local
+            .send(Command::ScopeMembership {
+                result: Err("scope membership queue is full".into()),
+            })
+            .unwrap();
+        assert!(
+            matches!(received.try_recv(), Ok(Err(message)) if message == "scope membership queue is full")
+        );
+        assert!(!local.stopping);
+        assert!(local.poll().is_none());
+    }
+
+    #[test]
+    fn scope_failure_is_not_lost_behind_a_full_or_ended_result_queue() {
+        let (mut worker, _, sender) = worker();
+        let (failure, received) = mpsc::sync_channel(1);
+        worker.scope_failures = received;
+        for _ in 0..16 {
+            sender.try_send(Event::Mode { server: false }).unwrap();
+        }
+        failure.try_send("work".into()).unwrap();
+        drop(sender);
+        let mut local = ready(worker);
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::ScopeFailed { name } if name == "work"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, Event::Mode { .. }))
+                .count(),
+            16
+        );
     }
 
     #[test]
@@ -822,7 +892,6 @@ mod tests {
                 source_mountns: 0,
                 mountns: 0,
             },
-            scope: ScopeHandle::default(),
             recreated: None,
             auto: Box::default(),
         }

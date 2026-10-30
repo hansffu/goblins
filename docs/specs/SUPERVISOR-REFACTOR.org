@@ -630,22 +630,26 @@ flowchart TB
 [[file:diagrams/supervisor-scope.svg]]
 
 *Starting and finding a scope:*
-- The daemon keeps a map from scope name to the scope process's control channel. It starts the process, the scope mode of =packages/supervisor-bwrap= (*[Q3]*), when it accepts the first member of a scope.
-- For every member, the daemon opens a membership lease and passes it in =Start=; for a raid member it does so at acceptance (section 4.5).
+- The daemon keeps a map from scope name to the scope process's control channel and child. A raid member requires its owner's live, non-stopping map entry: at acceptance the daemon creates a membership socketpair, sends one end in =AddMember= and passes the other in =Start= (section 4.5). The synchronous =-32009= "the owner's scope has stopped" remains unchanged. A goblin without a scope gets no lease.
+- Every other launch requests membership after its worker reads and selects the manifest, whether its scope is explicit or the configuration default. The runtime reports =ScopeNeeded= with the name and configuration-pinned scope-runtime executable; the daemon finds or starts the scope, sends =AddMember= and returns the member end in =ScopeMembership=. A running scope is reused regardless of which executable started it, subject to =Join= compatibility. The daemon does no manifest preflight or caching, never blocks the event pump and preserves the public =Start= parameters and validation order.
+- Each scope has one daemon-created control socketpair: first-message setup, =AddMember= with a descriptor, stop, and stopping/error reports. Each member has a separate daemon-created socketpair for =Join=, =RegisterMember= and Docker operations. =AddMember= waits in the scope's bounded outbound queue during startup. Stop/cancellation closes pending membership; EOF before =Join= has no sandbox to clean up, and EOF after =Join= invokes member cleanup.
+- The worker sends resolved definition, network and =allowNix= in =Join=. A compatibility refusal fails the launch asynchronously, as the worker's compatibility check does today.
 - The scope process checks each new member with today's =compatible= rules (definition, network, =allowNix=) and refuses a mismatch.
+- The scope never stops solely because membership becomes empty while daemon control is open. It reports =Idle{added}= with the number of =AddMember= messages received. The daemon sends =Stop= only if that count equals its sent count: an older =Idle= crossing a newer =AddMember= is ignored until the scope reports idle again. Sending =Stop= marks the entry stopping; a unit test covers this crossing. Control EOF still tears the scope down.
 - A scope process that is stopping stays in the daemon's map until it exits and has released its storage lock. A launch that needs the scope meanwhile waits, as it waits for the registry slot today, instead of meeting its own previous instance as a foreign controller.
 
 *Two kinds of lease, counted separately:*
-- A *membership lease* is the member runtime's connection to the scope process. Its first request, =Join=, returns the namespace descriptors. The namespaces, pasta and storage stay until the last membership lease closes, or until the daemon's channel closes.
+- A *membership lease* is the member runtime's connection to the scope process. Its first request, =Join=, returns the namespace descriptors. The namespaces, pasta and storage stay until the last membership closes and the daemon confirms =Stop= through the =Idle= count handshake, or until the daemon's channel closes.
+- A normal stop sends =Leave= on the membership connection, starting leftover cleanup immediately, and waits for =Left= before reporting =Stopped= or releasing its resources. With another active member, =Left= can be immediate; the last leaver is held until the daemon's =Idle=/=Stop= handshake and scope storage teardown. The member and bridge release share a separate 15-second deadline starting after the helper's own two-second shutdown fallback. The previous keeper, namespace, pasta, engine-guardian and temporary-storage drops were unbounded; 15 seconds matches the existing CLI server-stop cleanup wait, rather than shortening storage teardown to the helper's two seconds. On timeout the membership closes as the stop fallback. Crash and EOF retain their cleanup behavior. In 4A the Docker bridge sends its own =Leave= after engine shutdown and before releasing its donors. This preserves the existing rule that scope clearing works once the last member has stopped, without waiting or retrying in the CLI. During daemon shutdown, the daemon keeps pumping scope control through orderly release before joining workers; it does not start pending scopes, and kills an unresponsive scope after the release budget.
 - A *Docker lease* is taken on that connection with =AttachDocker= and grown with =ExtendDocker=. Both send the grant descriptors and fresh copies of all the member's =ResourceLease=s (section 4.5), including the leases on inherited workspaces, and return the socket path. Closing the connection, or =DetachDocker=, ends it. The engine stops when the last Docker lease ends, while non-Docker members keep the scope, as =Lease::drop= does now.
 
 *What the scope owns:*
-- Its runtime directory moves out of the first member's session directory to =STATE/scopes/NAME/=. The engine's store skeleton moves there too, instead of living in the first Docker user's session store.
+- Its runtime directory moves out of the first member's session directory to =STATE/scopes/NAME/=. The scope process creates it private and holds a lock file while alive. Before starting another process of that name, the daemon removes a stale directory only when its lock is free; =goblins gc= does the same. This runtime state is separate from persistent and temporary storage under =cache/goblins/scopes=. The engine's store skeleton moves there in phase 4B, instead of living in the first Docker user's session store.
 - It holds every Docker user's =ResourceLease=s, inherited workspaces included, until the engine stops. That replaces =State.owners= and =State._owner= and keeps the backing directories and Nix roots of the engine's grants alive, even after a donating member stops or its supervisor crashes.
 - Later grants bind into the skeleton as today. Their store paths stay rooted by the leases the scope holds.
 
 *Cleaning up after a member.* =kill_member= moves into the scope process, because the member's runtime cannot run it if its supervisor is killed.
-- After its sandbox's mount namespace exists and before the payload starts, a member runtime registers that namespace with =RegisterMember=, and the payload starts only after the scope acknowledges it. The helper's =--block-fd= gate on Bubblewrap is the intended point, but the exact hook has to be checked during implementation.
+- After its sandbox's mount namespace exists and before the payload starts, the helper reports it and waits before writing Bubblewrap's =--block-fd= gate. The runtime sends =RegisterMember= with a pinned namespace descriptor, waits for the scope acknowledgement, then tells the helper to release. EOF, refusal or registration failure fails the launch and kills the helper. Existing launch limits apply; no new timeout is added. =READY2= retains its current post-release meaning.
 - When a membership lease closes for any reason, the scope process kills every process in its PID namespace that is in that member's mount namespace.
 - A member whose supervisor dies before registering has no payload yet, so nothing is left to clean up.
 
@@ -655,7 +659,7 @@ flowchart TB
 
 Neither existing descriptor path is a general transport: =init::send= treats a short write as an error and uses fixed ancillary buffers, and the host =Connection= receiver accepts descriptors for one request. The control channel needs its own, specified and tested on its own:
 - *Its own budget.* A private per-frame descriptor limit sized for the largest message (=Exported=), with batching if that is ever exceeded. =init::MAX_FDS= stays 3, because it also bounds what host connections may send, which is a public limit.
-- *Association.* Each frame's header declares its descriptor count, and the sender attaches that frame's descriptors to the frame's first =sendmsg=. The receiver queues incoming descriptors in arrival order and gives each decoded frame the number it declared. A count that does not match the indices in the frame, or descriptors left over at EOF, is a protocol error: the channel closes and every queued descriptor is closed.
+- *Association.* Each frame's header declares its descriptor count, and the sender attaches that frame's descriptors to the frame's first =sendmsg=. The receiver reads at most the current frame boundary (one byte at a time until its header is complete), because =recvmsg= does not report an ancillary-data byte offset in a coalesced buffer. Descriptors are accepted only with that frame's first byte, and the declared count must exactly match the frame's received descriptors; no later frame may consume an earlier attachment. A count that does not match the indices in the frame, or descriptors left over at EOF, is a protocol error: the channel closes and every queued descriptor is closed.
 - *Partial I/O.* Writes and reads are queued and resumable, with descriptors only on a frame's first chunk. Output queues are bounded, as with =Connection=.
 - *Frame size.* A relayed sandbox call or answer travels in one frame, so the channel's frame limit is above the sandbox endpoint's request and reply limits.
 - *Tests:*
@@ -909,11 +913,15 @@ Tests: the =cargo metadata= dependency check of section 4.10, and =nix flake che
 
 The binary's entry point is minimal from the start, for both modes. It accepts only the inherited control socket, runs no CLI, daemon or client start-up, and reads everything else from its first message. Before anything else it:
 - sets =PR_SET_PDEATHSIG=;
-- checks that its parent is still the daemon that started it, closing the race between fork and the =prctl=;
+- compares =getppid()= with the starting daemon PID from =SO_PEERCRED= on the inherited socketpair, exiting on mismatch to close the fork/=prctl= race;
 - closes every descriptor except the control socket, as the helper's =close_range= allowlist does today.
 
+The daemon spawns scope processes from its main loop thread, which lives as long as the daemon: Linux parent-death signals follow the creating thread. The configuration pins the scope executable alongside =helper=; =ScopeNeeded= carries it, while =Started= does not.
+
+Phase 4A builds the section 4.7 control-channel transport once in =libs/runtime=, including fragmented/coalesced frames, short writes, mid-frame EOF and error descriptor-cleanup tests. Phase 6 reuses it.
+
 This is the riskiest step and lands as two commits, each green:
-1. *Namespaces, pasta, storage, membership leases and member clean-up.* The Docker engine stays in the daemon for this commit. What remains of =Shared= is a per-scope Docker state keyed by scope name. It holds its owners as =Inheritance= values, as today, and starts the engine in the namespaces it receives from the scope process.
+1. *Namespaces, pasta, storage, membership leases and member clean-up.* The Docker engine stays in the daemon for this commit. What remains of =Shared= is a per-scope Docker state keyed by scope name. It holds its owners as =Inheritance= values, as today, and starts the engine in the namespaces it receives from the scope process. While the engine runs, this bridge holds its own membership lease. Teardown stops the engine before closing that lease. A departing donor's own membership closes immediately, cleaning its leftovers while the bridge retains its resources. The store skeleton stays in the first Docker user's session store, retained by that donor's =Inheritance= until 4B. Its cleanup guardian keeps a fresh shared lease on the donor's =resources/.gc-lease=, passed to Bubblewrap as the typed donor =ResourceLease= descriptor rather than a path inferred from the runtime directory, preserving session-resource protection after daemon death; the scope runtime lock is a separate lifetime. An unexpected engine exit keeps today's scope-wide outcome: the bridge reports it to the daemon, which stops every member of that scope with exit code 1, including non-Docker members. This transitional report uses no new scope-protocol message. In 4B the scope process owns the engine and preserves the same failure rule.
 2. *The Docker engine, Docker leases and the store skeleton* move into the scope process, and the bridge and =Shared= are deleted.
 
 =HELD= becomes per scope process. The cross-process =flock= on persistent scope storage stays.
@@ -1050,6 +1058,7 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
   - The =cargo metadata= dependency check of section 4.10.
   - Every package builds on its own with =nix flake check=.
 - *Phase 4:*
+  - The control-channel transport tests listed in section 4.7, implemented here for reuse in phase 6.
   - B, with a workspace inherited from A, attaches to Docker and stops. The engine keeps working with that workspace, and a surviving Docker user still gets a new live grant into it. Required: it moved here from phase 2.
   - The first member of a scope stops while a second keeps the network, storage and Docker engine.
   - The last Docker user leaves while a non-Docker member remains: the engine stops and the namespaces and storage stay.
@@ -1075,7 +1084,6 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
   - =Export= is waiting in the outbound queue when its owner is stopped, and separately =Exported= is waiting on the return channel; the member launch succeeds in both cases.
   - A supervisor given a =Start= with another =supervisor_api= refuses it, and the launch fails with a clear message.
   - Killing the daemon stops every supervisor and scope process, checked by their PIDs, in addition to the existing daemon-death tests.
-  - The control-channel transport tests listed in section 4.7.
   - Outbound ordering: a queued =Spawn= followed by a =Signal= delivers the signal after the spawn; two different queued signals arrive in order; =KillAll= after a queued =Spawn= also covers that exec; a cancellation for an unsent request removes it.
   - The source check of section 1: no daemon file other than =supervised= uses pidfds or process signals, and none uses Bubblewrap, namespaces, PTYs, SOCK_SEQPACKET, init or =/proc=.
 

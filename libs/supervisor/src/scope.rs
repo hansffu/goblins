@@ -1,35 +1,23 @@
-//! One live instance per named scope: namespaces, network, managed storage
-//! and an optional Docker engine. Members hold strong references; the
-//! registry only a weak one, so the last member leaving stops the scope.
-use crate::Result;
-use crate::config::Launch;
-use crate::docker::Engine;
-use crate::docker::storage_root;
-use crate::network::Network;
-use crate::process;
-use crate::process::Cancellation;
-use crate::scope_keeper::Namespaces;
-use crate::scope_storage::Storage;
-use crate::session::Inheritance;
-use goblins_runtime::config::ScopeDefinition;
-use goblins_unix as unix;
+//! Transitional daemon-side Docker bridge. Namespace/storage ownership lives
+//! in the scope process; phase 4B moves this engine state there as well.
+use crate::{
+    Result,
+    config::Launch,
+    docker::{Engine, storage_root},
+    process::{self, Cancellation},
+    scope_client::{Broker, Client},
+    session::Inheritance,
+};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    os::{
-        fd::{AsRawFd, RawFd},
-        unix::fs::MetadataExt,
-    },
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
-    time::Duration,
+    time::{Duration, Instant},
 };
-
 pub(crate) type Grant = (File, PathBuf, bool);
-/// A grant already given to the engine, by identity. Holding descriptors for
-/// every member's store closure would exhaust the controller's descriptor
-/// limit; the engine's own mounts keep the granted objects alive.
 type Granted = ((u64, u64), PathBuf, bool);
 fn identity(file: &File) -> std::io::Result<(u64, u64)> {
     let meta = file.metadata()?;
@@ -37,278 +25,80 @@ fn identity(file: &File) -> std::io::Result<(u64, u64)> {
 }
 pub(crate) struct Shared {
     pub name: String,
-    pub definition: ScopeDefinition,
-    pub directory: PathBuf,
-    pub user: File,
-    pub net: File,
-    pub pid: Option<File>,
-    online: bool,
-    /// Whether members see the host store: a shared engine's view of it comes
-    /// from its members, so in a scope with Docker they must agree.
-    nix: bool,
+    definition: goblins_runtime::config::ScopeDefinition,
+    directory: PathBuf,
     state: Mutex<State>,
-    _keeper: Keeper,
-    // Dropped last: temporary data outlives every member process and engine.
-    storage: Storage,
-}
-struct Keeper {
-    stop: Option<std::sync::mpsc::Sender<()>>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-impl Drop for Keeper {
-    fn drop(&mut self) {
-        self.stop.take();
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
 }
 struct State {
-    // Explicit drop ordering is also used when the last Docker user leaves.
     engine: Option<Engine>,
+    // An independent scope membership belongs to the engine, never its donor.
+    membership: Option<Client>,
     users: usize,
     grants: Vec<Granted>,
     owners: Vec<Inheritance>,
     store: Option<PathBuf>,
-    network: Option<Network>,
-    namespaces: Namespaces,
-    _owner: Inheritance,
 }
 impl Drop for State {
     fn drop(&mut self) {
         self.engine.take();
-        self.network.take();
+        self.membership.take();
     }
 }
-
 fn lock<'a, T>(mutex: &'a Mutex<T>, cancel: &Cancellation) -> Result<MutexGuard<'a, T>> {
     loop {
         cancel.check()?;
         match mutex.try_lock() {
             Ok(guard) => return Ok(guard),
             Err(std::sync::TryLockError::Poisoned(_)) => {
-                return Err("scope state poisoned".into());
+                return Err("scope Docker state poisoned".into());
             }
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
     }
 }
 type Slot = Arc<Mutex<Weak<Shared>>>;
-static NAMED: OnceLock<Mutex<BTreeMap<(PathBuf, String), Slot>>> = OnceLock::new();
+static DOCKER: OnceLock<Mutex<BTreeMap<(PathBuf, String), Slot>>> = OnceLock::new();
 impl Shared {
-    /// Join the live instance of the launch's scope, or start it.
-    pub fn prepare(
-        launch: &Launch,
-        owner: Inheritance,
-        directory: &Path,
-        cancel: &Cancellation,
-    ) -> Result<Arc<Self>> {
-        let selected = launch.scope.as_ref().ok_or("launch has no scope")?;
+    pub fn prepare(launch: &Launch, member: &Client, cancel: &Cancellation) -> Result<Arc<Self>> {
         let realm = launch
             .protected_paths
             .last()
             .cloned()
-            .unwrap_or_else(|| directory.to_path_buf());
-        let slot = lock(NAMED.get_or_init(Mutex::default), cancel)?
-            .entry((realm, selected.name.clone()))
+            .ok_or("missing daemon realm")?;
+        let slot = lock(DOCKER.get_or_init(Mutex::default), cancel)?
+            .entry((realm, member.name.clone()))
             .or_insert_with(|| Arc::new(Mutex::new(Weak::new())))
             .clone();
-        // Serializes startup and final teardown of this scope within the
-        // controller: a new member waits instead of joining a stopping scope.
-        let mut slot_guard = lock(&slot, cancel)?;
-        if let Some(shared) = slot_guard.upgrade() {
-            shared.compatible(launch)?;
+        let mut slot = lock(&slot, cancel)?;
+        if let Some(shared) = slot.upgrade() {
             return Ok(shared);
         }
-        // A previous instance may still be stopping in another thread.
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        let storage = loop {
-            if let Some(storage) = Storage::open(&selected.name, &selected.definition)? {
-                break storage;
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(format!("scope '{}' did not finish stopping", selected.name).into());
-            }
-            cancel.check()?;
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let path = directory.join(format!(
-            "scope-runtime-{}",
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        unix::private_directory(&path)?;
-        fs::create_dir(path.join("docker-socket"))?;
-        // Linux PDEATHSIG follows the creating THREAD. A session worker may
-        // exit while other members still use this scope; keep the creator alive
-        // independently until the shared namespaces and pasta have been stopped.
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-        let setup_launch = launch.clone();
-        let setup_path = path.clone();
-        let setup_cancel = cancel.clone();
-        let pid = selected.definition.pid;
-        let storage_lease = storage.temporary_lease().map(File::try_clone).transpose()?;
-        let thread = std::thread::spawn(move || {
-            let setup = || -> Result<(Namespaces, Option<Network>)> {
-                let namespaces = Namespaces::start(
-                    &setup_launch,
-                    &setup_path,
-                    pid,
-                    storage_lease.as_ref(),
-                    &setup_cancel,
-                )?;
-                let network = setup_launch
-                    .pasta
-                    .as_ref()
-                    .map(|pasta| {
-                        Network::attach(
-                            pasta,
-                            namespaces.user.try_clone()?,
-                            namespaces.net.try_clone()?,
-                            &namespaces.net_path,
-                            &setup_path,
-                            &setup_cancel,
-                        )
-                    })
-                    .transpose()?;
-                Ok((namespaces, network))
-            };
-            let result = setup();
-            let success = result.is_ok();
-            if ready_tx.send(result).is_ok() && success {
-                let _ = stop_rx.recv();
-            }
-        });
-        let keeper = Keeper {
-            stop: Some(stop_tx),
-            thread: Some(thread),
-        };
-        let (namespaces, network) = ready_rx.recv().map_err(|_| "scope owner exited")??;
+        fs::create_dir_all(member.directory.join("docker-socket"))?;
         let shared = Arc::new(Self {
-            name: selected.name.clone(),
-            definition: selected.definition.clone(),
-            directory: path,
-            user: namespaces.user.try_clone()?,
-            net: namespaces.net.try_clone()?,
-            pid: namespaces.pid.as_ref().map(File::try_clone).transpose()?,
-            online: launch.pasta.is_some(),
-            nix: launch.allow_nix,
+            name: member.name.clone(),
+            definition: member.definition.clone(),
+            directory: member.directory.clone(),
             state: Mutex::new(State {
                 engine: None,
+                membership: None,
                 users: 0,
                 grants: vec![],
                 owners: vec![],
                 store: None,
-                network,
-                namespaces,
-                _owner: owner,
             }),
-            _keeper: keeper,
-            storage,
         });
-        *slot_guard = Arc::downgrade(&shared);
+        *slot = Arc::downgrade(&shared);
         Ok(shared)
-    }
-    pub fn compatible(&self, launch: &Launch) -> Result<()> {
-        if self.online != launch.pasta.is_some() {
-            return Err(format!(
-                "scope '{}' has a different network policy (online/offline)",
-                self.name
-            )
-            .into());
-        }
-        if self.definition.docker && self.nix != launch.allow_nix {
-            return Err(format!(
-                "scope '{}' has Docker and a different allowNix setting",
-                self.name
-            )
-            .into());
-        }
-        if launch
-            .scope
-            .as_ref()
-            .is_none_or(|s| s.name != self.name || s.definition != self.definition)
-        {
-            return Err(format!(
-                "scope '{}' is running with a different definition; stop its members first",
-                self.name
-            )
-            .into());
-        }
-        Ok(())
     }
     pub fn alive(&self) -> bool {
         let Ok(mut state) = self.state.try_lock() else {
             return true;
         };
-        state.namespaces.alive() && state.engine.as_mut().is_none_or(Engine::alive)
-    }
-    /// User, network and (when shared) PID namespace descriptors for members.
-    pub fn fds(&self) -> (RawFd, RawFd, Option<RawFd>) {
-        (
-            self.user.as_raw_fd(),
-            self.net.as_raw_fd(),
-            self.pid.as_ref().map(AsRawFd::as_raw_fd),
-        )
-    }
-    pub fn storage(&self, name: &str) -> Result<&File> {
-        self.storage.directory(name)
+        state.engine.as_mut().is_none_or(Engine::alive)
+            && state.membership.as_ref().is_none_or(Client::alive)
     }
     pub fn socket(&self) -> PathBuf {
         self.directory.join("docker-socket/docker.sock")
-    }
-    /// Kill a departed member's processes that remain in the shared PID
-    /// namespace. Payload code cannot leave its mount namespace (seccomp
-    /// denies unshare, setns and mount), so it identifies the member.
-    pub fn kill_member(&self, mountns: u64) {
-        let Some(pidns) = self
-            .pid
-            .as_ref()
-            .and_then(|f| f.metadata().ok())
-            .map(|m| m.ino())
-        else {
-            return;
-        };
-        for _ in 0..100 {
-            let mut found = false;
-            for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
-                let Some(id) = entry
-                    .file_name()
-                    .to_str()
-                    .and_then(|n| n.parse::<i32>().ok())
-                else {
-                    continue;
-                };
-                // Pin the process before checking it, so a reused PID is
-                // never signalled on the strength of another process's check.
-                let Ok(pidfd) =
-                    unix::owned(unsafe { libc::syscall(libc::SYS_pidfd_open, id, 0) as i32 })
-                else {
-                    continue;
-                };
-                let member = |kind: &str, inode: u64| {
-                    fs::metadata(format!("/proc/{id}/ns/{kind}")).is_ok_and(|m| m.ino() == inode)
-                };
-                if member("pid", pidns) && member("mnt", mountns) {
-                    found = true;
-                    unsafe {
-                        libc::syscall(
-                            libc::SYS_pidfd_send_signal,
-                            pidfd.as_raw_fd(),
-                            libc::SIGKILL,
-                            std::ptr::null::<libc::siginfo_t>(),
-                            0,
-                        );
-                    }
-                }
-            }
-            if !found {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        eprintln!("scope '{}': member processes survived cleanup", self.name);
     }
     pub fn acquire(
         self: &Arc<Self>,
@@ -317,9 +107,9 @@ impl Shared {
         grants: Vec<Grant>,
         owner: Inheritance,
         store: PathBuf,
+        broker: &Broker,
         cancel: &Cancellation,
     ) -> Result<Lease> {
-        self.compatible(launch)?;
         if !self.definition.docker {
             return Err(format!("scope '{}' does not enable Docker", self.name).into());
         }
@@ -353,6 +143,7 @@ impl Shared {
                 }
                 i += count;
             }
+            let membership = broker.request(launch, cancel)?;
             state.engine = Some(Engine::start(
                 launch,
                 crate::docker::Filesystem {
@@ -361,10 +152,12 @@ impl Shared {
                 },
                 &storage_root(true)?,
                 &self.directory,
+                owner.resources(),
                 cancel,
-                &state.namespaces,
+                &membership.namespaces,
                 self.definition.persistent.then_some(self.name.as_str()),
             )?);
+            state.membership = Some(membership);
             state.store = Some(store);
         } else {
             state.owners.push(owner.clone());
@@ -381,6 +174,7 @@ impl Shared {
         state.users += 1;
         Ok(Lease {
             shared: self.clone(),
+            stop_deadline: None,
         })
     }
 }
@@ -436,7 +230,12 @@ impl State {
         }
         let engine = self.engine.as_ref().ok_or("scope Docker engine stopped")?;
         let keep = [
-            self.namespaces.outer.as_raw_fd(),
+            self.membership
+                .as_ref()
+                .ok_or("scope Docker membership lost")?
+                .namespaces
+                .outer
+                .as_raw_fd(),
             engine.mounts.as_raw_fd(),
             engine.root.as_raw_fd(),
             source.as_raw_fd(),
@@ -455,8 +254,12 @@ impl State {
 }
 pub(crate) struct Lease {
     pub shared: Arc<Shared>,
+    stop_deadline: Option<Instant>,
 }
 impl Lease {
+    pub fn stop(mut self, deadline: Instant) {
+        self.stop_deadline = Some(deadline);
+    }
     /// Give the engine store paths mounted into a member after it attached:
     /// package grants, dev shell refreshes and flake apps. Each path is
     /// opened only while it is bound, so the controller holds no descriptor
@@ -483,6 +286,14 @@ impl Drop for Lease {
             state.users -= 1;
             if state.users == 0 {
                 state.engine.take();
+                if let Some(membership) = state.membership.take() {
+                    let deadline = self.stop_deadline.unwrap_or_else(|| {
+                        Instant::now() + goblins_runtime::scope::RELEASE_TIMEOUT
+                    });
+                    if let Err(error) = membership.leave(deadline) {
+                        eprintln!("scope Docker bridge shutdown: {error}");
+                    }
+                }
                 state.owners.clear();
                 state.grants.clear();
                 state.store = None;
@@ -490,14 +301,4 @@ impl Drop for Lease {
             }
         }
     }
-}
-
-// Transitional opaque scope pin; phase 4 deletes the pin and handle.
-impl goblins_runtime::ScopePin for Shared {}
-pub(crate) fn from_pin(
-    pin: std::sync::Arc<dyn goblins_runtime::ScopePin>,
-) -> std::sync::Arc<Shared> {
-    let pin: std::sync::Arc<dyn std::any::Any + Send + Sync> = pin;
-    pin.downcast::<Shared>()
-        .unwrap_or_else(|_| panic!("scope pin has the wrong implementation"))
 }

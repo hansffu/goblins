@@ -305,6 +305,7 @@ let
 in
 {
   # Each runnable Rust package builds with only its listed library sources.
+  rust-supervisor-bwrap = import ../packages/supervisor-bwrap { inherit pkgs; };
   rust-supervisor = import ../libs/supervisor { inherit pkgs; };
   rust-unix = import ../libs/unix { inherit pkgs; };
   rust-runtime = import ../libs/runtime { inherit pkgs; };

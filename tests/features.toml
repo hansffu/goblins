@@ -10,7 +10,7 @@ env = { GOBLINS_TEST_CODEX = "1" }
 # These affect shared authority, lifecycle or test execution. Unknown paths
 # also recommend full validation; agents can present targeted review earlier.
 broad = [
-  "packages/mount-helper/*", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
+  "packages/mount-helper/*", "packages/supervisor-bwrap/*", "packages/daemon/src/scopes.rs", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
   "libs/supervisor/src/lib.rs", "libs/supervisor/src/manifest.rs", "libs/supervisor/src/maintenance.rs", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "packages/daemon/src/controller.rs", "libs/supervisor/src/session.rs",
   "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "packages/daemon/src/controller/policy.rs",
@@ -47,7 +47,7 @@ paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs"
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"
-python = ["test_scopes", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
+python = ["test_scopes", "test_scope_process", "test_scope_cleanup", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]
 checks = ["rust"]
 paths = ["libs/supervisor/src/scope*.rs", "libs/supervisor/src/cleanup.rs", "libs/supervisor/src/network.rs", "libs/supervisor/src/docker.rs", "nix/builders/mk-scope.nix", "nix/demo-goblins/scopes.nix"]
 

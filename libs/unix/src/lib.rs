@@ -229,3 +229,5 @@ pub fn forking() -> std::sync::RwLockWriteGuard<'static, ()> {
 pub fn no_forks() -> std::sync::RwLockReadGuard<'static, ()> {
     FORKS.read().unwrap_or_else(|e| e.into_inner())
 }
+
+pub mod cleanup;

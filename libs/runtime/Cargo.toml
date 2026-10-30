@@ -8,7 +8,12 @@ publish = false
 test-support = []
 
 [dependencies]
+goblins-unix = { path = "../unix" }
+goblins-jsonrpc = { path = "../jsonrpc" }
 goblins-protocol = { path = "../api" }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+goblins-unix = { path = "../unix", features = ["test-support"] }

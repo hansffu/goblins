@@ -315,6 +315,27 @@ class DockerTests(unittest.TestCase):
         self.enable(fresh, four)
         self.run_ok(four, "docker run --rm -v shared:/data goblins-test sh -c 'test \"$(cat /data/value)\" = shared-value'")
 
+    def test_unexpected_engine_death_stops_docker_and_non_docker_scope_members(self):
+        self.named_storage = True
+        docker, one = self.shell("scoped", cwd=self.rw)
+        idle, two = self.shell("scoped", cwd=self.rw)
+        other, three = self.shell("member", cwd=self.rw)
+        self.enable(docker, one)
+        self.assertFalse(self.d.get(idle)["docker_enabled"])
+        self.assertFalse(self.d.get(other)["docker_enabled"])
+        engine, = self.engines()
+        engine_fd = os.pidfd_open(int(engine))
+        try:
+            signal.pidfd_send_signal(engine_fd, signal.SIGKILL)
+        finally:
+            os.close(engine_fd)
+        for member in (docker, idle):
+            record = self.d.wait(lambda: (r if (r := self.d.get(member))["state"] == "stopped" else None))
+            self.assertEqual(record["exit_code"], 1, record)
+            self.assertIsNone(record["stop_reason"], record)
+        self.assertEqual(self.d.get(other)["state"], "running")
+        self.run_ok(three, "test -d /workspace")
+
     def test_scope_clear_removes_subordinate_owned_volumes_and_restarts_empty(self):
         self.named_storage = True
         session, terminal = self.shell("scoped", cwd=self.rw)

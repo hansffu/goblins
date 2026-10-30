@@ -9,7 +9,7 @@ use goblins_protocol::{
 use goblins_runtime::Identity;
 use goblins_runtime::Source;
 use goblins_runtime::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
-use goblins_runtime::{Command, Event, Runtime, ScopeHandle};
+use goblins_runtime::{Command, Event, Runtime};
 use goblins_supervisor::Local;
 use goblins_unix as unix;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -190,6 +190,8 @@ struct Active {
     created: u64,
     record: SessionRecord,
     runtime: Option<Box<dyn Runtime>>,
+    /// Scope selected at acceptance or requested before startup completes.
+    member_scope: Option<String>,
     pending: Option<Pending>,
     /// A host command waiting for its directory; it holds the pending slot.
     preparing: Option<host::Preparing>,
@@ -201,9 +203,6 @@ struct Active {
     support: Support,
     /// The current dev shell generation, replaced by each refresh.
     dev_shell: Option<DevShellSummary>,
-    /// The goblin's scope, held weakly, so the daemon can pin it for a member
-    /// the goblin runs. Until phase 4 moves scopes into processes of their own.
-    scope: ScopeHandle,
     /// The manifest this launch was accepted against, which stays rooted
     /// until the launch has started.
     launch_manifest: Option<std::sync::Arc<goblins_runtime::config::ManifestLease>>,
@@ -238,6 +237,29 @@ struct Active {
     line: String,
 }
 impl Active {
+    fn fail_launch(&mut self, message: &str) {
+        self.exporting = None;
+        self.launch_manifest = None;
+        if !["stopped", "failed"].contains(&self.record.state.as_str()) {
+            self.record.state = "failed".into();
+            self.record.detail = Some(bounded(&message));
+            if self.record.identity.is_none() {
+                self.terminal.failed_start();
+            }
+        }
+        if let Some(runtime) = &mut self.runtime {
+            let _ = runtime.send(Command::Stop);
+        }
+    }
+
+    fn scope_failed(&mut self, name: &str) {
+        if self.member_scope.as_deref() == Some(name) {
+            if let Some(runtime) = &mut self.runtime {
+                let _ = runtime.send(Command::ScopeFailed);
+            }
+        }
+    }
+
     /// Cancel the runtime's work under `id`, queued or running.
     fn cancel_work(&mut self, id: u64) {
         if let Some(runtime) = &mut self.runtime {
@@ -247,9 +269,9 @@ impl Active {
     /// Give a test goblin the plain policy a Started event would carry.
     #[cfg(test)]
     fn set_policy(&mut self, policy: Policy) {
+        self.member_scope = policy.scope.as_ref().map(|scope| scope.name.clone());
         self.policy = Some(Box::new(policy));
         self.dev_shell = None;
-        self.scope = ScopeHandle::default();
     }
     /// May this goblin do `operation`? A goblin that has not started has no
     /// policy, and conflicts.
@@ -571,7 +593,7 @@ const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing",
 #[derive(Clone)]
 struct Owner {
     id: String,
-    scope: Option<std::sync::Arc<dyn goblins_runtime::ScopePin>>,
+    scope: Option<std::sync::Arc<OwnedFd>>,
     /// The scope the owner is in, which a member must be able to join.
     scope_name: Option<String>,
 }
@@ -644,6 +666,7 @@ pub struct Controller {
     sequence: u64,
     connections: Vec<Connection>,
     sessions: BTreeMap<String, Active>,
+    scopes: crate::scopes::Scopes,
     execs: BTreeMap<u64, exec::Exec>,
     edits: Vec<editor::Edit>,
     host_jobs: Vec<host::Job>,
@@ -718,6 +741,7 @@ impl Controller {
             sequence: 0,
             connections: vec![],
             sessions: BTreeMap::new(),
+            scopes: Default::default(),
             execs: BTreeMap::new(),
             edits: Vec::new(),
             host_jobs: Vec::new(),
@@ -1588,7 +1612,12 @@ impl Controller {
         let launch_manifest = manifest.clone();
         let source = match (owner.clone(), manifest) {
             (Some(owner), Some(manifest)) => Source::Member {
-                scope: owner.scope,
+                scope: owner
+                    .scope
+                    .as_ref()
+                    .map(|fd| fd.try_clone().map(goblins_runtime::Fd::from))
+                    .transpose()
+                    .map_err(|e| (-32010, e.to_string()))?,
                 owner_scope: owner.scope_name,
                 manifest: manifest.path.clone(),
                 configuration: p.name.clone(),
@@ -1674,7 +1703,7 @@ impl Controller {
             id.clone(),
             Active {
                 activity_at: None,
-                scope: Default::default(),
+                member_scope: owner.as_ref().and_then(|o| o.scope_name.clone()),
                 launch_manifest,
                 exporting: owner.as_ref().map(|o| o.id.clone()),
                 policy: None,
@@ -1776,24 +1805,13 @@ impl Controller {
         let Some(a) = self.sessions.get_mut(id) else {
             return;
         };
-        a.exporting = None;
-        a.launch_manifest = None;
-        if !["stopped", "failed"].contains(&a.record.state.as_str()) {
-            a.record.state = "failed".into();
-            a.record.detail = Some(bounded(&message));
-            if a.record.identity.is_none() {
-                a.terminal.failed_start();
-            }
-        }
-        if let Some(runtime) = &mut a.runtime {
-            let _ = runtime.send(Command::Stop);
-        }
+        a.fail_launch(&message);
         self.dirty = true;
     }
     /// The checks a raid owner's run passes before anything is allocated:
     /// it owns an unpaused raid, runs, and its configuration permits the
     /// target. Its live scope is held from here on.
-    fn member_owner(&self, owner: &str, target: &str) -> std::result::Result<Owner, Fault> {
+    fn member_owner(&mut self, owner: &str, target: &str) -> std::result::Result<Owner, Fault> {
         let raid = self.raids.of(owner);
         if raid.is_none_or(|r| r.owner.as_deref() != Some(owner)) {
             return Err((
@@ -1811,12 +1829,16 @@ impl Controller {
         let policy = a.policy.as_deref().ok_or_else(conflict)?;
         let scope = match &policy.scope {
             None => None,
-            Some(_) => Some(
-                a.scope
-                    .0
-                    .upgrade()
-                    .ok_or((-32009, "the owner's scope has stopped".to_string()))?,
-            ),
+            Some(scope) => {
+                if !self.scopes.live(&scope.name) {
+                    return Err((-32009, "the owner's scope has stopped".into()));
+                }
+                Some(std::sync::Arc::new(OwnedFd::from(
+                    self.scopes
+                        .membership(&self.state, &scope.name, None)
+                        .map_err(|e| (-32010, e.to_string()))?,
+                )))
+            }
         };
         Ok(Owner {
             id: owner.into(),
@@ -2694,6 +2716,7 @@ impl Controller {
         }
     }
     pub fn tick(&mut self) -> Result<()> {
+        self.scopes.tick(&self.state);
         self.expire_activity(Instant::now());
         self.poll_history();
         self.poll_deletes();
@@ -2780,6 +2803,27 @@ impl Controller {
             let mut payload_exited = false;
             for result in results {
                 match result {
+                    Event::ScopeFailed { name } => {
+                        a.scope_failed(&name);
+                        for other in self.sessions.values_mut() {
+                            other.scope_failed(&name);
+                        }
+                    }
+                    Event::ScopeNeeded { name, executable } => {
+                        a.member_scope = Some(name.clone());
+                        if !["stopped", "failed", "stopping"].contains(&a.record.state.as_str()) {
+                            let result = self
+                                .scopes
+                                .membership(&self.state, &name, Some(&executable))
+                                .map_err(|e| e.to_string());
+                            if a.runtime.as_mut().is_none_or(|r| {
+                                r.send(Command::ScopeMembership { result }).is_err()
+                            }) {
+                                a.fail_launch("scope membership could not be delivered");
+                                self.dirty = true;
+                            }
+                        }
+                    }
                     Event::SandboxConnected(stream) => {
                         if self
                             .connections
@@ -2814,14 +2858,12 @@ impl Controller {
                         dev_shell,
                         master,
                         identity,
-                        scope,
                         recreated,
                         auto,
                     } => {
                         // Started: nothing the launch was accepted against
                         // needs holding any more.
                         a.launch_manifest = None;
-                        a.scope = scope;
                         // Recreated grants are this goblin's own: children
                         // asking for them are approved automatically.
                         if let Some(recreated) = recreated {
@@ -2843,6 +2885,7 @@ impl Controller {
                         a.record.skipped.extend(auto.skipped);
                         a.record.docker_enabled = docker_enabled;
                         a.record.scope = policy.scope.as_ref().map(|s| s.name.clone());
+                        a.member_scope = a.record.scope.clone();
                         a.record.dev_shell = policy.dev_shell.as_ref().map(|d| d.reference.clone());
                         a.dev_identity = dev_shell.as_ref().map(|d| d.identity.clone());
                         a.dev_shell = dev_shell;
@@ -3301,6 +3344,9 @@ impl Drop for Controller {
                 let _ = runtime.send(Command::Stop);
             }
         }
+        // Scope release is a handshake with this pump. Joining a worker first
+        // would strand its Leave until timeout and keep storage locked.
+        self.scopes.shutdown(&self.state);
         for (_, mut a) in std::mem::take(&mut self.sessions) {
             a.runtime.take();
             // What this goblin held of its resources went with its runtime.
@@ -3384,7 +3430,7 @@ mod tests {
             id.clone(),
             Active {
                 activity_at: None,
-                scope: Default::default(),
+                member_scope: None,
                 launch_manifest: None,
                 exporting: None,
                 policy: Some(Box::new(Policy::fixture("shell", &[]))),
@@ -4146,7 +4192,6 @@ mod tests {
                     source_mountns: 0,
                     mountns: 0,
                 },
-                scope: Default::default(),
                 recreated: None,
                 auto: Box::default(),
             })
@@ -4659,6 +4704,179 @@ mod tests {
             fs::remove_dir_all(state).unwrap();
         }
     }
+    #[test]
+    fn shutdown_pumps_scope_control_before_joining_a_runtime_waiting_for_left() {
+        use goblins_runtime::{
+            channel::Channel,
+            scope::{self, Message},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        let _forking = unix::forking();
+        let state = unix::temp_directory().unwrap();
+        let mut daemon = Controller::new(&state, None).unwrap();
+        let (control, scope_control) = UnixStream::pair().unwrap();
+        let (member, scope_member) = UnixStream::pair().unwrap();
+        // The child supplies process lifetime only; the thread emulates the
+        // trusted scope protocol without namespaces, Bubblewrap or Docker.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pidfd =
+            unix::owned(unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) as i32 })
+                .unwrap();
+        daemon.scopes.insert_fake_process("work", child, control, 1);
+        let scope_thread = std::thread::spawn(move || {
+            let mut control = Channel::new(scope_control).unwrap();
+            let mut member = Channel::new(scope_member).unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(3);
+            let mut idle = false;
+            while Instant::now() < deadline {
+                if let Some(frame) = member.receive().unwrap() {
+                    assert!(matches!(
+                        scope::decode(frame.value).unwrap(),
+                        Message::Leave {}
+                    ));
+                    control
+                        .queue(&scope::encode(&Message::Idle { added: 1 }), &mut vec![])
+                        .unwrap();
+                    idle = true;
+                }
+                control.flush().unwrap();
+                if let Some(frame) = control.receive().unwrap() {
+                    assert!(idle);
+                    assert!(matches!(
+                        scope::decode(frame.value).unwrap(),
+                        Message::Stop {}
+                    ));
+                    member
+                        .queue(&scope::encode(&Message::Left {}), &mut vec![])
+                        .unwrap();
+                    member.flush().unwrap();
+                    break;
+                }
+                if control.closed() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGTERM,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
+            }
+        });
+        struct WaitingRuntime {
+            stop: Option<mpsc::SyncSender<()>>,
+            worker: Option<std::thread::JoinHandle<()>>,
+        }
+        impl Runtime for WaitingRuntime {
+            fn send(&mut self, command: Command) -> std::result::Result<(), Command> {
+                if matches!(command, Command::Stop) {
+                    if let Some(stop) = self.stop.take() {
+                        let _ = stop.try_send(());
+                    }
+                }
+                Ok(())
+            }
+            fn poll(&mut self) -> Option<Event> {
+                None
+            }
+            fn ended(&self) -> bool {
+                false
+            }
+        }
+        impl Drop for WaitingRuntime {
+            fn drop(&mut self) {
+                if let Some(worker) = self.worker.take() {
+                    worker.join().unwrap();
+                }
+            }
+        }
+        let completed = Arc::new(AtomicBool::new(false));
+        let done = completed.clone();
+        let (stop, stopped) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            stopped.recv().unwrap();
+            let mut member = Channel::new(member).unwrap();
+            member
+                .queue(&scope::encode(&Message::Leave {}), &mut vec![])
+                .unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(1);
+            while Instant::now() < deadline {
+                member.flush().unwrap();
+                if let Some(frame) = member.receive().unwrap() {
+                    assert!(matches!(
+                        scope::decode(frame.value).unwrap(),
+                        Message::Left {}
+                    ));
+                    done.store(true, Ordering::SeqCst);
+                    break;
+                }
+                if member.closed() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        session_with_results_id(&mut daemon, "pump", vec![]);
+        daemon.sessions.get_mut("pump").unwrap().runtime = Some(Box::new(WaitingRuntime {
+            stop: Some(stop),
+            worker: Some(worker),
+        }));
+        drop(daemon);
+        scope_thread.join().unwrap();
+        assert!(
+            completed.load(Ordering::SeqCst),
+            "daemon joined its worker before pumping scope release"
+        );
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn an_engine_failure_reaches_running_and_starting_members_only_in_its_scope() {
+        let state = unix::temp_directory().unwrap();
+        let mut daemon = Controller::new(&state, None).unwrap();
+        let mut senders = vec![];
+        let mut received = vec![];
+        for (id, scope) in [("docker", "work"), ("pending", "work"), ("other", "other")] {
+            session_with_results_id(&mut daemon, id, vec![]);
+            let (runtime, events, commands) = goblins_runtime::Fake::new();
+            let active = daemon.sessions.get_mut(id).unwrap();
+            active.runtime = Some(Box::new(runtime));
+            active.member_scope = Some(scope.into());
+            if id == "pending" {
+                active.policy = None;
+                active.record.state = "starting".into();
+            }
+            senders.push(events);
+            received.push(commands);
+        }
+        senders[0]
+            .try_send(Event::ScopeFailed {
+                name: "work".into(),
+            })
+            .unwrap();
+        daemon.tick().unwrap();
+        for commands in &received[..2] {
+            assert!(matches!(
+                commands.lock().unwrap().pop_front(),
+                Some(Command::ScopeFailed)
+            ));
+        }
+        assert!(received[2].lock().unwrap().is_empty());
+        drop(daemon);
+        fs::remove_dir_all(state).unwrap();
+    }
+
     /// A raid owner with a running runtime, a raid and a current manifest.
     /// Its runtime records what it is sent and takes the events the test
     /// sends.

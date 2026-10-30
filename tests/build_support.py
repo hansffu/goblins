@@ -1,12 +1,13 @@
 """Rooted Nix fixtures shared within a run, with an incremental host controller.
 
-Only the host executable may come from Cargo. Sandbox executables and their
+Only host executables may come from Cargo. Sandbox executables and their
 closures remain real, immutable Nix outputs, including in local-controller mode.
 """
 from functools import cache
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import json
 import os
 from pathlib import Path
 import shlex
@@ -88,6 +89,17 @@ def fixture_app(check="demo-goblins", *, packaged=False):
     application = root / "bin/goblins"
     application.parent.mkdir(parents=True, exist_ok=True)
     with fixture_lock(root / "prepare.lock"):
+        scope_runtime = os.environ.get("GOBLINS_LOCAL_SCOPE_RUNTIME")
+        if scope_runtime:
+            data = json.loads(manifest.read_text())
+            def pin(configuration):
+                configuration["scope_runtime"] = scope_runtime
+                for variant in configuration.get("scopes", {}).values():
+                    pin(variant)
+            for configuration in data["goblins"].values():
+                pin(configuration)
+            manifest = root / "config.json"
+            atomic_write(manifest, json.dumps(data))
         # Another worker may execute this launcher while we prepare it. Replace
         # files atomically rather than truncating executable/readable files.
         atomic_write(application,

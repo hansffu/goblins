@@ -23,6 +23,9 @@ pub struct Configuration {
     pub env: BTreeMap<String, String>,
     pub client_package: PathBuf,
     pub helper: PathBuf,
+    /// Pinned private scope executable, resolved with the configuration.
+    #[serde(default)]
+    pub scope_runtime: PathBuf,
     pub flake: String,
     #[serde(default)]
     pub sandbox_etc: BTreeMap<String, PathBuf>,
@@ -67,7 +70,7 @@ pub struct Docker {
     #[serde(default)]
     pub enabled: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeDefinition {
     pub persistent: bool,
@@ -208,6 +211,9 @@ pub struct Launch {
     pub resume_command: Option<Vec<String>>,
     pub posix_shell: PathBuf,
     pub helper: PathBuf,
+    /// Pinned private scope executable, resolved with the configuration.
+    #[serde(default)]
+    pub scope_runtime: PathBuf,
     pub bwrap: PathBuf,
     pub flake: String,
     pub client_package: PathBuf,

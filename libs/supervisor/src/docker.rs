@@ -233,12 +233,32 @@ impl Engine {
         filesystem: Filesystem,
         storage_root: &Path,
         directory: &Path,
+        lifetime_lease: &goblins_runtime::ResourceLease,
         cancel: &process::Cancellation,
-        scope: &crate::scope_keeper::Namespaces,
+        scope: &crate::scope_keeper::NamespaceFds,
         name: Option<&str>,
     ) -> Result<Self> {
-        let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
         let storage = Storage::new(storage_root, name)?;
+        Self::bootstrap(
+            launch,
+            filesystem,
+            storage,
+            directory,
+            lifetime_lease,
+            cancel,
+            scope,
+        )
+    }
+    fn bootstrap(
+        launch: &Launch,
+        filesystem: Filesystem,
+        storage: Storage,
+        directory: &Path,
+        lifetime_lease: &goblins_runtime::ResourceLease,
+        cancel: &process::Cancellation,
+        scope: &crate::scope_keeper::NamespaceFds,
+    ) -> Result<Self> {
+        let config = launch.docker.as_ref().ok_or("Docker not enabled")?;
         // State paths can exceed sockaddr_un's limit (notably under
         // nix develop's nested TMPDIR). Pin the socket directory and connect
         // through a short procfs path; the daemon uses its short sandbox path.
@@ -310,13 +330,8 @@ impl Engine {
                 "--ro-bind",
                 &directory.join("docker.json").display().to_string(),
                 "/run/docker/config.json",
-                "--ro-bind",
-                &directory
-                    .parent()
-                    .ok_or("missing Docker resource directory")?
-                    .join(".gc-lease")
-                    .display()
-                    .to_string(),
+                "--ro-bind-fd",
+                &lifetime_lease.fd().to_string(),
                 "/run/goblins/storage-lease",
                 "--setenv",
                 "XDG_RUNTIME_DIR",
@@ -331,7 +346,7 @@ impl Engine {
             .arg(&launch.helper)
             .arg("--docker-init")
             .arg(storage.path.file_name().unwrap())
-            .arg(if name.is_some() { "keep" } else { "delete" })
+            .arg(if storage.persistent { "keep" } else { "delete" })
             .arg(
                 storage
                     .lock
@@ -364,6 +379,7 @@ impl Engine {
                     .open(directory.join("docker.log"))?,
             );
         let mut keep = filesystem.fds.to_vec();
+        keep.push(lifetime_lease.fd());
         keep.extend([
             scope.outer.as_raw_fd(),
             scope.net.as_raw_fd(),
@@ -465,3 +481,6 @@ impl Drop for Engine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -5,6 +5,7 @@ import ../../nix/builders/rust.nix {
   source = ./.;
   libs = [
     ../api
+    ../unix
     ../jsonrpc
   ];
 }

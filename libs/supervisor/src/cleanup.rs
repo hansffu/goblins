@@ -262,6 +262,25 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
         );
         return Ok(());
     };
+    let scopes = state.join("scopes");
+    if private_existing(&scopes)? {
+        for entry in fs::read_dir(&scopes)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            if !name.to_str().is_some_and(goblins_protocol::scope_name) {
+                return Err(
+                    format!("invalid scope runtime name at {}", entry.path().display()).into(),
+                );
+            }
+            if goblins_runtime::scope::remove_stale(&entry.path(), dry_run)? {
+                println!(
+                    "{} {}",
+                    if dry_run { "Would remove" } else { "Removed" },
+                    entry.path().display()
+                );
+            }
+        }
+    }
     for entry in fs::read_dir(state)? {
         let entry = entry?;
         let name = entry.file_name();

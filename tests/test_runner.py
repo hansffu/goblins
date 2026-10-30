@@ -35,6 +35,9 @@ class RunnerTests(unittest.TestCase):
         }, {
             "reason": "compiler-artifact", "target": {"name": "goblins-codex"},
             "executable": str(self.directory / "built-adapter"),
+        }, {
+            "reason": "compiler-artifact", "target": {"name": "goblins-supervisor-bwrap"},
+            "executable": str(self.directory / "built-scope-runtime"),
         }]
         cargo.write_text("#!" + sys.executable + "\nimport json\nfor artifact in " +
                          repr(artifacts) + ":\n    print(json.dumps(artifact))\n")
@@ -70,7 +73,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_workers_use_the_adapter_reported_by_cargo(self):
         self.env["GOBLINS_CODEX_ADAPTER"] = "/stale/adapter"
-        self.module("probe_adapter", "self.assertEqual(os.environ['GOBLINS_CODEX_ADAPTER'],str(root/'built-adapter'))")
+        self.env["GOBLINS_LOCAL_SCOPE_RUNTIME"] = "/stale/scope-runtime"
+        self.module("probe_adapter", "self.assertEqual(os.environ['GOBLINS_CODEX_ADAPTER'],str(root/'built-adapter'))\n"
+                    "self.assertEqual(os.environ['GOBLINS_LOCAL_SCOPE_RUNTIME'],str(root/'built-scope-runtime'))")
         for jobs in (1, 2):
             with self.subTest(jobs=jobs):
                 self.run_runner("--jobs", str(jobs), "probe_adapter")
@@ -168,9 +173,10 @@ class RunnerTests(unittest.TestCase):
                               "print(json.dumps([shutil.which('nix'),shutil.which('nix-store')]))\n")
         controller.chmod(0o755)
         env = {**self.env, "GOBLINS_LOCAL_CONTROLLER": str(controller), "PATH": str(ambient)}
+        env.pop("GOBLINS_LOCAL_SCOPE_RUNTIME", None)
         fixture_app.cache_clear()
         self.addCleanup(fixture_app.cache_clear)
-        with patch.dict(os.environ, env), patch("build_support.fixture_path", side_effect=lambda ref:
+        with patch.dict(os.environ, env, clear=True), patch("build_support.fixture_path", side_effect=lambda ref:
                 pinned.parent if ref.endswith("#nix^out") else self.directory / "manifest.json"):
             app = fixture_app("pin-probe")
             expected = [str(pinned / tool) for tool in ("nix", "nix-store")]

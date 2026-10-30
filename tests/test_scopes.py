@@ -5,6 +5,8 @@ Run on the host as a regular user with newuidmap/newgidmap and subuid/subgid.
 import os
 from pathlib import Path
 import shutil
+import signal
+import select
 import subprocess
 import tempfile
 import time
@@ -154,6 +156,59 @@ class ScopeTests(unittest.TestCase):
         work = self.start()
         output, _ = self.run_in(self.terminal(work), "cat /var/cache/probe/file")
         self.assertIn("kept", output)
+
+    def test_relaunch_waits_for_a_stopping_scope_to_release_its_storage(self):
+        first = self.start(scope="scratch")
+        def children(pid):
+            return [int(value) for value in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
+        scope_pid = next(pid for pid in children(self.d.process.pid)
+                         if Path(f"/proc/{pid}/exe").resolve().name == "goblins-supervisor-bwrap")
+        keeper = next(pid for pid in children(scope_pid)
+                      if Path(f"/proc/{pid}/exe").resolve().name == "bwrap")
+        keeper_fd = os.pidfd_open(keeper)
+        self.addCleanup(os.close, keeper_fd)
+        def resume():
+            try:
+                signal.pidfd_send_signal(keeper_fd, signal.SIGCONT)
+            except ProcessLookupError:
+                pass
+        self.addCleanup(resume)
+        # Hold namespace teardown after the daemon sends Stop. The child keeps
+        # its runtime/storage leases until its stopped Bubblewrap is reaped.
+        signal.pidfd_send_signal(keeper_fd, signal.SIGSTOP)
+        self.d.wait(lambda: any(line.startswith("State:") and "T" in line
+                                for line in Path(f"/proc/{keeper}/status").read_text().splitlines()))
+        self.d.rpc.call("sessions.stop", {"session": first})
+        self.d.wait(lambda: "do_wait" in Path(f"/proc/{scope_pid}/wchan").read_text())
+        self.assertEqual(self.d.get(first)["state"], "stopping")
+        self.assertTrue((self.d.state / first / "resources").exists())
+        second = self.start(scope="scratch", wait=False)
+        self.d.wait(lambda: (self.d.state / second / "resources/request.sock").exists())
+        self.assertEqual(self.d.get(second)["state"], "starting")
+        # Host RPC continues while the worker waits for the old child to exit.
+        self.assertTrue(self.d.rpc.call("sessions.list", {}))
+        resume()
+        self.d.wait(lambda: self.d.get(first)["state"] == "stopped")
+        self.assertFalse((self.d.state / first / "resources").exists())
+        record = self.d.wait(lambda: (r if (r := self.d.get(second))["state"] != "starting" else None), timeout=60)
+        self.assertEqual(record["state"], "running", record)
+
+    def test_daemon_shutdown_pumps_scope_release_before_joining_workers(self):
+        self.start()
+        self.start(scope="scratch")
+        children = Path(f"/proc/{self.d.process.pid}/task/{self.d.process.pid}/children").read_text().split()
+        pids = [int(pid) for pid in children
+                if Path(f"/proc/{pid}/exe").resolve().name == "goblins-supervisor-bwrap"]
+        self.assertEqual(len(pids), 2)
+        descriptors = [os.pidfd_open(pid) for pid in pids]
+        for fd in descriptors:
+            self.addCleanup(os.close, fd)
+        self.d.process.terminate()
+        # This is the existing Daemon.close bound, shorter than release's
+        # failure fallback: ordinary shutdown must finish the handshake.
+        self.assertEqual(self.d.process.wait(timeout=10), 0)
+        self.assertEqual(set(select.select(descriptors, [], [], 0)[0]), set(descriptors))
+        self.assertFalse(list((self.cache / "goblins/scopes").glob("temporary-*")))
 
     def test_unshared_pid_namespace_hides_processes_but_shares_network(self):
         a, b = self.start(scope="private"), self.start(scope="private")

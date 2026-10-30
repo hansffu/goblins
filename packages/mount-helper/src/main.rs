@@ -342,6 +342,10 @@ fn run() -> io::Result<i32> {
     } else {
         None
     };
+    let register_scope = args.get(1).is_some_and(|arg| arg == "--register-scope");
+    if register_scope {
+        args.remove(1);
+    }
     let network = if args.get(1).is_some_and(|arg| arg == "--network-namespaces") {
         if args.len() < 6 {
             return Err(io::Error::other("missing network namespace descriptors"));
@@ -588,6 +592,19 @@ fn run() -> io::Result<i32> {
         },
     ];
     cvt(unsafe { libc::syscall(libc::SYS_capset, &hdr, caps.as_ptr()) as i32 })?;
+    if register_scope {
+        // The payload remains behind Bubblewrap's block-fd until the scope
+        // process owns this namespace registration. The helper pins the child
+        // by pidfd throughout the handshake, preventing PID reuse.
+        println!("MOUNTNS {host_pid} {}", inode(&ns)?);
+        io::stdout().flush()?;
+        let mut release = String::new();
+        if io::stdin().read_line(&mut release)? == 0 || release != "RELEASE\n" {
+            return Err(io::Error::other(
+                "scope registration did not release payload",
+            ));
+        }
+    }
     writeln!(File::from(block_w), "x")?;
     println!(
         "READY2 {pid} {} {} {} {}",

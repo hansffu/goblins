@@ -9,7 +9,6 @@ use goblins_protocol::Reply;
 use goblins_runtime::Command;
 use goblins_runtime::Event;
 use goblins_runtime::Handoff;
-use goblins_runtime::ScopeHandle;
 use goblins_runtime::policy::Support;
 use goblins_unix as unix;
 use std::{
@@ -27,7 +26,10 @@ pub(super) type Work = (Command, Cancel);
 use goblins_runtime::{Auto, Recreate, Recreated, Source};
 pub(super) struct Worker {
     pub cancel: Cancel,
+    pub failed_scope: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub scope_failures: Receiver<String>,
     pub commands: SyncSender<Work>,
+    pub memberships: SyncSender<std::result::Result<goblins_runtime::Fd, String>>,
     pub results: Receiver<Event>,
     /// The running sandbox's endpoints, sent just before `Event::Started`.
     pub endpoints: Receiver<Box<Endpoints>>,
@@ -51,8 +53,12 @@ impl Worker {
     ) -> Self {
         let cancel = Cancel::default();
         let token = cancel.clone();
+        let failed_scope = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let failed = failed_scope.clone();
         let (tx, commands) = mpsc::sync_channel(4);
         let (results, rx) = mpsc::sync_channel(16);
+        let (memberships, membership_rx) = mpsc::sync_channel(1);
+        let (scope_failures, scope_failure_rx) = mpsc::sync_channel(1);
         let (endpoints, handed) = mpsc::sync_channel(1);
         let thread = thread::spawn(move || {
             let run = || -> Result<Option<i32>> {
@@ -92,7 +98,7 @@ impl Worker {
                         let session = Session::member(
                             Member {
                                 handoff,
-                                scope: scope.map(crate::scope::from_pin),
+                                scope,
                                 owner_scope: owner_scope.as_deref(),
                                 protected_paths: protected,
                                 manifest: &manifest,
@@ -209,6 +215,11 @@ impl Worker {
                 };
                 // Root copied outputs here, while the source still holds the
                 // directory whose roots kept them, so they outlive it.
+                session.scope_broker = Some(crate::scope_client::Broker {
+                    events: results.clone(),
+                    scope_failures,
+                    memberships: membership_rx,
+                });
                 let mut auto = Auto::default();
                 for (name, output) in copied {
                     token.check()?;
@@ -279,7 +290,6 @@ impl Worker {
                     dev_shell: inheritance.dev_shell_summary(),
                     master,
                     identity: session.identity.clone().unwrap(),
-                    scope: ScopeHandle(inheritance.scope_handle()),
                     recreated: recreated.map(Box::new),
                     auto: Box::new(auto),
                 };
@@ -459,7 +469,12 @@ impl Worker {
                 session.alive();
                 Ok(session.exit_code)
             };
-            match run() {
+            let outcome = run();
+            if failed.load(std::sync::atomic::Ordering::SeqCst) {
+                let _ = results.try_send(Event::Stopped { exit_code: Some(1) });
+                return;
+            }
+            match outcome {
                 Ok(exit_code) => {
                     let _ = results.try_send(Event::Stopped { exit_code });
                 }
@@ -473,7 +488,10 @@ impl Worker {
         });
         Self {
             cancel,
+            failed_scope,
+            scope_failures: scope_failure_rx,
             commands: tx,
+            memberships,
             results: rx,
             endpoints: handed,
             thread: Some(thread),

@@ -457,6 +457,7 @@ dependencies = [
 name = "goblins-mount-helper"
 version = "0.1.0"
 dependencies = [
+ "goblins-unix",
  "libc",
 ]
 
@@ -474,7 +475,9 @@ dependencies = [
 name = "goblins-runtime"
 version = "0.1.0"
 dependencies = [
+ "goblins-jsonrpc",
  "goblins-protocol",
+ "goblins-unix",
  "libc",
  "serde",
  "serde_json",
@@ -492,6 +495,13 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "goblins-supervisor-bwrap"
+version = "0.1.0"
+dependencies = [
+ "goblins-supervisor",
 ]
 
 [[package]]

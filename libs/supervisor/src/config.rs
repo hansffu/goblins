@@ -315,6 +315,7 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
             resume_command: config.resume_command.clone(),
             posix_shell: string("shell")?.into(),
             helper: config.helper.clone(),
+            scope_runtime: config.scope_runtime.clone(),
             bwrap: spec["dependencies"]["bwrap"]
                 .as_str()
                 .ok_or("missing bwrap")?

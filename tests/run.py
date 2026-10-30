@@ -184,6 +184,7 @@ def main():
             return 0
         if args.packaged:
             os.environ.pop("GOBLINS_LOCAL_CONTROLLER", None)
+            os.environ.pop("GOBLINS_LOCAL_SCOPE_RUNTIME", None)
         else:
             print("Building the Rust workspace incrementally with Cargo...", flush=True)
             artifacts = cargo_artifacts("build", "--locked", "--workspace")
@@ -191,6 +192,9 @@ def main():
                               if a.get("reason") == "compiler-artifact" and a.get("executable")
                               and a["target"]["name"] == "goblins")
             os.environ["GOBLINS_LOCAL_CONTROLLER"] = executable
+            os.environ["GOBLINS_LOCAL_SCOPE_RUNTIME"] = next(a["executable"] for a in artifacts
+                if a.get("reason") == "compiler-artifact" and a.get("executable")
+                and a["target"]["name"] == "goblins-supervisor-bwrap")
             os.environ["GOBLINS_CODEX_ADAPTER"] = next(a["executable"] for a in artifacts
                 if a.get("reason") == "compiler-artifact" and a.get("executable")
                 and a["target"]["name"] == "goblins-codex")
@@ -203,7 +207,7 @@ def main():
         if args.jobs > 1 and not loader.errors:
             # Build the ignored Session test driver before workers start, so
             # they neither contend for Cargo nor each launch another build.
-            if any(type(test).__module__ == "test_integration" for test in cases(suite)):
+            if any(type(test).__module__ in ("test_integration", "test_scope_cleanup") for test in cases(suite)):
                 rust_driver()
             started = time.monotonic()
             results = parallel_suite(suite, args.jobs, cache, args.failfast)
