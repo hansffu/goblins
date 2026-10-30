@@ -202,7 +202,7 @@ impl Terminal {
             .into());
         }
         peer.set_nonblocking(true)?;
-        self.hello = goblins_protocol::rpc::encode(&goblins_protocol::rpc::result(
+        self.hello = goblins_jsonrpc::encode(&goblins_jsonrpc::result(
             id,
             serde_json::json!({"attached":true}),
         ))?;
@@ -252,7 +252,7 @@ impl Terminal {
             };
             match listener.accept() {
                 Ok((mut peer, _)) => {
-                    use goblins_protocol::rpc;
+                    use goblins_jsonrpc as rpc;
                     use serde_json::json;
                     let writer = peer.try_clone()?;
                     let attached = match &self.refusal {
@@ -361,7 +361,7 @@ impl Drop for Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use goblins_protocol::rpc;
+    use goblins_jsonrpc as rpc;
     use std::time::Duration;
 
     struct Fixture {

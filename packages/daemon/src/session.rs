@@ -1005,7 +1005,7 @@ impl Session {
         let filter = seccomp::filter()?;
         let (control_r, control_w) = unix::pipe()?;
         let (reply_r, reply_w) = unix::pipe()?;
-        let (init_control, init_peer) = goblins_protocol::init::pair()?;
+        let (init_control, init_peer) = goblins_init::pair()?;
         let mut command = Command::new(&self.launch.helper);
         command.args(["--init-control".into(), init_peer.as_raw_fd().to_string()]);
         let namespaces = self

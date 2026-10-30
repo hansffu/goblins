@@ -115,7 +115,9 @@ The development shell includes pyte for fullscreen terminal regression tests. Te
 | =tests/fixtures.nix=                | Runtime dependency fixtures and agent-sandbox baselines                  |
 | =tests/checks.nix=                  | Nix API validation and named configuration test build                    |
 | =packages/mount-helper/src/=                              | Namespace mount helper, scope keeper and Docker launcher                 |
-| =libs/api/=                  | Bounded request/reply types, validation and deadline                     |
+| =libs/api/=                  | Public request/reply types and validators                     |
+| =libs/jsonrpc/= | JSON-RPC values, envelopes, framing and deadlines |
+| =libs/init/= | Private init protocol and descriptor transport |
 | =packages/sandbox-cli/=                    | Restricted Rust sandbox request executable                               |
 | =packages/daemon/=                | Rust session library, event pump, worker and tui/run frontend            |
 | =nix/builders/rust.nix=             | Shared Rust build derivation with separate package selection             |

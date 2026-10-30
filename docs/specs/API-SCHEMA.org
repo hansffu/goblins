@@ -7,7 +7,7 @@ Status: draft for discussion. The daemon's public JSON-RPC API, its host and san
 
 Labels: *[E]* existing behaviour (master, 2026-10-29), *[P]* proposed change.
 
-This plan is independent of [[file:SUPERVISOR-REFACTOR.org][SUPERVISOR-REFACTOR.org]]. That plan separates the public contract (=libs/jsonrpc= and =libs/api=) from the internal ones (section 4.10 there); this plan concerns only the public one. It names the library =libs/api=, which holds the unsplit =goblins-protocol= crate until that plan's phase 3B.
+This plan is independent of [[file:SUPERVISOR-REFACTOR.org][SUPERVISOR-REFACTOR.org]]. That plan separates the public contract (=libs/jsonrpc= and =libs/api=) from the internal ones (section 4.10 there); this plan concerns only the public one. It names the public API library =libs/api=; JSON-RPC framing is in =libs/jsonrpc= and the private init protocol is in =libs/init= after that plan's phase 3B.
 
 * 1. Where the API stands
 

@@ -3,7 +3,7 @@
 //! also the job's. The job's output is a file the daemon writes to
 //! /run/goblins/host-jobs/JOB, which this client tails.
 use crate::cli::HostCommand;
-use goblins_protocol::rpc;
+use goblins_jsonrpc as rpc;
 use serde_json::{Value, json};
 use std::{
     fs::File,
@@ -118,7 +118,7 @@ fn run(
                 .ok_or_else(|| format!("--env expects KEY=VALUE, not {kv}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let host = rpc::HostCommand {
+    let host = goblins_protocol::rpc::HostCommand {
         argv: command,
         cwd: cwd
             .to_str()

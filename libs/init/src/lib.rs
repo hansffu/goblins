@@ -10,9 +10,6 @@ use std::{
 pub const MAX_MESSAGE: usize = 64 * 1024;
 /// A spawn carries one PTY slave or stdin, stdout and stderr.
 pub const MAX_FDS: usize = 3;
-/// Bounds on what a spawn may carry, checked by both ends.
-pub const MAX_ARGS: usize = 1024;
-pub const MAX_ENV: usize = 256;
 
 /// Daemon → init. Exec IDs are chosen by the daemon and never reused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -66,16 +63,6 @@ pub enum Event {
 /// Signals a host client may forward to an exec.
 pub fn forwardable(signal: i32) -> bool {
     [libc::SIGHUP, libc::SIGINT, libc::SIGTERM].contains(&signal)
-}
-
-/// Environment variable names an exec may set.
-pub fn env_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    (1..=256).contains(&name.len())
-        && bytes
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// Send `bytes` with `fds` attached as SCM_RIGHTS. Never blocks or raises
@@ -177,6 +164,7 @@ pub fn pair() -> io::Result<(OwnedFd, OwnedFd)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use goblins_protocol::env_name;
     use std::os::fd::AsRawFd;
     #[test]
     fn messages_carry_descriptors_and_names() {

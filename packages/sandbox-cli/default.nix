@@ -4,7 +4,11 @@ let
     inherit pkgs;
     package = "goblins-client";
     source = ./.;
-    libs = [ ../../libs/api ];
+    libs = [
+      ../../libs/api
+      ../../libs/jsonrpc
+      ../../libs/init
+    ];
   };
 in
 pkgs.runCommand "goblins-request-client" { nativeBuildInputs = [ pkgs.installShellFiles ]; } ''

@@ -6,7 +6,8 @@ use crate::{
     unix,
     worker::{Auto, Endpoints, Recreated, Source, Worker},
 };
-use goblins_protocol::{Reply, Request, init};
+use goblins_init as init;
+use goblins_protocol::{Reply, Request};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, VecDeque},

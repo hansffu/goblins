@@ -3,7 +3,7 @@ use crate::{
     Result,
     controller::{PermissionRecord, Snapshot},
 };
-use goblins_protocol::rpc::{self, Decoder};
+use goblins_jsonrpc::{self as rpc, Decoder};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -74,7 +74,7 @@ impl Client {
         let frame = rpc::encode(&rpc::request(id.clone(), method, params))?;
         self.stream.set_write_timeout(Some(rpc::TIMEOUT))?;
         // One message: the descriptors arrive with the request's first byte.
-        goblins_protocol::init::send(self.stream.as_raw_fd(), &frame, fds)?;
+        goblins_init::send(self.stream.as_raw_fd(), &frame, fds)?;
         Ok(id)
     }
     /// The connection itself, for a caller that keeps it open (an exec).

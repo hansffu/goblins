@@ -2,7 +2,7 @@
 //! It starts the agent on the payload's terminal, runs host-requested execs
 //! and reaps everything orphaned to it. Its control socket is inherited from
 //! the daemon and is never visible as a file.
-use goblins_protocol::init::{self, Command, Event};
+use goblins_init::{self as init, Command, Event};
 use std::{
     collections::{BTreeMap, VecDeque},
     ffi::{CString, OsStr, OsString},
@@ -222,7 +222,9 @@ impl Init {
         if fds.len() != if tty { 1 } else { 3 } {
             return Err(invalid("wrong number of descriptors"));
         }
-        if env.len() > init::MAX_ENV || env.iter().any(|(k, _)| !init::env_name(k)) {
+        if env.len() > goblins_protocol::MAX_ENV
+            || env.iter().any(|(k, _)| !goblins_protocol::env_name(k))
+        {
             return Err(invalid("invalid environment"));
         }
         let mut environment = self.environment.clone();
@@ -238,7 +240,7 @@ impl Init {
         };
         // No command: the sandbox's own shell, never the host's.
         let argv: Vec<OsString> = match argv {
-            Some(argv) if argv.is_empty() || argv.len() > init::MAX_ARGS => {
+            Some(argv) if argv.is_empty() || argv.len() > goblins_protocol::MAX_ARGS => {
                 return Err(invalid("invalid command"));
             }
             Some(argv) => argv.into_iter().map(OsString::from).collect(),

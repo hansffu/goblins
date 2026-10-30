@@ -10,7 +10,7 @@ env = { GOBLINS_TEST_CODEX = "1" }
 # These affect shared authority, lifecycle or test execution. Unknown paths
 # also recommend full validation; agents can present targeted review earlier.
 broad = [
-  "packages/mount-helper/*", "libs/api/*", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
+  "packages/mount-helper/*", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "packages/daemon/src/controller.rs", "packages/daemon/src/session.rs",
   "packages/daemon/src/worker.rs", "packages/daemon/src/controller/runtime.rs", "packages/daemon/src/controller/policy.rs",
   "packages/daemon/src/config.rs",

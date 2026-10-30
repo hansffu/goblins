@@ -651,7 +651,7 @@ flowchart TB
 
 ** 4.7 The control channel
 
-*[P]* One SOCK_STREAM Unix socket pair per supervisor and per scope process, created by the daemon. Frames use the JSON-RPC Content-Length framing of =libs/jsonrpc= (today's [[file:../../libs/api/src/rpc.rs][rpc.rs]]), with SCM_RIGHTS descriptors attached as described in section 4.3. It is not SOCK_SEQPACKET, because the daemon's side must stay portable. The message types live in =libs/runtime=, which no sandbox-side package links (section 4.10).
+*[P]* One SOCK_STREAM Unix socket pair per supervisor and per scope process, created by the daemon. Frames use the JSON-RPC Content-Length framing of =libs/jsonrpc= ([[file:../../libs/jsonrpc/src/lib.rs][framing]]), with SCM_RIGHTS descriptors attached as described in section 4.3. It is not SOCK_SEQPACKET, because the daemon's side must stay portable. The message types live in =libs/runtime=, which no sandbox-side package links (section 4.10).
 
 Neither existing descriptor path is a general transport: =init::send= treats a short write as an error and uses fixed ancillary buffers, and the host =Connection= receiver accepts descriptors for one request. The control channel needs its own, specified and tested on its own:
 - *Its own budget.* A private per-frame descriptor limit sized for the largest message (=Exported=), with batching if that is ever exceeded. =init::MAX_FDS= stays 3, because it also bounds what host connections may send, which is a public limit.
@@ -798,7 +798,7 @@ This table describes the end state. =Terminal= and =ServerLog= stay in the daemo
 | =packages/docker= | patched rootless Docker, Nix only | =packages/docker/default.nix= |
 | =libs/jsonrpc= | JSON-RPC values and Content-Length framing, with no methods | the method-free half of =libs/api/src/rpc.rs= |
 | =libs/api= | the public host and sandbox endpoints, their parameter types and limits, the client terminal relay and the shared validators | the rest of =libs/api=, including the method types of =rpc.rs= |
-| =libs/init= | the supervisor's channel to =goblins-init= | =libs/api/src/init.rs= |
+| =libs/init= | the supervisor's channel to =goblins-init= | =libs/init/src/lib.rs= |
 | =libs/runtime= | =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff=, the scope messages, and the plain data both sides use: the manifest, =Skipped=, the dev shell generation and summary, =ResourceLease= with its flock helpers, and =ManifestLease= with its path and drop | new, and the data halves of =config=, =binds=, =history= and =devshell= |
 | =libs/unix= | the generic POSIX descriptor and filesystem helpers shared by the daemon and supervisor, including the fork-test guard | the generic parts of =packages/daemon/src/unix.rs= |
 | =libs/supervisor= | the runtime: session, worker, binds, Nix work, scopes, Docker, terminals and the request relay | the runtime modules of =packages/daemon= |

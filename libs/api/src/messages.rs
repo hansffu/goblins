@@ -209,14 +209,14 @@ pub fn exchange(
     params: Value,
 ) -> io::Result<Result<Value, Value>> {
     use std::io::Write;
-    stream.set_write_timeout(Some(crate::rpc::TIMEOUT))?;
-    stream.write_all(&crate::rpc::encode(&crate::rpc::request(
+    stream.set_write_timeout(Some(goblins_jsonrpc::TIMEOUT))?;
+    stream.write_all(&goblins_jsonrpc::encode(&goblins_jsonrpc::request(
         id.clone(),
         method,
         params,
     ))?)?;
-    let reply = crate::rpc::read_started(stream, Some(std::time::Instant::now()))?;
-    crate::rpc::validate_response(&reply, &id)?;
+    let reply = goblins_jsonrpc::read_started(stream, Some(std::time::Instant::now()))?;
+    goblins_jsonrpc::validate_response(&reply, &id)?;
     Ok(match reply.get("error") {
         Some(e) => Err(e.clone()),
         None => Ok(reply["result"].clone()),

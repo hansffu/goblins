@@ -2,6 +2,20 @@
 use serde::{Deserialize, Serialize};
 
 pub const MAX_FRAME: usize = 4096;
+/// Bounds on what a spawn may carry, checked by both ends.
+pub const MAX_ARGS: usize = 1024;
+pub const MAX_ENV: usize = 256;
+
+/// Environment variable names an exec may set.
+pub fn env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=256).contains(&name.len())
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 pub const REQUEST_SOCKET: &str = "/run/goblins/request.sock";
 pub const INTEGRATION_PROMPT: &str = "Check your Goblins inbox and process the next item.";
 
@@ -142,7 +156,6 @@ pub fn plain_text(s: &str) -> String {
 }
 
 pub mod editor;
-pub mod init;
 pub mod messages;
 pub mod patch;
 pub mod rpc;

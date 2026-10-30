@@ -305,6 +305,9 @@ let
 in
 {
   # Each runnable Rust package builds with only its listed library sources.
+  rust-api = import ../libs/api { inherit pkgs; };
+  rust-jsonrpc = import ../libs/jsonrpc { inherit pkgs; };
+  rust-init = import ../libs/init { inherit pkgs; };
   rust-daemon = import ../packages/daemon { inherit pkgs; };
   rust-mount-helper = import ../packages/mount-helper { inherit pkgs; };
   rust-sandbox-cli = import ../packages/sandbox-cli { inherit pkgs; };

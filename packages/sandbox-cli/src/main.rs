@@ -4,7 +4,8 @@ mod host;
 mod init;
 mod preview;
 use clap::Parser;
-use goblins_protocol::{REQUEST_SOCKET, rpc};
+use goblins_jsonrpc as rpc;
+use goblins_protocol::REQUEST_SOCKET;
 use serde_json::json;
 use std::{
     io::{Read, Write},
@@ -500,7 +501,8 @@ fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String
         if let Some(error) = reply.get("error") {
             return Ok(json!({"status":"error","message":error}));
         }
-        let result: rpc::PermissionResult = serde_json::from_value(reply["result"].clone())?;
+        let result: goblins_protocol::rpc::PermissionResult =
+            serde_json::from_value(reply["result"].clone())?;
         if !["ready", "denied", "error"].contains(&result.status.as_str())
             || !goblins_protocol::identifier(&result.request)
         {

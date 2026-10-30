@@ -6,7 +6,8 @@
 //! The sandbox's request stays open until the editor is done; closing it
 //! kills the client.
 use super::{Connection, Controller, Fault, capacity, params};
-use goblins_protocol::{editor, rpc};
+use goblins_jsonrpc as rpc;
+use goblins_protocol::editor;
 use serde_json::{Value, json};
 use std::{
     io::Read,

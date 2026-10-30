@@ -7,7 +7,8 @@ use super::{
     policy::Operation,
     runtime::{Command, Event, SpawnKind, Stdio},
 };
-use goblins_protocol::{init, rpc};
+use goblins_init as init;
+use goblins_jsonrpc as rpc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -68,7 +69,9 @@ impl ExecParams {
     fn validate(&self) -> Result<(), Fault> {
         let text = |s: &String| !s.contains('\0') && s.len() <= 65536;
         if let Some(argv) = &self.argv
-            && (argv.is_empty() || argv.len() > init::MAX_ARGS || !argv.iter().all(text))
+            && (argv.is_empty()
+                || argv.len() > goblins_protocol::MAX_ARGS
+                || !argv.iter().all(text))
         {
             return Err(invalid("invalid command"));
         }
@@ -77,8 +80,11 @@ impl ExecParams {
         {
             return Err(invalid("the working directory must be an absolute path"));
         }
-        if self.env.len() > init::MAX_ENV
-            || !self.env.iter().all(|(k, v)| init::env_name(k) && text(v))
+        if self.env.len() > goblins_protocol::MAX_ENV
+            || !self
+                .env
+                .iter()
+                .all(|(k, v)| goblins_protocol::env_name(k) && text(v))
         {
             return Err(invalid("invalid environment variable"));
         }

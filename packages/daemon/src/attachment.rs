@@ -150,7 +150,7 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
 /// attach handlers takes a hello with this terminal's size on `attach.sock`;
 /// an older one attaches `terminal.sock` at once.
 fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Result<i32> {
-    use goblins_protocol::rpc;
+    use goblins_jsonrpc as rpc;
     use std::{io::Write, os::unix::net::UnixStream};
     let attach = record["attach"]
         .as_str()

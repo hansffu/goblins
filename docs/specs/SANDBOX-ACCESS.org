@@ -121,7 +121,7 @@ Emacs/CLI ─host.sock─▶ daemon ─socketpair─▶ goblins-init ─▶ agen
   impersonated by the agent, which has the same uid.
 - Init marks the descriptor close-on-exec and sets =PR_SET_DUMPABLE 0=. Without that, the agent could open
   =/proc/<init>/fd/N= as the same uid. Yama blocks this on this host, but the design must not rely on it.
-- The protocol is framed JSON-RPC as in =libs/api=. Stdio and PTY descriptors travel as SCM_RIGHTS,
+- The protocol is framed JSON-RPC as in =libs/jsonrpc=. Stdio and PTY descriptors travel as SCM_RIGHTS,
   extending =unix::send_terminal=.
 - Messages:
   - daemon → init: =spawn {argv, cwd, env, tty}= with descriptors, plus =signal= and =kill-all=;
@@ -312,7 +312,7 @@ goblins [--state-dir DIR] exec [-t] [-e K=V]... [-w DIR] [--instance I] [--sessi
 
 Where the code lives:
 - =packages/sandbox-cli/src/init.rs= :: =goblins-init= (an argv[0] alias of the in-sandbox client).
-- =libs/api/src/init.rs=, =editor.rs= :: the init channel's messages and descriptor passing;
+- =libs/init/src/lib.rs=, =libs/api/src/editor.rs= :: the init channel's messages and descriptor passing;
   =editor.open= parameters, argument parsing and path rules.
 - =packages/daemon/src/controller/exec.rs=, =editor.rs= :: =sessions.exec=, =sessions.kill_execs= and
   =editor.open= in the daemon.

@@ -3,7 +3,8 @@
 //! the attached terminal's conversation switches, and delivers inbox reminders.
 use clap::{Parser, Subcommand};
 use goblins_codex::{Delivery, activity};
-use goblins_protocol::{AgentState, rpc};
+use goblins_jsonrpc as rpc;
+use goblins_protocol::AgentState;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{

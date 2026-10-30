@@ -6,9 +6,10 @@ use crate::{
     unix,
     worker::Source,
 };
+use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::{
     Request,
-    rpc::{self, Decoder, DevShellDiffParams, FlakeRunParams, PermissionParams},
+    rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams},
 };
 use policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
 use runtime::{Command, Event, Local, Runtime, ScopeHandle};
@@ -401,8 +402,7 @@ impl Connection {
         }
         let mut bytes = [0; 16384];
         let waiting = self.waiting.is_some() && self.exec.is_none();
-        match goblins_protocol::init::receive(self.peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT)
-        {
+        match goblins_init::receive(self.peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT) {
             Ok((0, _)) => {
                 self.dead = true;
                 return None;
@@ -412,9 +412,7 @@ impl Connection {
                 if matches!(self.role, Role::Host) {
                     self.fds.extend(fds);
                 }
-                if waiting
-                    || self.input.len() + n > 32768
-                    || self.fds.len() > goblins_protocol::init::MAX_FDS
+                if waiting || self.input.len() + n > 32768 || self.fds.len() > goblins_init::MAX_FDS
                 {
                     self.dead = true;
                     return None;
@@ -2261,7 +2259,7 @@ impl Controller {
                     | "communications.list"
             );
             // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
-            // Host commands carry argument lists (rpc::MAX_HOST_COMMAND).
+            // Host commands carry argument lists (goblins_protocol::rpc::MAX_HOST_COMMAND).
             let legacy_limit = if matches!(c.role, Role::Host)
                 || matches!(
                     call.method.as_str(),
@@ -3489,7 +3487,7 @@ mod tests {
         let (a, b) = unix::pipe().unwrap();
         let (cut, rest) = frame.split_at(100);
         let fds = [a.as_raw_fd(), b.as_raw_fd(), b.as_raw_fd()];
-        goblins_protocol::init::send(peer.as_raw_fd(), cut, &fds).unwrap();
+        goblins_init::send(peer.as_raw_fd(), cut, &fds).unwrap();
         d.service(&mut c);
         assert_eq!(c.fds.len(), 3);
         assert!(c.exec.is_none());

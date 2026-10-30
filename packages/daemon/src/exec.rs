@@ -3,7 +3,7 @@
 //! sandbox ends to goblins-init and reports the exit status. This
 //! connection stays open for the exec's life: closing it cancels the exec.
 use goblins_controller::{Result, host::Client, unix};
-use goblins_protocol::rpc::{self, Decoder};
+use goblins_jsonrpc::{self as rpc, Decoder};
 use serde_json::{Value, json};
 use std::{
     io::{self, Read, Write},

@@ -9,7 +9,7 @@ use super::{
     runtime::{Command, Event, SpawnKind, Stdio},
 };
 use crate::{config, terminal::Terminal, unix};
-use goblins_protocol::rpc;
+use goblins_jsonrpc as rpc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{

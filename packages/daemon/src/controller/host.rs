@@ -9,7 +9,8 @@ use super::{
     policy::Operation,
     runtime::{Command, HostOutcome},
 };
-use goblins_protocol::rpc::{self, HostCommand};
+use goblins_jsonrpc as rpc;
+use goblins_protocol::rpc::HostCommand;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -143,7 +144,7 @@ pub(super) struct Preparing {
     pub(super) serial: u64,
     pub(super) connection: u64,
     pub(super) rpc: Value,
-    pub(super) params: rpc::PermissionParams,
+    pub(super) params: goblins_protocol::rpc::PermissionParams,
 }
 
 #[derive(Deserialize)]

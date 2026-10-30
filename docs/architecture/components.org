@@ -64,7 +64,9 @@ Both host and sandbox expose a command named =goblins=, but they execute differe
 | =goblins-controller=    | Daemon library, host CLI, TUI, terminal and exec frontends          | [[file:../../packages/daemon/src/][packages/daemon/src/]] |
 | =goblins-client=        | Sandbox CLI, init and editor client                                 | [[file:../../packages/sandbox-cli/src/][packages/sandbox-cli/src/]]     |
 | Sandbox aliases       | Install =goblins=, =goblins-request=, =goblins-init= and =goblins-editor=   | [[file:../../packages/sandbox-cli/default.nix][internal-goblins.nix]]   |
-| =goblins-protocol=      | Framing, typed requests, mailbox operations, init/terminal protocol | [[file:../../libs/api/src/][libs/api/src/]]   |
+| =goblins-protocol=      | Typed requests, mailbox operations, validators and terminal relay | [[file:../../libs/api/src/][libs/api/src/]]   |
+| =goblins-jsonrpc= | JSON-RPC values, envelopes and bounded framing | [[file:../../libs/jsonrpc/src/lib.rs][jsonrpc/lib.rs]] |
+| =goblins-init= | Private init commands, events and descriptor transport | [[file:../../libs/init/src/lib.rs][init/lib.rs]] |
 | =goblins-mount-helper=  | Namespace setup and live mount operations                           | [[file:../../packages/mount-helper/src/main.rs][src/main.rs]]            |
 | Emacs frontend        | Status/approval buffer, terminal integration and TRAMP access       | [[file:../../emacs/][emacs/]]                 |
 | Agent launchers/hooks | Sandbox-only Codex and Claude configuration and integration         | [[file:../../nix/goblins/][nix/goblins/]]           |
@@ -90,7 +92,7 @@ The protocol crate has no Nix, launch or approval authority. The sandbox client 
 
 The host state directory is private, and =host.sock= has mode =0600=. The sandbox receives only its own request endpoint, bind-mounted from a listener created for that session. The controller derives the actor from the listener role, not a caller-supplied session ID. =initialize= negotiates API version and capabilities; it does not let a sandbox choose host authority.
 
-Public RPC uses JSON-RPC 2.0 with =Content-Length= framing. Parsing rejects duplicate keys and enforces bounded frames, deadlines and typed parameters. Host state subscriptions send an initial snapshot followed by sequenced =state.changed= notifications containing replacement snapshots. A gap or daemon-instance change requires a fresh subscription. See [[file:../../libs/api/src/rpc.rs][rpc.rs]], [[file:../../packages/daemon/src/host.rs][host.rs]] and [[file:../../packages/daemon/src/controller.rs][controller.rs]] for exact limits and methods.
+Public RPC uses JSON-RPC 2.0 with =Content-Length= framing. Parsing rejects duplicate keys and enforces bounded frames, deadlines and typed parameters. Host state subscriptions send an initial snapshot followed by sequenced =state.changed= notifications containing replacement snapshots. A gap or daemon-instance change requires a fresh subscription. See [[file:../../libs/jsonrpc/src/lib.rs][framing]], [[file:../../libs/api/src/rpc.rs][RPC types]], [[file:../../packages/daemon/src/host.rs][host.rs]] and [[file:../../packages/daemon/src/controller.rs][controller.rs]] for exact limits and methods.
 
 * Sandbox and package boundary
 

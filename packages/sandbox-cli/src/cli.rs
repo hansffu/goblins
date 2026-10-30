@@ -1,6 +1,6 @@
 //! Restricted CLI. Authorization always lives in the daemon, not this parser.
 use clap::{CommandFactory, Parser, Subcommand};
-use goblins_protocol::rpc;
+use goblins_jsonrpc as rpc;
 use serde_json::json;
 
 #[derive(Parser)]
