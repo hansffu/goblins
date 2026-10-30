@@ -1,7 +1,9 @@
 """Raid owners running members, through real controller sockets, CLIs and namespaces."""
+import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -159,6 +161,118 @@ class RaidMemberTests(unittest.TestCase):
         # Members of the raid message each other by name.
         sent = self.sandbox(late["session"], "messages.send", {"key": "k", "to": "member", "body": "hi"})
         self.assertEqual((sent["recipient"], sent["sender_name"]), (member["session"], "late"))
+
+    def resources(self, launch):
+        return self.d.state / launch["session"] / "resources"
+
+    def stopped(self, launch):
+        self.d.rpc.call("sessions.stop", {"session": launch["session"]})
+        self.d.wait(lambda: self.d.get(launch["session"])["state"] == "stopped")
+
+    def lease_free(self, directory):
+        """Whether nobody holds a lease on `directory` any more (probed, then let go)."""
+        with open(directory / ".gc-lease", "rb") as lease:
+            try:
+                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(lease, fcntl.LOCK_UN)
+            return True
+
+    def test_a_member_keeps_the_resources_of_every_goblin_up_its_chain_until_it_stops(self):
+        # A runs B; A stops and B takes the paused raid over and runs C, so
+        # C's workspace lives in A's snapshot, not in B's.
+        with tempfile.TemporaryDirectory(prefix="goblin-raid-chain-") as folder:
+            source = Path(folder)
+            (source / "input").write_text("host\n")
+            self.d = Daemon(workspace=source)
+            self.addCleanup(self.d.close)
+            a = self.d.start(agent_name="a")
+            b = self.d.member(a["session"], agent_name="b")
+            snapshot = self.resources(a) / "workspace"
+            self.stopped(a)
+            raid = self.d.get(b["session"])["raid"]["name"]
+            self.cli("raid", "set-owner", raid, "b")
+            # Garbage collection leaves a running server's resources alone, A's
+            # included, which B still holds.
+            self.assertIn("Keeping resources of the running server", self.cli("gc").stdout)
+            self.assertTrue((snapshot / "input").exists())
+            # C starts after A stopped, from B, and uses A's snapshot.
+            c = self.d.member(b["session"], agent_name="c")
+            shell = self.terminal(c)
+            shell.sendall(b"cat input > seen; echo c-write > input\n")
+            self.d.wait(lambda: (snapshot / "seen").exists() and (snapshot / "input").read_text() == "c-write\n")
+            self.assertEqual((snapshot / "seen").read_text(), "host\n")
+            self.assertEqual((source / "input").read_text(), "host\n")
+            self.stopped(b)
+            # Neither owner is running, but C holds a lease on each directory.
+            self.assertIn("Keeping resources of the running server", self.cli("gc").stdout)
+            self.assertEqual(self.d.get(c["session"])["state"], "running")
+            # C still reads and writes A's snapshot, though A and B stopped
+            # and goblins gc ran.
+            shell.sendall(b"cat input > seen-again; echo c-again > input\n")
+            self.d.wait(lambda: (snapshot / "seen-again").exists() and (snapshot / "input").read_text() == "c-again\n")
+            self.assertEqual((snapshot / "seen-again").read_text(), "c-write\n")
+            for launch in (a, b, c):
+                self.assertTrue((self.resources(launch) / ".gc-lease").exists(), launch)
+                self.assertFalse(self.lease_free(self.resources(launch)), launch)
+            # The last holder removes what it kept alive.
+            self.stopped(c)
+            for launch in (a, b, c):
+                self.d.wait(lambda launch=launch: not self.resources(launch).exists(), timeout=15)
+
+    def test_a_member_launched_as_its_owner_stops_still_starts_with_the_owners_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="goblin-raid-stop-") as folder:
+            source = Path(folder)
+            (source / "input").write_text("host\n")
+            self.d = Daemon(workspace=source)
+            self.addCleanup(self.d.close)
+            owner = self.d.start(agent_name="owner")
+            snapshot = self.resources(owner) / "workspace"
+            # Accepted, then the owner stops at once: the owner's runtime
+            # answers the export it was sent before it handles the stop.
+            member = self.d.member(owner["session"], agent_name="member", wait=False)
+            self.stopped(owner)
+            self.running(member)
+            self.assertTrue(snapshot.is_dir())
+            self.terminal(member).sendall(b"cat input > seen; echo member-write > input\n")
+            self.d.wait(lambda: (snapshot / "seen").exists() and (snapshot / "input").read_text() == "member-write\n")
+            self.assertEqual((snapshot / "seen").read_text(), "host\n")
+
+    def test_goblins_gc_collects_the_resources_of_a_whole_chain_once_every_holder_died(self):
+        # A runs B; A stops and B takes the raid over and runs C. The daemon
+        # is then killed: C's leases on all three directories die with it.
+        a = self.d.start(agent_name="a")
+        b = self.d.member(a["session"], agent_name="b")
+        self.stopped(a)
+        raid = self.d.get(b["session"])["raid"]["name"]
+        self.cli("raid", "set-owner", raid, "b")
+        c = self.d.member(b["session"], agent_name="c")
+        directories = [self.resources(launch) for launch in (a, b, c)]
+        for directory in directories:
+            self.assertTrue(directory.is_dir())
+        os.kill(self.d.process.pid, signal.SIGKILL)
+        self.d.process.wait()
+        # Every sandbox, and with it every copy of a lease, goes with the
+        # daemon: observe that, rather than collecting until it has.
+        self.d.wait(lambda: all(self.lease_free(directory) for directory in directories), timeout=30)
+        collected = self.cli("gc")
+        self.assertFalse(any(directory.exists() for directory in directories), collected.stdout)
+
+    def test_an_owner_keeps_its_resources_while_a_member_runs_and_whoever_stops_last_removes_them(self):
+        for first in ("member", "owner"):
+            with self.subTest(first=first):
+                owner = self.d.start(agent_name=f"owner-{first}")
+                member = self.d.member(owner["session"], agent_name=f"member-{first}")
+                one, other = (member, owner) if first == "member" else (owner, member)
+                self.stopped(one)
+                # The one still running, and whoever it inherited from or
+                # shares with, keeps its directory.
+                self.assertEqual(self.d.get(other["session"])["state"], "running")
+                self.assertTrue(self.resources(owner).is_dir())
+                self.stopped(other)
+                self.d.wait(lambda: not self.resources(owner).exists(), timeout=15)
+                self.d.wait(lambda: not self.resources(member).exists(), timeout=15)
 
     def test_members_share_the_owners_workspace_and_pinned_working_directory(self):
         with tempfile.TemporaryDirectory(prefix="goblin-raid-work-") as folder:

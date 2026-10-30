@@ -136,9 +136,14 @@ impl Support {
     }
     /// The first feature `policy` needs that this implementation lacks. A
     /// feature counts only where it is needed: a goblin without `onAttach`
-    /// never needs `AttachClients`.
-    pub fn lacks(&self, policy: &Policy) -> Option<Feature> {
+    /// never needs `AttachClients`, and `Docker` only for one that attaches
+    /// the scope's engine as it starts (`docker_at_start`), configured or
+    /// inherited from its raid owner.
+    pub fn lacks(&self, policy: &Policy, docker_at_start: bool) -> Option<Feature> {
         let mut needs = vec![];
+        if docker_at_start {
+            needs.push(Feature::Docker);
+        }
         if policy.nix {
             needs.push(Feature::NixDaemon);
         }
@@ -418,7 +423,7 @@ mod tests {
                 "host-commands"
             ]
         );
-        assert_eq!(support.lacks(&policy), None);
+        assert_eq!(support.lacks(&policy, false), None);
     }
 
     #[test]
@@ -556,15 +561,20 @@ mod tests {
         let mut support = Support::linux();
         support.0.remove(&Feature::AttachClients);
         support.0.remove(&Feature::SharedPid);
-        assert_eq!(support.lacks(&policy), Some(Feature::SharedPid));
+        assert_eq!(support.lacks(&policy, false), Some(Feature::SharedPid));
         policy.scope.as_mut().unwrap().pid = false;
-        assert_eq!(support.lacks(&policy), Some(Feature::AttachClients));
+        assert_eq!(support.lacks(&policy, false), Some(Feature::AttachClients));
         policy.handlers = None;
         // A configured dev shell needs the feature that evaluates it.
         support.0.remove(&Feature::DevShells);
-        assert_eq!(support.lacks(&policy), Some(Feature::DevShells));
+        assert_eq!(support.lacks(&policy, false), Some(Feature::DevShells));
         policy.dev_shell = None;
-        assert_eq!(support.lacks(&policy), None);
+        assert_eq!(support.lacks(&policy, false), None);
+        // Docker counts for a goblin that attaches it as it starts, however
+        // that was decided, and for no other.
+        support.0.remove(&Feature::Docker);
+        assert_eq!(support.lacks(&policy, true), Some(Feature::Docker));
+        assert_eq!(support.lacks(&policy, false), None);
         // A goblin without handlers has no client to start, whatever the
         // support.
         let capabilities = Capabilities {
@@ -579,6 +589,6 @@ mod tests {
             })
         );
         support.0.remove(&Feature::Scopes);
-        assert_eq!(support.lacks(&policy), Some(Feature::Scopes));
+        assert_eq!(support.lacks(&policy, false), Some(Feature::Scopes));
     }
 }

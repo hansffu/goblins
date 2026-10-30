@@ -256,3 +256,62 @@ fn a_directory_that_is_being_collected_cannot_be_leased() {
     drop(ResourceLease::new(resources).unwrap());
     assert!(!session.exists());
 }
+
+#[test]
+fn a_handoff_holds_every_resources_directory_the_owner_holds_after_the_owner_is_gone() {
+    let _no_forks = unix::no_forks();
+    // A runs B, which runs C: C's workspace lives in A's resources.
+    let (a_session, a_resources) = resources();
+    let (b_session, b_resources) = resources();
+    let owner =
+        Inheritance::fixture_leases("shell", &[], vec![b_resources.clone(), a_resources.clone()]);
+    let handoff = owner.handoff().unwrap();
+    // Fresh leases of their own, never copies of the owner's.
+    assert_eq!(handoff.leases.len(), 2);
+    for (lease, own) in handoff.leases.iter().zip(owner.leases.iter()) {
+        assert_ne!(lease.fd(), own.fd());
+    }
+    assert!(handoff.workspace.as_raw_fd() >= 0);
+    assert!(handoff.working_directory.is_none());
+    assert!(handoff.dev_shell.is_none());
+    assert!(!handoff.docker);
+    // The owners stop: what they held stays while the handoff holds it.
+    drop(owner);
+    assert!(a_resources.join("snapshot").exists());
+    assert!(b_resources.join("snapshot").exists());
+    drop(handoff);
+    assert!(!a_session.exists());
+    assert!(!b_session.exists());
+}
+
+#[test]
+fn a_handoff_carries_the_docker_flag_as_it_was_when_it_was_made() {
+    let _no_forks = unix::no_forks();
+    let (session, resources) = resources();
+    let owner = Inheritance::fixture_in("shell", &[], resources);
+    assert!(!owner.handoff().unwrap().docker);
+    owner.docker.store(true, Ordering::SeqCst);
+    assert!(owner.handoff().unwrap().docker);
+    // Read once: the flag later changing does not reach a handoff already made.
+    let made = owner.handoff().unwrap();
+    owner.docker.store(false, Ordering::SeqCst);
+    assert!(made.docker);
+    drop((made, owner));
+    assert!(!session.exists());
+}
+
+#[test]
+fn a_capability_held_elsewhere_keeps_every_directory_of_its_chain_for_the_engine_that_uses_them() {
+    let _no_forks = unix::no_forks();
+    // A scope keeps the capability of a Docker user, so that the directories
+    // its engine's grants live in stay until the engine stops.
+    let (a_session, a_resources) = resources();
+    let (b_session, b_resources) = resources();
+    let owner = Inheritance::fixture_leases("shell", &[], vec![b_resources, a_resources.clone()]);
+    let engine = owner.clone();
+    drop(owner);
+    assert!(a_resources.join("snapshot").exists());
+    drop(engine);
+    assert!(!a_session.exists());
+    assert!(!b_session.exists());
+}

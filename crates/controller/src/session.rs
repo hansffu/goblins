@@ -4,7 +4,10 @@ pub use crate::process::Cancellation as Cancel;
 use crate::{
     Result,
     config::Launch,
-    controller::policy::{DevShellPolicy, DevShellSummary, Policy, ScopePolicy},
+    controller::{
+        policy::{DevShellPolicy, DevShellSummary, Policy, ScopePolicy},
+        runtime::{Handoff, WorkingDirectory},
+    },
     process::{self, Cancellation},
     seccomp, snapshot, unix,
 };
@@ -149,6 +152,7 @@ pub struct Identity {
 /// exclusively, otherwise the last holder or `goblins gc` removes it later.
 /// Every lease is its own open file description, never a `dup`, because the
 /// exclusive-lock test cannot tell `dup`s apart.
+#[derive(Debug)]
 pub(crate) struct ResourceLease {
     directory: PathBuf,
     lock: Option<File>,
@@ -159,12 +163,15 @@ impl ResourceLease {
         Ok(Self { directory, lock })
     }
     /// A fresh lease on the same directory, for another holder.
-    #[allow(dead_code)]
     pub(crate) fn share(&self) -> Result<Self> {
         Self::new(self.directory.clone())
     }
     pub(crate) fn fd(&self) -> std::os::fd::RawFd {
         self.lock.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+    }
+    #[cfg(test)]
+    pub(crate) fn directory(&self) -> &Path {
+        &self.directory
     }
 }
 impl Drop for ResourceLease {
@@ -183,10 +190,10 @@ impl Drop for ResourceLease {
         }
     }
 }
+/// The pinned snapshot directory. Its contents live in the resources of the
+/// goblin that made it, which every goblin sharing it holds a lease on.
 struct SharedWorkspace {
     file: File,
-    // Keep snapshot contents alive until every goblin sharing it has stopped.
-    _owner: Arc<ResourceLease>,
 }
 /// Host-owned launch capability. Goblins a raid owner runs reuse its opened
 /// working directory, never re-resolve host paths or read a caller-selected
@@ -202,22 +209,40 @@ pub(crate) struct Inheritance {
     /// This session's configuration key and the configurations it may run.
     configuration: String,
     run_targets: Arc<[String]>,
-    _owner: Arc<ResourceLease>,
+    /// This session's resources and those it inherited: they stay until
+    /// every holder, in this daemon or another process, has let go.
+    leases: Arc<[Arc<ResourceLease>]>,
 }
 impl Inheritance {
-    /// The live scope, held for a launch accepted while this session runs.
-    pub(crate) fn scope(&self) -> std::result::Result<Option<Arc<crate::scope::Shared>>, String> {
-        match &self.launch.scope {
-            None => Ok(None),
-            Some(_) => self
-                .scope
-                .upgrade()
-                .map(Some)
-                .ok_or_else(|| "the owner's scope has stopped".into()),
-        }
+    #[cfg(test)]
+    pub(crate) fn set_docker(&self, attached: bool) {
+        self.docker.store(attached, Ordering::SeqCst);
     }
-    pub(crate) fn scope_name(&self) -> Option<&str> {
-        self.launch.scope.as_ref().map(|s| s.name.as_str())
+    /// What a goblin this one runs takes from it: a fresh lease on every
+    /// resources directory it holds, its workspace and working directory, its
+    /// current dev shell generation and whether Docker is attached.
+    pub(crate) fn handoff(&self) -> Result<Handoff> {
+        Ok(Handoff {
+            leases: self
+                .leases
+                .iter()
+                .map(|lease| lease.share())
+                .collect::<Result<_>>()?,
+            workspace: OwnedFd::from(self.workspace.file.try_clone()?).into(),
+            working_directory: self.binds.export_working_directory()?.map(
+                |(fd, source, destination)| WorkingDirectory {
+                    fd: OwnedFd::from(fd).into(),
+                    source,
+                    destination,
+                },
+            ),
+            dev_shell: self.launch.dev_shell.clone(),
+            docker: self.docker.load(Ordering::SeqCst),
+        })
+    }
+    /// The scope, held weakly.
+    pub(crate) fn scope_handle(&self) -> Weak<crate::scope::Shared> {
+        self.scope.clone()
     }
     /// The helper binary, which also supervises host commands.
     pub(crate) fn helper(&self) -> &Path {
@@ -257,7 +282,20 @@ impl Inheritance {
         run_targets: &[&str],
         directory: PathBuf,
     ) -> Self {
-        let owner = Arc::new(ResourceLease::new(directory).unwrap());
+        Self::fixture_leases(configuration, run_targets, vec![directory])
+    }
+    /// The same, holding a lease on each of `directories`: its own first,
+    /// then those it inherited. The first is the workspace.
+    pub(crate) fn fixture_leases(
+        configuration: &str,
+        run_targets: &[&str],
+        directories: Vec<PathBuf>,
+    ) -> Self {
+        let leases: Vec<_> = directories
+            .into_iter()
+            .map(|d| Arc::new(ResourceLease::new(d).unwrap()))
+            .collect();
+        let owner = leases[0].clone();
         let launch: Launch = serde_json::from_value(serde_json::json!({
             "shell": "/unused", "posix_shell": "/unused", "helper": "/unused",
             "bwrap": "/unused", "flake": "unused", "client_package": "/unused",
@@ -272,13 +310,12 @@ impl Inheritance {
             ),
             workspace: Arc::new(SharedWorkspace {
                 file: File::open(&owner.directory).unwrap(),
-                _owner: owner.clone(),
             }),
             scope: Weak::new(),
             docker: Arc::default(),
             configuration: configuration.into(),
             run_targets: run_targets.iter().map(|t| t.to_string()).collect(),
-            _owner: owner,
+            leases: leases.into(),
         }
     }
 }
@@ -304,6 +341,17 @@ pub(crate) fn log_event(directory: &Path, event: &str, fields: serde_json::Value
             serde_json::json!({"time":time,"event":event,"fields":fields})
         );
     }
+}
+/// What a goblin a raid owner runs starts from.
+pub(crate) struct Member<'a> {
+    pub handoff: Handoff,
+    /// The owner's scope, held from the launch's acceptance.
+    pub scope: Option<Arc<crate::scope::Shared>>,
+    /// The scope the owner is in, which the configuration must be able to join.
+    pub owner_scope: Option<&'a str>,
+    pub protected_paths: Vec<PathBuf>,
+    pub manifest: &'a Path,
+    pub configuration: &'a str,
 }
 /// Recorded grants that resolved, in order, and the names that did not.
 pub(crate) type Resolved = (Vec<(String, PathBuf)>, Vec<crate::history::Skipped>);
@@ -334,11 +382,14 @@ pub struct Session {
     helper_input: Option<File>,
     helper_output: Option<File>,
     cancel: Cancellation,
-    directory_owner: Arc<ResourceLease>,
+    /// The leases on this session's resources, its own first, then those it
+    /// inherited from its raid owner.
+    leases: Vec<Arc<ResourceLease>>,
     binds: Option<Arc<crate::binds::Plan>>,
     // A goblin a raid owner runs opens its own binds at start, sharing only
-    // the owner's pinned working directory.
-    owner_binds: Option<Arc<crate::binds::Plan>>,
+    // the owner's pinned working directory: its descriptor, host path and
+    // where the sandbox sees it.
+    inherited_cwd: Option<(File, PathBuf, PathBuf)>,
     workspace: Option<Arc<SharedWorkspace>>,
     candidate: Option<crate::devshell::Candidate>,
     pub(crate) configuration: String,
@@ -369,7 +420,7 @@ impl Session {
         };
         unix::private_directory(&directory)?;
         let session = Self {
-            directory_owner: Arc::new(ResourceLease::new(directory.clone())?),
+            leases: vec![Arc::new(ResourceLease::new(directory.clone())?)],
             directory,
             launch,
             mounted: BTreeSet::new(),
@@ -392,7 +443,7 @@ impl Session {
             helper_output: None,
             cancel,
             binds: None,
-            owner_binds: None,
+            inherited_cwd: None,
             workspace: None,
             candidate: None,
             configuration: String::new(),
@@ -422,33 +473,39 @@ impl Session {
         Ok(session)
     }
     /// A goblin a raid owner runs, using a configuration resolved from the
-    /// daemon's current manifest for the owner's scope. It shares the owner's
-    /// workspace, scope, working directory, dev shell and Docker attachment;
-    /// everything else comes from its own definition.
-    pub(crate) fn member(
-        owner: Inheritance,
-        scope: Option<Arc<crate::scope::Shared>>,
-        manifest: &Path,
-        configuration: &str,
-        cancel: Cancel,
-        directory: PathBuf,
-    ) -> Result<Self> {
+    /// daemon's current manifest for the owner's scope. It takes what the
+    /// owner handed over: its workspace, scope, working directory, dev shell
+    /// and Docker attachment, and a lease on every resources directory the
+    /// owner holds, kept for the member's life. Everything else comes from
+    /// its own definition.
+    pub(crate) fn member(member: Member, cancel: Cancel, directory: PathBuf) -> Result<Self> {
+        let Member {
+            handoff,
+            scope,
+            owner_scope,
+            protected_paths,
+            manifest,
+            configuration,
+        } = member;
         let manifest = crate::config::Manifest::validate(manifest)?;
         let editor = manifest.editor()?;
         let run_targets: Arc<[String]> = manifest.run_targets(configuration).into();
         let mut launch = manifest
-            .select_inherited(configuration, owner.scope_name())
+            .select_inherited(configuration, owner_scope)
             .map_err(|e| format!("configuration '{configuration}' cannot be launched here: {e}"))?
             .launch()?;
         if launch.initial_packages.len() > 128 {
             return Err("initial package limit is 128".into());
         }
-        launch.protected_paths = owner.launch.protected_paths.clone();
+        launch.protected_paths = protected_paths;
         let mut session = Self::new_in(launch, None, cancel, directory)?;
         // new_in canonicalizes cwd for host launches only. Keep the owner's
         // pinned namespace path even when its host pathname was renamed.
-        session.launch.cwd = owner.launch.cwd.clone();
-        session.launch.dev_shell = owner.launch.dev_shell.clone();
+        session.launch.cwd = handoff
+            .working_directory
+            .as_ref()
+            .map(|w| w.destination.clone());
+        session.launch.dev_shell = handoff.dev_shell;
         session.launch.editor = editor;
         if session.launch.scope.is_some() {
             let scope = scope.ok_or("the owner's scope has stopped")?;
@@ -456,8 +513,7 @@ impl Session {
             scope.compatible(&session.launch)?;
             session.scope = Some(scope);
         }
-        let enabled = owner.docker.load(Ordering::SeqCst)
-            || session.launch.docker.as_ref().is_some_and(|d| d.enabled);
+        let enabled = handoff.docker || session.launch.docker.as_ref().is_some_and(|d| d.enabled);
         session.docker_inherit_enabled = Some(enabled);
         if enabled
             && let Some(client) = session
@@ -469,11 +525,26 @@ impl Session {
         {
             session.launch.initial_packages.push(client);
         }
-        session.owner_binds = Some(owner.binds.clone());
-        session.workspace = Some(owner.workspace.clone());
+        session.inherited_cwd = handoff
+            .working_directory
+            .map(|w| (File::from(OwnedFd::from(w.fd)), w.source, w.destination));
+        session.workspace = Some(Arc::new(SharedWorkspace {
+            file: File::from(OwnedFd::from(handoff.workspace)),
+        }));
+        // Held for this goblin's whole life, as the owner's capability kept
+        // them before.
+        session
+            .leases
+            .extend(handoff.leases.into_iter().map(Arc::new));
         session.configuration = configuration.to_string();
         session.run_targets = run_targets;
         Ok(session)
+    }
+    /// Whether this goblin attaches the scope's Docker engine as it starts:
+    /// inherited from its owner, or configured.
+    pub(crate) fn docker_at_start(&self) -> bool {
+        self.docker_inherit_enabled
+            .unwrap_or_else(|| self.launch.docker.as_ref().is_some_and(|d| d.enabled))
     }
     /// What this session's configuration allows; known before it starts.
     pub(crate) fn policy(&self) -> Policy {
@@ -488,7 +559,7 @@ impl Session {
             docker: self.docker_attached.clone(),
             configuration: self.configuration.clone(),
             run_targets: self.run_targets.clone(),
-            _owner: self.directory_owner.clone(),
+            leases: self.leases.clone().into(),
         }
     }
     pub fn event(&self, event: &str, fields: serde_json::Value) {
@@ -568,8 +639,8 @@ impl Session {
         };
         if self.binds.is_none() {
             let mut binds = self.launch.binds.plan(&private, &self.cancel)?;
-            if let Some(owner) = &self.owner_binds {
-                binds.share_working_directory(owner)?;
+            if let Some((fd, source, destination)) = self.inherited_cwd.take() {
+                binds.use_working_directory(fd, source, destination);
             } else if let Some(cwd) = &self.launch.cwd {
                 binds.add_working_directory(cwd, &private)?;
             }
@@ -579,7 +650,6 @@ impl Session {
         if self.workspace.is_none() {
             self.workspace = Some(Arc::new(SharedWorkspace {
                 file: File::open(self.directory.join("workspace"))?,
-                _owner: self.directory_owner.clone(),
             }));
         }
         let workspace_fd = self.workspace.as_ref().unwrap().file.as_raw_fd();
@@ -905,10 +975,7 @@ impl Session {
         // Eager Docker joins need the complete initial package view too; the
         // shell helper is launched only after the engine is ready.
         self.mounted = initial;
-        if self
-            .docker_inherit_enabled
-            .unwrap_or_else(|| self.launch.docker.as_ref().is_some_and(|d| d.enabled))
-        {
+        if self.docker_at_start() {
             self.enable_docker()?;
         }
         if docker {
@@ -998,7 +1065,7 @@ impl Session {
         let parent = unsafe { libc::getpid() };
         let payload_limit = unix::payload_descriptor_limit();
         let mut keep = vec![
-            self.directory_owner.fd(),
+            self.leases[0].fd(),
             input.as_raw_fd(),
             output.as_raw_fd(),
             filter.as_raw_fd(),

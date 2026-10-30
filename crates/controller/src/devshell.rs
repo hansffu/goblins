@@ -7,7 +7,7 @@ use crate::{
     process::Cancellation,
     session::{containing_store_output, store_path},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -65,7 +65,7 @@ const MAX_DIFF_BYTES: usize = 128 * 1024;
 
 /// What a generation contains, for refresh diffs: the dev shell's direct
 /// inputs by package name, and its derivation environment.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Summary {
     pub packages: BTreeMap<String, BTreeSet<String>>,
     pub env: BTreeMap<String, String>,
@@ -73,7 +73,7 @@ pub struct Summary {
 }
 
 /// One host-approved dev shell generation, shared by a sandbox's children.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DevShell {
     /// Host flake reference as given at launch, for display.
     pub reference: String,

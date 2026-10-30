@@ -1,7 +1,7 @@
 //! Single authority/event loop, with independent blocking workers per session.
 use crate::{
     Result,
-    session::{Cancel, Identity, Inheritance},
+    session::{Cancel, Identity},
     terminal::Terminal,
     unix,
     worker::Source,
@@ -11,7 +11,7 @@ use goblins_protocol::{
     rpc::{self, Decoder, DevShellDiffParams, FlakeRunParams, PermissionParams},
 };
 use policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
-use runtime::{Command, Event, Local, Runtime};
+use runtime::{Command, Event, Local, Runtime, ScopeHandle};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::{
@@ -202,9 +202,14 @@ struct Active {
     support: Support,
     /// The current dev shell generation, replaced by each refresh.
     dev_shell: Option<DevShellSummary>,
-    /// The runtime's capability, which only member launches use until a
-    /// raid member takes a handoff from its owner.
-    inheritance: Option<Inheritance>,
+    /// The goblin's scope, held weakly, so the daemon can pin it for a member
+    /// the goblin runs. Until phase 4 moves scopes into processes of their own.
+    scope: ScopeHandle,
+    /// The manifest this launch was accepted against, which stays rooted
+    /// until the launch has started.
+    launch_manifest: Option<std::sync::Arc<crate::config::ManifestLease>>,
+    /// The raid owner whose handoff this member still waits for.
+    exporting: Option<String>,
     /// The runtime's channel to the sandbox's goblins-init is open.
     init: bool,
     granted_outputs: BTreeMap<String, PathBuf>,
@@ -243,10 +248,10 @@ impl Active {
     /// Give the goblin the capability of a started session, as `Started`
     /// does.
     #[cfg(test)]
-    fn set_inheritance(&mut self, inheritance: Inheritance) {
+    fn set_inheritance(&mut self, inheritance: crate::session::Inheritance) {
         self.policy = Some(Box::new(inheritance.policy()));
         self.dev_shell = inheritance.dev_shell_summary();
-        self.inheritance = Some(inheritance);
+        self.scope = ScopeHandle(inheritance.scope_handle());
     }
     /// May this goblin do `operation`? A goblin that has not started has no
     /// policy, and conflicts.
@@ -571,8 +576,9 @@ const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing",
 #[derive(Clone)]
 struct Owner {
     id: String,
-    inheritance: Inheritance,
     scope: Option<std::sync::Arc<crate::scope::Shared>>,
+    /// The scope the owner is in, which a member must be able to join.
+    scope_name: Option<String>,
 }
 /// Dev-shell generations an auto-approve set holds.
 const AUTO_DEV_SHELLS: usize = 32;
@@ -1361,6 +1367,9 @@ impl Controller {
     }
     fn stop(&mut self, id: &str, reason: Option<String>) -> std::result::Result<Value, Fault> {
         let a = self.sessions.get_mut(id).ok_or_else(missing)?;
+        // A member that stops no longer waits for its owner's handoff; one
+        // that arrives later is nobody's, and dropping it releases its leases.
+        a.exporting = None;
         if let Some(runtime) = &mut a.runtime {
             // Preserve the first cause, including a natural exit with no reason.
             if !["stopping", "stopped", "failed"].contains(&a.record.state.as_str()) {
@@ -1549,6 +1558,18 @@ impl Controller {
             }
         }
         let id = self.id("s");
+        // A member takes its owner's workspace, working directory, dev shell
+        // and leases from the owner's runtime, which answers without waiting
+        // for Nix work. A launch that fails after this leaves an answer
+        // nobody wants, which releases what it holds.
+        if let Some(owner) = &owner {
+            self.sessions
+                .get_mut(&owner.id)
+                .and_then(|a| a.runtime.as_mut())
+                .ok_or_else(conflict)?
+                .send(Command::Export { member: id.clone() })
+                .map_err(|_| capacity())?;
+        }
         let directory = self.state.join(&id);
         unix::private_directory(&directory).map_err(|e| (-32010, e.to_string()))?;
         let path = directory.join("terminal.sock");
@@ -1574,13 +1595,16 @@ impl Controller {
             }
         };
         let sequence = self.manifest_sequence + 1;
+        let launch_manifest = manifest.clone();
         let source = match (owner.clone(), manifest) {
             (Some(owner), Some(manifest)) => Source::Member {
-                owner: owner.inheritance,
                 scope: owner.scope,
-                manifest,
+                owner_scope: owner.scope_name,
+                manifest: manifest.path.clone(),
                 configuration: p.name.clone(),
                 auto: approvals.packages.clone(),
+                state: self.state.clone(),
+                history: self.history_directory.clone(),
             },
             _ => Source::Host {
                 configuration: p.configuration.clone().into(),
@@ -1660,7 +1684,9 @@ impl Controller {
             id.clone(),
             Active {
                 activity_at: None,
-                inheritance: None,
+                scope: Default::default(),
+                launch_manifest,
+                exporting: owner.as_ref().map(|o| o.id.clone()),
                 policy: None,
                 support: Support::linux(),
                 dev_shell: None,
@@ -1697,6 +1723,83 @@ impl Controller {
         }
         Ok(result)
     }
+    /// What a raid owner handed over for `member`, or why it could not: the
+    /// member starts with it, or its launch fails.
+    fn exported(
+        &mut self,
+        owner: &str,
+        member: String,
+        result: std::result::Result<Box<runtime::Handoff>, String>,
+    ) {
+        let Some(a) = self
+            .sessions
+            .get_mut(&member)
+            .filter(|a| a.exporting.as_deref() == Some(owner))
+        else {
+            // The launch never happened, or ended: nobody wants it, and
+            // dropping it releases what it holds.
+            return;
+        };
+        a.exporting = None;
+        match result {
+            Ok(handoff) => {
+                // A runtime that refuses it cannot start the member: it would
+                // wait for ever.
+                let refused = a
+                    .runtime
+                    .as_mut()
+                    .is_some_and(|runtime| runtime.send(Command::Start(handoff)).is_err());
+                if refused {
+                    self.fail_launch(
+                        &member,
+                        "the launch could not take its owner's handoff".into(),
+                    );
+                }
+            }
+            Err(error) => {
+                let name = self.sessions[owner].record.agent_name.clone();
+                self.fail_launch(
+                    &member,
+                    format!("goblin {name} could not hand over its resources: {error}"),
+                );
+            }
+        }
+    }
+    /// The members still waiting for `owner`'s handoff, which will not come.
+    fn fail_exports(&mut self, owner: &str, name: &str) {
+        let waiting: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, a)| a.exporting.as_deref() == Some(owner))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for member in waiting {
+            self.fail_launch(
+                &member,
+                format!("goblin {name} stopped before it could hand over its resources"),
+            );
+        }
+    }
+    /// A member's launch that cannot start: it fails with `message` and its
+    /// runtime stops.
+    fn fail_launch(&mut self, id: &str, message: String) {
+        let Some(a) = self.sessions.get_mut(id) else {
+            return;
+        };
+        a.exporting = None;
+        a.launch_manifest = None;
+        if !["stopped", "failed"].contains(&a.record.state.as_str()) {
+            a.record.state = "failed".into();
+            a.record.detail = Some(bounded(&message));
+            if a.record.identity.is_none() {
+                a.terminal.failed_start();
+            }
+        }
+        if let Some(runtime) = &mut a.runtime {
+            let _ = runtime.send(Command::Stop);
+        }
+        self.dirty = true;
+    }
     /// The checks a raid owner's run passes before anything is allocated:
     /// it owns an unpaused raid, runs, and its configuration permits the
     /// target. Its live scope is held from here on.
@@ -1712,15 +1815,23 @@ impl Controller {
         if a.record.state != "running" || a.runtime.is_none() {
             return Err(conflict());
         }
-        let inheritance = a.inheritance.clone().ok_or_else(conflict)?;
         a.allow(&Operation::RunMember {
             configuration: target.into(),
         })?;
-        let scope = inheritance.scope().map_err(|e| (-32009, e))?;
+        let policy = a.policy.as_deref().ok_or_else(conflict)?;
+        let scope = match &policy.scope {
+            None => None,
+            Some(_) => Some(
+                a.scope
+                    .0
+                    .upgrade()
+                    .ok_or((-32009, "the owner's scope has stopped".to_string()))?,
+            ),
+        };
         Ok(Owner {
             id: owner.into(),
-            inheritance,
             scope,
+            scope_name: policy.scope.as_ref().map(|s| s.name.clone()),
         })
     }
     fn sandbox_control(
@@ -2641,6 +2752,7 @@ impl Controller {
                     Event::HostJobPrepared { .. }
                     | Event::HostJobFailed { .. }
                     | Event::HostJobFinished { .. } => self.host_event(id, event),
+                    Event::Exported { member, result } => self.exported(id, member, result),
                     event => {
                         if matches!(event, Event::Started { .. })
                             && let Some(a) = self.sessions.get_mut(id)
@@ -2703,7 +2815,8 @@ impl Controller {
                     | Event::InitLost
                     | Event::HostJobPrepared { .. }
                     | Event::HostJobFailed { .. }
-                    | Event::HostJobFinished { .. } => (),
+                    | Event::HostJobFinished { .. }
+                    | Event::Exported { .. } => (),
                     Event::Started {
                         docker_enabled,
                         policy,
@@ -2711,10 +2824,14 @@ impl Controller {
                         dev_shell,
                         master,
                         identity,
-                        inheritance,
+                        scope,
                         recreated,
                         auto,
                     } => {
+                        // Started: nothing the launch was accepted against
+                        // needs holding any more.
+                        a.launch_manifest = None;
+                        a.scope = scope;
                         // Recreated grants are this goblin's own: children
                         // asking for them are approved automatically.
                         if let Some(recreated) = recreated {
@@ -2740,7 +2857,6 @@ impl Controller {
                         a.dev_identity = dev_shell.as_ref().map(|d| d.identity.clone());
                         a.dev_shell = dev_shell;
                         a.record.description = policy.description.clone();
-                        a.inheritance = Some(inheritance);
                         match policy.handlers.clone() {
                             Some(handlers) => a.serve(master, handlers)?,
                             None => a.terminal.master(master)?,
@@ -2764,10 +2880,14 @@ impl Controller {
                         false => a.terminal.release(),
                     },
                     Event::Manifest { sequence, lease } => {
+                        let lease = std::sync::Arc::new(lease);
                         if sequence > self.manifest_published {
                             self.manifest_published = sequence;
-                            self.current_manifest = Some(lease);
+                            self.current_manifest = Some(lease.clone());
                         }
+                        // The launch keeps it until it started, even once a
+                        // newer manifest replaces it as the current one.
+                        a.launch_manifest = Some(lease);
                     }
                     Event::Preview { approval, result } => {
                         if let Some(p) = &mut a.pending
@@ -2831,13 +2951,9 @@ impl Controller {
                             self.reply_waiting(&call_key(serial), result.map_err(|e| bounded(&e)));
                         }
                     }
-                    Event::DevShell {
-                        summary,
-                        inheritance,
-                    } => {
+                    Event::DevShell { summary } => {
                         a.dev_identity = Some(summary.identity.clone());
                         a.dev_shell = Some(summary);
-                        a.inheritance = Some(inheritance);
                         self.dirty = true;
                     }
                     Event::Progress { request, state } => {
@@ -2914,12 +3030,15 @@ impl Controller {
                         self.dirty = true;
                     }
                     Event::Failed(e) => {
+                        a.launch_manifest = None;
                         a.record.state = "failed".into();
                         a.record.detail = Some(bounded(&e));
                         a.terminal.failed_start();
                         self.dirty = true;
                     }
                     Event::Stopped { exit_code } => {
+                        a.launch_manifest = None;
+                        a.exporting = None;
                         if a.record.identity.is_none() {
                             a.terminal.failed_start();
                         }
@@ -2952,9 +3071,12 @@ impl Controller {
             }
             if runtime_ended {
                 a.runtime.take();
-                a.inheritance.take();
                 a.policy.take();
+                a.launch_manifest = None;
                 a.init = false;
+                // A member still waiting for this goblin's handoff never
+                // gets it.
+                self.fail_exports(&id, &a.record.agent_name.clone());
                 // A worker can lose its final try_send when its bounded result
                 // queue is full (or panic). Never retain a live session after
                 // its producer is gone, even without a Stopped result.
@@ -3191,11 +3313,11 @@ impl Drop for Controller {
         }
         for (_, mut a) in std::mem::take(&mut self.sessions) {
             a.runtime.take();
-            // What this goblin held of its resources goes with it. They are
-            // removed by whichever holder lets go last, in the daemon or
-            // outside it, or by `goblins gc`; only the goblin's own files and
-            // the then empty session directory are removed here.
-            a.inheritance.take();
+            // What this goblin held of its resources went with its runtime.
+            // They are removed by whichever holder lets go last, in the
+            // daemon or outside it, or by `goblins gc`; only the goblin's
+            // own files and the then empty session directory are removed
+            // here.
             drop(a.terminal);
             attach::remove_files(&a.directory);
             let _ = fs::remove_dir(&a.directory);
@@ -3207,6 +3329,7 @@ impl Drop for Controller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Inheritance;
     fn daemon() -> Controller {
         let path = unix::temp_directory().unwrap();
         Controller::new(&path, None).unwrap()
@@ -3247,7 +3370,9 @@ mod tests {
             id.clone(),
             Active {
                 activity_at: None,
-                inheritance: None,
+                scope: Default::default(),
+                launch_manifest: None,
+                exporting: None,
                 policy: Some(Box::new(Policy::fixture("shell", &[]))),
                 support: Support::linux(),
                 dev_shell: None,
@@ -3571,9 +3696,12 @@ mod tests {
     fn the_current_manifest_follows_host_acceptance_order() {
         let mut d = daemon();
         let path = d.state.clone();
-        let lease = |name: &str| {
-            std::sync::Arc::new(crate::config::ManifestLease::unrooted(&path.join(name)))
-        };
+        // The roots a launch's worker made: the daemon owns them from the
+        // event on, and removes each with its last lease.
+        let roots = [path.join("newer-root"), path.join("older-root")];
+        for root in &roots {
+            fs::write(root, "").unwrap();
+        }
         d.manifest_sequence = 3;
         // The newest acceptance reports first; an older one reporting later
         // must not replace it. A failed launch never reports one.
@@ -3582,7 +3710,10 @@ mod tests {
             "newer",
             vec![Event::Manifest {
                 sequence: 3,
-                lease: lease("newer.json"),
+                lease: crate::config::ManifestLease::adopt(
+                    path.join("newer.json"),
+                    Some(roots[0].clone()),
+                ),
             }],
         );
         d.tick().unwrap();
@@ -3591,7 +3722,10 @@ mod tests {
             "older",
             vec![Event::Manifest {
                 sequence: 2,
-                lease: lease("older.json"),
+                lease: crate::config::ManifestLease::adopt(
+                    path.join("older.json"),
+                    Some(roots[1].clone()),
+                ),
             }],
         );
         session_with_results_id(&mut d, "failed", vec![Event::Failed("bad".into())]);
@@ -3601,6 +3735,22 @@ mod tests {
             path.join("newer.json")
         );
         assert_eq!(d.manifest_published, 3);
+        // The older one never became current and its launch ended: its root
+        // went with it. The newer one is the daemon's current manifest.
+        assert!(roots[0].exists());
+        assert!(!roots[1].exists());
+        // A still newer acceptance replaces it, and its root goes.
+        d.manifest_sequence = 4;
+        session_with_results_id(
+            &mut d,
+            "newest",
+            vec![Event::Manifest {
+                sequence: 4,
+                lease: crate::config::ManifestLease::adopt(path.join("newest.json"), None),
+            }],
+        );
+        d.tick().unwrap();
+        assert!(!roots[0].exists());
         drop(d);
         fs::remove_dir_all(&path).unwrap();
     }
@@ -3979,7 +4129,7 @@ mod tests {
                     source_mountns: 0,
                     mountns: 0,
                 },
-                inheritance,
+                scope: Default::default(),
                 recreated: None,
                 auto: Box::default(),
             })
@@ -4468,11 +4618,11 @@ mod tests {
             let resources = session.join("resources");
             fs::create_dir(&resources).unwrap();
             fs::write(resources.join("snapshot"), "x").unwrap();
-            // The goblin holds its resources, like its runtime does...
-            d.sessions
-                .get_mut(&id)
-                .unwrap()
-                .set_inheritance(Inheritance::fixture_in("shell", &[], resources.clone()));
+            // The goblin's runtime holds its resources...
+            let (runtime, _events, _received) = runtime::Fake::new();
+            d.sessions.get_mut(&id).unwrap().runtime = Some(Box::new(
+                runtime.holding(Inheritance::fixture_in("shell", &[], resources.clone())),
+            ));
             // ...and maybe another holder does, as a raid member that shares
             // them or a helper that outlived it.
             let lease =
@@ -4489,6 +4639,264 @@ mod tests {
             assert!(!session.exists(), "held: {held}");
             fs::remove_dir_all(state).unwrap();
         }
+    }
+    /// A raid owner with a running runtime, a raid and a current manifest.
+    /// Its runtime records what it is sent and takes the events the test
+    /// sends.
+    fn raid_owner(
+        d: &mut Controller,
+    ) -> (
+        String,
+        std::sync::mpsc::SyncSender<Event>,
+        runtime::Received,
+    ) {
+        let root = session_with_results_id(d, "root", vec![]);
+        let (runtime, events, received) = runtime::Fake::new();
+        let a = d.sessions.get_mut(&root).unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.pending = None;
+        a.record.name = "coordinator".into();
+        a.record.agent_name = "boss".into();
+        a.set_inheritance(Inheritance::fixture("coordinator", &["shell"]));
+        d.sandbox_control(&root, "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        d.current_manifest = Some(std::sync::Arc::new(crate::config::ManifestLease::unrooted(
+            &d.state.join("current.json"),
+        )));
+        (root, events, received)
+    }
+    fn run_member(d: &mut Controller, owner: &str, key: &str) -> String {
+        let accepted = d
+            .sandbox_control(
+                owner,
+                "sessions.start",
+                json!({"key": key, "name": "shell", "agent_name": null}),
+            )
+            .unwrap();
+        accepted["session"].as_str().unwrap().to_string()
+    }
+    fn tick_until(d: &mut Controller, done: impl Fn(&Controller) -> bool) {
+        for _ in 0..500 {
+            d.tick().unwrap();
+            if done(d) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the daemon never got there");
+    }
+    #[test]
+    fn a_member_launch_asks_its_owner_for_a_handoff_and_starts_on_the_answer() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // Accepted: the owner is asked at once, and the member waits for it.
+        let asked = received.lock().unwrap().pop_front();
+        assert!(matches!(&asked, Some(Command::Export { member: m }) if *m == member));
+        assert_eq!(
+            d.sessions[&member].exporting.as_deref(),
+            Some(owner.as_str())
+        );
+        assert_eq!(d.sessions[&member].record.state, "starting");
+        // The answer reaches the member, which goes on to read its
+        // configuration: the manifest does not exist, so it fails for that,
+        // not for want of a handoff.
+        let handoff = Inheritance::fixture("coordinator", &[]).handoff().unwrap();
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        let a = &d.sessions[&member];
+        assert!(a.exporting.is_none());
+        let detail = a.record.detail.as_deref().unwrap();
+        assert!(!detail.contains("hand over"), "{detail}");
+        assert!(!detail.contains("given up"), "{detail}");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_member_whose_owner_stops_before_answering_fails_naming_the_owner() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // The owner's runtime ends without an answer.
+        drop(events);
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        let a = &d.sessions[&member];
+        assert!(a.exporting.is_none());
+        assert_eq!(
+            a.record.detail.as_deref(),
+            Some("goblin boss stopped before it could hand over its resources")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_member_whose_owner_cannot_hand_over_fails_with_the_reason_and_a_late_answer_is_released() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Err("no workspace".into()),
+            })
+            .unwrap();
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        assert_eq!(
+            d.sessions[&member].record.detail.as_deref(),
+            Some("goblin boss could not hand over its resources: no workspace")
+        );
+        // An answer for a launch that is not waiting for it holds a lease,
+        // which letting go of the answer releases.
+        let resources = path.join("late-resources");
+        fs::create_dir(&resources).unwrap();
+        let handoff = Inheritance::fixture_in("coordinator", &[], resources.clone())
+            .handoff()
+            .unwrap();
+        events
+            .send(Event::Exported {
+                member: "nobody".into(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!resources.exists());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_owner_that_answers_and_stops_in_one_round_still_starts_its_member() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        let handoff = Inheritance::fixture("coordinator", &[]).handoff().unwrap();
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        events.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        drop(events);
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        // It failed for its own configuration, not for want of its owner.
+        let detail = d.sessions[&member].record.detail.clone().unwrap();
+        assert!(!detail.contains("boss"), "{detail}");
+        assert!(!detail.contains("hand over"), "{detail}");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_member_stopped_while_it_waits_for_its_handoff_ends_and_a_late_handoff_is_released() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        d.stop(&member, None).unwrap();
+        tick_until(&mut d, |d| {
+            d.sessions[&member].runtime.is_none() && d.sessions[&member].record.state == "stopped"
+        });
+        // The owner's answer arrives afterwards, and nobody wants it.
+        let resources = path.join("late-resources");
+        fs::create_dir(&resources).unwrap();
+        let handoff = Inheritance::fixture_in("coordinator", &[], resources.clone())
+            .handoff()
+            .unwrap();
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!resources.exists());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_handoff_arriving_after_a_member_was_stopped_is_released_not_started_or_failed() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // The member's runtime records what it is sent and does not run.
+        let (runtime, _member_events, sent) = runtime::Fake::new();
+        d.sessions.get_mut(&member).unwrap().runtime = Some(Box::new(runtime));
+        d.stop(&member, None).unwrap();
+        assert!(d.sessions[&member].exporting.is_none());
+        let resources = path.join("late-resources");
+        fs::create_dir(&resources).unwrap();
+        let handoff = Inheritance::fixture_in("coordinator", &[], resources.clone())
+            .handoff()
+            .unwrap();
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Err("late".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        // Neither started the stopping member nor turned its stop into a failed
+        // launch; the handoff went and its lease with it.
+        assert_eq!(d.sessions[&member].record.state, "stopping");
+        let commands: Vec<_> = sent.lock().unwrap().drain(..).collect();
+        assert!(
+            matches!(commands.as_slice(), [Command::Stop]),
+            "{commands:?}"
+        );
+        assert!(!resources.exists());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_runtime_that_refuses_the_handoff_fails_its_launch_instead_of_waiting() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // A member runtime whose queue is full refuses a Start.
+        let (runtime, _member_events, sent) = runtime::Fake::new();
+        for approval in 0..4 {
+            sent.lock().unwrap().push_back(Command::Preview {
+                approval,
+                package: "hello".into(),
+            });
+        }
+        d.sessions.get_mut(&member).unwrap().runtime = Some(Box::new(runtime));
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(
+                    Inheritance::fixture("coordinator", &[]).handoff().unwrap(),
+                )),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let a = &d.sessions[&member];
+        assert_eq!(a.record.state, "failed");
+        assert_eq!(
+            a.record.detail.as_deref(),
+            Some("the launch could not take its owner's handoff")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
     }
     #[test]
     fn full_result_queue_without_stopped_cannot_leave_session_running() {

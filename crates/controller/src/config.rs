@@ -141,15 +141,16 @@ pub(crate) struct ManifestLease {
 }
 impl ManifestLease {
     /// Validate `path` and root the store output that holds it under
-    /// `directory`, named for `sequence` so leases never share a root.
-    pub(crate) fn create(
+    /// `directory`, named for `sequence` so leases never share a root. The
+    /// root is the caller's until a lease adopts it.
+    pub(crate) fn root(
         path: &Path,
         directory: &Path,
         sequence: u64,
         cancel: &crate::process::Cancellation,
-    ) -> Result<Self> {
+    ) -> Result<Option<PathBuf>> {
         Manifest::validate(path)?;
-        let root = match crate::session::containing_store_output(path) {
+        Ok(match crate::session::containing_store_output(path) {
             None => None,
             Some(output) => {
                 crate::unix::private_directory(directory)?;
@@ -167,11 +168,22 @@ impl ManifestLease {
                 )?;
                 Some(link)
             }
-        };
-        Ok(Self {
-            path: path.to_path_buf(),
-            root,
         })
+    }
+    /// A lease on `path` that removes its `root`, if it has one, once the last
+    /// holder drops it.
+    pub(crate) fn adopt(path: PathBuf, root: Option<PathBuf>) -> Self {
+        Self { path, root }
+    }
+    /// Validate and root the manifest, and lease it.
+    pub(crate) fn create(
+        path: &Path,
+        directory: &Path,
+        sequence: u64,
+        cancel: &crate::process::Cancellation,
+    ) -> Result<Self> {
+        let root = Self::root(path, directory, sequence, cancel)?;
+        Ok(Self::adopt(path.to_path_buf(), root))
     }
 }
 #[cfg(test)]

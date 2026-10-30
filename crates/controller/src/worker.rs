@@ -4,10 +4,10 @@ use crate::{
     config::Manifest,
     controller::{
         policy::Support,
-        runtime::{Command, Event},
+        runtime::{Command, Event, Handoff, Published, ScopeHandle},
     },
     process::WORKER_TICK,
-    session::{Cancel, Inheritance, Session},
+    session::{Cancel, Member, Session},
     unix,
 };
 use goblins_protocol::Reply;
@@ -79,19 +79,33 @@ pub(super) enum Source {
         /// Order of this acceptance, for the daemon's current manifest.
         sequence: u64,
     },
-    /// A goblin a raid owner runs, from the daemon's current manifest.
+    /// A goblin a raid owner runs, from the daemon's current manifest. It
+    /// starts once the owner's handoff arrives.
     Member {
-        owner: Inheritance,
         /// Held from acceptance, so the owner stopping cannot take it away.
         scope: Option<std::sync::Arc<crate::scope::Shared>>,
-        manifest: std::sync::Arc<crate::config::ManifestLease>,
+        /// The scope the owner is in, which the configuration must be able to
+        /// join.
+        owner_scope: Option<String>,
+        /// The current manifest, which the daemon keeps leased until the
+        /// launch started.
+        manifest: PathBuf,
         configuration: String,
         /// Approvals copied from the owner, by exact output.
         auto: std::collections::BTreeMap<String, PathBuf>,
+        state: PathBuf,
+        /// The history store, protected like the daemon's state.
+        history: Option<PathBuf>,
     },
 }
 impl Worker {
-    pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
+    pub fn start(
+        source: Source,
+        directory: PathBuf,
+        dimensions: (u16, u16),
+        published: Published,
+        handoff: Option<mpsc::Receiver<Handoff>>,
+    ) -> Self {
         let cancel = Cancel::default();
         let token = cancel.clone();
         let (tx, commands) = mpsc::sync_channel(4);
@@ -105,28 +119,45 @@ impl Worker {
                 let (master, slave) = unix::pty(dimensions.0, dimensions.1)?;
                 let mut recreated: Option<Recreated> = None;
                 let mut copied = std::collections::BTreeMap::new();
-                // Held until the session rooted what it needs: the owner's
-                // directory keeps its grants, the lease the manifest.
-                let mut held = None;
-                let mut held_lease = None;
                 let mut session = match source {
                     Source::Member {
-                        owner,
                         scope,
+                        owner_scope,
                         manifest,
                         configuration,
                         auto,
+                        state,
+                        history,
                     } => {
                         copied = auto;
+                        // Wait for what the owner hands over. Stopping ends
+                        // the wait, and so does the daemon giving the launch up.
+                        let handoff = handoff.ok_or("a member launch has no handoff")?;
+                        let handoff = loop {
+                            token.check()?;
+                            match handoff.recv_timeout(WORKER_TICK) {
+                                Ok(handoff) => break handoff,
+                                Err(mpsc::RecvTimeoutError::Timeout) => (),
+                                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    return Err("the launch was given up".into());
+                                }
+                            }
+                        };
+                        // As a host launch protects them.
+                        let mut protected: Vec<PathBuf> = history.into_iter().collect();
+                        protected.push(std::fs::canonicalize(state)?);
                         let session = Session::member(
-                            owner.clone(),
-                            scope,
-                            &manifest.path,
-                            &configuration,
+                            Member {
+                                handoff,
+                                scope,
+                                owner_scope: owner_scope.as_deref(),
+                                protected_paths: protected,
+                                manifest: &manifest,
+                                configuration: &configuration,
+                            },
                             token.clone(),
                             directory,
                         )?;
-                        held = Some((owner, manifest));
                         results.try_send(Event::Mode {
                             server: session.launch.handlers.is_some(),
                         })?;
@@ -165,14 +196,12 @@ impl Worker {
                             &token,
                         ) {
                             Ok(lease) => {
-                                let lease = std::sync::Arc::new(lease);
-                                results.try_send(Event::Manifest {
-                                    sequence,
-                                    lease: lease.clone(),
-                                })?;
-                                // Kept until it started, even once a newer manifest
-                                // replaces it as the daemon's current one.
-                                held_lease = Some(lease);
+                                // The daemon takes the lease over and keeps it
+                                // until the launch started, even once a newer
+                                // manifest replaces it as its current one. An
+                                // event that is refused or never read drops it,
+                                // and its root goes with it.
+                                results.try_send(Event::Manifest { sequence, lease })?;
                                 None
                             }
                             Err(error) => {
@@ -254,7 +283,7 @@ impl Worker {
                 // A configuration that needs what this sandbox implementation
                 // cannot do fails before anything starts.
                 let support = Support::linux();
-                if let Some(feature) = support.lacks(&session.policy()) {
+                if let Some(feature) = support.lacks(&session.policy(), session.docker_at_start()) {
                     return Err(format!(
                         "this sandbox does not support {}, which the configuration needs",
                         serde_json::to_value(feature)?.as_str().unwrap_or_default()
@@ -294,25 +323,28 @@ impl Worker {
                     }
                 };
                 // Everything it mounts is rooted by now.
-                drop(held);
-                drop(held_lease);
                 endpoints.try_send(Box::new(Endpoints {
                     control: session.control.take().unwrap(),
                     listener: session.listener.take().unwrap(),
                     exit_watch: session.exit_watch()?,
                 }))?;
                 let inheritance = session.inheritance();
-                results.try_send(Event::Started {
+                let started = Event::Started {
                     docker_enabled: session.docker_enabled(),
                     policy: Box::new(inheritance.policy()),
                     support,
                     dev_shell: inheritance.dev_shell_summary(),
                     master,
                     identity: session.identity.clone().unwrap(),
-                    inheritance,
+                    scope: ScopeHandle(inheritance.scope_handle()),
                     recreated: recreated.map(Box::new),
                     auto: Box::new(auto),
-                })?;
+                };
+                // What an export hands over, before the daemon can ask.
+                if let Ok(mut published) = published.lock() {
+                    *published = Some(inheritance);
+                }
+                results.try_send(started)?;
                 loop {
                     if token.check().is_err() || !session.alive() {
                         break;
@@ -382,12 +414,15 @@ impl Worker {
                                 } else if req.kind == "devshell" {
                                     session.apply_refresh().and_then(|()| {
                                         let inheritance = session.inheritance();
-                                        results.try_send(Event::DevShell {
-                                            summary: inheritance
-                                                .dev_shell_summary()
-                                                .ok_or("the dev shell is gone")?,
-                                            inheritance,
-                                        })?;
+                                        let summary = inheritance
+                                            .dev_shell_summary()
+                                            .ok_or("the dev shell is gone")?;
+                                        // The new generation, whole, for exports
+                                        // made from now on.
+                                        if let Ok(mut published) = published.lock() {
+                                            *published = Some(inheritance);
+                                        }
+                                        results.try_send(Event::DevShell { summary })?;
                                         Ok(())
                                     })
                                 } else {

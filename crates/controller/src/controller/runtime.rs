@@ -2,7 +2,7 @@
 //! out, and neither side waits for the other.
 use super::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
 use crate::{
-    session::{Cancel, Identity, Inheritance},
+    session::{Cancel, Identity, Inheritance, ResourceLease},
     unix,
     worker::{Auto, Endpoints, Recreated, Source, Worker},
 };
@@ -59,6 +59,45 @@ impl AsRawFd for Fd {
         self.0.as_raw_fd()
     }
 }
+
+/// What a goblin a raid owner runs takes from it, produced by the owner's
+/// runtime on `Command::Export` and carried by the daemon, which never looks
+/// inside its descriptors, to the member's runtime.
+#[derive(Debug)]
+pub(crate) struct Handoff {
+    /// A fresh lease on every resources directory the owner holds, its own
+    /// and each it inherited, each its own open file description. The
+    /// member keeps them for its whole life, so they stay after any owner in
+    /// the chain stops.
+    pub leases: Vec<ResourceLease>,
+    pub workspace: Fd,
+    /// Absent when the owner launched without a working directory; the
+    /// member then gets none either.
+    pub working_directory: Option<WorkingDirectory>,
+    /// The owner's dev shell generation at the time of the export.
+    pub dev_shell: Option<crate::devshell::DevShell>,
+    /// Whether the owner had Docker attached, read once.
+    pub docker: bool,
+}
+
+/// The owner's pinned working directory.
+#[derive(Debug)]
+pub(crate) struct WorkingDirectory {
+    pub fd: Fd,
+    /// The host path it was opened at.
+    pub source: PathBuf,
+    /// Where the sandbox sees it.
+    pub destination: PathBuf,
+}
+
+/// The owner's scope, held weakly until phase 4 moves scopes into processes
+/// of their own: the daemon upgrades it when it accepts a member launch.
+#[derive(Clone, Default)]
+pub(crate) struct ScopeHandle(pub std::sync::Weak<crate::scope::Shared>);
+
+/// The goblin's current capability, replaced under the lock whenever a dev
+/// shell refresh publishes, so an export never waits for Nix work.
+pub(crate) type Published = std::sync::Arc<std::sync::Mutex<Option<Inheritance>>>;
 
 /// A process's terminal or standard streams.
 #[derive(Debug)]
@@ -136,6 +175,13 @@ pub(crate) enum Command {
     },
     /// End every process started with `Spawn`.
     KillAll,
+    /// Hand over what a goblin the owner runs takes from it. Answered with
+    /// `Event::Exported` without waiting for Nix work.
+    Export {
+        member: String,
+    },
+    /// The handoff a member waits for before it starts.
+    Start(Box<Handoff>),
     /// Resolve and pin the host directory a host command would start in,
     /// sandbox path `cwd`, for its approval.
     PrepareHostJob {
@@ -214,8 +260,8 @@ pub(crate) enum Event {
         /// The agent's PTY, or with attach handlers its output pipe.
         master: OwnedFd,
         identity: Identity,
-        /// Only member launches use it, until a raid member takes a handoff.
-        inheritance: Inheritance,
+        /// Until phase 4, how the daemon finds the owner's scope for a member.
+        scope: ScopeHandle,
         recreated: Option<Box<Recreated>>,
         auto: Box<Auto>,
     },
@@ -243,7 +289,11 @@ pub(crate) enum Event {
     /// A refresh became the current generation; members it runs later start in it.
     DevShell {
         summary: DevShellSummary,
-        inheritance: Inheritance,
+    },
+    /// What `member` takes from this goblin, or why it cannot be had.
+    Exported {
+        member: String,
+        result: Result<Box<Handoff>, String>,
     },
     Granted {
         reply: Reply,
@@ -253,7 +303,10 @@ pub(crate) enum Event {
     /// A host launch's manifest validated; `sequence` orders acceptances.
     Manifest {
         sequence: u64,
-        lease: std::sync::Arc<crate::config::ManifestLease>,
+        /// The first lease on the manifest, which owns the GC root of the
+        /// store output that holds it: an event nobody consumes removes the
+        /// root when it is dropped, and the daemon shares it with `Arc`.
+        lease: crate::config::ManifestLease,
     },
     /// Process `id` started; `master` is the PTY `Stdio::NewPty` asked for.
     Spawned {
@@ -339,9 +392,12 @@ pub(crate) struct Local {
     /// PTYs allocated for processes init has not reported started.
     masters: BTreeMap<u64, OwnedFd>,
     buffer: Vec<u8>,
-    /// The goblin's capability, from `Started`: it resolves host
-    /// directories through the sandbox's binds.
-    inheritance: Option<Inheritance>,
+    /// The goblin's capability, published by its worker at `Started` and by
+    /// each dev shell refresh: it resolves host directories through the
+    /// sandbox's binds and is what an export hands over.
+    published: Published,
+    /// Where a member's `Start` goes, to the worker that waits for it.
+    start: Option<mpsc::SyncSender<Handoff>>,
     /// What the goblin may do, from `Started`.
     capabilities: Option<(Policy, Support)>,
     /// Where host jobs keep their output and outcome.
@@ -360,12 +416,26 @@ pub(crate) struct Local {
 impl Local {
     pub fn start(source: Source, directory: PathBuf, dimensions: (u16, u16)) -> Self {
         let host_jobs = directory.join("host-jobs");
-        Self::new(Worker::start(source, directory, dimensions), host_jobs)
+        let published = Published::default();
+        // A member's worker waits for the handoff before it builds anything.
+        let (start, handoff) = match &source {
+            Source::Member { .. } => {
+                let (start, handoff) = mpsc::sync_channel(1);
+                (Some(start), Some(handoff))
+            }
+            Source::Host { .. } => (None, None),
+        };
+        let worker = Worker::start(source, directory, dimensions, published.clone(), handoff);
+        let mut local = Self::new(worker, host_jobs);
+        local.published = published;
+        local.start = start;
+        local
     }
     fn new(worker: Worker, host_jobs: PathBuf) -> Self {
         Self {
             worker,
-            inheritance: None,
+            published: Published::default(),
+            start: None,
             capabilities: None,
             host_jobs,
             prepared: BTreeMap::new(),
@@ -381,6 +451,10 @@ impl Local {
             polling: false,
             ended: false,
         }
+    }
+    /// The goblin's current capability, once it has started.
+    fn capability(&self) -> Option<Inheritance> {
+        self.published.lock().ok()?.clone()
     }
     /// Report an event in the current round, or the next.
     fn report(&mut self, event: Event) {
@@ -399,17 +473,10 @@ impl Local {
                         | Event::Call { serial: id, .. } => {
                             self.cancels.remove(id);
                         }
-                        Event::DevShell { inheritance, .. } => {
-                            self.inheritance = Some(inheritance.clone());
-                        }
                         // The worker hands the endpoints over just before.
                         Event::Started {
-                            inheritance,
-                            policy,
-                            support,
-                            ..
+                            policy, support, ..
                         } => {
-                            self.inheritance = Some(inheritance.clone());
                             self.capabilities = Some(((**policy).clone(), support.clone()));
                             if let Ok(endpoints) = self.worker.endpoints.try_recv() {
                                 let Endpoints {
@@ -575,8 +642,7 @@ impl Local {
             .remove(request)
             .ok_or("the host command's directory was not prepared")?;
         let helper = self
-            .inheritance
-            .as_ref()
+            .capability()
             .ok_or("the goblin has stopped")?
             .helper()
             .to_path_buf();
@@ -721,8 +787,33 @@ impl Runtime for Local {
             Command::KillAll => {
                 let _ = self.to_init(&init::Command::KillAll {}, &[]);
             }
+            Command::Export { member } => {
+                let result = match self.capability() {
+                    Some(inheritance) => inheritance
+                        .handoff()
+                        .map(Box::new)
+                        .map_err(|e| e.to_string()),
+                    None => Err("the goblin has not started".into()),
+                };
+                self.report(Event::Exported { member, result });
+            }
+            Command::Start(handoff) => {
+                // A one-slot channel to a worker that waits: it only refuses
+                // when the worker is gone or was already given one, and then
+                // the launch cannot start.
+                let delivered = self
+                    .start
+                    .as_ref()
+                    .is_some_and(|start| start.try_send(*handoff).is_ok());
+                if !delivered {
+                    self.report(Event::Failed(
+                        "the launch could not take its owner's handoff".into(),
+                    ));
+                    return self.send(Command::Stop);
+                }
+            }
             Command::PrepareHostJob { request, cwd } => {
-                let result = match &self.inheritance {
+                let result = match &self.capability() {
                     Some(inheritance) => inheritance
                         .host_directory(&cwd)
                         .map(|(file, path)| {
@@ -795,6 +886,8 @@ pub(crate) struct Fake {
     events: mpsc::Receiver<Event>,
     round: usize,
     ended: bool,
+    /// What the runtime holds for the goblin's life, such as a lease.
+    held: Vec<Box<dyn std::any::Any + Send>>,
 }
 
 #[cfg(test)]
@@ -818,8 +911,14 @@ impl Fake {
             events,
             round: 0,
             ended: false,
+            held: vec![],
         };
         (fake, sender, received)
+    }
+    /// The runtime holds `what` until it is dropped.
+    pub fn holding(mut self, what: impl std::any::Any + Send) -> Self {
+        self.held.push(Box::new(what));
+        self
     }
 }
 
@@ -1179,7 +1278,7 @@ mod tests {
                 source_mountns: 0,
                 mountns: 0,
             },
-            inheritance,
+            scope: ScopeHandle::default(),
             recreated: None,
             auto: Box::default(),
         }
@@ -1298,5 +1397,173 @@ mod tests {
             cases,
             ["refused", "allowed", "refused", "refused", "allowed"]
         );
+    }
+
+    #[test]
+    fn an_export_is_answered_at_once_and_a_start_reaches_the_waiting_member() {
+        let (idle, received, _results) = worker();
+        let mut local = ready(idle);
+        let round = |local: &mut Local| std::iter::from_fn(|| local.poll()).collect::<Vec<_>>();
+        let export = |local: &mut Local, member: &str| {
+            local
+                .send(Command::Export {
+                    member: member.into(),
+                })
+                .unwrap();
+            round(local)
+        };
+        // Before the goblin started there is nothing to hand over.
+        assert!(matches!(
+            export(&mut local, "m0").as_slice(),
+            [Event::Exported { member, result: Err(error) }]
+                if member == "m0" && error == "the goblin has not started"
+        ));
+        // Once its worker published its capability, the answer comes from
+        // that, whatever the worker is busy with.
+        let directory = unix::temp_directory().unwrap();
+        let fixture = || Inheritance::fixture_in("shell", &[], directory.clone());
+        *local.published.lock().unwrap() = Some(fixture());
+        let events = export(&mut local, "m1");
+        let [
+            Event::Exported {
+                member,
+                result: Ok(handoff),
+            },
+        ] = events.as_slice()
+        else {
+            panic!("expected the handoff: {}", events.len());
+        };
+        assert_eq!(member, "m1");
+        assert_eq!(handoff.leases.len(), 1);
+        assert!(received.try_recv().is_err(), "the worker was not asked");
+        // Exports keep being answered while the goblin stops.
+        local.send(Command::Stop).unwrap();
+        assert!(matches!(
+            export(&mut local, "m2").as_slice(),
+            [Event::Exported { result: Ok(_), .. }]
+        ));
+        // A member's Start goes to the worker that waits for it.
+        let (start, waiting) = mpsc::sync_channel(1);
+        local.start = Some(start);
+        local
+            .send(Command::Start(Box::new(fixture().handoff().unwrap())))
+            .unwrap();
+        assert!(waiting.try_recv().is_ok());
+    }
+
+    #[test]
+    fn an_export_made_while_a_refresh_publishes_is_one_whole_generation() {
+        let _no_forks = unix::no_forks();
+        let (idle, _received, _results) = worker();
+        let mut local = ready(idle);
+        let (one, two) = (
+            unix::temp_directory().unwrap(),
+            unix::temp_directory().unwrap(),
+        );
+        // Two capabilities that differ in everything an export carries: the
+        // directory it leases and the Docker flag. A mixture of the two
+        // would be a torn read.
+        let first = Inheritance::fixture_in("shell", &[], one.clone());
+        first.set_docker(true);
+        let second = Inheritance::fixture_in("shell", &[], two.clone());
+        *local.published.lock().unwrap() = Some(first.clone());
+        let published = local.published.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flipper = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut flip = false;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let next = if flip { first.clone() } else { second.clone() };
+                    *published.lock().unwrap() = Some(next);
+                    flip = !flip;
+                }
+            })
+        };
+        for _ in 0..500 {
+            local.send(Command::Export { member: "m".into() }).unwrap();
+            let Some(Event::Exported {
+                result: Ok(handoff),
+                ..
+            }) = local.poll()
+            else {
+                panic!("expected a handoff");
+            };
+            // The Docker flag and the lease belong to the same generation.
+            assert_eq!(handoff.docker, handoff.leases[0].directory() == one);
+            while local.poll().is_some() {}
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        flipper.join().unwrap();
+    }
+
+    #[test]
+    fn a_start_a_worker_cannot_take_fails_the_launch_instead_of_leaving_it_waiting() {
+        let _no_forks = unix::no_forks();
+        // Each in a directory of its own: the last lease on one removes it.
+        let handoff = || Box::new(Inheritance::fixture("shell", &[]).handoff().unwrap());
+        let failed = |local: &mut Local| {
+            let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            matches!(
+                events.as_slice(),
+                [Event::Failed(message)] if message == "the launch could not take its owner's handoff"
+            )
+        };
+        // A worker that has gone.
+        let (idle, _received, _results) = worker();
+        let mut local = ready(idle);
+        let (start, waiting) = mpsc::sync_channel(1);
+        drop(waiting);
+        local.start = Some(start);
+        local.send(Command::Start(handoff())).unwrap();
+        assert!(failed(&mut local));
+        assert!(local.worker.cancel.check().is_err());
+        // A worker that was already given one.
+        let (idle, _received, _results) = worker();
+        let mut local = ready(idle);
+        let (start, _waiting) = mpsc::sync_channel(1);
+        local.start = Some(start);
+        local.send(Command::Start(handoff())).unwrap();
+        assert!(!failed(&mut local));
+        local.send(Command::Start(handoff())).unwrap();
+        assert!(failed(&mut local));
+        // A runtime that is not waiting for one at all.
+        let (idle, _received, _results) = worker();
+        let mut local = ready(idle);
+        local.send(Command::Start(handoff())).unwrap();
+        assert!(failed(&mut local));
+    }
+
+    #[test]
+    fn a_manifest_root_nobody_adopts_goes_with_its_event() {
+        let directory = unix::temp_directory().unwrap();
+        let root = directory.join("root");
+        std::fs::write(&root, "").unwrap();
+        let event = |name: &str| Event::Manifest {
+            sequence: 1,
+            lease: crate::config::ManifestLease::adopt(directory.join(name), Some(root.clone())),
+        };
+        // Queued and never read: the queue's end takes the event with it.
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .try_send(event("queued.json"))
+            .unwrap_or_else(|_| panic!());
+        assert!(root.exists());
+        drop(receiver);
+        drop(sender);
+        assert!(!root.exists());
+        // Refused because the queue is full: the event comes back, and
+        // dropping it removes the root.
+        std::fs::write(&root, "").unwrap();
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        sender
+            .try_send(Event::Mode { server: false })
+            .unwrap_or_else(|_| panic!());
+        let refused = sender.try_send(event("refused.json"));
+        assert!(refused.is_err());
+        assert!(root.exists());
+        drop(refused);
+        assert!(!root.exists());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

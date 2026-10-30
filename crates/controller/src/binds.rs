@@ -329,22 +329,35 @@ impl Plan {
         });
         Ok(())
     }
+    /// The pinned working directory, for a goblin this one runs: a copy of
+    /// its descriptor, the host path it was opened at and where the sandbox
+    /// sees it.
+    pub(crate) fn export_working_directory(&self) -> Result<Option<(File, PathBuf, PathBuf)>> {
+        self.working_directory
+            .as_ref()
+            .map(|m| -> Result<_> {
+                Ok((
+                    m.source_fd.try_clone()?,
+                    m.source.clone(),
+                    m.destination.clone(),
+                ))
+            })
+            .transpose()
+    }
     /// Use the parent's pinned working directory: the exact object the root
     /// launch opened, not whatever its pathname names now.
-    pub(crate) fn share_working_directory(&mut self, parent: &Plan) -> Result<()> {
-        self.working_directory = parent
-            .working_directory
-            .as_ref()
-            .map(|m| -> Result<Mount> {
-                Ok(Mount {
-                    source_fd: m.source_fd.try_clone()?,
-                    source: m.source.clone(),
-                    destination: m.destination.clone(),
-                    readonly: m.readonly,
-                })
-            })
-            .transpose()?;
-        Ok(())
+    pub(crate) fn use_working_directory(
+        &mut self,
+        fd: File,
+        source: PathBuf,
+        destination: PathBuf,
+    ) {
+        self.working_directory = Some(Mount {
+            source_fd: fd,
+            source,
+            destination,
+            readonly: false,
+        });
     }
     /// The host directory for a sandbox `path` inside a shared mount: the
     /// working directory or a declared directory grant, which the sandbox
@@ -562,7 +575,8 @@ mod tests {
         let moved = root.join("moved");
         fs::rename(&work, &moved).unwrap();
         fs::create_dir(&work).unwrap();
-        child.share_working_directory(&parent).unwrap();
+        let (fd, source, destination) = parent.export_working_directory().unwrap().unwrap();
+        child.use_working_directory(fd, source, destination);
         assert_eq!(
             child.destinations().collect::<Vec<_>>(),
             [&*work, &*declared]

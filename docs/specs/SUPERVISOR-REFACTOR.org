@@ -560,10 +560,13 @@ struct Handoff {
     workspace: Fd,
     /// Absent when the owner launched without a working directory; the
     /// member then gets none either, as today.
-    working_directory: Option<(Fd, PathBuf)>,
+    working_directory: Option<WorkingDirectory>,
     dev_shell: Option<DevShell>, // generation current at export
     docker: bool,                // read once, no longer a live flag
 }
+/// The pinned directory itself, where it was opened on the host and where
+/// the sandbox sees it.
+struct WorkingDirectory { fd: Fd, source: PathBuf, destination: PathBuf }
 #+end_src
 
 #+begin_src mermaid :file diagrams/supervisor-member-handoff.svg :background-color "'#282c34'"
@@ -864,13 +867,14 @@ Tests: =Fake= replaces =Worker::idle=, =Worker::completed= and =Worker::listenin
    - =Local= reports full =Support=.
    - Tests: a =Fake= with reduced =Support= exercises the =Unsupported= path and the =initialize= feature list.
 2. *What a raid member takes from its owner.*
-   - =Command::Export= returns a =Handoff=; =Source::Member= carries it instead of the owner's =Inheritance=, scope =Arc= and manifest =Arc=.
+   - (B2.) =Command::Export{member}= returns =Event::Exported{member, handoff}=, and =Command::Start(handoff)= gives it to the member's runtime (both boxed). The member's =Local= is created at acceptance, as before, and its worker waits for =Start= before it builds anything, so records, names and limits keep their meaning; phase 6's =Supervised= can spawn the supervisor at =Start= instead. The daemon sends =Export= when it accepts the launch, and a member whose owner's runtime ends without answering, or answers with an error, fails with a message naming the owner. =Source::Member= carries the configuration, the approvals, the manifest path, the state and history directories (for the protected paths) and, until phase 4, the scope =Arc= taken at acceptance, instead of the owner's =Inheritance= and the manifest =Arc=. =Inheritance= no longer reaches the daemon at all: =Started= carries a transitional =ScopeHandle(Weak<scope::Shared>)=, which the daemon upgrades at acceptance as =member_owner= did, and the worker publishes its capability, under a lock, at =Started= and with each dev shell refresh, for =Local= to answer =Export= and resolve host directories from. Its =leases= list (its own and those it inherited) replaces =_owner=, and the workspace no longer owns a lease of its own.
+   - The Docker flag of =Handoff= is read once, when the owner's runtime answers =Export= instead of in the member's worker shortly after acceptance. Nothing visible changes: the member never reread the owner's flag after it started, so one already running when its owner enables Docker later does not get Docker, then or now. A member that attaches Docker as it starts, inherited or configured, fails its launch when =Support= lacks =Feature::Docker= (=Support::lacks=).
    - (B1, its own commit.) =SessionDirectory= becomes =ResourceLease=, which works across processes: a holder that lets go removes the directory only if it can then take the lock exclusively (principle 4). A copy of the lock descriptor held elsewhere, such as the helper's, keeps the directory for the last holder or =goblins gc=; so does a copy that a process being forked holds until it executes, which is rare and costs only a later collection; before, the directory went whenever the last =Arc= dropped. Until B2 the leases are still shared in-process as =Arc<ResourceLease>=; =share()= (a fresh lease of its own) waits for B2's handoff. The lock is an =Option<File>= in code, so that drop can close it before it asks for the exclusive lock. =Controller::drop= no longer removes the session directory whole: it drops each goblin's runtime and capability, removes the goblin's own files and the then empty session directory, and leaves =resources/= to the last holder or =goblins gc=, as eviction does.
-   - (B2.) Each runtime keeps its own and its inherited leases.
+   - (B2.) Each runtime keeps its own and its inherited leases: a member's =Session= holds the fresh leases of its =Handoff= for its whole life.
    - =DevShell= and the other =Handoff= payload types gain =Serialize= and =Deserialize=.
-   - =Completed::Manifest= becomes =Event::Manifest= with a root path; the daemon holds each launch's manifest lease until its =Started=. This replaces the =held= tuple in =worker.rs=.
+   - =Completed::Manifest= becomes =Event::Manifest=, which carries the first =ManifestLease= by value, not behind an =Arc=: it owns the root of the manifest's store output, so an event that is refused, or queued and never read, removes the root when it is dropped. The daemon puts the lease behind an =Arc= when it reads the event, and holds each launch's lease until its =Started=, =Failed= or =Stopped=. This replaces the =held= tuple in =worker.rs=. Phase 6 sends the path and the root over the control channel, and the supervisor's side removes the root if the daemon never adopts it.
    - Until phase 4, =Source::Member= keeps carrying the scope =Arc= taken at acceptance, the one transitional in-process owner (section 4.5).
-   - =Completed::DevShell= becomes =Event::DevShell= with a serialisable generation summary.
+   - =Completed::DevShell= becomes =Event::DevShell= with a serialisable generation summary and no =Inheritance=.
 
 ** Phase 3: packages and libraries
 
@@ -1021,10 +1025,10 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
   - A denial cancels a dev shell evaluation that is blocked in Nix, and a stop cancels a blocked package build, both promptly.
 - *Phase 2:*
   - With a =Fake= reporting reduced =Support=, every operation is refused as =Unsupported=, and =initialize= drops exactly the matching features.
-  - An owner is stopped right after the launch is accepted, before =Exported=; and separately between =Exported= and the member's =Started=. In both cases the member starts with the owner's workspace, dev shell and auto-approved outputs.
+  - An owner is stopped right after the launch is accepted, before =Exported=; and separately between =Exported= and the member's =Started=. In both cases the member starts with the owner's workspace, dev shell and auto-approved outputs. Covered as follows: the first by a Python test (a member launched as its owner stops still starts with the owner's snapshot; the export is sent in the acceptance dispatch, before any later stop, so the order holds by construction); the transitions, including an owner that answers and stops in one round, an owner that stops before answering, a late answer for a stopped member and an undeliverable =Start=, by deterministic unit tests, because the product has no pause point between =Exported= and =Started= and none is added for tests; the dev shell and the auto-approved generation by the devshell suites, in which a member inherits the dev shell and approves the inherited generation with its owner running.
   - The owner's runtime is blocked in Nix work (a dev shell refresh or package build) when a member launch is accepted and the owner is then stopped. The member starts with the owner's handoff without waiting for that work, and the owner stops within the deadline.
-  - A chain: A runs B, B owns a raid and runs C. Stop A and B and run =goblins gc=; C still reads and writes the workspace.
-  - B, with a workspace inherited from A, attaches to Docker and stops. The engine keeps working with that workspace.
+  - A chain: A runs B, B owns a raid and runs C. Stop A and B and run =goblins gc=; C still reads and writes the workspace. =goblins gc= leaves a running server's resources alone, so the Python test runs it once on the running server and checks that answer, starts C from A's snapshot after A stopped, and has C read and write it; the resources of A, B and C stay until C stops. A second test kills the daemon, waits until every lease is free and runs =goblins gc= once, which removes all three directories.
+  - B, with a workspace inherited from A, attaches to Docker and stops. The engine keeps working with that workspace. *Moved to phase 4* as a required test (below): in phase 2 the scope still keeps its owners as =Inheritance= values and the only change is the lease list, which a unit test covers (a scope-held capability keeps every directory of its chain); phase 4 replaces the owners with scope leases, which is where a Docker chain test catches regressions.
   - Overlapping refusals keep today's order, for example a running =allowNix= goblin with a pending request asking for a package gets =conflict=. Phase 5 changes this expectation.
   - =initialize= feature lists for full and reduced =Support= match the mapping in section 4.4.
   - =goblins exec= with a supplied PTY, with three descriptors, and without =argv= behaves as today.
@@ -1035,6 +1039,7 @@ The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
   - The =cargo metadata= dependency check of section 4.10.
   - Every package builds on its own with =nix flake check=.
 - *Phase 4:*
+  - B, with a workspace inherited from A, attaches to Docker and stops. The engine keeps working with that workspace, and a surviving Docker user still gets a new live grant into it. Required: it moved here from phase 2.
   - The first member of a scope stops while a second keeps the network, storage and Docker engine.
   - The last Docker user leaves while a non-Docker member remains: the engine stops and the namespaces and storage stay.
   - The first Docker user stops, =goblins gc= runs, and a surviving Docker user then gets a new live grant into the engine.
