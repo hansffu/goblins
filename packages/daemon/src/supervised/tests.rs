@@ -225,6 +225,41 @@ fn peer() {
 }
 
 #[test]
+fn record_drops_are_counted_across_stop_failure_and_confirmed_reap() {
+    let _forking = goblins_unix::forking();
+    let root = goblins_unix::temp_directory().unwrap();
+    let mut runtime = launch(&root, "hold");
+    ready(&mut runtime, &root);
+    let record = || Command::RecordEvent {
+        event: "diagnostic".into(),
+        fields: serde_json::json!({"exec":1}),
+    };
+    for _ in 0..17 {
+        runtime.send(record()).unwrap();
+    }
+    assert_eq!(runtime.commands.unsent_requests(), 0);
+    assert_eq!(runtime.commands.dropped_record_events(), 1);
+    runtime.send(Command::Stop).unwrap();
+    assert_eq!(runtime.commands.dropped_record_events(), 17);
+    runtime.abort();
+    runtime.send(record()).unwrap();
+    assert_eq!(runtime.commands.dropped_record_events(), 18);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !runtime.ended() {
+        round(&mut runtime);
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(runtime.commands.dropped_record_events(), 18);
+    runtime.send(record()).unwrap();
+    assert_eq!(runtime.commands.dropped_record_events(), 19);
+    assert!(runtime.ended());
+    assert!(!root.join("session/resources").exists());
+    drop(runtime);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn c4_acceptance_has_legacy_listener_before_bootstrap() {
     let _forking = goblins_unix::forking();
     let root = goblins_unix::temp_directory().unwrap();

@@ -11,6 +11,7 @@ mod engine;
 mod entry;
 mod evaluator;
 mod local;
+mod logging;
 pub mod maintenance;
 pub mod manifest;
 mod network;

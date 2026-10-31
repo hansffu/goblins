@@ -275,18 +275,20 @@ impl Controller {
             self.dirty = true;
         }
         if exec.interactive
-            && let Some(a) = self.sessions.get(&exec.session)
+            && let Some(runtime) = self
+                .sessions
+                .get_mut(&exec.session)
+                .and_then(|a| a.runtime.as_mut())
         {
             let outcome = match &reply {
                 Some(Ok(value)) => value.clone(),
                 Some(Err((_, message))) => json!({"error":message}),
                 None => json!({"cancelled":true}),
             };
-            goblins_runtime::log_event(
-                &a.directory.join("resources"),
-                "exec-exited",
-                json!({"exec":id,"outcome":outcome}),
-            );
+            let _ = runtime.send(Command::RecordEvent {
+                event: "exec-exited".into(),
+                fields: json!({"exec":id,"outcome":outcome}),
+            });
         }
         let Some(reply) = reply else {
             return;
@@ -330,11 +332,12 @@ impl Controller {
                     a.record.shells += 1;
                     // Interactive shells only: TRAMP and eshell would flood
                     // the size-capped log and crowd out lifecycle events.
-                    goblins_runtime::log_event(
-                        &a.directory.join("resources"),
-                        "exec-started",
-                        json!({"exec":id,"argv":argv,"cwd":cwd,"pid":pid}),
-                    );
+                    if let Some(runtime) = &mut a.runtime {
+                        let _ = runtime.send(Command::RecordEvent {
+                            event: "exec-started".into(),
+                            fields: json!({"exec":id,"argv":argv,"cwd":cwd,"pid":pid}),
+                        });
+                    }
                 } else {
                     a.record.execs += 1;
                 }

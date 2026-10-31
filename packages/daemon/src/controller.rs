@@ -4958,6 +4958,80 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn interactive_exec_records_typed_events_without_daemon_resource_writes() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let resources = a.directory.join("resources");
+        unix::private_directory(&resources).unwrap();
+        for interactive in [true, false] {
+            let (mut c, _peer) = connection(Role::Host);
+            c.id = d.number();
+            c.initialized = true;
+            c.fds = (0..if interactive { 1 } else { 3 })
+                .map(|_| unix::pipe().unwrap().0)
+                .collect();
+            d.dispatch(&mut c, rpc::Call { jsonrpc:"2.0".into(), id:Some(json!(5)), method:"sessions.exec".into(),
+                params:json!({"session":"a","argv":["sh"],"cwd":"/work","tty":interactive,"interactive":interactive}) });
+            let id = c.exec.expect("exec accepted");
+            d.connections.push(c);
+            assert!(
+                matches!(received.lock().unwrap().pop_front(), Some(Command::Spawn { id:actual, .. }) if actual==id)
+            );
+            d.process_event("a", Event::Spawned { id, pid: 42 });
+            if interactive {
+                let Some(Command::RecordEvent { event, fields }) =
+                    received.lock().unwrap().pop_front()
+                else {
+                    panic!("missing started diagnostic")
+                };
+                assert_eq!(event, "exec-started");
+                assert_eq!(
+                    fields,
+                    json!({"exec":id,"argv":["sh"],"cwd":"/work","pid":42})
+                );
+            } else {
+                assert!(received.lock().unwrap().is_empty());
+            }
+            d.process_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: Some(7),
+                    signal: None,
+                },
+            );
+            if interactive {
+                let Some(Command::RecordEvent { event, fields }) =
+                    received.lock().unwrap().pop_front()
+                else {
+                    panic!("missing exit diagnostic")
+                };
+                assert_eq!(event, "exec-exited");
+                assert_eq!(
+                    fields,
+                    json!({"exec":id,"outcome":{"code":7,"signal":null}})
+                );
+            } else {
+                assert!(received.lock().unwrap().is_empty());
+            }
+            assert!(
+                !resources.join("events.jsonl").exists(),
+                "daemon must not fall back to writing the resource log"
+            );
+            assert_eq!(d.sessions["a"].record.shells, 0);
+            assert_eq!(d.sessions["a"].record.execs, 0);
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
     fn exec_passes_a_pty_or_three_descriptors_and_runs_the_shell_without_argv() {
         let mut d = daemon();
         let path = d.state.clone();

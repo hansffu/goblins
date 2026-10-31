@@ -8,6 +8,8 @@ use std::{
 };
 
 pub const REQUESTS: usize = 4;
+pub const RECORD_EVENTS: usize = 16;
+pub const RECORD_BYTES: usize = 1024 * 1024;
 const SIGNALS: usize = 16;
 const SANDBOX_BYTES: usize = 2 * 1024 * 1024;
 
@@ -22,6 +24,10 @@ pub struct Commands {
     stop_sent: bool,
     closed_connections: BTreeSet<u64>,
     in_flight_sandbox: BTreeMap<u64, usize>,
+    records: VecDeque<(Command, usize)>,
+    record_bytes: usize,
+    records_closed: bool,
+    dropped_records: u64,
 }
 fn request(command: &Command) -> bool {
     matches!(
@@ -64,12 +70,31 @@ impl Commands {
         self.ordered.iter().filter(|c| request(c)).count()
     }
     pub fn is_empty(&self) -> bool {
+        self.work_is_empty() && self.records.is_empty()
+    }
+    pub fn work_is_empty(&self) -> bool {
         self.ordered.is_empty()
             && self.cancellations.is_empty()
             && self.cancelled.is_empty()
             && !self.stop
     }
     pub fn push(&mut self, command: Command) -> Result<(), Command> {
+        if let Command::RecordEvent { event, fields } = &command {
+            let size = serde_json::to_vec(fields)
+                .ok()
+                .and_then(|fields| event.len().checked_add(fields.len()));
+            if self.records_closed
+                || self.records.len() == RECORD_EVENTS
+                || size.is_none_or(|size| self.record_bytes.saturating_add(size) > RECORD_BYTES)
+            {
+                self.discard_record_event();
+            } else {
+                let size = size.unwrap();
+                self.record_bytes += size;
+                self.records.push_back((command, size));
+            }
+            return Ok(());
+        }
         // A locally synthesized outcome replaces the removed request in
         // its original slot until the actor has room to report completion.
         if request(&command) && self.unsent_requests() + self.cancelled.len() == REQUESTS {
@@ -131,6 +156,7 @@ impl Commands {
                 }
             }
             Command::Stop => {
+                self.close_record_events();
                 if !self.stop_sent {
                     self.stop = true;
                 }
@@ -250,6 +276,9 @@ impl Commands {
     /// Take only when the frame writer is idle. Once taken for Channel, a
     /// frame is committed even if its first nonblocking write would block.
     pub fn pop(&mut self) -> Option<Command> {
+        self.pop_work().or_else(|| self.pop_record_event())
+    }
+    pub fn pop_work(&mut self) -> Option<Command> {
         let command = self
             .cancellations
             .pop_front()
@@ -266,6 +295,35 @@ impl Commands {
             *self.in_flight_sandbox.entry(connection).or_default() += bytes;
         }
         command
+    }
+    pub fn pop_record_event(&mut self) -> Option<Command> {
+        self.records.pop_front().map(|(command, bytes)| {
+            self.record_bytes -= bytes;
+            command
+        })
+    }
+    pub fn dropped_record_events(&self) -> u64 {
+        self.dropped_records
+    }
+    pub fn discard_record_event(&mut self) {
+        self.dropped_records = self.dropped_records.saturating_add(1);
+    }
+    pub fn close_record_events(&mut self) {
+        self.records_closed = true;
+        self.dropped_records = self
+            .dropped_records
+            .saturating_add(self.records.len() as u64);
+        self.records.clear();
+        self.record_bytes = 0;
+    }
+    /// Confirmed actor teardown: discard work without resetting diagnostic
+    /// accounting, which remains local to this planner's lifetime.
+    pub fn clear(&mut self) {
+        self.close_record_events();
+        let dropped = self.dropped_records;
+        *self = Self::default();
+        self.dropped_records = dropped;
+        self.records_closed = true;
     }
     fn sandbox_written(&mut self, connection: u64, bytes: usize) {
         if let Some(queued) = self.in_flight_sandbox.get_mut(&connection) {
@@ -421,7 +479,12 @@ impl Writer {
             && let Some(command) = commands.pop()
         {
             self.current_output = sandbox_size(&command);
-            self.current = Some(encoder.prepare(super::Message::Command(command))?);
+            let record = matches!(command, Command::RecordEvent { .. });
+            match encoder.prepare(super::Message::Command(command)) {
+                Ok(prepared) => self.current = Some(prepared),
+                Err(_) if record => commands.discard_record_event(),
+                Err(error) => return Err(error),
+            }
         }
         self.pump(channel)?;
         self.account_completed(commands);

@@ -133,6 +133,7 @@ impl Supervised {
         Ok(())
     }
     fn fail(&mut self, message: String) {
+        self.commands.close_record_events();
         self.write_failure = false;
         self.exit_grace = None;
         if self.failure.is_none() {
@@ -185,7 +186,10 @@ impl Supervised {
         match message {
             Message::Event(event) => {
                 match &event {
-                    Event::Stopped { .. } => self.stopped = true,
+                    Event::Stopped { .. } => {
+                        self.stopped = true;
+                        self.commands.close_record_events();
+                    }
                     Event::Failed(_) => self.failed = true,
                     Event::SandboxClosed { connection } => {
                         self.commands.sandbox_closed(*connection)
@@ -219,6 +223,7 @@ impl Supervised {
                     return Err("supervisor Released before Stopped".into());
                 }
                 self.release_seen = true;
+                self.commands.close_record_events();
             }
             Message::Adopted { transfer } => self.writer.adopted(transfer)?,
             _ => return Err("invalid supervisor-to-daemon message".into()),
@@ -359,7 +364,7 @@ impl Supervised {
         let mut process = self.process.take().unwrap(); // already reaped
         self.decoder.close(&mut process.channel);
         self.writer.close(&mut process.channel);
-        self.commands = Commands::default();
+        self.commands.clear();
         self.adoptions.clear();
         self.bootstrap.take();
         self.unlink_legacy();
@@ -413,6 +418,12 @@ impl Supervised {
 }
 impl Runtime for Supervised {
     fn send(&mut self, command: Command) -> Result<(), Command> {
+        if matches!(command, Command::RecordEvent { .. })
+            && (self.failure.is_some() || self.release_seen || self.process.is_none())
+        {
+            self.commands.discard_record_event();
+            return Ok(());
+        }
         if matches!(command, Command::Stop | Command::ScopeFailed) && self.stop.is_none() {
             self.stop = Some(Instant::now());
         }

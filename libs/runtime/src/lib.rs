@@ -17,12 +17,10 @@ pub mod devshell;
 pub mod guardian;
 pub mod history;
 pub mod lease;
-mod logging;
 pub mod policy;
 pub mod sandbox;
 pub mod scope;
 pub mod supervisor;
-pub use logging::log_event;
 /// Why an allowNix goblin gets no package grants.
 pub const NIX_PACKAGES: &str =
     "this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request";
@@ -206,6 +204,11 @@ pub enum SpawnKind {
 /// What the daemon asks of a runtime.
 #[derive(Debug)]
 pub enum Command {
+    /// Best-effort diagnostic logging, independent of request admission.
+    RecordEvent {
+        event: String,
+        fields: serde_json::Value,
+    },
     /// The runtime writes framed acceptance/refusal, then raw terminal bytes.
     Attach {
         terminal: TerminalId,

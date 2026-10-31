@@ -71,6 +71,8 @@ pub(crate) struct Engine {
     capabilities: Option<(Policy, Support)>,
     /// Where host jobs keep their output and outcome.
     host_jobs: PathBuf,
+    /// Disabled before resource teardown, independently of terminal lifetime.
+    log_directory: Option<PathBuf>,
     /// Pinned directories of host commands awaiting approval, by request.
     prepared: BTreeMap<String, File>,
     jobs: Vec<HostJob>,
@@ -137,12 +139,14 @@ impl Engine {
         Ok(local)
     }
     pub(super) fn new(worker: Worker, host_jobs: PathBuf) -> Self {
+        let log_directory = host_jobs.parent().map(Path::to_path_buf);
         Self {
             worker,
             published: Published::default(),
             start: None,
             capabilities: None,
             host_jobs,
+            log_directory,
             prepared: BTreeMap::new(),
             jobs: vec![],
             cancels: BTreeMap::new(),
@@ -192,6 +196,8 @@ impl Engine {
     /// A terminal buffer must not retain sandbox resources. A host job's
     /// output stays available until its queued result has been delivered.
     fn release_resources(&mut self) {
+        self.log_directory = None;
+        self.deferred.close_record_events();
         self.prepared.clear();
         if self.jobs.is_empty()
             && !self
@@ -208,7 +214,7 @@ impl Engine {
     fn finish_stop(&mut self) {
         self.collect_scope_failure();
         if self.events.len() < EVENTS
-            && self.deferred.is_empty()
+            && self.deferred.work_is_empty()
             && self.cached_exports.is_empty()
             && self.relay.drained()
             && self.pending_stop.is_some()
@@ -254,7 +260,7 @@ impl Engine {
             if self.events.len() + 2 > EVENTS {
                 break;
             }
-            let Some(command) = self.deferred.pop() else {
+            let Some(command) = self.deferred.pop_work() else {
                 break;
             };
             if let Err(command) = self.dispatch(command) {
@@ -437,6 +443,11 @@ impl Engine {
         // Final lifecycle follows all producers in this round, independent
         // of which source had first capacity, and still respects the cap.
         self.finish_stop();
+        // Diagnostic work is lowest priority and independent of semantic
+        // output capacity. One bounded record per round cannot flood a tick.
+        if let Some(command) = self.deferred.pop_record_event() {
+            let _ = self.dispatch(command);
+        }
     }
     /// Read init's events without blocking.
     fn receive_init(&mut self) {
@@ -687,6 +698,13 @@ impl Engine {
             }
         }
         match command {
+            Command::RecordEvent { event, fields } => {
+                if let Some(directory) = &self.log_directory {
+                    crate::logging::log_event(directory, &event, fields);
+                } else {
+                    self.deferred.discard_record_event();
+                }
+            }
             Command::Attach {
                 terminal,
                 stream,
@@ -841,6 +859,7 @@ impl Engine {
 impl Runtime for Engine {
     fn send(&mut self, command: Command) -> Result<(), Command> {
         match command {
+            command @ Command::RecordEvent { .. } => self.deferred.push(command),
             command @ (Command::Cancel(_)
             | Command::CancelProcess { .. }
             | Command::CancelHostJob { .. }) => {
@@ -851,6 +870,7 @@ impl Runtime for Engine {
                 Ok(())
             }
             command @ (Command::Stop | Command::ScopeFailed) => {
+                self.deferred.close_record_events();
                 self.preserve_exports();
                 self.dispatch(command)
             }
@@ -858,7 +878,7 @@ impl Runtime for Engine {
             | Command::SandboxClose { .. }
             | Command::ScopeMembership { .. }) => self.dispatch(command),
             command => {
-                if self.events.len() + 2 > EVENTS || !self.deferred.is_empty() {
+                if self.events.len() + 2 > EVENTS || !self.deferred.work_is_empty() {
                     self.deferred.push(command)
                 } else {
                     self.dispatch(command)
@@ -918,6 +938,7 @@ impl Runtime for Engine {
 #[cfg(test)]
 mod tests {
     mod actor;
+    mod logging;
     use super::*;
     use crate::process::Cancellation as Cancel;
     use goblins_runtime::Identity;

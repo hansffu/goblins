@@ -257,7 +257,7 @@ impl Inheritance {
     }
 }
 /// Append to a session directory's diagnostic `events.jsonl`.
-use goblins_runtime::log_event;
+use crate::logging::log_event;
 /// What a goblin a raid owner runs starts from.
 pub(crate) struct Member<'a> {
     pub handoff: Handoff,

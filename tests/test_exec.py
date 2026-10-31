@@ -130,7 +130,14 @@ class ExecTests(unittest.TestCase):
         t.send("exit 3\n")
         self.assertEqual(t.wait(), 3)
         self.d.wait(lambda: self.d.get(self.agent["session"])["shells"] == 0)
-        events = [json.loads(line) for line in log.read_text().splitlines()]
+        # Exec completion and best-effort supervisor logging travel separately.
+        # A concurrent read may see a trailing record before its newline.
+        def recorded():
+            return [json.loads(line) for line in log.read_text().splitlines(keepends=True)
+                    if line.endswith("\n")]
+        self.d.wait(lambda: any(e["event"] == "exec-exited" and e["fields"]["outcome"].get("code") == 3
+                               for e in recorded()))
+        events = recorded()
         started = [e for e in events if e["event"] == "exec-started"]
         self.assertEqual(len(started), before + 1)
         self.assertEqual(events[-1]["event"], "exec-exited")

@@ -36,6 +36,27 @@ fn startup(source: Source, handoff: Option<Handoff>) -> Message {
         handoff: handoff.map(Box::new),
     })
 }
+
+#[test]
+fn diagnostic_records_preserve_opaque_descriptor_looking_data_without_capabilities() {
+    let fields = json!({"$fd":0,"nested":[{"$fd":1}],"text":"line\nquote\""});
+    let mut encoded = Encoder::default()
+        .prepare(Message::Command(Command::RecordEvent {
+            event: "exec-started".into(),
+            fields: fields.clone(),
+        }))
+        .unwrap();
+    assert!(!encoded.needs_adoption());
+    assert_eq!(encoded.frames.len(), 1);
+    assert!(encoded.frames[0].fds.is_empty());
+    assert!(encoded.frames[0].value["params"]["fields"].is_string());
+    let received = decode(&mut encoded, &mut Decoder::default());
+    assert!(received.adopted.is_none());
+    assert!(
+        matches!(received.message, Message::Command(Command::RecordEvent { event, fields: actual })
+        if event=="exec-started" && actual==fields)
+    );
+}
 fn decode(prepared: &mut Prepared, decoder: &mut Decoder) -> Received {
     let mut result = None;
     while let Some(frame) = prepared.frames.pop_front() {

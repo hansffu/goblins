@@ -373,6 +373,7 @@ macro_rules! command_codec {
     }
 }
 command_codec! {
+    RecordEvent { event:String=>plain, fields:Value=>opaque },
     Attach { terminal:TerminalId=>plain, stream:Fd=>fd, rows:u16=>plain, cols:u16=>plain },
     Detach { terminal:TerminalId=>plain },
     Resize { terminal:TerminalId=>plain, rows:u16=>plain, cols:u16=>plain },
