@@ -9,56 +9,14 @@ use std::{
     collections::BTreeMap,
     fs::{self, File},
     os::{
-        fd::{AsRawFd, FromRawFd, OwnedFd},
+        fd::{AsRawFd, OwnedFd},
         unix::net::UnixStream,
     },
     path::PathBuf,
 };
 
-/// Must be called directly by the minimal scope executable before other setup.
-pub fn main() -> Result<()> {
-    // The socketpair was created by the daemon before fork; its peer credentials
-    // identify that original daemon even if it died before this process ran.
-    unix::cvt(unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) })?;
-    let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = std::mem::size_of_val(&peer) as libc::socklen_t;
-    unix::cvt(unsafe {
-        libc::getsockopt(
-            scope::CONTROL_FD,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut peer as *mut libc::ucred).cast(),
-            &mut size,
-        )
-    })?;
-    if size as usize != std::mem::size_of_val(&peer) || unsafe { libc::getppid() } != peer.pid {
-        return Err("scope daemon exited before startup".into());
-    }
-    unix::cvt(unsafe { libc::syscall(libc::SYS_close_range, 4u32, u32::MAX, 0u32) as i32 })?;
-    unix::cvt(unsafe { libc::syscall(libc::SYS_close_range, 0u32, 2u32, 0u32) as i32 })?;
-    // Replace closed inherited stdio with new null handles. Otherwise namespace
-    // or lease capabilities may occupy 0..2 and be overwritten by subprocess
-    // stdio setup (the helper deliberately rejects capability fds below 3).
-    for expected in 0..3 {
-        let fd = unix::cvt(unsafe {
-            libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC)
-        })?;
-        if fd != expected {
-            return Err("scope descriptor allowlist setup failed".into());
-        }
-    }
-    unix::cvt(unsafe { libc::fcntl(scope::CONTROL_FD, libc::F_SETFD, libc::FD_CLOEXEC) })?;
-    let stream = unsafe { UnixStream::from_raw_fd(scope::CONTROL_FD) };
-    let mut control = Channel::new(stream)?;
-    let setup = loop {
-        if let Some(frame) = control.receive()? {
-            break scope::decode(frame.value)?;
-        }
-        if control.closed() {
-            return Ok(());
-        }
-        wait(&control);
-    };
+/// Scope setup after the shared inherited-socket safety boundary.
+pub(crate) fn start(mut control: Channel, setup: Message) -> Result<()> {
     let Message::Setup {
         api,
         name,

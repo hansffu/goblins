@@ -22,7 +22,6 @@ let
           ${configuration.build_spec} > $out
       '';
       helper = "${helper}/bin/goblins-mount-helper";
-      scope_runtime = "${supervisor}/bin/goblins-supervisor-bwrap";
       # Resolve approved attributes directly from our pinned nixpkgs source.
       flake = "path:${pkgs.path}";
     };
@@ -42,6 +41,7 @@ let
   );
   package =
     (pkgs.writeShellScriptBin "goblins" ''
+      export GOBLINS_SUPERVISOR_RUNTIME=${supervisor}/bin/goblins-supervisor-bwrap
       export PATH=${pkgs.nix}/bin:$PATH
       exec ${controller}/bin/goblins --runtime ${config} "$@"
     '').overrideAttrs

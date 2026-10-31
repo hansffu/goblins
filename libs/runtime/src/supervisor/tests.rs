@@ -210,7 +210,6 @@ fn all_descriptor_free_events_preserve_private_and_public_data() {
         },
         Event::ScopeNeeded {
             name: "scope".into(),
-            executable: "/pinned".into(),
         },
         Event::Preview {
             approval: 4,

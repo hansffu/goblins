@@ -30,7 +30,6 @@ impl Broker {
         let selected = launch.scope.as_ref().ok_or("launch has no scope")?;
         self.events.send(Event::ScopeNeeded {
             name: selected.name.clone(),
-            executable: launch.scope_runtime.clone(),
         })?;
         loop {
             cancel.check()?;

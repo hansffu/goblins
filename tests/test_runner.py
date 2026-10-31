@@ -73,9 +73,9 @@ class RunnerTests(unittest.TestCase):
 
     def test_workers_use_the_adapter_reported_by_cargo(self):
         self.env["GOBLINS_CODEX_ADAPTER"] = "/stale/adapter"
-        self.env["GOBLINS_LOCAL_SCOPE_RUNTIME"] = "/stale/scope-runtime"
+        self.env["GOBLINS_SUPERVISOR_RUNTIME"] = "/stale/scope-runtime"
         self.module("probe_adapter", "self.assertEqual(os.environ['GOBLINS_CODEX_ADAPTER'],str(root/'built-adapter'))\n"
-                    "self.assertEqual(os.environ['GOBLINS_LOCAL_SCOPE_RUNTIME'],str(root/'built-scope-runtime'))")
+                    "self.assertEqual(os.environ['GOBLINS_SUPERVISOR_RUNTIME'],str(root/'built-scope-runtime'))")
         for jobs in (1, 2):
             with self.subTest(jobs=jobs):
                 self.run_runner("--jobs", str(jobs), "probe_adapter")
@@ -169,18 +169,18 @@ class RunnerTests(unittest.TestCase):
                 (directory / tool).write_text("#!/bin/sh\nexit 0\n")
                 (directory / tool).chmod(0o755)
         controller = self.directory / "controller"
-        controller.write_text("#!" + sys.executable + "\nimport json,shutil\n"
-                              "print(json.dumps([shutil.which('nix'),shutil.which('nix-store')]))\n")
+        controller.write_text("#!" + sys.executable + "\nimport json,os,shutil\n"
+                              "print(json.dumps([shutil.which('nix'),shutil.which('nix-store'),os.environ['GOBLINS_SUPERVISOR_RUNTIME']]))\n")
         controller.chmod(0o755)
         env = {**self.env, "GOBLINS_LOCAL_CONTROLLER": str(controller), "PATH": str(ambient)}
-        env.pop("GOBLINS_LOCAL_SCOPE_RUNTIME", None)
+        env["GOBLINS_SUPERVISOR_RUNTIME"] = str(self.directory / "supervisor runtime")
         fixture_app.cache_clear()
         self.addCleanup(fixture_app.cache_clear)
         with patch.dict(os.environ, env, clear=True), patch("build_support.fixture_path", side_effect=lambda ref:
                 pinned.parent if ref.endswith("#nix^out") else self.directory / "manifest.json"):
             app = fixture_app("pin-probe")
             expected = [str(pinned / tool) for tool in ("nix", "nix-store")]
-            self.assertEqual(json.loads(subprocess.check_output([app], env=env, text=True)), expected)
+            self.assertEqual(json.loads(subprocess.check_output([app], env=env, text=True)), [*expected, env["GOBLINS_SUPERVISOR_RUNTIME"]])
             default = daemon_environment(env)
             self.assertEqual([shutil.which(tool, path=default["PATH"]) for tool in ("nix", "nix-store")], expected)
             injected = daemon_environment(env, tool_path=barrier)

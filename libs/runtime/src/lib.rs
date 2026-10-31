@@ -368,7 +368,6 @@ pub enum Event {
     /// Resolve a private scope membership without blocking the event pump.
     ScopeNeeded {
         name: String,
-        executable: PathBuf,
     },
     Preview {
         approval: u64,

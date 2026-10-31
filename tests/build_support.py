@@ -7,7 +7,6 @@ from functools import cache
 from contextlib import contextmanager
 import fcntl
 import hashlib
-import json
 import os
 from pathlib import Path
 import shlex
@@ -89,21 +88,12 @@ def fixture_app(check="demo-goblins", *, packaged=False):
     application = root / "bin/goblins"
     application.parent.mkdir(parents=True, exist_ok=True)
     with fixture_lock(root / "prepare.lock"):
-        scope_runtime = os.environ.get("GOBLINS_LOCAL_SCOPE_RUNTIME")
-        if scope_runtime:
-            data = json.loads(manifest.read_text())
-            def pin(configuration):
-                configuration["scope_runtime"] = scope_runtime
-                for variant in configuration.get("scopes", {}).values():
-                    pin(variant)
-            for configuration in data["goblins"].values():
-                pin(configuration)
-            manifest = root / "config.json"
-            atomic_write(manifest, json.dumps(data))
+        supervisor = os.environ.get("GOBLINS_SUPERVISOR_RUNTIME") or str(
+            fixture_path(installable + ".supervisor") / "bin/goblins-supervisor-bwrap")
         # Another worker may execute this launcher while we prepare it. Replace
         # files atomically rather than truncating executable/readable files.
         atomic_write(application,
-                     f'#!/bin/sh\nexport PATH={shlex.quote(str(nix_bin()))}:"$PATH"\n'
+                     f'#!/bin/sh\nexport GOBLINS_SUPERVISOR_RUNTIME={shlex.quote(supervisor)}\nexport PATH={shlex.quote(str(nix_bin()))}:"$PATH"\n'
                      f'exec {shlex.quote(controller)} --runtime {shlex.quote(str(manifest))} "$@"\n',
                      executable=True)
         # Keep the actual generator and exact installed completion contents.

@@ -1859,7 +1859,7 @@ impl Controller {
                 }
                 Some(std::sync::Arc::new(OwnedFd::from(
                     self.scopes
-                        .membership(&self.state, &scope.name, None)
+                        .membership(&self.state, &scope.name, false)
                         .map_err(|e| (-32010, e.to_string()))?,
                 )))
             }
@@ -2838,12 +2838,12 @@ impl Controller {
                             other.scope_failed(&name);
                         }
                     }
-                    Event::ScopeNeeded { name, executable } => {
+                    Event::ScopeNeeded { name } => {
                         a.member_scope = Some(name.clone());
                         if !["stopped", "failed", "stopping"].contains(&a.record.state.as_str()) {
                             let result = self
                                 .scopes
-                                .membership(&self.state, &name, Some(&executable))
+                                .membership(&self.state, &name, true)
                                 .map_err(|e| e.to_string());
                             if a.runtime.as_mut().is_none_or(|r| {
                                 r.send(Command::ScopeMembership { result }).is_err()

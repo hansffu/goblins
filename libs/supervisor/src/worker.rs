@@ -1,6 +1,6 @@
 //! One session worker: blocking host work is kept off the controller event pump.
 use crate::Result;
-use crate::local::Published;
+use crate::engine::Published;
 use crate::process::Cancellation as Cancel;
 use crate::process::WORKER_TICK;
 use crate::session::Member;

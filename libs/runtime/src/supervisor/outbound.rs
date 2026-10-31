@@ -312,6 +312,10 @@ impl Writer {
     pub fn idle(&self, channel: &channel::Channel) -> bool {
         self.current.is_none() && self.priority.is_none() && !channel.wants_write()
     }
+    /// All transmitted owners were adopted, as well as all bytes flushed.
+    pub fn drained(&self, channel: &channel::Channel) -> bool {
+        self.idle(channel) && self.pending.is_empty()
+    }
     pub fn begin(&mut self, prepared: Prepared) -> Result<(), Prepared> {
         if self.current.is_some() || self.priority.is_some() {
             return Err(prepared);

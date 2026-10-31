@@ -1,5 +1,5 @@
-//! Linux runtime implementation. Only Local and the temporary preflight and
-//! maintenance facades are public; phase 6 replaces the facades before unlinking.
+//! Linux runtime engine and inherited-socket executable dispatch. Local and
+//! the preflight/maintenance facades remain during the phase 6 cutover.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 mod binds;
 mod catalog;
@@ -7,6 +7,8 @@ mod cleanup;
 mod config;
 mod devshell;
 mod docker;
+mod engine;
+mod entry;
 mod evaluator;
 mod local;
 pub mod maintenance;
@@ -20,7 +22,9 @@ mod scope_client;
 mod scope_docker;
 mod scope_keeper;
 mod scope_process;
-pub use scope_process::main as scope_main;
+mod supervisor_process;
+pub use entry::main as control_main;
+pub use local::Local;
 mod scope_storage;
 mod seccomp;
 mod server_log;
@@ -33,69 +37,3 @@ mod worker;
 #[cfg(test)]
 #[allow(dead_code)]
 mod unix;
-use crate::local::HostJob;
-use crate::local::Published;
-use crate::process::Cancellation as Cancel;
-use crate::worker::Worker;
-use goblins_runtime::policy::{Policy, Support};
-use goblins_runtime::{Event, Handoff};
-use std::{
-    collections::{BTreeMap, VecDeque},
-    fs::File,
-    os::{fd::OwnedFd, unix::net::UnixListener},
-    path::PathBuf,
-    sync::mpsc,
-};
-
-/// The runtime inside the daemon: a worker thread for Nix-bound work, with
-/// `send` as the dispatcher that never waits for it, and the running
-/// sandbox's init channel, request socket, exit watch and host jobs.
-pub struct Local {
-    worker: Worker,
-    /// Tokens of cancellable work sent to the worker, by cancel id.
-    cancels: BTreeMap<u64, Cancel>,
-    /// The private channel to the sandbox's goblins-init, from `Started`.
-    init: Option<OwnedFd>,
-    /// The sandbox's `request.sock`, from `Started` until it stops.
-    listener: Option<UnixListener>,
-    relay: relay::Relay,
-    /// The helper's pidfd, until the payload's exit is reported.
-    exit_watch: Option<OwnedFd>,
-    terminals: terminals::Terminals,
-    buffer: Vec<u8>,
-    /// The goblin's capability, published by its worker at `Started` and by
-    /// each dev shell refresh: it resolves host directories through the
-    /// sandbox's binds and is what an export hands over.
-    published: Published,
-    /// Where a member's `Start` goes, to the worker that waits for it.
-    start: Option<mpsc::SyncSender<Handoff>>,
-    /// What the goblin may do, from `Started`.
-    capabilities: Option<(Policy, Support)>,
-    /// Where host jobs keep their output and outcome.
-    host_jobs: PathBuf,
-    /// Pinned directories of host commands awaiting approval, by request.
-    prepared: BTreeMap<String, File>,
-    jobs: Vec<HostJob>,
-    stopping: bool,
-    /// Events reported and not yet polled.
-    events: VecDeque<Event>,
-    /// Accepted dispatcher work paused by bounded event output.
-    deferred: goblins_runtime::supervisor::outbound::Commands,
-    /// Exports accepted before Stop are materialized before teardown even
-    /// when their result must wait for an event slot.
-    cached_exports: BTreeMap<String, std::result::Result<Box<Handoff>, String>>,
-    worker_event: Option<Event>,
-    scope_failure: Option<String>,
-    collect_cursor: usize,
-    round: usize,
-    /// A round is being polled: its sources were collected.
-    polling: bool,
-    ended: bool,
-    /// A failure or final lifecycle result was observed, so worker loss
-    /// must not overwrite its diagnostic.
-    settled: bool,
-    sandbox_stopped: bool,
-    /// Monotonic cleanup boundary, independent of later terminal events.
-    released: bool,
-    pending_stop: Option<Option<i32>>,
-}

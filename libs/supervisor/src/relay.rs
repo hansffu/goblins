@@ -38,7 +38,7 @@ struct Peer {
 impl Relay {
     pub fn open(&mut self, stream: UnixStream, events: &mut VecDeque<Event>) {
         assert!(
-            events.len() < crate::local::EVENTS,
+            events.len() < crate::engine::EVENTS,
             "accept only with event capacity"
         );
         if self.peers.len() >= CONNECTIONS || stream.set_nonblocking(true).is_err() {
@@ -101,7 +101,7 @@ impl Relay {
         self.closed_events(events);
     }
     fn closed_events(&mut self, events: &mut VecDeque<Event>) {
-        while events.len() < crate::local::EVENTS {
+        while events.len() < crate::engine::EVENTS {
             let Some(connection) = self.closing.pop_front() else {
                 break;
             };
@@ -131,7 +131,7 @@ impl Relay {
         self.peers.retain(|connection, peer| {
             // Reading may yield a call and a subsequent closure. Reserve both
             // before advancing this producer; never coalesce semantic events.
-            if events.len() + 2 > crate::local::EVENTS {
+            if events.len() + 2 > crate::engine::EVENTS {
                 return true;
             }
             peer.flush();

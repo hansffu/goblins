@@ -184,7 +184,7 @@ def main():
             return 0
         if args.packaged:
             os.environ.pop("GOBLINS_LOCAL_CONTROLLER", None)
-            os.environ.pop("GOBLINS_LOCAL_SCOPE_RUNTIME", None)
+            os.environ.pop("GOBLINS_SUPERVISOR_RUNTIME", None)
         else:
             print("Building the Rust workspace incrementally with Cargo...", flush=True)
             artifacts = cargo_artifacts("build", "--locked", "--workspace")
@@ -192,7 +192,7 @@ def main():
                               if a.get("reason") == "compiler-artifact" and a.get("executable")
                               and a["target"]["name"] == "goblins")
             os.environ["GOBLINS_LOCAL_CONTROLLER"] = executable
-            os.environ["GOBLINS_LOCAL_SCOPE_RUNTIME"] = next(a["executable"] for a in artifacts
+            os.environ["GOBLINS_SUPERVISOR_RUNTIME"] = next(a["executable"] for a in artifacts
                 if a.get("reason") == "compiler-artifact" and a.get("executable")
                 and a["target"]["name"] == "goblins-supervisor-bwrap")
             os.environ["GOBLINS_CODEX_ADAPTER"] = next(a["executable"] for a in artifacts

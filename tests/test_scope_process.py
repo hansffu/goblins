@@ -17,7 +17,7 @@ from support import FLAKE
 class ScopeProcessTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.executable = os.environ.get("GOBLINS_LOCAL_SCOPE_RUNTIME") or str(
+        cls.executable = os.environ.get("GOBLINS_SUPERVISOR_RUNTIME") or str(
             fixture_path(FLAKE + "#checks.x86_64-linux.scope-goblins.supervisor") /
             "bin/goblins-supervisor-bwrap")
 
@@ -205,3 +205,72 @@ class ScopeProcessTests(unittest.TestCase):
         self.send(control, "Setup", {"api": 999, "name": "probe", "directory": str(directory)})
         self.assertNotEqual(self.reap(pid), 0)
         self.assertFalse(directory.exists())
+
+    def supervisor_start(self, **changes):
+        params = {"supervisor_api": 1, "source": {
+            "kind": "Host", "configuration": str(self.root / "absent.json"),
+            "name": "probe", "scope": None, "dev_shell": None,
+            "workspace": None, "cwd": None, "state": str(self.root),
+            "history": None, "recreate": None, "sequence": 1},
+            "directory": str(self.root / "runtime"), "dimensions": [24, 80],
+            "detached": True, "handoff": None}
+        params.update(changes)
+        return params
+
+    def test_supervisor_validates_complete_start_before_creating_runtime(self):
+        invalid = [{"supervisor_api": 999}, {"dimensions": [0, 80]},
+                   {"directory": "relative"}, {"unexpected": True},
+                   {"source": {"kind": "Member", "scope": None,
+                               "owner_scope": None, "manifest": str(self.root / "manifest"),
+                               "configuration": "probe", "auto": {}, "state": str(self.root),
+                               "history": None}}]
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                control, child = self.pair()
+                pid = self.spawn(child)
+                child.close()
+                self.send(control, "SupervisorStart", self.supervisor_start(**changes))
+                self.assertNotEqual(self.reap(pid), 0)
+                self.assertFalse((self.root / "terminal.sock").exists())
+                self.assertFalse((self.root / "runtime").exists())
+
+    def test_supervisor_reports_worker_failure_and_releases_before_exit(self):
+        control, child = self.pair()
+        pid = self.spawn(child)
+        child.close()
+        self.send(control, "SupervisorStart", self.supervisor_start())
+        control.settimeout(20)
+        data = bytearray()
+        while chunk := control.recv(65536):
+            data.extend(chunk)
+        self.assertEqual(self.reap(pid), 0)
+        messages = []
+        while data:
+            header, body = bytes(data).split(b"\r\n\r\n", 1)
+            fields = dict(line.split(b":", 1) for line in header.split(b"\r\n"))
+            length = int(fields[b"Content-Length"])
+            self.assertEqual(int(fields[b"Descriptor-Count"]), 0)
+            self.assertGreaterEqual(len(body), length)
+            messages.append(json.loads(body[:length]))
+            data = bytearray(body[length:])
+        methods = [message["method"] for message in messages]
+        self.assertEqual(methods.count("Event.Failed"), 1)
+        self.assertEqual(methods.count("Event.Stopped"), 1)
+        self.assertEqual(methods.count("Released"), 1)
+        self.assertLess(methods.index("Event.Failed"), methods.index("Event.Stopped"))
+        self.assertLess(methods.index("Event.Stopped"), methods.index("Released"))
+        failure = next(message["params"] for message in messages if message["method"] == "Event.Failed")
+        self.assertIn("absent.json", failure["error"])
+
+    def test_wrong_first_mode_message_disposes_its_descriptors(self):
+        control, child = self.pair()
+        read, write = os.pipe2(os.O_CLOEXEC)
+        self.addCleanup(os.close, read)
+        pid = self.spawn(child)
+        child.close()
+        self.send(control, "Event.Mode", {"server": False, "invalid": {"$fd": 0}}, [write])
+        os.close(write)
+        self.assertNotEqual(self.reap(pid), 0)
+        self.assertTrue(select.select([read], [], [], 10)[0])
+        self.assertEqual(os.read(read, 1), b"")
+        self.assertFalse((self.root / "terminal.sock").exists())

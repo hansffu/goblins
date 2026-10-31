@@ -639,6 +639,10 @@ This same-build protocol is defined in =goblins_runtime::supervisor=. Phase 6 fi
 
 =DESCRIPTOR= means ={"$fd":INDEX}=, indexing exactly one attached descriptor in that frame. =Result<T,String>= means ={"Ok":T}= or ={"Err":TEXT}=; an optional value is its normal value or =null=. String/path pairs and environment entries are two-element JSON arrays. An opaque field contains a JSON /string/ whose contents are a serialized JSON value; it is decoded once by the vocabulary codec, after the transport has checked descriptors. Raw calls, replies and trusted lock-file JSON use this form so literal =$fd= keys in data neither forge capabilities nor collide with the descriptor scanner.
 
+The executable reads one inherited control socket on descriptor 3. Before choosing a mode it installs =PDEATHSIG=, checks =SO_PEERCRED= against its current daemon parent, closes inherited descriptors other than 3, replaces stdio with close-on-exec =/dev/null= handles and makes descriptor 3 close-on-exec. The first complete message must be scope =Setup= or =SupervisorStart=; any other direction, method or incomplete/invalid startup is rejected before creating the runtime. A member's complete typed handoff is adopted before the engine starts; it is then acknowledged with =Adopted=. One-shot preflight and maintenance modes are added in later phase 6 commits.
+
+The Nix wrapper exports =GOBLINS_SUPERVISOR_RUNTIME= as the absolute path of its pinned =goblins-supervisor-bwrap=. A controller captures this once and uses it for every scope start; phase 6 cutover uses the same selection for supervisor, preflight and maintenance modes. There is no PATH search or per-configuration =scope_runtime= field. An unset or empty pin reports =supervisor executable not configured (GOBLINS_SUPERVISOR_RUNTIME)= when a process is needed; a relative pin reports =supervisor executable must be an absolute path (GOBLINS_SUPERVISOR_RUNTIME)=. Help and other operations needing no process do not require it. Local Cargo tests set the same variable to the executable reported by Cargo, while packaged tests use the wrapper's immutable pin.
+
 ** Bootstrap and ownership notifications
 
 | Direction | Method | Parameters | Effect |
@@ -687,14 +691,32 @@ All methods in this table are daemon-to-supervisor notifications. Approval, seri
 
 =TerminalId= is ="Main"= or ={"Process":U64}=. =SpawnKind= is ="Exec"= or ="Attach"=. =Stdio= uses =kind:"Fds"= with =fds:[DESCRIPTOR,DESCRIPTOR,DESCRIPTOR]=, =kind:"Tty"= with =slave:DESCRIPTOR=, or =kind:"NewPty"= with =rows:U16= and =cols:U16=. NewPty allocates a terminal owned by the runtime; no master comes back to the daemon. =Changes= has =update:[INPUT_NAME,...]_OR_NULL= and =lock:BOOL=; a non-null empty update array selects all inputs. =Request= is the existing permission request record, with =id=, =kind=, =package= and =reason= strings.
 
+A full daemon sender queue still refuses admission synchronously with =-32010=, =resource limit reached=. A command already transmitted may instead encounter a full engine worker/deferred queue. The supervisor keeps running and reports =resource limit reached= through that command's existing correlated failure; no admission acknowledgement or refusal method is added. Output backpressure pauses input only while the actor's bounded output is full; it never waits on worker admission. Cancel and Stop continue dispatching when the worker is full. Public results retain the following shapes:
+
+| Command / affected call | Asynchronous capacity result |
+|-------------------------+------------------------------|
+| =Preview= / package permission preview | The permission's =preview.error= contains the message; the request stays pending. No JSON-RPC error code. |
+| =Refresh= / dev shell permission preview | The permission fails; its normal result has =status:"error"= and the message. No JSON-RPC error code. |
+| =Run=, =Diff= / =flake.run=, =devshell.diff= | The waiting call returns JSON-RPC =-32009= with the message. |
+| =Decide= / permission execution | The normal permission result has =status:"error"= and the message. No JSON-RPC error code. The host's already accepted decision is unchanged. |
+| =Spawn= / =sessions.exec= | =Event.SpawnFailed= has null shell code; the waiting call returns JSON-RPC =-32010= with the message. |
+| =Spawn= / attach client startup | Existing attach startup failure carries the message and ends the attempted attachment. |
+| =Export= / raid member launch | =Event.Exported= fails; the accepted member launch becomes failed with the diagnostic. No new RPC error reply. |
+| =PrepareHostJob= / host-command permission preparation | =Event.HostJobPrepared= fails; the waiting request returns JSON-RPC =-32602= with the message. |
+| =RunHostJob= / approved host-command execution | =Event.HostJobFailed= fails the normal result with =status:"failed"= and =could not start the host command: resource limit reached=. No JSON-RPC error code. |
+| =Attach= / terminal handoff | The existing best-effort stream handshake returns JSON-RPC =-32009= with the message when delivered; partial output or a blocked/closed stream can instead produce a framing/EOF failure. A terminal status event reports actual runtime attachment state and releases the daemon's reservation. |
+| =Start= / member handoff | Refusal is a startup invariant failure and ends this supervisor; normal member bootstrap adopts its handoff before starting. |
+
 ** Supervisor events
+
+The shared engine runs inside the inherited-socket supervisor and behind the temporary =Local= adapter. The actor retains full typed outbound owners until =Adopted=. It holds =Stopped= separately while earlier output and ownership acknowledgements drain, so it does not queue a lifecycle barrier ahead of the acknowledgements it needs to read. =Released= follows final event transmission and disposal of sender transfer owners. The actor output queue holds at most 16 messages, plus one staged Stopped result and the current committed frame/transfer owners; engine ready events and worker results each retain their existing 16-event limit.
 
 All methods in this table are supervisor-to-daemon notifications. There is no coalescing or lossy replacement of semantic results. Phase 6 commit 2 bounds the current dispatcher ready queue and worker-result channel at 16 each, pauses producers on full output, and bounds poll rounds at 16; cancellation and Stop remain responsive. The logical sender planner has four unsent request slots, independent of receiver admission. It commits one indivisible frame to the unchanged Channel at a time, prioritizes coalesced cancellations between frames, and keeps Stop after earlier queued work including Export and sandbox answers. Removing an unsent spawn/host request emits its existing local cancellation outcome rather than stranding its caller; each synthesized outcome occupies the removed request's original slot until reported, sharing the same four-slot limit with unsent requests. Typed transfer ownership remains retained until Adopted or teardown as above.
 
 | Method | Parameters | Effect |
 |--------+------------+--------|
 | =Event.ScopeFailed= | ={"name":STRING}= | Reports scope failure. |
-| =Event.ScopeNeeded= | ={"name":STRING,"executable":PATH}= | Requests scope membership. =executable= is transitional and is removed when the daemon-wide executable pin lands. |
+| =Event.ScopeNeeded= | ={"name":STRING}= | Requests scope membership. The daemon uses its captured executable pin. |
 | =Event.Preview= | ={"approval":U64,"result":Result<Preview,String>}= | Returns a package preview including the private output path. |
 | =Event.Started= | ={"docker_enabled":BOOL,"policy":Policy,"support":Support,"dev_shell":OPAQUE_OPTIONAL_DEV_SHELL_SUMMARY,"identity":Identity,"recreated":Recreated_OR_NULL,"auto":Auto}= | Publishes descriptor-free launch metadata; every PTY remains in the runtime. |
 | =Event.Progress= | ={"request":STRING,"state":STRING}= | Reports grant progress without restricting state to a compile-time string. |

@@ -108,7 +108,7 @@ impl Terminals {
         events: &mut VecDeque<Event>,
     ) {
         assert!(
-            events.len() < crate::local::EVENTS,
+            events.len() < crate::engine::EVENTS,
             "attach needs event capacity"
         );
         let mut diagnostic = None;
@@ -168,7 +168,7 @@ impl Terminals {
     }
     pub fn detach(&mut self, id: TerminalId, events: &mut VecDeque<Event>) {
         assert!(
-            events.len() < crate::local::EVENTS,
+            events.len() < crate::engine::EVENTS,
             "detach needs event capacity"
         );
         if let Some(entry) = self.entries.get_mut(&id) {
@@ -182,7 +182,7 @@ impl Terminals {
         }
     }
     pub fn tick(&mut self, ended: bool, events: &mut VecDeque<Event>) {
-        if events.len() == crate::local::EVENTS {
+        if events.len() == crate::engine::EVENTS {
             return;
         }
         if let Some(log) = &mut self.log {
@@ -193,7 +193,7 @@ impl Terminals {
             .cursor
             .map_or(0, |cursor| ids.partition_point(|id| *id <= cursor));
         for id in ids[split..].iter().chain(&ids[..split]).copied() {
-            if events.len() == crate::local::EVENTS {
+            if events.len() == crate::engine::EVENTS {
                 break;
             }
             self.cursor = Some(id);
@@ -224,6 +224,16 @@ impl Terminals {
                 self.entries.remove(&id);
             }
         }
+    }
+    pub fn status(&self, id: TerminalId) -> TerminalStatus {
+        self.entries
+            .get(&id)
+            .map(|e| e.io.status())
+            .unwrap_or(TerminalStatus {
+                eof: true,
+                complete: true,
+                ..Default::default()
+            })
     }
     pub fn drained(&self) -> bool {
         self.entries.is_empty() && self.log.as_ref().is_none_or(ServerLog::drained)

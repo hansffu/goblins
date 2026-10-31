@@ -10,3 +10,5 @@ pub mod messaging;
 pub mod operation;
 
 mod scopes;
+
+mod supervised;

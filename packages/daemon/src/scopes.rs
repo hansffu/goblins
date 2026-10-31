@@ -14,7 +14,7 @@ use std::{
         fd::{AsRawFd, OwnedFd},
         unix::{net::UnixStream, process::CommandExt},
     },
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command, Stdio},
     time::Instant,
 };
@@ -28,7 +28,6 @@ struct Process {
 }
 struct Pending {
     fd: OwnedFd,
-    executable: PathBuf,
     release_deadline: Instant,
 }
 #[derive(Default)]
@@ -40,6 +39,7 @@ struct Entry {
 pub(crate) struct Scopes {
     entries: BTreeMap<String, Entry>,
     shutting_down: bool,
+    executable: crate::supervised::Executable,
 }
 fn queue(channel: &mut Channel, message: Message, mut fds: Vec<OwnedFd>) -> Result<()> {
     channel.queue(&scope::encode(&message), &mut fds)?;
@@ -161,33 +161,33 @@ impl Scopes {
                 !p.stopping && !p.channel.closed() && matches!(p.child.try_wait(), Ok(None))
             })
     }
-    pub fn membership(
-        &mut self,
-        state: &Path,
-        name: &str,
-        executable: Option<&Path>,
-    ) -> Result<Fd> {
+    pub fn membership(&mut self, state: &Path, name: &str, allow_start: bool) -> Result<Fd> {
         if self.shutting_down {
             return Err("daemon is stopping".into());
         }
         if !goblins_protocol::scope_name(name) {
             return Err("invalid scope name".into());
         }
-        if executable.is_none() && !self.live(name) {
+        if !allow_start && !self.live(name) {
             return Err("the owner's scope has stopped".into());
         }
+        let program = if allow_start {
+            Some(self.executable.path()?)
+        } else {
+            None
+        };
         let entry = self.entries.entry(name.into()).or_default();
         if entry.pending.len() >= MAX_PENDING {
             return Err("scope membership queue is full".into());
         }
         let (runtime, member) = UnixStream::pair()?;
-        let program = executable.map(Path::to_path_buf).unwrap_or_default();
-        if entry.process.is_none() && executable.is_some() {
-            entry.process = Process::start(state, name, &program)?;
+        if entry.process.is_none()
+            && let Some(program) = program
+        {
+            entry.process = Process::start(state, name, program)?;
         }
         entry.pending.push_back(Pending {
             fd: member.into(),
-            executable: program,
             release_deadline: Instant::now() + scope::RELEASE_TIMEOUT,
         });
         // Count newly accepted AddMember before processing any Idle report;
@@ -234,8 +234,8 @@ impl Scopes {
                     }
                 }
                 if !self.shutting_down && entry.process.is_none() {
-                    if let Some(pending) = entry.pending.front() {
-                        entry.process = Process::start(state, name, &pending.executable)?;
+                    if !entry.pending.is_empty() {
+                        entry.process = Process::start(state, name, self.executable.path()?)?;
                         entry.send_pending()?;
                     }
                 }
@@ -300,7 +300,6 @@ impl Entry {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     self.pending.push_front(Pending {
                         fd: fds.pop().unwrap(),
-                        executable: pending.executable,
                         release_deadline: pending.release_deadline,
                     });
                     break;
@@ -342,9 +341,8 @@ mod tests {
         // This new registry has no child for the previous daemon's scope.
         // The executable must never run while its guardian still holds lock.
         let mut scopes = Scopes::default();
-        let fd = scopes
-            .membership(&state, "held", Some(Path::new("/must-not-run")))
-            .unwrap();
+        scopes.executable = crate::supervised::Executable::from_path(Some("/must-not-run".into()));
+        let fd = scopes.membership(&state, "held", true).unwrap();
         let mut client = Channel::new(UnixStream::from(OwnedFd::from(fd))).unwrap();
         scopes.tick(&state);
         assert!(scopes.entries["held"].process.is_none());

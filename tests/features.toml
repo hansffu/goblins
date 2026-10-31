@@ -13,7 +13,7 @@ broad = [
   "packages/mount-helper/*", "packages/supervisor-bwrap/*", "packages/daemon/src/scopes.rs", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
   "libs/supervisor/src/lib.rs", "libs/supervisor/src/manifest.rs", "libs/supervisor/src/maintenance.rs", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "packages/daemon/src/controller.rs", "libs/supervisor/src/session.rs",
-  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
+  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "libs/supervisor/src/engine.rs", "libs/supervisor/src/engine/*", "libs/supervisor/src/entry.rs", "libs/supervisor/src/supervisor_process.rs", "packages/daemon/src/supervised.rs", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
   "libs/supervisor/src/config.rs",
   "libs/unix/src/lib.rs", "libs/supervisor/src/process.rs",
   "libs/supervisor/src/seccomp.rs", "libs/supervisor/src/sandbox_etc.rs",
