@@ -27,6 +27,8 @@ pub struct SupervisorStart {
     pub directory: PathBuf,
     pub dimensions: (u16, u16),
     pub detached: bool,
+    /// A prebound legacy frontend listener; the daemon never accepts from it.
+    pub legacy_listener: Option<Fd>,
     pub handoff: Option<Box<Handoff>>,
 }
 pub enum Message {
@@ -141,6 +143,14 @@ impl Encoder {
                 b.value("directory", &start.directory)?;
                 b.value("dimensions", &start.dimensions)?;
                 b.value("detached", &start.detached)?;
+                // Precede handoff batching so its first-frame allowance also
+                // accounts for this descriptor and the member scope handle.
+                let listener = start
+                    .legacy_listener
+                    .as_ref()
+                    .map(|fd| b.fd(fd))
+                    .transpose()?;
+                b.value("legacy_listener", &listener)?;
                 let handoff = start
                     .handoff
                     .as_deref()

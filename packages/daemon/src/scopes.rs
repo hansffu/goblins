@@ -1,6 +1,6 @@
 //! Daemon-owned scope child registry. All operations run on its main-loop
 //! thread; manifest resolution and namespace setup remain off the event pump.
-use crate::Result;
+use crate::{Result, supervised::Child};
 use goblins_runtime::{
     Fd,
     channel::{Channel, Descriptor},
@@ -10,12 +10,8 @@ use goblins_unix as unix;
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
-    os::{
-        fd::{AsRawFd, OwnedFd},
-        unix::{net::UnixStream, process::CommandExt},
-    },
+    os::{fd::OwnedFd, unix::net::UnixStream},
     path::Path,
-    process::{Child, Command, Stdio},
     time::Instant,
 };
 
@@ -53,25 +49,7 @@ impl Process {
         if !scope::remove_stale(&directory, false)? {
             return Ok(None);
         }
-        let (daemon, child) = UnixStream::pair()?;
-        let fd = child.as_raw_fd();
-        let mut command = Command::new(executable);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        unsafe {
-            command.pre_exec(move || {
-                if fd != scope::CONTROL_FD {
-                    unix::cvt(libc::dup2(fd, scope::CONTROL_FD))?;
-                }
-                unix::cvt(libc::fcntl(scope::CONTROL_FD, libc::F_SETFD, 0))?;
-                unix::cvt(libc::syscall(libc::SYS_close_range, 4u32, u32::MAX, 4u32) as i32)?;
-                Ok(())
-            });
-        }
-        let mut child = command.spawn()?;
-        drop(command);
+        let (child, daemon) = Child::start(executable)?;
         let mut channel = Channel::new(daemon)?;
         if let Err(error) = queue(
             &mut channel,
@@ -83,7 +61,7 @@ impl Process {
             vec![],
         ) {
             let _ = child.kill();
-            let _ = child.wait();
+            drop(child);
             return Err(error);
         }
         Ok(Some(Self {
@@ -121,21 +99,26 @@ impl Process {
                 }
             }
         }
-        if self.channel.closed() {
+        if self.channel.closed() || self.channel.flush().is_err() {
             self.stopping = true;
+            let _ = self.child.kill();
         }
-        if self.channel.flush().is_err() {
-            self.stopping = true;
-        }
-        Ok(self.child.try_wait()?.is_none())
+        Ok(!self.child.reap()?)
     }
 }
 impl Scopes {
+    pub(crate) fn new(executable: crate::supervised::Executable) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            shutting_down: false,
+            executable,
+        }
+    }
     #[cfg(test)]
     pub(crate) fn insert_fake_process(
         &mut self,
         name: &str,
-        child: Child,
+        child: std::process::Child,
         stream: UnixStream,
         added: u64,
     ) {
@@ -143,7 +126,7 @@ impl Scopes {
             name.into(),
             Entry {
                 process: Some(Process {
-                    child,
+                    child: Child::fixture(child),
                     channel: Channel::new(stream).unwrap(),
                     added,
                     stopping: false,
@@ -158,7 +141,7 @@ impl Scopes {
             .get_mut(name)
             .and_then(|entry| entry.process.as_mut())
             .is_some_and(|p| {
-                !p.stopping && !p.channel.closed() && matches!(p.child.try_wait(), Ok(None))
+                !p.stopping && !p.channel.closed() && matches!(p.child.exited(), Ok(false))
             })
     }
     pub fn membership(&mut self, state: &Path, name: &str, allow_start: bool) -> Result<Fd> {
@@ -198,10 +181,7 @@ impl Scopes {
     /// Workers perform orderly Leave while stopping. Their acknowledgements
     /// depend on Idle/Stop reports, so keep pumping before joining any worker.
     pub fn shutdown(&mut self, state: &Path) {
-        self.shutting_down = true;
-        for entry in self.entries.values_mut() {
-            entry.pending.clear();
-        }
+        self.begin_shutdown();
         let deadline = std::time::Instant::now() + scope::RELEASE_TIMEOUT;
         while !self.entries.is_empty() && std::time::Instant::now() < deadline {
             self.tick(state);
@@ -209,9 +189,18 @@ impl Scopes {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
-        // A scope that cannot finish (for example SIGSTOP) must not hang daemon
-        // teardown. Kill only after the orderly release budget, as a failure
-        // fallback; normal engine shutdown retains its membership until done.
+        self.abort();
+    }
+    pub fn begin_shutdown(&mut self) {
+        self.shutting_down = true;
+        for entry in self.entries.values_mut() {
+            entry.pending.clear();
+        }
+    }
+    pub fn drained(&self) -> bool {
+        self.entries.is_empty()
+    }
+    pub fn abort(&mut self) {
         for entry in self.entries.values_mut() {
             if let Some(process) = &mut entry.process {
                 process.channel.close();
@@ -247,6 +236,7 @@ impl Scopes {
                 if let Some(process) = &mut entry.process {
                     process.stopping = true;
                     process.channel.close();
+                    let _ = process.child.kill();
                 }
             }
             entry.process.is_some() || !entry.pending.is_empty()
@@ -319,7 +309,7 @@ impl Drop for Scopes {
         }
         for entry in self.entries.values_mut() {
             if let Some(p) = &mut entry.process {
-                let _ = p.child.wait();
+                let _ = p.child.kill();
             }
         }
     }
@@ -327,8 +317,10 @@ impl Drop for Scopes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
     #[test]
     fn a_guardian_held_old_runtime_fails_a_new_start_at_the_release_deadline() {
+        let _no_forks = unix::no_forks();
         let state = unix::temp_directory().unwrap();
         unix::private_directory(&state.join("scopes")).unwrap();
         let runtime = state.join("scopes/held");
@@ -378,12 +370,13 @@ mod tests {
     }
     #[test]
     fn idle_crossing_a_new_add_member_does_not_stop_scope() {
+        let _forking = unix::forking();
         // Exercise the real control channel/counter decision without namespace
         // setup: a short-lived child is only a reapable Process fixture.
         let (daemon, peer) = UnixStream::pair().unwrap();
         let child = Command::new("true").spawn().unwrap();
         let mut process = Process {
-            child,
+            child: Child::fixture(child),
             channel: Channel::new(daemon).unwrap(),
             added: 2,
             stopping: false,
@@ -399,6 +392,8 @@ mod tests {
             scope::decode(peer.receive().unwrap().unwrap().value).unwrap(),
             Message::Stop {}
         ));
-        process.child.wait().unwrap();
+        while !process.child.reap().unwrap() {
+            std::thread::yield_now();
+        }
     }
 }

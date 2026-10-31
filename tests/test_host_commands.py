@@ -198,6 +198,34 @@ class HostCommandTests(unittest.TestCase):
         self.d.process.wait(timeout=10)
         self.d.wait(lambda: not alive(pid), timeout=30)
 
+    def test_the_supervisor_dying_stops_its_jobs(self):
+        self.assertNotIn("GOBLINS_DEBUG_LOCAL_RUNTIME", self.d.env)
+        session, terminal = self.launch()
+        self.run_in(terminal, "goblin host run --detach --reason supervisor-orphan -- bash -c 'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > supervisor-orphan.pid; exec sleep 300'")
+        record = self.pending(session)
+        self.d.decide(record, True)
+        self.d.wait(lambda: (self.project / "supervisor-orphan.pid").exists())
+        orphan = int((self.project / "supervisor-orphan.pid").read_text())
+        lease = str(self.d.state / session / "resources/.gc-lease")
+        def supervisor():
+            children = Path(f"/proc/{self.d.process.pid}/task/{self.d.process.pid}/children").read_text().split()
+            found = []
+            for child in children:
+                try:
+                    if any(str(fd.readlink()) == lease for fd in Path(f"/proc/{child}/fd").iterdir()):
+                        found.append(int(child))
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+            return found
+        [pid] = self.d.wait(supervisor)
+        self.assertIn(b"goblins-supervisor-bwrap", Path(f"/proc/{pid}/cmdline").read_bytes())
+        os.kill(pid, signal.SIGKILL)
+        self.d.wait(lambda: self.d.get(session)["state"] == "failed")
+        self.d.wait(lambda: not alive(orphan), timeout=30)
+        self.d.wait(lambda: not Path(f"/proc/{pid}").exists())
+        self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
+        self.assertIsNone(self.d.process.poll(), "only the goblin supervisor should die")
+
     def test_host_commands_name_their_own_server(self):
         session, terminal = self.launch()
         cli = f"{self.d.binary} --runtime {self.d.manifest}"

@@ -98,6 +98,26 @@ impl Terminal {
     }
     pub fn new(path: &Path) -> Result<Self> {
         let listener = UnixListener::bind(path)?;
+        Self::from_listener(path, listener)
+    }
+    pub(crate) fn from_listener(path: &Path, listener: UnixListener) -> Result<Self> {
+        if listener.local_addr()?.as_pathname() != Some(path) {
+            return Err("legacy terminal listener has the wrong address".into());
+        }
+        let mut accepting: libc::c_int = 0;
+        let mut length = std::mem::size_of_val(&accepting) as libc::socklen_t;
+        unix::cvt(unsafe {
+            libc::getsockopt(
+                listener.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_ACCEPTCONN,
+                (&mut accepting as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        })?;
+        if accepting != 1 {
+            return Err("legacy terminal descriptor is not a listener".into());
+        }
         listener.set_nonblocking(true)?;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         Ok(Self {
@@ -204,6 +224,7 @@ impl Terminal {
         Ok(())
     }
     pub fn attach(&mut self, peer: UnixStream, id: serde_json::Value) -> Result<()> {
+        self.refresh_peer();
         if self.peer.is_some() || self.complete {
             return Err(if self.complete {
                 "terminal already completed"
@@ -225,7 +246,7 @@ impl Terminal {
         self.interrupted = false;
         Ok(())
     }
-    pub fn tick(&mut self) -> Result<()> {
+    fn refresh_peer(&mut self) {
         if let Some(peer) = &mut self.peer {
             // Even after PTY EOF, continue draining output. Peer input EOF is a
             // consumer disconnect, not payload exit or session cancellation.
@@ -257,6 +278,9 @@ impl Terminal {
                 self.to_pty.clear();
             }
         }
+    }
+    pub fn tick(&mut self) -> Result<()> {
+        self.refresh_peer();
         for _ in 0..4 {
             let Some((_, listener)) = self.listener.as_ref().filter(|_| !self.held) else {
                 break;
@@ -412,6 +436,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn c4_attach_refreshes_closed_peer_before_refusing() {
+        let _no_forks = unix::no_forks();
+        let mut fixture = Fixture::new();
+        let (first, first_runtime) = UnixStream::pair().unwrap();
+        fixture
+            .terminal
+            .attach(first_runtime, serde_json::json!(0))
+            .unwrap();
+        close(first);
+        // Attach is a dispatcher action and can precede the next I/O tick.
+        let (mut second, second_runtime) = UnixStream::pair().unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        fixture
+            .terminal
+            .attach(second_runtime, serde_json::json!(0))
+            .unwrap();
+        fixture.terminal.tick().unwrap();
+        assert_eq!(rpc::read(&mut second).unwrap()["result"]["attached"], true);
+    }
+    #[test]
+    fn inherited_listener_is_adopted_and_invalid_descriptors_are_refused() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let path = directory.join("terminal.sock");
+        let wrong = directory.join("wrong.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let other = UnixListener::bind(&wrong).unwrap();
+        assert!(Terminal::from_listener(&path, other).is_err());
+        assert!(path.exists());
+        let file = OwnedFd::from(File::open("/dev/null").unwrap());
+        assert!(Terminal::from_listener(&path, UnixListener::from(file)).is_err());
+        let mut terminal = Terminal::from_listener(&path, listener).unwrap();
+        let mut peer = UnixStream::connect(&path).unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        terminal.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["result"]["attached"], true);
+        drop(terminal);
+        assert!(!path.exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
     #[test]
     fn abandoned_handshake_never_enters_reattached_output() {
         for size in [6, CAP] {

@@ -15,7 +15,7 @@ import uuid
 import zipfile
 
 from build_support import fixture_app
-from daemon_support import Daemon, ROOT
+from daemon_support import Daemon, ROOT, supervisor_children
 from terminal_support import Terminal
 
 
@@ -161,8 +161,10 @@ class ScopeTests(unittest.TestCase):
         first = self.start(scope="scratch")
         def children(pid):
             return [int(value) for value in Path(f"/proc/{pid}/task/{pid}/children").read_text().split()]
-        scope_pid = next(pid for pid in children(self.d.process.pid)
-                         if Path(f"/proc/{pid}/exe").resolve().name == "goblins-supervisor-bwrap")
+        scopes, members = supervisor_children(self.d.process.pid, self.d.state)
+        self.assertEqual(set(scopes), {"scratch"})
+        self.assertEqual(len(members), 1)
+        scope_pid = scopes["scratch"]
         keeper = next(pid for pid in children(scope_pid)
                       if Path(f"/proc/{pid}/exe").resolve().name == "bwrap")
         keeper_fd = os.pidfd_open(keeper)
@@ -196,10 +198,11 @@ class ScopeTests(unittest.TestCase):
     def test_daemon_shutdown_pumps_scope_release_before_joining_workers(self):
         self.start()
         self.start(scope="scratch")
-        children = Path(f"/proc/{self.d.process.pid}/task/{self.d.process.pid}/children").read_text().split()
-        pids = [int(pid) for pid in children
-                if Path(f"/proc/{pid}/exe").resolve().name == "goblins-supervisor-bwrap"]
-        self.assertEqual(len(pids), 2)
+        scopes, members = supervisor_children(self.d.process.pid, self.d.state)
+        self.assertEqual(set(scopes), {"work", "scratch"})
+        self.assertEqual(len(members), 2)
+        pids = set(scopes.values()) | members
+        self.assertEqual(len(pids), 4)
         descriptors = [os.pidfd_open(pid) for pid in pids]
         for fd in descriptors:
             self.addCleanup(os.close, fd)

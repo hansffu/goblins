@@ -180,7 +180,7 @@ pub fn stop(state: &Path) -> Result<()> {
         return Ok(());
     };
     client.call("server.stop", json!({}))?;
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(20);
     while lock_held(state)? {
         if Instant::now() >= deadline || STOP.load(Ordering::Relaxed) {
             return Err("stop accepted; server cleanup has not finished yet".into());

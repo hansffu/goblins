@@ -187,6 +187,15 @@ pub fn relay(
             }
         }
     }
+    wait_outcome(session, control, stop)
+}
+
+// Shared completion phase, kept separate from process-global terminal mode.
+fn wait_outcome(
+    session: &str,
+    mut control: impl FnMut(&str, Value) -> Result<Value>,
+    stop: &AtomicBool,
+) -> Result<i32> {
     // Stream EOF precedes local drain above. A control disconnect is never a
     // substitute for EOF, and a daemon crash must not look like normal exit.
     loop {
@@ -200,23 +209,99 @@ pub fn relay(
             if record["state"] == "failed" {
                 return Err(record["detail"].as_str().unwrap_or("launch failed").into());
             }
-            if record["terminal_complete"] != true || record["terminal_interrupted"] == true {
+            if record["terminal_interrupted"] == true {
                 return Err("terminal output incomplete".into());
             }
-            return record["exit_code"]
-                .as_i64()
-                .map(|c| c as i32)
-                .ok_or_else(|| {
-                    record["stop_reason"]
-                        .as_str()
-                        .or_else(|| record["detail"].as_str())
-                        .unwrap_or("payload exit status unknown")
-                        .into()
-                });
+            // The raw stream and lifecycle notifications travel separately.
+            // Stopped can be visible before the drained terminal notification.
+            if record["terminal_complete"] == true {
+                return record["exit_code"]
+                    .as_i64()
+                    .map(|c| c as i32)
+                    .ok_or_else(|| {
+                        record["stop_reason"]
+                            .as_str()
+                            .or_else(|| record["detail"].as_str())
+                            .unwrap_or("payload exit status unknown")
+                            .into()
+                    });
+            }
         }
         if stop.load(Ordering::Relaxed) {
             return Err("terminal completion interrupted".into());
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn completion_wait_preserves_failure_unknown_exit_and_control_loss() {
+        for (record, expected) in [
+            (
+                json!({"state":"failed","detail":"launch failed"}),
+                "launch failed",
+            ),
+            (
+                json!({"state":"stopped","terminal_complete":true,"terminal_interrupted":false}),
+                "payload exit status unknown",
+            ),
+        ] {
+            let error =
+                wait_outcome("s", |_, _| Ok(record.clone()), &AtomicBool::new(false)).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
+        let error = wait_outcome(
+            "s",
+            |_, _| Err("control disconnected".into()),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "control disconnected");
+        let error = wait_outcome(
+            "s",
+            |_, _| Ok(json!({"state":"stopped","terminal_complete":false})),
+            &AtomicBool::new(true),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "terminal completion interrupted");
+    }
+    #[test]
+    fn c4_interrupted_terminal_completion_remains_an_error() {
+        let result = wait_outcome(
+            "s",
+            |_, _| {
+                Ok(
+                    json!({"state":"stopped","terminal_complete":false,"terminal_interrupted":true,"terminal_detached":false,"exit_code":0}),
+                )
+            },
+            &AtomicBool::new(false),
+        );
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "terminal output incomplete"
+        );
+    }
+    #[test]
+    fn c4_terminal_eof_waits_for_delayed_completion_state() {
+        let mut states = std::collections::VecDeque::from([
+            json!({"state":"stopped","terminal_complete":false,"terminal_interrupted":false,"terminal_detached":false,"exit_code":0}),
+            json!({"state":"stopped","terminal_complete":true,"terminal_interrupted":false,"terminal_detached":false,"exit_code":0}),
+        ]);
+        let result = wait_outcome(
+            "s",
+            |method, params| {
+                assert_eq!(method, "sessions.get");
+                assert_eq!(params, json!({"session":"s"}));
+                Ok(states
+                    .pop_front()
+                    .expect("completion must be consumed exactly once"))
+            },
+            &AtomicBool::new(false),
+        );
+        assert_eq!(result.unwrap(), 0);
+        assert!(states.is_empty());
     }
 }

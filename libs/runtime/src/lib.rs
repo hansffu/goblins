@@ -103,8 +103,10 @@ pub trait Runtime: Send {
     /// The sandbox, host jobs and their resources are gone. A runtime may
     /// still serve retained terminal output after this becomes true. Release
     /// is monotonic: later terminal events never make the sandbox live again.
-    fn released(&self) -> bool {
-        self.ended()
+    fn released(&self) -> bool;
+    /// Failure/shutdown fallback, after every runtime got an orderly Stop.
+    fn abort(&mut self) {
+        let _ = self.send(Command::Stop);
     }
     /// True once every event has been polled and the runtime is gone.
     fn ended(&self) -> bool;
@@ -514,6 +516,8 @@ pub struct Fake {
     events: mpsc::Receiver<Event>,
     round: usize,
     ended: bool,
+    released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    own_events: Option<mpsc::SyncSender<Event>>,
     /// What the runtime holds for the goblin's life, such as a lease.
     held: Vec<Box<dyn std::any::Any + Send>>,
 }
@@ -539,9 +543,21 @@ impl Fake {
             events,
             round: 0,
             ended: false,
+            released: Default::default(),
+            own_events: None,
             held: vec![],
         };
         (fake, sender, received)
+    }
+    /// An idle accepted launch for controller policy tests, with no process.
+    pub fn idle() -> Self {
+        let (mut fake, sender, _) = Self::new();
+        fake.own_events = Some(sender);
+        fake
+    }
+    /// Independently controlled resource release, even with retained events.
+    pub fn release_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.released.clone()
     }
     /// The runtime holds `what` until it is dropped.
     pub fn holding(mut self, what: impl std::any::Any + Send) -> Self {
@@ -572,6 +588,13 @@ impl Runtime for Fake {
         if request(&command) && received.iter().filter(|c| request(c)).count() >= 4 {
             return Err(command);
         }
+        if matches!(command, Command::Stop)
+            && let Some(sender) = self.own_events.take()
+        {
+            sender
+                .try_send(Event::Stopped { exit_code: None })
+                .unwrap_or_else(|_| panic!("idle fake lifecycle queue full"));
+        }
         received.push_back(command);
         Ok(())
     }
@@ -586,10 +609,17 @@ impl Runtime for Fake {
                 return Some(event);
             }
             Err(mpsc::TryRecvError::Empty) => (),
-            Err(mpsc::TryRecvError::Disconnected) => self.ended = true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.ended = true;
+                self.released
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
         }
         self.round = 0;
         None
+    }
+    fn released(&self) -> bool {
+        self.released.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn ended(&self) -> bool {
         self.ended

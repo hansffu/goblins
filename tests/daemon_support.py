@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -11,6 +12,35 @@ import uuid
 from build_support import daemon_environment, fixture_app
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def supervisor_children(pid, state, proc=Path("/proc")):
+    """Separate scope keepers by their lifetime lock from goblin supervisors."""
+    scopes, members = {}, set()
+    root = Path(state) / "scopes"
+    children = (proc / str(pid) / "task" / str(pid) / "children").read_text().split()
+    for child in map(int, children):
+        directory = proc / str(child)
+        try:
+            if (directory / "exe").resolve().name != "goblins-supervisor-bwrap":
+                continue
+            names = set()
+            for fd in (directory / "fd").iterdir():
+                target = Path(os.readlink(fd))
+                if target.name == "lock" and target.parent.parent == root:
+                    names.add(target.parent.name)
+            if len(names) > 1:
+                raise ValueError(f"supervisor {child} holds multiple scope locks: {names}")
+            if names:
+                [name] = names
+                if name in scopes:
+                    raise ValueError(f"multiple supervisors hold scope {name}")
+                scopes[name] = child
+            else:
+                members.add(child)
+        except FileNotFoundError:
+            # A child that exited during discovery is no longer live.
+            continue
+    return scopes, members
 
 def frame(value):
     body = json.dumps(value).encode()
@@ -79,6 +109,11 @@ class Daemon:
         self.state_home = Path(state_home or Path(self.temp.name) / "xdg-state")
         self.history = self.state_home / "goblins/sessions"
         self.env = {**daemon_environment(env, tool_path=tool_path), "XDG_STATE_HOME": str(self.state_home)}
+        # This helper invokes the unwrapped daemon, so carry the wrapper's
+        # executable pin just as invoking the installed launcher would.
+        pin = re.search(r'^export GOBLINS_SUPERVISOR_RUNTIME=(.*)$', self.app.read_text(), re.M)
+        if pin:
+            self.env["GOBLINS_SUPERVISOR_RUNTIME"] = shlex.split(pin.group(1))[0]
         argv = [self.binary, "--runtime", self.manifest, "--state-dir", str(self.state), "server", "start", "--foreground"]
         if workspace:
             argv += ["--workspace", str(workspace)]
@@ -188,7 +223,7 @@ class Daemon:
         self.rpc.close()
         if self.process.poll() is None:
             self.process.terminate()
-        self.process.wait(timeout=10)
+        self.process.wait(timeout=22)
         self.process.stdout.close()
         self.process.stderr.close()
         self.temp.cleanup()

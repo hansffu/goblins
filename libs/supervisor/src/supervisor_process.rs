@@ -27,11 +27,12 @@ pub(crate) fn start(mut channel: Channel, first: Frame) -> Result<()> {
         let Message::SupervisorStart(start) = received.message else {
             return Err("SupervisorStart must complete before commands".into());
         };
-        let mut engine = Engine::start(
+        let mut engine = Engine::with_listener(
             start.source,
             start.directory,
             start.dimensions,
             start.detached,
+            start.legacy_listener.map(OwnedFd::from),
         )?;
         if let Some(handoff) = start.handoff {
             if let Err(command) = engine.send(Command::Start(handoff)) {

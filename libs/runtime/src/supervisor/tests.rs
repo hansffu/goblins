@@ -32,6 +32,7 @@ fn startup(source: Source, handoff: Option<Handoff>) -> Message {
         directory: "/state/session/resources".into(),
         dimensions: (37, 123),
         detached: true,
+        legacy_listener: None,
         handoff: handoff.map(Box::new),
     })
 }
@@ -436,7 +437,16 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
         state: "/state".into(),
         history: Some("/history".into()),
     };
-    let message = startup(source, Some(handoff(&root, channel::MAX_FDS + 1)));
+    let Message::SupervisorStart(mut start) =
+        startup(source, Some(handoff(&root, channel::MAX_FDS + 1)))
+    else {
+        unreachable!()
+    };
+    start.directory = root.join("resources");
+    let path = root.join("terminal.sock");
+    start.legacy_listener =
+        Some(OwnedFd::from(std::os::unix::net::UnixListener::bind(&path).unwrap()).into());
+    let message = Message::SupervisorStart(start);
     let mut prepared = Encoder::default().prepare(message).unwrap();
     assert!(prepared.frames.len() > 1);
     assert!(
@@ -452,6 +462,11 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
     else {
         panic!("start");
     };
+    let listener =
+        std::os::unix::net::UnixListener::from(OwnedFd::from(start.legacy_listener.unwrap()));
+    let peer = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let (accepted, _) = listener.accept().unwrap();
+    drop((peer, accepted));
     let Source::Member {
         scope: Some(scope),
         owner_scope,
@@ -483,9 +498,64 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
         );
     }
     drop(h);
+    drop(listener);
+    assert!(std::os::unix::net::UnixStream::connect(&path).is_err());
     assert!(!root.join("r0").exists());
     assert!(!root.join(format!("r{}", channel::MAX_FDS)).exists());
     fs::remove_dir_all(root).unwrap();
+}
+#[test]
+fn startup_listener_is_closed_with_partial_handoff_on_eof_or_invalid_continuation() {
+    let _no_forks = unix::no_forks();
+    for invalid_continuation in [false, true] {
+        let root = unix::temp_directory().unwrap();
+        let source = Source::Member {
+            scope: None,
+            owner_scope: None,
+            manifest: "/manifest".into(),
+            configuration: "child".into(),
+            auto: Default::default(),
+            state: root.clone(),
+            history: None,
+        };
+        let Message::SupervisorStart(mut start) =
+            startup(source, Some(handoff(&root, channel::MAX_FDS + 1)))
+        else {
+            unreachable!()
+        };
+        let path = root.join("terminal.sock");
+        start.directory = root.join("resources");
+        start.legacy_listener =
+            Some(OwnedFd::from(std::os::unix::net::UnixListener::bind(&path).unwrap()).into());
+        let mut prepared = Encoder::default()
+            .prepare(Message::SupervisorStart(start))
+            .unwrap();
+        let mut decoder = Decoder::default();
+        assert!(
+            decoder
+                .receive(prepared.frames.pop_front().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        let continuation = prepared.frames.pop_front().unwrap();
+        drop(std::os::unix::net::UnixStream::connect(&path).unwrap());
+        if invalid_continuation {
+            let mut frame = continuation;
+            frame.value["params"]["transfer"] = json!(999);
+            assert!(decoder.receive(frame).is_err());
+        } else {
+            drop(continuation);
+            assert!(decoder.finish().is_err());
+        }
+        // Failed adoption drops the receiver; the typed sender still retains
+        // its listener and every lease until teardown, just like Handoff.
+        drop(std::os::unix::net::UnixStream::connect(&path).unwrap());
+        drop(prepared);
+        assert!(std::os::unix::net::UnixStream::connect(&path).is_err());
+        assert!(!root.join("r0").exists());
+        assert!(!root.join(format!("r{}", channel::MAX_FDS)).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
 }
 #[test]
 fn start_and_export_handoffs_roundtrip_and_partial_or_invalid_batches_release_every_lease() {

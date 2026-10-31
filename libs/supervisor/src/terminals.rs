@@ -26,7 +26,18 @@ pub(crate) struct Terminals {
 }
 impl Terminals {
     pub fn new(directory: &Path, detached: bool) -> crate::Result<Self> {
-        let mut io = Terminal::new(&directory.join("terminal.sock"))?;
+        Self::with_listener(directory, detached, None)
+    }
+    pub fn with_listener(
+        directory: &Path,
+        detached: bool,
+        listener: Option<OwnedFd>,
+    ) -> crate::Result<Self> {
+        let path = directory.join("terminal.sock");
+        let mut io = match listener {
+            Some(fd) => Terminal::from_listener(&path, std::os::unix::net::UnixListener::from(fd))?,
+            None => Terminal::new(&path)?,
+        };
         io.detached = detached;
         io.hold();
         let mut this = Self {

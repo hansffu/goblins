@@ -484,6 +484,20 @@ impl Controller {
         }
     }
 
+    /// Confirmed runtime exit means no further job outcome can arrive.
+    pub(super) fn lost_host_jobs(&mut self, session: &str) {
+        self.end_host_jobs(session);
+        let mut index = 0;
+        while index < self.host_jobs.len() {
+            if self.host_jobs[index].session == session {
+                let job = self.host_jobs.remove(index);
+                self.finish_host_job(job, Err("session runtime exited".into()));
+            } else {
+                index += 1;
+            }
+        }
+    }
+
     /// `host.status`, `host.list` and `host.cancel` from `session`, or
     /// `host.cancel` from the host (`session` None).
     pub(super) fn host_control(

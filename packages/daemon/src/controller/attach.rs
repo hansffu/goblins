@@ -478,6 +478,9 @@ impl Controller {
         }
         self.client_tick(a, now);
         let (attached, detached) = match a.handlers {
+            // Loss of the runtime/init is an interrupted terminal outcome,
+            // not a user detach, including clients already marked exited.
+            Some(_) if !a.init && a.terminal.interrupted => (false, false),
             Some(_) => (a.attach.attached(), a.attach.detached()),
             None => (a.terminal.attached, a.terminal.detached),
         };

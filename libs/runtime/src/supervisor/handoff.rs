@@ -418,6 +418,14 @@ impl Decoder {
                     directory: p.take("directory")?,
                     dimensions: p.take("dimensions")?,
                     detached: p.take("detached")?,
+                    legacy_listener: p
+                        .0
+                        .remove("legacy_listener")
+                        .map(serde_json::from_value::<Option<Descriptor>>)
+                        .transpose()?
+                        .flatten()
+                        .map(|fd| d.take(fd).map(Fd::from))
+                        .transpose()?,
                     handoff: None,
                 };
                 let handoff = p.take::<Option<Value>>("handoff")?;

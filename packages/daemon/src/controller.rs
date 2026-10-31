@@ -1,5 +1,6 @@
 //! Single authority/event loop, with independent blocking workers per session.
 use crate::Result;
+use crate::supervised::{Executable, Supervised};
 use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::{
     Request,
@@ -10,7 +11,6 @@ use goblins_runtime::Source;
 use goblins_runtime::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
 use goblins_runtime::{Command, Event, Runtime};
 use goblins_runtime::{TerminalId, TerminalStatus};
-use goblins_supervisor::Local;
 use goblins_unix as unix;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -669,6 +669,32 @@ fn random_name<'a>(
         "cannot select random agent name after 8 attempts".into(),
     ))
 }
+#[derive(Clone, Copy)]
+enum RuntimeBackend {
+    Supervised,
+    #[cfg(all(debug_assertions, not(test)))]
+    Local,
+    #[cfg(test)]
+    Fake,
+}
+impl RuntimeBackend {
+    fn current() -> Self {
+        #[cfg(test)]
+        {
+            Self::Fake
+        }
+        #[cfg(not(test))]
+        {
+            #[cfg(debug_assertions)]
+            if std::env::var_os("GOBLINS_DEBUG_LOCAL_RUNTIME").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+            {
+                return Self::Local;
+            }
+            Self::Supervised
+        }
+    }
+}
 pub struct Controller {
     messaging: crate::messaging::Service,
     /// As the messaging worker last reported it.
@@ -683,6 +709,10 @@ pub struct Controller {
     connections: Vec<Connection>,
     sessions: BTreeMap<String, Active>,
     scopes: crate::scopes::Scopes,
+    executable: Executable,
+    backend: RuntimeBackend,
+    /// Index retained handles through cleanup and later terminal service.
+    retiring: BTreeSet<String>,
     execs: BTreeMap<u64, exec::Exec>,
     edits: Vec<editor::Edit>,
     host_jobs: Vec<host::Job>,
@@ -744,7 +774,11 @@ impl Controller {
         let messaging = crate::messaging::Service::new(&state, &instance)?;
         // Roots of manifests a previous server held.
         let _ = fs::remove_dir_all(state.join("manifests"));
+        let executable = Executable::default();
         Ok(Self {
+            executable: executable.clone(),
+            backend: RuntimeBackend::current(),
+            retiring: BTreeSet::new(),
             messaging,
             messaging_health: Default::default(),
             messaging_directory: BTreeMap::new(),
@@ -757,7 +791,7 @@ impl Controller {
             sequence: 0,
             connections: vec![],
             sessions: BTreeMap::new(),
-            scopes: Default::default(),
+            scopes: crate::scopes::Scopes::new(executable),
             execs: BTreeMap::new(),
             edits: Vec::new(),
             host_jobs: Vec::new(),
@@ -1411,6 +1445,9 @@ impl Controller {
         // A member that stops no longer waits for its owner's handoff; one
         // that arrives later is nobody's, and dropping it releases its leases.
         a.exporting = None;
+        if a.live() {
+            self.retiring.insert(id.to_string());
+        }
         if a.live()
             && let Some(runtime) = &mut a.runtime
         {
@@ -1680,13 +1717,30 @@ impl Controller {
                 .unwrap_or_default(),
             None => p.configuration.clone(),
         };
-        let runtime = Local::start(
-            source,
-            directory.join("resources"),
-            (p.rows, p.cols),
-            p.detached,
-        )
-        .map_err(|e| (-32010, e.to_string()))?;
+        let runtime: Box<dyn Runtime> = match self.backend {
+            RuntimeBackend::Supervised => Box::new(
+                Supervised::start(
+                    self.executable.clone(),
+                    source,
+                    directory.join("resources"),
+                    (p.rows, p.cols),
+                    p.detached,
+                )
+                .map_err(|e| (-32010, e.to_string()))?,
+            ),
+            #[cfg(all(debug_assertions, not(test)))]
+            RuntimeBackend::Local => Box::new(
+                goblins_supervisor::Local::start(
+                    source,
+                    directory.join("resources"),
+                    (p.rows, p.cols),
+                    p.detached,
+                )
+                .map_err(|e| (-32010, e.to_string()))?,
+            ),
+            #[cfg(test)]
+            RuntimeBackend::Fake => Box::new(goblins_runtime::Fake::idle().holding(source)),
+        };
         let record = SessionRecord {
             agent_state: Default::default(),
             agent_state_since: None,
@@ -1754,7 +1808,7 @@ impl Controller {
                 recreated_from: recorded,
                 created: self.next,
                 record,
-                runtime: Some(Box::new(runtime)),
+                runtime: Some(runtime),
                 pending: None,
                 preparing: None,
                 terminal,
@@ -1833,6 +1887,7 @@ impl Controller {
             return;
         };
         a.fail_launch(&message);
+        self.retiring.insert(id.to_string());
         self.dirty = true;
     }
     /// The checks a raid owner's run passes before anything is allocated:
@@ -3117,6 +3172,10 @@ impl Controller {
                         self.dirty = true;
                     }
                     Event::Failed(e) => {
+                        self.retiring.insert(id.clone());
+                        if let Some(runtime) = &mut a.runtime {
+                            let _ = runtime.send(Command::Stop);
+                        }
                         a.launch_manifest = None;
                         a.record.state = "failed".into();
                         a.record.detail = Some(bounded(&e));
@@ -3125,6 +3184,7 @@ impl Controller {
                         self.dirty = true;
                     }
                     Event::Stopped { exit_code } => {
+                        self.retiring.insert(id.clone());
                         a.launch_manifest = None;
                         a.exporting = None;
                         if a.record.identity.is_none() {
@@ -3159,6 +3219,8 @@ impl Controller {
                 }
             }
             if runtime_ended {
+                self.lost_host_jobs(&id);
+                self.retiring.remove(&id);
                 for c in &mut self.connections {
                     if matches!(&c.role, Role::Sandbox(session) if session == &id) {
                         c.dead = true;
@@ -3409,9 +3471,34 @@ impl Drop for Controller {
                 let _ = runtime.send(Command::Stop);
             }
         }
-        // Scope release is a handshake with this pump. Joining a worker first
-        // would strand its Leave until timeout and keep storage locked.
-        self.scopes.shutdown(&self.state);
+        if matches!(self.backend, RuntimeBackend::Supervised) {
+            self.scopes.begin_shutdown();
+            let deadline = Instant::now() + crate::supervised::SHUTDOWN_TIMEOUT;
+            loop {
+                self.scopes.tick(&self.state);
+                let mut pending = false;
+                for a in self.sessions.values_mut() {
+                    if let Some(runtime) = &mut a.runtime {
+                        while runtime.poll().is_some() {}
+                        pending |= !runtime.released();
+                    }
+                }
+                if !pending && self.scopes.drained() || Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // Kill every remaining child before any destructor can reap one.
+            for a in self.sessions.values_mut() {
+                if let Some(runtime) = &mut a.runtime {
+                    runtime.abort();
+                }
+            }
+            self.scopes.abort();
+        } else {
+            // Temporary Local/test workers may wait on the scope Leave pump.
+            self.scopes.shutdown(&self.state);
+        }
         for (_, mut a) in std::mem::take(&mut self.sessions) {
             a.runtime.take();
             // What this goblin held of its resources went with its runtime.
@@ -3428,6 +3515,7 @@ impl Drop for Controller {
 
 #[cfg(test)]
 mod tests {
+    mod supervised;
     use super::*;
 
     fn policy_fixture(configuration: &str, targets: &[&str]) -> Policy {
@@ -3939,38 +4027,14 @@ mod tests {
     }
     #[test]
     fn retained_terminal_output_does_not_reserve_names_history_or_live_capacity() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        struct Retained {
-            fake: goblins_runtime::Fake,
-            released: Arc<AtomicBool>,
-        }
-        impl Runtime for Retained {
-            fn send(&mut self, command: Command) -> std::result::Result<(), Command> {
-                self.fake.send(command)
-            }
-            fn poll(&mut self) -> Option<Event> {
-                self.fake.poll()
-            }
-            fn released(&self) -> bool {
-                self.released.load(Ordering::SeqCst)
-            }
-            fn ended(&self) -> bool {
-                false
-            }
-        }
+        use std::sync::atomic::Ordering;
         let mut d = daemon();
         let path = d.state.clone();
         let id = session_with_results_id(&mut d, "retained", vec![]);
         let (fake, sender, _) = goblins_runtime::Fake::new();
-        let released = Arc::new(AtomicBool::new(false));
+        let released = fake.release_flag();
         let a = d.sessions.get_mut(&id).unwrap();
-        a.runtime = Some(Box::new(Retained {
-            fake,
-            released: released.clone(),
-        }));
+        a.runtime = Some(Box::new(fake));
         a.record.agent_name = "kid".into();
         a.record.state = "stopped".into();
         let record = line_record(a, None);
@@ -4403,6 +4467,88 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
+    #[test]
+    fn c4_runtime_exit_finishes_registered_host_jobs() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let state = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.set_policy(host_policy_fixture("shell", &[]));
+        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        c.id = d.number();
+        c.initialized = true;
+        d.dispatch(&mut c, rpc::Call { jsonrpc:"2.0".into(), id:Some(json!(7)), method:"permissions.request".into(), params:json!({"kind":"host-command","reason":"test","host":{"argv":["sleep","300"],"cwd":"/work","detach":true}}) });
+        let Some(Command::PrepareHostJob { request, .. }) = received.lock().unwrap().pop_front()
+        else {
+            panic!("missing preparation")
+        };
+        d.connections.push(c);
+        events
+            .send(Event::HostJobPrepared {
+                request: request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let record = d
+            .permissions
+            .iter()
+            .find(|r| r.id == request)
+            .unwrap()
+            .clone();
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: request.clone(),
+                approval: record.approval,
+                approved: true,
+            },
+            "host",
+        )
+        .unwrap();
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request)
+                .unwrap()
+                .state,
+            "running"
+        );
+        assert_eq!(d.host_jobs.len(), 1);
+        // No HostJobFinished can follow a disconnected runtime producer.
+        drop(events);
+        d.tick().unwrap();
+        assert!(d.sessions["a"].runtime.is_none());
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request)
+                .unwrap()
+                .state,
+            "cancelled"
+        );
+        assert!(d.host_jobs.is_empty());
+        assert_eq!(d.host_outcomes[&request]["status"], "cancelled");
+        assert!(d.host_outcomes[&request]["code"].is_null());
+        d.host_event(
+            "a",
+            Event::HostJobFinished {
+                request: request.clone(),
+                outcome: Ok(goblins_runtime::HostOutcome {
+                    exit_code: Some(0),
+                    ..Default::default()
+                }),
+            },
+        );
+        assert_eq!(d.host_outcomes[&request]["status"], "cancelled");
+        assert!(d.host_outcomes[&request]["code"].is_null());
+        drop(d);
+        fs::remove_dir_all(state).unwrap();
+    }
+
     #[test]
     fn host_commands_wait_for_their_directory_and_a_disconnect_releases_it() {
         let mut d = daemon();
@@ -4990,6 +5136,9 @@ mod tests {
             fn poll(&mut self) -> Option<Event> {
                 None
             }
+            fn released(&self) -> bool {
+                false
+            }
             fn ended(&self) -> bool {
                 false
             }
@@ -5148,8 +5297,11 @@ mod tests {
     }
     #[test]
     fn a_member_launch_asks_its_owner_for_a_handoff_and_starts_on_the_answer() {
+        let _forking = unix::forking();
         let mut d = daemon();
         let path = d.state.clone();
+        d.backend = RuntimeBackend::Supervised;
+        d.executable = crate::supervised::tests::executable(&d.state, "engine");
         let (owner, events, received) = raid_owner(&mut d);
         let member = run_member(&mut d, &owner, "k1");
         // Accepted: the owner is asked at once, and the member waits for it.
@@ -5233,8 +5385,11 @@ mod tests {
     }
     #[test]
     fn an_owner_that_answers_and_stops_in_one_round_still_starts_its_member() {
+        let _forking = unix::forking();
         let mut d = daemon();
         let path = d.state.clone();
+        d.backend = RuntimeBackend::Supervised;
+        d.executable = crate::supervised::tests::executable(&d.state, "engine");
         let (owner, events, _received) = raid_owner(&mut d);
         let member = run_member(&mut d, &owner, "k1");
         let handoff = handoff_fixture(None);

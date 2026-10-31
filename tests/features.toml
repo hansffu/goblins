@@ -13,7 +13,7 @@ broad = [
   "packages/mount-helper/*", "packages/supervisor-bwrap/*", "packages/daemon/src/scopes.rs", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
   "libs/supervisor/src/lib.rs", "libs/supervisor/src/manifest.rs", "libs/supervisor/src/maintenance.rs", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "packages/daemon/src/controller.rs", "libs/supervisor/src/session.rs",
-  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "libs/supervisor/src/engine.rs", "libs/supervisor/src/engine/*", "libs/supervisor/src/entry.rs", "libs/supervisor/src/supervisor_process.rs", "packages/daemon/src/supervised.rs", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
+  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "libs/supervisor/src/engine.rs", "libs/supervisor/src/engine/*", "libs/supervisor/src/entry.rs", "libs/supervisor/src/supervisor_process.rs", "packages/daemon/src/supervised.rs", "packages/daemon/src/supervised/*", "packages/daemon/src/controller/tests/*", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
   "libs/supervisor/src/config.rs",
   "libs/unix/src/lib.rs", "libs/supervisor/src/process.rs",
   "libs/supervisor/src/seccomp.rs", "libs/supervisor/src/sandbox_etc.rs",
@@ -35,7 +35,7 @@ paths = ["libs/supervisor/src/binds.rs", "libs/supervisor/src/snapshot.rs", "lib
 
 [features.lifecycle]
 description = "Daemon management, configuration, names and responsiveness"
-python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness"]
+python = ["test_daemon", "test_server", "test_cleanup", "test_configuration", "test_agent_names", "test_responsiveness", "test_supervised"]
 checks = ["rust"]
 paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "packages/daemon/src/goblin-names.txt"]
 
@@ -114,7 +114,7 @@ paths = ["emacs/*.el", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
-python = ["test_runner", "test_features", "test_dependencies", "test_terminal_support"]
+python = ["test_runner", "test_features", "test_dependencies", "test_terminal_support", "test_process_discovery"]
 checks = []
 paths = []
 

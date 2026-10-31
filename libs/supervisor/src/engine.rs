@@ -105,10 +105,20 @@ impl Engine {
         dimensions: (u16, u16),
         detached: bool,
     ) -> crate::Result<Self> {
-        let terminals = crate::terminals::Terminals::new(
-            directory.parent().ok_or("missing goblin directory")?,
-            detached,
-        )?;
+        Self::with_listener(source, directory, dimensions, detached, None)
+    }
+    pub(super) fn with_listener(
+        source: Source,
+        directory: PathBuf,
+        dimensions: (u16, u16),
+        detached: bool,
+        listener: Option<std::os::fd::OwnedFd>,
+    ) -> crate::Result<Self> {
+        let parent = directory.parent().ok_or("missing goblin directory")?;
+        let terminals = match listener {
+            Some(fd) => crate::terminals::Terminals::with_listener(parent, detached, Some(fd))?,
+            None => crate::terminals::Terminals::new(parent, detached)?,
+        };
         let host_jobs = directory.join("host-jobs");
         let published = Published::default();
         // A member's worker waits for the handoff before it builds anything.
