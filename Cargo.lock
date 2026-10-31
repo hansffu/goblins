@@ -439,6 +439,7 @@ name = "goblins-init"
 version = "0.1.0"
 dependencies = [
  "goblins-protocol",
+ "goblins-unix",
  "libc",
  "serde",
  "serde_json",

@@ -1,7 +1,9 @@
-//! Public request data only. This crate has no launcher, Nix or approval authority.
+//! Public request data and shared pure wire contracts; no launcher, Nix or approval authority.
 use serde::{Deserialize, Serialize};
 
 pub const MAX_FRAME: usize = 4096;
+/// Host exec stdio: one PTY slave or stdin, stdout and stderr.
+pub const HOST_MAX_FDS: usize = 3;
 /// Bounds on what a spawn may carry, checked by both ends.
 pub const MAX_ARGS: usize = 1024;
 pub const MAX_ENV: usize = 256;
@@ -156,6 +158,7 @@ pub fn plain_text(s: &str) -> String {
 }
 
 pub mod editor;
+pub mod init;
 pub mod messages;
 pub mod patch;
 pub mod rpc;

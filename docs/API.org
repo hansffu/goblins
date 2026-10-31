@@ -171,6 +171,8 @@ Runs a command inside a running goblin. The request must carry file descriptors 
 - Input :: ={"session", "pin", "argv", "cwd", "env", "tty", "interactive"}=. =pin= (optional) requires this exact session ID. =argv= (optional) defaults to the sandbox's =$SHELL=; otherwise 1–1024 arguments of at most 64 KiB each, without NUL. =cwd= (optional) is absolute, at most 4096 bytes. =env= is a list of at most 256 =[name, value]= pairs. =interactive= marks an explicit =-t= shell, counted in =shells=.
 - Output :: ={"code", "signal"}= when it exited, or ={"code", "message"}= when it could not be started.
 
+The host connection accepts at most three accumulated descriptors (=goblins_protocol::HOST_MAX_FDS=), including across fragmented reads; this is separate from the private supervisor transport's 240-descriptor frame limit. Exec validation also checks the canonical serialized init =spawn= command against 64 KiB, counting the allocated exec ID and JSON escaping; only a larger encoding returns =-32602= with =command too long=. This check remains after target/policy/capacity/init-availability checks and before stdio transfer or exec registration. The shared validator changes neither public framing limits nor refusal order.
+
 *** =sessions.kill_execs=
 
 Kills every exec running in a goblin. The kill is best effort: the answer means it was handed to the goblin's runtime, not that every exec has ended; each exec's own call ends when it does. A goblin whose sandbox init has gone answers =conflict=.
@@ -564,6 +566,23 @@ A communications log entry: ={"instance", "sequence", "timestamp", "kind", "acto
 ** HistoryRecord
 
 ={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "created", "updated", "stopped"}=
+
+* Private init channel (same build)
+
+The supervisor and sandbox init exchange one JSON message per inherited =SOCK_SEQPACKET= datagram with =SCM_RIGHTS= descriptors. The canonical data lives in =goblins_protocol::init= and is re-exported unchanged by =goblins_init=; this module is a private same-build contract, not a public JSON-RPC method or a grant of host authority. The daemon uses the pure =goblins_runtime::exec::validate_spawn= helper rather than constructing init messages. This helper uses the same =Command::Spawn= serializer as the supervisor and returns the original serialization diagnostic or =command too long= when the encoded message exceeds =MAX_MESSAGE= (65536 bytes); exactly 65536 bytes fits.
+
+Commands use ={"method":NAME,"params":OBJECT}= with these variants:
+- =spawn=: =id:U64= (daemon-allocated, never reused), =argv:[STRING,...]_OR_NULL= (null selects the sandbox shell), =cwd:STRING_OR_NULL=, =env:[[NAME,VALUE],...]= and =tty:BOOL=. All fields are serialized, including nulls; field order is unchanged. A tty spawn carries one PTY slave, otherwise stdin, stdout and stderr. Each command gets its own session and process group.
+- =signal=: =id:U64= and =signal:I32=, forwarding a signal to that exec's process group. The host forwarding policy remains SIGHUP, SIGINT and SIGTERM.
+- =cancel=: =id:U64= and =everything:BOOL= (default false when omitted), cancelling that exec group or every process its keeper holds, with existing graceful signals followed by SIGKILL.
+- =kill-all=: empty params, cancelling all execs while leaving the agent unaffected.
+
+Events use the same envelope:
+- =spawned=: =id:U64= and =pid:I32=.
+- =failed=: =id:U64=, =code:I32= (127 for a missing command, 126 otherwise) and =message:STRING=.
+- =exited=: =id:U64=, =code:I32_OR_NULL= and =signal:I32_OR_NULL=.
+
+The init sender's =MAX_FDS= aliases the host stdio budget of three; the unrelated supervisor frame budget remains 240. Generic =goblins_unix::ancillary= I/O has no init-message knowledge: callers supply their send limit and the helper additionally bounds its fixed ancillary storage before writing headers. Sending is nonblocking with SIGPIPE suppressed, borrows descriptors, and retains =too many descriptors= and =short message= errors. Receiving retains the existing larger fixed ancillary capacity, makes received descriptors close-on-exec, and closes every installed descriptor on data or ancillary truncation before returning =truncated message=. Host aggregate descriptor enforcement and error order remain in the controller; the Unix helper does not impose an earlier receive limit of three or mutate shared socket flags. =goblins_init= retains its transport wrappers and connected close-on-exec seqpacket pair.
 
 * Private scope channel (API 1)
 

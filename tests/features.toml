@@ -43,7 +43,7 @@ paths = ["packages/daemon/src/server.rs", "libs/supervisor/src/cleanup.rs", "pac
 description = "Command execution, signals, terminals and attachment"
 python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connected", "test_terminal_support"]
 checks = ["rust"]
-paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs"]
+paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs", "packages/daemon/src/host.rs", "libs/runtime/src/exec.rs", "libs/api/src/init.rs", "libs/unix/src/ancillary.rs"]
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"

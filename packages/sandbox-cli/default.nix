@@ -8,6 +8,7 @@ let
       ../../libs/api
       ../../libs/jsonrpc
       ../../libs/init
+      ../../libs/unix
     ];
   };
 in

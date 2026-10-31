@@ -73,7 +73,12 @@ impl Client {
         let frame = rpc::encode(&rpc::request(id.clone(), method, params))?;
         self.stream.set_write_timeout(Some(rpc::TIMEOUT))?;
         // One message: the descriptors arrive with the request's first byte.
-        goblins_init::send(self.stream.as_raw_fd(), &frame, fds)?;
+        goblins_unix::ancillary::send(
+            self.stream.as_raw_fd(),
+            &frame,
+            fds,
+            goblins_protocol::HOST_MAX_FDS,
+        )?;
         Ok(id)
     }
     /// The connection itself, for a caller that keeps it open (an exec).
@@ -175,4 +180,49 @@ pub fn decision<'a>(line: &str, snapshot: &'a Snapshot) -> Option<(&'a Permissio
         .iter()
         .find(|p| p.approval == token && p.state == "pending")
         .map(|p| (p, action == "approve"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::fd::AsRawFd;
+
+    #[test]
+    fn host_client_refuses_four_descriptors_before_sending() {
+        let _no_forks = goblins_unix::no_forks();
+        let (stream, peer) = UnixStream::pair().unwrap();
+        let mut client = Client {
+            instance: "test".into(),
+            features: vec![],
+            stream,
+            next: 1,
+        };
+        let (_reader, writer) = goblins_unix::pipe().unwrap();
+        let fd = writer.as_raw_fd();
+        assert_eq!(
+            client
+                .send_with_fds("sessions.exec", json!({"session":"a"}), &[fd; 4])
+                .unwrap_err()
+                .to_string(),
+            "too many descriptors"
+        );
+        assert_eq!(
+            client.next, 2,
+            "preserve request-id consumption on failed sends"
+        );
+        assert!(unsafe { libc::fcntl(fd, libc::F_GETFD) } >= 0);
+        assert_eq!(
+            goblins_unix::ancillary::receive(peer.as_raw_fd(), &mut [0; 1024], libc::MSG_DONTWAIT)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        client
+            .send_with_fds("sessions.exec", json!({"session":"a"}), &[fd; 3])
+            .unwrap();
+        let (n, fds) =
+            goblins_unix::ancillary::receive(peer.as_raw_fd(), &mut [0; 1024], 0).unwrap();
+        assert!(n > 0);
+        assert_eq!(fds.len(), 3);
+    }
 }

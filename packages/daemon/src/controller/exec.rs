@@ -8,12 +8,12 @@ use super::Fault;
 use super::capacity;
 use super::conflict;
 use super::params;
-use goblins_init as init;
 use goblins_jsonrpc as rpc;
 use goblins_runtime::Command;
 use goblins_runtime::Event;
 use goblins_runtime::SpawnKind;
 use goblins_runtime::Stdio;
+use goblins_runtime::exec;
 use goblins_runtime::policy::Operation;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -154,18 +154,9 @@ impl Controller {
         if !self.sessions[&session].init {
             return Err((-32009, "the sandbox has no init channel".to_string()));
         }
-        // What init would be sent must fit its message limit.
-        let command = init::Command::Spawn {
-            id,
-            argv: p.argv.clone(),
-            cwd: p.cwd.clone(),
-            env: p.env.clone(),
-            tty: p.tty,
-        };
-        let bytes = serde_json::to_vec(&command).map_err(|e| invalid(&e.to_string()))?;
-        if bytes.len() > init::MAX_MESSAGE {
-            return Err(invalid("command too long"));
-        }
+        // Validate the canonical init encoding before moving stdio.
+        exec::validate_spawn(id, &p.argv, &p.cwd, &p.env, p.tty)
+            .map_err(|message| invalid(&message))?;
         let mut fds = fds.into_iter().map(Into::into);
         let stdio = match (fds.next(), fds.next(), fds.next()) {
             (Some(tty), None, None) => Stdio::Tty(tty),
@@ -208,7 +199,7 @@ impl Controller {
         let signal = (call.id.is_none() && call.method == "exec.signal")
             .then(|| params::<Signal>(call.params).ok())
             .flatten()
-            .filter(|s| init::forwardable(s.signal));
+            .filter(|s| exec::forwardable(s.signal));
         match signal {
             Some(Signal { signal }) => self.exec_command(id, Command::Signal { id, signal }),
             None => c.dead = true,

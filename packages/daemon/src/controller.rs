@@ -450,7 +450,7 @@ impl Connection {
         };
         let mut bytes = [0; 16384];
         let waiting = self.waiting.is_some() && self.exec.is_none();
-        match goblins_init::receive(peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT) {
+        match unix::ancillary::receive(peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT) {
             Ok((0, _)) => {
                 self.dead = true;
                 return None;
@@ -460,7 +460,9 @@ impl Connection {
                 if matches!(self.role, Role::Host) {
                     self.fds.extend(fds);
                 }
-                if waiting || self.input.len() + n > 32768 || self.fds.len() > goblins_init::MAX_FDS
+                if waiting
+                    || self.input.len() + n > 32768
+                    || self.fds.len() > goblins_protocol::HOST_MAX_FDS
                 {
                     self.dead = true;
                     return None;
@@ -3705,7 +3707,7 @@ mod tests {
         let (a, b) = unix::pipe().unwrap();
         let (cut, rest) = frame.split_at(100);
         let fds = [a.as_raw_fd(), b.as_raw_fd(), b.as_raw_fd()];
-        goblins_init::send(peer.as_raw_fd(), cut, &fds).unwrap();
+        unix::ancillary::send(peer.as_raw_fd(), cut, &fds, goblins_protocol::HOST_MAX_FDS).unwrap();
         d.service(&mut c);
         assert_eq!(c.fds.len(), 3);
         assert!(c.exec.is_none());
@@ -5036,6 +5038,97 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
+    #[test]
+    fn host_descriptor_budget_accumulates_across_reads_and_closes_on_drop() {
+        let _no_forks = unix::no_forks();
+        let (mut c, peer) = connection(Role::Host);
+        let (reader, writer) = unix::pipe().unwrap();
+        unix::nonblocking(reader.as_raw_fd()).unwrap();
+        let frame = rpc::encode(&rpc::request(json!(1), "initialize", json!({"api":1}))).unwrap();
+        let (first, rest) = frame.split_at(8);
+        for bytes in [first, rest] {
+            unix::ancillary::send(
+                peer.as_raw_fd(),
+                bytes,
+                &[writer.as_raw_fd(); 2],
+                goblins_protocol::HOST_MAX_FDS,
+            )
+            .unwrap();
+            assert!(c.read().is_none());
+        }
+        assert!(
+            c.dead,
+            "the fourth accumulated descriptor must close a host connection"
+        );
+        assert_eq!(
+            c.fds.len(),
+            4,
+            "retain owned descriptors until connection cleanup"
+        );
+        drop(writer);
+        drop(c);
+        assert_eq!(
+            File::from(reader).read(&mut [0]).unwrap(),
+            0,
+            "rejected descriptors leaked"
+        );
+    }
+
+    #[test]
+    fn exec_size_refusal_preserves_error_order_id_consumption_and_fd_ownership() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let params = json!({"session":"a", "argv":["x".repeat(65536)]});
+        for case in 0..4 {
+            let (mut c, _peer) = connection(Role::Host);
+            c.initialized = true;
+            let mut readers = Vec::new();
+            for _ in 0..if case == 0 { 2 } else { 3 } {
+                let (reader, writer) = unix::pipe().unwrap();
+                unix::nonblocking(reader.as_raw_fd()).unwrap();
+                readers.push(std::fs::File::from(reader));
+                c.fds.push(writer);
+            }
+            let before = d.number();
+            let mut value = params.clone();
+            if case == 1 {
+                value["session"] = json!("missing");
+            }
+            d.sessions.get_mut("a").unwrap().init = case != 2;
+            let error = d.exec_start(&mut c, json!(5), value).unwrap_err();
+            match case {
+                0 => assert_eq!(
+                    error,
+                    (
+                        -32602,
+                        "pass a PTY slave with tty, or stdin, stdout and stderr".into()
+                    )
+                ),
+                1 => assert_eq!(error, missing()),
+                2 => assert_eq!(error, (-32009, "the sandbox has no init channel".into())),
+                _ => assert_eq!(error, (-32602, "command too long".into())),
+            }
+            // Only checks after number() consume an exec id, as before.
+            assert_eq!(d.number() - before, if case >= 2 { 2 } else { 1 });
+            assert!(c.fds.is_empty());
+            assert!(c.exec.is_none() && c.waiting.is_none());
+            assert!(d.execs.is_empty());
+            assert!(received.lock().unwrap().is_empty());
+            for reader in &mut readers {
+                assert_eq!(reader.read(&mut [0]).unwrap(), 0, "refused stdio leaked");
+            }
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn exec_passes_a_pty_or_three_descriptors_and_runs_the_shell_without_argv() {
         let mut d = daemon();

@@ -230,6 +230,7 @@ pub fn no_forks() -> std::sync::RwLockReadGuard<'static, ()> {
     FORKS.read().unwrap_or_else(|e| e.into_inner())
 }
 
+pub mod ancillary;
 pub mod cleanup;
 
 /// Read a bounded regular file without blocking on a FIFO or device.
