@@ -1,5 +1,4 @@
 //! Linux runtime engine and inherited-socket executable dispatch.
-//! Local remains during the phase 6 cutover.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 mod binds;
 mod catalog;
@@ -10,7 +9,6 @@ mod docker;
 mod engine;
 mod entry;
 mod evaluator;
-mod local;
 mod logging;
 mod maintenance;
 mod network;
@@ -25,7 +23,6 @@ mod scope_keeper;
 mod scope_process;
 mod supervisor_process;
 pub use entry::main as control_main;
-pub use local::Local;
 mod scope_storage;
 mod seccomp;
 mod server_log;

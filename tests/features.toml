@@ -13,7 +13,7 @@ broad = [
   "packages/mount-helper/*", "packages/supervisor-bwrap/*", "packages/daemon/src/scopes.rs", "libs/api/*", "libs/jsonrpc/*", "libs/init/*", "libs/runtime/*", "libs/unix/*",
   "libs/supervisor/src/lib.rs", "libs/supervisor/src/logging.rs", "libs/supervisor/src/preflight.rs", "libs/supervisor/src/maintenance.rs", "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
   "packages/daemon/src/controller.rs", "libs/supervisor/src/session.rs",
-  "libs/supervisor/src/worker.rs", "libs/supervisor/src/local.rs", "libs/supervisor/src/engine.rs", "libs/supervisor/src/engine/*", "libs/supervisor/src/entry.rs", "libs/supervisor/src/supervisor_process.rs", "packages/daemon/src/supervised.rs", "packages/daemon/src/supervised/*", "packages/daemon/src/controller/tests/*", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
+  "libs/supervisor/src/worker.rs", "libs/supervisor/src/engine.rs", "libs/supervisor/src/engine/*", "libs/supervisor/src/entry.rs", "libs/supervisor/src/supervisor_process.rs", "packages/daemon/src/supervised.rs", "packages/daemon/src/supervised/*", "packages/daemon/src/controller/tests/*", "libs/supervisor/src/relay.rs", "packages/daemon/src/controller/policy.rs",
   "libs/supervisor/src/config.rs",
   "libs/unix/src/lib.rs", "libs/supervisor/src/process.rs",
   "libs/supervisor/src/seccomp.rs", "libs/supervisor/src/sandbox_etc.rs",
@@ -21,7 +21,7 @@ broad = [
   "packages/daemon/src/main.rs", "packages/daemon/src/lib.rs", "packages/daemon/src/maintenance.rs",
   "packages/daemon/src/cli.rs", "packages/sandbox-cli/src/main.rs", "packages/sandbox-cli/src/cli.rs",
   "tests/daemon_support.py", "tests/build_support.py", "tests/support.py",
-  "tests/terminal_support.py", "tests/run.py", "tests/tasks.py", "tests/features.toml",
+  "tests/terminal_support.py", "tests/run.py", "tests/tasks.py", "tests/rust_tests.py", "tests/features.toml",
   "tests/checks.nix", "justfile", "nix/lib.nix", "nix/builders/mk-goblin.nix",
   "nix/builders/mk-goblins.nix", "nix/internal/*", "packages/*/Cargo.toml", "libs/*/Cargo.toml",
 ]
@@ -114,7 +114,7 @@ paths = ["emacs/*.el", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
-python = ["test_runner", "test_features", "test_dependencies", "test_terminal_support", "test_process_discovery"]
+python = ["test_runner", "test_features", "test_dependencies", "test_rust_tests", "test_terminal_support", "test_process_discovery"]
 checks = []
 paths = []
 

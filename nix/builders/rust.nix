@@ -4,6 +4,7 @@
   source,
   libs,
   testPackages ? [ ],
+  checkEnv ? { },
 }:
 let
   root = ../../.;
@@ -40,6 +41,14 @@ pkgs.rustPlatform.buildRustPackage {
       }
     fi
   '') members;
+  # Executable fixtures are supplied only to tests, never compiled as library
+  # dependencies or embedded into production output through env! constants.
+  preCheck = pkgs.lib.concatStringsSep "\n" (
+    pkgs.lib.mapAttrsToList (name: value: "export ${name}=${pkgs.lib.escapeShellArg (toString value)}") checkEnv
+  );
+  postCheck = pkgs.lib.optionalString (checkEnv != { }) (
+    "unset " + pkgs.lib.concatStringsSep " " (builtins.attrNames checkEnv)
+  );
   cargoLock.lockFile = ../../Cargo.lock;
   cargoBuildFlags = [
     "-p"

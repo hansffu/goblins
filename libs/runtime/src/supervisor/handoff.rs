@@ -418,6 +418,7 @@ impl Decoder {
                     directory: p.take("directory")?,
                     dimensions: p.take("dimensions")?,
                     detached: p.take("detached")?,
+                    payload_nofile: p.take("payload_nofile")?,
                     legacy_listener: p
                         .0
                         .remove("legacy_listener")

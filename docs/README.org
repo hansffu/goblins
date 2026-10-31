@@ -89,6 +89,8 @@ The runner defaults to two spawned worker processes; =-j 4= opts in to four. Ord
 
 Fixture builds are serialized across workers, using one Nix job with two cores. The Rust workspace and ignored Session test driver are built once before parallel execution, sharing the Rust suite's Cargo feature selection and artifacts. The runner defaults to two Cargo build jobs unless =CARGO_BUILD_JOBS= is already set; =just test-rust= limits test threads to two.
 
+=just test-rust= runs =tests/rust_tests.py=: it first serially builds the production =goblins-supervisor-bwrap= executable, selects its exact absolute Cargo JSON artifact and exports =GOBLINS_TEST_SUPERVISOR_EXECUTABLE= only for the subsequent workspace test invocation. Real actor tests execute that binary through the ordinary inherited-control child backend; missing, relative or nonexecutable pins fail, with no PATH/sibling fallback, skipped case or recursive Cargo invocation inside Rust tests. For a targeted suite, use =python3 tests/rust_tests.py -p goblins-controller TEST_NAME -- --test-threads=2=. Direct =cargo test= callers must first build the supervisor and supply the same absolute fixture variable. Standalone Nix daemon checks inject an independently built production executable only through the builder's check environment and clear it afterward; it is never compiled into the installed daemon. Daemon source/test-package lists and all normal/dev/build/optional/target Cargo dependency routes exclude the supervisor and init implementation libraries, enforced transitively by the dependency tests.
+
 Ordinary API and terminal tests use an offline Fish fixture with only core utilities, grep and sed. Exec tests use an offline Bash fixture. Three exec cases that only run independent commands share a goblin; cases that stop or replace agents retain fresh sessions. The real connected-shell and packaging checks still use the complete demo. Existing tests and assertions are retained.
 
 Session startup roots the initial closure listing once and uses its registered Nix references to avoid redundant per-path roots. This only protects outputs from GC: the sandbox's visible paths are still computed from its declared packages, and later grants and unrelated binds keep their own roots. Host command waits wake on process exit/output while keeping bounded cancellation.
@@ -119,7 +121,7 @@ The development shell includes pyte for fullscreen terminal regression tests. Te
 | =libs/jsonrpc/= | JSON-RPC values, envelopes, framing and deadlines |
 | =libs/init/= | Private init protocol and descriptor transport |
 | =libs/runtime/= | Internal runtime contract, policy and lease data |
-| =libs/supervisor/= | Private Linux runtime implementation with Local and temporary facades |
+| =libs/supervisor/= | Private Linux runtime engine and inherited-socket supervisor/scope/one-shot modes |
 | =libs/unix/= | Shared POSIX descriptor and filesystem helpers |
 | =packages/sandbox-cli/=                    | Restricted Rust sandbox request executable                               |
 | =packages/daemon/=                | Rust event pump, authority and tui/run frontend            |

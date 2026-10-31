@@ -27,6 +27,8 @@ pub struct SupervisorStart {
     pub directory: PathBuf,
     pub dimensions: (u16, u16),
     pub detached: bool,
+    /// Original daemon soft limit, absent when it was not raised.
+    pub payload_nofile: Option<u64>,
     /// A prebound legacy frontend listener; the daemon never accepts from it.
     pub legacy_listener: Option<Fd>,
     pub handoff: Option<Box<Handoff>>,
@@ -180,6 +182,7 @@ impl Encoder {
                 b.value("directory", &start.directory)?;
                 b.value("dimensions", &start.dimensions)?;
                 b.value("detached", &start.detached)?;
+                b.value("payload_nofile", &start.payload_nofile)?;
                 // Precede handoff batching so its first-frame allowance also
                 // accounts for this descriptor and the member scope handle.
                 let listener = start
@@ -286,6 +289,9 @@ fn valid_start(start: &SupervisorStart) -> io::Result<()> {
     }
     if !start.directory.is_absolute() || !matches!(start.dimensions, (1..=1000, 1..=1000)) {
         return Err(invalid("invalid supervisor startup parameters"));
+    }
+    if matches!(start.payload_nofile, Some(0 | u64::MAX)) {
+        return Err(invalid("invalid payload descriptor limit"));
     }
     if matches!(start.source, Source::Member { .. }) != start.handoff.is_some() {
         return Err(invalid(

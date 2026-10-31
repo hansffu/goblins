@@ -76,6 +76,8 @@ Both host and sandbox expose a command named =goblins=, but they execute differe
 | =goblins-codex=         | Codex adapter: owns the goblin's conversation, follows the attached terminal, delivers reminders | [[file:../../packages/adapter-codex/src/][packages/adapter-codex/src/]]      |
 | =goblins-claude=        | Claude adapter: wakeup ledger for its hooks and plugin monitor, activity reports | [[file:../../packages/adapter-claude/src/][packages/adapter-claude/src/]]     |
 
+The daemon links only public/shared contracts, runtime declarations and Unix helpers. Every real runtime uses the pinned supervisor executable; no Local adapter, debug backend escape hatch, supervisor library or init transport library is linked into the daemon, including its test dependencies. Controller actor tests use a separately built production supervisor executable as a check-only fixture, while policy fixtures use Fake; this does not put fixture paths into the installed daemon or add implementation sources to its Nix fileset.
+
 A Codex goblin runs the App Server and =goblins-codex= as its main command, without a terminal; each attach starts Codex's own terminal as a client of that server ([[file:../adr/0016-server-and-client-goblins.md][ADR 0016]]).
 
 The protocol crate has no Nix, launch or approval authority. The sandbox client depends on that protocol rather than the controller/helper. Nix builders adapt =agent-sandbox.nix= specifications for the Rust runtime; the runtime uses Bubblewrap and pasta rather than its static Python launcher.

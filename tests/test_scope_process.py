@@ -3,6 +3,7 @@ import array
 import fcntl
 import json
 import os
+import resource
 from pathlib import Path
 import select
 import signal
@@ -27,7 +28,7 @@ class ScopeProcessTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
 
-    def spawn(self, stream, extra=(), wrong_parent=False):
+    def spawn(self, stream, extra=(), wrong_parent=False, nofile=None):
         pid = os.fork()
         if pid == 0:
             try:
@@ -42,6 +43,8 @@ class ScopeProcessTests(unittest.TestCase):
                 for fd in extra:
                     # Protect it from fd 3's replacement above.
                     os.dup2(fd, 100 + fd, inheritable=True)
+                if nofile is not None:
+                    resource.setrlimit(resource.RLIMIT_NOFILE, nofile)
                 env = {**os.environ, "XDG_CACHE_HOME": str(self.root / "cache")}
                 os.execve(self.executable, [self.executable], env)
             finally:
@@ -214,7 +217,7 @@ class ScopeProcessTests(unittest.TestCase):
             "workspace": None, "cwd": None, "state": str(self.root),
             "history": None, "recreate": None, "sequence": 1},
             "directory": str(self.root / "runtime"), "dimensions": [24, 80],
-            "detached": True, "handoff": None}
+            "detached": True, "payload_nofile": None, "handoff": None}
         params.update(changes)
         return params
 
@@ -235,16 +238,93 @@ class ScopeProcessTests(unittest.TestCase):
                 self.assertFalse((self.root / "terminal.sock").exists())
                 self.assertFalse((self.root / "runtime").exists())
 
+    def test_supervisor_rejects_physical_payload_limits_before_engine_or_adoption(self):
+        parent_limits = resource.getrlimit(resource.RLIMIT_NOFILE)
+        for limit in (257, 513, 128):
+            with self.subTest(limit=limit):
+                control, child = self.pair()
+                pid = self.spawn(child, nofile=(256, 512))
+                child.close()
+                scope, scope_child = self.pair()
+                resources = self.root / f"owned-{limit}"
+                resources.mkdir(mode=0o700)
+                (resources / "held").write_text("sender-owned")
+                with (resources / ".gc-lease").open("w+b") as owner, \
+                     (resources / ".gc-lease").open("r+b") as transfer:
+                    # Independent shared OFDs retain sender ownership until
+                    # confirmed child death; the receiver must close its copy.
+                    fcntl.flock(owner, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    fcntl.flock(transfer, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    workspace = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                    try:
+                        params = self.supervisor_start(payload_nofile=limit,
+                            source=dict(kind="Member", scope={"$fd": 0}, owner_scope=None,
+                                        manifest=str(self.root / "absent.json"), configuration="probe",
+                                        auto={}, state=str(self.root), history=None),
+                            handoff=dict(transfer=99, count=1, workspace={"$fd": 1},
+                                         working_directory=None, dev_shell="null", docker=False,
+                                         leases=[dict(directory=str(resources), lock={"$fd": 2})],
+                                         more=False))
+                        self.send(control, "SupervisorStart", params,
+                                  [scope_child.fileno(), workspace, transfer.fileno()])
+                    finally:
+                        os.close(workspace)
+                    scope_child.close()
+                    transfer.close()
+                    if limit == 128:
+                        messages = self.supervisor_messages(control)
+                        self.assertEqual(self.reap(pid), 0)
+                        self.assertEqual([m["params"] for m in messages if m["method"] == "Adopted"],
+                                         [dict(transfer=99)])
+                        failure = [m["params"]["error"] for m in messages if m["method"] == "Event.Failed"]
+                        self.assertEqual(failure, [
+                            f"cannot open configuration {self.root / 'absent.json'}: No such file or directory (os error 2)"])
+                        self.assertEqual([m["method"] for m in messages].count("Released"), 1)
+                    else:
+                        self.assertEqual(self.reap(pid), 1)
+                        control.settimeout(3)
+                        self.assertEqual(control.recv(1), b"", "invalid startup emitted an ACK/event")
+                    scope.settimeout(3)
+                    self.assertEqual(scope.recv(1), b"", "receiver retained the scope capability")
+                    self.assertEqual((resources / "held").read_text(), "sender-owned")
+                    # This upgrade fails while an independent receiver lease
+                    # survives; it succeeds only after all transferred copies close.
+                    fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if limit != 128:
+                    self.assertFalse((self.root / "runtime").exists())
+                    self.assertFalse((self.root / "terminal.sock").exists())
+                    self.assertFalse((self.root / "cache").exists())
+                self.assertEqual(resource.getrlimit(resource.RLIMIT_NOFILE), parent_limits)
+
     def test_supervisor_reports_worker_failure_and_releases_before_exit(self):
+        parent_limits = resource.getrlimit(resource.RLIMIT_NOFILE)
+        for limit in (None, 128):
+            with self.subTest(limit=limit):
+                self.worker_failure_control(limit, parent_limits)
+
+    def worker_failure_control(self, limit, parent_limits):
         control, child = self.pair()
-        pid = self.spawn(child)
+        pid = self.spawn(child, nofile=(256, 512))
         child.close()
-        self.send(control, "SupervisorStart", self.supervisor_start())
+        self.send(control, "SupervisorStart", self.supervisor_start(payload_nofile=limit))
+        messages = self.supervisor_messages(control)
+        self.assertEqual(self.reap(pid), 0)
+        methods = [message["method"] for message in messages]
+        self.assertEqual(methods.count("Event.Failed"), 1)
+        self.assertEqual(methods.count("Event.Stopped"), 1)
+        self.assertEqual(methods.count("Released"), 1)
+        self.assertLess(methods.index("Event.Failed"), methods.index("Event.Stopped"))
+        self.assertLess(methods.index("Event.Stopped"), methods.index("Released"))
+        failure = next(message["params"] for message in messages if message["method"] == "Event.Failed")
+        self.assertEqual(failure["error"],
+                         f"cannot open configuration {self.root / 'absent.json'}: No such file or directory (os error 2)")
+        self.assertEqual(resource.getrlimit(resource.RLIMIT_NOFILE), parent_limits)
+
+    def supervisor_messages(self, control):
         control.settimeout(20)
         data = bytearray()
         while chunk := control.recv(65536):
             data.extend(chunk)
-        self.assertEqual(self.reap(pid), 0)
         messages = []
         while data:
             header, body = bytes(data).split(b"\r\n\r\n", 1)
@@ -254,14 +334,7 @@ class ScopeProcessTests(unittest.TestCase):
             self.assertGreaterEqual(len(body), length)
             messages.append(json.loads(body[:length]))
             data = bytearray(body[length:])
-        methods = [message["method"] for message in messages]
-        self.assertEqual(methods.count("Event.Failed"), 1)
-        self.assertEqual(methods.count("Event.Stopped"), 1)
-        self.assertEqual(methods.count("Released"), 1)
-        self.assertLess(methods.index("Event.Failed"), methods.index("Event.Stopped"))
-        self.assertLess(methods.index("Event.Stopped"), methods.index("Released"))
-        failure = next(message["params"] for message in messages if message["method"] == "Event.Failed")
-        self.assertIn("absent.json", failure["error"])
+        return messages
 
     def test_wrong_first_mode_message_disposes_its_descriptors(self):
         control, child = self.pair()

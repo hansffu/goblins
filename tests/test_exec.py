@@ -69,6 +69,10 @@ class ExecTests(unittest.TestCase):
             if session["state"] in ("starting", "running"):
                 self.d.rpc.call("sessions.stop", {"session": session["id"]})
         self.d.wait(lambda: all(not (self.d.state / s["id"] / "resources").exists() for s in sessions))
+        # Resource cleanup precedes runtime release and live-name availability.
+        for session in sessions:
+            record = self.d.wait(lambda: self.d.record(session["id"]))
+            self.d.wait_record_released(record["id"])
 
     def command(self, *args):
         return [str(self.d.app), "--state-dir", str(self.d.state), "exec", *args]

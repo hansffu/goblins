@@ -1,5 +1,5 @@
-//! Shared runtime engine: supervisor control and the temporary Local adapter
-//! dispatch to the same worker, sandbox, host jobs and terminal implementation.
+//! Runtime engine inside the supervisor, dispatching to the worker, sandbox,
+//! host jobs and terminal implementation.
 use crate::session::Inheritance;
 use crate::worker::Endpoints;
 use crate::worker::Worker;
@@ -101,14 +101,6 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
-    pub fn start(
-        source: Source,
-        directory: PathBuf,
-        dimensions: (u16, u16),
-        detached: bool,
-    ) -> crate::Result<Self> {
-        Self::with_listener(source, directory, dimensions, detached, None)
-    }
     pub(super) fn with_listener(
         source: Source,
         directory: PathBuf,

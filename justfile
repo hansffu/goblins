@@ -41,7 +41,7 @@ emacs-daemon *args:
 test: test-rust test-python test-emacs
 
 test-rust:
-    cargo test --workspace --locked -j 2 -- --test-threads=2
+    python3 tests/rust_tests.py
 
 [positional-arguments]
 test-python *args:

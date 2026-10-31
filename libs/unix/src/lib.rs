@@ -202,6 +202,41 @@ pub fn raise_descriptor_limit() {
     }
 }
 
+/// Snapshot the original soft limit without querying mutable kernel state.
+pub fn saved_payload_descriptor_limit() -> Option<u64> {
+    let original = PAYLOAD_NOFILE.load(std::sync::atomic::Ordering::Relaxed);
+    (original != 0).then_some(original)
+}
+
+/// Install inherited payload metadata without changing ambient kernel limits.
+/// Validate completely before replacing existing metadata, including on error.
+pub fn install_payload_descriptor_limit(original: Option<u64>) -> std::io::Result<()> {
+    if let Some(original) = original {
+        let invalid = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid payload descriptor limit",
+            )
+        };
+        let value = libc::rlim_t::try_from(original).map_err(|_| invalid())?;
+        if value == 0 || value == libc::RLIM_INFINITY {
+            return Err(invalid());
+        }
+        let mut ambient = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut ambient) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if value > ambient.rlim_cur || value > ambient.rlim_max {
+            return Err(invalid());
+        }
+    }
+    PAYLOAD_NOFILE.store(original.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
 /// The limit to restore in a sandbox payload, if the server raised its own.
 pub fn payload_descriptor_limit() -> Option<libc::rlimit> {
     let original = PAYLOAD_NOFILE.load(std::sync::atomic::Ordering::Relaxed);
@@ -295,3 +330,6 @@ mod read_tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(test)]
+mod nofile_tests;

@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import resource
 import signal
 import socket
 import unittest
@@ -50,6 +51,59 @@ class SupervisedTests(unittest.TestCase):
 
     def assert_reaped(self, pid):
         self.d.wait(lambda: not Path(f"/proc/{pid}").exists())
+
+    def test_former_debug_local_variable_cannot_select_an_inprocess_runtime(self):
+        env = {**os.environ, "GOBLINS_DEBUG_LOCAL_RUNTIME": "1"}
+        self.d = Daemon(self.application, env=env)
+        self.addCleanup(self.d.close)
+        self.assertEqual(self.d.env["GOBLINS_DEBUG_LOCAL_RUNTIME"], "1")
+        # tests/run.py supplies a freshly built Cargo debug controller; direct
+        # packaged invocations additionally check release behavior. Source
+        # boundary tests reject the retired debug-only selector independently.
+        if controller := os.environ.get("GOBLINS_LOCAL_CONTROLLER"):
+            self.assertEqual(Path(f"/proc/{self.d.process.pid}/exe").resolve(), Path(controller).resolve())
+        launch, supervisor = self.launch(name="always-supervised")
+        self.assertNotEqual(supervisor, self.d.process.pid)
+        terminal = self.d.terminal(launch)
+        self.addCleanup(terminal.close)
+        self.d.rpc.call("sessions.stop", {"session": launch["session"]})
+        self.d.wait(lambda: not (self.d.state / launch["session"] / "resources").exists())
+        while terminal.recv(4096):
+            pass
+        terminal.close()
+        self.assert_reaped(supervisor)
+
+    def test_foreground_supervisor_preserves_payload_nofile_and_ambient_capacity(self):
+        parent_limits = resource.getrlimit(resource.RLIMIT_NOFILE)
+        for soft in (128, 512):
+            with self.subTest(soft=soft):
+                self.d = Daemon(self.application,
+                                preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (soft, 512)))
+                self.addCleanup(self.d.close)
+                self.assertEqual(resource.prlimit(self.d.process.pid, resource.RLIMIT_NOFILE), (512, 512))
+                manifest = self.manifest(
+                    'printf "NOFILE:%s:%s\\n" "$(ulimit -Sn)" "$(ulimit -Hn)"; exec sleep 600')
+                launch, supervisor = self.launch(manifest, name=f"nofile-{soft}")
+                self.assertEqual(resource.prlimit(supervisor, resource.RLIMIT_NOFILE), (512, 512))
+                payload = self.d.get(launch["session"])["identity"]["pid"]
+                terminal = self.d.terminal(launch)
+                self.addCleanup(terminal.close)
+                output = bytearray()
+                while b"\n" not in output:
+                    chunk = terminal.recv(4096)
+                    self.assertTrue(chunk, "payload exited before reporting its limits")
+                    output.extend(chunk)
+                self.assertIn(f"NOFILE:{soft}:512".encode(), bytes(output).splitlines())
+                self.assertEqual(resource.prlimit(self.d.process.pid, resource.RLIMIT_NOFILE), (512, 512))
+                self.assertEqual(resource.prlimit(supervisor, resource.RLIMIT_NOFILE), (512, 512))
+                self.d.rpc.call("sessions.stop", {"session": launch["session"]})
+                self.d.wait(lambda: not (self.d.state / launch["session"] / "resources").exists())
+                while terminal.recv(4096):
+                    pass
+                terminal.close()
+                self.assert_reaped(supervisor)
+                self.d.wait(lambda: not Path(f"/proc/{payload}").exists())
+                self.assertEqual(resource.getrlimit(resource.RLIMIT_NOFILE), parent_limits)
 
     def test_killing_one_supervisor_fails_only_its_goblin_and_releases_leases(self):
         victim, supervisor = self.launch(name="victim")

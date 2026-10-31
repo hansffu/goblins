@@ -124,6 +124,7 @@ class DockerTests(unittest.TestCase):
         self.enable(session, terminal)
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
+        self.d.wait_record_released(self.d.record(session)["id"])
         self.assertTrue(self.d.record(session)["docker_enabled"])
         launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
                                                     "recreate": session, "rows": 24, "cols": 100})

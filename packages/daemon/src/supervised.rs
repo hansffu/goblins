@@ -87,6 +87,7 @@ impl Supervised {
                 directory,
                 dimensions,
                 detached,
+                payload_nofile: goblins_unix::saved_payload_descriptor_limit(),
                 legacy_listener: None,
                 handoff: None,
             }),

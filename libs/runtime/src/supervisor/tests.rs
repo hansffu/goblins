@@ -32,6 +32,7 @@ fn startup(source: Source, handoff: Option<Handoff>) -> Message {
         directory: "/state/session/resources".into(),
         dimensions: (37, 123),
         detached: true,
+        payload_nofile: None,
         legacy_listener: None,
         handoff: handoff.map(Box::new),
     })
@@ -463,6 +464,7 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
     else {
         unreachable!()
     };
+    start.payload_nofile = Some(128);
     start.directory = root.join("resources");
     let path = root.join("terminal.sock");
     start.legacy_listener =
@@ -483,6 +485,7 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
     else {
         panic!("start");
     };
+    assert_eq!(start.payload_nofile, Some(128));
     let listener =
         std::os::unix::net::UnixListener::from(OwnedFd::from(start.legacy_listener.unwrap()));
     let peer = std::os::unix::net::UnixStream::connect(&path).unwrap();
@@ -1334,4 +1337,47 @@ fn maintenance_rejects_bad_version_mode_fields_and_nonwritable_output_capabiliti
     let mut frame = prepared.frames.pop_front().unwrap();
     frame.fds.push(fs::File::open("/dev/null").unwrap().into());
     assert!(Decoder::default().receive(frame).is_err());
+}
+
+#[test]
+fn startup_payload_limit_is_required_nullable_and_strict() {
+    for limit in [None, Some(128)] {
+        let Message::SupervisorStart(mut start) = startup(host(), None) else {
+            unreachable!()
+        };
+        start.payload_nofile = limit;
+        roundtrip(Message::SupervisorStart(start));
+    }
+    for value in [
+        json!(0),
+        json!(u64::MAX),
+        json!(-1),
+        json!(1.5),
+        json!("128"),
+        json!(true),
+        json!([]),
+    ] {
+        let mut prepared = Encoder::default().prepare(startup(host(), None)).unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"]["payload_nofile"] = value;
+        assert!(Decoder::default().receive(frame).is_err());
+    }
+    let mut prepared = Encoder::default().prepare(startup(host(), None)).unwrap();
+    let mut frame = prepared.frames.pop_front().unwrap();
+    frame.value["params"]
+        .as_object_mut()
+        .unwrap()
+        .remove("payload_nofile");
+    assert!(Decoder::default().receive(frame).is_err());
+    for limit in [0, u64::MAX] {
+        let Message::SupervisorStart(mut start) = startup(host(), None) else {
+            unreachable!()
+        };
+        start.payload_nofile = Some(limit);
+        assert!(
+            Encoder::default()
+                .prepare(Message::SupervisorStart(start))
+                .is_err()
+        );
+    }
 }

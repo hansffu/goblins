@@ -674,8 +674,6 @@ fn random_name<'a>(
 #[derive(Clone, Copy)]
 enum RuntimeBackend {
     Supervised,
-    #[cfg(all(debug_assertions, not(test)))]
-    Local,
     #[cfg(test)]
     Fake,
 }
@@ -687,12 +685,6 @@ impl RuntimeBackend {
         }
         #[cfg(not(test))]
         {
-            #[cfg(debug_assertions)]
-            if std::env::var_os("GOBLINS_DEBUG_LOCAL_RUNTIME").as_deref()
-                == Some(std::ffi::OsStr::new("1"))
-            {
-                return Self::Local;
-            }
             Self::Supervised
         }
     }
@@ -1728,16 +1720,6 @@ impl Controller {
             RuntimeBackend::Supervised => Box::new(
                 Supervised::start(
                     self.executable.clone(),
-                    source,
-                    directory.join("resources"),
-                    (p.rows, p.cols),
-                    p.detached,
-                )
-                .map_err(|e| (-32010, e.to_string()))?,
-            ),
-            #[cfg(all(debug_assertions, not(test)))]
-            RuntimeBackend::Local => Box::new(
-                goblins_supervisor::Local::start(
                     source,
                     directory.join("resources"),
                     (p.rows, p.cols),
@@ -3503,7 +3485,7 @@ impl Drop for Controller {
             }
             self.scopes.abort();
         } else {
-            // Temporary Local/test workers may wait on the scope Leave pump.
+            // Fake policy fixtures keep their test scope Leave pump.
             self.scopes.shutdown(&self.state);
         }
         for (_, mut a) in std::mem::take(&mut self.sessions) {
@@ -5500,6 +5482,14 @@ mod tests {
         let detail = a.record.detail.as_deref().unwrap();
         assert!(!detail.contains("hand over"), "{detail}");
         assert!(!detail.contains("given up"), "{detail}");
+        assert_eq!(
+            detail,
+            format!(
+                "cannot open configuration {}: {}",
+                path.join("current.json").display(),
+                io::Error::from_raw_os_error(libc::ENOENT)
+            )
+        );
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
@@ -5578,6 +5568,14 @@ mod tests {
         let detail = d.sessions[&member].record.detail.clone().unwrap();
         assert!(!detail.contains("boss"), "{detail}");
         assert!(!detail.contains("hand over"), "{detail}");
+        assert_eq!(
+            detail,
+            format!(
+                "cannot open configuration {}: {}",
+                path.join("current.json").display(),
+                io::Error::from_raw_os_error(libc::ENOENT)
+            )
+        );
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

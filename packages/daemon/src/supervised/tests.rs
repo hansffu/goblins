@@ -9,6 +9,22 @@ use std::{
 };
 
 pub(crate) fn executable(root: &Path, mode: &str) -> Executable {
+    if mode == "engine" {
+        let path = PathBuf::from(
+            std::env::var_os("GOBLINS_TEST_SUPERVISOR_EXECUTABLE").expect(
+                "real actor tests require GOBLINS_TEST_SUPERVISOR_EXECUTABLE; run just test-rust",
+            ),
+        );
+        assert!(
+            path.is_absolute(),
+            "the actor test executable pin must be absolute"
+        );
+        assert!(
+            fs::metadata(&path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0),
+            "the actor test executable pin must name an executable file"
+        );
+        return Executable::from_path(Some(path));
+    }
     fn quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\"'\"'"))
     }
@@ -80,13 +96,6 @@ fn transmit(channel: &mut Channel, encoder: &mut Encoder, message: Message) {
 #[ignore = "subprocess helper; exercised by supervised lifecycle tests"]
 fn peer() {
     let mode = std::env::var("GOBLINS_TEST_SUPERVISOR_MODE").unwrap();
-    if mode == "engine" {
-        std::process::exit(if goblins_supervisor::control_main().is_ok() {
-            0
-        } else {
-            1
-        });
-    }
     let root = PathBuf::from(std::env::var_os("GOBLINS_TEST_SUPERVISOR_ROOT").unwrap());
     let mut channel =
         Channel::new(unsafe { UnixStream::from_raw_fd(supervisor::CONTROL_FD) }).unwrap();

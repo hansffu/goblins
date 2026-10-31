@@ -291,6 +291,7 @@ pub(crate) fn wrong_direction_handoff(
             directory: root.into(),
             dimensions: (24, 80),
             detached: false,
+            payload_nofile: None,
             legacy_listener: None,
             handoff: Some(handoff),
         }),

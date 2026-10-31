@@ -7,8 +7,8 @@ import unittest
 from support import HERE
 
 
-# Paths identify roles independently of Cargo package names. The daemon may
-# link supervisor while Local exists; phase 6 removes that transitional edge.
+# Paths identify roles independently of Cargo package names. The daemon links
+# only contracts/helpers; runtime implementation is a separate executable.
 LIBRARIES = {
     "api": {"jsonrpc", "unix"},
     "jsonrpc": {"unix"},
@@ -23,6 +23,16 @@ SANDBOX = {"sandbox-cli", "adapter-codex", "adapter-claude"}
 def check_dependencies(paths, edges):
     """Check workspace edges and sandbox transitive reachability."""
     for source, dependencies in edges.items():
+        if paths[source] == "packages/daemon":
+            pending, seen = list(dependencies), set()
+            while pending:
+                dependency = pending.pop()
+                if dependency in seen:
+                    continue
+                seen.add(dependency)
+                if paths[dependency] in {"libs/supervisor", "libs/init"}:
+                    raise ValueError(f"daemon links runtime implementation {paths[dependency]}")
+                pending.extend(edges.get(dependency, ()))
         kind, name = Path(paths[source]).parts
         for target in dependencies:
             target_kind, target_name = Path(paths[target]).parts
@@ -42,23 +52,36 @@ def check_dependencies(paths, edges):
                 pending.extend(edges.get(dependency, ()))
 
 
+def check_retired_runtime_boundary(controller, supervisor, local_exists):
+    """Reject the retired implementation selector even in debug-only code."""
+    if ("GOBLINS_DEBUG_LOCAL_RUNTIME" in controller or "RuntimeBackend::Local" in controller
+            or "mod local;" in supervisor or "pub use local::Local;" in supervisor or local_exists):
+        raise ValueError("retired Local runtime boundary is present")
+
+
+def workspace_graph(metadata, root):
+    """All declared workspace edges, including dev/build/optional/target edges."""
+    members = set(metadata["workspace_members"])
+    paths = {package["id"]: Path(package["manifest_path"]).parent.relative_to(root).as_posix()
+             for package in metadata["packages"] if package["id"] in members}
+    by_directory = {Path(package["manifest_path"]).parent.resolve(): package["id"]
+                    for package in metadata["packages"] if package["id"] in members}
+    # Member declarations include optional, target-specific, build and dev
+    # dependencies, without downloading unrelated registry packages.
+    edges = {package["id"]: [by_directory[directory]
+             for dependency in package["dependencies"]
+             if dependency.get("path")
+             and (directory := Path(dependency["path"]).resolve()) in by_directory]
+             for package in metadata["packages"] if package["id"] in members}
+    return paths, edges
+
+
 class DependencyTests(unittest.TestCase):
     def test_workspace_obeys_dependency_boundaries(self):
         metadata = json.loads(subprocess.check_output(
             ["cargo", "metadata", "--no-deps", "--locked", "--offline", "--format-version=1"],
             cwd=HERE, text=True))
-        members = set(metadata["workspace_members"])
-        paths = {package["id"]: Path(package["manifest_path"]).parent.relative_to(HERE).as_posix()
-                 for package in metadata["packages"] if package["id"] in members}
-        by_directory = {Path(package["manifest_path"]).parent.resolve(): package["id"]
-                        for package in metadata["packages"] if package["id"] in members}
-        # Member declarations include optional, target-specific, build and dev
-        # dependencies, without downloading unrelated registry packages.
-        edges = {package["id"]: [by_directory[directory]
-                 for dependency in package["dependencies"]
-                 if dependency.get("path")
-                 and (directory := Path(dependency["path"]).resolve()) in by_directory]
-                 for package in metadata["packages"] if package["id"] in members}
+        paths, edges = workspace_graph(metadata, HERE)
         check_dependencies(paths, edges)
 
     def test_packages_and_libraries_cannot_depend_on_packages(self):
@@ -78,3 +101,56 @@ class DependencyTests(unittest.TestCase):
         for source, target in (("api", "init"), ("unix", "api")):
             with self.subTest(source=source), self.assertRaisesRegex(ValueError, "may not depend"):
                 check_dependencies(paths, {source: [target]})
+
+    def test_daemon_cannot_link_implementation_directly_or_transitively(self):
+        paths = {"daemon": "packages/daemon", "runtime": "libs/runtime",
+                 "supervisor": "libs/supervisor", "init": "libs/init"}
+        for target in ("supervisor", "init"):
+            for edges in ({"daemon": [target]},
+                          {"daemon": ["runtime"], "runtime": [target]}):
+                with self.subTest(target=target, edges=edges), self.assertRaisesRegex(
+                        ValueError, "daemon links runtime implementation"):
+                    check_dependencies(paths, edges)
+
+    def test_final_daemon_contract_graph_is_allowed(self):
+        paths = {"daemon": "packages/daemon", "runtime": "libs/runtime",
+                 "api": "libs/api", "jsonrpc": "libs/jsonrpc", "unix": "libs/unix"}
+        check_dependencies(paths, {"daemon": ["runtime", "api", "jsonrpc", "unix"],
+                                   "runtime": ["api", "jsonrpc", "unix"],
+                                   "api": ["jsonrpc"], "jsonrpc": [], "unix": []})
+
+    def test_daemon_boundary_checks_every_declared_dependency_kind(self):
+        root = Path("/goblins-dependency-test")
+        for forbidden in ("supervisor", "init"):
+            for kind in (None, "dev", "build"):
+                for optional in (False, True):
+                    for target in (None, 'cfg(target_os = "linux")'):
+                        for indirect in (False, True):
+                            def declaration(name):
+                                return {"path": str(root / "libs" / name), "kind": kind,
+                                        "optional": optional, "target": target}
+                            metadata = {"workspace_members": ["daemon", "runtime", forbidden], "packages": [
+                                {"id": "daemon", "manifest_path": str(root / "packages/daemon/Cargo.toml"),
+                                 "dependencies": [declaration("runtime" if indirect else forbidden)]},
+                                {"id": "runtime", "manifest_path": str(root / "libs/runtime/Cargo.toml"),
+                                 "dependencies": [declaration(forbidden)] if indirect else []},
+                                {"id": forbidden, "manifest_path": str(root / "libs" / forbidden / "Cargo.toml"),
+                                 "dependencies": []}]}
+                            with self.subTest(forbidden=forbidden, kind=kind, optional=optional,
+                                              target=target, indirect=indirect), self.assertRaisesRegex(
+                                    ValueError, "daemon links runtime implementation"):
+                                check_dependencies(*workspace_graph(metadata, root))
+
+    def test_retired_local_backend_module_and_debug_selector_are_absent(self):
+        check_retired_runtime_boundary((HERE / "packages/daemon/src/controller.rs").read_text(),
+                                       (HERE / "libs/supervisor/src/lib.rs").read_text(),
+                                       (HERE / "libs/supervisor/src/local.rs").exists())
+
+    def test_retired_boundary_guard_rejects_pre_cutover_paths(self):
+        for controller, supervisor, local in (
+                ('#[cfg(debug_assertions)] if var_os("GOBLINS_DEBUG_LOCAL_RUNTIME").is_some() {}', "", False),
+                ("RuntimeBackend::Local => start_local()", "", False),
+                ("", "mod local;", False), ("", "pub use local::Local;", False), ("", "", True)):
+            with self.subTest(controller=controller, supervisor=supervisor, local=local), self.assertRaisesRegex(
+                    ValueError, "retired Local runtime boundary"):
+                check_retired_runtime_boundary(controller, supervisor, local)

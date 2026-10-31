@@ -27,6 +27,9 @@ pub(crate) fn start(mut channel: Channel, first: Frame) -> Result<()> {
         let Message::SupervisorStart(start) = received.message else {
             return Err("SupervisorStart must complete before commands".into());
         };
+        // Decode and adopt the complete logical startup before installing
+        // metadata; reject physical limits before any engine or worker exists.
+        goblins_unix::install_payload_descriptor_limit(start.payload_nofile)?;
         let mut engine = Engine::with_listener(
             start.source,
             start.directory,
