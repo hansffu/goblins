@@ -89,17 +89,23 @@ fn duration(limit: Duration) -> String {
         s => format!("{s} s"),
     }
 }
-struct CommandChild {
-    child: Child,
+pub(crate) struct CommandChild {
+    pub(crate) child: Child,
     reaped: bool,
 }
 impl CommandChild {
+    pub(crate) fn new(child: Child) -> Self {
+        Self {
+            child,
+            reaped: false,
+        }
+    }
     fn kill_group(&self) {
         unsafe {
             libc::kill(-(self.child.id() as i32), libc::SIGKILL);
         }
     }
-    fn finished(&mut self) -> Result<Option<std::process::ExitStatus>> {
+    pub(crate) fn finished(&mut self) -> Result<Option<std::process::ExitStatus>> {
         // Observe without reaping first. Keeping the child (even as a zombie)
         // reserves its PID while we terminate its process group, preventing a
         // signal to an unrelated group if the kernel recycled a reaped PID.
@@ -173,10 +179,7 @@ pub(crate) fn command_with_fds(
             Ok(())
         });
     }
-    let mut child = CommandChild {
-        child: command.spawn()?,
-        reaped: false,
-    };
+    let mut child = CommandChild::new(command.spawn()?);
     // Wake as soon as the child exits, including when it closed its output
     // earlier. Keep waitid(WNOWAIT) for process-group identity and cleanup.
     // If pidfds are restricted, output readiness still avoids most polling.

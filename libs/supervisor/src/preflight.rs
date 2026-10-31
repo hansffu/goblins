@@ -69,7 +69,7 @@ pub(crate) fn start(mut channel: Channel, first: Frame) -> Result<()> {
                 crate::entry::wait(&channel);
             }
         }
-        terminal_input(&channel)?;
+        terminal_input(&channel, "preflight")?;
         Ok(())
     })();
     decoder.close(&mut channel);
@@ -80,8 +80,10 @@ pub(crate) fn start(mut channel: Channel, first: Frame) -> Result<()> {
 /// check. Reject bytes already queued, including a partial extra frame; do not
 /// wait for parent EOF or claim to reject bytes arriving after this boundary.
 /// Channel consumes exactly one frame without reading ahead across frames.
-fn terminal_input(channel: &Channel) -> Result<()> {
-    let fd = channel.fd().ok_or("preflight control closed")?;
+pub(crate) fn terminal_input(channel: &Channel, mode: &str) -> Result<()> {
+    let fd = channel
+        .fd()
+        .ok_or_else(|| format!("{mode} control closed"))?;
     let mut byte = 0u8;
     let n = unsafe {
         libc::recv(
@@ -92,7 +94,7 @@ fn terminal_input(channel: &Channel) -> Result<()> {
         )
     };
     if n > 0 {
-        return Err("trailing preflight input".into());
+        return Err(format!("trailing {mode} input").into());
     }
     if n < 0 {
         let error = std::io::Error::last_os_error();

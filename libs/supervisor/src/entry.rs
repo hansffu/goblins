@@ -55,12 +55,13 @@ pub fn main() -> Result<()> {
             let setup = scope::decode(first.value)?;
             crate::scope_process::start(channel, setup)
         }
+        Some("Maintenance") => crate::maintenance::start(channel, first),
         Some("Preflight") => crate::preflight::start(channel, first),
         Some("SupervisorStart") => crate::supervisor_process::start(channel, first),
         _ => {
             drop(first);
             channel.close();
-            Err("scope Setup, SupervisorStart or Preflight must be first".into())
+            Err("scope Setup, SupervisorStart, Preflight or Maintenance must be first".into())
         }
     }
 }

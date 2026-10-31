@@ -176,9 +176,11 @@ class CleanupTests(unittest.TestCase):
         mounted.mkdir()
         # A private mount namespace exposes a same-filesystem bind mount to
         # the worker. Device-number checks alone cannot enforce this boundary.
+        # The supervisor needs /dev/null; the root bind otherwise makes it nodev.
         result = subprocess.run([
             "bwrap", "--die-with-parent", "--unshare-user", "--unshare-pid",
-            "--bind", "/", "/", "--proc", "/proc",
+            "--bind", "/", "/", "--dev-bind", "/dev/null", "/dev/null",
+            "--proc", "/proc",
             "--bind", str(outside), str(mounted),
             str(self.app), "--state-dir", str(self.state), "gc",
         ], env=self.env, text=True, capture_output=True, timeout=60)

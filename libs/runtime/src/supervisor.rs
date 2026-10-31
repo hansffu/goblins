@@ -9,7 +9,7 @@ use crate::{
     config::ManifestLease,
     lease::ResourceLease,
 };
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 use std::{
     collections::VecDeque,
@@ -31,8 +31,34 @@ pub struct SupervisorStart {
     pub legacy_listener: Option<Fd>,
     pub handoff: Option<Box<Handoff>>,
 }
+/// Maintenance selects paths, while the implementation retains deletion policy.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum MaintenanceOperation {
+    Gc {
+        runtime: Option<PathBuf>,
+        state: PathBuf,
+        dry_run: bool,
+    },
+    ClearScope {
+        runtime: Option<PathBuf>,
+        name: Option<String>,
+        dry_run: bool,
+    },
+}
+pub struct Maintenance {
+    pub supervisor_api: u32,
+    pub operation: MaintenanceOperation,
+    /// Explicit output capabilities; common entry still has null stdio.
+    pub stdout: Fd,
+    pub stderr: Fd,
+}
 pub enum Message {
     SupervisorStart(SupervisorStart),
+    Maintenance(Maintenance),
+    MaintenanceFinished {
+        result: Result<(), String>,
+    },
     /// Startup-only validation/rooting in one pinned child, without an engine.
     Preflight {
         supervisor_api: u32,
@@ -186,6 +212,20 @@ impl Encoder {
                 b.method = "PreflightFailed";
                 b.value("error", error)?;
             }
+            Message::Maintenance(request) => {
+                valid_maintenance(request)?;
+                b.method = "Maintenance";
+                b.value("supervisor_api", &request.supervisor_api)?;
+                b.value("operation", &request.operation)?;
+                let stdout = b.fd(&request.stdout)?;
+                let stderr = b.fd(&request.stderr)?;
+                b.value("stdout", &stdout)?;
+                b.value("stderr", &stderr)?;
+            }
+            Message::MaintenanceFinished { result } => {
+                b.method = "MaintenanceFinished";
+                b.value("result", result)?;
+            }
             Message::Command(command) => encode_command(command, &mut b)?,
             Message::Event(event) => encode_event(event, &mut b)?,
             Message::Stopping => b.method = "Stopping",
@@ -218,6 +258,18 @@ fn invalid(message: &str) -> io::Error {
 }
 fn other(error: impl std::fmt::Display) -> io::Error {
     invalid(&error.to_string())
+}
+fn valid_maintenance(request: &Maintenance) -> io::Result<()> {
+    if request.supervisor_api != API {
+        return Err(invalid("incompatible supervisor API"));
+    }
+    for fd in [&request.stdout, &request.stderr] {
+        let flags = goblins_unix::cvt(unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) })?;
+        if flags & libc::O_ACCMODE == libc::O_RDONLY {
+            return Err(invalid("maintenance output descriptor is not writable"));
+        }
+    }
+    Ok(())
 }
 fn valid_preflight(api: u32, directory: &std::path::Path) -> io::Result<()> {
     if api != API {

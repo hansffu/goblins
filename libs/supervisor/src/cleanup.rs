@@ -24,6 +24,11 @@ use std::{
 };
 
 use goblins_runtime::lease::flock;
+pub(crate) struct Context<'a> {
+    pub output: &'a mut dyn Write,
+    pub error: &'a File,
+    pub cancel: &'a process::Cancellation,
+}
 
 fn lock_root() -> Result<PathBuf> {
     unix::cache_directory("locks", true)
@@ -73,10 +78,11 @@ fn private_existing(path: &Path) -> Result<bool> {
     }
 }
 
-fn stored_names(root: &Path) -> Result<BTreeSet<String>> {
+fn stored_names(root: &Path, context: &Context) -> Result<BTreeSet<String>> {
     let mut names = BTreeSet::new();
     if private_existing(root)? {
         for entry in fs::read_dir(root)? {
+            context.cancel.check()?;
             let entry = entry?;
             if let Some(name) = entry
                 .file_name()
@@ -95,18 +101,24 @@ fn stored_names(root: &Path) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
-pub fn clear_scope(runtime: Option<&Path>, name: Option<&str>, dry_run: bool) -> Result<()> {
+pub(crate) fn clear_scope(
+    runtime: Option<&Path>,
+    name: Option<&str>,
+    dry_run: bool,
+    context: &mut Context,
+) -> Result<()> {
     if name.is_some_and(|n| !goblins_protocol::scope_name(n)) {
         return Err("invalid scope name".into());
     }
+    context.cancel.check()?;
     let _gate = storage_gate()?;
     let scopes = scope_storage::root(true)?;
     let engines = docker::storage_root(true)?;
     let names = if let Some(name) = name {
         BTreeSet::from([name.to_owned()])
     } else {
-        stored_names(&scopes)?
-            .union(&stored_names(&engines)?)
+        stored_names(&scopes, context)?
+            .union(&stored_names(&engines, context)?)
             .cloned()
             .collect()
     };
@@ -115,7 +127,9 @@ pub fn clear_scope(runtime: Option<&Path>, name: Option<&str>, dry_run: bool) ->
     let mut locks = Vec::new();
     let mut paths = Vec::new();
     for name in names {
+        context.cancel.check()?;
         for root in [&scopes, &engines] {
+            context.cancel.check()?;
             if !private_existing(root)? {
                 continue;
             }
@@ -139,10 +153,10 @@ pub fn clear_scope(runtime: Option<&Path>, name: Option<&str>, dry_run: bool) ->
     }
     let leases: Vec<_> = std::iter::once(&_gate).chain(locks.iter()).collect();
     for path in &paths {
-        remove(runtime, path, true, dry_run, &leases)?;
+        remove(runtime, path, true, dry_run, &leases, context)?;
     }
     if paths.is_empty() {
-        println!("No stored scope data");
+        writeln!(context.output, "No stored scope data")?;
     }
     Ok(())
 }
@@ -156,7 +170,13 @@ fn session_name(name: &str) -> bool {
     })
 }
 
-pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
+pub(crate) fn gc(
+    runtime: Option<&Path>,
+    state: &Path,
+    dry_run: bool,
+    context: &mut Context,
+) -> Result<()> {
+    context.cancel.check()?;
     // Holding the gate excludes stores halfway through creation. Temporary
     // leases stay held by their owners, and by Docker's cleanup guardian.
     let gate = flock(&lock_root()?.join("storage.lock"), true)?
@@ -177,6 +197,7 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
             continue;
         }
         for entry in fs::read_dir(&root)? {
+            context.cancel.check()?;
             let entry = entry?;
             let name = entry.file_name();
             let Some(suffix) = name.to_str().and_then(|n| n.strip_prefix(prefix)) else {
@@ -189,17 +210,18 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
             let lock_path = temporary_lock(kind, &path)?;
             match fs::symlink_metadata(&lock_path) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    println!(
+                    writeln!(
+                        context.output,
                         "Keeping legacy temporary storage without a lifetime lease: {}",
                         path.display()
-                    );
+                    )?;
                     continue;
                 }
                 Err(e) => return Err(e.into()),
                 Ok(_) => (),
             }
             let Some(_lease) = flock(&lock_path, true)? else {
-                println!("Keeping active storage {}", path.display());
+                writeln!(context.output, "Keeping active storage {}", path.display())?;
                 continue;
             };
             // Reject top-level links, even though the worker never follows
@@ -208,8 +230,9 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
             if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
                 return Err(format!("unsafe temporary store {}", path.display()).into());
             }
-            remove(runtime, &path, true, dry_run, &[&gate, &_lease])?;
+            remove(runtime, &path, true, dry_run, &[&gate, &_lease], context)?;
             if !dry_run {
+                context.cancel.check()?;
                 fs::remove_file(lock_path)?;
             }
         }
@@ -217,6 +240,7 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
     // Normal teardown can leave empty lease files. The gate prevents a
     // temporary store from being created between this check and unlink.
     for entry in fs::read_dir(lock_root()?)? {
+        context.cancel.check()?;
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
@@ -230,7 +254,7 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
             if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
                 return Err("unsafe cleanup scratch directory".into());
             }
-            remove(runtime, &entry.path(), false, dry_run, &[&gate])?;
+            remove(runtime, &entry.path(), false, dry_run, &[&gate], context)?;
             continue;
         }
         let target = [
@@ -250,8 +274,9 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
                 && let Some(_lease) = flock(&entry.path(), true)?
             {
                 if dry_run {
-                    println!("Would remove {}", entry.path().display());
+                    writeln!(context.output, "Would remove {}", entry.path().display())?;
                 } else {
+                    context.cancel.check()?;
                     fs::remove_file(entry.path())?;
                 }
             }
@@ -264,19 +289,24 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
     // The background launcher also holds server-control.lock before opening
     // its log. Keep both locks, including their files, for the whole sweep.
     let Some(_management) = flock(&state.join("server-control.lock"), true)? else {
-        println!("Keeping resources of a starting or stopping server");
+        writeln!(
+            context.output,
+            "Keeping resources of a starting or stopping server"
+        )?;
         return Ok(());
     };
     let Some(_daemon) = flock(&state.join("daemon.lock"), true)? else {
-        println!(
+        writeln!(
+            context.output,
             "Keeping resources of the running server at {}",
             state.display()
-        );
+        )?;
         return Ok(());
     };
     let scopes = state.join("scopes");
     if private_existing(&scopes)? {
         for entry in fs::read_dir(&scopes)? {
+            context.cancel.check()?;
             let entry = entry?;
             let name = entry.file_name();
             if !name.to_str().is_some_and(goblins_protocol::scope_name) {
@@ -285,15 +315,17 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
                 );
             }
             if goblins_runtime::scope::remove_stale(&entry.path(), dry_run)? {
-                println!(
+                writeln!(
+                    context.output,
                     "{} {}",
                     if dry_run { "Would remove" } else { "Removed" },
                     entry.path().display()
-                );
+                )?;
             }
         }
     }
     for entry in fs::read_dir(state)? {
+        context.cancel.check()?;
         let entry = entry?;
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
@@ -320,7 +352,11 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
             let lease_path = resources.join(".gc-lease");
             let lease = if session_name(name) && lease_path.exists() {
                 let Some(lease) = flock(&lease_path, true)? else {
-                    println!("Keeping active session resources {}", path.display());
+                    writeln!(
+                        context.output,
+                        "Keeping active session resources {}",
+                        path.display()
+                    )?;
                     continue;
                 };
                 Some(lease)
@@ -331,22 +367,23 @@ pub fn gc(runtime: Option<&Path>, state: &Path, dry_run: bool) -> Result<()> {
                 .into_iter()
                 .chain(lease.iter())
                 .collect();
-            remove(runtime, &path, false, dry_run, &leases)?;
+            remove(runtime, &path, false, dry_run, &leases, context)?;
         }
     }
     Ok(())
 }
 
-struct Worker(std::process::Child);
-impl Drop for Worker {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+#[cfg(test)]
+std::thread_local! {
+    static SCRATCH_REAPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
-struct Scratch(PathBuf);
+struct Scratch {
+    path: PathBuf,
+    #[cfg(test)]
+    worker: libc::pid_t,
+}
 impl Scratch {
-    fn new() -> Result<Self> {
+    fn new(worker: u32) -> Result<Self> {
         let mut template =
             CString::new(lock_root()?.join("cleanup-XXXXXX").as_os_str().as_bytes())?
                 .into_bytes_with_nul();
@@ -354,12 +391,41 @@ impl Scratch {
             return Err(std::io::Error::last_os_error().into());
         }
         template.pop();
-        Ok(Self(PathBuf::from(std::ffi::OsString::from_vec(template))))
+        #[cfg(not(test))]
+        let _ = worker;
+        Ok(Self {
+            path: PathBuf::from(std::ffi::OsString::from_vec(template)),
+            #[cfg(test)]
+            worker: worker as libc::pid_t,
+        })
     }
 }
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        #[cfg(test)]
+        {
+            // Kernel observation at the cleanup boundary: the real helper
+            // must already have been reaped, not merely signalled or exited.
+            let mut status: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            assert_eq!(
+                unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        self.worker as libc::id_t,
+                        &mut status,
+                        libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                    )
+                },
+                -1,
+                "scratch cleanup preceded helper reap"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+            SCRATCH_REAPS.with(|count| count.set(count.get() + 1));
+        }
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -369,9 +435,11 @@ fn remove(
     mapped: bool,
     dry_run: bool,
     leases: &[&File],
+    context: &mut Context,
 ) -> Result<()> {
+    context.cancel.check()?;
     if dry_run {
-        println!("Would remove {}", path.display());
+        writeln!(context.output, "Would remove {}", path.display())?;
         return Ok(());
     }
     let runtime =
@@ -389,6 +457,7 @@ fn remove(
         .open(path.parent().ok_or("missing storage parent")?)?;
     let directory_fd = parent.as_raw_fd();
     let lease_fds: Vec<_> = leases.iter().map(|f| f.as_raw_fd()).collect();
+    context.cancel.check()?;
     let mut command = Command::new(helper);
     command
         .arg("--clean-storage")
@@ -397,9 +466,15 @@ fn remove(
         .arg(if mapped { "mapped" } else { "host" })
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stderr(Stdio::from(context.error.try_clone()?))
+        .process_group(0);
+    let owner = unsafe { libc::getpid() };
     unsafe {
         command.pre_exec(move || {
+            unix::cvt(libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL))?;
+            if libc::getppid() != owner {
+                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+            }
             unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
             unix::cvt(libc::fcntl(directory_fd, libc::F_SETFD, 0))?;
             for &fd in &lease_fds {
@@ -408,37 +483,48 @@ fn remove(
             Ok(())
         });
     }
-    let mut child = Worker(command.spawn()?);
+    // Reverse lexical drop order is part of the safety contract: reap the
+    // helper before scratch cleanup, and before the caller releases leases.
+    let mut scratch = None;
+    let mut child = process::CommandChild::new(command.spawn()?);
     let mut info = File::from(std::os::fd::OwnedFd::from(
-        child.0.stdout.take().ok_or("missing worker stdout")?,
+        child.child.stdout.take().ok_or("missing worker stdout")?,
     ));
-    let cancel = process::Cancellation::default();
-    if process::helper_line(&mut info, Duration::from_secs(10), &cancel)?.trim() != "ready" {
+    let cancel = context.cancel;
+    if process::helper_line(&mut info, Duration::from_secs(10), cancel)?.trim() != "ready" {
         return Err("storage cleanup worker did not become ready".into());
     }
     if mapped {
-        let scratch = Scratch::new()?;
+        scratch = Some(Scratch::new(child.child.id())?);
         for (kind, id) in [
             ("uid", unsafe { libc::getuid() }),
             ("gid", unsafe { libc::getgid() }),
         ] {
             docker::map_ids(
                 kind,
-                child.0.id(),
+                child.child.id(),
                 id,
                 docker::subordinate(kind, id)?,
-                &scratch.0,
-                &cancel,
+                &scratch.as_ref().unwrap().path,
+                cancel,
             )?;
         }
     }
     child
-        .0
+        .child
         .stdin
         .take()
         .ok_or("missing worker stdin")?
         .write_all(b"x")?;
-    let status = child.0.wait()?;
+    let status = loop {
+        cancel.check()?;
+        if let Some(status) = child.finished()? {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    drop(child);
+    drop(scratch);
     if !status.success() {
         return Err(format!(
             "cleanup failed for {} ({status}); data may be partially removed",
@@ -446,6 +532,113 @@ fn remove(
         )
         .into());
     }
-    println!("Removed {}", path.display());
+    writeln!(context.output, "Removed {}", path.display())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn mapping_error_reaps_the_helper_before_scratch_and_inherited_gate_cleanup() {
+        if let Some(root) = std::env::var_os("GOBLINS_TEST_SCRATCH_PEER") {
+            let _fork = unix::forking();
+            let root = PathBuf::from(root);
+            let target = root.join("target");
+            unix::private_directory(&target).unwrap();
+            fs::write(target.join("payload"), "retained").unwrap();
+            let helper = root.join("helper");
+            fs::write(
+                &helper,
+                "#!/bin/sh
+echo $$ > helper.pid
+printf 'ready\n'
+exec sleep 30
+",
+            )
+            .unwrap();
+            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+            let runtime = root.join("runtime.json");
+            fs::write(
+                &runtime,
+                serde_json::json!({
+                    "api":2,"helper_api":6,
+                    "goblins":{"shell":{
+                        "build_spec":"/unused","args":[],"env":{},"client_package":"/unused",
+                        "helper":helper,"flake":"unused"
+                    }}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let gate = storage_gate().unwrap();
+            let mut output = Vec::new();
+            let error = File::create(root.join("stderr")).unwrap();
+            let cancel = process::Cancellation::default().with_limit(Duration::from_secs(5));
+            let mut context = Context {
+                output: &mut output,
+                error: &error,
+                cancel: &cancel,
+            };
+            SCRATCH_REAPS.with(|count| count.set(0));
+            // The fake deletion helper deliberately does not create a user
+            // namespace. Mapping must fail, exercising the actual error path
+            // after scratch construction, without changing host credentials.
+            assert!(remove(Some(&runtime), &target, true, false, &[&gate], &mut context).is_err());
+            let pid: libc::pid_t = fs::read_to_string(root.join("helper.pid"))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+            // Require the mapping/scratch path was actually reached; an early
+            // readiness failure cannot stand in for this ownership proof.
+            assert_eq!(SCRATCH_REAPS.with(std::cell::Cell::get), 1);
+            // Scratch::drop above independently observed ECHILD before removal.
+            assert!(!fs::read_dir(lock_root().unwrap()).unwrap().any(|e| {
+                e.unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("cleanup-")
+            }));
+            assert!(
+                flock(&lock_root().unwrap().join("storage.lock"), true)
+                    .unwrap()
+                    .is_none()
+            );
+            drop(gate);
+            assert!(
+                flock(&lock_root().unwrap().join("storage.lock"), true)
+                    .unwrap()
+                    .is_some()
+            );
+            assert_eq!(
+                fs::read_to_string(target.join("payload")).unwrap(),
+                "retained"
+            );
+            return;
+        }
+        let _fork = unix::forking();
+        let root = unix::temp_directory().unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","cleanup::tests::mapping_error_reaps_the_helper_before_scratch_and_inherited_gate_cleanup","--nocapture"])
+            .env("GOBLINS_TEST_SCRATCH_PEER",&root)
+            .env("XDG_CACHE_HOME",root.join("cache"))
+            .env("XDG_STATE_HOME",root.join("history"))
+            .current_dir(&root).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }

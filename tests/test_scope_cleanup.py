@@ -37,8 +37,10 @@ class ScopeCleanupTests(unittest.TestCase):
             self.assertEqual(outside.stat().st_dev, mounted.stat().st_dev)
             env = {**os.environ, "XDG_CACHE_HOME": str(root / "cache"),
                    "XDG_STATE_HOME": str(root / "history")}
+            # The supervisor needs /dev/null; the root bind otherwise makes it nodev.
             prefix = ["bwrap", "--die-with-parent", "--unshare-user", "--unshare-pid",
-                      "--bind", "/", "/", "--proc", "/proc",
+                      "--bind", "/", "/", "--dev-bind", "/dev/null", "/dev/null",
+                      "--proc", "/proc",
                       "--bind", str(outside), str(mounted)]
             if caller == "gc":
                 command = [str(self.app), "--state-dir", str(state), "gc"]

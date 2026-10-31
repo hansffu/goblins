@@ -524,6 +524,32 @@ impl Decoder {
                     adopted: Some(transfer),
                 })
             }
+            "Maintenance" => {
+                let supervisor_api = p.take("supervisor_api")?;
+                let operation = p.take("operation")?;
+                let stdout = d.take(p.take("stdout")?)?.into();
+                let stderr = d.take(p.take("stderr")?)?.into();
+                p.finish()?;
+                let request = Maintenance {
+                    supervisor_api,
+                    operation,
+                    stdout,
+                    stderr,
+                };
+                valid_maintenance(&request)?;
+                Some(Received {
+                    message: Message::Maintenance(request),
+                    adopted: None,
+                })
+            }
+            "MaintenanceFinished" => {
+                let result = p.take("result")?;
+                p.finish()?;
+                Some(Received {
+                    message: Message::MaintenanceFinished { result },
+                    adopted: None,
+                })
+            }
             "Preflight" => {
                 let supervisor_api = p.take("supervisor_api")?;
                 let path = p.take("path")?;

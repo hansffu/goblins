@@ -11,6 +11,7 @@ use std::{
 use goblins_unix::cleanup::remove_at as remove;
 
 pub fn run() -> io::Result<i32> {
+    let owner = unsafe { libc::getppid() };
     let args: Vec<_> = env::args_os().collect();
     if args.len() != 5 || !matches!(args[4].to_str(), Some("mapped" | "host")) {
         return Err(io::Error::other("invalid storage cleanup arguments"));
@@ -29,17 +30,37 @@ pub fn run() -> io::Result<i32> {
         return Err(io::Error::other("storage parent is not a directory"));
     }
     if args[4] == "mapped" {
-        cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) })?;
+        let result = cvt(unsafe { libc::unshare(libc::CLONE_NEWUSER) });
+        parent_death(owner);
+        result?;
     }
+    parent_death(owner);
     println!("ready");
     io::stdout().flush()?;
     io::stdin().read_exact(&mut [0])?;
     if args[4] == "mapped" {
-        cvt(unsafe { libc::setresgid(0, 0, 0) })?;
-        cvt(unsafe { libc::setresuid(0, 0, 0) })?;
+        let result = cvt(unsafe { libc::setresgid(0, 0, 0) });
+        parent_death(owner);
+        result?;
+        let result = cvt(unsafe { libc::setresuid(0, 0, 0) });
+        parent_death(owner);
+        result?;
     }
+    parent_death(owner);
     remove(&parent, &args[3])?;
     Ok(0)
+}
+
+// Namespace/credential transitions may clear this setting. Rearm before
+// READY and deleting work, including before reporting credential errors to
+// possibly blocked stderr. A lost parent must never turn into an error-print
+// hang that retains inherited locks: exit without stdio or destructor work.
+fn parent_death(owner: libc::pid_t) {
+    if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) } < 0
+        || unsafe { libc::getppid() } != owner
+    {
+        unsafe { libc::_exit(1) };
+    }
 }
 
 use std::os::fd::FromRawFd;

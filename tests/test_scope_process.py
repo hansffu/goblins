@@ -369,3 +369,90 @@ class ScopeProcessTests(unittest.TestCase):
         self.assertTrue(select.select([read], [], [], 0)[0])
         self.assertEqual(os.read(read, 1), b"")
         self.assertNotEqual(self.reap(pid), 0)
+
+    def maintenance(self, operation, output, error, overrides=None, suffix=b""):
+        control, child = self.pair()
+        pid = self.spawn(child)
+        child.close()
+        params = dict(supervisor_api=1, operation=operation,
+                      stdout={"$fd": 0}, stderr={"$fd": 1})
+        params.update(overrides or {})
+        body = json.dumps(dict(jsonrpc="2.0", method="Maintenance", params=params)).encode()
+        frame = f"Content-Length: {len(body)}\r\nDescriptor-Count: 2\r\n\r\n".encode() + body
+        control.sendmsg([frame + suffix],
+                        [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [output, error]))])
+        return control, pid
+
+    def test_maintenance_scope_dry_run_writes_explicit_output_without_deleting(self):
+        selected = self.root / "cache/goblins/scopes/scope-work"
+        selected.mkdir(mode=0o700, parents=True)
+        for path in (selected.parent, selected.parent.parent):
+            path.chmod(0o700)
+        (selected / "payload").write_text("keep")
+        with (self.root / "stdout").open("wb") as output, (self.root / "stderr").open("wb") as error:
+            flags = fcntl.fcntl(output, fcntl.F_GETFL)
+            control, pid = self.maintenance(
+                dict(kind="ClearScope", runtime=None, name="work", dry_run=True),
+                output.fileno(), error.fileno())
+            self.assertEqual(self.receive(control),
+                             dict(jsonrpc="2.0", method="MaintenanceFinished", params=dict(result={"Ok": None})))
+            self.assertEqual(self.reap(pid), 0)
+            self.assertEqual(fcntl.fcntl(output, fcntl.F_GETFL), flags)
+        self.assertEqual((self.root / "stdout").read_text(), f"Would remove {selected}\n")
+        self.assertEqual((self.root / "stderr").read_bytes(), b"")
+        self.assertEqual((selected / "payload").read_text(), "keep")
+        self.assertFalse((self.root / "terminal.sock").exists())
+
+    def test_maintenance_operation_error_has_normal_exit_and_original_diagnostic(self):
+        with (self.root / "stdout").open("wb") as output, (self.root / "stderr").open("wb") as error:
+            control, pid = self.maintenance(
+                dict(kind="ClearScope", runtime=None, name="../invalid", dry_run=False),
+                output.fileno(), error.fileno())
+            self.assertEqual(self.receive(control),
+                             dict(jsonrpc="2.0", method="MaintenanceFinished",
+                                  params=dict(result={"Err": "invalid scope name"})))
+            self.assertEqual(self.reap(pid), 0)
+        self.assertFalse((self.root / "cache").exists())
+
+    def test_maintenance_rejects_invalid_api_mode_fields_and_readonly_output_before_effects(self):
+        for mode in ["api", "operation", "extra", "readonly"]:
+            with self.subTest(mode=mode):
+                with (self.root / "stdout").open("w+b") as output, (self.root / "stderr").open("wb") as error:
+                    readonly = os.open(self.root / "stdout", os.O_RDONLY | os.O_CLOEXEC)
+                    try:
+                        overrides = (dict(supervisor_api=2) if mode == "api" else
+                                     dict(operation=dict(kind="Unknown")) if mode == "operation" else
+                                     dict(extra=True) if mode == "extra" else {})
+                        control, pid = self.maintenance(
+                            dict(kind="Gc", runtime=None, state=str(self.root / "state"), dry_run=True),
+                            readonly if mode == "readonly" else output.fileno(),
+                            error.fileno(), overrides)
+                        self.assertNotEqual(self.reap(pid), 0)
+                    finally:
+                        os.close(readonly)
+                self.assertFalse((self.root / "cache").exists())
+                self.assertFalse((self.root / "state").exists())
+
+    def test_maintenance_queued_cancellation_precedes_cache_and_lock_mutations(self):
+        with (self.root / "stdout").open("wb") as output, (self.root / "stderr").open("wb") as error:
+            control, pid = self.maintenance(
+                dict(kind="ClearScope", runtime=None, name=None, dry_run=True),
+                output.fileno(), error.fileno(), suffix=b"C")
+            self.assertNotEqual(self.reap(pid), 0)
+        self.assertFalse((self.root / "cache").exists())
+        self.assertEqual((self.root / "stdout").read_bytes(), b"")
+
+    def test_maintenance_broken_output_is_an_operation_error_with_normal_protocol_exit(self):
+        read, write = os.pipe2(os.O_CLOEXEC)
+        os.close(read)
+        try:
+            with (self.root / "stderr").open("wb") as error:
+                control, pid = self.maintenance(
+                    dict(kind="ClearScope", runtime=None, name=None, dry_run=True),
+                    write, error.fileno())
+                reply = self.receive(control)
+                self.assertEqual(reply["method"], "MaintenanceFinished")
+                self.assertIn("Broken pipe", reply["params"]["result"]["Err"])
+                self.assertEqual(self.reap(pid), 0)
+        finally:
+            os.close(write)

@@ -6,6 +6,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 
 pub mod host;
 pub mod mailbox;
+pub mod maintenance;
 pub mod messaging;
 pub mod operation;
 

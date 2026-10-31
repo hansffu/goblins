@@ -100,6 +100,10 @@ fn peer() {
         }
         thread::sleep(Duration::from_millis(1));
     };
+    if mode.starts_with("maintenance-") {
+        super::maintenance::tests::peer(&root, &mode, startup, channel);
+        return;
+    }
     if mode.starts_with("preflight-") {
         super::preflight::tests::peer(&root, &mode, startup, channel);
         return;

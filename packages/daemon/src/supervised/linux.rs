@@ -18,17 +18,39 @@ pub(crate) struct Child {
 }
 impl Child {
     pub fn start(executable: &Path) -> io::Result<(Self, UnixStream)> {
+        Self::start_with_group(executable, false)
+    }
+    pub fn start_maintenance(executable: &Path) -> io::Result<(Self, UnixStream)> {
+        Self::start_with_group(executable, true)
+    }
+    fn start_with_group(executable: &Path, isolated_group: bool) -> io::Result<(Self, UnixStream)> {
         // Test callers own the exclusive forking() guard through cleanup;
         // taking a nested guard here would deadlock those lifecycle tests.
         let (daemon, peer) = UnixStream::pair()?;
         let fd = peer.as_raw_fd();
         let mut command = Command::new(executable);
+        if isolated_group {
+            command.process_group(0);
+        }
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         unsafe {
             command.pre_exec(move || {
+                if isolated_group {
+                    // Maintenance writes explicit CLI tty capabilities from a
+                    // background group. Preserve TOSTOP without stopping these
+                    // foreground-command writers or their inherited helpers.
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    action.sa_sigaction = libc::SIG_IGN;
+                    unix::cvt(libc::sigemptyset(&mut action.sa_mask))?;
+                    unix::cvt(libc::sigaction(
+                        libc::SIGTTOU,
+                        &action,
+                        std::ptr::null_mut(),
+                    ))?;
+                }
                 let control = goblins_runtime::supervisor::CONTROL_FD;
                 if fd != control {
                     unix::cvt(libc::dup2(fd, control))?;

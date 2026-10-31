@@ -255,7 +255,12 @@ fn preflight_work_before_a_result_has_no_two_second_operation_limit() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn wrong_direction_handoff(root: &Path, mode: &str, mut channel: Channel, mut encoder: Encoder) {
+pub(crate) fn wrong_direction_handoff(
+    root: &Path,
+    mode: &str,
+    mut channel: Channel,
+    mut encoder: Encoder,
+) {
     use goblins_runtime::{Command, Handoff, ResourceLease, Source, supervisor::SupervisorStart};
     let resources = root.join("unexpected-resources");
     goblins_unix::private_directory(&resources).unwrap();

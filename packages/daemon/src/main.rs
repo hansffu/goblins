@@ -70,15 +70,18 @@ fn execute(cli: Cli) -> Result<i32> {
                 all: _,
                 dry_run,
             } => {
-                goblins_supervisor::maintenance::clear_scope(
+                goblins_controller::maintenance::clear_scope(
                     cli.runtime.as_deref(),
                     name.as_deref(),
                     dry_run,
+                    || STOP.load(Ordering::Relaxed),
                 )?;
             }
         },
         Command::Gc { dry_run } => {
-            goblins_supervisor::maintenance::gc(cli.runtime.as_deref(), &state, dry_run)?;
+            goblins_controller::maintenance::gc(cli.runtime.as_deref(), &state, dry_run, || {
+                STOP.load(Ordering::Relaxed)
+            })?;
         }
         Command::Send {
             recipient,

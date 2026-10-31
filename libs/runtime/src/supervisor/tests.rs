@@ -1264,3 +1264,74 @@ fn preflight_scalar_vocabulary_is_strict_and_preserves_relative_manifest_paths()
     frame.fds.push(fs::File::open("/dev/null").unwrap().into());
     assert!(Decoder::default().receive(frame).is_err());
 }
+
+fn maintenance_request() -> Message {
+    let writable =
+        || OwnedFd::from(fs::File::options().write(true).open("/dev/null").unwrap()).into();
+    Message::Maintenance(Maintenance {
+        supervisor_api: API,
+        operation: MaintenanceOperation::Gc {
+            runtime: None,
+            state: "relative/state".into(),
+            dry_run: true,
+        },
+        stdout: writable(),
+        stderr: writable(),
+    })
+}
+#[test]
+fn maintenance_scalar_contract_preserves_paths_flags_and_has_no_ownership_ack() {
+    let mut encoded = Encoder::default().prepare(maintenance_request()).unwrap();
+    assert!(!encoded.needs_adoption());
+    assert_eq!(encoded.frames.len(), 1);
+    assert_eq!(encoded.frames[0].fds.len(), 2);
+    let received = decode(&mut encoded, &mut Decoder::default());
+    assert!(received.adopted.is_none());
+    assert!(
+        matches!(received.message, Message::Maintenance(Maintenance {
+        operation: MaintenanceOperation::Gc { state, runtime: None, dry_run: true }, ..
+    }) if state == Path::new("relative/state"))
+    );
+    roundtrip(maintenance_request());
+    roundtrip(Message::MaintenanceFinished { result: Ok(()) });
+    roundtrip(Message::MaintenanceFinished {
+        result: Err("original cleanup error".into()),
+    });
+    let writable =
+        || OwnedFd::from(fs::File::options().write(true).open("/dev/null").unwrap()).into();
+    roundtrip(Message::Maintenance(Maintenance {
+        supervisor_api: API,
+        operation: MaintenanceOperation::ClearScope {
+            runtime: Some("relative/runtime".into()),
+            name: Some("work".into()),
+            dry_run: false,
+        },
+        stdout: writable(),
+        stderr: writable(),
+    }));
+}
+#[test]
+fn maintenance_rejects_bad_version_mode_fields_and_nonwritable_output_capabilities() {
+    for (key, value) in [
+        ("supervisor_api", json!(2)),
+        ("operation", json!({"kind":"Unknown","dry_run":true})),
+        (
+            "operation",
+            json!({"kind":"Gc","runtime":null,"state":"/state","dry_run":true,"extra":true}),
+        ),
+        ("extra", json!(true)),
+    ] {
+        let mut prepared = Encoder::default().prepare(maintenance_request()).unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"][key] = value;
+        assert!(Decoder::default().receive(frame).is_err());
+    }
+    let mut prepared = Encoder::default().prepare(maintenance_request()).unwrap();
+    let mut frame = prepared.frames.pop_front().unwrap();
+    frame.fds[0] = fs::File::open("/dev/null").unwrap().into();
+    assert!(Decoder::default().receive(frame).is_err());
+    let mut prepared = Encoder::default().prepare(maintenance_request()).unwrap();
+    let mut frame = prepared.frames.pop_front().unwrap();
+    frame.fds.push(fs::File::open("/dev/null").unwrap().into());
+    assert!(Decoder::default().receive(frame).is_err());
+}
