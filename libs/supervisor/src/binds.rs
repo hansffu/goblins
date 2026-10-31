@@ -52,84 +52,9 @@ impl Plan {
     }
 }
 
-// Expand only the agent-sandbox path syntax, never a shell expression. Literal env
-// values in mkGoblin.env do not pass through this function.
-pub(crate) fn expand(value: &str, env: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
-    let mut input = value;
-    let mut output = String::new();
-    if input.starts_with('~') {
-        if input != "~" && !input.starts_with("~/") {
-            return Err("host bind paths do not support ~user; use $HOME".into());
-        }
-        output.push_str(&env("HOME").ok_or("HOME is unset")?);
-        input = &input[1..];
-    }
-    while let Some(index) = input.find('$') {
-        output.push_str(&input[..index]);
-        input = &input[index + 1..];
-        let name;
-        if input.starts_with('{') {
-            let end = input
-                .find('}')
-                .ok_or("unclosed variable in host bind path")?;
-            name = &input[1..end];
-            input = &input[end + 1..];
-        } else {
-            let end = input
-                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .unwrap_or(input.len());
-            name = &input[..end];
-            input = &input[end..];
-        }
-        if name.is_empty()
-            || !name
-                .bytes()
-                .enumerate()
-                .all(|(i, c)| c.is_ascii_alphabetic() || c == b'_' || i > 0 && c.is_ascii_digit())
-        {
-            return Err("host bind paths accept $VAR or ${VAR}, not shell expressions".into());
-        }
-        output.push_str(&env(name).ok_or_else(|| format!("unset host bind variable: {name}"))?);
-    }
-    output.push_str(input);
-    let path = PathBuf::from(output);
-    if !path.is_absolute()
-        || path.components().any(|c| matches!(c, Component::ParentDir))
-        || path.as_os_str().as_bytes().contains(&0)
-    {
-        return Err(format!("host bind path must be absolute without '..': {value}").into());
-    }
-    Ok(path.components().collect())
-}
+pub(crate) use goblins_runtime::binds::{expand, validate};
 fn overlaps(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
-}
-pub(crate) fn validate(path: &Path, private: &[PathBuf]) -> Result<()> {
-    // These trees establish the helper/control/store boundary. A startup grant
-    // cannot replace them, expose their host counterparts, or cover an ancestor.
-    for protected in [
-        "/proc",
-        "/sys",
-        "/dev",
-        "/nix",
-        "/run",
-        "/bin",
-        "/workspace",
-    ]
-    .into_iter()
-    .map(Path::new)
-    .chain(private.iter().map(PathBuf::as_path))
-    {
-        if overlaps(path, protected) {
-            return Err(format!(
-                "host bind {} overlaps protected path {}",
-                path.display(),
-                protected.display()
-            )
-            .into());
-        }
-    }
-    Ok(())
 }
 pub fn plan(
     declarations: &Declarations,
@@ -469,51 +394,6 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn path_expansion_is_not_shell_evaluation() {
-        let env = |name: &str| {
-            if name == "HOME" {
-                Some("/home/test".into())
-            } else {
-                None
-            }
-        };
-        for input in [
-            "~/.config/fish",
-            "$HOME/.config/fish",
-            "${HOME}/.config/fish",
-        ] {
-            assert_eq!(
-                expand(input, env).unwrap(),
-                Path::new("/home/test/.config/fish")
-            );
-        }
-        for input in [
-            "~someone/file",
-            "$MISSING/file",
-            "$(id)",
-            "${HOME:-/tmp}",
-            "relative",
-            "$HOME/../secret",
-        ] {
-            assert!(expand(input, env).is_err(), "{input}");
-        }
-    }
-    #[test]
-    fn reserved_trees_cannot_be_covered_or_exposed() {
-        for input in [
-            "/",
-            "/nix",
-            "/nix/var/nix/daemon-socket",
-            "/run/goblins",
-            "/proc/self/root",
-            "/workspace/subdir",
-        ] {
-            assert!(validate(Path::new(input), &[]).is_err());
-        }
-        assert!(validate(Path::new("/tmp"), &["/tmp/session-private".into()]).is_err());
-        assert!(validate(Path::new("/home/test/.config/fish"), &[]).is_ok());
-    }
     #[test]
     fn host_commands_run_only_in_shared_directories() {
         let root = unix::temp_directory().unwrap();

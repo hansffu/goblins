@@ -1,6 +1,7 @@
 //! Nonblocking daemon client and member placeholder for one supervisor.
 use std::path::{Path, PathBuf};
 mod child;
+pub(crate) mod preflight;
 pub(crate) use child::Child;
 use goblins_runtime::{
     Command, Event, Runtime, Source, TerminalId, TerminalStatus,

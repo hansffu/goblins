@@ -1,5 +1,5 @@
 //! Linux runtime engine and inherited-socket executable dispatch. Local and
-//! the preflight/maintenance facades remain during the phase 6 cutover.
+//! the maintenance facade remains during the phase 6 cutover.
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 mod binds;
 mod catalog;
@@ -13,8 +13,8 @@ mod evaluator;
 mod local;
 mod logging;
 pub mod maintenance;
-pub mod manifest;
 mod network;
+mod preflight;
 mod process;
 mod relay;
 mod results;

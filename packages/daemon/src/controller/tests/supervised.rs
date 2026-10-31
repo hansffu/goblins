@@ -155,3 +155,36 @@ fn shutdown_stops_and_reaps_stalled_supervisors_in_parallel() {
     }
     fs::remove_dir_all(state).unwrap();
 }
+
+#[test]
+fn startup_preflight_failure_keeps_the_previous_current_manifest() {
+    let _fork = unix::forking();
+    let mut d = daemon();
+    let state = d.state.clone();
+    let root = state.join("old-root");
+    fs::write(&root, "previous current").unwrap();
+    let previous = std::sync::Arc::new(goblins_runtime::config::ManifestLease::adopt(
+        state.join("old-manifest"),
+        Some(root.clone()),
+    ));
+    d.current_manifest = Some(previous.clone());
+    for mode in [
+        "preflight-error",
+        "preflight-sequence",
+        "preflight-duplicate",
+        "preflight-nonzero",
+        "preflight-eof",
+    ] {
+        d.executable = child::executable(&state, mode);
+        d.use_manifest(&state.join("new-manifest"));
+        assert!(std::sync::Arc::ptr_eq(
+            d.current_manifest.as_ref().unwrap(),
+            &previous
+        ));
+        assert_eq!(fs::read_to_string(&root).unwrap(), "previous current");
+    }
+    drop(previous);
+    drop(d);
+    assert!(!root.exists());
+    fs::remove_dir_all(state).unwrap();
+}

@@ -268,7 +268,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 .runtime
                 .ok_or("run requires --runtime (use the Nix-built goblins command)")?;
             let configuration = fs::canonicalize(&runtime)?.display().to_string();
-            let manifest = goblins_supervisor::manifest::read(&runtime)?;
+            let manifest = goblins_runtime::config::read(&runtime)?;
             if !manifest.goblins.contains_key(&config) {
                 return Err(format!(
                     "unknown configuration '{config}'; available: {}",
@@ -282,11 +282,9 @@ fn execute(cli: Cli) -> Result<i32> {
                 .into());
             }
             // Report an unknown or disallowed scope before starting.
-            goblins_supervisor::manifest::select_configuration(
-                manifest,
-                &config,
-                scope.as_deref(),
-            )?;
+            goblins_runtime::config::select(manifest, &config, scope.as_deref(), |name| {
+                std::env::var(name).ok()
+            })?;
             // Resolve a relative flake path against the caller's directory.
             let dev_shell = dev_shell
                 .map(|reference| -> goblins_controller::Result<String> {
@@ -352,12 +350,12 @@ fn execute(cli: Cli) -> Result<i32> {
             let runtime = cli
                 .runtime
                 .ok_or("configurations requires --runtime (use the Nix-built goblins command)")?;
-            let manifest = goblins_supervisor::manifest::read(&runtime)?;
+            let manifest = goblins_runtime::config::read(&runtime)?;
             // Configurations with allowNix use Nix rather than a Goblins dev
             // shell, so frontends don't offer one for them.
             let mut nix = Vec::new();
             for (name, config) in &manifest.goblins {
-                if goblins_supervisor::manifest::allows_nix(config)? {
+                if goblins_runtime::config::allows_nix(config)? {
                     nix.push(name);
                 }
             }

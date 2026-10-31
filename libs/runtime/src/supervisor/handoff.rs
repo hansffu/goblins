@@ -524,6 +524,31 @@ impl Decoder {
                     adopted: Some(transfer),
                 })
             }
+            "Preflight" => {
+                let supervisor_api = p.take("supervisor_api")?;
+                let path = p.take("path")?;
+                let directory: PathBuf = p.take("directory")?;
+                let sequence = p.take("sequence")?;
+                p.finish()?;
+                valid_preflight(supervisor_api, &directory)?;
+                Some(Received {
+                    message: Message::Preflight {
+                        supervisor_api,
+                        path,
+                        directory,
+                        sequence,
+                    },
+                    adopted: None,
+                })
+            }
+            "PreflightFailed" => {
+                let error = p.take("error")?;
+                p.finish()?;
+                Some(Received {
+                    message: Message::PreflightFailed { error },
+                    adopted: None,
+                })
+            }
             "Stopping" => {
                 p.finish()?;
                 Some(Received {

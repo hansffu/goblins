@@ -1,5 +1,6 @@
 """Private scope startup and descriptor lifetime, without daemon/CLI startup."""
 import array
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -274,3 +275,97 @@ class ScopeProcessTests(unittest.TestCase):
         self.assertTrue(select.select([read], [], [], 10)[0])
         self.assertEqual(os.read(read, 1), b"")
         self.assertFalse((self.root / "terminal.sock").exists())
+
+    def preflight(self, path, sequence=0, **overrides):
+        control, child = self.pair()
+        pid = self.spawn(child)
+        child.close()
+        params = dict(supervisor_api=1, path=str(path),
+                      directory=str(self.root / "manifests"), sequence=sequence)
+        params.update(overrides)
+        self.send(control, "Preflight", params)
+        return control, pid
+
+    def test_preflight_adopts_an_unrooted_manifest_then_exits_without_an_engine(self):
+        path = self.root / "manifest.json"
+        path.write_text(json.dumps(dict(api=2, helper_api=6, goblins={})))
+        # Relative paths retain the inherited working directory.
+        control, pid = self.preflight(os.path.relpath(path), sequence=17)
+        reply = self.receive(control)
+        self.assertEqual(reply["method"], "Event.Manifest")
+        params = reply["params"]
+        self.assertEqual(params["sequence"], 17)
+        self.assertEqual(params["path"], os.path.relpath(path))
+        self.assertIsNone(params["root"])
+        self.assertIsNone(params["owner"])
+        self.assertGreater(params["transfer"], 0)
+        self.send(control, "Adopted", dict(transfer=params["transfer"]))
+        self.assertEqual(self.reap(pid), 0)
+        self.assertEqual(control.recv(1), b"")
+        self.assertFalse((self.root / "manifests").exists())
+        self.assertFalse((self.root / "terminal.sock").exists())
+
+    def test_preflight_validation_error_is_one_normal_result_before_successful_exit(self):
+        path = self.root / "invalid.json"
+        path.write_text(json.dumps(dict(api=1, helper_api=6, goblins={})))
+        control, pid = self.preflight(path)
+        self.assertEqual(self.receive(control), dict(
+            jsonrpc="2.0", method="PreflightFailed",
+            params=dict(error="incompatible manifest/helper API")))
+        self.assertEqual(self.reap(pid), 0)
+        self.assertEqual(control.recv(1), b"")
+        self.assertFalse((self.root / "manifests").exists())
+
+    def test_preflight_rejects_incompatible_api_and_relative_root_directory(self):
+        path = self.root / "manifest.json"
+        path.write_text(json.dumps(dict(api=2, helper_api=6, goblins={})))
+        for overrides in [dict(supervisor_api=2), dict(directory="relative")]:
+            with self.subTest(overrides=overrides):
+                control, pid = self.preflight(path, **overrides)
+                self.assertNotEqual(self.reap(pid), 0)
+                self.assertEqual(control.recv(1), b"")
+                self.assertFalse((self.root / "manifests").exists())
+
+    def test_preflight_rejects_wrong_adoption_and_already_queued_extra_input(self):
+        path = self.root / "manifest.json"
+        path.write_text(json.dumps(dict(api=2, helper_api=6, goblins={})))
+        for mode in ["wrong", "duplicate", "partial"]:
+            with self.subTest(mode=mode):
+                control, pid = self.preflight(path)
+                params = self.receive(control)["params"]
+                transfer = params["transfer"]
+                body = json.dumps(dict(jsonrpc="2.0", method="Adopted",
+                                       params=dict(transfer=transfer + (mode == "wrong")))).encode()
+                frame = (f"Content-Length: {len(body)}\r\nDescriptor-Count: 0\r\n\r\n".encode() + body)
+                # One send queues the terminal ACK and suffix together.
+                suffix = frame if mode == "duplicate" else b"C" if mode == "partial" else b""
+                control.sendall(frame + suffix)
+                self.assertNotEqual(self.reap(pid), 0)
+                try:
+                    self.assertEqual(control.recv(1), b"")
+                except ConnectionResetError:
+                    pass  # Closing unread trailing input is an intentional failure.
+
+    def test_preflight_rejects_a_multipart_handoff_instead_of_adoption(self):
+        path = self.root / "manifest.json"
+        path.write_text(json.dumps(dict(api=2, helper_api=6, goblins={})))
+        control, pid = self.preflight(path)
+        self.assertEqual(self.receive(control)["method"], "Event.Manifest")
+        resources = self.root / "unexpected-resources"
+        resources.mkdir()
+        lock = os.open(resources / ".gc-lease", os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        read, write = os.pipe2(os.O_CLOEXEC)
+        self.addCleanup(os.close, read)
+        handoff = dict(transfer=99, count=2, workspace={"$fd": 0}, working_directory=None,
+                       dev_shell="null", docker=False,
+                       leases=[dict(directory=str(resources), lock={"$fd": 1})], more=True)
+        self.send(control, "Command.Start", dict(handoff=handoff), [write, lock])
+        os.close(write)
+        control.settimeout(3)
+        self.assertEqual(control.recv(1), b"")
+        # The rejected raw descriptors close before the control EOF is visible.
+        self.assertTrue(select.select([read], [], [], 0)[0])
+        self.assertEqual(os.read(read, 1), b"")
+        self.assertNotEqual(self.reap(pid), 0)

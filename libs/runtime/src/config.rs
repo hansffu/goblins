@@ -1,4 +1,8 @@
+mod manifest;
 use crate::Result;
+pub use manifest::{
+    allows_nix, build_spec, editor, read, run_targets, select, select_inherited, validate,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -134,6 +138,47 @@ impl ManifestLease {
         let mut path = root.as_os_str().to_os_string();
         path.push(".ownership");
         path.into()
+    }
+    /// Reserve an absent root for construction. Keep exclusive ownership until
+    /// the creating command and its process group have finished.
+    pub fn begin_root(path: PathBuf, root: PathBuf) -> Result<Self> {
+        let lock = crate::lease::flock(&Self::transfer_path(&root), true)?
+            .ok_or_else(|| format!("manifest root is already owned: {}", root.display()))?;
+        match std::fs::symlink_metadata(&root) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.into()),
+            Ok(_) => return Err(format!("manifest root already exists: {}", root.display()).into()),
+        }
+        // No root-removing guard exists before the absence check succeeds.
+        Ok(Self {
+            path,
+            root: Some(root),
+            transfer: Some(lock),
+        })
+    }
+    /// Verify creation before allowing independent shared receiver ownership.
+    /// Lock conversions need not be atomic: a competing constructor in the
+    /// conversion gap must now reject the existing root before adopting it.
+    pub fn finish_root(&mut self) -> Result<()> {
+        self.finish_root_with(|fd| {
+            goblins_unix::cvt(unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) }).map(|_| ())
+        })
+    }
+    fn finish_root_with(
+        &mut self,
+        downgrade: impl FnOnce(std::os::fd::RawFd) -> std::io::Result<()>,
+    ) -> Result<()> {
+        use std::os::fd::AsRawFd;
+        let root = self.root.as_ref().ok_or("manifest has no root")?;
+        if !std::fs::symlink_metadata(root)?.file_type().is_symlink() {
+            return Err("manifest root must be a symlink".into());
+        }
+        let lock = self
+            .transfer
+            .as_ref()
+            .ok_or("manifest root has no construction owner")?;
+        downgrade(lock.as_raw_fd())?;
+        Ok(())
     }
     pub(crate) fn root(&self) -> Option<&std::path::Path> {
         self.root.as_deref()
@@ -402,4 +447,37 @@ fn substitute(
             Ok(argument)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod root_tests {
+    use super::*;
+    #[test]
+    fn failed_downgrade_keeps_attempt_cleanup_and_respects_a_racing_owner() {
+        let _no_forks = goblins_unix::no_forks();
+        for contended in [false, true] {
+            let dir = goblins_unix::temp_directory().unwrap();
+            let root = dir.join("root");
+            let mut lease = ManifestLease::begin_root("/manifest".into(), root.clone()).unwrap();
+            std::os::unix::fs::symlink("/owned", &root).unwrap();
+            let error = lease
+                .finish_root_with(|fd| {
+                    // Model a failed non-atomic conversion: its EX may be lost.
+                    goblins_unix::cvt(unsafe { libc::flock(fd, libc::LOCK_UN) })?;
+                    Err(std::io::ErrorKind::PermissionDenied.into())
+                })
+                .unwrap_err();
+            assert!(error.downcast_ref::<std::io::Error>().is_some());
+            let racing = contended.then(|| {
+                crate::lease::flock(&ManifestLease::transfer_path(&root), false)
+                    .unwrap()
+                    .unwrap()
+            });
+            drop(lease);
+            assert_eq!(root.is_symlink(), contended);
+            drop(racing);
+            // Contended failure intentionally leaves cleanup to existing GC.
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
 }

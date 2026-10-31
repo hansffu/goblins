@@ -23,8 +23,8 @@ pub struct Cancellation {
     parent: Option<Arc<AtomicBool>>,
     /// When the work times out, and its time limit for the message.
     deadline: Option<(Instant, Duration)>,
-    /// While a scope handles one startup request, a following request (Leave)
-    /// or EOF cancels it. The socket stays unread for the scope event loop.
+    /// During scope setup or preflight, following input or EOF cancels work.
+    /// The control socket stays unread for the protocol dispatcher.
     readable: Option<Arc<OwnedFd>>,
 }
 impl Cancellation {

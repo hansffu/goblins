@@ -824,7 +824,12 @@ impl Controller {
     /// Start with the manifest the server was started with as current, once
     /// it validates. Call before the first launch.
     pub fn use_manifest(&mut self, path: &Path) {
-        match goblins_supervisor::manifest::lease(path, &self.state.join("manifests"), 0) {
+        match crate::supervised::preflight::lease(
+            &self.executable,
+            path,
+            &self.state.join("manifests"),
+            0,
+        ) {
             Ok(lease) => self.current_manifest = Some(std::sync::Arc::new(lease)),
             Err(e) => eprintln!(
                 "goblins: no current configuration from {}: {e}",

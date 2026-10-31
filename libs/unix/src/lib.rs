@@ -2,7 +2,7 @@
 use std::{
     ffi::CString,
     fs::{self, File},
-    io,
+    io::{self, Read},
     os::{
         fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
         unix::fs::{MetadataExt, OpenOptionsExt},
@@ -231,3 +231,66 @@ pub fn no_forks() -> std::sync::RwLockReadGuard<'static, ()> {
 }
 
 pub mod cleanup;
+
+/// Read a bounded regular file without blocking on a FIFO or device.
+pub fn read_regular(path: &Path, limit: u64, description: &str) -> Result<Vec<u8>> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| format!("cannot open {description} {}: {e}", path.display()))?;
+    if !file.metadata()?.is_file() {
+        return Err(format!("{description} must be a regular file").into());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{description} exceeds {} MiB", limit / (1024 * 1024)).into());
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    #[test]
+    fn bounded_regular_reads_reject_fifo_device_and_directory_without_waiting() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_directory().unwrap();
+        let fifo = root.join("fifo");
+        let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        for path in [&fifo, &root, Path::new("/dev/null")] {
+            assert_eq!(
+                read_regular(path, 1024 * 1024, "configuration")
+                    .unwrap_err()
+                    .to_string(),
+                "configuration must be a regular file"
+            );
+        }
+        let file = root.join("closure");
+        File::create(&file)
+            .unwrap()
+            .set_len(8 * 1024 * 1024)
+            .unwrap();
+        assert_eq!(
+            read_regular(&file, 8 * 1024 * 1024, "configuration")
+                .unwrap()
+                .len(),
+            8 * 1024 * 1024
+        );
+        File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
+        assert_eq!(
+            read_regular(&file, 8 * 1024 * 1024, "configuration")
+                .unwrap_err()
+                .to_string(),
+            "configuration exceeds 8 MiB"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+}

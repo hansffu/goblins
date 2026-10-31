@@ -33,6 +33,17 @@ pub struct SupervisorStart {
 }
 pub enum Message {
     SupervisorStart(SupervisorStart),
+    /// Startup-only validation/rooting in one pinned child, without an engine.
+    Preflight {
+        supervisor_api: u32,
+        path: PathBuf,
+        directory: PathBuf,
+        sequence: u64,
+    },
+    /// An operation error; the one-shot child still completes successfully.
+    PreflightFailed {
+        error: String,
+    },
     Command(Command),
     Event(Event),
     /// Stop reached the dispatcher; cleanup is not yet complete.
@@ -158,6 +169,23 @@ impl Encoder {
                     .transpose()?;
                 b.value("handoff", &handoff)?;
             }
+            Message::Preflight {
+                supervisor_api,
+                path,
+                directory,
+                sequence,
+            } => {
+                valid_preflight(*supervisor_api, directory)?;
+                b.method = "Preflight";
+                b.value("supervisor_api", supervisor_api)?;
+                b.value("path", path)?;
+                b.value("directory", directory)?;
+                b.value("sequence", sequence)?;
+            }
+            Message::PreflightFailed { error } => {
+                b.method = "PreflightFailed";
+                b.value("error", error)?;
+            }
             Message::Command(command) => encode_command(command, &mut b)?,
             Message::Event(event) => encode_event(event, &mut b)?,
             Message::Stopping => b.method = "Stopping",
@@ -190,6 +218,15 @@ fn invalid(message: &str) -> io::Error {
 }
 fn other(error: impl std::fmt::Display) -> io::Error {
     invalid(&error.to_string())
+}
+fn valid_preflight(api: u32, directory: &std::path::Path) -> io::Result<()> {
+    if api != API {
+        return Err(invalid("incompatible supervisor API"));
+    }
+    if !directory.is_absolute() {
+        return Err(invalid("invalid preflight directory"));
+    }
+    Ok(())
 }
 fn valid_start(start: &SupervisorStart) -> io::Result<()> {
     if start.supervisor_api != API {

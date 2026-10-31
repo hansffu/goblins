@@ -100,6 +100,10 @@ fn peer() {
         }
         thread::sleep(Duration::from_millis(1));
     };
+    if mode.starts_with("preflight-") {
+        super::preflight::tests::peer(&root, &mode, startup, channel);
+        return;
+    }
     assert!(matches!(startup.message, Message::SupervisorStart(_)));
     if mode != "unacked"
         && !mode.starts_with("close-")

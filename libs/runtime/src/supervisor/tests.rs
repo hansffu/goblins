@@ -1226,3 +1226,41 @@ fn member_startup_version_rejection_keeps_sender_ownership_until_receiver_eof() 
     assert!(!root.join("r0").exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn preflight_scalar_vocabulary_is_strict_and_preserves_relative_manifest_paths() {
+    let request = || Message::Preflight {
+        supervisor_api: API,
+        path: "relative/config.json".into(),
+        directory: "/state/manifests".into(),
+        sequence: 17,
+    };
+    roundtrip(request());
+    roundtrip(Message::PreflightFailed {
+        error: "original operation diagnostic".into(),
+    });
+    for (key, value) in [
+        ("supervisor_api", json!(2)),
+        ("directory", json!("relative")),
+        ("unexpected", json!(true)),
+    ] {
+        let mut prepared = Encoder::default().prepare(request()).unwrap();
+        let mut frame = prepared.frames.pop_front().unwrap();
+        frame.value["params"][key] = value;
+        assert!(Decoder::default().receive(frame).is_err(), "{key}");
+    }
+    assert!(
+        Encoder::default()
+            .prepare(Message::Preflight {
+                supervisor_api: API,
+                path: "/config".into(),
+                directory: "relative".into(),
+                sequence: 0,
+            })
+            .is_err()
+    );
+    let mut prepared = Encoder::default().prepare(request()).unwrap();
+    let mut frame = prepared.frames.pop_front().unwrap();
+    frame.fds.push(fs::File::open("/dev/null").unwrap().into());
+    assert!(Decoder::default().receive(frame).is_err());
+}
