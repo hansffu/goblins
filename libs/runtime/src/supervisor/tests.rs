@@ -61,7 +61,7 @@ fn pipe() -> (Fd, fs::File) {
     let (a, b) = unix::pipe().unwrap();
     (a.into(), b.into())
 }
-fn handoff(root: &Path, count: usize) -> Handoff {
+pub(super) fn handoff(root: &Path, count: usize) -> Handoff {
     let leases = (0..count)
         .map(|n| {
             let path = root.join(format!("r{n}"));

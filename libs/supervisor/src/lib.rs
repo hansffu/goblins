@@ -14,6 +14,7 @@ pub mod manifest;
 mod network;
 mod process;
 mod relay;
+mod results;
 mod sandbox_etc;
 mod scope_client;
 mod scope_docker;
@@ -78,6 +79,15 @@ pub struct Local {
     stopping: bool,
     /// Events reported and not yet polled.
     events: VecDeque<Event>,
+    /// Accepted dispatcher work paused by bounded event output.
+    deferred: goblins_runtime::supervisor::outbound::Commands,
+    /// Exports accepted before Stop are materialized before teardown even
+    /// when their result must wait for an event slot.
+    cached_exports: BTreeMap<String, std::result::Result<Box<Handoff>, String>>,
+    worker_event: Option<Event>,
+    scope_failure: Option<String>,
+    collect_cursor: usize,
+    round: usize,
     /// A round is being polled: its sources were collected.
     polling: bool,
     ended: bool,

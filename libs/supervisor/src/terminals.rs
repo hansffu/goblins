@@ -22,6 +22,7 @@ pub(crate) struct Terminals {
     entries: BTreeMap<TerminalId, Entry>,
     log: Option<ServerLog>,
     log_path: Option<PathBuf>,
+    cursor: Option<TerminalId>,
 }
 impl Terminals {
     pub fn new(directory: &Path, detached: bool) -> crate::Result<Self> {
@@ -106,6 +107,10 @@ impl Terminals {
         cols: u16,
         events: &mut VecDeque<Event>,
     ) {
+        assert!(
+            events.len() < crate::local::EVENTS,
+            "attach needs event capacity"
+        );
         let mut diagnostic = None;
         let result: crate::Result<()> = match self.entries.get_mut(&id) {
             Some(entry) => {
@@ -162,6 +167,10 @@ impl Terminals {
         }
     }
     pub fn detach(&mut self, id: TerminalId, events: &mut VecDeque<Event>) {
+        assert!(
+            events.len() < crate::local::EVENTS,
+            "detach needs event capacity"
+        );
         if let Some(entry) = self.entries.get_mut(&id) {
             let error = entry.io.detach().err().map(|e| e.to_string());
             entry.reported = entry.io.status();
@@ -173,10 +182,22 @@ impl Terminals {
         }
     }
     pub fn tick(&mut self, ended: bool, events: &mut VecDeque<Event>) {
+        if events.len() == crate::local::EVENTS {
+            return;
+        }
         if let Some(log) = &mut self.log {
             log.tick();
         }
-        self.entries.retain(|id, entry| {
+        let ids: Vec<_> = self.entries.keys().copied().collect();
+        let split = self
+            .cursor
+            .map_or(0, |cursor| ids.partition_point(|id| *id <= cursor));
+        for id in ids[split..].iter().chain(&ids[..split]).copied() {
+            if events.len() == crate::local::EVENTS {
+                break;
+            }
+            self.cursor = Some(id);
+            let entry = self.entries.get_mut(&id).unwrap();
             let error = entry.io.tick().err().map(|e| e.to_string());
             if error.is_some() {
                 entry.io.interrupted = true;
@@ -193,14 +214,16 @@ impl Terminals {
             }
             if entry.exposed && (status != entry.reported || error.is_some()) {
                 events.push_back(Event::Terminal {
-                    terminal: *id,
+                    terminal: id,
                     status,
                     error,
                 });
                 entry.reported = status;
             }
-            !remove
-        });
+            if remove {
+                self.entries.remove(&id);
+            }
+        }
     }
     pub fn drained(&self) -> bool {
         self.entries.is_empty() && self.log.as_ref().is_none_or(ServerLog::drained)

@@ -16,6 +16,7 @@ const CONNECTIONS: usize = 8;
 pub(crate) struct Relay {
     next: u64,
     peers: BTreeMap<u64, Peer>,
+    closing: VecDeque<u64>,
 }
 struct Waiting {
     id: Value,
@@ -36,6 +37,10 @@ struct Peer {
 }
 impl Relay {
     pub fn open(&mut self, stream: UnixStream, events: &mut VecDeque<Event>) {
+        assert!(
+            events.len() < crate::local::EVENTS,
+            "accept only with event capacity"
+        );
         if self.peers.len() >= CONNECTIONS || stream.set_nonblocking(true).is_err() {
             return;
         }
@@ -89,10 +94,24 @@ impl Relay {
         }
     }
     pub fn end(&mut self, events: &mut VecDeque<Event>) {
-        for (connection, _) in std::mem::take(&mut self.peers) {
+        // Close transports now; at most CONNECTIONS bounded closure identities
+        // stay in this producer until the shared event output has capacity.
+        self.closing
+            .extend(std::mem::take(&mut self.peers).into_keys());
+        self.closed_events(events);
+    }
+    fn closed_events(&mut self, events: &mut VecDeque<Event>) {
+        while events.len() < crate::local::EVENTS {
+            let Some(connection) = self.closing.pop_front() else {
+                break;
+            };
             events.push_back(Event::SandboxClosed { connection });
         }
     }
+    pub fn drained(&self) -> bool {
+        self.peers.is_empty() && self.closing.is_empty()
+    }
+
     pub fn tick(
         &mut self,
         capabilities: &Capabilities<'_>,
@@ -108,7 +127,13 @@ impl Relay {
         events: &mut VecDeque<Event>,
         now: Instant,
     ) {
+        self.closed_events(events);
         self.peers.retain(|connection, peer| {
+            // Reading may yield a call and a subsequent closure. Reserve both
+            // before advancing this producer; never coalesce semantic events.
+            if events.len() + 2 > crate::local::EVENTS {
+                return true;
+            }
             peer.flush();
             if let Some(call) = peer.read(capabilities, stopping, now) {
                 events.push_back(Event::SandboxCall {

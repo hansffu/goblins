@@ -24,6 +24,7 @@ use std::{
 const LOG_LIMIT: u64 = 16 * 1024 * 1024;
 /// Finished host jobs whose output stays readable per sandbox.
 const KEPT: usize = 8;
+pub(crate) const EVENTS: usize = 16;
 
 use goblins_runtime::{Command, Event, Runtime, Stdio};
 
@@ -88,6 +89,12 @@ impl Local {
             buffer: vec![],
             stopping: false,
             events: VecDeque::new(),
+            deferred: Default::default(),
+            cached_exports: BTreeMap::new(),
+            worker_event: None,
+            scope_failure: None,
+            collect_cursor: 0,
+            round: 0,
             polling: false,
             ended: false,
             settled: false,
@@ -105,6 +112,10 @@ impl Local {
     }
     /// Report an event in the current round, or the next.
     fn report(&mut self, event: Event) {
+        assert!(
+            self.events.len() < EVENTS,
+            "event producer needs capacity before advancing"
+        );
         self.events.push_back(event);
     }
     /// A terminal buffer must not retain sandbox resources. A host job's
@@ -124,7 +135,12 @@ impl Local {
         }
     }
     fn finish_stop(&mut self) {
-        if self.pending_stop.is_some()
+        self.collect_scope_failure();
+        if self.events.len() < EVENTS
+            && self.deferred.is_empty()
+            && self.cached_exports.is_empty()
+            && self.relay.drained()
+            && self.pending_stop.is_some()
             && self.jobs.is_empty()
             && !self
                 .events
@@ -137,15 +153,61 @@ impl Local {
             self.report(Event::Stopped { exit_code });
         }
     }
-    /// Collect a round: worker results, init's events, new request
-    /// connections and the payload's exit.
-    fn collect(&mut self) {
-        if self.ended {
-            self.release_resources();
+    fn export_result(&self) -> Result<Box<goblins_runtime::Handoff>, String> {
+        match self.capability() {
+            Some(inheritance) => inheritance
+                .handoff()
+                .map(Box::new)
+                .map_err(|e| e.to_string()),
+            None => Err("the goblin has not started".into()),
         }
-        for _ in 0..16 {
-            match self.worker.results.try_recv() {
+    }
+    fn preserve_exports(&mut self) {
+        let members: Vec<_> = self.deferred.export_members().map(str::to_string).collect();
+        for member in members {
+            if !self.cached_exports.contains_key(&member) {
+                let result = self.export_result();
+                self.cached_exports.insert(member, result);
+            }
+        }
+    }
+    fn collect_deferred(&mut self) {
+        for _ in 0..EVENTS {
+            if self.events.len() == EVENTS {
+                break;
+            }
+            if let Some(event) = self.deferred.pop_cancelled() {
+                self.report(event);
+                continue;
+            }
+            if self.events.len() + 2 > EVENTS {
+                break;
+            }
+            let Some(command) = self.deferred.pop() else {
+                break;
+            };
+            if let Err(command) = self.dispatch(command) {
+                self.deferred.restore_front(command);
+                break;
+            }
+        }
+    }
+    fn collect_worker(&mut self) {
+        for _ in 0..EVENTS {
+            if self.events.len() == EVENTS {
+                break;
+            }
+            let received = self
+                .worker_event
+                .take()
+                .map(Ok)
+                .unwrap_or_else(|| self.worker.results.try_recv());
+            match received {
                 Ok(event) => {
+                    if matches!(event, Event::Started { .. }) && self.events.len() + 2 > EVENTS {
+                        self.worker_event = Some(event);
+                        break;
+                    }
                     match &event {
                         // Finished work no longer needs its token.
                         Event::Preview { approval: id, .. }
@@ -228,13 +290,24 @@ impl Local {
                 }
             }
         }
-        // Read after results too: Stopped must not hide a failure that the
-        // worker published immediately before it, even with a full result queue.
-        if let Ok(name) = self.worker.scope_failures.try_recv() {
+        // A critical scope failure is sent before the final worker result.
+        self.collect_scope_failure();
+    }
+    fn collect_scope_failure(&mut self) {
+        if self.scope_failure.is_none() {
+            self.scope_failure = self.worker.scope_failures.try_recv().ok();
+        }
+        if self.events.len() < EVENTS
+            && let Some(name) = self.scope_failure.take()
+        {
             self.report(Event::ScopeFailed { name });
         }
-        self.receive_init();
+    }
+    fn collect_sandbox(&mut self) {
         for _ in 0..8 {
+            if self.events.len() == EVENTS {
+                break;
+            }
             let Some(listener) = &self.listener else {
                 break;
             };
@@ -253,19 +326,46 @@ impl Local {
                 &mut self.events,
             );
         }
-        self.finish_host_jobs();
-        self.finish_stop();
-        self.terminals.tick(self.ended, &mut self.events);
+    }
+    fn collect_payload(&mut self) {
         // Observe process exit independently of a worker blocked on Nix.
         // A pidfd pins the process identity, avoiding PID-reuse races.
-        if self
-            .exit_watch
-            .as_ref()
-            .is_some_and(|fd| unix::readable(fd.as_raw_fd(), 0).unwrap_or(true))
+        if self.events.len() < EVENTS
+            && self
+                .exit_watch
+                .as_ref()
+                .is_some_and(|fd| unix::readable(fd.as_raw_fd(), 0).unwrap_or(true))
         {
             self.exit_watch = None;
             self.report(Event::PayloadExited);
         }
+    }
+    /// Rotate the first producer each round; full output pauses every I/O
+    /// producer without preventing direct cancellation or Stop dispatch.
+    fn collect(&mut self) {
+        if self.ended {
+            self.release_resources();
+        }
+        for offset in 0..8 {
+            match (self.collect_cursor + offset) % 8 {
+                0 => self.collect_deferred(),
+                1 => self.collect_worker(),
+                2 => self.collect_scope_failure(),
+                3 => self.receive_init(),
+                4 => self.collect_sandbox(),
+                5 => self.finish_host_jobs(),
+                6 => {
+                    self.finish_stop();
+                    self.terminals.tick(self.ended, &mut self.events);
+                }
+                7 => self.collect_payload(),
+                _ => unreachable!(),
+            }
+        }
+        self.collect_cursor = (self.collect_cursor + 1) % 8;
+        // Final lifecycle follows all producers in this round, independent
+        // of which source had first capacity, and still respects the cap.
+        self.finish_stop();
     }
     /// Read init's events without blocking.
     fn receive_init(&mut self) {
@@ -273,6 +373,9 @@ impl Local {
             self.buffer = vec![0; init::MAX_MESSAGE];
         }
         for _ in 0..256 {
+            if self.events.len() == EVENTS {
+                return;
+            }
             let Some(socket) = &self.init else {
                 return;
             };
@@ -455,6 +558,9 @@ impl Local {
     fn finish_host_jobs(&mut self) {
         let mut index = 0;
         while index < self.jobs.len() {
+            if self.events.len() == EVENTS {
+                return;
+            }
             if matches!(self.jobs[index].child.try_wait(), Ok(None)) {
                 index += 1;
                 continue;
@@ -491,8 +597,8 @@ fn prune(jobs: &Path) {
     }
 }
 
-impl Runtime for Local {
-    fn send(&mut self, command: Command) -> Result<(), Command> {
+impl Local {
+    fn dispatch(&mut self, command: Command) -> Result<(), Command> {
         // The daemon checks too; a command the goblin may not be sent fails
         // the goblin closed instead of running, and so does one that needs a
         // capability before `Started` has reported them.
@@ -561,6 +667,10 @@ impl Runtime for Local {
                 self.worker.cancel.cancel();
                 self.cancels.clear();
                 self.stopping = true;
+                self.prepared.clear();
+                for job in &mut self.jobs {
+                    job.lifetime.take();
+                }
             }
             Command::Spawn {
                 id,
@@ -581,13 +691,10 @@ impl Runtime for Local {
                 let _ = self.to_init(&init::Command::KillAll {}, &[]);
             }
             Command::Export { member } => {
-                let result = match self.capability() {
-                    Some(inheritance) => inheritance
-                        .handoff()
-                        .map(Box::new)
-                        .map_err(|e| e.to_string()),
-                    None => Err("the goblin has not started".into()),
-                };
+                let result = self
+                    .cached_exports
+                    .remove(&member)
+                    .unwrap_or_else(|| self.export_result());
                 self.report(Event::Exported { member, result });
             }
             Command::Start(handoff) => {
@@ -638,6 +745,13 @@ impl Runtime for Local {
                 }
             }
             command => {
+                // Until final lifecycle, an open worker still accepts work
+                // with the already-cancelled child token. Its atomic close/
+                // drain supplies the correlated cancellation outcome.
+                if self.pending_stop.is_some() || self.ended || self.sandbox_stopped {
+                    self.report(crate::worker::cancelled(command));
+                    return Ok(());
+                }
                 let id = command.cancel_id();
                 let cancel = self.worker.cancel.child();
                 match self.worker.commands.try_send((command, cancel.clone())) {
@@ -652,18 +766,59 @@ impl Runtime for Local {
         }
         Ok(())
     }
+}
+impl Runtime for Local {
+    fn send(&mut self, command: Command) -> Result<(), Command> {
+        match command {
+            command @ (Command::Cancel(_)
+            | Command::CancelProcess { .. }
+            | Command::CancelHostJob { .. }) => {
+                self.deferred.push(command)?;
+                while let Some(command) = self.deferred.pop_cancellation() {
+                    self.dispatch(command)?;
+                }
+                Ok(())
+            }
+            command @ (Command::Stop | Command::ScopeFailed) => {
+                self.preserve_exports();
+                self.dispatch(command)
+            }
+            command @ (Command::SandboxSend { .. }
+            | Command::SandboxClose { .. }
+            | Command::ScopeMembership { .. }) => self.dispatch(command),
+            command => {
+                if self.events.len() + 2 > EVENTS || !self.deferred.is_empty() {
+                    self.deferred.push(command)
+                } else {
+                    self.dispatch(command)
+                }
+            }
+        }
+    }
     fn poll(&mut self) -> Option<Event> {
         // Every round collects every source, behind what `send` reported.
         if !self.polling {
             self.collect();
             self.polling = true;
+            self.round = 0;
         }
-        let event = self.events.pop_front();
+        let event = if self.round == EVENTS {
+            None
+        } else {
+            self.events.pop_front()
+        };
         self.polling = event.is_some();
+        self.round += usize::from(event.is_some());
         // Once the initial lifecycle/results have drained, later terminal
         // status notifications cannot acquire sandbox authority again.
         if event.is_none()
+            && self.events.is_empty()
+            && self.scope_failure.is_none()
+            && self.relay.drained()
             && self.sandbox_stopped
+            && self.deferred.is_empty()
+            && self.cached_exports.is_empty()
+            && self.worker_event.is_none()
             && self.jobs.is_empty()
             && self.prepared.is_empty()
             && self
@@ -680,7 +835,12 @@ impl Runtime for Local {
         self.released
     }
     fn ended(&self) -> bool {
-        self.ended && self.released && self.events.is_empty() && self.terminals.drained()
+        self.ended
+            && self.released
+            && self.events.is_empty()
+            && self.deferred.is_empty()
+            && self.cached_exports.is_empty()
+            && self.terminals.drained()
     }
 }
 
@@ -707,7 +867,7 @@ mod tests {
             cancel: Cancel::default(),
             failed_scope: Default::default(),
             scope_failures: mpsc::sync_channel(1).1,
-            commands,
+            commands: crate::worker::WorkSender::new(commands),
             memberships: mpsc::sync_channel(1).0,
             results,
             endpoints,
@@ -745,7 +905,12 @@ mod tests {
         failure.try_send("work".into()).unwrap();
         drop(sender);
         let mut local = ready(worker);
-        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        let mut events = vec![];
+        for _ in 0..2 {
+            let round: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            events.extend(round);
+        }
         assert_eq!(
             events
                 .iter()
@@ -1585,6 +1750,18 @@ mod tests {
 
     #[test]
     fn a_command_the_goblin_may_not_be_sent_fails_it_closed() {
+        let (fresh_worker, fresh_received, _fresh_results) = worker();
+        let mut fresh = ready(fresh_worker);
+        fresh
+            .send(Command::Preview {
+                approval: 0,
+                package: "hello".into(),
+            })
+            .unwrap();
+        let (command, token) = fresh_received.try_recv().unwrap();
+        assert!(matches!(command, Command::Preview { approval: 0, .. }));
+        assert!(token.check().is_ok(), "fresh live work is not cancelled");
+        drop(fresh);
         let (worker, received, results) = worker();
         let mut local = ready(worker);
         results
@@ -1616,6 +1793,61 @@ mod tests {
             })
             .unwrap();
         assert!(received.try_recv().is_ok());
+        // The open worker route is preserved, but Stop's parent token is
+        // already cancelled. Final drain completes each accepted request.
+        local
+            .send(Command::Preview {
+                approval: 2,
+                package: "hello".into(),
+            })
+            .unwrap();
+        let (command, token) = received.try_recv().unwrap();
+        assert!(matches!(command, Command::Preview { approval: 2, .. }));
+        assert!(token.check().is_err());
+        results
+            .send(crate::worker::cancelled(Command::Preview {
+                approval: 1,
+                package: "hello".into(),
+            }))
+            .unwrap();
+        results.send(crate::worker::cancelled(command)).unwrap();
+        results.send(Event::Stopped { exit_code: None }).unwrap();
+        drop(results);
+        let mut output = vec![];
+        for _ in 0..2 {
+            output.extend(std::iter::from_fn(|| local.poll()));
+        }
+        for approval in [1, 2] {
+            assert_eq!(output.iter().filter(|e|matches!(e,Event::Preview {approval:actual,result:Err(_)} if *actual==approval)).count(),1);
+        }
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, Event::Stopped { .. }))
+                .count(),
+            1
+        );
+        assert!(local.released());
+        assert!(local.jobs.is_empty());
+        assert!(local.worker.cancel.check().is_err());
+        // Observed final lifecycle never reopens the worker or authority.
+        local
+            .send(Command::Preview {
+                approval: 3,
+                package: "hello".into(),
+            })
+            .unwrap();
+        assert!(received.try_recv().is_err());
+        let output: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            output.as_slice(),
+            [Event::Preview {
+                approval: 3,
+                result: Err(_)
+            }]
+        ));
+        assert!(local.released());
+        assert!(local.jobs.is_empty());
     }
 
     #[test]
@@ -1850,6 +2082,504 @@ mod tests {
         assert!(root.exists());
         drop(refused);
         assert!(!root.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn full_event_output_pauses_init_and_keeps_cancel_stop_and_every_result() {
+        let _no_forks = unix::no_forks();
+        let (worker, _commands, _results) = worker();
+        let mut local = ready(worker);
+        let (control, sandbox) = init::pair().unwrap();
+        local.init = Some(control);
+        for id in 0..64 {
+            init::send(
+                sandbox.as_raw_fd(),
+                &serde_json::to_vec(&init::Event::Exited {
+                    id,
+                    code: Some(0),
+                    signal: None,
+                })
+                .unwrap(),
+                &[],
+            )
+            .unwrap();
+        }
+        drop(sandbox);
+        for _ in 0..EVENTS {
+            local.report(Event::Mode { server: false });
+        }
+        local.collect();
+        assert_eq!(local.events.len(), EVENTS);
+        assert!(unix::readable(local.init.as_ref().unwrap().as_raw_fd(), 0).unwrap());
+        let cancelled = Cancel::default();
+        local.cancels.insert(9, cancelled.clone());
+        local.send(Command::Cancel(9)).unwrap();
+        local.send(Command::Stop).unwrap();
+        assert!(cancelled.check().is_err());
+        assert!(local.worker.cancel.check().is_err());
+        assert_eq!(local.events.len(), EVENTS);
+        let mut output = vec![];
+        for _ in 0..8 {
+            let round: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            assert!(local.events.len() <= EVENTS);
+            output.extend(round);
+        }
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, Event::Mode { .. }))
+                .count(),
+            EVENTS
+        );
+        let ids: Vec<_> = output
+            .iter()
+            .filter_map(|e| {
+                if let Event::Exited { id, .. } = e {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(ids, (0..64).collect::<Vec<_>>());
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, Event::InitLost))
+                .count(),
+            1
+        );
+    }
+    #[test]
+    fn exports_accepted_behind_full_output_survive_stop_and_keep_their_resource_leases() {
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        std::fs::write(directory.join("keep"), "fixture").unwrap();
+        let resources = directory.join("resources");
+        unix::private_directory(&resources).unwrap();
+        let (worker, _commands, results) = worker();
+        let mut local = ready(worker);
+        *local.published.lock().unwrap() =
+            Some(Inheritance::fixture_in("shell", &[], resources.clone()));
+        for _ in 0..EVENTS {
+            local.report(Event::Mode { server: false });
+        }
+        for member in 0..4 {
+            local
+                .send(Command::Export {
+                    member: format!("member{member}"),
+                })
+                .unwrap();
+        }
+        assert!(
+            local
+                .send(Command::Export {
+                    member: "excess".into()
+                })
+                .is_err()
+        );
+        local.send(Command::Stop).unwrap();
+        assert!(local.stopping);
+        assert_eq!(local.cached_exports.len(), 4);
+        results
+            .send(Event::Stopped { exit_code: Some(0) })
+            .unwrap_or_else(|_| panic!("receiver"));
+        let mut output = vec![];
+        for _ in 0..4 {
+            let round: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            assert!(local.events.len() <= EVENTS);
+            output.extend(round);
+        }
+        let exports: Vec<_> = output
+            .iter()
+            .filter_map(|e| {
+                if let Event::Exported { member, result } = e {
+                    Some((member, result))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(exports.len(), 4);
+        for (index, (member, result)) in exports.iter().enumerate() {
+            assert_eq!(member.as_str(), format!("member{index}"));
+            let handoff = result.as_ref().unwrap();
+            assert!(!handoff.leases.is_empty());
+            assert!(resources.exists());
+            assert!(
+                goblins_runtime::lease::resource_exclusive(&resources)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        let stopped = output
+            .iter()
+            .position(|e| matches!(e, Event::Stopped { .. }))
+            .unwrap();
+        let last_export = output
+            .iter()
+            .rposition(|e| matches!(e, Event::Exported { .. }))
+            .unwrap();
+        assert!(last_export < stopped);
+        assert!(local.released());
+        drop(exports);
+        drop(output);
+        assert!(!resources.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn call_flood_with_full_results_keeps_all_calls_and_another_goblins_rpc_responsive() {
+        use std::io::Write;
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (flood_worker, _flood_commands, flood_results) = worker();
+        let mut flood = ready(flood_worker);
+        let (other_worker, _other_commands, _other_results) = worker();
+        let mut other = ready(other_worker);
+        for (runtime, name) in [(&mut flood, "flood"), (&mut other, "other")] {
+            let listener = UnixListener::bind(directory.join(name)).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            runtime.listener = Some(listener);
+        }
+        let initialize = goblins_jsonrpc::encode(&goblins_jsonrpc::request(
+            serde_json::json!(1),
+            "initialize",
+            serde_json::json!({"api":1}),
+        ))
+        .unwrap();
+        let mut clients = vec![];
+        for _ in 0..8 {
+            let mut client =
+                std::os::unix::net::UnixStream::connect(directory.join("flood")).unwrap();
+            client.write_all(&initialize).unwrap();
+            clients.push(client);
+        }
+        let mut client = std::os::unix::net::UnixStream::connect(directory.join("other")).unwrap();
+        client.write_all(&initialize).unwrap();
+        for _ in 0..EVENTS {
+            flood.report(Event::Mode { server: false });
+        }
+        let mut sent_modes = EVENTS;
+        let mut output = vec![];
+        for tick in 0..8 {
+            for _ in 0..EVENTS {
+                match flood_results.try_send(Event::Mode { server: false }) {
+                    Ok(()) => sent_modes += 1,
+                    Err(mpsc::TrySendError::Full(_)) => break,
+                    Err(_) => panic!("live result receiver"),
+                }
+            }
+            let round: Vec<_> = std::iter::from_fn(|| flood.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            output.extend(round);
+            if tick == 0 {
+                let round: Vec<_> = std::iter::from_fn(|| other.poll()).collect();
+                assert!(round.iter().any(
+                    |e| matches!(e,Event::SandboxCall {call,..} if call.method=="initialize")
+                ));
+            }
+        }
+        for _ in 0..8 {
+            let round: Vec<_> = std::iter::from_fn(|| flood.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            output.extend(round);
+        }
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, Event::Mode { .. }))
+                .count(),
+            sent_modes
+        );
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, Event::SandboxOpened { .. }))
+                .count(),
+            8
+        );
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e,Event::SandboxCall {call,..} if call.method=="initialize"))
+                .count(),
+            8
+        );
+        drop(clients);
+        drop(client);
+        drop(flood);
+        drop(other);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn stop_after_a_committed_large_frame_keeps_the_earlier_export_successful() {
+        use goblins_runtime::channel;
+        use goblins_runtime::supervisor::{
+            self, Decoder, Encoder, Message,
+            outbound::{Commands, Writer},
+        };
+        use std::os::unix::net::UnixStream;
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        std::fs::write(directory.join("keep"), "fixture").unwrap();
+        let resources = directory.join("resources");
+        unix::private_directory(&resources).unwrap();
+        let (worker, _work, results) = worker();
+        let mut local = ready(worker);
+        *local.published.lock().unwrap() =
+            Some(Inheritance::fixture_in("shell", &[], resources.clone()));
+        let (a, b) = UnixStream::pair().unwrap();
+        let size: libc::c_int = 4096;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    a.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    (&size as *const libc::c_int).cast(),
+                    std::mem::size_of_val(&size) as _,
+                )
+            },
+            0
+        );
+        let mut sender = channel::Channel::new(a).unwrap();
+        let mut receiver = channel::Channel::new(b).unwrap();
+        let mut queue = Commands::default();
+        let mut writer = Writer::default();
+        let mut encoder = Encoder::default();
+        let mut decoder = Decoder::default();
+        let payload = goblins_jsonrpc::result(
+            serde_json::json!(1),
+            serde_json::json!("x".repeat(512 * 1024)),
+        );
+        let encoded = goblins_jsonrpc::encode(&payload).unwrap();
+        assert!(
+            encoded.len() > 4096
+                && serde_json::to_vec(&payload).unwrap().len() <= goblins_jsonrpc::MAX_BODY
+        );
+        queue
+            .push(Command::SandboxSend {
+                connection: 99,
+                message: payload.clone(),
+            })
+            .unwrap();
+        writer
+            .pump_commands(&mut queue, &mut encoder, &mut sender)
+            .unwrap();
+        assert!(sender.wants_write());
+        queue
+            .push(Command::Export {
+                member: "child".into(),
+            })
+            .unwrap();
+        queue.push(Command::Stop).unwrap();
+        let mut methods = vec![];
+        let mut output = vec![];
+        for _ in 0..2048 {
+            writer
+                .pump_commands(&mut queue, &mut encoder, &mut sender)
+                .unwrap();
+            if let Some(supervisor::Received {
+                message: Message::Command(command),
+                ..
+            }) = decoder.receive_channel(&mut receiver).unwrap()
+            {
+                methods.push(match command {
+                    Command::SandboxSend { .. } => "send",
+                    Command::Export { .. } => "export",
+                    Command::Stop => "stop",
+                    _ => panic!("fixture command"),
+                });
+                if let Command::SandboxSend { message, .. } = &command {
+                    assert_eq!(message, &payload);
+                }
+                local.send(command).unwrap();
+            }
+            output.extend(std::iter::from_fn(|| local.poll()));
+            if methods.len() == 3 && writer.idle(&sender) && queue.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(methods, ["send", "export", "stop"]);
+        assert!(
+            matches!(output.as_slice(),[Event::Exported {member,result:Ok(_)}] if member=="child")
+        );
+        results
+            .send(Event::Stopped { exit_code: Some(0) })
+            .unwrap_or_else(|_| panic!("receiver"));
+        for _ in 0..4 {
+            while local.poll().is_some() {}
+        }
+        assert!(local.released());
+        assert!(resources.exists());
+        drop(output);
+        assert!(!resources.exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn a_terminal_flood_keeps_another_goblins_rpc_responsive_and_retains_every_accepted_byte() {
+        use std::io::{Read, Write};
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (flood_worker, _flood_work, _flood_results) = worker();
+        let mut flood = ready(flood_worker);
+        flood.terminals = crate::terminals::Terminals::new(&directory, false).unwrap();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        unix::nonblocking(slave.as_raw_fd()).unwrap();
+        flood.terminals.started(master, false).unwrap();
+        let mut slave = File::from(slave);
+        let (other_worker, _other_work, _other_results) = worker();
+        let mut other = ready(other_worker);
+        let listener = UnixListener::bind(directory.join("rpc.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        other.listener = Some(listener);
+        let mut rpc = std::os::unix::net::UnixStream::connect(directory.join("rpc.sock")).unwrap();
+        rpc.write_all(
+            &goblins_jsonrpc::encode(&goblins_jsonrpc::request(
+                serde_json::json!(1),
+                "initialize",
+                serde_json::json!({"api":1}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let bytes = [b'x'; 8192];
+        let mut accepted = 0;
+        for tick in 0..32 {
+            match slave.write(&bytes) {
+                Ok(n) => accepted += n,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => (),
+                Err(error) => panic!("pty write: {error}"),
+            }
+            let round: Vec<_> = std::iter::from_fn(|| flood.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            if tick == 0 {
+                let round: Vec<_> = std::iter::from_fn(|| other.poll()).collect();
+                assert!(round.iter().any(
+                    |e| matches!(e,Event::SandboxCall {call,..} if call.method=="initialize")
+                ));
+            }
+        }
+        assert!(accepted > 0);
+        drop(slave);
+        let mut frontend =
+            std::os::unix::net::UnixStream::connect(directory.join("terminal.sock")).unwrap();
+        for _ in 0..2 {
+            while flood.poll().is_some() {}
+        }
+        assert_eq!(
+            goblins_jsonrpc::read_started(&mut frontend, Some(std::time::Instant::now())).unwrap()
+                ["result"]["attached"],
+            true
+        );
+        frontend.set_nonblocking(true).unwrap();
+        let mut received = vec![];
+        let mut eof = false;
+        for _ in 0..256 {
+            while flood.poll().is_some() {}
+            let mut buffer = [0; 16384];
+            match frontend.read(&mut buffer) {
+                Ok(0) => {
+                    eof = true;
+                    break;
+                }
+                Ok(n) => received.extend_from_slice(&buffer[..n]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => (),
+                Err(error) => panic!("terminal read: {error}"),
+            }
+        }
+        assert!(eof);
+        assert_eq!(received.len(), accepted);
+        assert!(received.iter().all(|byte| *byte == b'x'));
+        drop(frontend);
+        drop(rpc);
+        drop(flood);
+        drop(other);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cancellation_of_paused_spawn_and_host_job_completes_without_starting_or_retaining_them() {
+        use std::io::Read;
+        let _no_forks = unix::no_forks();
+        let directory = unix::temp_directory().unwrap();
+        let (worker, _work, _results) = worker();
+        let mut local = ready(worker);
+        local.capabilities.as_mut().unwrap().0.host_commands = true;
+        local.host_jobs = directory.join("jobs");
+        local
+            .prepared
+            .insert("job".into(), File::open(&directory).unwrap());
+        for _ in 0..EVENTS {
+            local.report(Event::Mode { server: false });
+        }
+        local
+            .send(Command::RunHostJob {
+                request: "job".into(),
+                argv: vec!["must-not-start".into()],
+                env: vec![],
+                timeout: None,
+            })
+            .unwrap();
+        local
+            .send(Command::CancelHostJob {
+                request: "job".into(),
+            })
+            .unwrap();
+        assert!(local.prepared.is_empty());
+        assert!(local.jobs.is_empty());
+        assert!(!local.host_jobs.exists());
+        let (read, write) = unix::pipe().unwrap();
+        let mut reader = File::from(read);
+        local
+            .send(Command::Spawn {
+                id: 7,
+                kind: SpawnKind::Exec,
+                argv: None,
+                cwd: None,
+                env: vec![],
+                stdio: Stdio::Fds([
+                    write.into(),
+                    OwnedFd::from(File::open("/dev/null").unwrap()).into(),
+                    OwnedFd::from(File::open("/dev/null").unwrap()).into(),
+                ]),
+            })
+            .unwrap();
+        local
+            .send(Command::CancelProcess {
+                id: 7,
+                everything: true,
+            })
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(reader.read(&mut byte).unwrap(), 0);
+        assert_eq!(local.events.len(), EVENTS);
+        let mut output = vec![];
+        for _ in 0..3 {
+            let round: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            assert!(round.len() <= EVENTS);
+            output.extend(round);
+        }
+        assert_eq!(output.iter().filter(|e|matches!(e,Event::HostJobFinished {request,outcome:Ok(outcome)} if request=="job" && outcome.cancelled)).count(),1);
+        assert_eq!(
+            output
+                .iter()
+                .filter(|e| matches!(e, Event::SpawnFailed { id: 7, .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !output
+                .iter()
+                .any(|e| matches!(e, Event::HostJobFailed { .. } | Event::Spawned { .. }))
+        );
+        assert!(local.jobs.is_empty());
+        assert!(local.prepared.is_empty());
+        assert!(!local.host_jobs.exists());
+        drop(local);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -21,14 +21,14 @@ use std::{
 };
 
 pub(crate) struct Broker {
-    pub events: SyncSender<Event>,
+    pub events: crate::results::Results,
     pub scope_failures: SyncSender<String>,
     pub memberships: Receiver<std::result::Result<Fd, String>>,
 }
 impl Broker {
     pub fn request(&self, launch: &Launch, cancel: &Cancellation) -> Result<Client> {
         let selected = launch.scope.as_ref().ok_or("launch has no scope")?;
-        self.events.try_send(Event::ScopeNeeded {
+        self.events.send(Event::ScopeNeeded {
             name: selected.name.clone(),
             executable: launch.scope_runtime.clone(),
         })?;

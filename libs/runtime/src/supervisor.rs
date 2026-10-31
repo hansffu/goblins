@@ -441,7 +441,11 @@ event_codec! {
     Stopped { exit_code:Option<i32> =>plain },
 }
 mod handoff;
+pub mod outbound;
 pub use handoff::Decoder;
 use handoff::*;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod outbound_tests;

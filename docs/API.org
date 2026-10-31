@@ -689,7 +689,7 @@ All methods in this table are daemon-to-supervisor notifications. Approval, seri
 
 ** Supervisor events
 
-All methods in this table are supervisor-to-daemon notifications. There is no coalescing or lossy replacement of semantic results; event backpressure is implemented by the dispatcher in the following queue commit.
+All methods in this table are supervisor-to-daemon notifications. There is no coalescing or lossy replacement of semantic results. Phase 6 commit 2 bounds the current dispatcher ready queue and worker-result channel at 16 each, pauses producers on full output, and bounds poll rounds at 16; cancellation and Stop remain responsive. The logical sender planner has four unsent request slots, independent of receiver admission. It commits one indivisible frame to the unchanged Channel at a time, prioritizes coalesced cancellations between frames, and keeps Stop after earlier queued work including Export and sandbox answers. Removing an unsent spawn/host request emits its existing local cancellation outcome rather than stranding its caller; each synthesized outcome occupies the removed request's original slot until reported, sharing the same four-slot limit with unsent requests. Typed transfer ownership remains retained until Adopted or teardown as above.
 
 | Method | Parameters | Effect |
 |--------+------------+--------|

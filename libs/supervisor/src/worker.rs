@@ -23,12 +23,62 @@ use std::{
 
 /// A command for the worker, with the token that cancels it.
 pub(super) type Work = (Command, Cancel);
+/// Sending and final receiver draining share a small gate, so an accepted
+/// queued request cannot slip between the final drain and receiver close.
+pub(super) struct WorkSender {
+    sender: SyncSender<Work>,
+    open: std::sync::Arc<std::sync::Mutex<bool>>,
+}
+impl WorkSender {
+    pub fn new(sender: SyncSender<Work>) -> Self {
+        Self {
+            sender,
+            open: std::sync::Arc::new(std::sync::Mutex::new(true)),
+        }
+    }
+    pub fn try_send(&self, work: Work) -> std::result::Result<(), mpsc::TrySendError<Work>> {
+        let open = self.open.lock().unwrap_or_else(|p| p.into_inner());
+        if !*open {
+            return Err(mpsc::TrySendError::Disconnected(work));
+        }
+        self.sender.try_send(work)
+    }
+}
+fn finish_commands(open: &std::sync::Mutex<bool>, commands: Receiver<Work>) -> Vec<Work> {
+    let mut accepting = open.lock().unwrap_or_else(|p| p.into_inner());
+    *accepting = false;
+    commands.try_iter().collect()
+}
+pub(super) fn cancelled(command: Command) -> Event {
+    let message = "session cancelled".to_string();
+    match command {
+        Command::Preview { approval, .. } => Event::Preview {
+            approval,
+            result: Err(message),
+        },
+        Command::Refresh { approval, .. } => Event::Refresh {
+            approval,
+            result: Err(message),
+        },
+        Command::Run { serial, .. } | Command::Diff { serial, .. } => Event::Call {
+            serial,
+            result: Err(message),
+        },
+        Command::Decide { request, .. } => Event::Granted {
+            reply: Reply::new(Some(request.id), "error", Some(message.clone())),
+            detail: Some(message),
+            output: None,
+        },
+        _ => unreachable!("the worker receives only Nix-bound requests"),
+    }
+}
+
 use goblins_runtime::{Auto, Recreate, Recreated, Source};
 pub(super) struct Worker {
     pub cancel: Cancel,
     pub failed_scope: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub scope_failures: Receiver<String>,
-    pub commands: SyncSender<Work>,
+    pub commands: WorkSender,
     pub memberships: SyncSender<std::result::Result<goblins_runtime::Fd, String>>,
     pub results: Receiver<Event>,
     /// The running sandbox's endpoints, sent just before `Event::Started`.
@@ -58,7 +108,10 @@ impl Worker {
         let failed_scope = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let failed = failed_scope.clone();
         let (tx, commands) = mpsc::sync_channel(4);
+        let tx = WorkSender::new(tx);
+        let commands_open = tx.open.clone();
         let (results, rx) = mpsc::sync_channel(16);
+        let results = crate::results::Results::new(results, token.clone());
         let (memberships, membership_rx) = mpsc::sync_channel(1);
         let (scope_failures, scope_failure_rx) = mpsc::sync_channel(1);
         let (endpoints, handed) = mpsc::sync_channel(1);
@@ -109,7 +162,7 @@ impl Worker {
                             token.clone(),
                             directory,
                         )?;
-                        results.try_send(Event::Mode {
+                        results.send(Event::Mode {
                             server: session.launch.handlers.is_some(),
                         })?;
                         session
@@ -136,7 +189,7 @@ impl Worker {
                         if let Ok(config) = crate::config::read(&configuration)
                             .and_then(|m| crate::config::select(m, &name, scope.as_deref()))
                         {
-                            results.try_send(Event::Mode {
+                            results.send(Event::Mode {
                                 server: config.on_attach.is_some(),
                             })?;
                         }
@@ -152,7 +205,7 @@ impl Worker {
                                 // manifest replaces it as its current one. An
                                 // event that is refused or never read drops it,
                                 // and its root goes with it.
-                                results.try_send(Event::Manifest { sequence, lease })?;
+                                results.send(Event::Manifest { sequence, lease })?;
                                 None
                             }
                             Err(error) => {
@@ -299,7 +352,7 @@ impl Worker {
                 if let Ok(mut published) = published.lock() {
                     *published = Some(inheritance);
                 }
-                results.try_send(started)?;
+                results.send(started)?;
                 loop {
                     if token.check().is_err() || !session.alive() {
                         break;
@@ -313,10 +366,7 @@ impl Worker {
                                 &cancel,
                             )
                             .map_err(|e| e.to_string());
-                            if results
-                                .try_send(Event::Preview { approval, result })
-                                .is_err()
-                            {
+                            if results.send(Event::Preview { approval, result }).is_err() {
                                 break;
                             }
                         }
@@ -324,10 +374,7 @@ impl Worker {
                             let result = session
                                 .prepare_refresh(&changes, &cancel)
                                 .map_err(|e| e.to_string());
-                            if results
-                                .try_send(Event::Refresh { approval, result })
-                                .is_err()
-                            {
+                            if results.send(Event::Refresh { approval, result }).is_err() {
                                 break;
                             }
                         }
@@ -339,7 +386,7 @@ impl Worker {
                                     serde_json::json!({"program":program,"generation":generation})
                                 })
                                 .map_err(|e| e.to_string());
-                            if results.try_send(Event::Call { serial, result }).is_err() {
+                            if results.send(Event::Call { serial, result }).is_err() {
                                 break;
                             }
                         }
@@ -347,7 +394,7 @@ impl Worker {
                             let result = session
                                 .diff_refresh(&changes, &cancel)
                                 .map_err(|e| e.to_string());
-                            if results.try_send(Event::Call { serial, result }).is_err() {
+                            if results.send(Event::Call { serial, result }).is_err() {
                                 break;
                             }
                         }
@@ -377,7 +424,7 @@ impl Worker {
                                         if let Ok(mut published) = published.lock() {
                                             *published = Some(inheritance);
                                         }
-                                        results.try_send(Event::DevShell { summary })?;
+                                        results.send(Event::DevShell { summary })?;
                                         Ok(())
                                     })
                                 } else {
@@ -386,7 +433,7 @@ impl Worker {
                                         output.as_deref(),
                                         |_, _| Ok(()),
                                         |state| {
-                                            results.try_send(Event::Progress {
+                                            results.send(Event::Progress {
                                                 request: req.id.clone(),
                                                 state: state.into(),
                                             })?;
@@ -450,7 +497,7 @@ impl Worker {
                                 }
                             };
                             if results
-                                .try_send(Event::Granted {
+                                .send(Event::Granted {
                                     reply,
                                     detail,
                                     output,
@@ -472,19 +519,30 @@ impl Worker {
                 Ok(session.exit_code)
             };
             let outcome = run();
+            let queued = finish_commands(&commands_open, commands);
+            // run() owned Session. It has now released the sandbox before
+            // retained completion/final-event delivery can wait for capacity.
+            if results.finish_held().is_err() {
+                return;
+            }
+            for (command, _) in queued {
+                if results.final_event(cancelled(command)).is_err() {
+                    return;
+                }
+            }
             if failed.load(std::sync::atomic::Ordering::SeqCst) {
-                let _ = results.try_send(Event::Stopped { exit_code: Some(1) });
+                let _ = results.final_event(Event::Stopped { exit_code: Some(1) });
                 return;
             }
             match outcome {
                 Ok(exit_code) => {
-                    let _ = results.try_send(Event::Stopped { exit_code });
+                    let _ = results.final_event(Event::Stopped { exit_code });
                 }
                 Err(e) => {
                     if token.check().is_ok() {
-                        let _ = results.try_send(Event::Failed(e.to_string()));
+                        let _ = results.final_event(Event::Failed(e.to_string()));
                     }
-                    let _ = results.try_send(Event::Stopped { exit_code: None });
+                    let _ = results.final_event(Event::Stopped { exit_code: None });
                 }
             }
         });
@@ -559,8 +617,60 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.cancel.cancel();
+        // Dropping a runtime means its caller is gone. Disconnect the event
+        // receiver before joining, unblocking any final worker output and
+        // dropping queued ownership guards instead of deadlocking shutdown.
+        let (_, closed) = mpsc::sync_channel(1);
+        drop(std::mem::replace(&mut self.results, closed));
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+    #[test]
+    fn closing_work_keeps_every_accepted_request_and_refuses_later_sends() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let sender = WorkSender::new(sender);
+        for serial in 0..4 {
+            sender
+                .try_send((
+                    Command::Run {
+                        serial,
+                        app: "app".into(),
+                    },
+                    Cancel::default(),
+                ))
+                .unwrap_or_else(|_| panic!("capacity"));
+        }
+        let queued = finish_commands(&sender.open, receiver);
+        assert_eq!(queued.len(), 4);
+        let serials: Vec<_> = queued
+            .into_iter()
+            .map(|(command, _)| match cancelled(command) {
+                Event::Call {
+                    serial,
+                    result: Err(_),
+                } => serial,
+                _ => panic!("cancelled response"),
+            })
+            .collect();
+        assert_eq!(serials, [0, 1, 2, 3]);
+        assert!(matches!(
+            sender.try_send((
+                Command::Run {
+                    serial: 4,
+                    app: "app".into()
+                },
+                Cancel::default()
+            )),
+            Err(mpsc::TrySendError::Disconnected((
+                Command::Run { serial: 4, .. },
+                _
+            )))
+        ));
     }
 }

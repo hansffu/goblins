@@ -42,7 +42,7 @@ fn cancelled_docker_reply_does_not_fan_out_scope_failure_but_real_eof_does() {
     session.scope = Some(client.clone());
     let (critical, received) = mpsc::sync_channel(1);
     session.scope_broker = Some(crate::scope_client::Broker {
-        events: mpsc::sync_channel(1).0,
+        events: crate::results::Results::new(mpsc::sync_channel(1).0, Default::default()),
         scope_failures: critical,
         memberships: mpsc::sync_channel(1).1,
     });
