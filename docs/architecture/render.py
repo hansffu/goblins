@@ -14,6 +14,24 @@ import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 
+def preserve_native_whitespace(target):
+    """Declare native whitespace without serializing text or layout again."""
+    data = target.read_bytes()
+    svg = ET.fromstring(data)
+    if svg.tag != "{http://www.w3.org/2000/svg}svg":
+        raise ValueError(f"Expected an SVG root in {target}")
+    space = "{http://www.w3.org/XML/1998/namespace}space"
+    if svg.get(space) == "preserve":
+        return svg
+    if space in svg.attrib:
+        raise ValueError(f"Unexpected SVG whitespace policy in {target}")
+    data, count = re.subn(rb"\A<svg(?=[\s>])", b'<svg xml:space="preserve"', data, count=1)
+    if count != 1:
+        raise ValueError(f"Expected Mermaid's unprefixed SVG root in {target}")
+    target.write_bytes(data)
+    return ET.fromstring(data)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mmdc", default="mmdc", help="Mermaid CLI executable")
@@ -70,7 +88,7 @@ def main():
                     check=True,
                     env=env,
                 )
-                svg = ET.parse(target).getroot()
+                svg = preserve_native_whitespace(target)
                 if any(element.tag.endswith("}foreignObject") for element in svg.iter()):
                     raise RuntimeError(f"HTML labels in {target} cannot display in Emacs")
                 if not any(element.tag.endswith("}text") for element in svg.iter()):

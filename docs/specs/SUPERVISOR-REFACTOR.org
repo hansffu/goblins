@@ -3,9 +3,9 @@
 #+startup: showall inlineimages hideblocks
 #+property: header-args:mermaid :results file graphics replace :background-color "'#282c34'" :theme dark
 
-Status: draft for discussion. It turns phases 1 and 2 of [[file:PER-GOBLIN-SUPERVISOR.md][PER-GOBLIN-SUPERVISOR.md]] into a sequence of reviewable refactors on Linux. macOS is out of scope: nothing here ports anything to Darwin, but every step leaves the daemon with less Linux knowledge than before, and section 4.4 defines how a second sandbox implementation would describe what it can do. The Nix configuration API stays unchanged throughout. The public JSON-RPC API keeps its methods, fields, codes, messages and limits. The visible changes are which refusal a sandbox request gets when it fails more than one check, and how two host methods answer when the sandbox's init cannot take a message (both in section 4.4).
+Status: runtime implementation complete through phase 6 commit 9 (=19ce5c4743240ce34045c01a933d8d9751406aca=, 2026-10-31); phase 7 documentation is prepared with regenerated native SVG diagrams. The original staged plan below expands phases 1 and 2 of [[file:PER-GOBLIN-SUPERVISOR.md][PER-GOBLIN-SUPERVISOR.md]] into a sequence of reviewable refactors on Linux. macOS is out of scope: nothing here ports anything to Darwin, but every step leaves the daemon with less Linux knowledge than before, and section 4.4 defines how a second sandbox implementation would describe what it can do. The Nix configuration API stays unchanged throughout. The public JSON-RPC API keeps its methods, fields, codes, messages and limits. The visible changes are which refusal a sandbox request gets when it fails more than one check, and how two host methods answer when the sandbox's init cannot take a message (both in section 4.4).
 
-Labels: *[E]* existing behaviour (master, 2026-10-29), *[P]* proposed change, *[Q]* a decision the user has taken, recorded in section 7.
+Labels retain their planning meaning: *[E]* baseline behaviour (master, 2026-10-29), *[P]* the planned change at that stage, *[Q]* a user decision recorded in section 7. Transitional Local adapters, facade modules and shared Rust values described in historical stages have been removed from the final implementation; [[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]] and the architecture guide describe the current boundaries.
 
 Diagrams use Mermaid source blocks with rendered SVGs in [[file:diagrams/][diagrams/]], following the conventions of [[file:../architecture/README.org][the architecture documents]]. They show ownership and ordering, not a call for every arrow.
 
@@ -43,7 +43,7 @@ The end state is reached when:
 - Killing one supervisor fails only its goblin; killing the daemon still stops every supervisor, sandbox, host job, scope and Docker engine.
 - =just test-merge= passes with the existing tests plus the new tests in section 8.
 
-* 2. Where the code stands
+* 2. Baseline before the refactor (2026-10-29)
 
 The session worker ([[file:../../libs/supervisor/src/worker.rs][worker.rs]]) is already a message boundary: =Source= and =Work= go in, =Completed= comes out. It is the seed of the supervisor. Four things keep it from being a process boundary.
 
@@ -103,11 +103,11 @@ A member launch (=Source::Member=) carries the owner's =Inheritance=, an upgrade
 
 ** 2.4 Scopes are per-daemon shared state *[E]*
 
-[[file:../../libs/supervisor/src/scope.rs][scope.rs]] keeps a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
+In the 2026-10-29 baseline, the historical =scope.rs= module (removed during the refactor) kept a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
 - =State._owner=, the first member's =Inheritance=;
 - =State.owners=, one =Inheritance= per Docker user.
 
-These keep those goblins' session resources and Nix roots alive for the scope's or the engine's lifetime. Other details that matter for the split:
+These kept those goblins' session resources and Nix roots alive for the scope's or the engine's lifetime. Current process ownership is described in [[file:../architecture/components.org][components.org]] and implemented by [[file:../../libs/supervisor/src/scope_process.rs][the scope actor]]. Other historical details that mattered for the split:
 - The scope's runtime directory lives inside the /first/ member's session directory.
 - The engine's store skeleton (=State.store=) is the first Docker user's session store, and later grants bind into it.
 - Scope membership and Docker use are counted separately. The engine stops when its last /Docker user/ leaves (=Lease::drop=), while the namespaces and storage stay for the remaining members.
@@ -1087,14 +1087,22 @@ sequenceDiagram
 - *The daemon stops linking =libs/supervisor=* once =Local= is deleted. =Supervised= lives in the daemon's =supervised= module, the one place that launches, watches and kills its children (section 1).
 - *Lifetime and failure.* See section 6.
 
-The final commit 9 candidate removes =Local= and its debug flag before the sole =just test-merge= run; that candidate must pass the gate before merge.
+Phase 6 commit 9 is complete: =19ce5c4743240ce34045c01a933d8d9751406aca=, tree =c7b384389a3876a2f80c79315c43ffbe82c1b8de=, removes Local and its former debug selector and excludes supervisor/init implementation from every daemon dependency route. Its committed diff exactly matches the reviewed candidate SHA-256 =862daa39dffbd5083141e3e9899992308dc3e5200e91f88eec6a2727f5fc2d0a= (93492 bytes, 35 paths) against parent =f0d580884ab417c22a4efb872928e0cf4670e733=. The foreground saved payload descriptor limit crosses exec as required nullable startup metadata; the background server self-exec limitation remains documented separately.
+
+The final =just test-merge= gate passed on that exact candidate under approved host request =r128423=, exit 0 in 1005.162 seconds. Results: 443 unique workspace Rust tests passed plus two separately counted self-exec child controls; four helper entries were ignored. Main Python ran 335 cases: 334 passed, zero failures/errors and one Testcontainers skip reporting the Java-jar and registry-access prerequisites; its classpath was not configured, and no failed registry probe was observed. Standalone ERT passed 133 tests; all 15 packaged smoke tests passed, including the previously failing packaged exec setup and cancellation/signals/stdin body. Nix checks passed using cached outputs, with no new derivation builds or internal package-test execution claimed for this final run. All 28 prior phase/case failure rows passed (27 main Python and one packaged); this does not erase the earlier failed runs. Docker suites and nested host acceptance passed, but detailed nested Testcontainers case/skip counts were not archived and remain unknown. No independent cleanup census was performed.
+
+The immutable gate evidence is =target/test-runner/m606-final-gate/final-result-summary.json= (SHA-256 =119def8f6dc70a924bf8b9f42ee5e36e11fd4dbde25cbea684b8dd40a80eab61=), with raw per-phase logs. The original case inventory omitted three successful cases whose descriptions placed outcomes on a later line; the original summary and inventory remain preserved. The corrected =current-case-inventory-v2.json= (SHA-256 =c9c1097ee6327d28c19759894a62f785462964f038b83f0e18f407e6bc6f510d=) reconciles 335 unique main and 15 packaged cases against every raw group total. =final-result-addendum-v2.json= (SHA-256 =cce1fa9ac47cf2465337e4f9ed7e29d5359fcd3e1b6c906ed21a58fa5c6017e3=) records that report-only correction without changing observed gate outcomes. The separate matching sandbox bundle =m554= passed formatting, warning-free all-target checks, 443 Rust tests plus two child controls, 36 infrastructure tests, 335-case feature mapping, 43 build-free Nix derivation paths and 19 startup tests; its four package outputs were cached. Earlier failed gates =r19035= and =r92669=, formatting failure =m350= and initial overlong submission refusal remain retained. Owner commit proof is =target/test-runner/phase6-c9-owner-commit-proof.json=; evidence under =target/= is local audit material, not checked-in documentation or a new test run.
+
+The scoped =fixture-diagnostic-addendum-v3.json= (SHA-256 =03a35c7f813c0e60fecb5d1ea239dadb8fa2318c9d69ed7b3f570025a5f76620=, in the same gate evidence directory) records an HTTP-provider =_queue.Empty= traceback in the native Codex log. The test and native group reported success, but those assertions do not establish why the request lacked a scripted response or what effect that had. Both cause and impact remain unresolved; neither harmlessness nor a behavioral regression has been established. Earlier archived occurrences establish history only. This qualification is separate from the observed exit-zero gate and case-count correction; no runtime fix or new test execution is claimed here.
 
 ** Phase 7: documents
 
-- *[P]* ADR 0018 records the decisions in section 7.
-- *[P]* [[file:../architecture/components.org][components.org]], [[file:../architecture/daemon.org][daemon.org]] and [[file:../architecture/workflows.org][workflows.org]] describe the supervisor, the relay and the layout, with regenerated diagrams.
-- *[P]* The internals sections of USAGE.org are updated where they describe the helper, the request socket and terminals.
-- *[P]* [[file:../API.org][API.org]] needs no change: its methods, codes and limits stay, and it does not specify the order of refusals.
+- [[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]] records the decisions in section 7, alternatives and consequences.
+- [[file:../architecture/components.org][components.org]], [[file:../architecture/daemon.org][daemon.org]] and [[file:../architecture/workflows.org][workflows.org]] describe the supervisor, the relay and the layout, with regenerated diagrams.
+- The internals sections of [[file:../USAGE.org][USAGE.org]] are updated where they describe the helper, the request socket and terminals.
+- [[file:../API.org][API.org]] includes the implemented private control modes, descriptor ownership, release and payload-limit metadata; phase 7 adds cross-references without changing public methods, codes or limits.
+
+Phase 7 diagram verification used the reviewed batch renderer and presentation configuration with Mermaid 12.0.0, Chromium 156.0.8078.73 and DejaVu 2.37. All 12 SVGs regenerated successfully with native text, no foreignObject, finite geometry and no literal entity labels. Each final output differs from its retained raw Mermaid output only by the root =xml:space="preserve"= declaration: parsed text, existing attributes, paths and layout coordinates are unchanged. All 12 native PNGs and four contact sheets were visually inspected for spacing, wrapping and clipping; the three sampled Chromium raw/normalized pairs have equal bounds and byte-identical PNGs. Some tight canvas margins and inherited label/connector intersections remain readable; this is not a layout redesign. Actual Emacs, export and light-background consumers were not observed. Evidence is =target/test-runner/phase7-render-m1092/summary.json= (SHA-256 =a05fd418a8cc30eac713a298a0a960f6408a179c1d744a98d20d3cff1edc459c=), with raw/final SVGs, invariants, tool/font identities and previews. Earlier parse failure =m740=, visual failures =m792= and =m881=, their report corrections and the two-copy diagnostic =m946= remain preserved. No feature, merge or host tests were rerun for this documentation-only phase under the =AGENTS.md= exemption; the committed C9 gate result above is separate.
 
 * 6. Lifetime and failure
 
@@ -1126,7 +1134,7 @@ flowchart TD
 
 * 7. Decisions
 
-The user took these decisions on 2026-10-29. ADR 0018 records them (phase 7).
+The user took these decisions on 2026-10-29. [[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]] records them and their implemented consequences; the schema-first API follow-up remains parked.
 
 - *[Q1] Sandbox requests are relayed, and the supervisor checks them.* The supervisor owns =request.sock=, parses every call, refuses what =Policy= or =Support= does not allow, and relays the rest as messages (sections 4.4 and 4.8). This follows the spec's "every sandbox-to-daemon request crosses exactly its own trusted host supervisor" as written.
   - The cost is the split =Connection=: the hang-up check in =decide= reads a flag the runtime's =SandboxClosed= sets, so a hang-up is noticed one hop later, and disconnects and backpressure become messages.
