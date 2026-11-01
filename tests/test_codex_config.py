@@ -238,15 +238,20 @@ class CodexConfigTests(unittest.TestCase):
             "goblins-codex", command,
         ]))
 
-    def thread(self, receiver):
-        """The adapter's conversation, or None until it writes its first status."""
+    def adapter_status(self, receiver):
+        """The adapter snapshot, or None until it writes its first status."""
         import subprocess
         result = subprocess.run([str(self.app), "--state-dir", str(self.d.state), "exec", receiver, "--",
                                  "goblins-codex", "status"], capture_output=True, text=True)
         if result.returncode and "No such file or directory" in result.stderr:
             return None
         self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)["thread_id"]
+        return json.loads(result.stdout)
+
+    def thread(self, receiver):
+        """The adapter's conversation, or None until it writes its first status."""
+        status = self.adapter_status(receiver)
+        return status["thread_id"] if status is not None else None
 
     def native_status(self, receiver):
         import subprocess
@@ -257,8 +262,8 @@ class CodexConfigTests(unittest.TestCase):
         receiver = self.d.start("notifier", agent_name="receiver")["session"]
         def paused_and_quiescent():
             # Pause writes controls; only a later observer snapshot applies it.
-            status = self.local(receiver, "status")
-            if (status.get("paused") is not True or status.get("agent_state") != "idle"
+            status = self.adapter_status(receiver)
+            if (status is None or status.get("paused") is not True or status.get("agent_state") != "idle"
                     or "diagnostic" not in status or status["diagnostic"] is not None):
                 return None
             thread, threads = status.get("thread_id"), status.get("threads")

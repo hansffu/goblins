@@ -174,16 +174,19 @@ tty.setraw(0)
 try:
     redraw()
     while True:
-        if not select.select([0], [], [], .5)[0]:
-            if not connected: continue
-            serial += 1
-            try: wire.send({'id':serial,'method':'thread/read','params':{'threadId':thread,'includeTurns':False}})
-            except OSError: connected = False
-            continue
-        data = os.read(0, 4096)
-        if not data: break
-        draft += data
-        draft = draft.replace(b'\x1b[I', b'').replace(b'\x1b[O', b'')
+        # A PTY read can contain several submitted lines. Drain those before
+        # waiting for more input, including an exit already in the buffer.
+        if b'\r' not in draft:
+            if not select.select([0], [], [], .5)[0]:
+                if not connected: continue
+                serial += 1
+                try: wire.send({'id':serial,'method':'thread/read','params':{'threadId':thread,'includeTurns':False}})
+                except OSError: connected = False
+                continue
+            data = os.read(0, 4096)
+            if not data: break
+            draft += data
+            draft = draft.replace(b'\x1b[I', b'').replace(b'\x1b[O', b'')
         if b'\r' in draft:
             submitted, draft = draft.split(b'\r', 1)
             text = submitted.replace(b'\x1b[200~', b'').replace(b'\x1b[201~', b'').decode()

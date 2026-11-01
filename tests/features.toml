@@ -83,9 +83,9 @@ paths = ["packages/daemon/src/history.rs", "packages/daemon/src/records.rs"]
 
 [features.codex]
 description = "Codex configuration, native adapter and operation notices"
-python = ["test_codex_native", "test_codex_config", "test_operation_notices.CodexNotices"]
+python = ["test_codex_native", "test_codex_config", "test_fake_codex", "test_operation_notices.CodexNotices"]
 checks = ["rust"]
-paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix"]
+paths = ["packages/adapter-codex/*", "nix/goblins/codex/*", "nix/builders/mk-codex.nix", "tests/fake_codex.py", "tests/codex_wire.py"]
 env = { GOBLINS_TEST_CODEX = "1" }
 
 [features.claude]
@@ -114,7 +114,7 @@ paths = ["emacs/*.el", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
-python = ["test_runner", "test_features", "test_dependencies", "test_rust_tests", "test_terminal_support", "test_process_discovery"]
+python = ["test_runner", "test_features", "test_dependencies", "test_rust_tests", "test_terminal_support", "test_process_discovery", "test_fake_codex"]
 checks = []
 paths = []
 
