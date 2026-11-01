@@ -1,0 +1,803 @@
+//! One command tree supplies parsing, help and packaged shell completions.
+use clap::{CommandFactory, Parser, Subcommand, ValueHint};
+use goblins_controller::Result;
+use std::path::{Path, PathBuf};
+
+#[derive(Parser)]
+#[command(
+    name = "goblins",
+    version,
+    about = "Run named sandbox agents with approved package grants"
+)]
+pub struct Cli {
+    /// Runtime manifest (supplied by the Nix package)
+    #[arg(long, global = true, value_name = "MANIFEST")]
+    pub runtime: Option<PathBuf>,
+    /// Private server state directory (default: $XDG_RUNTIME_DIR/goblins)
+    #[arg(long, global = true, value_name = "DIRECTORY", value_hint = ValueHint::DirPath)]
+    pub state_dir: Option<PathBuf>,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+pub enum Command {
+    /// Clear persistent scope storage and Docker data
+    Scope {
+        #[command(subcommand)]
+        command: ScopeCommand,
+    },
+    /// Remove abandoned temporary storage and stopped-server resources
+    Gc {
+        /// List unused data without deleting it
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Group goblins from any branch so they can find and message each other
+    Raid {
+        #[command(subcommand)]
+        command: RaidCommand,
+    },
+    /// Inspect daemon-recorded messages and outcomes
+    CommunicationsLog {
+        /// Read an audit file after daemon shutdown
+        #[arg(long, conflicts_with = "follow")]
+        log: Option<PathBuf>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        follow: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send text contents through the daemon to another agent
+    Send {
+        recipient: String,
+        #[command(flatten)]
+        source: MessageSource,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Reply to and complete a claimed inbox item
+    Reply {
+        message_id: String,
+        #[arg(long)]
+        claim_generation: u64,
+        #[command(flatten)]
+        source: MessageSource,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    /// Fetch or acknowledge this caller's daemon inbox
+    Inbox {
+        #[command(subcommand)]
+        command: InboxCommand,
+    },
+
+    /// Start, stop or inspect the background server
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
+    },
+    /// Open the approval interface; quitting leaves agents running
+    Tui {
+        /// Use the line-oriented approval interface
+        #[arg(long)]
+        plain: bool,
+    },
+    /// Launch a Nix configuration with an explicit or automatic agent name
+    Run {
+        /// Reusable Nix configuration key (for example, shell)
+        config: String,
+        /// Agent name; omitted names are chosen from the goblin name list
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Join this scope instead of the goblin's default (goblins it runs share it)
+        #[arg(long, value_name = "SCOPE")]
+        scope: Option<String>,
+        /// Start in this flake's dev shell, like `nix develop` (goblins it runs share it)
+        #[arg(long, value_name = "FLAKE[#ATTR]", value_hint = clap::ValueHint::DirPath)]
+        dev_shell: Option<String>,
+        /// Start without attaching to its terminal
+        #[arg(long, visible_alias = "detached")]
+        detatched: bool,
+        /// Join this raid, creating it with the new goblin as owner if absent
+        #[arg(long, value_name = "RAID")]
+        raid: Option<String>,
+    },
+    /// Resume a recorded conversation in a new goblin with the same environment
+    Resume {
+        /// Record id, any goblin session id it ran as, its agent's
+        /// conversation id, or a unique prefix (see 'goblins history')
+        id: String,
+        /// Start without attaching to its terminal
+        #[arg(long)]
+        detached: bool,
+    },
+    /// List recorded conversations that 'goblins resume' can continue
+    History {
+        /// Print the records as JSON
+        #[arg(long)]
+        json: bool,
+        /// Print the table directly instead of through $PAGER
+        #[arg(long)]
+        no_pager: bool,
+        #[command(subcommand)]
+        command: Option<HistoryCommand>,
+    },
+    /// Print configured goblin names and their manifest as JSON (no server needed)
+    Configurations,
+    /// Attach to a sandbox by live name or immutable session ID
+    Attach {
+        session: String,
+        /// Require this daemon instance and an exact session ID (for editors)
+        #[arg(long)]
+        instance: Option<String>,
+    },
+    /// Run a command inside a running goblin's sandbox (its own $SHELL by default)
+    Exec {
+        /// Allocate a terminal: always (-t), auto (when stdin is one) or never
+        #[arg(
+            short = 't',
+            long = "tty",
+            value_name = "WHEN",
+            num_args = 0..=1,
+            require_equals = true,
+            default_value = "never",
+            default_missing_value = "always",
+            value_parser = ["always", "auto", "never"]
+        )]
+        tty: String,
+        /// Set an environment variable for the command
+        #[arg(short = 'e', long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Working directory inside the sandbox
+        #[arg(short = 'w', long = "workdir", value_name = "DIR")]
+        workdir: Option<String>,
+        /// Require this daemon instance (for editors)
+        #[arg(long)]
+        instance: Option<String>,
+        /// Require this exact session ID; the name is never resolved again
+        #[arg(long, value_name = "ID")]
+        session: Option<String>,
+        /// Agent name or session ID
+        goblin: String,
+        /// Command and arguments, after --
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+    /// Detach a sandbox's terminal by live name or immutable session ID
+    Detach { id_or_name: String },
+    /// List agent names, session IDs, configurations and lifecycle state
+    List,
+    /// Stop one agent by live name or immutable session ID
+    Stop { id_or_name: String },
+    /// Kill one sandbox by live name or immutable session ID
+    Kill { id_or_name: String },
+    /// Call a trusted host JSON-RPC method
+    Rpc { method: String, params_json: String },
+    /// Print a shell completion script (Nix packages install Bash/Fish/Zsh scripts)
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    #[command(name = "__complete-names", hide = true)]
+    CompleteNames {
+        #[arg(last = true)]
+        words: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScopeCommand {
+    /// Delete a scope's managed storage and its complete Docker store
+    #[command(group = clap::ArgGroup::new("selection").required(true))]
+    Clear {
+        /// Stored scope name, including scopes no longer configured
+        #[arg(group = "selection")]
+        name: Option<String>,
+        /// Clear every stored scope; refuses if any selected scope is in use
+        #[arg(long, group = "selection")]
+        all: bool,
+        /// List data without deleting it
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RaidCommand {
+    /// Add goblins, creating the raid (first goblin as owner) if absent
+    Invite {
+        raid: String,
+        #[arg(required = true, value_name = "GOBLIN")]
+        goblins: Vec<String>,
+    },
+    /// Dissolve the raid; its goblins keep running unless --stop-members
+    Destroy {
+        raid: String,
+        /// Also stop every running member
+        #[arg(long)]
+        stop_members: bool,
+    },
+    /// Make a member the owner, resuming a paused raid
+    SetOwner { raid: String, goblin: String },
+    /// List the raid's members, their roles and its owner
+    Members {
+        raid: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set or change a member's descriptive role (roles cannot be cleared)
+    SetRole {
+        raid: String,
+        goblin: String,
+        role: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HistoryCommand {
+    /// Remove records that are not running; every given criterion must match
+    #[command(group = clap::ArgGroup::new("criteria").required(true).multiple(true))]
+    Prune {
+        /// Not updated within this age: 30d, 12h or 2w
+        #[arg(long, value_name = "AGE", group = "criteria", value_parser = parse_age)]
+        older_than: Option<u64>,
+        /// Last updated before this local day
+        #[arg(long, value_name = "YYYY-MM-DD", group = "criteria", value_parser = parse_date)]
+        before: Option<u64>,
+        /// Keep the N most recently updated records
+        #[arg(long, value_name = "N", group = "criteria")]
+        keep: Option<usize>,
+        /// Show what would be removed without removing it
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+fn parse_age(text: &str) -> std::result::Result<u64, String> {
+    goblins_controller::history::parse_age(text)
+}
+fn parse_date(text: &str) -> std::result::Result<u64, String> {
+    goblins_controller::history::parse_date(text)
+}
+
+#[derive(Subcommand)]
+pub enum ServerCommand {
+    /// Start the server in the background; repeated starts leave it running
+    Start {
+        /// Snapshot this workspace separately for each agent
+        #[arg(long, value_name = "DIRECTORY", value_hint = ValueHint::DirPath)]
+        workspace: Option<PathBuf>,
+        /// Run in this terminal instead, with output on stdout/stderr
+        #[arg(long)]
+        foreground: bool,
+        /// Session records to keep for 'goblins resume'
+        #[arg(long, value_name = "N", default_value_t = goblins_controller::history::DEFAULT_KEEP)]
+        keep_sessions: usize,
+    },
+    /// Stop the server and all its agents, waiting for cleanup
+    Stop,
+    /// Show server state and live agent count (exit 1 when stopped)
+    Status,
+    /// Print captured background server stdout/stderr
+    Logs,
+}
+
+// Return 1 outside a name argument so Bash/Zsh can retain their generated
+// option/path completion. A missing server is a valid, empty candidate list.
+pub fn complete_names(default_state: Option<&Path>, words: Vec<String>) -> i32 {
+    let Some((state, slot)) = completion_target(words) else {
+        return 1;
+    };
+    // Host jobs may complete an explicitly selected server, but must never
+    // query the default server that owns the job. An empty list is successful.
+    let Some(state) = state.or_else(|| default_state.map(Path::to_path_buf)) else {
+        return 0;
+    };
+    if slot == Slot::Record {
+        // Record ids, described by agent name, chat name and last update:
+        // "ID<TAB>DESCRIPTION", newest first. The shells show both.
+        for record in crate::records::records(&state).unwrap_or_default() {
+            let text =
+                |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or("-"));
+            let id = text(&record["id"]);
+            let mut description = vec![text(&record["agent_name"])];
+            if let Some(name) = record["variables"]["session_name"].as_str() {
+                description.push(goblins_protocol::plain_text(name));
+            }
+            if let Some(updated) = record["updated"].as_u64() {
+                description.push(goblins_controller::history::local_time(updated));
+            }
+            println!("{id}\t{}", description.join(" · "));
+        }
+        return 0;
+    }
+    let Ok(mut client) = goblins_controller::host::Client::connect(&state) else {
+        return 0;
+    };
+    let Ok(records) = client.call("sessions.list", serde_json::json!({})) else {
+        return 0;
+    };
+    if slot == Slot::Raid {
+        // Every raid has a live member, so the records name them all.
+        let names: std::collections::BTreeSet<_> = records
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r["raid"]["name"].as_str())
+            .filter(|n| {
+                n.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            })
+            .collect();
+        for name in names {
+            println!("{name}");
+        }
+        return 0;
+    }
+    if let Some(records) = records.as_array() {
+        for record in records {
+            if !matches!(
+                record["state"].as_str(),
+                Some("starting" | "running" | "stopping")
+            ) {
+                continue;
+            }
+            if let Some(name) = record["agent_name"].as_str()
+                && !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            {
+                println!("{name}");
+            }
+        }
+    }
+    0
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Slot {
+    Goblin,
+    /// A history record, for `resume`.
+    Record,
+    Raid,
+}
+
+fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
+    // Bash may split --option=value at '='. Restore it without evaluating any
+    // shell text, then let the actual CLI parser identify the argument slot.
+    const TARGET: &str = "__goblins_completion_target__";
+    let mut words = words;
+    if words
+        .last()
+        .is_some_and(|word| word.starts_with("--") && word.ends_with('='))
+    {
+        words.last_mut()?.push_str(TARGET);
+    } else {
+        words.push(TARGET.into());
+    }
+    let mut normalized = Vec::<String>::new();
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        if word == "=" && normalized.last().is_some_and(|last| last.starts_with("--")) {
+            let value = words.next()?;
+            normalized.last_mut()?.push_str(&format!("={value}"));
+        } else {
+            normalized.push(word);
+        }
+    }
+    // Required arguments after the target (a raid's goblins or role) are not
+    // typed yet: stand them in so the parser can still place the target.
+    let cli = (0..=2).find_map(|extra| {
+        let mut words = normalized.clone();
+        words.extend(std::iter::repeat_n(
+            "__goblins_completion_rest__".into(),
+            extra,
+        ));
+        Cli::try_parse_from(words).ok()
+    })?;
+    let slot = match cli.command? {
+        Command::Attach {
+            session,
+            instance: None,
+        } if session == TARGET => Slot::Goblin,
+        Command::Exec {
+            goblin,
+            instance: None,
+            ..
+        } if goblin == TARGET => Slot::Goblin,
+        Command::Detach { id_or_name }
+        | Command::Kill { id_or_name, .. }
+        | Command::Stop { id_or_name, .. }
+            if id_or_name == TARGET =>
+        {
+            Slot::Goblin
+        }
+        Command::Run {
+            raid: Some(raid), ..
+        } if raid == TARGET => Slot::Raid,
+        Command::Resume { id, .. } if id == TARGET => Slot::Record,
+        Command::Raid { command } => match command {
+            RaidCommand::Invite { goblins, .. } if goblins.last().is_some_and(|g| g == TARGET) => {
+                Slot::Goblin
+            }
+            RaidCommand::SetRole { goblin, role, .. } if goblin == TARGET && role != TARGET => {
+                Slot::Goblin
+            }
+            RaidCommand::SetOwner { goblin, .. } if goblin == TARGET => Slot::Goblin,
+            RaidCommand::Invite { raid, .. }
+            | RaidCommand::Destroy { raid, .. }
+            | RaidCommand::Members { raid, .. }
+            | RaidCommand::SetRole { raid, .. }
+            | RaidCommand::SetOwner { raid, .. }
+                if raid == TARGET =>
+            {
+                Slot::Raid
+            }
+            _ => return None,
+        },
+        _ => return None,
+    };
+    Some((cli.state_dir, slot))
+}
+
+pub fn completions(shell: clap_complete::Shell, runtime: Option<&Path>) -> Result<()> {
+    let mut command = Cli::command();
+    let configurations: Vec<_> = runtime
+        .map(goblins_runtime::config::read)
+        .transpose()?
+        .map(|m| m.goblins.into_keys().collect())
+        .unwrap_or_default();
+    // These are the character set accepted by the Nix configuration API;
+    // never interpolate shell expressions from a hand-written manifest.
+    if configurations.iter().any(|name: &String| {
+        name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    }) {
+        return Err("completion configuration keys must be simple identifiers".into());
+    }
+    if !configurations.is_empty() {
+        command = command.mut_subcommand("run", |run| {
+            run.mut_arg("config", |arg| {
+                arg.value_parser(clap::builder::PossibleValuesParser::new(
+                    configurations.clone(),
+                ))
+            })
+        });
+    }
+    let mut generated = Vec::new();
+    clap_complete::generate(shell, &mut command, "goblins", &mut generated);
+    let mut generated = String::from_utf8(generated)?;
+    // Intercept only name positions before the generated function adjusts its
+    // word context. Everything else still uses clap's command/option tree.
+    let hook = match shell {
+        clap_complete::Shell::Bash => Some(
+            r#"
+    local goblins_names goblins_value goblins_values=()
+    if [[ "${COMP_WORDS[COMP_CWORD]}" != -* ]] &&
+       goblins_names=$("${COMP_WORDS[0]}" __complete-names -- "${COMP_WORDS[@]:0:COMP_CWORD}" 2>/dev/null); then
+        # Candidates may carry a description after a tab; Bash shows values only.
+        while IFS=$'\t' read -r goblins_value _; do
+            [[ -n "$goblins_value" ]] && goblins_values+=("$goblins_value")
+        done <<< "$goblins_names"
+        COMPREPLY=( $(compgen -W "${goblins_values[*]}" -- "${COMP_WORDS[COMP_CWORD]}") )
+        return
+    fi
+"#,
+        ),
+        clap_complete::Shell::Zsh => Some(
+            r#"
+    local goblins_names goblins_line
+    local -a goblins_values goblins_descriptions
+    if [[ "${words[CURRENT]}" != -* ]] &&
+       goblins_names=$("${words[1]}" __complete-names -- "${words[@]:0:$((CURRENT - 1))}" 2>/dev/null); then
+        # "VALUE<TAB>DESCRIPTION" lines are listed with their description, in order.
+        for goblins_line in "${(@f)goblins_names}"; do
+            [[ -n "$goblins_line" ]] || continue
+            goblins_values+=("${goblins_line%%$'\t'*}")
+            if [[ "$goblins_line" == *$'\t'* ]]; then
+                goblins_descriptions+=("${goblins_line%%$'\t'*}  -- ${goblins_line#*$'\t'}")
+            fi
+        done
+        if (( ${#goblins_descriptions} )); then
+            compadd -V goblins -l -d goblins_descriptions -- "${goblins_values[@]}"
+        elif (( ${#goblins_values} )); then
+            compadd -- "${goblins_values[@]}"
+        fi
+        return 0
+    fi
+"#,
+        ),
+        _ => None,
+    };
+    if let Some(hook) = hook {
+        if !generated.contains("_goblins() {") {
+            return Err("unexpected shell completion function".into());
+        }
+        generated = generated.replacen("_goblins() {", &format!("_goblins() {{{hook}"), 1);
+    }
+    print!("{generated}");
+    if shell == clap_complete::Shell::Fish {
+        // clap_complete's static Fish generator currently omits positional
+        // values. Add only those candidates, retaining its command/option tree.
+        println!(
+            r#"
+function __fish_goblins_needs_positional
+    set -l subcommand $argv[1]
+    set -l words (commandline -opc)
+    set -e words[1]
+    argparse -s (__fish_goblins_global_optspecs) -- $words 2>/dev/null; or return 1
+    test "$argv[1]" = "$subcommand"; or return 1
+    set -e argv[1]
+    argparse (__fish_goblins_global_optspecs) name= scope= dev-shell= raid= detatched detached -- $argv 2>/dev/null; or return 1
+    test (count $argv) -eq 0
+end
+complete -c goblins -n '__fish_goblins_needs_positional run' -f -a '{}'
+complete -c goblins -n '__fish_goblins_needs_positional completions' -f -a 'bash elvish fish powershell zsh'
+"#,
+            configurations.join(" ")
+        );
+    }
+    if shell == clap_complete::Shell::Fish {
+        println!(
+            r#"
+function __fish_goblins_agent_names
+    set -l words (commandline -opc)
+    command $words[1] __complete-names -- $words 2>/dev/null
+end
+complete -c goblins -n '__fish_goblins_using_subcommand attach detach kill stop resume' -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand run' -l raid -r -f -a '(__fish_goblins_agent_names)'
+complete -c goblins -n '__fish_goblins_using_subcommand raid; and __fish_seen_subcommand_from invite destroy members set-role set-owner' -f -a '(__fish_goblins_agent_names)'
+"#
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn completion_uses_cli_argument_positions_and_state_directory() {
+        for words in [
+            vec!["goblins", "attach"],
+            vec!["goblins", "exec"],
+            vec!["goblins", "exec", "-t"],
+            vec!["goblins", "detach"],
+            vec!["goblins", "kill"],
+            vec!["goblins", "stop"],
+        ] {
+            assert_eq!(
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((None, Slot::Goblin))
+            );
+        }
+        for (words, slot) in [
+            (vec!["goblins", "raid", "invite", "review"], Slot::Goblin),
+            (
+                vec!["goblins", "raid", "invite", "review", "a"],
+                Slot::Goblin,
+            ),
+            (vec!["goblins", "raid", "invite"], Slot::Raid),
+            (vec!["goblins", "raid", "set-role"], Slot::Raid),
+            (vec!["goblins", "raid", "set-role", "review"], Slot::Goblin),
+            (vec!["goblins", "raid", "destroy"], Slot::Raid),
+            (vec!["goblins", "raid", "set-owner"], Slot::Raid),
+            (vec!["goblins", "raid", "set-owner", "review"], Slot::Goblin),
+            (vec!["goblins", "raid", "members"], Slot::Raid),
+            (vec!["goblins", "run", "shell", "--raid"], Slot::Raid),
+            (vec!["goblins", "resume"], Slot::Record),
+            (vec!["goblins", "resume", "--detached"], Slot::Record),
+        ] {
+            assert_eq!(
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((None, slot))
+            );
+        }
+        assert_eq!(
+            completion_target(
+                ["goblins", "raid", "set-role", "review", "a"]
+                    .map(String::from)
+                    .to_vec()
+            ),
+            None
+        );
+        for words in [
+            vec!["goblins", "--state-dir", "/tmp/custom state", "attach"],
+            vec!["goblins", "detach", "--state-dir=/tmp/custom state"],
+            vec!["goblins", "--state-dir", "=", "/tmp/custom state", "detach"],
+        ] {
+            assert_eq!(
+                completion_target(words.into_iter().map(String::from).collect()),
+                Some((Some("/tmp/custom state".into()), Slot::Goblin))
+            );
+        }
+        for words in [
+            vec!["goblins"],
+            vec!["goblins", "run"],
+            vec!["goblins", "help", "attach"],
+            vec!["goblins", "attach", "snikk"],
+            vec!["goblins", "attach", "--state-dir"],
+            vec!["goblins", "attach", "--runtime"],
+            vec!["goblins", "attach", "--instance"],
+            vec!["goblins", "attach", "--instance", "exact-daemon"],
+        ] {
+            assert_eq!(
+                completion_target(words.into_iter().map(String::from).collect()),
+                None
+            );
+        }
+    }
+    #[test]
+    fn prune_needs_a_criterion() {
+        assert!(Cli::try_parse_from(["goblins", "history", "prune"]).is_err());
+        assert!(Cli::try_parse_from(["goblins", "history", "prune", "--dry-run"]).is_err());
+        assert!(
+            Cli::try_parse_from(["goblins", "history", "prune", "--older-than", "30"]).is_err()
+        );
+        match Cli::try_parse_from([
+            "goblins",
+            "history",
+            "prune",
+            "--older-than",
+            "2d",
+            "--keep",
+            "3",
+            "--dry-run",
+        ])
+        .unwrap()
+        .command
+        {
+            Some(Command::History {
+                command:
+                    Some(HistoryCommand::Prune {
+                        older_than,
+                        before,
+                        keep,
+                        dry_run,
+                    }),
+                ..
+            }) => assert_eq!(
+                (older_than, before, keep, dry_run),
+                (Some(2 * 86_400_000), None, Some(3), true)
+            ),
+            _ => panic!("not prune"),
+        }
+        assert!(Cli::try_parse_from(["goblins", "history", "--json"]).is_ok());
+    }
+    #[test]
+    fn terminal_lifecycle_host_commands() {
+        assert!(
+            matches!(Cli::try_parse_from(["goblins", "attach", "snikk"]).unwrap().command,
+            Some(Command::Attach { session, instance: None }) if session == "snikk")
+        );
+        assert!(
+            matches!(Cli::try_parse_from(["goblins", "kill", "snikk"]).unwrap().command,
+            Some(Command::Kill { id_or_name, .. }) if id_or_name == "snikk")
+        );
+        assert!(
+            matches!(Cli::try_parse_from(["goblins", "detach", "snikk"]).unwrap().command,
+            Some(Command::Detach { id_or_name }) if id_or_name == "snikk")
+        );
+        assert!(Cli::try_parse_from(["goblins", "detatch", "snikk"]).is_err());
+        let exec = |args: &[&str]| match Cli::try_parse_from(args).unwrap().command {
+            Some(Command::Exec {
+                tty,
+                goblin,
+                command,
+                ..
+            }) => (tty, goblin, command),
+            _ => panic!("not exec"),
+        };
+        assert_eq!(
+            exec(&["goblins", "exec", "-t", "snikk"]),
+            ("always".into(), "snikk".into(), vec![])
+        );
+        assert_eq!(
+            exec(&["goblins", "exec", "--tty=auto", "a.b", "--", "ls", "-l"]),
+            ("auto".into(), "a.b".into(), vec!["ls".into(), "-l".into()])
+        );
+        assert_eq!(exec(&["goblins", "exec", "snikk"]).0, "never");
+        assert!(Cli::try_parse_from(["goblins", "exec", "snikk", "ls"]).is_err());
+        for args in [
+            vec!["goblins", "attach"],
+            vec!["goblins", "kill"],
+            vec!["goblins", "detach"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+    #[test]
+    fn command_tree_rejects_removed_aliases_and_misplaced_options() {
+        Cli::command().debug_assert();
+        for args in [
+            vec!["goblins", "shell"],
+            vec!["goblins", "daemon"],
+            vec!["goblins", "serve"],
+            vec!["goblins", "list", "--name", "snikk"],
+            vec!["goblins", "server", "status", "--workspace", "/tmp"],
+            vec!["goblins", "run", "shell", "--name", "a", "--name", "b"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+        let cli = Cli::try_parse_from([
+            "goblins",
+            "run",
+            "shell",
+            "--name",
+            "snikk",
+            "--state-dir",
+            "/tmp/test",
+        ])
+        .unwrap();
+        assert_eq!(cli.state_dir, Some("/tmp/test".into()));
+        assert!(
+            matches!(cli.command, Some(Command::Run { config, name: Some(name), .. }) if config == "shell" && name == "snikk")
+        );
+    }
+}
+
+#[derive(clap::Args)]
+pub struct MessageSource {
+    /// Literal message text
+    #[arg(long, conflicts_with = "file", required_unless_present = "file")]
+    pub message: Option<String>,
+    /// Sender-local UTF-8 file, or - for stdin (contents are sent)
+    #[arg(long, conflicts_with = "message", required_unless_present = "message")]
+    pub file: Option<std::path::PathBuf>,
+}
+#[derive(Subcommand)]
+pub enum InboxCommand {
+    Status,
+    Next {
+        #[arg(long)]
+        key: Option<String>,
+    },
+    Complete {
+        message: String,
+        #[arg(long)]
+        claim_generation: u64,
+        #[arg(long)]
+        key: Option<String>,
+    },
+    Requeue {
+        message: String,
+        #[arg(long)]
+        claim_generation: u64,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        key: Option<String>,
+    },
+}
+impl InboxCommand {
+    pub fn request(self) -> std::io::Result<(&'static str, serde_json::Value)> {
+        use goblins_protocol::messages::operation_key;
+        use serde_json::json;
+        Ok(match self {
+            Self::Status => ("inbox.status", json!({})),
+            Self::Next { key } => ("inbox.next", json!({"key":operation_key(key)?})),
+            Self::Complete {
+                message,
+                claim_generation,
+                key,
+            } => (
+                "inbox.complete",
+                json!({"message":message,"claim_generation":claim_generation,"key":operation_key(key)?}),
+            ),
+            Self::Requeue {
+                message,
+                claim_generation,
+                key,
+                reason,
+            } => (
+                "inbox.requeue",
+                json!({"message":message,"claim_generation":claim_generation,"key":operation_key(key)?,"reason":reason}),
+            ),
+        })
+    }
+}

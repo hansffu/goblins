@@ -41,7 +41,7 @@ def rust_driver():
         # Match test-rust's workspace feature selection so Cargo reuses artifacts.
         for artifact in cargo_artifacts("test", "--locked", "--workspace", "--no-run"):
             if (artifact.get("reason") == "compiler-artifact" and artifact.get("executable")
-                    and artifact["target"]["name"] == "goblins_controller"):
+                    and artifact["target"]["name"] == "goblins_supervisor"):
                 os.environ["GOBLINS_TEST_DRIVER"] = artifact["executable"]
         if "GOBLINS_TEST_DRIVER" not in os.environ:
             raise RuntimeError("Cargo did not produce the Rust host test driver")

@@ -69,6 +69,10 @@ class ExecTests(unittest.TestCase):
             if session["state"] in ("starting", "running"):
                 self.d.rpc.call("sessions.stop", {"session": session["id"]})
         self.d.wait(lambda: all(not (self.d.state / s["id"] / "resources").exists() for s in sessions))
+        # Resource cleanup precedes runtime release and live-name availability.
+        for session in sessions:
+            record = self.d.wait(lambda: self.d.record(session["id"]))
+            self.d.wait_record_released(record["id"])
 
     def command(self, *args):
         return [str(self.d.app), "--state-dir", str(self.d.state), "exec", *args]
@@ -130,7 +134,14 @@ class ExecTests(unittest.TestCase):
         t.send("exit 3\n")
         self.assertEqual(t.wait(), 3)
         self.d.wait(lambda: self.d.get(self.agent["session"])["shells"] == 0)
-        events = [json.loads(line) for line in log.read_text().splitlines()]
+        # Exec completion and best-effort supervisor logging travel separately.
+        # A concurrent read may see a trailing record before its newline.
+        def recorded():
+            return [json.loads(line) for line in log.read_text().splitlines(keepends=True)
+                    if line.endswith("\n")]
+        self.d.wait(lambda: any(e["event"] == "exec-exited" and e["fields"]["outcome"].get("code") == 3
+                               for e in recorded()))
+        events = recorded()
         started = [e for e in events if e["event"] == "exec-started"]
         self.assertEqual(len(started), before + 1)
         self.assertEqual(events[-1]["event"], "exec-exited")

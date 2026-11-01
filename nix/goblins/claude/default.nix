@@ -3,10 +3,7 @@
 let
   inherit (pkgs) lib;
   # Claude's inbox wakeups and activity: the launcher, hooks, monitor and mod use it.
-  adapter = import ../../packages/rust.nix {
-    inherit pkgs;
-    package = "goblins-claude";
-  };
+  adapter = import ../../../packages/adapter-claude { inherit pkgs; };
   hooks = import ./hooks.nix { inherit pkgs adapter; };
   plugin = import ./plugin.nix { inherit pkgs adapter; };
   skills = import ../skills.nix { inherit lib; };

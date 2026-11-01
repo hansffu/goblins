@@ -253,6 +253,7 @@ class ClaudeConfigTests(unittest.TestCase):
         # Recreate resumes the recorded conversation with its own arguments.
         terminal.send("exit\n")
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
+        self.d.wait_record_released(self.d.record(session)["id"])
         launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
                                                     "recreate": session, "rows": 24, "cols": 100})
         resumed = Terminal([str(self.app), "--state-dir", str(self.d.state), "attach", launch["session"]])
@@ -313,6 +314,7 @@ class ClaudeConfigTests(unittest.TestCase):
         self.assertEqual(recorded["session_name"], "Fake task")
         self.d.rpc.call("sessions.stop", {"session": receiver})
         self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
+        self.d.wait_record_released(self.d.record(receiver)["id"])
         again = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
                                                    "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
         self.assertEqual(again["agent_name"], "receiver")

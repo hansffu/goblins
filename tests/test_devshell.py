@@ -387,6 +387,12 @@ class DevShellRefreshTests(DevShellTests):
         output, code = self.end(self.terminal, n, timeout=60)
         self.assertEqual(code, 1, output)
         self.assertEqual([r["state"] for r in self.d.permissions() if r["kind"] == "devshell"], ["denied"])
+        # The endless evaluation no longer holds the worker: the next
+        # request's preview is resolved.
+        peer, package = self.d.pending(self.session)
+        self.addCleanup(peer.close)
+        self.d.wait(lambda: self.d.rpc.call("permissions.get", {"request": package["id"]}).get("preview"),
+                    timeout=60)
 
     def test_refresh_evaluation_times_out(self):
         d = Daemon(env={**os.environ, "GOBLINS_EVALUATION_TIMEOUT": "5"})

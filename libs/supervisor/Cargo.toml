@@ -1,0 +1,19 @@
+[package]
+name = "goblins-supervisor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+goblins-runtime = { path = "../runtime" }
+goblins-unix = { path = "../unix" }
+goblins-protocol = { path = "../api" }
+goblins-jsonrpc = { path = "../jsonrpc" }
+goblins-init = { path = "../init" }
+
+[dev-dependencies]
+goblins-runtime = { path = "../runtime", features = ["test-support"] }
+goblins-unix = { path = "../unix", features = ["test-support"] }

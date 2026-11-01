@@ -60,7 +60,7 @@ As in Claude Code and Codex, ids are the keys and names are labels. A new root g
 
 ** Store and writing
 
-- A new module =crates/controller/src/history.rs= owns the store.
+- A new module =packages/daemon/src/history.rs= owns the store.
 - *Ownership.* The daemon takes an exclusive =flock= on =sessions/.lock= at startup and holds it for its lifetime. The owner writes its name (pid and state directory) into the lock file, so others can say who holds it. A second daemon (another =--state-dir=) that cannot get the lock runs without history and says so in =goblins server status=; a thread retries the lock every 2 seconds, so the daemon takes the store over once its holder lets go, and a short CLI prune never leaves a daemon without history. Meanwhile it keeps root goblins' variables in memory (=sessions.set-variables= still answers =recorded: false=); at takeover it writes a record for every running root goblin from its session: name, agent name, working directory, scope, dev shell, Docker, granted packages in grant order, the variables, and for a recreated goblin the record it continues and its skipped items. Denials made meanwhile are not recorded. Only the lock holder removes temporary files left by an interrupted write. With one owner, "running" is simply "running in the owning daemon".
 - *Writer.* The controller sends whole-record snapshots over a channel to a writer thread, which keeps only the newest revision per id and writes it with temp file, fsync, rename and directory fsync. Disk I/O never runs on the event loop.
 - *Serialisation.* Retention and prune also run on the writer thread, so they are ordered with writes. Deleting a record drops any queued revision for it. A deletion counts only once the file is unlinked and the directory fsynced; the writer reports each outcome, a record that could not be deleted stays, and =history.prune= answers only then, with what was removed and what failed. Running records are never deleted, and only running goblins produce writes, so a late write cannot resurrect a pruned record.
@@ -73,7 +73,7 @@ As in Claude Code and Codex, ids are the keys and names are labels. A new root g
 A generic, agent-agnostic way for a goblin to record values for its own record.
 
 - Sandbox RPC =sessions.set-variables {variables: {key: value}}=, handled next to =sessions.set-state= in =sandbox_control=. All given keys change together, so an agent can switch =session_id= and =session_name= in one call. It only ever writes the calling session's record. For children it succeeds without recording, so agent hooks need no special case.
-- Sandbox CLI: =goblins variable set KEY=VALUE…= in =crates/client=.
+- Sandbox CLI: =goblins variable set KEY=VALUE…= in =packages/sandbox-cli=.
 - Limits: keys match =[a-z][a-z0-9_]{0,31}=; values are UTF-8 without control characters, at most 256 bytes; at most 16 keys per record. An empty value removes the key.
 - Values are display text and may contain spaces. When a value fills a =resumeCommand= placeholder it must not start with =-=; otherwise recreate falls back to plain =args= and reports why.
 
@@ -122,7 +122,7 @@ A generic, agent-agnostic way for a goblin to record values for its own record.
 * Codex
 
 - *Launcher fix.* Codex refuses =--sandbox= and =--ask-for-approval= when resuming a remote thread ("Permission overrides are not supported when resuming a remote task."). =nix/goblins/codex/launcher.nix= must leave those two flags off the remote terminal UI when its first positional argument is =resume=. The app-server keeps enforcing =sandbox_mode= and =approval_policy= through its own =-c= settings. If the caller passes either flag with =resume=, the launcher exits with a clear error.
-- *Reporting.* =goblins-codex='s =native_proxy= (=crates/codex/src/main.rs=) already records the foreground thread id from correlated =thread/start=, =thread/resume= and =thread/fork= responses. It now also keeps the desired =session_id= and =session_name= (from =result.thread.name=) and sends them together with =sessions.set-variables=. It takes =thread/name/updated= (=params.threadName=) as the new name only when =params.threadId= is the current foreground thread. A foreground switch replaces both values at once.
+- *Reporting.* =goblins-codex='s =native_proxy= (=packages/adapter-codex/src/main.rs=) already records the foreground thread id from correlated =thread/start=, =thread/resume= and =thread/fork= responses. It now also keeps the desired =session_id= and =session_name= (from =result.thread.name=) and sends them together with =sessions.set-variables=. It takes =thread/name/updated= (=params.threadName=) as the new name only when =params.threadId= is the current foreground thread. A foreground switch replaces both values at once.
 - *Retries.* Reporting runs off the proxy loop. A failed report is retried with a bounded backoff, always with the latest desired values, so an obsolete retry cannot overwrite a newer thread.
 - =mkCodexGoblin= default: =resumeCommand = args ++ [ "resume" "{session_id}" ]=. Options placed before =resume=, such as =-p= and =-c=, still reach the app-server; this was verified end-to-end.
 

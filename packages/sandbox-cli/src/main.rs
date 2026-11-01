@@ -1,0 +1,607 @@
+//! Untrusted request client. No controller or helper dependency.
+mod cli;
+mod host;
+mod init;
+mod preview;
+use clap::Parser;
+use goblins_jsonrpc as rpc;
+use goblins_protocol::REQUEST_SOCKET;
+use serde_json::json;
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+};
+
+fn parse_args(legacy: bool, args: &[String]) -> Result<(String, String), String> {
+    let mut args = args.iter();
+    let kind = if legacy { "package" } else { "request-package" };
+    if args.next().map(String::as_str) != Some(kind) {
+        return Err("usage: goblin request-package PACKAGE [--reason TEXT]".into());
+    }
+    let mut package = None;
+    let mut reason = "Requested from the sandbox shell".to_string();
+    let mut positional = false;
+    while let Some(arg) = args.next() {
+        if !positional && arg == "--reason" {
+            reason = args.next().ok_or("--reason requires text")?.clone();
+        } else if !positional && arg == "--" {
+            positional = true;
+        } else if !positional && arg.starts_with('-') {
+            return Err(format!("unknown option: {arg}"));
+        } else if package.replace(arg.clone()).is_some() {
+            return Err("expected exactly one package attribute".into());
+        }
+    }
+    Ok((package.ok_or("missing package attribute")?, reason))
+}
+fn run() -> Result<i32, String> {
+    let mut args = std::env::args();
+    let name = args.next().unwrap_or_default();
+    let name = std::path::Path::new(&name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let legacy = name == "goblins-request";
+    let args: Vec<_> = args.collect();
+    match name.as_str() {
+        "goblins-init" => return init::run(&args),
+        "goblins-editor" => return editor_open(&args),
+        _ => (),
+    }
+    if !legacy {
+        let command =
+            cli::Cli::try_parse_from(std::iter::once("goblin".to_string()).chain(args.clone()))
+                .unwrap_or_else(|e| e.exit())
+                .command;
+        match command {
+            cli::Command::SetState { state } => {
+                println!("{}", call("sessions.set-state", json!({"state":state}))?);
+                return Ok(0);
+            }
+            cli::Command::Variable {
+                command: cli::VariableCommand::Set { assignments },
+            } => {
+                let set = variables(&assignments)?;
+                println!(
+                    "{}",
+                    call("sessions.set-variables", serde_json::to_value(set).unwrap())?
+                );
+                return Ok(0);
+            }
+            cli::Command::Send {
+                recipient,
+                source,
+                key,
+            } => {
+                let body =
+                    goblins_protocol::messages::load_body(source.message, source.file.as_deref())
+                        .map_err(|e| e.to_string())?;
+                let key =
+                    goblins_protocol::messages::operation_key(key).map_err(|e| e.to_string())?;
+                return mailbox_command(
+                    "messages.send",
+                    json!({"key":key,"to":recipient,"body":body}),
+                );
+            }
+            cli::Command::Reply {
+                message_id,
+                claim_generation,
+                source,
+                key,
+            } => {
+                let body =
+                    goblins_protocol::messages::load_body(source.message, source.file.as_deref())
+                        .map_err(|e| e.to_string())?;
+                let key =
+                    goblins_protocol::messages::operation_key(key).map_err(|e| e.to_string())?;
+                return mailbox_command(
+                    "messages.reply",
+                    json!({"key":key,"message":message_id,"claim_generation":claim_generation,"body":body}),
+                );
+            }
+            cli::Command::Inbox { command } => {
+                let (method, params) = command.request().map_err(|e| e.to_string())?;
+                return mailbox_command(method, params);
+            }
+            cli::Command::RequestPackage { .. } => (),
+            cli::Command::EnableDocker { reason } => {
+                return request_permission(
+                    json!({"kind":"docker", "reason":reason.unwrap_or_else(|| "Enable Docker in this sandbox".into())}),
+                );
+            }
+            cli::Command::Devshell { command } => return devshell(command),
+            cli::Command::Host { command } => return host::command(command),
+            cli::Command::Editor {
+                command: cli::EditorCommand::Open { args },
+            } => return editor_open(&args),
+            cli::Command::Flake {
+                command: cli::FlakeCommand::Run { installable, args },
+            } => return flake_run(installable.as_deref(), args),
+            cli::Command::Completions { shell } => {
+                cli::completions(shell);
+                return Ok(0);
+            }
+            cli::Command::Complete { words } => return cli::complete(words),
+            cli::Command::Raid { command } => return raid(command),
+            cli::Command::Status => {
+                let record = call("sessions.status", json!({}))?;
+                let raid = &record["raid"];
+                println!(
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nRun targets: {}\nState: {}\nActivity: {}\nAttached: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
+                    record["agent_name"].as_str().unwrap_or("unknown"),
+                    record["name"].as_str().unwrap_or("unknown"),
+                    record["description"].as_str().unwrap_or("unknown"),
+                    match record["allowed_run_targets"].as_array() {
+                        Some(names) if !names.is_empty() => names
+                            .iter()
+                            .filter_map(|n| n.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        Some(_) => "none".into(),
+                        None => "unknown".into(),
+                    },
+                    record["state"].as_str().unwrap_or("unknown"),
+                    record["agent_state"].as_str().unwrap_or("unknown"),
+                    match (
+                        record["attached"].as_bool(),
+                        record["attached_since"].as_u64()
+                    ) {
+                        (Some(true), Some(since)) => {
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map_or(0, |d| d.as_millis() as u64);
+                            format!("yes, for {}s", now.saturating_sub(since) / 1000)
+                        }
+                        (Some(true), None) => "yes".into(),
+                        (Some(false), _) => "no".into(),
+                        (None, _) => "unknown".into(),
+                    },
+                    record["scope"].as_str().unwrap_or("none"),
+                    if record["docker_enabled"] == true {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    // Ordinary nix commands against the host daemon.
+                    if record["nix"] == true {
+                        "available"
+                    } else {
+                        "none"
+                    },
+                    if record["host_commands"] == true {
+                        "available after approval"
+                    } else {
+                        "none"
+                    },
+                    // What the configuration asks, not what the agent's own
+                    // settings make of it; no line for a goblin without an agent.
+                    match record["permission_bypass"].as_bool() {
+                        Some(true) => "\nAgent permission bypass: requested",
+                        Some(false) => "\nAgent permission bypass: not requested",
+                        None => "",
+                    },
+                    record["dev_shell"].as_str().unwrap_or("none"),
+                    match raid["name"].as_str() {
+                        Some(name) if raid["paused"] == true => format!(
+                            "{name} (role: {}, paused until the host selects a new owner)",
+                            raid["role"].as_str().unwrap_or("none"),
+                        ),
+                        Some(name) => format!(
+                            "{name} (role: {}, owner: {})",
+                            raid["role"].as_str().unwrap_or("none"),
+                            raid["owner_name"]
+                                .as_str()
+                                .or(raid["owner"].as_str())
+                                .unwrap_or("unknown")
+                        ),
+                        None => "none".into(),
+                    },
+                    record["id"].as_str().unwrap_or("unknown")
+                );
+                return Ok(0);
+            }
+            // Goblins do not attach to each other's terminals: a member always
+            // starts detached, and the host can attach to it.
+            cli::Command::Run { config, name, .. } => {
+                let params = json!({"key":random_key()?,
+                    "name":config,"agent_name":name,"detached":true});
+                println!("{}", call("sessions.start", params)?);
+                return Ok(0);
+            }
+            command => {
+                let (method, params) = match command {
+                    cli::Command::List => ("sessions.list", json!({})),
+                    cli::Command::Kill { session } | cli::Command::Stop { session } => {
+                        ("sessions.stop", json!({"session":session}))
+                    }
+                    cli::Command::Detach => ("sessions.detach", json!({})),
+                    _ => unreachable!(),
+                };
+                let (mut socket, _) = connect()?;
+                let reply = rpc::exchange(&mut socket, json!(1), method, params)
+                    .map_err(|e| e.to_string())?;
+                println!("{reply}");
+                return Ok(0);
+            }
+        }
+    } else if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("usage: goblins-request package PACKAGE [--reason TEXT]");
+        return Ok(0);
+    }
+    let (package, reason) = parse_args(legacy, &args)?;
+    request_permission(json!({"kind":"package","package":package,"reason":reason}))
+}
+/// `KEY=VALUE` arguments, split at the first `=`.
+fn variables(assignments: &[String]) -> Result<goblins_protocol::SetVariables, String> {
+    let mut set = goblins_protocol::SetVariables {
+        variables: Default::default(),
+    };
+    for assignment in assignments {
+        let (key, value) = assignment
+            .split_once('=')
+            .ok_or_else(|| format!("expected KEY=VALUE, got '{assignment}'"))?;
+        if set.variables.insert(key.into(), value.into()).is_some() {
+            return Err(format!("variable '{key}' is given twice"));
+        }
+    }
+    set.validate()?;
+    Ok(set)
+}
+fn raid(command: cli::RaidCommand) -> Result<i32, String> {
+    use cli::RaidCommand::*;
+    let (method, params, json) = match command {
+        Create { raid } => ("raids.create", json!({"raid":raid}), true),
+        Leave => ("raids.leave", json!({}), true),
+        Members { json } => ("raids.members", json!({}), json),
+        SetRole { role } => ("raids.set_role", json!({"role":role}), true),
+    };
+    let result = call(method, params)?;
+    if json {
+        println!("{result}");
+    } else {
+        print!("{}", goblins_protocol::raid_members(&result));
+    }
+    Ok(0)
+}
+fn request_permission(params: serde_json::Value) -> Result<i32, String> {
+    Ok(request(params)?.0)
+}
+/// Write the sandbox's trusted lock into the workspace unless it is already
+/// there. Returns whether the file changed.
+fn write_trusted_lock() -> Result<(bool, u64), String> {
+    let trusted = call("devshell.lock", json!({}))?;
+    let path = std::path::PathBuf::from(trusted["path"].as_str().ok_or("missing lock path")?);
+    let generation = trusted["generation"].as_u64().unwrap_or(0);
+    let current = std::fs::read(&path)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+    if current.as_ref() == Some(&trusted["lock"]) {
+        return Ok((false, generation));
+    }
+    let mut text = serde_json::to_string_pretty(&trusted["lock"]).map_err(|e| e.to_string())?;
+    text.push('\n');
+    let staged = path.with_file_name(".flake.lock.goblins");
+    std::fs::write(&staged, text).map_err(|e| format!("cannot write {}: {e}", staged.display()))?;
+    std::fs::rename(&staged, &path)
+        .map_err(|e| format!("cannot replace {}: {e}", path.display()))?;
+    Ok((true, generation))
+}
+fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
+    match command {
+        cli::DevshellCommand::RestoreLock => {
+            let (changed, generation) = write_trusted_lock()?;
+            println!(
+                "flake.lock {} the trusted lock of dev shell generation {generation}",
+                if changed { "restored to" } else { "already is" }
+            );
+            Ok(0)
+        }
+        cli::DevshellCommand::Diff { update, lock } => {
+            let mut params = json!({});
+            if let Some(update) = update {
+                params["update"] = json!(update);
+            }
+            if lock {
+                params["lock"] = json!(true);
+            }
+            match waiting_call("devshell-diff", "devshell.diff", params)? {
+                Ok(preview) if preview.is_object() => {
+                    print!("{}", preview::render(&preview));
+                    Ok(0)
+                }
+                Ok(_) => Err("daemon returned an invalid preview".into()),
+                Err(message) => {
+                    eprintln!("goblins: {message}");
+                    Ok(1)
+                }
+            }
+        }
+        cli::DevshellCommand::Refresh {
+            update,
+            lock,
+            reason,
+        } => {
+            let mut params = json!({"kind":"devshell","reason":reason
+                .unwrap_or_else(|| "Refresh the dev shell from the workspace flake".into())});
+            if let Some(update) = update {
+                params["update"] = json!(update);
+            }
+            if lock {
+                params["lock"] = json!(true);
+            }
+            let (code, reply) = request(params)?;
+            if code != 0 {
+                if let Some(message) = reply["message"].as_str() {
+                    eprintln!("{message}");
+                }
+                return Ok(code);
+            }
+            let (changed, generation) = write_trusted_lock()?;
+            if changed {
+                println!("flake.lock updated to the approved lock");
+            }
+            // Enter the new generation once, like nix develop: its shellHook
+            // runs here, inside the sandbox.
+            let status = std::process::Command::new("/bin/sh")
+                .args(["-c", ". /run/goblins/devshell/env.sh"])
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !status.success() {
+                eprintln!("warning: the dev shell's shellHook exited with {status}");
+            }
+            println!(
+                "Dev shell generation {generation} is active. Running processes keep their \
+                 old environment: run `source /run/goblins/devshell/env.sh` in Bash (or start \
+                 a new shell) to use it. Goblins this one runs start in it."
+            );
+            Ok(0)
+        }
+    }
+}
+/// The app named by `[FLAKE]#APP`. Only the dev shell's flake is served, so
+/// a named flake must resolve to it; the daemon never evaluates another.
+fn app_name(installable: Option<&str>) -> Result<String, String> {
+    let installable = installable.unwrap_or(".");
+    let (flake, app) = installable.split_once('#').unwrap_or((installable, ""));
+    if !flake.is_empty() {
+        let trusted = call("devshell.lock", json!({}))?;
+        let lock = std::path::Path::new(trusted["path"].as_str().ok_or("missing lock path")?);
+        let resolve = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+        if flake.contains(':')
+            || resolve(std::path::Path::new(flake)).is_none()
+            || resolve(std::path::Path::new(flake)) != lock.parent().and_then(resolve)
+        {
+            return Err(format!(
+                "flake run serves only this sandbox's dev shell flake ({}); use #APP",
+                lock.parent().unwrap_or(lock).display()
+            ));
+        }
+    }
+    Ok(if app.is_empty() { "default" } else { app }.to_string())
+}
+/// A program path the daemon returned: an existing file in the store, with
+/// no `..` or other indirection in the path itself.
+fn store_program(value: &serde_json::Value) -> Result<std::path::PathBuf, String> {
+    let program = std::path::PathBuf::from(value.as_str().ok_or("missing program")?);
+    let valid = program.starts_with("/nix/store/")
+        && program
+            .components()
+            .skip(1)
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        && program.components().count() > 4
+        && program.is_file();
+    if !valid {
+        return Err(format!(
+            "daemon returned an invalid program {}",
+            program.display()
+        ));
+    }
+    Ok(program)
+}
+/// One sandbox call the daemon answers from its worker, which can take long;
+/// the daemon bounds evaluation. The outer error is a connection or protocol
+/// failure; the inner one is the daemon's refusal or failure.
+fn waiting_call(
+    feature: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<Result<serde_json::Value, String>, String> {
+    let (mut socket, init) = connect()?;
+    if !init["features"]
+        .as_array()
+        .is_some_and(|v| v.iter().any(|f| f == feature))
+    {
+        return Err(format!("daemon does not support {method}"));
+    }
+    socket
+        .set_write_timeout(Some(rpc::TIMEOUT))
+        .map_err(|e| e.to_string())?;
+    socket
+        .write_all(
+            &rpc::encode(&rpc::request(json!(1), method, params)).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+    let reply = rpc::read(&mut socket).map_err(|e| e.to_string())?;
+    rpc::validate_response(&reply, &json!(1)).map_err(|e| e.to_string())?;
+    if let Some(error) = reply.get("error") {
+        return Ok(Err(error["message"]
+            .as_str()
+            .unwrap_or("request failed")
+            .to_string()));
+    }
+    Ok(Ok(reply["result"].clone()))
+}
+/// `goblin editor open`: ask the host editor to open sandbox files, by
+/// default waiting until it is done with all of them.
+fn editor_open(args: &[String]) -> Result<i32, String> {
+    use goblins_protocol::editor;
+    let (mut files, wait) = editor::parse(args)?;
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    for file in &mut files {
+        file.path = editor::absolute(&cwd, std::path::Path::new(&file.path))
+            .to_str()
+            .ok_or("file names must be UTF-8")?
+            .to_string();
+    }
+    let open = editor::Open { files, wait };
+    open.validate()?;
+    let params = serde_json::to_value(&open).map_err(|e| e.to_string())?;
+    match waiting_call(editor::FEATURE, "editor.open", params)? {
+        Ok(result) => {
+            if let Some(message) = result["message"].as_str() {
+                eprintln!("goblins: {}", goblins_protocol::plain_text(message));
+            }
+            Ok(result["code"].as_i64().map_or(1, |c| c as i32))
+        }
+        Err(message) => {
+            eprintln!("goblins: {message}");
+            Ok(1)
+        }
+    }
+}
+fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
+    let app = app_name(installable)?;
+    let result = match waiting_call("flake-run", "flake.run", json!({"app":app}))? {
+        Ok(result) => result,
+        Err(message) => {
+            eprintln!("goblins: {message}");
+            return Ok(1);
+        }
+    };
+    let program = store_program(&result["program"])?;
+    use std::os::unix::process::CommandExt;
+    let error = std::process::Command::new(&program).args(args).exec();
+    Err(format!("cannot execute {}: {error}", program.display()))
+}
+fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String> {
+    let id = random_key()?;
+    let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
+        let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))?;
+        if init["api"] != 1 || init["role"] != "sandbox" {
+            return Err("incompatible daemon".into());
+        }
+        if params["kind"] == "docker"
+            && !init["features"]
+                .as_array()
+                .is_some_and(|features| features.iter().any(|feature| feature == "docker-enable"))
+        {
+            return Err("daemon does not support on-demand Docker; start a new sandbox with an updated daemon".into());
+        }
+        socket.set_write_timeout(Some(rpc::TIMEOUT))?;
+        use std::io::Write;
+        socket.write_all(&rpc::encode(&rpc::request(
+            json!(id),
+            "permissions.request",
+            params.clone(),
+        ))?)?;
+        let reply = rpc::read(&mut socket)?;
+        rpc::validate_response(&reply, &json!(id))?;
+        if let Some(error) = reply.get("error") {
+            return Ok(json!({"status":"error","message":error}));
+        }
+        let result: goblins_protocol::rpc::PermissionResult =
+            serde_json::from_value(reply["result"].clone())?;
+        if !["ready", "denied", "error"].contains(&result.status.as_str())
+            || !goblins_protocol::identifier(&result.request)
+        {
+            return Err("invalid terminal result".into());
+        }
+        Ok(serde_json::to_value(result)?)
+    };
+    match exchange() {
+        Ok(reply) => {
+            println!("{}", serde_json::to_string(&reply).unwrap());
+            Ok((if reply["status"] == "ready" { 0 } else { 1 }, reply))
+        }
+        Err(e) => {
+            eprintln!("goblins-request: outcome unknown; do not retry automatically: {e}");
+            Ok((2, json!(null)))
+        }
+    }
+}
+fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+    let (mut socket, _) = connect()?;
+    rpc::exchange(&mut socket, json!(1), method, params).map_err(|e| e.to_string())
+}
+fn mailbox_command(method: &str, params: serde_json::Value) -> Result<i32, String> {
+    if method != "inbox.status" {
+        goblins_protocol::messages::Mutation::parse(method, params.clone())?;
+    }
+    let (mut socket, init) = connect()?;
+    if !init["features"]
+        .as_array()
+        .is_some_and(|v| v.iter().any(|f| f == goblins_protocol::messages::FEATURE))
+    {
+        return Err("daemon does not support agent inboxes".into());
+    }
+    let key = params["key"].as_str().map(String::from);
+    if let Some(key) = &key {
+        eprintln!("{}", json!({"key":key}));
+    }
+    Ok(goblins_protocol::messages::print_outcome(
+        goblins_protocol::messages::exchange(&mut socket, json!(1), method, params),
+        key.as_deref(),
+    ))
+}
+fn random_key() -> Result<String, String> {
+    let mut random = [0; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut random))
+        .map_err(|e| e.to_string())?;
+    Ok(random.iter().map(|b| format!("{b:02x}")).collect())
+}
+fn connect() -> Result<(UnixStream, serde_json::Value), String> {
+    let mut socket = UnixStream::connect(REQUEST_SOCKET).map_err(|e| e.to_string())?;
+    let init = rpc::exchange(&mut socket, json!(0), "initialize", json!({"api":1}))
+        .map_err(|e| e.to_string())?;
+    if init["api"] != 1 || init["role"] != "sandbox" {
+        return Err("incompatible daemon".into());
+    }
+    Ok((socket, init))
+}
+fn main() {
+    std::process::exit(match run() {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("goblins: {e}");
+            if std::env::args()
+                .nth(1)
+                .is_some_and(|s| matches!(s.as_str(), "send" | "reply" | "inbox"))
+            {
+                1
+            } else {
+                2
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn request_options_can_precede_or_follow_the_package() {
+        for args in [
+            ["request-package", "hello", "--reason", "test"],
+            ["request-package", "--reason", "test", "hello"],
+        ] {
+            assert_eq!(
+                parse_args(false, &args.map(String::from)).unwrap(),
+                ("hello".into(), "test".into())
+            );
+        }
+        assert!(parse_args(false, &["tui".into()]).is_err());
+        assert!(parse_args(true, &["package".into(), "hello".into()]).is_ok());
+    }
+    #[test]
+    fn variables_split_at_the_first_equals_sign() {
+        let set = variables(&["session_id=a=b".into(), "session_name=".into()]).unwrap();
+        assert_eq!(set.variables["session_id"], "a=b");
+        assert_eq!(set.variables["session_name"], "");
+        assert!(variables(&["novalue".into()]).is_err());
+        assert!(variables(&["a=1".into(), "a=2".into()]).is_err());
+        assert!(variables(&["Bad=1".into()]).is_err());
+    }
+}

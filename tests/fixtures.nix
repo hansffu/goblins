@@ -13,7 +13,7 @@ in
       shell = "${pkgs.bashInteractive}/bin/bash";
       posix_shell = "${pkgs.bashInteractive}/bin/bash";
       flake = "path:${pkgs.path}";
-      client_package = import ../nix/packages/internal-goblins.nix { inherit pkgs; };
+      client_package = import ../packages/sandbox-cli { inherit pkgs; };
       # Duplicate Bash commands must coexist just as they do on a Nix shell PATH.
       initial_packages = [
         pkgs.python3

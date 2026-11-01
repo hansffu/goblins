@@ -207,6 +207,9 @@ class AttachHandlerTests(unittest.TestCase):
         # and through attach.sock with a hello.
         plain = self.d.start()
         old = self.d.terminal(dict(plain, terminal=self.d.get(plain["session"])["terminal"]))
+        # The legacy ACK precedes the daemon snapshot. Observe the live peer
+        # before waiting for its closure, so initial false cannot satisfy it.
+        self.assertTrue(self.d.wait(lambda: self.d.get(plain["session"])["terminal_attached"]))
         old.close()
         self.d.wait(lambda: not self.d.get(plain["session"])["terminal_attached"])
         cli = self.attach(plain["session"], rows=33, cols=90)
@@ -260,6 +263,9 @@ os.execv({str(nix_bin() / "nix-store")!r}, [{str(nix_bin() / "nix-store")!r}, *s
         self.d.cli("stop", session)
         self.d.wait(lambda: self.d.get(session)["state"] == "stopped")
         record = self.d.record(session)
+        # Stopped and released are separate: history authority follows cleanup.
+        released = self.d.wait_record_released(record["id"])
+        self.assertFalse(released["running"])
         again = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": manifest,
                                                    "recreate": record["id"], "rows": 24, "cols": 100,
                                                    "detached": True})

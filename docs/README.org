@@ -14,6 +14,7 @@ The [[file:../README.org][top-level README]] is for users. This directory holds 
 | [[file:specs/DESIGN.org][specs/DESIGN.org]]             | Runtime design and ownership/failure boundaries                         |
 | [[file:specs/DAEMON.org][specs/DAEMON.org]]             | Daemon and communication decisions; the host API 1 contract             |
 | [[file:specs/AGENT-INTEGRATION.org][specs/AGENT-INTEGRATION.org]]  | Inboxes, hooks, skills and Codex/Claude Code drivers                    |
+| [[file:specs/SUPERVISOR-REFACTOR.org][specs/SUPERVISOR-REFACTOR.org]] | Completed runtime cutover, phased history and final gate evidence |
 | [[file:specs/SANDBOX-ACCESS.org][specs/SANDBOX-ACCESS.org]]     | =goblins exec=, TRAMP and the sandbox editor                            |
 | [[file:specs/CHILDREN-AND-RAIDS.org][specs/CHILDREN-AND-RAIDS.org]] | Child configurations and raids                                          |
 | [[file:specs/TODO.org][specs/TODO.org]]               | Open work                                                               |
@@ -32,8 +33,11 @@ Accepted decisions:
 - [[file:adr/0011-nix-in-a-goblin.md][ADR 0011]]: allowNix gives a goblin the host store and Nix daemon
 - [[file:adr/0012-host-commands.md][ADR 0012]]: approved host commands under a subreaper supervisor
 - [[file:adr/0013-agent-permission-bypass.md][ADR 0013]]: agents keep their own permission prompts unless a configuration bypasses them
+- [[file:adr/0014-raids-replace-the-ownership-tree.md][ADR 0014]]: transferable raid ownership without a parent/child tree
 - [[file:adr/0015-claude-code-mod.md][ADR 0015]]: a Claude Code mod presents the inbox while managed hooks keep the lifecycle
 - [[file:adr/0016-server-and-client-goblins.md][ADR 0016]]: server and client goblins with attach handlers; Codex without the relay
+- [[file:adr/0017-claude-integration-in-goblin.md][ADR 0017]]: Claude wakeup integration lives inside the goblin
+- [[file:adr/0018-per-goblin-supervisors.md][ADR 0018]]: supervisor processes own runtime, relay, terminals and scoped capabilities
 
 * Build and run from a checkout
 
@@ -89,6 +93,8 @@ The runner defaults to two spawned worker processes; =-j 4= opts in to four. Ord
 
 Fixture builds are serialized across workers, using one Nix job with two cores. The Rust workspace and ignored Session test driver are built once before parallel execution, sharing the Rust suite's Cargo feature selection and artifacts. The runner defaults to two Cargo build jobs unless =CARGO_BUILD_JOBS= is already set; =just test-rust= limits test threads to two.
 
+=just test-rust= runs =tests/rust_tests.py=: it first serially builds the production =goblins-supervisor-bwrap= executable, selects its exact absolute Cargo JSON artifact and exports =GOBLINS_TEST_SUPERVISOR_EXECUTABLE= only for the subsequent workspace test invocation. Real actor tests execute that binary through the ordinary inherited-control child backend; missing, relative or nonexecutable pins fail, with no PATH/sibling fallback, skipped case or recursive Cargo invocation inside Rust tests. For a targeted suite, use =python3 tests/rust_tests.py -p goblins-controller TEST_NAME -- --test-threads=2=. Direct =cargo test= callers must first build the supervisor and supply the same absolute fixture variable. Standalone Nix daemon checks inject an independently built production executable only through the builder's check environment and clear it afterward; it is never compiled into the installed daemon. Daemon source/test-package lists and all normal/dev/build/optional/target Cargo dependency routes exclude the supervisor and init implementation libraries, enforced transitively by the dependency tests.
+
 Ordinary API and terminal tests use an offline Fish fixture with only core utilities, grep and sed. Exec tests use an offline Bash fixture. Three exec cases that only run independent commands share a goblin; cases that stop or replace agents retain fresh sessions. The real connected-shell and packaging checks still use the complete demo. Existing tests and assertions are retained.
 
 Session startup roots the initial closure listing once and uses its registered Nix references to avoid redundant per-path roots. This only protects outputs from GC: the sandbox's visible paths are still computed from its declared packages, and later grants and unrelated binds keep their own roots. Host command waits wake on process exit/output while keeping bounded cancellation.
@@ -110,22 +116,28 @@ The development shell includes pyte for fullscreen terminal regression tests. Te
 | =nix/goblins/claude/=               | Claude Code launcher, hooks and managed config                           |
 | =skills/=                           | Goblins agent skills mounted into Codex and Claude Code sandboxes        |
 | =nix/internal/=                     | Shared Nix argument validation                                           |
-| =nix/packages/goblins.nix=          | Host binary, including its Rust helper, controller, and pinned catalog   |
-| =nix/packages/internal-goblins.nix= | Restricted in-sandbox =goblins= binary                                   |
+| =packages/daemon/wrapper.nix=          | Host binary, including its Rust helper, controller, and pinned catalog   |
+| =packages/sandbox-cli/default.nix= | Restricted in-sandbox =goblins= binary                                   |
 | =tests/fixtures.nix=                | Runtime dependency fixtures and agent-sandbox baselines                  |
 | =tests/checks.nix=                  | Nix API validation and named configuration test build                    |
-| =src/=                              | Namespace mount helper, scope keeper and Docker launcher                 |
-| =crates/protocol/=                  | Bounded request/reply types, validation and deadline                     |
-| =crates/client/=                    | Restricted Rust sandbox request executable                               |
-| =crates/controller/=                | Rust session library, event pump, worker and tui/run frontend            |
-| =nix/packages/rust.nix=             | Shared Rust build derivation with separate package selection             |
+| =packages/supervisor-bwrap/= | Pinned supervisor, scope and one-shot entry executable |
+| =packages/mount-helper/src/=                              | Namespace mount helper, scope keeper and Docker launcher                 |
+| =libs/api/=                  | Public request/reply types and validators                     |
+| =libs/jsonrpc/= | JSON-RPC values, envelopes, framing and deadlines |
+| =libs/init/= | Private init protocol and descriptor transport |
+| =libs/runtime/= | Internal runtime contract, policy and lease data |
+| =libs/supervisor/= | Private Linux runtime engine and inherited-socket supervisor/scope/one-shot modes |
+| =libs/unix/= | Shared POSIX descriptor and filesystem helpers |
+| =packages/sandbox-cli/=                    | Restricted Rust sandbox request executable                               |
+| =packages/daemon/=                | Rust event pump, authority and tui/run frontend            |
+| =nix/builders/rust.nix=             | Shared Rust build derivation with separate package selection             |
 | =tests/=                            | Python black-box payload and terminal tests; Nix checks                  |
 | =emacs/=                            | Emacs status, workspace, terminal and TRAMP frontend                     |
 | =prototypes/=                       | Earlier experiments                                                      |
 
 * Implementation notes
 
-The controller accepts explicit frontend decisions; its library never opens =/dev/tty=. Each session has a cancellable worker for startup and sequential grants while the daemon continues serving other sessions and frontends. The internal client depends only on shared protocol code, with no host policy or mount API. There is no production Python executable or mandatory Python interpreter; Python is a test driver only.
+The controller accepts explicit frontend decisions; its library never opens =/dev/tty=. Each session has a supervisor process whose cancellable worker performs startup and sequential grants while its engine handles relay, init and terminal traffic; the daemon continues serving identity, approvals, history and messaging. The internal client depends only on shared protocol code, with no host policy or mount API. There is no production Python executable or mandatory Python interpreter; Python is a test driver only.
 
 The Rust rewrite preserves PoC commit =c2a9d42= as its behavioral reference. It does not implement terminal multiplexing, live file/network grants or daemon restart recovery. Closing frontends leaves sessions alive; daemon death stops every helper and sandbox; abrupt death may leave host session directories and GC roots for manual cleanup.
 

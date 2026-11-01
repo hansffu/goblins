@@ -540,7 +540,7 @@ reused, even while the previous session's terminal output is still draining.
 There is no renaming operation.
 
 The daemon randomly chooses among the available names in
-[[file:../crates/controller/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
+[[file:../packages/daemon/src/goblin-names.txt][the checked-in list of 128 fantasy goblin names]]. The runtime still permits
 16 live sessions; the larger pool adds variety without changing that limit. If
 none is available, launch fails immediately with a resource-limit error;
 allocation never spins or silently collides. Custom names do not consume list
@@ -705,12 +705,7 @@ Frontends use the host methods =history.list=, =history.prune= and the =recreate
 
 * Shells, commands and editors inside a running goblin
 
-Every sandbox's root process is =goblins-init=. It starts the agent on the
-sandbox's terminal, reaps everything orphaned to it, and runs the commands the
-host asks for. When the agent exits, init hangs up those commands, kills
-whatever is left below it, and exits with the agent's status, so the sandbox
-still ends with its agent. Init's channel to the daemon is an inherited
-socket: nothing in the sandbox can open, find or impersonate it.
+Every sandbox's root process is =goblins-init=. It starts the main command on a terminal, or without one when =onAttach= is configured, reaps orphans and runs host-requested execs. When the main command exits, init hangs up those commands, kills what remains below it and exits with the main command's status. Its inherited private control socket belongs to the host-side supervisor; sandbox programs cannot reopen or impersonate that endpoint. The daemon coordinates exec and attachment through that supervisor rather than holding init's socket or a PTY master.
 
 #+begin_src sh
 goblins exec -t snikk                       # the sandbox's own $SHELL, on a new terminal
@@ -808,7 +803,7 @@ mkGoblins {
 =injectedFiles= entries to the supplied options. Attribute-set =//= merges are shallow;
 merge nested =env= or =codexSettings= sets explicitly when extending them.
 
-The host and inner binary definitions live under =nix/packages/=.
+The host and inner binary definitions live under =packages/=.
 
 =editor.emacs.enable = true;= on =mkGoblins= applies to every goblin: it adds
 the TRAMP tools and =EDITOR=/=VISUAL= (=goblins-editor=) to each one, scope
@@ -987,20 +982,19 @@ binds still select live host files/directories with their declared read/write
 permissions. Bind variables expand from the daemon's inherited environment,
 including HOME; =mkGoblin.env= values and entry arguments remain literal.
 
-Session logs, sockets, mount placeholders, profiles and GC roots live below
-=STATE/SESSION/resources=. Logs are disposable and bounded. Normal session stop
-cleans resources; daemon SIGKILL kills payloads but can leave directories and
-roots. Remove crash leftovers only after verifying that daemon/session is gone.
-There is no startup recovery or automatic reconciliation of old directories.
+Session logs, sockets, mount placeholders, profiles and GC roots live below =STATE/SESSION/resources=. Logs are disposable and bounded. Normal cleanup releases those resources, while another member or Docker engine can retain a lease. Abrupt failure can leave directories and roots; inspect ownership and live sessions before collecting leftovers. There is no startup recovery of running goblins.
 
-The restricted executable inside the sandbox supports package requests,
-raid commands, =run/list/kill/stop= for members of the raid it owns, =status= for its own identity,
-and detaching its own terminal. It
-initializes on that session's endpoint and sends JSON-RPC 2.0 with Content-Length
-framing. It cannot choose its authority, manifest, PID, mount target, namespace,
-Nix expression or approval decision. The separate private host socket owns
-approvals and unrestricted terminal management. The namespace helper retains narrow private
-pipes; daemon threads never enter mount namespaces.
+The restricted sandbox executable supports package requests, raid commands, =run/list/kill/stop= for members of its owned raid, status for its own identity and detaching its terminal. Its own supervisor accepts =/run/goblins/request.sock=, validates framing, initialization, fixed policy and supported operations, then relays allowed calls to the daemon with an identity derived from that runtime. The daemon applies current state, raid authorization and approvals. Caller arguments cannot select another actor, manifest, PID, mount target, namespace, Nix expression or approval authority. The separate private host socket retains approval and unrestricted management authority.
+
+** Runtime processes and terminal lifetime
+
+Each running goblin has a separate host-side =goblins-supervisor-bwrap= process. It owns the helper and blocking session worker, sandbox request relay, private init channel, host-job supervision, PTYs, buffers and server log. The daemon keeps records, decisions, raids, history, messaging and the attach handshake. The host wrapper pins the supervisor from the same build through =GOBLINS_SUPERVISOR_RUNTIME=; there is no PATH fallback or in-process runtime selector. A separate process of that executable owns each active shared scope, independently of any goblin that first joined it.
+
+The modern =attach.sock= handshake runs in the daemon; after authorization the accepted stream passes to the supervisor for direct terminal I/O. Legacy =terminal.sock= is accepted by the supervisor and refuses server goblins with the existing upgrade diagnostic. A server goblin's main output goes to its bounded log and each =onAttach= client gets its own PTY. Detach and closing approval frontends keep the main goblin alive.
+
+A stop acknowledgement does not mean all cleanup has finished. Visible stopped state, authoritative resource release and final supervisor exit are separate: a released runtime can still serve retained terminal output. Name reuse and history's running flag follow runtime release, not resource-directory disappearance. Once terminal output is drained and events are delivered, the supervisor exits and the daemon reaps it. Losing one supervisor fails only its goblin, or interrupts retained terminal output if it already stopped; it does not stop raid peers or run =onDetach=. Daemon death ends its supervisors and sandboxes, with parent-death signaling as a backstop. There is no automatic session restart.
+
+The foreground daemon may raise its descriptor capacity while preserving the original soft limit for payloads through checked supervisor startup metadata; this does not lower the supervisor's ambient soft or hard limit. The preexisting background =server start= self-exec path loses that process-local original-limit metadata and is outside this propagation mechanism. See [[file:API.org][API.org]] and [[file:architecture/README.org][the architecture guide]] for the private process and lease contracts.
 
 * Codex configuration
 

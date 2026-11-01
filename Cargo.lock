@@ -381,6 +381,7 @@ name = "goblins-claude"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "goblins-jsonrpc",
  "goblins-protocol",
  "libc",
  "serde",
@@ -393,6 +394,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "clap_complete",
+ "goblins-init",
+ "goblins-jsonrpc",
  "goblins-protocol",
  "libc",
  "serde_json",
@@ -403,6 +406,7 @@ name = "goblins-codex"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "goblins-jsonrpc",
  "goblins-protocol",
  "libc",
  "serde",
@@ -418,9 +422,32 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
+ "goblins-jsonrpc",
  "goblins-protocol",
+ "goblins-runtime",
+ "goblins-unix",
  "libc",
  "ratatui",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "goblins-init"
+version = "0.1.0"
+dependencies = [
+ "goblins-protocol",
+ "goblins-unix",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "goblins-jsonrpc"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -429,6 +456,8 @@ dependencies = [
 name = "goblins-mount-helper"
 version = "0.1.0"
 dependencies = [
+ "goblins-runtime",
+ "goblins-unix",
  "libc",
 ]
 
@@ -436,9 +465,50 @@ dependencies = [
 name = "goblins-protocol"
 version = "0.1.0"
 dependencies = [
+ "goblins-jsonrpc",
  "libc",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "goblins-runtime"
+version = "0.1.0"
+dependencies = [
+ "goblins-jsonrpc",
+ "goblins-protocol",
+ "goblins-unix",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "goblins-supervisor"
+version = "0.1.0"
+dependencies = [
+ "goblins-init",
+ "goblins-jsonrpc",
+ "goblins-protocol",
+ "goblins-runtime",
+ "goblins-unix",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "goblins-supervisor-bwrap"
+version = "0.1.0"
+dependencies = [
+ "goblins-supervisor",
+]
+
+[[package]]
+name = "goblins-unix"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

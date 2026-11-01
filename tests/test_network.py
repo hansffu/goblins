@@ -93,10 +93,6 @@ class NetworkTests(unittest.TestCase):
         children = set()
         for task in Path(f"/proc/{self.d.process.pid}/task").iterdir():
             children.update((task / "children").read_text().split())
-        names = {pid: Path(f"/proc/{pid}/comm").read_text().strip() for pid in children}
-        # The Nix pasta entry point is a symlink to the passt executable.
-        pasta = [pid for pid, name in names.items() if name.startswith(("pasta", "passt"))]
-        self.assertEqual(len(pasta), 1, names)
         # The scope keeper is independent of pasta. Track the complete owned
         # tree so this also verifies namespace cleanup before Docker activation.
         descendants = set(children)
@@ -110,7 +106,11 @@ class NetworkTests(unittest.TestCase):
                         pending.append(child)
         identities = {pid: Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
                       for pid in descendants}
-        helpers = [pid for pid in children if Path(f"/proc/{pid}/comm").read_text().startswith("goblins-mount")]
+        names = {pid: Path(f"/proc/{pid}/comm").read_text().strip() for pid in descendants}
+        # The Nix pasta entry point is a symlink to the passt executable.
+        pasta = [pid for pid, name in names.items() if name.startswith(("pasta", "passt"))]
+        self.assertEqual(len(pasta), 1, names)
+        helpers = [pid for pid in descendants if names[pid].startswith("goblins-mount")]
         self.assertEqual(len(helpers), 1)
         events = (self.d.state / session / "resources/events.jsonl").read_text().splitlines()
         payload = str(next(json.loads(line)["fields"]["pid"] for line in events if json.loads(line)["event"] == "started"))
@@ -124,7 +124,7 @@ class NetworkTests(unittest.TestCase):
                     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
                     if fields[0] != "Z" and fields[19] == start:
                         return False
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     pass
             return True
 

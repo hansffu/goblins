@@ -67,9 +67,9 @@ class FeatureTests(unittest.TestCase):
 
     def test_path_recommendations_include_overlap_and_fall_back_to_full(self):
         data = load_manifest()
-        names, _ = recommend(["crates/client/src/preview.rs"], data)
+        names, _ = recommend(["packages/sandbox-cli/src/preview.rs"], data)
         self.assertEqual(set(names), {"devshell", "tui"})
-        for paths in (["crates/protocol/src/rpc.rs"], ["tests/daemon_support.py"],
+        for paths in (["libs/api/src/rpc.rs"], ["tests/daemon_support.py"],
                       ["new/backend.rs"], ["README.org", "new/backend.rs"]):
             with self.subTest(paths=paths):
                 self.assertEqual(recommend(paths, data)[0], ("full",))

@@ -2,8 +2,8 @@
 let
   inherit (pkgs) lib;
   validate = import ../internal/validate.nix { inherit lib; };
-  client = import ../packages/internal-goblins.nix { inherit pkgs; };
-  dockerDaemon = import ../packages/docker.nix { inherit pkgs; };
+  client = import ../../packages/sandbox-cli { inherit pkgs; };
+  dockerDaemon = import ../../packages/docker { inherit pkgs; };
   # Scope defaults come first; the goblin's own values win on conflicts.
   withDefaults =
     defaults: options:

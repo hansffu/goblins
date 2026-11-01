@@ -114,6 +114,30 @@ os.execv({real!r},[{real!r},*sys.argv[1:]])
         d.wait(lambda: not (d.state / a["session"] / "resources").exists(), timeout=2)
         print("EVIDENCE slow approved build A leaves B responsive; explicit stop reaps only A's owned work", flush=True)
 
+    def test_a_member_launch_and_its_owners_stop_do_not_wait_for_the_owners_nix_work(self):
+        d, marker = self.slow_daemon("build")
+        owner = d.start()
+        peer, record = d.pending(owner["session"]); self.addCleanup(peer.close)
+        d.decide(record, True); d.wait(marker.exists)
+        # The owner's worker is blocked in a build: the launch is accepted
+        # and the member starts anyway, from what the owner's runtime hands
+        # over without asking its worker.
+        member = d.member(owner["session"], wait=False)
+        d.wait(lambda: d.get(member["session"])["state"] == "running", timeout=60)
+        # It did not wait for the build: that is still blocked, and the
+        # request it serves still in progress.
+        blocked = json.loads(marker.read_text())
+        self.assertFalse(marker.with_suffix(".release").exists())
+        self.assertTrue(Path(f"/proc/{blocked[0]}").exists())
+        self.assertEqual(d.rpc.call("permissions.get", {"request": record["id"]})["state"], "realizing")
+        start = time.monotonic()
+        d.rpc.call("sessions.stop", {"session": owner["session"]})
+        d.wait(lambda: d.get(owner["session"])["state"] == "stopped", timeout=5)
+        self.assertLess(time.monotonic() - start, 5)
+        self.assert_reaped(d, marker)
+        self.assertEqual(d.get(member["session"])["state"], "running")
+        print("EVIDENCE a member starts and its owner stops while the owner's worker is blocked in a build", flush=True)
+
     def test_normal_exit_while_package_work_is_blocked_leaves_members_running(self):
         for kind in ("preview", "build"):
             with self.subTest(kind=kind):

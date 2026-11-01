@@ -202,6 +202,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
         failed = self.recreate(d, "rec-f", wait="failed")
         self.assertIn("unknown goblin", d.get(failed["session"])["detail"])
         self.assertEqual(d.record("rec-f")["sessions"], ["rec-f"])
+        d.wait_record_released("rec-f")
         updated = checks_manifest("updated-goblins")
         first = self.recreate(d, "rec-f", updated)["session"]
         self.assertEqual(self.exec(d, first, 'printf "%s %s" "$GOBLIN_MARKER" "$(pwd -P)"').stdout,
@@ -212,6 +213,7 @@ os.execv({real!r}, [{real!r}, *sys.argv[1:]])
             self.assertIn(f"goblin morb ({first}) is live and runs it", self.refused(d, target))
         d.rpc.call("sessions.stop", {"session": first})
         d.wait(lambda: d.get(first)["state"] == "stopped")
+        d.wait_record_released("rec-f")
         # An older goblin id, as Emacs shows stopped goblins, finds the latest.
         second = self.recreate(d, first, updated)["session"]
         line = d.wait(lambda: (r if (r := d.record("rec-f"))["sessions"][-1] == second else None))

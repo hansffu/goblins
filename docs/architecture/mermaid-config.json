@@ -54,5 +54,6 @@
     "compositeTitleBackground": "#3e4451",
     "altBackground": "#21242b",
     "dividerColor": "#5b6268"
-  }
+  },
+  "themeCSS": "text, tspan { white-space: pre; }"
 }

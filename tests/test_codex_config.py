@@ -238,15 +238,20 @@ class CodexConfigTests(unittest.TestCase):
             "goblins-codex", command,
         ]))
 
-    def thread(self, receiver):
-        """The adapter's conversation, or None until it writes its first status."""
+    def adapter_status(self, receiver):
+        """The adapter snapshot, or None until it writes its first status."""
         import subprocess
         result = subprocess.run([str(self.app), "--state-dir", str(self.d.state), "exec", receiver, "--",
                                  "goblins-codex", "status"], capture_output=True, text=True)
         if result.returncode and "No such file or directory" in result.stderr:
             return None
         self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)["thread_id"]
+        return json.loads(result.stdout)
+
+    def thread(self, receiver):
+        """The adapter's conversation, or None until it writes its first status."""
+        status = self.adapter_status(receiver)
+        return status["thread_id"] if status is not None else None
 
     def native_status(self, receiver):
         import subprocess
@@ -255,8 +260,23 @@ class CodexConfigTests(unittest.TestCase):
 
     def test_notify_then_fetch_without_model_or_attachment(self):
         receiver = self.d.start("notifier", agent_name="receiver")["session"]
+        def paused_and_quiescent():
+            # Pause writes controls; only a later observer snapshot applies it.
+            status = self.adapter_status(receiver)
+            if (status is None or status.get("paused") is not True or status.get("agent_state") != "idle"
+                    or "diagnostic" not in status or status["diagnostic"] is not None):
+                return None
+            thread, threads = status.get("thread_id"), status.get("threads")
+            if not isinstance(thread, str) or not thread or not isinstance(threads, dict) or thread not in threads:
+                return None
+            delivery = threads[thread]
+            if (not isinstance(delivery, dict) or "pending" not in delivery
+                    or delivery["pending"] is not None or delivery.get("uncertain") is not False):
+                return None
+            return status
         self.d.wait(lambda: self.d.get(receiver)["agent_state"] == "idle")
         self.local(receiver, "pause")
+        self.d.wait(paused_and_quiescent)
         self.d.rpc.call("messages.send", {"key":"wake", "to":receiver, "body":"private inbox content"})
         import time
         time.sleep(1)
@@ -296,10 +316,19 @@ class CodexConfigTests(unittest.TestCase):
         self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 5)
         # Messages are handled by hand while delivery is paused.
         self.local(receiver, "pause")
-        self.d.rpc.call("messages.send",{"key":"manual","to":receiver,"body":"manual fallback"})
+        self.d.wait(paused_and_quiescent)
+        inbox = self.sandbox(receiver, "inbox.status", {})
+        self.assertEqual((inbox["queued"], inbox["claim"], inbox["head"]), (0, None, None))
+        manual = self.d.rpc.call("messages.send",{"key":"manual","to":receiver,"body":"manual fallback"})
+        inbox = self.sandbox(receiver, "inbox.status", {})
+        self.assertEqual((inbox["queued"], inbox["claim"]), (1, None))
+        self.assertEqual(inbox["head"][0], manual["id"])
         import subprocess
         command = [str(self.app),"--state-dir",str(self.d.state),"exec",receiver,"--","/run/goblins/bin/goblin"]
         item = json.loads(subprocess.check_output([*command,"inbox","next"]))
+        self.assertIsNotNone(item["message"])
+        self.assertEqual((item["message"]["id"], item["message"]["body"]),
+                         (manual["id"], "manual fallback"))
         subprocess.run([*command,"reply",item["message"]["id"],"--claim-generation",str(item["claim_generation"]),"--message","processed manually"],check=True,capture_output=True)
         self.d.wait(lambda: self.d.rpc.call("inbox.status",{})["queued"] == 6)
         # Without its adapter, the goblin has no conversation: it stops.
@@ -338,6 +367,7 @@ class CodexConfigTests(unittest.TestCase):
         self.assertNotIn("--ask-for-approval", args)
         self.d.rpc.call("sessions.stop", {"session": receiver})
         self.d.wait(lambda: self.d.get(receiver)["state"] == "stopped")
+        self.d.wait_record_released(self.d.record(receiver)["id"])
         launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": self.d.manifest,
                                                     "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
         again = launch["session"]
@@ -357,6 +387,7 @@ class CodexConfigTests(unittest.TestCase):
         path.write_text(json.dumps(config))
         self.d.rpc.call("sessions.stop", {"session": again})
         self.d.wait(lambda: self.d.get(again)["state"] == "stopped")
+        self.d.wait_record_released(self.d.record(again)["id"])
         launch = self.d.rpc.call("sessions.start", {"key": uuid.uuid4().hex, "configuration": str(path),
                                                     "recreate": receiver, "rows": 24, "cols": 100, "detached": True})
         refused = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] == "stopped" else None), timeout=60)

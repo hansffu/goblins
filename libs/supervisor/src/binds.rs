@@ -1,0 +1,492 @@
+//! Startup grants from trusted mkSandbox declarations. These are ordinary host
+//! bind mounts, never snapshots or paths supplied by the sandbox request client.
+use crate::Result;
+use crate::process::Cancellation;
+use crate::session::store_path;
+use goblins_unix as unix;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::CString,
+    fs::{self, File},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::ffi::OsStrExt,
+    },
+    path::{Component, Path, PathBuf},
+};
+
+use goblins_runtime::binds::Declarations;
+pub struct Mount {
+    // Pin the object, not merely its current pathname. This descriptor remains
+    // CLOEXEC in the daemon and is inherited only by this launch's helper/bwrap.
+    source_fd: File,
+    source: PathBuf,
+    destination: PathBuf,
+    readonly: bool,
+}
+impl Mount {
+    pub(crate) fn docker_grant(&self) -> std::io::Result<(File, PathBuf, bool)> {
+        Ok((
+            self.source_fd.try_clone()?,
+            self.destination.clone(),
+            self.readonly,
+        ))
+    }
+}
+pub struct Plan {
+    pub home: PathBuf,
+    /// Kept apart from the declared mounts so a child with another
+    /// configuration can share its parent's pinned directory.
+    working_directory: Option<Mount>,
+    mounts: Vec<Mount>,
+    pub store_targets: BTreeMap<PathBuf, PathBuf>,
+}
+impl Plan {
+    /// Every mount in bind order: the working directory first, so declared
+    /// read-only paths beneath it still take precedence.
+    pub(crate) fn mounts(&self) -> impl Iterator<Item = &Mount> {
+        self.working_directory.iter().chain(&self.mounts)
+    }
+    pub(crate) fn destinations(&self) -> impl Iterator<Item = &Path> {
+        self.mounts().map(|m| m.destination.as_path())
+    }
+}
+
+pub(crate) use goblins_runtime::binds::{expand, validate};
+fn overlaps(a: &Path, b: &Path) -> bool {
+    a.starts_with(b) || b.starts_with(a)
+}
+pub fn plan(
+    declarations: &Declarations,
+    private: &[PathBuf],
+    cancel: &Cancellation,
+) -> Result<Plan> {
+    let env = |name: &str| std::env::var(name).ok();
+    let home = expand("$HOME", env)?;
+    validate(&home, &[])?;
+    let mut plan = Plan {
+        home,
+        working_directory: None,
+        mounts: vec![],
+        store_targets: BTreeMap::new(),
+    };
+    for (paths, directory, readonly) in [
+        (&declarations.rw_dirs, true, false),
+        (&declarations.ro_dirs, true, true),
+        (&declarations.rw_files, false, false),
+        (&declarations.ro_files, false, true),
+    ] {
+        for raw in paths {
+            cancel.check()?;
+            let destination = expand(raw, env)?;
+            validate(&destination, private)?;
+            let source_fd = open_source(&destination)
+                .map_err(|e| format!("host bind {}: {e}", destination.display()))?;
+            // Read the resolved location of the OPENED object. Resolving a
+            // name first and opening it afterwards would introduce another
+            // race during validation, including in any ancestor component.
+            let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
+            // A declared symlink into the immutable store may select an exact
+            // file/directory, but it cannot make that store content writable.
+            if source.starts_with("/nix/store") {
+                store_root(&source)?;
+                if !readonly {
+                    return Err("Nix store bind sources must be read-only".into());
+                }
+            } else {
+                validate(&source, private)?;
+            }
+            let meta = source_fd.metadata()?;
+            if if directory {
+                !meta.is_dir()
+            } else {
+                !meta.is_file()
+            } {
+                return Err(format!(
+                    "host bind {} must be a {}",
+                    destination.display(),
+                    if directory {
+                        "directory"
+                    } else {
+                        "regular file"
+                    }
+                )
+                .into());
+            }
+            if plan
+                .mounts
+                .iter()
+                .any(|m| overlaps(&destination, &m.destination))
+            {
+                return Err(format!(
+                    "overlapping host bind destinations are not supported: {}",
+                    destination.display()
+                )
+                .into());
+            }
+            if directory {
+                let dot = CString::new(".")?;
+                let dir = unix::owned(unsafe {
+                    libc::openat(
+                        source_fd.as_raw_fd(),
+                        dot.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+                    )
+                })?;
+                scan(dir.as_raw_fd(), &source, &mut plan.store_targets, cancel)?;
+            }
+            plan.mounts.push(Mount {
+                source_fd,
+                source,
+                destination,
+                readonly,
+            });
+        }
+    }
+    Ok(plan)
+}
+#[repr(C)]
+struct OpenHow {
+    flags: u64,
+    mode: u64,
+    resolve: u64,
+}
+fn open_source(path: &Path) -> Result<File> {
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        // Ordinary config symlinks are supported; procfs magic links must not
+        // cross into another process's descriptors or mount namespace.
+        resolve: 0x02, // RESOLVE_NO_MAGICLINKS
+    };
+    let fd = unix::owned(unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            &how,
+            size_of::<OpenHow>(),
+        ) as i32
+    })?;
+    // Both execs remap stdio, so source descriptors must always be above it.
+    Ok(File::from(unix::owned(unsafe {
+        libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3)
+    })?))
+}
+fn store_root(path: &Path) -> Result<PathBuf> {
+    let name = path
+        .strip_prefix("/nix/store")?
+        .components()
+        .next()
+        .ok_or("cannot expose the entire Nix store")?;
+    store_path(&Path::new("/nix/store").join(name))
+}
+// Read directory entries through pinned directory descriptors. Never recurse
+// through host symlinks: a config link must not grant another host directory.
+fn scan(
+    dir: RawFd,
+    source: &Path,
+    targets: &mut BTreeMap<PathBuf, PathBuf>,
+    cancel: &Cancellation,
+) -> Result<()> {
+    for entry in fs::read_dir(format!("/proc/self/fd/{dir}"))? {
+        cancel.check()?;
+        let entry = entry?;
+        let name = entry.file_name();
+        let meta = fs::symlink_metadata(entry.path())?;
+        if meta.is_symlink() {
+            let link = fs::read_link(entry.path())?;
+            let landing = if link.is_absolute() {
+                link
+            } else {
+                source.join(link)
+            };
+            // Immutable store symlinks (notably Home Manager) expose only the
+            // selected target. Do not mount the whole home-manager-files output
+            // or its closure, which could include unrelated private settings.
+            if landing.starts_with("/nix/store")
+                && !landing.components().any(|c| c == Component::ParentDir)
+            {
+                let Ok(resolved) = fs::canonicalize(&landing) else {
+                    continue;
+                };
+                if resolved.starts_with("/nix/store") {
+                    store_root(&landing)?;
+                    store_root(&resolved)?;
+                    targets.insert(landing, resolved);
+                }
+            }
+        } else if meta.is_dir() {
+            let name_c = CString::new(name.as_bytes())?;
+            let child = unix::owned(unsafe {
+                libc::openat(
+                    dir,
+                    name_c.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            })?;
+            scan(child.as_raw_fd(), &source.join(name), targets, cancel)?;
+        }
+    }
+    Ok(())
+}
+impl Plan {
+    pub fn add_working_directory(&mut self, cwd: &Path, private: &[PathBuf]) -> Result<()> {
+        validate(cwd, private)?;
+        let source_fd = open_source(cwd)?;
+        let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
+        validate(&source, private)?;
+        if !source_fd.metadata()?.is_dir() {
+            return Err("working directory must be a directory".into());
+        }
+        // A directory bind includes descendants. Mount it before explicit binds
+        // so configured read-only paths still take precedence. Pin the source
+        // using the same descriptor mechanism as other startup grants.
+        self.working_directory = Some(Mount {
+            source_fd,
+            source,
+            destination: cwd.to_path_buf(),
+            readonly: false,
+        });
+        Ok(())
+    }
+    /// The pinned working directory, for a goblin this one runs: a copy of
+    /// its descriptor, the host path it was opened at and where the sandbox
+    /// sees it.
+    pub(crate) fn export_working_directory(&self) -> Result<Option<(File, PathBuf, PathBuf)>> {
+        self.working_directory
+            .as_ref()
+            .map(|m| -> Result<_> {
+                Ok((
+                    m.source_fd.try_clone()?,
+                    m.source.clone(),
+                    m.destination.clone(),
+                ))
+            })
+            .transpose()
+    }
+    /// Use the parent's pinned working directory: the exact object the root
+    /// launch opened, not whatever its pathname names now.
+    pub(crate) fn use_working_directory(
+        &mut self,
+        fd: File,
+        source: PathBuf,
+        destination: PathBuf,
+    ) {
+        self.working_directory = Some(Mount {
+            source_fd: fd,
+            source,
+            destination,
+            readonly: false,
+        });
+    }
+    /// The host directory for a sandbox `path` inside a shared mount: the
+    /// working directory or a declared directory grant, which the sandbox
+    /// sees at the same path even beneath its private home or /tmp. The
+    /// innermost mount decides, so a grant beneath the working directory wins.
+    /// Opened beneath the pinned mount source, so symlinks the sandbox planted
+    /// cannot lead elsewhere; returns the directory and its host path.
+    pub(crate) fn resolve_shared(&self, path: &Path) -> Result<(File, PathBuf)> {
+        let unshared = || {
+            format!(
+                "{} is not shared with the host: only the working directory and granted directories are (the sandbox's /tmp and home are private)",
+                path.display()
+            )
+        };
+        if !path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
+            return Err(unshared().into());
+        }
+        let mount = self
+            .mounts()
+            .filter(|m| path.starts_with(&m.destination))
+            .filter(|m| m.source_fd.metadata().is_ok_and(|meta| meta.is_dir()))
+            .max_by_key(|m| m.destination.components().count())
+            .ok_or_else(unshared)?;
+        let relative = path.strip_prefix(&mount.destination)?;
+        let relative = if relative.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            relative
+        };
+        let name = CString::new(relative.as_os_str().as_bytes())?;
+        let how = OpenHow {
+            flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+            mode: 0,
+            resolve: 0x08 | 0x02, // RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS
+        };
+        let directory = File::from(
+            unix::owned(unsafe {
+                libc::syscall(
+                    libc::SYS_openat2,
+                    mount.source_fd.as_raw_fd(),
+                    name.as_ptr(),
+                    &how,
+                    size_of::<OpenHow>(),
+                ) as i32
+            })
+            .map_err(|e| format!("{}: {e}", path.display()))?,
+        );
+        let resolved = fs::read_link(format!("/proc/self/fd/{}", directory.as_raw_fd()))?;
+        Ok((directory, resolved))
+    }
+    pub fn source_fds(&self) -> impl Iterator<Item = RawFd> + '_ {
+        self.mounts().map(|m| m.source_fd.as_raw_fd())
+    }
+    pub fn store_roots(&self) -> Result<BTreeSet<PathBuf>> {
+        self.store_targets
+            .iter()
+            .flat_map(|(a, b)| [a, b])
+            .chain(
+                self.mounts()
+                    .map(|m| &m.source)
+                    .filter(|p| p.starts_with("/nix/store")),
+            )
+            .map(|p| store_root(p))
+            .collect()
+    }
+    /// Bubblewrap arguments for the declared mounts and, with a staging store
+    /// (`Some`), the store targets they select. A sandbox that sees the host
+    /// store (`None`) already has every target.
+    pub fn append_args(
+        &self,
+        args: &mut Vec<String>,
+        staging: Option<&Path>,
+        initial: &BTreeSet<PathBuf>,
+    ) -> Result<()> {
+        if let Some(staging) = staging {
+            for (destination, source) in &self.store_targets {
+                if initial.iter().any(|p| destination.starts_with(p)) {
+                    continue;
+                }
+                let placeholder = staging.join(destination.strip_prefix("/nix/store")?);
+                // The backing store skeleton is host-private and read-only in the
+                // sandbox. Prepare nested destinations before Bubblewrap sees it.
+                if source.is_dir() {
+                    fs::create_dir_all(placeholder)?;
+                } else {
+                    fs::create_dir_all(placeholder.parent().unwrap())?;
+                    File::create(placeholder)?;
+                }
+                args.extend([
+                    "--ro-bind".into(),
+                    source.display().to_string(),
+                    destination.display().to_string(),
+                ]);
+            }
+        }
+        for mount in self.mounts() {
+            args.extend([
+                if mount.readonly {
+                    "--ro-bind-fd"
+                } else {
+                    "--bind-fd"
+                }
+                .into(),
+                mount.source_fd.as_raw_fd().to_string(),
+                mount.destination.display().to_string(),
+            ]);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn host_commands_run_only_in_shared_directories() {
+        let root = unix::temp_directory().unwrap();
+        let (work, inner, outside) = (
+            root.join("work"),
+            root.join("work/inner"),
+            root.join("outside"),
+        );
+        for d in [&work, &inner, &outside] {
+            fs::create_dir_all(d).unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, work.join("escape")).unwrap();
+        let cancel = Cancellation::default();
+        let mut plan = plan(
+            &Declarations {
+                ro_dirs: vec![inner.display().to_string()],
+                ..Default::default()
+            },
+            &[],
+            &cancel,
+        )
+        .unwrap();
+        plan.add_working_directory(&work, &[]).unwrap();
+        assert_eq!(plan.resolve_shared(&work).unwrap().1, work);
+        assert_eq!(plan.resolve_shared(&inner).unwrap().1, inner);
+        for refused in [
+            outside.clone(),
+            work.join("escape"),
+            work.join("../outside"),
+            work.join("missing"),
+            PathBuf::from("relative"),
+        ] {
+            assert!(
+                plan.resolve_shared(&refused).is_err(),
+                "{}",
+                refused.display()
+            );
+        }
+        drop(plan);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn shared_working_directory_stays_first_and_pinned() {
+        let root = unix::temp_directory().unwrap();
+        let (work, declared) = (root.join("work"), root.join("declared"));
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&declared).unwrap();
+        let cancel = Cancellation::default();
+        let mut parent = plan(&Declarations::default(), &[], &cancel).unwrap();
+        parent.add_working_directory(&work, &[]).unwrap();
+        // The child's own declared bind, opened by the child's launch.
+        let mut child = plan(
+            &Declarations {
+                ro_dirs: vec![declared.display().to_string()],
+                ..Default::default()
+            },
+            &[],
+            &cancel,
+        )
+        .unwrap();
+        // Replace the pathname: the child must get the parent's object.
+        let moved = root.join("moved");
+        fs::rename(&work, &moved).unwrap();
+        fs::create_dir(&work).unwrap();
+        let (fd, source, destination) = parent.export_working_directory().unwrap().unwrap();
+        child.use_working_directory(fd, source, destination);
+        assert_eq!(
+            child.destinations().collect::<Vec<_>>(),
+            [&*work, &*declared]
+        );
+        let fds: Vec<_> = child.source_fds().collect();
+        assert_eq!(fds.len(), 2);
+        assert_ne!(fds[0], parent.source_fds().next().unwrap());
+        assert_eq!(
+            fs::read_link(format!("/proc/self/fd/{}", fds[0])).unwrap(),
+            moved
+        );
+        let mut args = vec![];
+        child
+            .append_args(&mut args, Some(&root), &BTreeSet::new())
+            .unwrap();
+        assert_eq!(
+            args,
+            [
+                "--bind-fd".to_string(),
+                fds[0].to_string(),
+                work.display().to_string(),
+                "--ro-bind-fd".into(),
+                fds[1].to_string(),
+                declared.display().to_string(),
+            ]
+        );
+        drop((parent, child));
+        fs::remove_dir_all(root).unwrap();
+    }
+}

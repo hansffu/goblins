@@ -75,10 +75,11 @@ class DaemonTests(unittest.TestCase):
         d = self.d
         launch = d.start()
         for plain in (True, False):
-            ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui", *(["--plain"] if plain else [])])
-            self.addCleanup(ui.close)
+            # The initial snapshot must contain A before the UI pins a selection.
             pa, a = d.pending(launch["session"])
             self.addCleanup(pa.close)
+            ui = Terminal([str(d.app), "--state-dir", str(d.state), "tui", *(["--plain"] if plain else [])])
+            self.addCleanup(ui.close)
             if plain:
                 ui.expect(a["approval"])
             else:

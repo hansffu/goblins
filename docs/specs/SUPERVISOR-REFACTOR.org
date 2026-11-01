@@ -1,0 +1,1217 @@
+#+title: Plan: move the goblin runtime behind per-goblin supervisors
+#+date: 2026-10-29
+#+startup: showall inlineimages hideblocks
+#+property: header-args:mermaid :results file graphics replace :background-color "'#282c34'" :theme dark
+
+Status: runtime implementation complete through phase 6 commit 9 (=19ce5c4743240ce34045c01a933d8d9751406aca=, 2026-10-31); phase 7 documentation is prepared with regenerated native SVG diagrams. The original staged plan below expands phases 1 and 2 of [[file:PER-GOBLIN-SUPERVISOR.md][PER-GOBLIN-SUPERVISOR.md]] into a sequence of reviewable refactors on Linux. macOS is out of scope: nothing here ports anything to Darwin, but every step leaves the daemon with less Linux knowledge than before, and section 4.4 defines how a second sandbox implementation would describe what it can do. The Nix configuration API stays unchanged throughout. The public JSON-RPC API keeps its methods, fields, codes, messages and limits. The visible changes are which refusal a sandbox request gets when it fails more than one check, and how two host methods answer when the sandbox's init cannot take a message (both in section 4.4).
+
+Labels retain their planning meaning: *[E]* baseline behaviour (master, 2026-10-29), *[P]* the planned change at that stage, *[Q]* a user decision recorded in section 7. Transitional Local adapters, facade modules and shared Rust values described in historical stages have been removed from the final implementation; [[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]] and the architecture guide describe the current boundaries.
+
+Diagrams use Mermaid source blocks with rendered SVGs in [[file:diagrams/][diagrams/]], following the conventions of [[file:../architecture/README.org][the architecture documents]]. They show ownership and ordering, not a call for every arrow.
+
+* 1. Goal and end state
+
+*[P]* Each running goblin has one host-side supervisor process. The supervisor owns everything the session worker, the mount helper, goblins-init, the request listener, the exit pidfd, the goblin's terminals and host jobs own today. It is the only way into the sandbox and the only way out: it validates every request the sandbox makes against what the goblin may do before relaying it to the daemon, and it buffers and streams the goblin's terminals. The daemon keeps sessions, records, raids, messaging, approvals, history, launch receipts, subscriptions, the attach handshake and frontend semantics, and talks to each supervisor over one trusted control channel. Shared scopes get a process of their own, because no single goblin may own them.
+
+#+begin_src mermaid :file diagrams/supervisor-target.svg :background-color "'#282c34'"
+flowchart TB
+    Frontends["CLI, TUI and Emacs"] -->|"host.sock,<br/>attach handshake"| Loop
+    Frontends -.->|"terminal stream<br/>after the handshake"| SupA
+    subgraph Daemon["Daemon process: no sandbox code"]
+        Loop["Controller tick loop<br/>sessions, raids, approvals,<br/>history, attach handshake"]
+        Messaging["Messaging thread"]
+        Loop <--> Messaging
+    end
+    Loop <-->|"control channel"| SupA["Supervisor A<br/>validates and relays requests,<br/>owns terminals"]
+    Loop <-->|"control channel"| SupB["Supervisor B<br/>raid member of A"]
+    Loop <-->|"control channel"| Scope["Scope process"]
+    SupA <-->|"request.sock, PTYs, init"| SandboxA["Helper, Bubblewrap,<br/>goblins-init, payload A"]
+    SupA --> JobsA["Host jobs of A"]
+    SupB <-->|"request.sock, PTYs, init"| SandboxB["Helper, Bubblewrap,<br/>goblins-init, payload B"]
+    SupA <-->|"scope lease"| Scope
+    SupB <-->|"scope lease"| Scope
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-target.svg]]
+
+The end state is reached when:
+- No daemon module uses Bubblewrap, namespaces, PTYs, SOCK_SEQPACKET, the init protocol, the mount helper or =/proc=. The daemon's goblin/scope process handling lives in one module, =supervised=, with a platform-neutral interface: start a child with an inherited control socket, notify on exit, kill and reap. Its Linux implementation uses =posix_spawn=-style launch, pidfds and =pidfd_send_signal= internally. It is the daemon's one platform-specific module; a future Darwin daemon reimplements those internals without changing its callers. Two checks enforce this: the daemon package does not link the supervisor library at all (section 4.10), and a source check fails if any daemon file other than =supervised= names one of these interfaces.
+- The daemon holds no descriptor that reaches into a sandbox. Every sandbox request reaches it as a validated message from that goblin's supervisor, and terminal bytes go between the supervisor and the frontend.
+- No Rust value (=Arc=, =Weak=, =AtomicBool=, =Inheritance=, =Cancel=) is shared between the daemon and a goblin's runtime or between two goblins' runtimes. Everything crossing that line is serialisable data plus passed descriptors.
+- What a goblin may do comes from three explicit inputs (section 4.4). The supervisor enforces the two that are fixed for the goblin's life on every sandbox request; the daemon decides with the third, the goblin's live state, and with the user's approvals.
+- Killing one supervisor fails only its goblin; killing the daemon still stops every supervisor, sandbox, host job, scope and Docker engine.
+- =just test-merge= passes with the existing tests plus the new tests in section 8.
+
+* 2. Baseline before the refactor (2026-10-29)
+
+The session worker ([[file:../../libs/supervisor/src/worker.rs][worker.rs]]) is already a message boundary: =Source= and =Work= go in, =Completed= comes out. It is the seed of the supervisor. Four things keep it from being a process boundary.
+
+#+begin_src mermaid :file diagrams/supervisor-today.svg :background-color "'#282c34'"
+flowchart TB
+    Frontends["CLI, TUI and Emacs"] -->|"host.sock"| Loop
+    subgraph Daemon["Daemon process"]
+        Loop["Controller tick loop<br/>sessions, raids, approvals,<br/>terminals, execs, host jobs"]
+        Messaging["Messaging thread"]
+        WorkerA["Worker thread A<br/>Session: Nix, roots, binds"]
+        WorkerB["Worker thread B<br/>raid member of A"]
+        Registry["Scope registry<br/>static NAMED"]
+        Keeper["Scope keeper thread"]
+        Loop <--> Messaging
+        Loop <-->|"Work and Completed"| WorkerA
+        Loop <-->|"Work and Completed"| WorkerB
+        WorkerA -.->|"Arc: Inheritance,<br/>workspace, scope"| WorkerB
+        WorkerA --> Registry
+        WorkerB --> Registry
+        Registry --> Keeper
+    end
+    WorkerA -->|"command and reply pipes"| HelperA["Mount helper A"]
+    HelperA --> SandboxA["Bubblewrap, goblins-init,<br/>payload A"]
+    WorkerB --> HelperB["Mount helper B"]
+    HelperB --> SandboxB["Bubblewrap, goblins-init,<br/>payload B"]
+    Keeper --> ScopeProcs["Scope keeper, pasta,<br/>Docker engine"]
+    Loop -->|"helper --host-job"| Jobs["Host jobs"]
+    Loop ==>|"PTY master, init socket,<br/>request.sock, pidfd"| SandboxA
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-today.svg]]
+
+** 2.1 The controller holds runtime handles *[E]*
+
+=Completed::Started= moves OS handles into =Active= ([[file:../../packages/daemon/src/controller.rs][controller.rs]], the =Worker::poll= arm of =tick=):
+
+| Handle | Created by | Used by the controller for |
+|--------+------------+----------------------------|
+| PTY master, or the server-log pipe for =onAttach= goblins | worker, =unix::pty= | =Terminal= buffering, =TIOCSWINSZ=, =ServerLog= |
+| init control socket (SOCK_SEQPACKET) | =Session::start=, =init::pair()= | =Spawn=, =Signal=, =Cancel= and =KillAll= for =goblins exec=, attach clients and =onDetach= (=controller/exec.rs=, =controller/attach.rs=) |
+| =request.sock= listener | =Session::start= | accepting =Role::Sandbox(id)= connections in =tick= |
+| helper pidfd (=exit_watch=) | =Session= | noticing exit while the worker is blocked on Nix |
+| =Inheritance= | =Session::inheritance()= | raid permits and metadata, member launches, host-job working directory |
+
+The controller also spawns host jobs itself (=helper --host-job=, [[file:../../packages/daemon/src/controller/host.rs][controller/host.rs]]), resolving their working directory through the pinned bind descriptors in =Inheritance=.
+
+** 2.2 =Inheritance= mixes policy with capabilities *[E]*
+
+=Inheritance= ([[file:../../libs/supervisor/src/session.rs][session.rs]]) carries plain policy (configuration key, run targets, description, =allowNix=, host commands, editor, integration) next to =Arc<Launch>=, =Arc<binds::Plan>= with O_PATH descriptors, the workspace snapshot descriptor, =Weak<scope::Shared>=, a live =Arc<AtomicBool>= for Docker, and =Arc<SessionDirectory>=, which keeps the owner's =resources/= alive after it stops.
+
+The checks that decide what a goblin may do are scattered through =Controller::dispatch=: =allowNix= refuses package and dev shell requests, Docker requires a scope with =docker.enable=, host commands require =hostCommands.enable=, =devshell.diff= requires a dev shell. The sandbox's =initialize= result lists a fixed set of features for every goblin.
+
+** 2.3 Raid members share the owner's runtime objects *[E]*
+
+A member launch (=Source::Member=) carries the owner's =Inheritance=, an upgraded =Arc<scope::Shared>= and the daemon's =Arc<ManifestLease>=. The member reuses the owner's workspace and working-directory descriptors and its dev shell generation, and reads the owner's Docker flag. The owner's =resources/= directory, which holds the workspace snapshot and the owner's GC roots, is removed when the last =Arc<SessionDirectory>= drops; its shared =.gc-lease= lock keeps =goblins gc= away until then.
+
+** 2.4 Scopes are per-daemon shared state *[E]*
+
+In the 2026-10-29 baseline, the historical =scope.rs= module (removed during the refactor) kept a process-global registry (=static NAMED=) of =Weak<Shared>=. =Shared= holds the namespace files, a keeper thread (needed because =PR_SET_PDEATHSIG= follows the creating thread), pasta, the storage lock, and a =State= with the Docker engine, its grant list and two kinds of owner:
+- =State._owner=, the first member's =Inheritance=;
+- =State.owners=, one =Inheritance= per Docker user.
+
+These kept those goblins' session resources and Nix roots alive for the scope's or the engine's lifetime. Current process ownership is described in [[file:../architecture/components.org][components.org]] and implemented by [[file:../../libs/supervisor/src/scope_process.rs][the scope actor]]. Other historical details that mattered for the split:
+- The scope's runtime directory lives inside the /first/ member's session directory.
+- The engine's store skeleton (=State.store=) is the first Docker user's session store, and later grants bind into it.
+- Scope membership and Docker use are counted separately. The engine stops when its last /Docker user/ leaves (=Lease::drop=), while the namespaces and storage stay for the remaining members.
+- The registry slot serialises startup and teardown: a new member waits for a stopping instance to release its storage lock instead of reporting it as a foreign controller.
+- A new member is checked against the running scope with =compatible= (definition, network, =allowNix=).
+- =scope_storage::HELD= is another process-global set.
+
+One goblin's supervisor cannot own any of this, because members must outlive whoever created the scope.
+
+When a member stops, =Session::stop= kills the processes left in a shared PID namespace by mount namespace (=scope.kill_member=, session.rs). The member's goblins-init is not PID 1 there, so descendants that detach from it survive its death until that sweep.
+
+** 2.5 Lifetime contract *[E]*
+
+Daemon death stops everything:
+- =PR_SET_PDEATHSIG= on the helper, pasta and Nix commands.
+- =--die-with-parent= on the scope keeper.
+- Lifetime-pipe EOF for the keeper, the Docker guardian and host jobs.
+
+Five Python tests assert this contract:
+- =test_abrupt_daemon_death_kills_multiple_payloads=
+- =test_server_death_reaps_containers=
+- =test_the_daemon_dying_stops_its_jobs=
+- =test_daemon_death_stops_network_processes=
+- the Docker GC-after-kill test
+
+They cannot see processes that do not exist yet, so phase 6 adds explicit assertions for supervisor and scope processes.
+
+* 3. Principles
+
+- *[P]* *The supervisor enforces; the daemon decides.* The supervisor owns every endpoint that reaches into the sandbox: the request socket, the PTYs and init. Each sandbox request crosses it as a parsed message, and it refuses anything the goblin's =Policy= or =Support= does not allow before the daemon sees it. The daemon decides everything that needs its state or a human: whether the goblin is running, pending requests, capacity and approvals. A request's identity comes from which supervisor relayed it, never from its content. This follows the spec's "every sandbox-to-daemon request crosses exactly its own trusted host supervisor" (*[Q1]*) and its responsibility table for terminals (*[Q2]*) as written.
+- *[P]* *Move behind an interface first, then into a library, then across a process boundary.* Each step lands in-process with all tests green before the next one changes where the code is compiled or runs.
+- *[P]* *Nothing shared but descriptors and files.* Whatever two goblins share (scopes, the owner's resources, the manifest root) is reached through a passed descriptor, a lease file or a process with its own channel, never a Rust reference.
+- *[P]* *A lease is a locked file description.* Existing leases are shared =flock=s on =.gc-lease= files. A lease travels to another process as a descriptor over SCM_RIGHTS. When a holder lets go, it removes the directory only if it can take the lock exclusively; otherwise the last holder or =goblins gc= removes it later. Because the kernel drops a lock when its last descriptor closes, every failure, cancellation and crash path releases a lease without extra code.
+- *[P]* *Ask, don't assume.* The daemon learns what the sandbox implementation supports from the runtime, and the runtime refuses anything it does not support even if asked.
+- *[P]* *Keep the lifetime contract.* Every new process dies with the daemon, and every sandbox dies with its supervisor.
+- *[P]* *No provider logic.* Codex and Claude adapters are untouched; they keep talking to =/run/goblins/request.sock=, which their supervisor now serves.
+
+* 4. The abstractions
+
+This section names every new type the plan introduces and what it replaces. The sketches show shape and ownership, not final signatures.
+
+#+begin_src mermaid :file diagrams/supervisor-abstractions.svg :background-color "'#282c34'"
+flowchart LR
+    subgraph Daemon["Daemon"]
+        Controller["Controller"]
+        Decides["State checks<br/>and approvals"]
+        Runtime["Runtime trait<br/>send Command, poll Event"]
+        Controller --> Decides
+        Controller --> Runtime
+    end
+    subgraph Contract["libs/runtime"]
+        Caps["Capabilities<br/>check, sandbox features"]
+        Policy["Policy<br/>what the<br/>configuration allows"]
+        Support["Support<br/>what the<br/>sandbox can do"]
+        Caps --> Policy
+        Caps --> Support
+    end
+    Decides --> Caps
+    Runtime -.->|"phases 1 to 5"| Local["Local<br/>the runtime, in the daemon"]
+    Runtime -.->|"phase 6"| Supervised["Supervised<br/>control channel"]
+    Runtime -.->|"tests"| Fake["Fake<br/>records commands,<br/>replays events"]
+    Supervised --> Supervisor["Supervisor process<br/>runs what Local ran"]
+    Local -->|"from phase 5"| Gate
+    Supervisor --> Gate["Request gate<br/>checks every<br/>sandbox request"]
+    Gate --> Caps
+    Supervisor -->|"Started carries"| Policy
+    Supervisor -->|"Started carries"| Support
+    Supervisor -->|"Exported carries"| Handoff["Handoff<br/>resource leases,<br/>workspace and working<br/>directory Fds<br/>dev shell, Docker"]
+    Supervisor <-->|"scope lease"| ScopeProc["Scope process"]
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-abstractions.svg]]
+
+** 4.1 =Runtime=: the daemon's handle to one goblin
+
+*[P]* Replaces =Active.worker=, =Active.init=, =Active.exit_watch=, =Active.listener= and the goblin's entries in =Controller.host_jobs=, and from phase 5 the goblin's =Terminal=, server log and sandbox =Connection=s. The controller's tick drains each goblin's runtime instead of polling five kinds of handle.
+
+#+begin_src rust
+/// The daemon's view of one goblin's runtime. Neither method blocks.
+trait Runtime {
+    /// Err gives the command back when the runtime's queue is full,
+    /// as `try_send` on the worker channel does today.
+    fn send(&mut self, command: Command) -> Result<(), Command>;
+    /// The events of one round, then None. The daemon drains one round
+    /// per tick, which bounds what one goblin costs it, as today's
+    /// per-tick limits on results, init messages and accepts do.
+    fn poll(&mut self) -> Option<Event>;
+    /// Monotonic sandbox, host-job and resource release, after final events.
+    /// Retained terminal output does not keep the goblin live.
+    fn released(&self) -> bool;
+    /// True once every event has been polled and the runtime is gone.
+    fn ended(&self) -> bool;
+}
+#+end_src
+
+The supervised child interface is platform-neutral: start a child with an inherited control socket, notify on exit, kill and reap. Pidfds and =pidfd_send_signal= are Linux implementation details internal to =supervised=, the daemon's one platform-specific module. A future Darwin daemon replaces only those internals. Phase 6 commit 4 implements that interface, removes the =Runtime::released()= default so every implementation states its release boundary, gives =Fake= an explicit released state independent of terminal-service lifetime, and moves the controller test wrapper onto that state. Tests can then model a released goblin whose terminal service is still alive.
+
+Three implementations, never more than two at once:
+- =Local= (phases 1 to 5, deleted in phase 6 commit 9): the former worker thread plus the init socket, pidfd, listener and host jobs, all inside the daemon. From phase 3 it lives in =libs/supervisor=.
+- =Supervised= (phase 6 on): a client of one supervisor's control channel. The supervisor runs the engine formerly wrapped by =Local=.
+- =Fake= (tests): records commands and replays scripted events. It replaces =Worker::idle=, =Worker::completed= and =Worker::listening=.
+
+=Local= is deleted in the final phase 6 candidate; acceptance still requires that candidate to pass the sole final merge gate.
+
+Rules every implementation follows:
+- *Only Nix work waits.* A runtime has a /dispatcher/ that receives every command, and one worker thread that runs Nix-bound work: =Preview=, =Decide=, =Refresh=, =Run= and =Diff=. The dispatcher handles everything else itself and never waits for the worker: cancellation, =Export=, =Stop=, the process and terminal commands, sandbox traffic and host jobs.
+  - In =Local=, the dispatcher is =send= itself.
+  - In a supervisor, it is the thread reading the control channel.
+- *Cancellation reaches running work.* Today a =Cancel= atomic is seen inside running Nix work. The dispatcher keeps that: it maps each cancel ID to a local token that the worker's Nix commands observe, and flips it when =Cancel= arrives. A cancellable command's cancel ID is its own approval or serial, which the daemon already allocates uniquely, so the commands carry no separate ID.
+- *Export never waits for Nix.* =Export= reads the runtime's current published state: the leases it holds, its workspace and working-directory descriptors, the Docker flag and the current dev shell generation. A refresh replaces that generation under a lock at the moment it publishes, so an export carries a complete generation even while a refresh or build is running.
+- *Requests are bounded; cancellation and answers are never refused.* On the daemon side, every command goes into one ordered outbound queue, with these rules:
+  - *Requests* can be refused when the runtime is busy, with today's capacity error: =Preview=, =Decide=, =Refresh=, =Run=, =Diff=, =Spawn=, =Attach=, =PrepareHostJob=, =RunHostJob= and =Export=. They keep today's limits (4 commands, 16 events).
+  - *Cancellations* are idempotent and never refused: =Cancel=, =CancelProcess= and =CancelHostJob=. They are coalesced into a set and written ahead of everything unsent. A cancellation whose target has not been sent removes that target from the queue instead.
+  - *Signals, =KillAll= and =Detach=* keep their order relative to =Spawn= and =Attach=, as today, where a process's =Spawn= is sent before its signals are accepted. They are appended in order and never coalesced, so a signal always follows its process's =Spawn=, distinct signals arrive in order, and =KillAll= covers every exec accepted before it. Like today's ignored init send failures, signals are best-effort: past 16 unsent signals for one process, newer ones are dropped.
+  - *=Resize=* is coalesced per terminal; the latest size wins.
+  - *Sandbox traffic* is never refused: =SandboxSend= and =SandboxClose= answer calls the runtime has already relayed, so refusing one would strand its caller. What produced them bounds them instead: today's per-connection call limit, and per connection the output cap a =Connection= has today. A connection over that cap is closed, as a =Connection= is marked dead today.
+  - *=Stop=* is coalesced into one and written last.
+  - *Never blocking.* =Supervised= reads and writes the control channel without blocking, with bounded output buffers, like a =Connection=.
+- *Events are bounded by backpressure, not loss.* When its event queue is full, the runtime stops reading sandbox connections, init and finished work until the daemon drains it. Nothing is dropped, and the sandbox waits as it would on a slow daemon today.
+- *Stopping is not dropping.*
+  - *Stop* is the normal path. The controller asks the runtime to stop and moves it to a /retiring/ set. It keeps polling the runtime there, so the runtime answers what arrived before =Stop=, =Export= included, and delivers its final events. The runtime leaves the set when it ends: at =Stopped= until phase 5, and from phase 5 once its terminals can be evicted after =Stopped= (below), or on channel EOF once all its events are drained.
+  - *On =Stop=*, the dispatcher cancels the worker's current operation, ends queued Nix requests as cancelled, answers any new sandbox call other than =initialize= and messaging with today's conflict error (section 4.4), and tears the sandbox down. Cancelled Nix commands are killed by process group, as today.
+  - *Drop* is only for failures and daemon shutdown. Dropping closes the channel at once.
+  - *Release is not runtime exit.* =Runtime::released()= becomes true once the sandbox, host jobs and resources have been released and final events drained. This boundary is monotonic: later terminal commands or status events never make it false again. Name allocation/resolution, conversation/history reservations, live-session capacity/counts and live-member authority use that boundary; the presence of a runtime serving terminal output does not make a goblin live. =Runtime::ended()= additionally waits for retained terminal/log output and producer exit, and controls runtime removal and record eviction.
+  - *=Stopped= is not exit.* =Stopped= means the sandbox, its processes, host jobs and leases are gone. From phase 5 a runtime then keeps only its terminals, until each one can be evicted under today's rule (=Terminal::can_evict=: output complete, interrupted, or detached with no frontend). It reports that through =Event::Terminal= and then ends; until then it stays in the retiring set without a kill deadline, because nothing it still holds touches a sandbox. The kill deadline covers the time up to =Stopped=.
+- *Teardown differs per implementation, and nothing blocks the tick.*
+  - =Local= keeps today's guard: drain every result before treating a disconnected worker as finished, and record a missing final result as =failed=. Its thread is joined only after it has exited (=worker_finished=) or in =Controller::drop=, as now.
+  - =Supervised= watches its supervisor's pidfd in the tick without waiting on it. The stop clock starts when the controller records the stop request, not when =Stop= is written. The dispatcher must acknowledge =Stopping= within 2 seconds; cleanup must then report =Stopped= within 15 seconds of that first acknowledgement, for at most 17 seconds overall. A missing acknowledgement or expired cleanup deadline kills that supervisor through its pidfd, and it is reaped when the pidfd reports its exit. =Stopped= disables those per-handle deadlines while terminal/log output remains; the separate eligible late-write natural-exit grace described below does not resurrect them. Daemon shutdown retains its shared bound and may abort remaining children. If the supervisor had not yet answered an =Export=, that member's launch fails as described in section 4.5.
+  - =Controller::drop= stops every runtime and then waits for all of them within one bound before falling back to dropping.
+
+*** Phase 6 commit 2: bounded scheduling and backpressure
+
+The four-request limit counts unsent logical commands in the planner, not remote admission credits; no receiver-admission acknowledgement is added. The planner retains typed commands until commitment, removes an unsent cancellation target and closes its capabilities, coalesces duplicate cancellations (a stronger =CancelProcess.everything= is never downgraded), and keeps remaining process signals and =KillAll= in order. Signals retain the existing best-effort bound of 16 unsent signals per process. Resize replacement stays at its existing position and cannot cross that terminal's Attach or Detach. Sandbox replies remain bounded by the existing per-connection 2 MiB output cap, including a committed frame that is still being written; overflow closes only that connection. CancelHostJob still reaches a previously sent preparation even if it removes an unsent RunHostJob. Removing an accepted unsent Spawn or host request also produces its existing local cancellation outcome (SpawnFailed, HostJobPrepared error, or HostJobFinished with cancelled=true), so a recorded caller cannot wait forever for a backend job that never started. A synthesized outcome takes the removed request's original slot until the actor reports it: commands and these scalar outcomes share the same four-slot limit, with no separate store/reservation policy. This is local result backpressure, not receiver-admission credit. Removed stdio capabilities close immediately.
+
+The approved transport boundary is one committed frame in the existing =Channel=. The writer commits a new frame only after =Channel.wants_write()= becomes false; a committed frame is indivisible even if its first nonblocking flush would block. Every frame still in the logical planner remains mutable. No reclaim API or duplicate framing/sendmsg implementation is added. Cancellations go ahead of unsent work and may pass between Handoff lease batches, but never interrupt a committed frame. Stop is accepted without blocking and coalesced into one; it stays after the in-flight frame and all earlier queued work, including Export and sandbox answers. The earlier proposed test that put Stop ahead of Export was withdrawn. RecordEvent's separate lowest-priority, droppable queue is introduced with logging in commit 5.
+
+The engine dispatcher's ready event queue and the worker-result channel are each bounded at 16. Producers check capacity before advancing sandbox/init/terminal I/O or collecting finished host work. Sandbox closure keeps at most eight pending connection identities after closing their transports; a partially decoded worker Started result and a critical scope failure each have one producer-owned staging slot. The dispatcher rotates the first source each round, rotates terminals, and returns at most 16 events per poll round, so one busy source or goblin cannot monopolize the daemon. Semantic results and diagnostics are not coalesced or dropped; producer I/O pauses until there is capacity.
+
+The Nix worker waits for result capacity while the dispatcher remains able to cancel it. If Stop interrupts a full result channel, the active operation retains its undelivered progress/summary and, when applicable, the derived permission reply (at most two producer-held values); that active operation unwinds before subsequent work is executed. Session teardown runs before those retained values or final lifecycle events wait for output capacity. Closing the worker-command gate atomically captures all four accepted queued operations and reports their cancellation before final lifecycle. Before final lifecycle, the still-open worker gate preserves the existing policy-allowed route with an already-cancelled child token; the gate's final drain supplies the correlated cancellation outcome. Once final lifecycle is observed, the dispatcher reports cancellation locally and never re-enqueues work or reopens authority. Dropping the runtime disconnects the result receiver before joining its worker, so an abandoned receiver cannot deadlock final output. These waits are confined to the worker; no new service or thread is added.
+
+When ready events are full, direct event-producing dispatcher commands wait in the bounded logical queue. Cancel and Stop still execute without waiting. Exports accepted before Stop materialize their complete published handoff before teardown and retain it in their accepted request slots until their event can be delivered. Stop closes host-job lifetime pipes and releases unused prepared directories immediately; final Stopped still follows host-job results, pending exports and sandbox closures. Critical scope failure remains ordered before final lifecycle even when output is full. The monotonic released boundary waits for this accepted work and its results; later terminal events cannot regain authority. Commits 3 and 4 connect the same command/frame planner to the supervisor actors.
+
+*** Phase 6 commit 3: shared engine and inherited-socket modes
+
+=Engine= contains the existing worker, published capability, sandbox relay, host jobs, terminals and bounded event scheduling. The temporary public =Local= adapter only delegates =Runtime= methods to it. The minimal executable calls one common safety setup before dispatch: =PDEATHSIG=, socket creator/current-parent verification, descriptor allowlist, new null stdio and close-on-exec control socket. Scope =Setup= retains its API and validation, and =SupervisorStart= selects the actor only after its complete typed startup validates. A member's complete handoff is passed to the waiting engine worker before any later command; partial startup never starts a worker.
+
+The supervisor actor uses the production descriptor codec, bounded frame writer and shared engine. Its output queue has 16 messages, in addition to the engine's existing 16 ready events and worker's 16 results, one staged Stopped result and the current committed frame/transfer owners. Full output pauses input and producers; worker admission itself never blocks the actor. Full worker/deferred admission returns each command's existing correlated failure with =resource limit reached=; daemon-side admission still returns synchronous =-32010=. This necessary asynchronous capacity boundary, including each public result/error code, is recorded in =docs/API.org=. It is not a new admission-credit or refusal protocol. A real-channel test holds the worker queue full and checks refusal, a targeted Cancel without global cancellation, and then Stop; another saturates output and checks every result.
+
+When the actor's own bounded output is full, it may pause every control read, including Cancel, Stop and Adopted, until the daemon drains its output. Worker admission exhaustion alone never pauses control input. The daemon must drain supervisor events independently of command-output backpressure; commit 4 preserves this condition in its client event pump. No progress is promised against a peer that indefinitely refuses to read. The saturation regression fills both the actor output queue and the real control socket, then drains the peer and checks every result and Stop acknowledgement.
+
+Outbound sender guards survive until typed adoption. Stopped waits separately while preceding output and all sender ownership guards drain; queuing a blocked Stopped at the head of a full output queue would prevent reading its required acknowledgement. The actor keeps earlier output drainable and resumes control reads as output capacity permits during that wait. Released follows final event transmission and ownership disposal, and runtime exit additionally waits for terminal/log drain. Production actor tests abandon an exported handoff before acknowledging it and verify its root remains held, Stopped/Released remain withheld, and acknowledgement permits exactly one of each result and cleanup.
+
+The Nix wrapper pins one absolute =GOBLINS_SUPERVISOR_RUNTIME= executable in the daemon environment. Configuration and Launch no longer contain =scope_runtime=, and =ScopeNeeded= contains only a name. Each controller captures the pin once for all scope starts; later cutover, preflight and maintenance use the same selector. Missing/empty selection reports =supervisor executable not configured= when a process is needed; relative paths are refused and no PATH search is performed. Local test launchers set the same variable from Cargo's supervisor artifact instead of modifying fixture manifests. The daemon still uses the temporary Local adapter until commit 4; one-shot modes are implemented in commits 6 and 7. The final merge gate remains scheduled after commit 9.
+
+*** Phase 6 commit 4: active Supervised client and lifecycle
+
+The daemon now selects =Supervised= by default. Its captured =Executable= is shared with the scope registry; one handle starts one child through the platform-neutral =supervised::Child= interface. Linux spawn, inherited control setup, pidfd exit notification, kill and reap are confined to its Linux backend. Scope children use that same interface. The temporary =GOBLINS_DEBUG_LOCAL_RUNTIME= implementation escape hatch exists only in debug builds, is not a user feature, and is deleted with Local in commit 9. Controller policy unit fixtures use Fake; tests exercising startup and all new supervisor-death tests explicitly use Supervised.
+
+A member handle initially retains Source, including accepted scope membership, without a child. Active retains its name, receipt and rooted manifest. Start installs the complete handoff and spawns; Stop before Start drops the placeholder without executing anything and reports no exit code; ScopeFailed before Start preserves the existing exit code 1 with the same no-spawn and scope-release behavior. The controller's retiring ID set indexes retained Active handles through cleanup and terminal service, so no move or absent handle can release a live name prematurely. Every Runtime implementation explicitly implements released; Fake has an independently controlled monotonic release flag, replacing the controller's test-specific wrapper.
+
+Each bounded client round receives up to 16 events before attempting writes, even when an earlier command frame remains blocked. The command planner, cancellation outcomes and sender transfer map from commits 1 and 2 remain in the handle through retirement. Typed incoming events are owned before their adoption token enters the coalesced control set; ownership acknowledgements precede new requests at a free frame boundary and never prevent reading peer events. The client retains full typed outbound owners across EOF, errors and kill until pidfd exit and reaping, then disposes decoder/raw channel state before those owners. Final lifecycle and late terminal results stay bounded while death synthesizes its remaining terminal statuses incrementally.
+
+The first Stop records the daemon's clock immediately, before it reaches the wire. Missing Stopping acknowledgement after 2 seconds kills that supervisor. An acknowledged Stop gets 15 seconds of cleanup from its first acknowledgement, bounded overall by 2+15 seconds from the original request; Stopped removes the kill deadline while terminal output remains. A missing/failed child before Stopped reports failure and final cleanup for only its own goblin, ends its calls and pending exports with diagnostics naming the owner, and withdraws its sandbox connections. Death after Stopped preserves the stopped record and released authority, reports EOF/interrupted with attached, connected and detached false, and does not run onDetach. A successful normal exit after final lifecycle and terminal/log drain is reaped without manufacturing interruption.
+
+Launch acceptance preserves the legacy socket readiness contract: the daemon prebinds =terminal.sock= nonblocking with mode 0600, then transfers its optional typed =SupervisorStart.legacy_listener= descriptor without accepting or performing I/O. A member placeholder retains it alongside Source; Stop, failed spawn and abandonment close and unlink it without a child. The engine validates its listener type and expected address and adopts it into the existing terminal handshake before starting its worker; absent/null retains the standalone binding path. The additional descriptor is encoded before handoff batching, so the unchanged 240-descriptor first-frame allowance accounts for every startup descriptor. Partial/error transfer cleanup owns it with the bootstrap; daemon cleanup waits for confirmed child death before unlinking a spawned runtime's path.
+
+Raw terminal EOF and queued terminal completion can reach the frontend independently of Stopped. The existing completion wait continues while a stopped record is incomplete without interruption; failed, genuinely interrupted, unknown-exit and control-loss outcomes remain errors. Attach refreshes a physically closed previous peer before deciding its slot, preserving live and half-closed reservations, bounded input, isolated handshake bytes and no resize on refusal. A transport write racing delivered final lifecycle and successful child exit does not invent interruption when all retained terminal outcomes are already known; encoding/protocol errors, unknown terminal outcomes and unsuccessful exits retain interruption. Confirmed runtime exit finalizes its remaining host jobs through the existing cancelled outcome without fabricated exit codes, while other runtimes and already finished records are unaffected.
+
+The control actor closes its socket before dropping Engine and returning to the executable, so an eligible late transport write failure must not SIGKILL an otherwise clean child in that interval. The daemon records a fixed 2-second deadline from the first transport failure only when Stopped and Released are valid, every retained terminal outcome is resolved and no earlier nontransport failure exists. It permits natural return without dropping sender ownership before confirmed reap; repeated transport errors do not reset the deadline. A successful reaped exit retains already delivered outcomes, while nonzero exit, encoding/protocol errors, unresolved outcomes and expiry preserve loss reporting. The expiry check remains active after the write failure is stored. An already observed exit notification is reaped even if the next poll is late. Stopped has disabled its historical ACK/cleanup deadlines; they are never resurrected for this grace or healthy retained output. The existing shared shutdown abort may still cut it short. No new thread, janitor or protocol operation is introduced.
+
+A deterministic test-only helper closes control after valid final lifecycle and terminal metadata while retaining an unacknowledged member handoff until actual exit. The pre-fix focused run reproduced exactly two failures (clean return falsely interrupted and stalled child killed before grace) plus one existing-loss control pass, with real BrokenPipe and child-not-exited preconditions reached. Corrected coverage retains sender lease/socket ownership through reap, actual natural exit codes 0 and 7, exact before/at-expiry boundaries, repeated-error nonextension, expired historical Stop deadlines, shared abort, strict eligibility and cleanup. An additional full production-step case exhausts the 16-message receive budget before its actual write failure, accounting for Released as a message without an Event; phase-level cases also cover closure between receive EAGAIN and write. Negative proof remains in the validation record and does not waive fresh full sandbox/startup/package checks, exact review or the eventual approved 61-case host rerun.
+
+The scope harness distinguishes same-executable scope and goblin children by held =state/scopes/NAME/lock= lifetime descriptors. Shutdown verifies two scope children plus two goblin supervisors and all four reaped PIDs; the paused-keeper relaunch test selects the named scope and retains its original lifecycle, responsiveness, storage and cleanup assertions. Focused tests first reproduced the five behavior gaps with five expected failures and one genuine-interruption control pass before fixes; those negative logs remain part of the validation evidence. The corrected candidate requires full Tier 1, startup and package build validation followed by the identical 61-case scoped host selection.
+
+Daemon shutdown requests Stop from every runtime first and pumps all scopes and supervisors in one common 2+15-second budget. It kills all remaining children before any final destructor waits. The CLI waits up to 20 seconds for the server lock to be released, and the isolated test daemon allows 22 seconds for that documented budget and process teardown. Healthy stopped supervisors retaining only output are dropped during server shutdown rather than extending the cleanup wait.
+
+Coverage includes real inherited-socket client children for member placeholders, sender ownership through confirmed death, full command output with reverse event progress, SIGCONT before deadline, separate acknowledgement/cleanup deadlines, terminal-only death, successful reaping, owner death while Export is pending with all leases and manifest ownership released, and parallel shutdown. The actual sandbox probes exercise isolated supervisor SIGKILL, lease release, stopped-name/history authority, normal terminal drain and PID reaping, and interrupted attachment without onDetach. Private child fixtures are test-only helpers, not runtime fault points. Each real-child test parent holds the exclusive forking guard through its cleanup assertions; nonspawning placeholder and immediate lock checks use the no-forks reader, with no nested guard in child startup. The final full merge gate remains scheduled after commit 9.
+
+*** Phase 6 commit 5: supervisor-owned exec diagnostic logging
+
+The daemon's interactive exec-start and exec-exit paths send =RecordEvent{event,fields}= instead of opening a resource file. The JSON fields travel as opaque data, preserving literal =$fd= values; the typed command has no descriptors, adoption token, result or public RPC. The shared runtime library no longer contains or exports the transitional file writer. Session and the engine use the private supervisor writer with the existing JSONL shape, timestamps, ignored I/O errors and pre-append 1 MiB threshold; an admitted append may overshoot that threshold and the writer never creates its parent directory.
+
+Each command planner has a separate FIFO of at most 16 uncommitted records and 1 MiB of event UTF-8 plus serialized fields bytes, excluding at most one already committed indivisible frame. Records do not use the four semantic request slots. New records that exceed either bound, arrive after admission closes or fail encoding before commitment are dropped and counted by that planner's saturating u64 getter. Counters are internal per-hop lifetime accounting, retained through planner teardown; they are neither public observability nor delivery acknowledgements and are not summed into an end-to-end loss count. Existing control framing and budgets stay unchanged. Cancellation and semantic work retain their ordering ahead of records; Stop drops/counts uncommitted records and permanently closes log admission without overtaking an already committed frame or delaying prior Export/results.
+
+The engine handles one queued record after each bounded collection round even when semantic output is full, and log backlog never holds worker admission or lifecycle output capacity. Resource teardown disables its optional log path and closes its log queue before authority release; late commands cannot recreate the log or directory even when another lease still retains that path. No worker thread, janitor, delivery credit, acknowledgement or logging service is added. Tests cover independent count/byte admission, FIFO and critical-work priority, Stop and retained counters, committed-frame atomicity, best-effort encoding errors versus real semantic errors, opaque descriptor-looking data, full output, dispatcher admission, private writer cap/errors, before/after-release paths and daemon typed events without file writes. The real interactive exec test waits for an observed complete exit log record rather than assuming its exec reply or shell count acknowledges the asynchronous log write; existing exit-status and noninteractive-exclusion assertions stay.
+
+*** Phase 6 commit 6: startup preflight and pure manifest data
+
+The frontend now reads bounded manifest/build-spec data and resolves scope selections through =goblins-runtime=, with explicit host-environment injection for pure bind expansion. =goblins-unix= provides the generic nonblocking regular-file read. Read versus full validation, error ordering, relative path semantics, one-MiB metadata/eight-MiB closure caps and help/completion behavior remain unchanged. Launch policy, Nix and namespaces remain private to the supervisor, and the temporary public manifest facade is removed.
+
+Foreground startup uses the captured executable pin for one =Preflight{supervisor_api:1,path,directory,sequence}= request before readiness/event pumping. The common safety setup runs first. Success uses the existing typed =Event.Manifest= and =Adopted= even for an unrooted lease; operation errors use scalar =PreflightFailed{error}= and normal successful protocol exit. The parent stages typed ownership and accepts only one matching result, acknowledgement flush, strict EOF and successful confirmed reap before changing its current manifest or preserving the original operation diagnostic. The client checks the first frame method before general logical decoding, accepting only single-frame Manifest/failure results; a wrong-direction multipart handoff is rejected before it can create a pending logical receive under the unlimited operation rule. Malformed/extra result or nonzero exit leaves the previous manifest unchanged. The child likewise checks for scalar Adopted before logical decoding during its acknowledgement phase, disposing wrong-direction raw descriptors before control closure. The child's terminal nonblocking byte peek rejects input already queued after its valid ACK (or failure result), including partial trailing bytes, without waiting for parent EOF or promising rejection of later arrivals.
+
+Normal pre-result Nix work remains unlimited. One fixed two-second deadline from complete logical result decoding covers ACK flush, EOF and reap without resets. Earlier failure/abandonment disposes raw/partial descriptors before control closure and grants at most two seconds for existing readable-control cancellation/process-group cleanup before kill/reap. A result deadline gets no additional grace after expiry. Full typed received owners survive actual exit/reap. No new thread, cancellation method, ownership service or ACK-of-ACK is introduced.
+
+A construction guard reserves absent =SEQUENCE-STORE_OUTPUT_NAME= roots using the existing stable =.ownership= inode: exclusive nonblocking lock and a symlink-aware absence check precede any owning guard. Exclusivity lasts through Nix command/process-group cleanup; successful creation is verified before downgrade to shared ownership and ordinary independent descriptor adoption. Conversion need not be atomic because competing exclusive constructors must now reject the existing root without adopting it. Failed/cancelled construction removes only its own attempt after cleanup, retaining the existing single nonblocking cleanup attempt/GC fallback. Preexisting/dangling/colliding/current roots are preserved. Maintenance migration remains C7, residual boundaries C8, and Local deletion/dependency removal plus the sole final merge gate remain C9.
+
+*** Phase 6 commit 7: one-shot CLI maintenance
+
+GC and scope-clear frontends now call the controller library's thin maintenance adapter, which captures the same absolute executable pin and sends one typed =Maintenance= request after common safety setup. The temporary public supervisor maintenance facade is removed. A strict operation record selects GC/runtime/state/dry-run or clear-scope/runtime/optional-name/dry-run, with exactly two explicit writable stdout/stderr descriptors. Request and result phases check their raw scalar methods before the generic multipart decoder, and initial queued input/EOF cancels before storage mutation. The sole =MaintenanceFinished{result}= has no descriptors or ownership/output acknowledgement; an ordinary operation Err uses successful protocol exit so the original CLI diagnostic survives strict result/EOF/successful-reap validation.
+
+Direct close-on-exec duplicates preserve the real CLI output streams and their shared flags/offsets, forwarding progress and arbitrary helper stderr bytes without accumulating output or adding frame chunks, transport, thread or service. Ambient child stdio stays null; cleanup takes explicit writers and the helper's stderr capability, retaining its private READY pipe. Slow/full output may block a child, while parent cancellation/control remains live. Output-write failures now return ordinary operation errors/exit 1, and existing STOP signals are deliberately honored as cancelled/exit 1. Other success/argument/name/error ordering, relative paths, environment and dry-run behavior remain. Parent final diagnostics can still block on an undrainable user stderr; backend cleanup deadlines do not bound that arbitrary I/O.
+
+The C6 private one-shot client loop is shared with maintenance, retaining its preflight diagnostics, typed owners, strict methods, ACK/EOF/reap and nonresetting completion clock. Maintenance alone uses a separate process group so terminal-group SIGINT/TERM/HUP goes through the CLI STOP path. That child alone ignores SIGTTOU, inherited by its helper output writers, so direct writes to the caller controlling TTY work with TOSTOP still enabled; parent, other starts, termios and shared descriptor flags stay unchanged. Normal operation/output duration remains unlimited; existing helper READY timeout remains ten seconds. The fixed two-second result deadline covers EOF/reap with no reset/second grace; earlier failure/abandon/cancel closes control after raw/partial disposal, then allows at most two seconds before direct-supervisor kill/reap.
+
+The cleanup algorithm retains storage-gate ordering, all-selected-lock preflight before delete, stable lock inodes, live resource/daemon protections and confined descriptor-relative removal. Actual cancellation flows through enumeration, helper readiness, mapping and completion. The existing process-group guard observes WNOWAIT, kills the owned group and reaps the direct child before scratch/gates/locks unwind on graceful errors, preserving PID identity. The removal helper rearms parent-death SIGKILL against its saved parent across namespace and credential changes before READY/deletion and before a credential-error diagnostic; failed arm/parent race exits without output or deletion. Forced fallback makes no synchronous orphan-reap claim: real helper pidfd exit and inherited-lock release are separate observations after supervisor reap. Fixture tests use only private XDG/state/cache and owned processes. The mapped stderr-blocked backstop fixture renames a private selected basename to a saved sibling before genuine helper exec, then observes real maps and the owned helper's bounded current write/writev ENOENT buffer before forced-parent fallback; it creates no mount or production pause point. Existing isolated mount-confinement tests remain separate evidence. C8 residual boundaries and C9 Local/dependency removal plus the sole final merge gate remain separate.
+
+*** Phase 6 commit 8: residual daemon boundaries
+
+Generic host and init descriptor I/O now lives in =goblins-unix::ancillary=, preserving nonblocking sends, SIGPIPE suppression, close-on-exec receives, fixed receive capacity, truncation disposal and short-send errors. Callers retain their protocol send limits; a separate checked physical-capacity bound protects the fixed aligned send buffer even when a caller supplies a larger limit. The public host stdio budget remains three, shared by alias with init's existing three-descriptor limit, while the supervisor transport retains its independent 240-descriptor frame allowance. The controller still accumulates host descriptors across reads before enforcing its original aggregate cap.
+
+Canonical init =Command=, =Event=, limits and signal policy move as pure data to the explicitly private same-build =goblins_protocol::init= module; =goblins_init= re-exports those names and retains transport adapters and seqpacket pair creation. This does not make an init command a public RPC method or add host authority to sandbox libraries. A pure =goblins_runtime::exec::validate_spawn= helper serializes that same canonical Spawn with the actual allocated exec ID at the daemon's existing validation point; strict greater-than-64-KiB rejection, serialization errors, refusal order, ID consumption and stdio disposal remain unchanged. The daemon no longer directly constructs or transports init wire messages. C9 removes Local/debug gates and temporary dependencies separately, then runs the sole full merge gate.
+
+*** Phase 6 commit 9: final process boundary
+
+The temporary Local adapter/module/export, debug runtime-selection branch and =GOBLINS_DEBUG_LOCAL_RUNTIME= escape hatch are deleted. Supervised is the only production backend; Fake remains solely for controller policy fixtures. The daemon's Cargo graph, across normal/dev/build/optional/target declarations and transitive paths, excludes supervisor and init implementation libraries. Its Nix source fileset and test-package list exclude them too. Generic Unix helpers and pure runtime/public contracts retain their existing roles, limits and ownership behavior.
+
+Real controller actor fixtures use an explicit absolute =GOBLINS_TEST_SUPERVISOR_EXECUTABLE= read at test execution, launching the separately built production binary through the existing child backend. A missing/invalid pin fails rather than selecting a fake, sibling binary or PATH entry. =tests/rust_tests.py= builds the production executable serially before Cargo tests and selects only the reported production-bin artifact; targeted callers may use that harness or provide the pin directly. The standalone daemon Nix check supplies the independent executable through a generic check-only environment hook, cleared after testing, without compile-time environment constants or a production output reference. Both member-handoff tests now positively require their actual missing-configuration diagnostic, preserving owner/export/lease and real-child behavior. Existing protocol peers remain real isolated subprocess fixtures for ownership/death cases; no actual actor is replaced with a stub. A host regression supplies the removed debug variable to an isolated daemon and verifies an actual supervisor child, cleanup and reap.
+
+Dependency regressions check declared-edge extraction for every dependency kind, optional/target declaration, direct/transitive forbidden route and allowed contract graph. Documentation and test feature mappings describe the final boundary; historical intermediate results remain evidence for their exact candidates. The final C9 candidate is frozen and reviewed before validation; the sole Docker-enabled full merge gate follows a matching fresh Rust precheck and separate user approval. No earlier targeted result substitutes for that required final gate.
+
+** 4.2 =Command= and =Event=
+
+*[P]* One vocabulary for everything the daemon asks of a runtime and everything a runtime reports. Today's =Work= and =Completed= become a subset; init's commands and events, host jobs, member export, terminals and relayed sandbox calls join them. The sketch below records the contract implemented through phase 5 and the phase 6 wire codec; later phase 6 commits switch process ownership without putting terminal masters back in these messages.
+
+#+begin_src rust
+enum Command {
+    RecordEvent { event: String, fields: Value },
+    // Today's Work, unchanged in meaning; Cancel atomics become ids. Each
+    // cancellable command is cancelled by its approval or serial.
+    Preview { approval: u64, package: String },
+    Decide { request: Request, approved: bool, output: Option<PathBuf> },
+    Refresh { approval: u64, changes: Changes },
+    Run { serial: u64, app: String },
+    Diff { serial: u64, changes: Changes },
+    Cancel(u64),
+    // Processes in the running sandbox, through goblins-init. Ids are
+    // allocated by the daemon, as exec and attach ids are today.
+    /// argv None runs the sandbox's configured shell, as today.
+    /// kind says what the process is for (goblins exec, or an attach client
+    /// and its onDetach), so the runtime can check it.
+    Spawn { id: u64, kind: SpawnKind, argv: Option<Vec<String>>,
+            env: Vec<(String, String)>, cwd: Option<String>, stdio: Stdio },
+    Signal { id: u64, signal: i32 },
+    /// The process group, or with `everything` all the process started
+    /// (attach clients and their onDetach).
+    CancelProcess { id: u64, everything: bool },
+    KillAll,
+    // Terminals (phase 5). The runtime writes the framed acceptance
+    // and then raw bytes to the frontend's stream.
+    Attach { terminal: TerminalId, stream: Fd, rows: u16, cols: u16 },
+    Detach { terminal: TerminalId },
+    Resize { terminal: TerminalId, rows: u16, cols: u16 },
+    // Answers to relayed sandbox calls (phase 5).
+    SandboxSend { connection: u64, message: Value }, // reply or notification
+    SandboxClose { connection: u64 },
+    // Approved host commands.
+    PrepareHostJob { request: String, cwd: PathBuf },
+    RunHostJob { request: String, argv: Vec<String>, env: Vec<(String, String)>,
+                 timeout: Option<u64> },
+    CancelHostJob { request: String },
+    // Raid members: Start is a handoff to an accepted member, not bootstrap.
+    Export { member: String },
+    Start(Box<Handoff>),
+    ScopeFailed,
+    ScopeMembership { result: Result<Fd, String> },
+    Stop,
+}
+
+/// The goblin's own PTY, or the PTY of the attach client a process id names.
+enum TerminalId { Main, Process(u64) }
+
+enum Stdio {
+    /// Frontend-provided stdin, stdout and stderr (`goblins exec`).
+    Fds([Fd; 3]),
+    /// A frontend-provided PTY slave (`goblins exec` with tty).
+    Tty(Fd),
+    /// A new PTY the runtime allocates and keeps (attach clients).
+    NewPty { rows: u16, cols: u16 },
+}
+
+enum Event {
+    // No PTY master, init socket, listener or pidfd crosses Started.
+    Started { docker_enabled: bool, policy: Box<Policy>, support: Support,
+              identity: Identity, dev_shell: Option<DevShellSummary>,
+              recreated: Option<Box<Recreated>>, auto: Box<Auto> },
+    ScopeFailed { name: String },
+    ScopeNeeded { name: String },
+    Mode { server: bool },
+    Manifest { sequence: u64, lease: ManifestLease },
+    Progress { request: String, state: String },
+    Preview { approval: u64, result: Result<catalog::Preview, String> },
+    Refresh { approval: u64, result: Result<(Value, String), String> },
+    Granted { reply: Reply, detail: Option<String>, output: Option<PathBuf> },
+    /// The new current generation, as devshell.lock and status need it.
+    DevShell { summary: DevShellSummary },
+    Call { serial: u64, result: Result<Value, String> },
+    // From goblins-init; the runtime keeps every allocated PTY.
+    // pid supplies onDetach placeholders, never a public supervisor pid.
+    Spawned { id: u64, pid: i32 },
+    /// code is init's (127 for a missing command, 126 otherwise); None
+    /// when init could not be asked, which goblins exec answers with
+    /// -32010 as today.
+    SpawnFailed { id: u64, code: Option<i32>, message: String },
+    Exited { id: u64, code: Option<i32>, signal: Option<i32> },
+    /// The init channel closed: execs end and no attach client starts.
+    InitLost,
+    /// The payload exited. The daemon decides what follows: it stops the
+    /// goblin, as it does on the pidfd today.
+    PayloadExited,
+    // Terminals (phase 5): the record fields the daemon keeps today.
+    Terminal { terminal: TerminalId, status: TerminalStatus,
+               error: Option<String> },
+    // Relayed sandbox calls (phase 5). Connection ids are the runtime's.
+    SandboxOpened { connection: u64 },
+    SandboxCall { connection: u64, call: rpc::Call }, // already checked
+    SandboxClosed { connection: u64 },
+    // Host jobs and raid members.
+    /// The host directory for the approval, or why it cannot be used.
+    HostJobPrepared { request: String, result: Result<PathBuf, String> },
+    /// An approved job could not be started.
+    HostJobFailed { request: String, error: String },
+    /// The supervisor's recorded outcome, or without one its diagnostic.
+    HostJobFinished { request: String, outcome: Result<Outcome, String> },
+    Exported { member: String, result: Result<Box<Handoff>, String> },
+    Failed(String),
+    Stopped { exit_code: Option<i32> },
+}
+
+/// What `tick` copies into the record today: pty_eof, terminal_complete,
+/// terminal_interrupted, terminal_attached, terminal_detached and whether
+/// a frontend remains physically connected (including a half-closed stream).
+struct TerminalStatus { eof: bool, complete: bool, interrupted: bool,
+                        attached: bool, detached: bool, connected: bool }
+#+end_src
+
+What changes against today:
+- =Completed::Started= no longer carries =Inheritance=, the init socket, the listener or the pidfd. It carries =Policy= and =Support= (section 4.4). It carries the output descriptor until phase 5 moves terminals into the runtime (section 4.9).
+- =Completed::DevShell= no longer carries an =Inheritance=. The daemon gets the identity and a serialisable summary of the generation, which is what =devshell.lock= and =status= read today through =Inheritance::dev_shell=. The runtime keeps the generation itself and replaces it under a lock when a refresh publishes, so =Export= always carries the generation current at that moment without waiting for a refresh in progress (section 4.1).
+- Resizing: until phase 5, =sessions.resize= keeps calling =TIOCSWINSZ= on the masters the daemon holds. From phase 5 it sends =Resize=.
+- =Event::Manifest= carries an owned =ManifestLease= in process. The phase 6 wire codec carries its path, root and ownership descriptor; the sender retains its guard until =Adopted=, and the receiver wraps its guard in the same lease type before acknowledgement. The root stays under the daemon's state directory.
+- The daemon decides what an init event means (attach client or exec), as it does now in =attach_event= and =exec_event=, but receives it as an =Event= instead of reading the init socket.
+- Sandbox calls arrive as =SandboxCall= messages instead of on a socket the daemon accepted (section 4.8).
+
+** 4.3 =Fd=: descriptors inside messages
+
+*[P]* A wrapper around =OwnedFd= that lets =Command= and =Event= carry descriptors in one type, whichever side of a process boundary they cross. In-process (=Local=, =Fake=) it moves. Over the control channel the codec takes every =Fd= out of the message and serialises each one as its index among that frame's descriptors; the receiver puts them back. The transport rules are in section 4.7.
+
+** 4.4 What a goblin may do: =Policy=, =Support=, =State= and =Capabilities=
+
+This is how the plan represents the abilities of different sandbox implementations. The answer to "may this goblin do X now?" has three independent inputs, and today they are blurred together in =Inheritance= and in scattered checks. Two of them are fixed for the goblin's life and known to its supervisor, which checks them on every sandbox request. The third is the daemon's.
+
+#+begin_src mermaid :file diagrams/supervisor-capabilities.svg :background-color "'#282c34'"
+flowchart TD
+    Request["The sandbox calls a method<br/>on request.sock"] --> Transport{"Supervisor: framing, envelope,<br/>known method, initialized,<br/>call limit, parameters"}
+    Transport -->|"refused"| R1["Today's transport or<br/>parameter error"]
+    Transport -->|"passed"| Static{"Supervisor: Capabilities<br/>Policy, then Support"}
+    Static -->|"Policy refuses"| R2["Today's policy refusal,<br/>same code and message"]
+    Static -->|"Support lacks it"| R3["Not supported by this sandbox,<br/>unreachable on Linux"]
+    Static -->|"passed"| Relay["SandboxCall to the daemon"]
+    Relay --> State{"Daemon: running,<br/>pending request, busy,<br/>capacity"}
+    State -->|"refused"| R4["Today's state refusal"]
+    State -->|"passed"| Act["Ask the host, then send<br/>the Command to the runtime"]
+    Act --> Recheck{"Runtime re-checks<br/>Policy and Support"}
+    Recheck -->|"no"| Closed["Failed, fail closed"]
+    Recheck -->|"yes"| Done["Carry it out"]
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-capabilities.svg]]
+
+*** Policy: what the configuration allows
+
+*[P]* Plain data resolved from the manifest by the runtime and reported in =Started=. It is the serialisable half of today's =Inheritance= and =Launch=, and it is fixed for the goblin's life. It holds no descriptors or references. It may hold host paths and commands as opaque display or argument data where results show them today, such as the dev shell's source directory for =devshell.lock= and the editor command.
+
+#+begin_src rust
+struct Policy {
+    configuration: String,
+    description: String,
+    run_targets: Vec<String>,          // allowedRunTargets
+    integration: Option<String>,
+    bypass_permissions: bool,
+    editor: Option<Editor>,
+    nix: bool,                         // allowNix
+    host_commands: bool,               // hostCommands.enable
+    scope: Option<ScopePolicy>,        // name, docker.enable, shared PID
+    dev_shell: Option<DevShellPolicy>, // configured source and lock path
+    initial_packages: Vec<PathBuf>,    // exact store outputs, for initially_available
+    handlers: Option<Handlers>,        // onAttach and onDetach
+}
+#+end_src
+
+*** Support: what the sandbox implementation can do
+
+*[P]* A set of features, reported by the runtime in =Started=. It describes the implementation, not the configuration. Linux reports every feature. A future Darwin supervisor would report fewer, and nothing in the daemon would change. It is a set of named features rather than a struct of booleans so that it serialises as a list of strings, in the same style as the =initialize= =features= list.
+
+#+begin_src rust
+#[serde(rename_all = "kebab-case")]
+enum Feature {
+    /// Mount new store paths into the running sandbox and publish a
+    /// new package profile generation (permissions.request package).
+    LivePackages,
+    /// Evaluate a host dev shell and refresh it in place
+    /// (permissions.request devshell, devshell.diff). devshell.lock only
+    /// shows the daemon's state, so it needs no feature.
+    DevShells,
+    /// Build a flake app and mount its closure (flake.run).
+    FlakeApps,
+    /// The whole store and the host Nix daemon (allowNix).
+    NixDaemon,
+    /// Run approved commands on the host (hostCommands.enable).
+    HostJobs,
+    /// Start more processes in the running sandbox (goblins exec, TRAMP).
+    Exec,
+    /// A fresh PTY client per attachment (onAttach).
+    AttachClients,
+    /// Join a scope's network namespace and storage.
+    Scopes,
+    /// Share a scope's PID namespace.
+    SharedPid,
+    /// Use the scope's Docker engine.
+    Docker,
+}
+struct Support(BTreeSet<Feature>);
+#+end_src
+
+Some things are not features, because every implementation must provide them:
+- launching the main workload with its initial packages and file grants;
+- a PTY or server log for its output, and direct-PTY attachment;
+- the sandbox request socket;
+- stop and cleanup.
+
+A feature is checked only where it is needed. =Scopes= is checked when a configuration names a scope, =SharedPid= only when that scope's definition shares its PID namespace, =AttachClients= only for a goblin with =onAttach=, and =Docker= only for Docker requests and inherited Docker. A missing =AttachClients= therefore never affects a single-terminal goblin.
+
+The internal =Feature= names are not protocol strings. Each one that gates sandbox RPC maps to the =initialize= feature it controls:
+
+| =Feature= | Sandbox =initialize= feature it gates |
+|-----------+---------------------------------------|
+| =LivePackages= | =package-grants= |
+| =Docker= | =docker-enable= |
+| =DevShells= | =devshell-diff= |
+| =FlakeApps= | =flake-run= |
+| =HostJobs= | =host-commands= |
+| =Scopes= | =scopes= |
+| =NixDaemon=, =Exec=, =AttachClients=, =SharedPid= | none; they affect launches and host operations |
+
+The other sandbox features are baseline and always listed: =terminal-detach=, =sandbox-status=, =agent-activity-v1=, =agent-inbox-v1=, =run-targets=, =raids=, =raid-owner=, =editor-open= and =variables=. The host =initialize= list describes the daemon, not one goblin, and stays as it is.
+
+*** State: what is true now
+
+*[P]* The live facts the daemon already keeps in =Active=: lifecycle state, pending request, Docker attached, granted outputs and attachment. It also holds the complete current dev shell summary (source path, lock, generation and identity). Its initial value comes in =Started=; =Event::DevShell= replaces it. =Policy= and =Support= are fixed for a goblin's life; =State= changes through =Event=s and lives only in the daemon.
+
+*** Capabilities: what a goblin may do, whatever is true now
+
+*[P]* A view over =Policy= and =Support= in =libs/runtime=, so the supervisor and the daemon use the same code. It replaces the policy checks scattered through =dispatch=, =host_spec= and =sandbox_control=.
+
+#+begin_src rust
+struct Capabilities<'a> {
+    policy: &'a Policy,
+    support: &'a Support,
+}
+enum Operation {
+    Package, DevShellRefresh, DevShellDiff, FlakeRun, Docker,
+    HostCommand, Exec,
+    /// Start an attach client or its onDetach (a Spawn of kind Attach).
+    /// Attaching a goblin's own terminal is baseline and no operation.
+    Attach,
+    RunMember { configuration: String },
+}
+enum Refusal {
+    /// The configuration does not allow it; today's code and message.
+    Policy { code: i32, message: String },
+    /// This sandbox implementation cannot do it.
+    Unsupported(Feature),
+}
+impl Capabilities<'_> {
+    /// Policy first, then Support.
+    fn check(&self, operation: &Operation) -> Result<(), Refusal>;
+}
+impl Support {
+    /// The `features` list in a sandbox's `initialize` result. It lives on
+    /// =Support=, not =Capabilities=: the daemon has the list before it has
+    /// a =Policy=.
+    fn sandbox_features(&self) -> Vec<&'static str>;
+}
+#+end_src
+
+Who checks what:
+- *The supervisor's request gate checks every sandbox call* (from phase 5, section 4.8). After the transport and parameter checks it maps the call to an =Operation= and calls =check=. Only calls that pass reach the daemon. =initialize= and the messaging calls (=messages.*=, =inbox.*=) map to no operation and pass after the transport checks, as they skip the policy checks today.
+- *The daemon checks host operations* with the =Policy= and =Support= from =Started=: =goblins exec= (=Exec=) and starting an attach client (=Attach=, refused for a goblin without handlers with =no attach handlers=) come from frontends, not from the sandbox. It also builds =initialize= results with =sandbox_features= and =sessions.status= from all three inputs.
+- *The daemon does not repeat the gate's checks* for relayed calls. The control channel is trusted, and the runtime re-checks every =Command= it is sent.
+- *Phase 2 introduces =Capabilities= in the daemon,* replacing the scattered checks in their current positions, so today's order holds until phase 5 moves the sandbox-side checks into the gate.
+
+One order for every sandbox call, by layer:
+1. *Transport and parameters, in the supervisor:* framing, the JSON-RPC envelope, the method allowlist, =initialize= first, one-shot trailing input, the call limit, and parsing and validating parameters. Today's codes and messages.
+2. *=Policy=, then =Support=, in the supervisor.*
+3. *State, capacity and approval, in the daemon:* running, pending request, call in progress, limits that count live state, backlogs, and the user's decision.
+
+Rules:
+- *The compatibility boundary.* Every sandbox call gets today's answer, with two exceptions. Codes and messages are unchanged, and [[file:../API.org][API.org]] does not specify the order of refusals, so it needs no change. Only phase 5's first commit changes anything.
+  1. *Policy before state.* Today's operations do not share one order: =permissions.request= checks for a pending request before =allowNix=, for example. A request that fails both a policy check and a state check now gets the policy refusal. A running =allowNix= goblin with a pending request that asks for a package gets =NIX_PACKAGES= instead of =conflict=.
+  2. *A short window at shutdown.* Today a call made while the daemon shuts down is refused with =conflict= before its parameters are read. The runtime learns of a stop or shutdown only when =Stop= reaches it, so in the moment between the daemon starting to stop and =Stop= arriving, a call with bad parameters or one the policy forbids gets that refusal instead of =conflict=. Every call that passes the gate still gets =conflict= from the daemon, as today.
+- *Two host calls, from phase 1.* Process commands go through =Runtime::send= and their failures come back as events, so a failure to hand a message to the sandbox's init is no longer known when the call is answered. The owner accepted both differences:
+  1. =sessions.kill_execs= is best effort, like signals (section 4.1). Today it answers =-32010= when its message to init cannot be sent; now it answers =accepted=, and still =conflict= once init has gone. [[file:../API.org][API.org]] says so in its entry.
+  2. A =sessions.exec= whose =Spawn= cannot be sent to init still gets =-32010= with today's message, but one tick later, through the exec's waiting state, so its connection closes after that answer as it does after any finished exec.
+- *A stopped goblin still answers conflict first.* A sandbox cannot call before =Started=, because the runtime accepts on =request.sock= only after it has sent =Started=. After =Stop=, the runtime answers every new call except =initialize= and messaging with today's =conflict=, right after the transport checks and before the method's own checks, so the =running= check keeps its place. =initialize= and messaging calls are still relayed until =Stopped= and get the daemon's answer, as today, where they branch before the per-goblin =running= check.
+- *Unsupported is new but unreachable on Linux.* When a later backend first reports a smaller =Support=, =Refusal::Unsupported= needs an error code and an entry in [[file:../API.org][API.org]]. That belongs to the change that adds the backend, not to this refactor.
+- *=initialize= features follow support only.* Today's list is fixed for every sandbox, including =package-grants= for an =allowNix= goblin. =sandbox_features= drops only the protocol features whose =Feature= is missing from =Support=, so Linux keeps today's exact list. Policy differences stay visible through =sessions.status=, as now.
+- *Launch-time mismatch fails closed in the runtime.* The runtime resolves the configuration, so it refuses one whose =Policy= needs a feature it lacks (a scope on an implementation without =Scopes=) with =Failed= and a clear message, before creating anything.
+- *Every command is re-checked.* The runtime refuses a =Command= that needs a missing feature or that its =Policy= forbids, even though neither the gate nor the daemon should let one through.
+- *Skills are out of scope.* Which skills the Nix builder installs into a goblin is decided at build time. Keeping them consistent with =Support= on another platform belongs to the macOS work.
+
+Where each existing refusal goes, from =Controller::dispatch=, =host_spec= and =sandbox_control= (in each cell, today's order is kept):
+
+| Sandbox call | Supervisor: transport and parameters | Supervisor: =Policy=, then =Support= | Daemon: state, capacity, approval |
+|--------------+--------------------------------------+--------------------------------------+-----------------------------------|
+| every call | framing and envelope errors; the per-method frame limit; =initialize= relayed; before =initialize= → =-32001= | | |
+| =initialize= and messaging | relayed after the transport checks, also after =Stop= until =Stopped= | | today's checks, including =conflict= for messaging while the daemon shuts down |
+| every other call | after =Stop= → =conflict=; then unknown method → =-32601=; then the method's checks below | | shutting down or not =running= → =conflict= (reached only in exception 2 of the compatibility boundary) |
+| =permissions.request= =package= | trailing input → =-32600=; parameters → =-32602= | =allowNix= → =NIX_PACKAGES=; =LivePackages= | pending → =conflict=; 64 packages → capacity; operation or permission backlog full → capacity |
+| =permissions.request= =devshell= | as above | =allowNix= → =NIX_DEV_SHELL=; no dev shell → invalid params; =DevShells= | pending → =conflict=; backlogs → capacity |
+| =permissions.request= =docker= | as above | no scope with =docker.enable= → invalid params; =Docker= | pending → =conflict=; backlogs → capacity |
+| =permissions.request= =host-command= | as above | =hostCommands.enable= off → invalid params; =HostJobs= | pending → =conflict=; too many running jobs → =-32003=; directory not resolvable (the runtime's =PrepareHostJob=) → invalid params; preview too long → invalid params; pinned approvals over their size limit → =-32003=; backlogs → capacity |
+| =flake.run=, =devshell.diff= | trailing input → invalid request; invalid parameters | =allowNix= → =NIX_DEV_SHELL=; no dev shell → invalid params; =FlakeApps= or =DevShells= | another call in progress → =-32009=; worker queue full → capacity |
+| =sessions.start= (=goblin run=) | parameters | the configuration is in =allowedRunTargets=, today's refusal | raid, naming and launch checks as today |
+
+How a second implementation fits: it speaks the same =Command= and =Event= protocol, runs the same gate and reports its own =Support=. The daemon, the frontends, raids and messaging need no change. Inside the supervisor, splitting =Session::start= into a platform-neutral launch plan and a Linux launcher (section 9) is where that implementation would plug in.
+
+** 4.5 =Handoff=: what a raid member takes from its owner
+
+*[P]* Replaces passing the owner's =Inheritance= object to the member's worker. The owner's runtime produces a =Handoff= on =Command::Export=. The daemon carries it to the new member's runtime without looking inside its descriptors.
+
+#+begin_src rust
+/// A shared lock on one goblin's resources directory, and which
+/// directory it protects, so the last holder removes the right one.
+struct ResourceLease {
+    directory: PathBuf,
+    lock: Fd, // its own open file description, never a dup
+}
+
+struct Handoff {
+    /// Fresh leases on every resources directory the owner itself holds:
+    /// its own, plus each one it inherited. Held for the member's whole
+    /// life. They keep the workspace snapshot (wherever it lives along
+    /// the chain), the dev shell and every approved output the member
+    /// may auto-approve, after any owner in the chain stops.
+    leases: Vec<ResourceLease>,
+    workspace: Fd,
+    /// Absent when the owner launched without a working directory; the
+    /// member then gets none either, as today.
+    working_directory: Option<WorkingDirectory>,
+    dev_shell: Option<DevShell>, // generation current at export
+    docker: bool,                // read once, no longer a live flag
+}
+/// The pinned directory itself, where it was opened on the host and where
+/// the sandbox sees it.
+struct WorkingDirectory { fd: Fd, source: PathBuf, destination: PathBuf }
+#+end_src
+
+#+begin_src mermaid :file diagrams/supervisor-member-handoff.svg :background-color "'#282c34'"
+sequenceDiagram
+    autonumber
+    participant O as Owner sandbox
+    participant D as Daemon
+    participant SO as Owner supervisor
+    participant SM as Member supervisor
+    O->>D: sessions.start CONFIG (goblin run)
+    D->>D: check owner Policy.run_targets, copy approvals,<br/>hold the manifest lease, open a scope lease
+    D->>SO: Export(member)
+    SO-->>D: Exported(Handoff with lease, workspace<br/>and working-directory descriptors)
+    D->>SM: spawn, then Start(Member: configuration,<br/>Handoff, scope lease, auto-approve set)
+    SM->>SM: keep the lease for life, root its own outputs,<br/>join the scope, launch the sandbox
+    SM-->>D: Started(Policy, Support)
+    D->>D: drop the launch's manifest lease
+    Note over SO,SM: The owner may stop at any point after Exported.<br/>Its resources stay while the member holds the lease.
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-member-handoff.svg]]
+
+The leases are what make this safe across processes. Today an =Arc<SessionDirectory>= keeps a goblin's =resources/= until the last goblin using it stops, and the shared workspace keeps the =Arc= of the goblin that made the snapshot. That goblin can be further up a chain: if A runs B, and B, now owning a raid, runs C, then C's workspace lives in A's resources, not in B's.
+
+Every runtime therefore keeps a list of =ResourceLease=s: its own resources directory and every lease it was handed. =Export= opens each listed =.gc-lease= again, takes a fresh shared =flock= and passes all of them. Each must be a new open file description, not a =dup=, because the exclusive-lock test cannot tell =dup=s apart. In the example, C holds leases on B's and A's resources, so stopping A and B and running =goblins gc= leaves C's workspace intact.
+
+=SessionDirectory::drop= becomes =ResourceLease::drop=: "release my lock, then remove =directory= only if an exclusive non-blocking lock succeeds". The last holder in any process removes the directory, and =goblins gc= removes it if every holder died. A member holds its leases for its whole life, exactly as its =Inheritance= keeps those =Arc=s today, so a re-root before =Started= is no longer what keeps the owner's roots alive. While the handoff sits in the daemon between =Exported= and =Start=, the daemon holds the descriptors. If the launch fails, is cancelled, or the daemon dies, closing them releases the lease.
+
+When things are pinned:
+- *The owner's resources are pinned when the owner's runtime answers =Export=.* The daemon sends =Export= when it accepts the launch.
+  - An owner stopped after that acceptance still answers. =Stop= is written after every queued command (section 4.1), so =Export= reaches the runtime first. The dispatcher answers =Export= from published state without waiting for Nix work in progress, before it handles =Stop=. A retiring runtime stays polled until =Stopped=, so the =Exported= reply is read.
+  - Only a failure path fails the member's launch, with an error naming the owner: the owner's supervisor dies, misses its stop deadline, or the daemon drops the runtime.
+  - Tests cover =Export= still waiting in the daemon's outbound queue when the owner is stopped, and =Exported= still waiting on the return channel.
+- *The scope is pinned at acceptance, by the daemon, not by the owner.* Before phase 4, =Source::Member= keeps carrying the =Arc<scope::Shared>= that =member_owner= upgrades today; that is the one transitional in-process owner. From phase 4, the daemon opens the member's scope lease from the scope process when it accepts the launch, and passes it in =Start=.
+
+The daemon keeps everything it already owns: the copied approvals and auto-approve set (=copied_approvals=, =approve_inherited_requests=) and the manifest lease, which it now holds itself until the member's =Started= instead of moving an =Arc= into the worker.
+
+** 4.6 Scope processes and scope leases
+
+*[P]* Replaces =static NAMED=, =scope::Shared=, the keeper thread, =Lease= and =owners: Vec<Inheritance>=.
+
+#+begin_src mermaid :file diagrams/supervisor-scope.svg :background-color "'#282c34'"
+flowchart TB
+    Daemon["Daemon<br/>scope name to channel"] -->|"starts on first member,<br/>control channel"| Scope
+    subgraph Scope["Scope process"]
+        Namespaces["User, network and<br/>optional PID namespaces"]
+        Pasta["pasta"]
+        Storage["Storage directory<br/>and lock"]
+        Engine["Docker engine, guardian<br/>and store skeleton"]
+        Leases["Docker users'<br/>resource leases"]
+        Members["Member mount<br/>namespaces"]
+    end
+    SupA["Supervisor A<br/>Docker user"] <-->|"membership lease<br/>and Docker lease"| Scope
+    SupB["Supervisor B"] <-->|"membership lease"| Scope
+    SupA --> SandboxA["Sandbox A joins<br/>the namespaces"]
+    SupB --> SandboxB["Sandbox B joins<br/>the namespaces"]
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-scope.svg]]
+
+*Starting and finding a scope:*
+- The daemon keeps a map from scope name to the scope process's control channel and child. A raid member requires its owner's live, non-stopping map entry: at acceptance the daemon creates a membership socketpair, sends one end in =AddMember= and passes the other in =Start= (section 4.5). The synchronous =-32009= "the owner's scope has stopped" remains unchanged. A goblin without a scope gets no lease.
+- Every other launch requests membership after its worker reads and selects the manifest, whether its scope is explicit or the configuration default. The runtime reports =ScopeNeeded= with the name; the daemon uses its captured executable pin; the daemon finds or starts the scope, sends =AddMember= and returns the member end in =ScopeMembership=. A running scope is reused subject to =Join= compatibility. The daemon does no manifest preflight or caching, never blocks the event pump and preserves the public =Start= parameters and validation order.
+- Each scope has one daemon-created control socketpair: first-message setup, =AddMember= with a descriptor, stop, and stopping/error reports. Each member has a separate daemon-created socketpair for =Join=, =RegisterMember= and Docker operations. =AddMember= waits in the scope's bounded outbound queue during startup. Stop/cancellation closes pending membership; EOF before =Join= has no sandbox to clean up, and EOF after =Join= invokes member cleanup.
+- The worker sends resolved definition, network and =allowNix= in =Join=. A compatibility refusal fails the launch asynchronously, as the worker's compatibility check does today.
+- The scope process checks each new member with today's =compatible= rules (definition, network, =allowNix=) and refuses a mismatch.
+- The scope never stops solely because membership becomes empty while daemon control is open. It reports =Idle{added}= with the number of =AddMember= messages received. The daemon sends =Stop= only if that count equals its sent count: an older =Idle= crossing a newer =AddMember= is ignored until the scope reports idle again. Sending =Stop= marks the entry stopping; a unit test covers this crossing. Control EOF still tears the scope down.
+- A scope process that is stopping stays in the daemon's map until it exits and has released its storage lock. A launch that needs the scope meanwhile waits, as it waits for the registry slot today, instead of meeting its own previous instance as a foreign controller.
+
+*Two kinds of lease, counted separately:*
+- A *membership lease* is the member runtime's connection to the scope process. Its first request, =Join=, returns the namespace descriptors. The namespaces, pasta and storage stay until the last membership closes and the daemon confirms =Stop= through the =Idle= count handshake, or until the daemon's channel closes.
+- A normal stop sends =Leave= on the membership connection, starting leftover cleanup immediately, and waits for =Left= before reporting =Stopped= or releasing its resources. With another active member, =Left= can be immediate; the last leaver is held until the daemon's =Idle=/=Stop= handshake and scope storage teardown. Scope release has a separate 15-second deadline starting after the helper's own two-second shutdown fallback. The previous keeper, namespace, pasta, engine-guardian and temporary-storage drops were unbounded; 15 seconds matches the existing CLI server-stop cleanup wait, rather than shortening storage teardown to the helper's two seconds. An exchange interrupted by cancellation keeps its expected reply until the runtime drains it (or Error), then awaits Left; the earlier Docker acknowledgement never substitutes for release. A pending reply does not make a live scope look dead during the worker's final liveness check; socket shutdown is checked separately, including EOF behind buffered reply bytes, so only genuine failure triggers peer fanout. First engine startup observes a queued following Leave or EOF through non-consuming readiness checks and cancels promptly, leaving that frame for the scope loop and preserving the existing release budget. Later guardian Retain/ack exchanges retain their ordered completion. On timeout the membership closes as the stop fallback. Crash and EOF retain their cleanup behavior. In 4A the Docker bridge sends its own =Leave= after engine shutdown and before releasing its donors. This preserves the existing rule that scope clearing works once the last member has stopped, without waiting or retrying in the CLI. During daemon shutdown, the daemon keeps pumping scope control through orderly release before joining workers; it does not start pending scopes, and kills an unresponsive scope after the release budget.
+- A *Docker lease* is taken on that connection with =AttachDocker= and grown with =ExtendDocker=. Both send the grant descriptors and fresh copies of all the member's =ResourceLease=s (section 4.5), including the leases on inherited workspaces, and return the socket path. Closing the connection, or =DetachDocker=, ends it. The engine stops when the last Docker lease ends, while non-Docker members keep the scope, as =Lease::drop= does now.
+
+*What the scope owns:*
+- Its runtime directory moves out of the first member's session directory to =STATE/scopes/NAME/=. The scope process creates it private and holds a lock file while alive. Before starting another process of that name, the daemon removes a stale directory only when its lock is free; =goblins gc= does the same. This runtime state is separate from persistent and temporary storage under =cache/goblins/scopes=. The engine's store skeleton moves there in phase 4B, instead of living in the first Docker user's session store.
+- It holds every Docker user's =ResourceLease=s, inherited workspaces included, until the engine stops. That replaces =State.owners= and =State._owner= and keeps the backing directories and Nix roots of the engine's grants alive, even after a donating member stops or its supervisor crashes.
+- Later grants bind into the skeleton as today. Their store paths stay rooted by the leases the scope holds.
+- Before the engine bootstrap is spawned, the scope opens fresh shared locks on the complete initial donor chain and the scope runtime directory. Their descriptors pass through the existing exec allowlist and the private helper bootstrap argument list; the guardian therefore holds them from exec, including scope death before readiness. The helper validates them and marks them close-on-exec, keeps the socket and locks raw across fork, and closes only the engine child's copies without socket shutdown. Only the guardian parent constructs the control Channel. Its post-fork ownership boundary captures channel setup, readiness reporting and engine-watch errors, then runs the existing namespace kill/reap and disk cleanup while Bootstrap or Retainer still holds every lock; a failed channel constructor leaves the initial locks with Bootstrap. Fast closed-readiness-pipe and channel-setup-failure probes exercise that production boundary and verify child reaping and denied donor/runtime exclusive locks throughout cleanup. Fast regressions exercise that actual fork boundary and kill a fake scope during the real Engine::bootstrap before any readiness or Retain acknowledgement, proving full-chain/runtime GC protection through guardian cleanup. Later attaches and extends send fresh copies of the complete donor lease chain to the trusted engine guardian. A private socketpair reuses the section 4.7 codec and descriptor batching: the only scope request is =Retain{leases:[{directory,lock}...]}=, and =Retained= acknowledges it. The scope publishes grants only after acknowledgement. The guardian keeps every received lock until container reaping and disk cleanup have finished, including after scope EOF or death; EOF starts existing teardown. The bootstrap runtime lock is retained as a raw capability without ResourceLease removal semantics, protecting the new skeleton from GC after scope death. A new daemon finding that old lock waits at most the existing 15-second scope release budget, then fails its queued launch without deleting the locked directory; a deterministic fast test exercises the expired deadline. Its confined filesystem cannot resolve host donor paths, so it retains descriptor capabilities and directory metadata without inferring a first donor path. The skeleton belongs to the scope runtime directory. A fast regression transfers more than one batch and proves that every donor remains protected after scope-channel EOF until guardian cleanup completes.
+
+*Cleaning up after a member.* =kill_member= moves into the scope process, because the member's runtime cannot run it if its supervisor is killed.
+- After its sandbox's mount namespace exists and before the payload starts, the helper reports it and waits before writing Bubblewrap's =--block-fd= gate. The runtime sends =RegisterMember= with a pinned namespace descriptor, waits for the scope acknowledgement, then tells the helper to release. EOF, refusal or registration failure fails the launch and kills the helper. Existing launch limits apply; no new timeout is added. =READY2= retains its current post-release meaning.
+- When a membership lease closes for any reason, the scope process kills every process in its PID namespace that is in that member's mount namespace.
+- A member whose supervisor dies before registering has no payload yet, so nothing is left to clean up.
+
+** 4.7 The control channel
+
+*[P]* One SOCK_STREAM Unix socket pair per supervisor and per scope process, created by the daemon. Frames use the JSON-RPC Content-Length framing of =libs/jsonrpc= ([[file:../../libs/jsonrpc/src/lib.rs][framing]]), with SCM_RIGHTS descriptors attached as described in section 4.3. It is not SOCK_SEQPACKET, because the daemon's side must stay portable. The message types live in =libs/runtime=, which no sandbox-side package links (section 4.10).
+
+*** Phase 6 commit 1: bootstrap and ownership contract
+
+The approved bootstrap is =SupervisorStart{supervisor_api:1,source,directory,dimensions,detached,handoff}=. It is distinct from =Command::Start(Handoff)=. A host start has no handoff; a member start requires the complete handoff. The daemon retains an accepted member placeholder, its name, receipt, manifest and scope until that handoff arrives, and may stop the placeholder before spawning anything. The process dispatcher that enforces the first-message rule and selects scope, supervisor or one-shot mode is introduced with the executable in a later commit; this commit defines and tests the wire types without changing the active =Local= runtime.
+
+The codec is =goblins_runtime::supervisor= and uses the existing =Channel= unchanged: 240 descriptors per frame, 8 MiB per body, and its existing bounded output buffers. One logical handoff may span =Leases= frames but its cumulative serialized bodies still fit 8 MiB; batching extends only the descriptor budget. Every batch names its transfer, total count is declared in the header, descriptor indices are local to their frame, and a second handoff may not overlap one in progress. Cancellation and control messages can pass while a handoff is incomplete. Adopted resource leases own cleanup as soon as each batch decodes; partial EOF, malformed continuation and abandoned messages drop these guards. Transmission alone never releases sender cleanup ownership. After actual transmission, =Prepared::into_pending= returns a =PendingTransfer= retaining the complete original typed message and every resource lease. The actor keeps that value by transfer ID until typed =Adopted= or channel closure/error; phases 6 commits 3 and 4 integrate the per-handle pending map, including retirement. Supervisor-death release in commit 4 waits for pidfd exit, rather than socket EOF alone.
+
+Raw sandbox calls, answers, dev shell lock JSON and summaries are encoded as opaque JSON strings, so a literal ={"$fd":...}= in user data cannot become a transport capability. Only typed descriptor fields participate in the scanner. The codec carries the actual Rust contract, including private preview output paths, =released=, =TerminalStatus.connected=, and the absence of terminal masters in =Started= and =Spawned=. Phase 6 commit 3 removes =ScopeNeeded.executable= when the daemon-wide executable pin lands.
+
+Manifest transfer uses =Event.Manifest{sequence,path,root,owner,transfer}= and =Adopted{transfer}=. Both manifest and complete handoff receivers return an adoption token only with the fully decoded owned message; the actor acknowledges after typed adoption. A stale logical result may be adopted and then dropped without publishing it. The sender keeps its full typed guard until acknowledgement, independently of the wire frames. Independent shared ownership locks on a stable private sibling inode protect the root across a lost acknowledgement: either live peer retains it, and the last graceful owner removes it. The inode remains stable like other GC lock files. An ownership protocol/adoption failure is a protocol error, with no =Rejected= notification: the receiver drops raw frame descriptors and =Decoder.pending= before explicitly closing =Channel=; =Channel.close= drops its received and unsent descriptors before socket shutdown. The sender observes teardown and drops its pending typed guards. The supervisor receive path treats =ECONNRESET= from a peer closing with unread data/SCM_RIGHTS as the same closed-channel outcome as EOF, including incomplete-handoff disposal. Guard drop keeps the existing single =LOCK_NB= exclusive-cleanup attempt; there is no wait, retry service, ticket or process-wide owner. A racing/half-dead peer retaining a copy, actual process death, or a raw framing error that auto-closes =Channel= before external decoder state can be dropped uses the existing stopped-server GC/startup-cleanup fallback. Raw framing errors mean a sender wrote invalid bytes or died mid-write. Undelivered output, failed bootstrap and shutdown retain the same guard/teardown ordering. =Stopping= acknowledges stop dispatch without claiming cleanup complete; =Released= carries the monotonic resource-release boundary independently of retained terminal output. These acknowledgements are not request-admission credits.
+
+Neither existing descriptor path is a general transport: =init::send= treats a short write as an error and uses fixed ancillary buffers, and the host =Connection= receiver accepts descriptors for one request. The control channel needs its own, specified and tested on its own:
+- *Its own budget.* A private per-frame descriptor limit sized for the largest message (=Exported=), with batching if that is ever exceeded. =init::MAX_FDS= stays 3, because it also bounds what host connections may send, which is a public limit.
+- *Association.* Each frame's header declares its descriptor count, and the sender attaches that frame's descriptors to the frame's first =sendmsg=. The receiver reads at most the current frame boundary (one byte at a time until its header is complete), because =recvmsg= does not report an ancillary-data byte offset in a coalesced buffer. Descriptors are accepted only with that frame's first byte, and the declared count must exactly match the frame's received descriptors; no later frame may consume an earlier attachment. A count that does not match the indices in the frame, or descriptors left over at EOF, is a protocol error: the channel closes and every queued descriptor is closed.
+- *Partial I/O.* Writes and reads are queued and resumable, with descriptors only on a frame's first chunk. Output queues are bounded, as with =Connection=.
+- *Frame size.* A relayed sandbox call or answer travels in one frame, so the channel's frame limit is above the sandbox endpoint's request and reply limits.
+- *Tests:*
+  - fragmented and coalesced frames with different descriptor counts;
+  - short writes under backpressure;
+  - EOF in the middle of a frame;
+  - every descriptor closed after a protocol error.
+
+** 4.8 Relaying sandbox requests
+
+*[P]* From phase 5 the runtime owns =request.sock= and every connection on it, and the daemon sees only messages. Today's =Connection= splits in two: the runtime takes the transport half, and the daemon keeps the call half.
+
+#+begin_src mermaid :file diagrams/supervisor-relay.svg :background-color "'#282c34'"
+sequenceDiagram
+    autonumber
+    participant C as Sandbox client
+    participant S as Supervisor
+    participant D as Daemon
+    participant H as Host frontend
+    C->>S: connect request.sock
+    S-->>D: SandboxOpened(connection)
+    C->>S: initialize
+    S-->>D: SandboxCall(initialize)
+    D->>S: SandboxSend(result with features)
+    S->>C: result
+    C->>S: permissions.request package
+    S->>S: transport and parameters,<br/>then Policy and Support
+    S-->>D: SandboxCall(checked)
+    D->>D: running, pending, capacity
+    D->>H: pending request
+    H->>D: permissions.decide
+    D-->>H: decided
+    D->>S: Decide
+    S-->>D: Granted
+    D->>S: SandboxSend(reply)
+    S->>C: reply
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-relay.svg]]
+
+- *The runtime's half:* the socket, framing and size limits, the JSON-RPC envelope, the sandbox method allowlist, =initialize= before other calls, one-shot calls and their trailing-input check, today's per-connection call limit, EOF, and the gate of section 4.4. It answers the refusals of the first two layers itself, with today's codes and messages, in today's order: frame and size errors, then the per-method frame limit, then =initialize=, then =-32001= for a call before it. =initialize= and messaging calls are then relayed. Any other call gets =conflict= after =Stop=, then =-32601= for an unknown method, then its own checks and the gate.
+- *One call at a time, as today.* The runtime handles a connection's calls in arrival order and does not evaluate the next until the daemon has answered the previous one, keeping today's handling of input that arrives while a call waits. A call pipelined after =initialize= is therefore gated only after the daemon's reply, by which time the runtime knows whether =initialize= succeeded, matching today's dispatch, which marks the connection initialized before it handles the next call.
+- *Notifications are dropped, as today.* A call without an ID is ignored before its parameters or policy are looked at, and is not relayed.
+- *The daemon's half, a /relayed connection/:* which call waits, =host.submitted= before the reply, the reply itself, closing one-shot connections, and =withdraw=. It is keyed by goblin and connection id, never by path.
+- *Ordering a decision against a hang-up.* Today =decide= reads the requester's socket and refuses with =conflict= if it finds EOF or unexpected bytes, so that unread input cannot hide a peer that has gone. The runtime now keeps reading every connection with a waiting call, and on EOF or unexpected input closes it and sends =SandboxClosed= at once; nothing is left unread to hide a hang-up. =decide= stays synchronous: it checks whether the relayed connection is closed, where it reads the socket today, and refuses with =conflict= and withdraws, as today. The hang-up is noticed one hop later than today. A hang-up that has not reached the daemon when it decides is handled like a hang-up just after =decide= today: the decision stands and its reply has no reader.
+- *Disconnects.* EOF, a transport error, or unexpected input while a call waits closes the connection in the runtime and sends =SandboxClosed=. The daemon then withdraws that connection's calls, as it does on disconnect today.
+- *Ending a runtime ends its connections.* The daemon withdraws every call relayed on them. =SandboxOpened= or =SandboxCall= arriving after =Stopped= is ignored, and the runtime has already closed those connections.
+
+** 4.9 Terminals
+
+*[P]* From phase 5 the runtime owns every PTY master and the server log, and streams them to frontends directly. The daemon keeps the attach handshake and everything that decides whether an attachment may happen.
+
+#+begin_src mermaid :file diagrams/supervisor-attach.svg :background-color "'#282c34'"
+sequenceDiagram
+    autonumber
+    participant F as Frontend
+    participant D as Daemon
+    participant S as Supervisor
+    participant P as Payload or attach client
+    F->>D: connect attach.sock, attach.hello(rows, cols)
+    D-->>F: attach.waiting while variables are missing
+    opt onAttach configured
+        D->>S: Spawn(onAttach, NewPty)
+        S->>P: start the client on a new PTY
+        S-->>D: Spawned(id)
+    end
+    D->>S: Attach(terminal, frontend stream, rows, cols)
+    S-->>F: attached true, then raw bytes
+    S-->>D: Terminal(attached)
+    F->>S: keystrokes
+    S->>P: keystrokes
+    F--xS: closes the stream
+    S-->>D: Terminal(detached)
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-attach.svg]]
+
+- *The runtime owns:* the goblin's own PTY, or the server-log pipe and its bounded log file (=ServerLog=); the PTYs it allocated for attach clients; =Terminal='s buffers; the older =terminal.sock= listener with its hold, release and refusal rules, which it can apply because it knows =Policy.handlers=; and resizing.
+- *The daemon keeps* =attach.sock= and the handshake: the 3-second =attach.hello=, =attach.waiting= while variables are missing, the one-attachment rule and its refusals, and =onAttach= and =onDetach= through =Spawn= and =Signal=. On success it passes the frontend's stream in =Attach=; the runtime writes the framed acceptance and then raw bytes, as =Terminal::attach= does today.
+- *One attachment, reserved by the daemon.* The daemon marks the terminal attached when it sends =Attach=, before the runtime answers, so a second =attach.hello= is refused at once, as today. The physical attachment reservation clears when =Event::Terminal= reports =connected=false=. Its descriptor-free =TerminalStatus= distinguishes =attached= from =connected=: a detached frontend can still hold the half-closed stream while reading its outcome, and a second attachment remains refused until it closes. The status also carries =eof=, =complete=, =interrupted= and =detached=; terminal I/O errors carry a diagnostic alongside the snapshot. That includes an =Attach= the runtime cannot carry out because the terminal has ended; the runtime then writes today's refusal to the frontend's stream itself. =attached_since= and the rest of the attach state stay in the daemon's =attach::Attach=, and an attach client's pid comes in =Spawned=, as today.
+- *Ordering.* Commands for one terminal are carried out in the order sent. =Resize= is coalesced in place and never overtakes the =Attach= before it, and =Detach= follows it. A frontend that closes its stream before or after the runtime has attached it is reported as detached once the runtime sees the closed stream.
+- *After the payload ends.* Today a stopped goblin's =Terminal= stays in the daemon until it can be evicted, so a frontend that attaches late still gets the buffered output. The runtime keeps that: after =Stopped= it keeps serving its terminals, =terminal.sock= included, until each can be evicted and the server log has drained, and only then ends (section 4.1). The daemon continues refusing new =attach.sock= handshakes for stopped or failed goblins; late buffered output remains available through =terminal.sock=. Worker completion without a final lifecycle result is reported as failure immediately, independently of retained terminal output. A stopped goblin whose output nobody reads keeps its record today; it now also keeps a supervisor holding that buffer and no sandbox. This is intentional and bounded by today's eviction rule; handing the buffer back to the daemon would put terminal code back into the daemon. The worker's stop result makes its published launch capability unavailable. The local runtime defers delivery of =Stopped= until any active host jobs and their queued results have finished, then releases its published resource leases and prepared host directories before exposing that lifecycle result; unread terminal output does not retain those resources.
+- *Records.* The runtime reports changes with =Event::Terminal=. The daemon copies them into the record fields, as =tick= copies them from =Terminal= today.
+- *Detaching.* =sessions.detach= sends =Detach=. A frontend closing its stream is seen by the runtime and reported as detached.
+- =goblins exec= keeps passing the frontend's own descriptors (=Stdio::Fds= or =Stdio::Tty=); those never were the daemon's PTYs.
+- *What this buys.* A goblin that floods its terminal costs its own supervisor, not the daemon's tick, and the daemon holds no PTY at all.
+
+** 4.10 Where the code lives
+
+*[P]* Directories say what they hold: =packages/= for what is built into something runnable, =libs/= for libraries. Library names say whether a contract is public or internal (*[Q5]*).
+
+#+begin_src mermaid :file diagrams/supervisor-layout.svg :background-color "'#282c34'"
+flowchart LR
+    subgraph Packages["packages/: runnable, one Nix package each"]
+        Daemon["daemon<br/>goblins: daemon, host CLI, TUI"]
+        SupBwrap["supervisor-bwrap<br/>supervisor and scope process"]
+        Helper["mount-helper"]
+        Cli["sandbox-cli<br/>goblin, goblins-init,<br/>goblins-editor"]
+        Adapters["adapter-codex<br/>adapter-claude"]
+        Docker["docker<br/>Nix only"]
+    end
+    subgraph Public["libs/: public contracts"]
+        Jsonrpc["jsonrpc<br/>values and framing"]
+        Api["api<br/>public endpoints and<br/>pure init wire data"]
+    end
+    subgraph Internal["libs/: internal"]
+        Init["init<br/>supervisor and goblins-init"]
+        Runtime["runtime<br/>Command, Event, Policy,<br/>Support, Handoff"]
+        Supervisor["supervisor<br/>the Linux runtime"]
+    end
+    Daemon --> Api
+    Daemon --> Runtime
+    SupBwrap --> Supervisor
+    Supervisor --> Runtime
+    Supervisor --> Api
+    Supervisor --> Init
+    Cli --> Api
+    Cli --> Init
+    Adapters --> Api
+    Init --> Api
+    Api --> Jsonrpc
+    Runtime --> Jsonrpc
+    Runtime --> Api
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-layout.svg]]
+
+This table describes the end state. Phase 5 moves =Terminal= and =ServerLog= into =goblins-supervisor=; their descriptors never cross =Started= or =Spawned=. Construction of the local runtime binds =terminal.sock= synchronously, preserving launch-time socket errors.
+
+| Directory | Holds | Before extraction |
+|-----------+-------+-------|
+| =packages/daemon= | the =goblins= binary: daemon, host CLI and TUI | =packages/daemon= minus the runtime |
+| =packages/supervisor-bwrap= | the supervisor and scope-process binary for Linux; a thin =main= over =libs/supervisor= | new |
+| =packages/mount-helper= | the supervisor's private helper | =packages/mount-helper/src/= |
+| =packages/sandbox-cli= | the =goblin= binary, with =goblins-init= and =goblins-editor= | =packages/sandbox-cli= and =packages/sandbox-cli/default.nix= |
+| =packages/adapter-codex=, =packages/adapter-claude= | the agent adapters | =packages/adapter-codex=, =packages/adapter-claude= |
+| =packages/docker= | patched rootless Docker, Nix only | =packages/docker/default.nix= |
+| =libs/jsonrpc= | JSON-RPC values and Content-Length framing, with no methods | the method-free half of =libs/api/src/rpc.rs= |
+| =libs/api= | the public host and sandbox endpoints, their parameter types and limits, the client terminal relay and the shared validators | the rest of =libs/api=, including the method types of =rpc.rs=, plus pure private same-build =init= wire data |
+| =libs/init= | private init transport and compatibility re-exports of canonical =api::init= wire data | =libs/init/src/lib.rs= |
+| =libs/runtime= | =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff=, the scope messages, and the plain data both sides use: the manifest, =Skipped=, the dev shell generation and summary, =ResourceLease= with its flock helpers, and =ManifestLease= with its path and drop | new, and the data halves of =config=, =binds=, =history= and =devshell= |
+| =libs/unix= | the generic POSIX descriptor and filesystem helpers shared by the daemon and supervisor, including the fork-test guard | the generic parts of =libs/unix/src/lib.rs= |
+| =libs/supervisor= | the runtime: session, worker, binds, Nix work, scopes, Docker, terminals and the request relay | the runtime modules of =packages/daemon= |
+
+Rules:
+- *Packages depend on libraries, never on each other.* Any package or library may use =libs/unix=; it depends on no other workspace member.
+- *Sandbox-side packages never link host authority.* =sandbox-cli= and the adapters link =jsonrpc=, =api= and =init=, never =runtime= or =supervisor=.
+- *The phase 3 to 5 implementation boundary.* The daemon imports contract data directly from =libs/runtime= and the in-process runtime through =Local=. During phases 3 to 5 two temporary public facade modules existed: =goblins_supervisor::maintenance::{gc, clear_scope}= and =goblins_supervisor::manifest::{read, select_configuration, allows_nix, lease}=. Phase 6 commits 6 and 7 replace them with pure contract-data helpers and pinned one-shot modes; commit 9 removes the remaining transitional Local adapter and implementation links. The former facades took plain paths and data; =lease= created its own default cancellation, while workers kept their real cancellation token. All other supervisor modules stay private, with no public re-exports.
+- *The daemon links =supervisor= only while =Local= exists* (phases 3 to 5). From phase 6 it links =runtime= and the public libraries, so the end state in section 1 is a compile-time fact.
+- *Public and internal differ in how they change.* =jsonrpc= and =api= have clients outside the Rust build (Emacs, the Python tests, scripts) and are documented in [[file:../API.org][API.org]]; the schema-first plan in [[file:API-SCHEMA.org][API-SCHEMA.org]] covers them. =init=, =runtime= and =supervisor= connect two ends from the same build, may change in any commit, and are described by ADRs and the architecture documents.
+- *One Linux runtime library for now.* Until the launch split in section 9, the whole runtime is Linux code in =libs/supervisor=. The Darwin work later splits out its platform-neutral core, and =packages/supervisor-darwin= would link that core and its own backend.
+- *Nix.* Each package has its =default.nix= beside its =Cargo.toml=, sharing =nix/builders/rust.nix=. Each package lists its library sources explicitly; a missing dependency fails its standalone build. =nix/= keeps the builders, =lib.nix= and the goblin definitions; the adapters' settings and skills stay in =nix/goblins=. =mkGoblins= pins the daemon, the supervisor and the helper by store path in the runtime configuration, as it pins the helper today.
+- *Checked.* A test over =cargo metadata= fails when a dependency breaks these rules.
+
+* 5. Phases
+
+Every phase is one or more commits, each reviewed and gated as AGENTS.md requires. All of them touch broad-routed paths (=controller.rs=, =session.rs=, =worker.rs=, =packages/mount-helper/=, =libs/api= and, after phase 3, their new homes), so every commit needs =just test-merge=.
+
+#+begin_src mermaid :file diagrams/supervisor-phases.svg :background-color "'#282c34'"
+flowchart LR
+    P1["1 Runtime handle<br/>in the controller"] --> P2["2 Policy, Support,<br/>Capabilities, Handoff"]
+    P2 --> P3["3 packages and libs,<br/>runtime in its own library"]
+    P3 --> P4["4 Scope processes<br/>supervisor-bwrap appears"]
+    P4 --> P5["5 Runtime owns the<br/>sandbox's endpoints:<br/>relay, gate, terminals"]
+    P5 --> P6["6 A supervisor process<br/>per goblin, Local deleted"]
+    P6 --> P7["7 Documents"]
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-phases.svg]]
+
+** Phase 1: the =Runtime= handle, in-process
+
+*[P]* Introduce =Runtime=, =Command=, =Event=, =Fd= and the =Local= and =Fake= implementations (sections 4.1 to 4.3), in a new =controller/runtime.rs=.
+
+- =poll_init=, the per-session =request.sock= accept loop, the pidfd check and =poll_host_jobs= in =tick= collapse into draining each goblin's =Runtime=. The accepted sandbox streams still come to the controller in this phase, as =Event::SandboxConnected=; phase 5 replaces them with relayed calls.
+- The runtime reports the payload's exit as =Event::PayloadExited=, and the controller calls =stop= on it as it does on the pidfd today, so a pending request is still answered at once with today's message.
+- Cancellation becomes =Command::Cancel(id)= instead of shared =Cancel= atomics in =Pending=, =Call= and =Work=. =Local::send= handles it at once, without queueing (section 4.1).
+- The dispatcher and stopping versus dropping follow section 4.1 from this phase on. =Local='s dispatcher is =send= itself and hands every command to the worker or init at once, so commands already take effect in the order sent and a cancellation already overtakes queued work. The outbound queue of section 4.1 and its ordering tests therefore land in phase 6 with =Supervised=, its only user. An init socket that refuses a message keeps today's answers: =-32010= for =goblins exec= and an attach client that cannot start, and nothing for signals. The exceptions for =sessions.kill_execs= and =sessions.exec= are in section 4.4.
+- An =accept= error on =request.sock= other than =WouldBlock= used to end the daemon's tick with an error. =Local= now stops accepting for that round and tries again in the next.
+- The sessions map plays the retiring set: a stopping goblin's record stays there, polled, until its runtime ends, and is evicted only after. A separate set comes with =Supervised= and its kill deadline.
+- Attach clients ask the runtime for a PTY (=Stdio::NewPty=) instead of the controller allocating one, and get the master back in =Spawned= until phase 5. =goblins exec= passes the frontend's descriptors through unchanged (=Stdio::Fds= or =Stdio::Tty=).
+- Host jobs:
+  - =permissions.request= for a host command makes today's checks up to the running-jobs limit, then sends =PrepareHostJob= and parks the call. The parked call holds the goblin's pending slot, so a second request still gets =conflict=. The runtime resolves the directory through the bind descriptors, keeps the pinned descriptor by request ID and answers =HostJobPrepared= with the display path for the preview or why it cannot be used. The daemon then makes the remaining checks in today's order and shows the request, or answers the refusal with today's code and message.
+  - A disconnect while the call is parked releases the slot and sends =CancelHostJob=; a stop answers it =conflict=. A =HostJobPrepared= nobody waits for any more is answered with =CancelHostJob=, so nothing stays pinned.
+  - =decide_host= sends =RunHostJob=; a job that cannot start comes back as =HostJobFailed=, with today's "could not start the host command" answer. =withdraw=, =host.cancel=, a denial and =end_host_jobs= send =CancelHostJob=.
+  - The runtime reads each finished job's =status.json= and reports =HostJobFinished=; the daemon keeps the job's caller, notice and stop reason and answers as today. A runtime ends only once its jobs have finished.
+  - The helper's =--host-job= mode and the job directory layout are unchanged.
+- =editor.open= stays in the daemon: it runs =emacsclient= on the host as a frontend integration and never touches the sandbox.
+- =Started= still carries =Inheritance= in this phase; phase 2 removes it.
+
+Tests: =Fake= replaces =Worker::idle=, =Worker::completed= and =Worker::listening=. The fixture helpers =session_with_results_id= and =live= absorb most of the change. These tests are rewritten against =Fake=:
+- =exec_descriptors_wait_for_their_whole_request=
+- the three attach-handler tests
+- the record tests that assert =Work=
+
+** Phase 2: =Policy=, =Support=, =Capabilities= and =Handoff=
+
+*[P]* Split =Inheritance= (sections 4.4 and 4.5). It lands as three commits: the first below, then the second split in two, the leases (B1) and the handoff (B2).
+
+=Inheritance= stays, as a type internal to the runtime, until phase 4: =scope.rs= keeps its owners as =Inheritance= values (section 4.6) and =Local= resolves host directories through one. It only stops crossing to the daemon.
+
+1. *What a goblin may do.*
+   - =Started= carries =Policy=, =Support= and the launch's =DevShellSummary=. Until B2 it also carries =Inheritance=, which the daemon uses only for member launches (=member_owner=, =Source::Member=). B2 removes it, together with a transitional =ScopeHandle(Weak<scope::Shared>)= that lets the daemon keep upgrading the owner's scope at acceptance, so that the =-32009= "the owner's scope has stopped" stays synchronous. Phase 4 deletes the handle.
+   - The daemon keeps the live =DevShellSummary= (lock, generation and identity as =devshell.lock= and =status= show them) in its state, replaced by =Event::DevShell=; =Policy= keeps only the configured source and lock path.
+   - =Local= re-checks every command against its =Policy= and =Support=; a command the goblin may not be sent reports =Failed= and stops it (fail closed). Before =Started= the runtime knows no policy, so it refuses every command that needs a capability the same way; cancellations, signals, =KillAll= and =Stop= are never refused. A configuration that needs a feature the implementation lacks (nix, host commands, a scope or shared PID, attach handlers, a dev shell) fails the launch before the sandbox starts. The Docker features of an inherited goblin, and of a configuration that attaches Docker at start, are enforced in B2, where the inherited flag is read.
+   - =Operation::Exec= and =Operation::Attach= are checked in =exec_start= and when an attach client starts. =Refusal::Unsupported= answers =-32009= "not supported by this sandbox: FEATURE". Its code and its API.org entry belong to the first backend that reports reduced =Support=.
+   - Every policy check in =dispatch=, =host_spec= and =sandbox_control= moves into =Capabilities::check=, still called by the daemon in today's positions, with today's messages and today's order.
+   - =initialize= and =sessions.status= use =sandbox_features= and the three inputs.
+   - =Local= reports full =Support=.
+   - Tests: a =Fake= with reduced =Support= exercises the =Unsupported= path and the =initialize= feature list.
+2. *What a raid member takes from its owner.*
+   - (B2.) =Command::Export{member}= returns =Event::Exported{member, handoff}=, and =Command::Start(handoff)= gives it to the member's runtime (both boxed). The member's =Local= is created at acceptance, as before, and its worker waits for =Start= before it builds anything, so records, names and limits keep their meaning; phase 6's =Supervised= can spawn the supervisor at =Start= instead. The daemon sends =Export= when it accepts the launch, and a member whose owner's runtime ends without answering, or answers with an error, fails with a message naming the owner. =Source::Member= carries the configuration, the approvals, the manifest path, the state and history directories (for the protected paths) and, until phase 4, the scope =Arc= taken at acceptance, instead of the owner's =Inheritance= and the manifest =Arc=. =Inheritance= no longer reaches the daemon at all: =Started= carries a transitional =ScopeHandle(Weak<scope::Shared>)=, which the daemon upgrades at acceptance as =member_owner= did, and the worker publishes its capability, under a lock, at =Started= and with each dev shell refresh, for =Local= to answer =Export= and resolve host directories from. Its =leases= list (its own and those it inherited) replaces =_owner=, and the workspace no longer owns a lease of its own.
+   - The Docker flag of =Handoff= is read once, when the owner's runtime answers =Export= instead of in the member's worker shortly after acceptance. Nothing visible changes: the member never reread the owner's flag after it started, so one already running when its owner enables Docker later does not get Docker, then or now. A member that attaches Docker as it starts, inherited or configured, fails its launch when =Support= lacks =Feature::Docker= (=Support::lacks=).
+   - (B1, its own commit.) =SessionDirectory= becomes =ResourceLease=, which works across processes: a holder that lets go removes the directory only if it can then take the lock exclusively (principle 4). A copy of the lock descriptor held elsewhere, such as the helper's, keeps the directory for the last holder or =goblins gc=; so does a copy that a process being forked holds until it executes, which is rare and costs only a later collection; before, the directory went whenever the last =Arc= dropped. Until B2 the leases are still shared in-process as =Arc<ResourceLease>=; =share()= (a fresh lease of its own) waits for B2's handoff. The lock is an =Option<File>= in code, so that drop can close it before it asks for the exclusive lock. =Controller::drop= no longer removes the session directory whole: it drops each goblin's runtime and capability, removes the goblin's own files and the then empty session directory, and leaves =resources/= to the last holder or =goblins gc=, as eviction does.
+   - (B2.) Each runtime keeps its own and its inherited leases: a member's =Session= holds the fresh leases of its =Handoff= for its whole life.
+   - =DevShell= and the other =Handoff= payload types gain =Serialize= and =Deserialize=.
+   - =Completed::Manifest= becomes =Event::Manifest=, which carries the first =ManifestLease= by value, not behind an =Arc=: it owns the root of the manifest's store output, so an event that is refused, or queued and never read, removes the root when it is dropped. The daemon puts the lease behind an =Arc= when it reads the event, and holds each launch's lease until its =Started=, =Failed= or =Stopped=. This replaces the =held= tuple in =worker.rs=. Phase 6 sends the path and the root over the control channel, and the supervisor's side removes the root if the daemon never adopts it.
+   - Until phase 4, =Source::Member= keeps carrying the scope =Arc= taken at acceptance, the one transitional in-process owner (section 4.5).
+   - =Completed::DevShell= becomes =Event::DevShell= with a serialisable generation summary and no =Inheritance=.
+
+** Phase 3: packages and libraries
+
+*[P]* Move to the layout of section 4.10, still one process and with no behaviour change. Four commits, each reviewed and gated on its own:
+1. *A: mechanical moves.*
+   - =crates/= becomes =packages/= and =libs/=, and the root =src/= becomes =packages/mount-helper/src/=, so the root =Cargo.toml= is a pure workspace. The unsplit =goblins-protocol= crate moves to =libs/api= for now. Cargo package names and binary names stay unchanged.
+   - Each package's Nix expression moves beside it, over =nix/builders/rust.nix=, with explicit library source lists. The adapters' Rust builds move out of =nix/goblins=, which keeps their settings and skills.
+   - The routing in =tests/features.toml=, fixture/build scripts, the =justfile= and document links follow where they name moved paths. Compare =just test-plan --paths= output before and after for representative paths of every feature. Add the =cargo metadata= dependency-rule check from section 4.10.
+2. *B: the protocol splits three ways.*
+   - =libs/jsonrpc= takes the method-free half of =rpc.rs=: values, envelope, =Decoder=, framing and its limits. =libs/api= keeps everything that names a method or a public limit: =PermissionParams=, =HostCommand= and its limits, =FlakeRunParams=, =DevShellDiffParams=, =input_name=, and the argument and environment limits =HostCommand= checks, which move there from =init.rs= because API.org publishes them. =libs/init= takes the rest of =init.rs= and uses those limits from =libs/api=.
+3. *C: the runtime contract gets its own library.*
+   - =Runtime=, =Command=, =Event=, =Fd=, =Policy=, =Support=, =Capabilities=, =Handoff= and the =Fake= test implementation move to =libs/runtime= (the daemon enables its =test-support= feature for unit tests), with the plain data both sides use: the manifest as Nix writes it (=Manifest=, =Launch='s serialised fields, =Editor=, =Handlers=, =binds::Declarations=), =history::Skipped=, the serialisable dev shell generation and its summary, =ManifestLease='s path and drop, and =ResourceLease= with its flock helpers.
+   - Only data and the lease/logging helpers move down. A type whose inherent methods need OS or Nix services is split: the data goes to =libs/runtime=, and each such method becomes a free function in the implementation that takes the data. =Launch::etc_mounts= becomes a =sandbox_etc= function; =ManifestLease::create= splits into an implementation function that validates and roots the manifest and a wrapper that immediately adopts the path into an owned lease. =Event::Manifest= keeps carrying that lease through C and D, so an unread or refused event removes its root as in phase 2; only phase 6 sends a path for the daemon to wrap (section 4.2). =Launch='s fields that the runtime fills in at launch (=scope=, =dev_shell=, =protected_paths=, the current =editor=) leave =Launch= for an implementation-side launch struct, and =binds::Plan= with its descriptors stays in the implementation. D moves these functions and structs to =libs/supervisor=.
+   - Until phase 4, =libs/runtime= has an opaque =ScopePin: Any + Send + Sync= marker, =ScopeHandle(Weak<dyn ScopePin>)= and an =Arc<dyn ScopePin>= for member launches. The implementation pins and downcasts =scope::Shared=; the daemon still upgrades at acceptance with the same synchronous refusal. Phase 4 deletes both =ScopePin= and =ScopeHandle=.
+   - A one-function =events.jsonl= writer moves to =libs/runtime= for the daemon's exec events; phase 6 replaces those writes with an event.
+   - =libs/runtime= depends on neither the daemon nor =libs/supervisor=, so there is no cycle.
+4. *D: the runtime implementation gets its own library.*
+   - The runtime modules move to =libs/supervisor=: =session=, =worker=, =binds=, =snapshot=, =seccomp= and =sandbox_etc=; =devshell=, =evaluator= and =catalog=; =scope*=, =network= and =docker=; =process= and the Linux parts of =unix=. =Local= and the launcher move with them. The host CLI frontend =exec.rs= stays in =packages/daemon=.
+   - The generic POSIX helpers shared by the daemon and supervisor move to =libs/unix=, including the fork-test guard.
+   - The daemon reaches the runtime through =libs/runtime= and =Local=, with the two temporary maintenance and manifest preflight modules specified in section 4.10. Cleanup moves privately into =libs/supervisor= beside storage. A daemon module that reaches any other implementation module fails to compile. The pure =parse_reference= validator moves into =libs/runtime=; staged data aliases become direct contract imports.
+   - The Python =sandbox= harness's ignored =session::tests::host_driver= test moves with =Session=.
+
+Tests: the =cargo metadata= dependency check of section 4.10, and =nix flake check= building every package on its own. The metadata check does not compare Nix library lists; missing library sources already fail package builds.
+
+** Phase 4: scope processes
+
+*[P]* Move scopes into their own processes (section 4.6, *[Q4]*). =packages/supervisor-bwrap= is created here, with only its scope mode; phase 6 adds the supervisor mode. =mkGoblins= pins it in the runtime configuration, and the Python tests build it with Cargo beside the daemon.
+
+The binary's entry point is minimal from the start, for both modes. It accepts only the inherited control socket, runs no CLI, daemon or client start-up, and reads everything else from its first message. Before anything else it:
+- sets =PR_SET_PDEATHSIG=;
+- compares =getppid()= with the starting daemon PID from =SO_PEERCRED= on the inherited socketpair, exiting on mismatch to close the fork/=prctl= race;
+- closes every descriptor except the control socket, as the helper's =close_range= allowlist does today.
+
+The daemon spawns scope processes from its main loop thread, which lives as long as the daemon: Linux parent-death signals follow the creating thread. The daemon captures =GOBLINS_SUPERVISOR_RUNTIME= once, and uses the same absolute executable pin for every scope and supervisor. =ScopeNeeded= carries only the scope name; neither a manifest configuration nor =Started= selects an executable.
+
+Phase 4A builds the section 4.7 control-channel transport once in =libs/runtime=, including fragmented/coalesced frames, short writes, mid-frame EOF and error descriptor-cleanup tests. Phase 6 reuses it.
+
+This is the riskiest step and lands as two commits, each green:
+1. *Namespaces, pasta, storage, membership leases and member clean-up.* The Docker engine stays in the daemon for this commit. What remains of =Shared= is a per-scope Docker state keyed by scope name. It holds its owners as =Inheritance= values, as today, and starts the engine in the namespaces it receives from the scope process. While the engine runs, this bridge holds its own membership lease. Teardown stops the engine before closing that lease. A departing donor's own membership closes immediately, cleaning its leftovers while the bridge retains its resources. The store skeleton stays in the first Docker user's session store, retained by that donor's =Inheritance= until 4B. Its cleanup guardian keeps a fresh shared lease on the donor's =resources/.gc-lease=, passed to Bubblewrap as the typed donor =ResourceLease= descriptor rather than a path inferred from the runtime directory, preserving session-resource protection after daemon death; the scope runtime lock is a separate lifetime. An unexpected engine exit keeps today's scope-wide outcome: the bridge reports it to the daemon, which stops every member of that scope with exit code 1, including non-Docker members. This transitional report uses no new scope-protocol message. In 4B the scope process owns the engine and preserves the same failure rule. On fatal teardown it closes each member channel before killing that member's leftovers, so runtimes observe scope failure before helper SIGKILL; helper cleanup cannot overwrite the already observed exit code 1.
+2. *The Docker engine, Docker leases and the store skeleton* move into the scope process, and the bridge and =Shared= are deleted.
+
+=HELD= becomes per scope process. The cross-process =flock= on persistent scope storage stays.
+
+** Phase 5: the runtime owns the sandbox's endpoints
+
+*[P]* Still in-process, the runtime takes over everything that touches the sandbox. Two commits:
+1. *Relay and gate* (sections 4.4 and 4.8).
+   - The runtime accepts on =request.sock= only after =Started=, runs the transport half of today's =Connection= and the gate, and emits =SandboxOpened=, =SandboxCall= and =SandboxClosed=.
+   - The daemon's =Role::Sandbox= connections become relayed connections. =decide= checks whether the relayed connection has closed instead of reading a socket.
+   - The sandbox-side policy checks leave the daemon for the gate. This is the commit that changes the refusal order (section 4.4).
+2. *Terminals* (section 4.9).
+   - =Terminal=, =ServerLog= and the =terminal.sock= listener move into the runtime. =Started= and =Spawned= stop carrying PTY masters and the log pipe.
+   - =attach::Attach= stays in the daemon and passes the frontend's stream in =Attach=. =sessions.resize= and =sessions.detach= send =Resize= and =Detach=.
+
+After this phase the controller holds no sandbox socket, PTY master or log pipe, only its control over each runtime.
+
+** Phase 6: a supervisor process per goblin
+
+*[P]* Replace =Local= with =Supervised=, and add the supervisor mode to =packages/supervisor-bwrap=.
+
+- *Spawning.* The daemon starts one supervisor per goblin, passing the control socket as an inherited descriptor and =Start(Source)= as the first message. The entry point is the one phase 4 introduced.
+- *Main loop.* The supervisor runs what =Local= ran: the dispatcher and worker, init, the request relay and gate, the terminals, the pidfd and host jobs. Blocking Nix work stays on its own thread, so process exits, init events, sandbox calls and terminal output are still handled during a build. That is the job =exit_watch= does in the daemon today.
+- *Launch sequence:*
+
+#+begin_src mermaid :file diagrams/supervisor-launch.svg :background-color "'#282c34'"
+sequenceDiagram
+    autonumber
+    participant F as Frontend
+    participant D as Daemon
+    participant S as Supervisor
+    participant B as Sandbox
+    participant C as Sandbox client
+    F->>D: sessions.start CONFIG
+    D->>D: name, launch receipt, raid rights
+    D->>S: spawn with the control socket
+    D->>S: Start(Source)
+    S->>S: resolve the configuration,<br/>check Policy against Support
+    S->>B: helper, Bubblewrap, goblins-init, payload
+    S-->>D: Started(Policy, Support, identity)
+    D-->>F: running
+    C->>S: connect /run/goblins/request.sock
+    S-->>D: SandboxOpened(connection)
+    C->>S: initialize, then one call
+    S-->>D: SandboxCall, once each has passed the gate
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-launch.svg]]
+
+- *Versioning.* =mkGoblins= pins the daemon and the supervisor from one build, so in a packaged install they always match. The control protocol carries a =supervisor_api= number, like =helper_api=, and a supervisor refuses a =Start= with another number. That catches a mismatched pair during development, such as a Cargo-built daemon with an older supervisor.
+- *Exec event logging.* The daemon stops writing =events.jsonl= in a goblin's resources directory through the transitional =libs/runtime= writer; it asks the supervisor to record the event instead.
+- *Maintenance and preflight.* Before the daemon stops linking =libs/supervisor=, replace the temporary =maintenance= and =manifest= entry points from section 4.10. Their replacement is designed in phase 6, not in phase 3.
+- *The daemon stops linking =libs/supervisor=* once =Local= is deleted. =Supervised= lives in the daemon's =supervised= module, the one place that launches, watches and kills its children (section 1).
+- *Lifetime and failure.* See section 6.
+
+Phase 6 commit 9 is complete: =19ce5c4743240ce34045c01a933d8d9751406aca=, tree =c7b384389a3876a2f80c79315c43ffbe82c1b8de=, removes Local and its former debug selector and excludes supervisor/init implementation from every daemon dependency route. Its committed diff exactly matches the reviewed candidate SHA-256 =862daa39dffbd5083141e3e9899992308dc3e5200e91f88eec6a2727f5fc2d0a= (93492 bytes, 35 paths) against parent =f0d580884ab417c22a4efb872928e0cf4670e733=. The foreground saved payload descriptor limit crosses exec as required nullable startup metadata; the background server self-exec limitation remains documented separately.
+
+The final =just test-merge= gate passed on that exact candidate under approved host request =r128423=, exit 0 in 1005.162 seconds. Results: 443 unique workspace Rust tests passed plus two separately counted self-exec child controls; four helper entries were ignored. Main Python ran 335 cases: 334 passed, zero failures/errors and one Testcontainers skip reporting the Java-jar and registry-access prerequisites; its classpath was not configured, and no failed registry probe was observed. Standalone ERT passed 133 tests; all 15 packaged smoke tests passed, including the previously failing packaged exec setup and cancellation/signals/stdin body. Nix checks passed using cached outputs, with no new derivation builds or internal package-test execution claimed for this final run. All 28 prior phase/case failure rows passed (27 main Python and one packaged); this does not erase the earlier failed runs. Docker suites and nested host acceptance passed, but detailed nested Testcontainers case/skip counts were not archived and remain unknown. No independent cleanup census was performed.
+
+The immutable gate evidence is =target/test-runner/m606-final-gate/final-result-summary.json= (SHA-256 =119def8f6dc70a924bf8b9f42ee5e36e11fd4dbde25cbea684b8dd40a80eab61=), with raw per-phase logs. The original case inventory omitted three successful cases whose descriptions placed outcomes on a later line; the original summary and inventory remain preserved. The corrected =current-case-inventory-v2.json= (SHA-256 =c9c1097ee6327d28c19759894a62f785462964f038b83f0e18f407e6bc6f510d=) reconciles 335 unique main and 15 packaged cases against every raw group total. =final-result-addendum-v2.json= (SHA-256 =cce1fa9ac47cf2465337e4f9ed7e29d5359fcd3e1b6c906ed21a58fa5c6017e3=) records that report-only correction without changing observed gate outcomes. The separate matching sandbox bundle =m554= passed formatting, warning-free all-target checks, 443 Rust tests plus two child controls, 36 infrastructure tests, 335-case feature mapping, 43 build-free Nix derivation paths and 19 startup tests; its four package outputs were cached. Earlier failed gates =r19035= and =r92669=, formatting failure =m350= and initial overlong submission refusal remain retained. Owner commit proof is =target/test-runner/phase6-c9-owner-commit-proof.json=; evidence under =target/= is local audit material, not checked-in documentation or a new test run.
+
+The scoped =fixture-diagnostic-addendum-v3.json= (SHA-256 =03a35c7f813c0e60fecb5d1ea239dadb8fa2318c9d69ed7b3f570025a5f76620=, in the same gate evidence directory) records an HTTP-provider =_queue.Empty= traceback in the native Codex log. The test and native group reported success, but those assertions do not establish why the request lacked a scripted response or what effect that had. Both cause and impact remain unresolved; neither harmlessness nor a behavioral regression has been established. Earlier archived occurrences establish history only. This qualification is separate from the observed exit-zero gate and case-count correction; no runtime fix or new test execution is claimed here.
+
+** Phase 7: documents
+
+- [[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]] records the decisions in section 7, alternatives and consequences.
+- [[file:../architecture/components.org][components.org]], [[file:../architecture/daemon.org][daemon.org]] and [[file:../architecture/workflows.org][workflows.org]] describe the supervisor, the relay and the layout, with regenerated diagrams.
+- The internals sections of [[file:../USAGE.org][USAGE.org]] are updated where they describe the helper, the request socket and terminals.
+- [[file:../API.org][API.org]] includes the implemented private control modes, descriptor ownership, release and payload-limit metadata; phase 7 adds cross-references without changing public methods, codes or limits.
+
+Phase 7 diagram verification used the reviewed batch renderer and presentation configuration with Mermaid 12.0.0, Chromium 156.0.8078.73 and DejaVu 2.37. All 12 SVGs regenerated successfully with native text, no foreignObject, finite geometry and no literal entity labels. Each final output differs from its retained raw Mermaid output only by the root =xml:space="preserve"= declaration: parsed text, existing attributes, paths and layout coordinates are unchanged. All 12 native PNGs and four contact sheets were visually inspected for spacing, wrapping and clipping; the three sampled Chromium raw/normalized pairs have equal bounds and byte-identical PNGs. Some tight canvas margins and inherited label/connector intersections remain readable; this is not a layout redesign. Actual Emacs, export and light-background consumers were not observed. Evidence is =target/test-runner/phase7-render-m1092/summary.json= (SHA-256 =a05fd418a8cc30eac713a298a0a960f6408a179c1d744a98d20d3cff1edc459c=), with raw/final SVGs, invariants, tool/font identities and previews. Earlier parse failure =m740=, visual failures =m792= and =m881=, their report corrections and the two-copy diagnostic =m946= remain preserved. No feature, merge or host tests were rerun for this documentation-only phase under the =AGENTS.md= exemption; the committed C9 gate result above is separate.
+
+* 6. Lifetime and failure
+
+#+begin_src mermaid :file diagrams/supervisor-lifetime.svg :background-color "'#282c34'"
+flowchart TD
+    DaemonDies["Daemon dies"] --> EOF["Every control channel reaches EOF;<br/>PDEATHSIG as a backstop"]
+    EOF --> SupStops["Each supervisor stops its goblin"]
+    EOF --> ScopeStops["Each scope process tears down"]
+    SupStops --> Helper["Helper: PDEATHSIG from the supervisor<br/>thread that started it; kills init by pidfd"]
+    SupStops --> Jobs["Host jobs: lifetime pipe closes"]
+    SupDies["One supervisor dies"] --> Helper2["Its helper, sandbox and host jobs die"]
+    SupDies --> Failed["Daemon sees EOF: that goblin failed,<br/>its relayed calls withdrawn,<br/>raid membership reconciled"]
+    SupDies --> Frontend["An attached frontend's stream<br/>reaches EOF"]
+    SupDies --> LeaseClosed["Its scope leases close: the scope<br/>kills what is left in its mount namespace<br/>and continues for other members"]
+    SupDies --> Kept["Its resources stay while a raid<br/>member or the Docker engine<br/>holds a lease on them"]
+#+end_src
+
+#+RESULTS:
+[[file:diagrams/supervisor-lifetime.svg]]
+
+- *[P]* *A supervisor stops on control-channel EOF*, and also sets =PR_SET_PDEATHSIG= against the daemon.
+- *[P]* *The helper keeps =PR_SET_PDEATHSIG= against the supervisor thread that spawned it.* That thread must live as long as the goblin, as the worker thread does today.
+- *[P]* *A scope process tears down on EOF from the daemon*, as well as when its last membership lease closes. It stops the engine when the last Docker lease ends.
+- *[P]* *A member's leftovers are the scope's job.* When a membership lease closes, for any reason, the scope process kills the processes left in that member's mount namespace (section 4.6). A killed supervisor therefore leaves nothing running in a shared PID namespace.
+- *[P]* *A supervisor that exits without =Stopped= marks its goblin =failed=.* This matches a worker that ends without a final result today. It does nothing to any other goblin, including created raid members.
+- *[P]* *A stalled supervisor cannot block the daemon.* =Supervised= never blocks on its channel and reports a full queue as today's capacity error (section 4.1).
+- *[P]* *Ending a runtime ends its sandbox connections and terminals.* The daemon withdraws every call relayed for that goblin (section 4.8). A supervisor that ends normally does so only once its terminals can be evicted (section 4.9). One that dies holds the frontend's terminal stream, so an attached frontend sees EOF, the record shows the terminal interrupted, and any output not yet delivered is lost, as when the daemon dies today.
+- *[E]* The five daemon-death tests in section 2.5 must pass unchanged. Phase 6 adds assertions that the supervisor and scope processes are gone too.
+
+* 7. Decisions
+
+The user took these decisions on 2026-10-29. [[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]] records them and their implemented consequences; the schema-first API follow-up remains parked.
+
+- *[Q1] Sandbox requests are relayed, and the supervisor checks them.* The supervisor owns =request.sock=, parses every call, refuses what =Policy= or =Support= does not allow, and relays the rest as messages (sections 4.4 and 4.8). This follows the spec's "every sandbox-to-daemon request crosses exactly its own trusted host supervisor" as written.
+  - The cost is the split =Connection=: the hang-up check in =decide= reads a flag the runtime's =SandboxClosed= sets, so a hang-up is noticed one hop later, and disconnects and backpressure become messages.
+  - The visible effect is one change of refusal order (section 4.4).
+  - The alternative considered was handing accepted streams to the daemon, which would have kept =Connection= whole but left the daemon speaking directly to the sandbox.
+- *[Q2] Terminals live in the supervisor.* The supervisor owns every PTY master, the server log and the buffers, and streams to the frontend once the daemon has completed the attach handshake (section 4.9). This matches the spec's responsibility table. The alternative considered was keeping =Terminal= in the daemon, fed by masters from the supervisor.
+- *[Q3] The supervisor is its own binary,* =packages/supervisor-bwrap=, which also runs scope processes. =mkGoblins= pins it by store path beside the daemon, and =supervisor_api= catches mismatched development builds (phase 6). The alternatives considered were a hidden subcommand of =goblins= and a mode of the mount helper.
+- *[Q4] Each scope has its own process, started by the daemon* (section 4.6, phase 4). It keeps separate membership and Docker leases, serialised start-up and teardown, compatibility checks and clean-up after crashed members. The alternatives considered were keeping scopes in the daemon, which would leave namespaces, pasta and Docker there, and letting the first member's supervisor own the scope, which breaks members that outlive their creator.
+- *[Q5] Code is laid out as =packages/= and =libs/=,* with public and internal contracts in separate libraries (section 4.10, phase 3). The public API is to become schema-first, under its own plan, [[file:API-SCHEMA.org][API-SCHEMA.org]].
+
+* 8. Tests
+
+*[E]* The existing suites are the regression contract:
+- =lifecycle=, with its daemon-death tests;
+- =exec=: attach, attach handlers and exec signals;
+- =sandbox=: grants, binds, workspace and roots;
+- =raids=, including =test_members_outlive_their_owner_and_a_new_owner_takes_them_over= and =test_member_shares_the_owners_scope=;
+- =scopes=, =docker=, =devshell= and =host-tools=;
+- the =codex= and =claude= adapters.
+
+*[P]* New tests, added in the phase that makes them possible:
+- *Phase 1:*
+  - The =Fake= runtime for the controller unit tests.
+  - A denial cancels a dev shell evaluation that is blocked in Nix, and a stop cancels a blocked package build, both promptly.
+- *Phase 2:*
+  - With a =Fake= reporting reduced =Support=, every operation is refused as =Unsupported=, and =initialize= drops exactly the matching features.
+  - An owner is stopped right after the launch is accepted, before =Exported=; and separately between =Exported= and the member's =Started=. In both cases the member starts with the owner's workspace, dev shell and auto-approved outputs. Covered as follows: the first by a Python test (a member launched as its owner stops still starts with the owner's snapshot; the export is sent in the acceptance dispatch, before any later stop, so the order holds by construction); the transitions, including an owner that answers and stops in one round, an owner that stops before answering, a late answer for a stopped member and an undeliverable =Start=, by deterministic unit tests, because the product has no pause point between =Exported= and =Started= and none is added for tests; the dev shell and the auto-approved generation by the devshell suites, in which a member inherits the dev shell and approves the inherited generation with its owner running.
+  - The owner's runtime is blocked in Nix work (a dev shell refresh or package build) when a member launch is accepted and the owner is then stopped. The member starts with the owner's handoff without waiting for that work, and the owner stops within the deadline.
+  - A chain: A runs B, B owns a raid and runs C. Stop A and B and run =goblins gc=; C still reads and writes the workspace. =goblins gc= leaves a running server's resources alone, so the Python test runs it once on the running server and checks that answer, starts C from A's snapshot after A stopped, and has C read and write it; the resources of A, B and C stay until C stops. A second test kills the daemon, waits until every lease is free and runs =goblins gc= once, which removes all three directories.
+  - B, with a workspace inherited from A, attaches to Docker and stops. The engine keeps working with that workspace. *Moved to phase 4* as a required test (below): in phase 2 the scope still keeps its owners as =Inheritance= values and the only change is the lease list, which a unit test covers (a scope-held capability keeps every directory of its chain); phase 4 replaces the owners with scope leases, which is where a Docker chain test catches regressions.
+  - Overlapping refusals keep today's order, for example a running =allowNix= goblin with a pending request asking for a package gets =conflict=. Phase 5 changes this expectation.
+  - =initialize= feature lists for full and reduced =Support= match the mapping in section 4.4.
+  - =goblins exec= with a supplied PTY, with three descriptors, and without =argv= behaves as today.
+  - =initialize= and messaging calls behave as today while a goblin is starting and stopping.
+  - The member still reads and writes the owner's workspace after the owner has fully stopped and =goblins gc= has run.
+  - The owner's =resources/= are removed by whichever of owner and member stops last, and by =goblins gc= if both die.
+- *Phase 3:*
+  - The =cargo metadata= dependency check of section 4.10.
+  - Every package builds on its own with =nix flake check=.
+- *Phase 4:*
+  - The control-channel transport tests listed in section 4.7, implemented here for reuse in phase 6.
+  - B, with a workspace inherited from A, attaches to Docker and stops. The engine keeps working with that workspace, and a surviving Docker user still gets a new live grant into it. Required: it moved here from phase 2.
+  - The first member of a scope stops while a second keeps the network, storage and Docker engine.
+  - The last Docker user leaves while a non-Docker member remains: the engine stops and the namespaces and storage stay.
+  - The first Docker user stops, =goblins gc= runs, and a surviving Docker user then gets a new live grant into the engine.
+  - A scope is relaunched while its previous instance is still stopping; the launch waits instead of reporting a foreign controller.
+  - A temporary scope's storage goes after its last member; a persistent scope's stays.
+- *Phase 5:*
+  - The transport refusals the runtime now answers keep today's codes and messages: malformed frames, an oversized body, an unknown method, a call before =initialize=, trailing input after a one-shot call, and a call over the per-connection limit.
+  - Every row of the refusal table in section 4.4, with overlapping failures, follows the new order. The phase 2 example now gets =NIX_PACKAGES=.
+  - With a =Fake= or =Local= reporting reduced =Support=, the gate refuses each operation as =Unsupported= without the daemon seeing the call.
+  - The requester disconnects, or sends unexpected bytes, while its request waits: the request is withdrawn, and a later =permissions.decide= answers =conflict=, as today.
+  - After =Stop= and before =Stopped=: a policy-forbidden call and an unknown method both get =conflict=, a call before =initialize= gets =-32001=, and =initialize= and a messaging call get the daemon's answers, as today. A =SandboxCall= that arrives after =Stopped= is ignored and its connection is closed.
+  - A sandbox that floods calls while the runtime's event queue is full loses none of them and does not delay another goblin's calls. Phase 6 commit 2 adds the deterministic full-output/two-runtime regression and checks every accepted call and worker result; commit 4 adds real-process saturation coverage.
+  - Attach, attach handlers, =terminal.sock=, resize and detach behave as today, for single-terminal and =onAttach= goblins.
+  - A frontend that attaches after the payload has exited gets the buffered output, and the runtime ends only once the terminal can be evicted.
+  - =initialize= pipelined with the next call in one write, a failed =initialize= followed by a call, and a call without an ID all get today's answers.
+  - A goblin flooding its terminal does not slow host RPC or another goblin's terminal. Phase 6 commit 2 adds a real-PTY flood beside another runtime's RPC, checks bounded poll rounds and verifies every accepted output byte; commit 4 adds process/host-RPC coverage.
+- *Phase 6:*
+  - Killing one supervisor fails only that goblin. Its sandbox and host jobs are gone, while another goblin, including a raid member it created, keeps running and messaging. An attached frontend sees its stream end, and the record shows the terminal interrupted with =attached=false= and =connected=false=, not detached.
+  - The owner's supervisor is killed while an =Export= is in flight. The member launch fails with an error naming the owner, and every lease and the manifest root held for it are released. Phase 6 commit 4 adds this test.
+  - A supervisor serving only retained terminal output after =Stopped= is killed. The goblin's name, record and history reservations are not revived. Phase 6 commit 4 adds this test.
+  - A supervisor exits once its terminals are evictable and the log has drained, checked by its PID. Phase 6 commit 4 adds this test.
+  - Two members share a PID namespace, and one has =setsid= descendants. Killing that member's supervisor removes its descendants, and the other member keeps running.
+  - A supervisor stopped with =SIGSTOP= while enough commands are queued to fill its channel does not block the daemon's tick, host RPC or other goblins, and the excess requests get capacity errors.
+  - With its outbound queue full, a goblin's sandbox caller disconnects, a host job is cancelled and the goblin is stopped. The supervisor gets =SIGCONT= before the stop deadline; then no host job is orphaned, no cancelled build keeps running, and the goblin stops. Without =SIGCONT=, the supervisor is killed at the deadline and the same holds.
+  - =Export= is waiting in the outbound queue when its owner is stopped, and separately =Exported= is waiting on the return channel; the member launch succeeds in both cases.
+  - A supervisor given a =Start= with another =supervisor_api= refuses it, and the launch fails with a clear message.
+  - Killing the daemon stops every supervisor and scope process, checked by their PIDs, in addition to the existing daemon-death tests.
+  - Outbound ordering: a queued =Spawn= followed by a =Signal= delivers the signal after the spawn; two different queued signals arrive in order; =KillAll= after a queued =Spawn= also covers that exec; a cancellation for an unsent request removes it.
+  - The source check of section 1: no daemon file other than =supervised= uses pidfds or process signals, and none uses Bubblewrap, namespaces, PTYs, SOCK_SEQPACKET, init or =/proc=.
+
+* 9. Out of scope
+
+- Darwin, Seatbelt and per-platform skill selection.
+- The public record field =identity= (payload PID and Linux namespace IDs, documented in [[file:../API.org][API.org]]) is Linux-shaped data that the daemon passes through. A second backend needs it to be backend-defined or optional; that public API decision belongs to the macOS work.
+- Splitting =Session::start= into a platform-neutral launch plan and a Linux launcher. This is a natural follow-up once the runtime has its own library, and it is where a second implementation of =Support= would plug in.
+- Daemon restart recovery: supervisors still die with the daemon.
+- Any change to raids, messaging, approvals or the public API beyond the refusal order in section 4.4.
+- Making the public API schema-first, which has its own plan, [[file:API-SCHEMA.org][API-SCHEMA.org]], and does not block this one.

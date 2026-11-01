@@ -41,13 +41,13 @@ settled with the user on 2026-09-30.
 
 * Current behaviour this changes
 
-- =Controller::start= (=crates/controller/src/controller.rs=) rejects a child
+- =Controller::start= (=packages/daemon/src/controller.rs=) rejects a child
   whose configuration key differs from the parent's ("children must use their
   parent's configuration") and hands the worker =Source::Child(Inheritance)=.
 - =Session::child= (=session.rs=) clones the parent's =Launch=, its opened
   bind =Plan= (including the working-directory mount), its =SharedWorkspace=,
   its scope (=Weak<scope::Shared>=) and its live Docker attachment flag.
-- The manifest (=nix/packages/goblins.nix=, =api = 2=, =helper_api = 5=) is
+- The manifest (=packages/daemon/wrapper.nix=, =api = 2=, =helper_api = 5=) is
   read once per root launch in =worker.rs= (=Manifest::read(..).select(..)=).
   A child never reopens it; this is what makes running branches immune to
   rebuilds today (=test_children_reuse_loaded_configuration_after_manifest_changes=).
@@ -97,7 +97,7 @@ declares.
 - Presets :: =mkCodexGoblin= and =mkClaudeGoblin= forward unknown options to
   =mkGoblin= (=goblinOptions= only removes their own keys), so they accept
   =allowedChildren= without changes. Add a check that proves it.
-- =nix/packages/goblins.nix= :: no manifest version change (=api = 2=,
+- =packages/daemon/wrapper.nix= :: no manifest version change (=api = 2=,
   =helper_api = 5=). A bump would not help an older daemon, which rejects
   unknown fields while parsing, before its version check, and reports
   "invalid configuration PATH: unknown field `allowed_children`". Restarting
@@ -127,7 +127,7 @@ declares.
   - storage mount expansion and validation are the same as =select=.
   Resolution errors are stored per entry, not returned: a broken reachable
   configuration must not stop the root from starting.
-- New module =crates/controller/src/branch.rs=:
+- New module =packages/daemon/src/branch.rs=:
 
   #+begin_src rust
   pub(crate) struct Branch { entries: BTreeMap<String, Entry> }
@@ -250,10 +250,10 @@ path (=Mount::docker_grant=) is unaffected.
 
 ** CLI, skills and docs
 
-- =crates/client/src/cli.rs= =Run= help: "Launch a child using a configuration
+- =packages/sandbox-cli/src/cli.rs= =Run= help: "Launch a child using a configuration
   this sandbox may start". =goblins status= prints the allowed configurations.
   Sandbox completion of =run CONFIG= uses =sessions.status.allowed_children=.
-- Host =run CONFIG --parent P= (=crates/controller/src/main.rs=, =Command::Run=) ::
+- Host =run CONFIG --parent P= (=packages/daemon/src/main.rs=, =Command::Run=) ::
   today the CLI reads the installed manifest and rejects a configuration it
   does not list before contacting the daemon. That would break launches the
   parent's snapshot still permits after a rebuild removed the configuration.
@@ -340,7 +340,7 @@ The controller sends them to the messaging worker over the existing channel.
 The worker writes them to the communications log, and only then lets that
 membership authorize messages.
 
-** State: =crates/controller/src/raid.rs=
+** State: =packages/daemon/src/raid.rs=
 
 #+begin_src rust
 pub struct Raid {
@@ -523,12 +523,12 @@ stopping. Initialize advertises =raids= on both endpoints.
 
 ** CLI
 
-- Host (=crates/controller/src/cli.rs=) :: =goblins raid invite NAME GOBLIN...=,
+- Host (=packages/daemon/src/cli.rs=) :: =goblins raid invite NAME GOBLIN...=,
   =raid destroy NAME=, =raid members NAME=, =raid set-role NAME GOBLIN ROLE=,
   and =run ... --raid NAME=. Output matches =list=/=rpc= conventions.
   Completion of raid and goblin names uses the existing hidden
   =__complete-names= mechanism.
-- Sandbox (=crates/client/src/cli.rs=) :: =goblins raid create NAME=,
+- Sandbox (=packages/sandbox-cli/src/cli.rs=) :: =goblins raid create NAME=,
   =raid invite CHILD...=, =raid leave=, =raid members=, =raid set-role ROLE=,
   and =run ... --inherit-raid=. Exit codes follow the other control commands
   (an interrupted reply is an unknown outcome, exit 2).

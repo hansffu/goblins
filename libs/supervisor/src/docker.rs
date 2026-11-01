@@ -1,0 +1,533 @@
+//! A scope-owned engine, initially launched from a member's confined bind plan.
+//! No host Docker socket, user service or global daemon is involved.
+use crate::Result;
+use crate::process;
+use goblins_runtime::{ResourceLease, channel::Channel, guardian, scope::DockerConfig};
+use goblins_unix as unix;
+use std::{
+    ffi::{CStr, CString},
+    fs::{self, File},
+    io::{Read, Write},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::{
+            ffi::{OsStrExt, OsStringExt},
+            net::UnixStream,
+            process::CommandExt,
+        },
+    },
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    time::{Duration, Instant},
+};
+
+pub struct Engine {
+    process: Child,
+    guardian: Option<Channel>,
+    _storage: Storage,
+    pub root: File,
+    pub mounts: File,
+}
+
+pub fn storage_root(create: bool) -> Result<PathBuf> {
+    unix::cache_directory("docker", create)
+}
+
+struct Storage {
+    path: PathBuf,
+    parent: File,
+    directory: File,
+    lock: Option<File>,
+    persistent: bool,
+}
+impl Storage {
+    fn new(root: &Path, name: Option<&str>) -> Result<Self> {
+        let _gate = crate::cleanup::storage_gate()?;
+        let parent = File::open(root)?;
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        unix::cvt(unsafe { libc::fstatfs(parent.as_raw_fd(), &mut stat) })?;
+        if stat.f_type == libc::TMPFS_MAGIC || stat.f_type as u64 == 0x858458f6 {
+            // RAMFS_MAGIC
+            return Err("Docker storage must be disk-backed; set XDG_CACHE_HOME to a disk filesystem before starting Goblins".into());
+        }
+        if let Some(name) = name {
+            if !goblins_protocol::scope_name(name) {
+                return Err("invalid scope name".into());
+            }
+            let locks = root.join("locks");
+            unix::private_directory(&locks)?;
+            let lock = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(locks.join(name))?;
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(
+                    format!("Docker scope '{name}' is in use by another controller").into(),
+                );
+            }
+            let path = root.join(format!("scope-{name}"));
+            // Dockerd changes its data root to 0710/0711. Its parent remains
+            // host-private; do not mistake Docker's normal mode for corruption.
+            match fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    unix::private_directory(&path)?
+                }
+                Ok(meta) => {
+                    use std::os::unix::fs::MetadataExt;
+                    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
+                        return Err("unsafe named Docker data directory".into());
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
+            let directory = File::open(&path)?;
+            return Ok(Self {
+                path,
+                parent,
+                directory,
+                lock: Some(lock),
+                persistent: true,
+            });
+        }
+        let mut template =
+            CString::new(root.join("session-XXXXXX").as_os_str().as_bytes())?.into_bytes_with_nul();
+        if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        template.pop();
+        let path = PathBuf::from(std::ffi::OsString::from_vec(template));
+        let directory = File::open(&path)?;
+        let lease = crate::cleanup::temporary_lease("docker", &path)?;
+        Ok(Self {
+            path,
+            parent,
+            directory,
+            lock: Some(lease),
+            persistent: false,
+        })
+    }
+}
+impl Drop for Storage {
+    fn drop(&mut self) {
+        if self.persistent {
+            return;
+        }
+        // Only an EMPTY directory may be removed by the unmapped host user.
+        // The mapped guardian removes populated trees, without following links.
+        if let Err(error) = fs::remove_dir(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "Docker storage cleanup incomplete at {}: {error}",
+                self.path.display()
+            );
+        }
+    }
+}
+
+pub(crate) fn subordinate(kind: &str, id: u32) -> Result<u32> {
+    let name = unsafe {
+        let mut entry: libc::passwd = std::mem::zeroed();
+        let mut result = std::ptr::null_mut();
+        let mut buffer = vec![0u8; 65536];
+        let error = libc::getpwuid_r(
+            libc::getuid(),
+            &mut entry,
+            buffer.as_mut_ptr().cast(),
+            buffer.len(),
+            &mut result,
+        );
+        if error != 0 || result.is_null() {
+            return Err("cannot resolve current user for scope UID mappings".into());
+        }
+        CStr::from_ptr(entry.pw_name).to_string_lossy().into_owned()
+    };
+    let text = fs::read_to_string(format!("/etc/sub{kind}")).map_err(|e| {
+        format!("scopes require /etc/sub{kind} entries and newuidmap/newgidmap: {e}")
+    })?;
+    let numeric = unsafe { libc::getuid() }.to_string();
+    for line in text.lines() {
+        let fields: Vec<_> = line.split(':').collect();
+        if fields.len() == 3 && (fields[0] == name || fields[0] == numeric) {
+            let start: u32 = fields[1].parse()?;
+            let count: u32 = fields[2].parse()?;
+            if count >= 65536
+                && start
+                    .checked_add(65536)
+                    .is_some_and(|end| id < start || id >= end)
+            {
+                return Ok(start);
+            }
+        }
+    }
+    Err(format!("scopes require at least 65536 subordinate {kind}s for {name}").into())
+}
+
+fn ready(path: &Path) -> bool {
+    (|| -> std::io::Result<bool> {
+        let mut socket = UnixStream::connect(path)?;
+        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        socket.set_write_timeout(Some(Duration::from_millis(100)))?;
+        socket.write_all(b"GET /_ping HTTP/1.0\r\nHost: docker\r\n\r\n")?;
+        let mut response = String::new();
+        socket.take(4096).read_to_string(&mut response)?;
+        Ok(response.starts_with("HTTP/1.0 200 ") || response.starts_with("HTTP/1.1 200 "))
+    })()
+    .unwrap_or(false)
+}
+
+pub(crate) fn map_ids(
+    kind: &str,
+    pid: u32,
+    id: u32,
+    subordinate: u32,
+    directory: &Path,
+    cancel: &process::Cancellation,
+) -> Result<()> {
+    let name = format!("new{kind}map");
+    // NixOS's privileged wrappers live outside the store; conventional Linux
+    // distributions install these helpers in /usr/bin. Never expose them inside.
+    let helper = [
+        PathBuf::from("/run/wrappers/bin").join(&name),
+        PathBuf::from("/usr/bin").join(&name),
+    ]
+    .into_iter()
+    .find(|p| p.is_file())
+    .ok_or_else(|| format!("scopes require installed {name}"))?;
+    process::command(
+        Command::new(helper).args([
+            pid.to_string(),
+            "0".into(),
+            id.to_string(),
+            "1".into(),
+            "1".into(),
+            subordinate.to_string(),
+            "65536".into(),
+        ]),
+        directory,
+        cancel,
+    )
+    .map_err(|e| {
+        format!("scope {name} failed (launch Goblins outside an existing restricted sandbox): {e}")
+    })?;
+    Ok(())
+}
+
+/// The engine's Bubblewrap filesystem arguments and the descriptors their
+/// `--bind-fd`/`--ro-bind-fd` entries name, which must stay open for it.
+#[derive(Clone, Copy)]
+pub struct Filesystem<'a> {
+    pub args: &'a [String],
+    pub fds: &'a [RawFd],
+}
+
+impl Engine {
+    pub fn alive(&mut self) -> bool {
+        matches!(self.process.try_wait(), Ok(None))
+    }
+
+    pub fn start(
+        config: &DockerConfig,
+        filesystem: Filesystem,
+        storage_root: &Path,
+        directory: &Path,
+        leases: &[ResourceLease],
+        cancel: &process::Cancellation,
+        scope: &crate::scope_keeper::NamespaceFds,
+        name: Option<&str>,
+    ) -> Result<Self> {
+        let storage = Storage::new(storage_root, name)?;
+        Self::bootstrap(
+            config, filesystem, storage, directory, leases, cancel, scope,
+        )
+    }
+    fn bootstrap(
+        config: &DockerConfig,
+        filesystem: Filesystem,
+        storage: Storage,
+        directory: &Path,
+        leases: &[ResourceLease],
+        cancel: &process::Cancellation,
+        scope: &crate::scope_keeper::NamespaceFds,
+    ) -> Result<Self> {
+        // State paths can exceed sockaddr_un's limit (notably under
+        // nix develop's nested TMPDIR). Pin the socket directory and connect
+        // through a short procfs path; the daemon uses its short sandbox path.
+        let socket_directory = File::open(directory.join("docker-socket"))?;
+        let socket_path = PathBuf::from(format!(
+            "/proc/self/fd/{}/docker.sock",
+            socket_directory.as_raw_fd()
+        ));
+        fs::write(
+            directory.join("docker.json"),
+            r#"{"features":{"containerd-snapshotter":false}}"#,
+        )?;
+        fs::write(
+            directory.join("docker-passwd"),
+            "root:x:0:0:root:/root:/bin/sh\n",
+        )?;
+        fs::write(directory.join("docker-group"), "root:x:0:\n")?;
+        let (guardian_host, guardian_child) = UnixStream::pair()?;
+        // Fresh OFDs survive fork/exec before the guardian can receive a frame
+        // or report readiness, including scope death during engine bootstrap.
+        let mut bootstrap_locks: Vec<std::os::fd::OwnedFd> = vec![
+            goblins_runtime::lease::flock(&directory.join("lock"), false)?
+                .ok_or("scope runtime is being collected")?
+                .into(),
+        ];
+        for lease in leases {
+            bootstrap_locks.push(lease.share()?.into_parts().1);
+        }
+        let bootstrap_fds = bootstrap_locks
+            .iter()
+            .map(|fd| fd.as_raw_fd().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let (info_r, info_w) = unix::pipe()?;
+        let (ready_r, ready_w) = unix::pipe()?;
+        let filter = crate::seccomp::docker_filter()?;
+        let mut command = Command::new(&config.helper);
+        command
+            .args([
+                "--docker-enter",
+                &scope.outer.as_raw_fd().to_string(),
+                &scope.net.as_raw_fd().to_string(),
+            ])
+            .arg(&config.bwrap)
+            .args([
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--unshare-uts",
+                "--unshare-cgroup",
+                "--cap-add",
+                "ALL",
+                "--new-session",
+                "--clearenv",
+                "--info-fd",
+                &info_w.as_raw_fd().to_string(),
+            ])
+            .args(filesystem.args)
+            .args([
+                "--tmpfs",
+                "/run/docker",
+                "--bind-fd",
+                &storage.directory.as_raw_fd().to_string(),
+                "/run/docker/data",
+                "--bind-fd",
+                &storage.parent.as_raw_fd().to_string(),
+                "/run/goblins/docker-storage-parent",
+                "--tmpfs",
+                "/run/containerd",
+                "--ro-bind",
+                "/sys/fs/cgroup",
+                "/run/docker/cgroup",
+                "--ro-bind",
+                "/sys",
+                "/sys",
+                "--ro-bind",
+                &directory.join("docker-passwd").display().to_string(),
+                "/etc/passwd",
+                "--ro-bind",
+                &directory.join("docker-group").display().to_string(),
+                "/etc/group",
+                "--bind",
+                &directory.join("docker-socket").display().to_string(),
+                "/run/goblins/docker-socket",
+                "--ro-bind",
+                &directory.join("docker.json").display().to_string(),
+                "/run/docker/config.json",
+                "--setenv",
+                "XDG_RUNTIME_DIR",
+                "/run/docker",
+                "--setenv",
+                "GOBLINS_CGROUPNS",
+                "host",
+                "--seccomp",
+                &filter.as_raw_fd().to_string(),
+                "--",
+            ])
+            .arg(&config.helper)
+            .arg("--docker-init")
+            .arg(storage.path.file_name().unwrap())
+            .arg(if storage.persistent { "keep" } else { "delete" })
+            .arg(
+                storage
+                    .lock
+                    .as_ref()
+                    .map_or(-1, AsRawFd::as_raw_fd)
+                    .to_string(),
+            )
+            .arg(ready_w.as_raw_fd().to_string())
+            .arg(guardian_child.as_raw_fd().to_string())
+            .arg(bootstrap_fds)
+            .arg(&config.daemon)
+            // Keep Docker's bridge, forwarding and NAT defaults. The scope
+            // owns the network namespace, so these affect only this
+            // session; pasta separately controls its upstream connectivity.
+            .args([
+                "--config-file=/run/docker/config.json",
+                "--log-level=error",
+                "--rootless",
+                "--host=unix:///run/goblins/docker-socket/docker.sock",
+                "--group=0",
+                "--data-root=/run/docker/data",
+                "--exec-root=/run/docker/exec",
+                "--pidfile=/run/docker/docker.pid",
+                "--storage-driver=overlay2",
+                "--default-cgroupns-mode=host",
+            ])
+            .stdin(Stdio::null())
+            .stdout(File::create(directory.join("docker.log"))?)
+            .stderr(
+                File::options()
+                    .append(true)
+                    .open(directory.join("docker.log"))?,
+            );
+        let mut keep = filesystem.fds.to_vec();
+        keep.push(guardian_child.as_raw_fd());
+        keep.extend(bootstrap_locks.iter().map(AsRawFd::as_raw_fd));
+        keep.extend([
+            scope.outer.as_raw_fd(),
+            scope.net.as_raw_fd(),
+            filter.as_raw_fd(),
+        ]);
+        keep.extend([storage.parent.as_raw_fd(), storage.directory.as_raw_fd()]);
+        keep.extend([info_w.as_raw_fd(), ready_w.as_raw_fd()]);
+        if let Some(lock) = &storage.lock {
+            keep.push(lock.as_raw_fd());
+        }
+        unsafe {
+            command.pre_exec(move || {
+                // EOF on the private channel lets the trusted guardian
+                // reap containers and clean disk storage even after host death.
+                unix::cvt(libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 4u32) as i32)?;
+                for &fd in &keep {
+                    unix::cvt(libc::fcntl(fd, libc::F_SETFD, 0))?;
+                }
+                Ok(())
+            });
+        }
+        cancel.check()?;
+        let mut child = command.spawn()?;
+        drop(command);
+        drop((info_w, ready_w, guardian_child, bootstrap_locks));
+        let setup = (|| -> Result<(File, File)> {
+            let mut info = File::from(info_r);
+            let mut json = String::new();
+            for _ in 0..20 {
+                let line = process::helper_line(&mut info, Duration::from_secs(10), cancel)?;
+                json.push_str(&line);
+                if line.trim() == "}" {
+                    break;
+                }
+            }
+            let info: serde_json::Value = serde_json::from_str(&json)?;
+            let pid = info["child-pid"].as_u64().ok_or("missing engine PID")?;
+            let nested: u32 =
+                process::helper_line(&mut File::from(ready_r), Duration::from_secs(15), cancel)?
+                    .trim()
+                    .parse()?;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                cancel.check()?;
+                if let Some(status) = child.try_wait()? {
+                    return Err(format!("Docker engine exited during startup: {status}").into());
+                }
+                if ready(&socket_path) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err("Docker engine startup timed out".into());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let proc = format!("/proc/{pid}/root/proc/{nested}");
+            Ok((
+                File::open(format!("{proc}/root"))?,
+                File::open(format!("{proc}/ns/mnt"))?,
+            ))
+        })();
+        match setup {
+            Ok((root, mounts)) => {
+                let engine = Self {
+                    process: child,
+                    guardian: Some(Channel::new(guardian_host)?),
+                    _storage: storage,
+                    root,
+                    mounts,
+                };
+                Ok(engine)
+            }
+            Err(error) => {
+                drop(guardian_host);
+                let status = match child.wait() {
+                    Ok(status) => status.to_string(),
+                    Err(error) => format!("wait failed: {error}"),
+                };
+                let diagnostic = process::diagnostic(&directory.join("docker.log"));
+                let tail: String = diagnostic
+                    .chars()
+                    .rev()
+                    .take(380)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                Err(format!("{error}; engine process {status}; stderr: {tail}").into())
+            }
+        }
+    }
+    /// The acknowledgement is before publication of any new grant. Each call
+    /// reopens every donor lock; the guardian owns those OFDs through cleanup.
+    pub fn retain(
+        &mut self,
+        leases: &[ResourceLease],
+        cancel: &process::Cancellation,
+    ) -> Result<()> {
+        let channel = self.guardian.as_mut().ok_or("Docker guardian stopped")?;
+        for batch in leases.chunks(goblins_runtime::channel::MAX_FDS) {
+            guardian::queue_retain(channel, batch)?;
+            Self::wait_retention_ack(channel, cancel)?;
+        }
+        Ok(())
+    }
+    fn wait_retention_ack(channel: &mut Channel, cancel: &process::Cancellation) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            cancel.check()?;
+            channel.flush()?;
+            if let Some(frame) = channel.receive()? {
+                guardian::retained(frame.value)?;
+                return Ok(());
+            }
+            if channel.closed() {
+                return Err("Docker guardian exited".into());
+            }
+            if Instant::now() >= deadline {
+                return Err("Docker guardian retention timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.guardian.take();
+        if let Err(error) = self.process.wait().and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!(
+                    "guardian exited with {status}"
+                )))
+            }
+        }) {
+            eprintln!("Docker shutdown: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

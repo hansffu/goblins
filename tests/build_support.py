@@ -1,6 +1,6 @@
 """Rooted Nix fixtures shared within a run, with an incremental host controller.
 
-Only the host executable may come from Cargo. Sandbox executables and their
+Only host executables may come from Cargo. Sandbox executables and their
 closures remain real, immutable Nix outputs, including in local-controller mode.
 """
 from functools import cache
@@ -88,10 +88,12 @@ def fixture_app(check="demo-goblins", *, packaged=False):
     application = root / "bin/goblins"
     application.parent.mkdir(parents=True, exist_ok=True)
     with fixture_lock(root / "prepare.lock"):
+        supervisor = os.environ.get("GOBLINS_SUPERVISOR_RUNTIME") or str(
+            fixture_path(installable + ".supervisor") / "bin/goblins-supervisor-bwrap")
         # Another worker may execute this launcher while we prepare it. Replace
         # files atomically rather than truncating executable/readable files.
         atomic_write(application,
-                     f'#!/bin/sh\nexport PATH={shlex.quote(str(nix_bin()))}:"$PATH"\n'
+                     f'#!/bin/sh\nexport GOBLINS_SUPERVISOR_RUNTIME={shlex.quote(supervisor)}\nexport PATH={shlex.quote(str(nix_bin()))}:"$PATH"\n'
                      f'exec {shlex.quote(controller)} --runtime {shlex.quote(str(manifest))} "$@"\n',
                      executable=True)
         # Keep the actual generator and exact installed completion contents.

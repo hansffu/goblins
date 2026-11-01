@@ -14,7 +14,7 @@ Claude Code's own background sessions (`claude --bg`, `claude attach`) were cons
 
 ## Decision
 
-Claude stays on the goblin's terminal. A new program in `mkClaudeGoblin`, `goblins-claude` (crate `crates/claude`), takes over the integration:
+Claude stays on the goblin's terminal. A new program in `mkClaudeGoblin`, `goblins-claude` (crate `packages/adapter-claude`), takes over the integration:
 
 - `start`, run by the launcher, begins a fresh ledger for the run, replacing registration and its epoch.
 - `hook`, run by every managed hook, keeps the lifecycle and activity in a ledger private to the goblin and decides `Stop` continuations.

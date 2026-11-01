@@ -1471,11 +1471,11 @@ are historical; the Rust architecture and checks above describe this worktree.
 ** Repository layout consolidation
 
 The implementation now lives directly at the repository root, with the Rust
-helper under =src/=, Python tests under =tests/=, and Nix definitions under
+helper under =packages/mount-helper/src/=, Python tests under =tests/=, and Nix definitions under
 =nix/=. There is one root =flake.nix= and one =flake.lock=. The root flake
 declares inputs, the default configuration and output wiring. Production Nix
-code consists of =nix/lib.nix= (public API), =nix/packages/goblins.nix= (host
-executable and helper/controller), and =nix/packages/internal-goblins.nix=
+code consists of =nix/lib.nix= (public API), =packages/daemon/wrapper.nix= (host
+executable and helper/controller), and =packages/sandbox-cli/default.nix=
 (sandbox request executable). Predefined configurations live under
 =nix/goblins/=; =shell.nix= supplies the default Fish entry and is exported as
 =lib.x86_64-linux.goblins.shell=.

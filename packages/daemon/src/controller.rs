@@ -1,0 +1,7828 @@
+//! Single authority/event loop, with independent blocking workers per session.
+use crate::Result;
+use crate::supervised::{Executable, Supervised};
+use goblins_jsonrpc::{self as rpc, Decoder};
+use goblins_protocol::{
+    Request,
+    rpc::{DevShellDiffParams, FlakeRunParams, PermissionParams},
+};
+use goblins_runtime::Identity;
+use goblins_runtime::Source;
+use goblins_runtime::policy::{Capabilities, DevShellSummary, Operation, Policy, Support};
+use goblins_runtime::{Command, Event, Runtime};
+use goblins_runtime::{TerminalId, TerminalStatus};
+use goblins_unix as unix;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fs::{self, File},
+    io::{self, Read, Write},
+    os::fd::{AsRawFd, OwnedFd},
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
+    path::{Path, PathBuf},
+    time::Instant,
+};
+
+mod attach;
+mod editor;
+mod exec;
+mod host;
+pub(crate) mod policy;
+mod raids;
+pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
+
+const HOSTS: usize = 32;
+const SESSIONS: usize = 16;
+const GOBLIN_NAMES: &str = include_str!("goblin-names.txt");
+const QUEUE: usize = 2 * 1024 * 1024;
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SessionRecord {
+    #[serde(default)]
+    pub docker_enabled: bool,
+    #[serde(default, alias = "docker_scope")]
+    pub scope: Option<String>,
+    /// Flake reference of the host-launched dev shell, if any.
+    #[serde(default)]
+    pub dev_shell: Option<String>,
+    /// Working directory the sandbox was launched in (goblins a raid owner
+    /// runs share it).
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+    pub id: String,
+    /// Unique among live goblins: the address in messages, exec and TRAMP.
+    pub agent_name: String,
+    /// The raid owner that ran this goblin, for display only.
+    #[serde(default)]
+    pub created_by: Option<CreatedBy>,
+    /// Reusable Nix configuration key, distinct from the per-launch agent name.
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub configuration: String,
+    #[serde(default)]
+    pub agent_state: goblins_protocol::AgentState,
+    /// When `agent_state` last changed, in Unix milliseconds.
+    #[serde(default)]
+    pub agent_state_since: Option<u64>,
+    /// Messages queued in the goblin's inbox, as the messaging worker last
+    /// counted them.
+    #[serde(default)]
+    pub inbox: u64,
+    pub state: String,
+    pub identity: Option<Identity>,
+    pub initial_packages: Vec<String>,
+    pub packages: Vec<String>,
+    /// Packages granted on request without asking the host, copied from the
+    /// goblin that started this one.
+    #[serde(default)]
+    pub auto_approve: Vec<String>,
+    pub terminal: String,
+    /// The socket frontends attach through with a hello.
+    #[serde(default)]
+    pub attach: String,
+    /// Where an agent without a terminal writes its output.
+    #[serde(default)]
+    pub server_log: Option<String>,
+    pub pty_eof: bool,
+    pub terminal_complete: bool,
+    pub terminal_interrupted: bool,
+    #[serde(default)]
+    pub terminal_attached: bool,
+    #[serde(default)]
+    pub terminal_detached: bool,
+    pub exit_code: Option<i32>,
+    /// Daemon-authored lifecycle explanation, safe to expose inside sandboxes.
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub raid: Option<RaidMembership>,
+    /// Live interactive shells (`goblins exec -t`) in the sandbox.
+    #[serde(default)]
+    pub shells: u32,
+    /// Live non-interactive execs: TRAMP, eshell and scripts.
+    #[serde(default)]
+    pub execs: u32,
+    /// The history record this goblin was recreated from.
+    #[serde(default)]
+    pub recreated_from: Option<String>,
+    /// What could not be restored when it was recreated, and why.
+    #[serde(default)]
+    pub skipped: Vec<goblins_runtime::history::Skipped>,
+}
+impl SessionRecord {
+    /// True when the visible activity changed; the change is timestamped.
+    fn set_agent_state(&mut self, state: goblins_protocol::AgentState) -> bool {
+        let changed = self.agent_state != state;
+        if changed {
+            self.agent_state = state;
+            self.agent_state_since = Some(crate::messaging::now());
+        }
+        changed
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreatedBy {
+    pub id: String,
+    pub agent_name: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PermissionRecord {
+    #[serde(default = "goblins_protocol::package_kind")]
+    pub kind: String,
+    pub id: String,
+    pub session: String,
+    /// Retained even after the session record is evicted or its name reused.
+    pub agent_name: String,
+    pub approval: String,
+    pub package: String,
+    pub reason: String,
+    pub state: String,
+    pub approved: Option<bool>,
+    pub preview: Option<Value>,
+    pub message: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub instance: String,
+    pub sessions: Vec<SessionRecord>,
+    pub permissions: Vec<PermissionRecord>,
+    #[serde(default)]
+    pub raids: Vec<RaidRecord>,
+    /// The communications log's health: messaging stops while it fails.
+    #[serde(default)]
+    pub messaging: crate::mailbox::Health,
+}
+struct Pending {
+    initial_output: Option<PathBuf>,
+    /// Identity of a prepared dev shell refresh candidate.
+    dev_identity: Option<String>,
+    id: String,
+    /// Also what cancels its preview or refresh evaluation.
+    serial: u64,
+    connection: u64,
+    /// The requester has an agent integration to wake with a completion notice.
+    notify: bool,
+    /// A host command waiting for the decision.
+    host: Option<host::Spec>,
+    /// The request outlives its connection (`goblin host run --detach`).
+    detached: bool,
+}
+/// A sandbox call waiting on the worker (`flake.run`, `devshell.diff`). One
+/// at a time per sandbox; the worker runs them in turn with other work.
+struct Call {
+    /// Also what cancels it.
+    serial: u64,
+    connection: u64,
+}
+fn call_key(serial: u64) -> String {
+    format!("call-{serial}")
+}
+fn prune_key(serial: u64) -> String {
+    format!("prune-{serial}")
+}
+struct Active {
+    activity_at: Option<Instant>,
+    created: u64,
+    record: SessionRecord,
+    runtime: Option<Box<dyn Runtime>>,
+    /// Scope selected at acceptance or requested before startup completes.
+    member_scope: Option<String>,
+    pending: Option<Pending>,
+    /// A host command waiting for its directory; it holds the pending slot.
+    preparing: Option<host::Preparing>,
+    terminal: TerminalStatus,
+    directory: PathBuf,
+    /// What the configuration allows and the sandbox implementation can do,
+    /// known once started and fixed for the goblin's life.
+    policy: Option<Box<Policy>>,
+    support: Support,
+    /// The current dev shell generation, replaced by each refresh.
+    dev_shell: Option<DevShellSummary>,
+    /// The manifest this launch was accepted against, which stays rooted
+    /// until the launch has started.
+    launch_manifest: Option<std::sync::Arc<goblins_runtime::config::ManifestLease>>,
+    /// The raid owner whose handoff this member still waits for.
+    exporting: Option<String>,
+    /// The runtime's channel to the sandbox's goblins-init is open.
+    init: bool,
+    granted_outputs: BTreeMap<String, PathBuf>,
+    /// Auto-approved packages, by exact output, rooted by the session itself.
+    auto_approve: BTreeMap<String, PathBuf>,
+    /// Dev-shell generations a refresh may move to without asking.
+    auto_approve_dev_shells: BTreeSet<String>,
+    /// Identity of the current trusted dev shell generation.
+    dev_identity: Option<String>,
+    call: Option<Call>,
+    /// The record this goblin was recreated from, reserved while it is live
+    /// so no other goblin resumes the same agent conversation.
+    recreated_from: Option<Box<crate::history::Record>>,
+    /// A root goblin's recorded variables, kept also while this server has
+    /// no history, for a record created when it takes the store over.
+    variables: BTreeMap<String, String>,
+    /// Names `sessions.set-variables` has set to a value since this launch.
+    /// Values seeded from the history record are not in it.
+    fresh: BTreeSet<String>,
+    attach: attach::Attach,
+    /// Known once started: the agent runs without a terminal and each attach
+    /// starts a client.
+    handlers: Option<goblins_runtime::config::Handlers>,
+    /// The history record this goblin writes: the record it was recreated
+    /// from, otherwise its own id.
+    line: String,
+}
+impl Active {
+    /// A terminal-only runtime does not reserve a live name or conversation.
+    fn live(&self) -> bool {
+        self.runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.released())
+    }
+    fn fail_launch(&mut self, message: &str) {
+        self.exporting = None;
+        self.launch_manifest = None;
+        if !["stopped", "failed"].contains(&self.record.state.as_str()) {
+            self.record.state = "failed".into();
+            self.record.detail = Some(bounded(&message));
+            if self.record.identity.is_none() {
+                self.terminal.eof = true;
+                self.terminal.interrupted = true;
+            }
+        }
+        if let Some(runtime) = &mut self.runtime {
+            let _ = runtime.send(Command::Stop);
+        }
+    }
+
+    fn scope_failed(&mut self, name: &str) {
+        if self.live() && self.member_scope.as_deref() == Some(name) {
+            if let Some(runtime) = &mut self.runtime {
+                let _ = runtime.send(Command::ScopeFailed);
+            }
+        }
+    }
+
+    /// Cancel the runtime's work under `id`, queued or running.
+    fn cancel_work(&mut self, id: u64) {
+        if let Some(runtime) = &mut self.runtime {
+            let _ = runtime.send(Command::Cancel(id));
+        }
+    }
+    /// Give a test goblin the plain policy a Started event would carry.
+    #[cfg(test)]
+    fn set_policy(&mut self, policy: Policy) {
+        self.member_scope = policy.scope.as_ref().map(|scope| scope.name.clone());
+        self.policy = Some(Box::new(policy));
+        self.dev_shell = None;
+    }
+    /// May this goblin do `operation`? A goblin that has not started has no
+    /// policy, and conflicts.
+    fn allow(&self, operation: &Operation) -> std::result::Result<(), Fault> {
+        let policy = self.policy.as_deref().ok_or_else(conflict)?;
+        Capabilities {
+            policy,
+            support: &self.support,
+        }
+        .check(operation)
+        .map_err(policy::fault)
+    }
+    /// The scope whose Docker engine this goblin may use.
+    fn docker_scope(&self) -> Option<&str> {
+        let scope = self.policy.as_deref()?.scope.as_ref()?;
+        scope.docker.then_some(scope.name.as_str())
+    }
+    /// End a parked host command's wait, releasing what its runtime pinned.
+    fn take_preparing(&mut self) -> Option<host::Preparing> {
+        let p = self.preparing.take()?;
+        if let Some(runtime) = &mut self.runtime {
+            let _ = runtime.send(Command::CancelHostJob {
+                request: p.request.clone(),
+            });
+        }
+        Some(p)
+    }
+    /// A pending request ended undecided: its preview or refresh stops, and
+    /// a host command's pinned directory is released.
+    fn cancel_pending(&mut self, p: &Pending) {
+        self.cancel_work(p.serial);
+        if p.host.is_some()
+            && let Some(runtime) = &mut self.runtime
+        {
+            let _ = runtime.send(Command::CancelHostJob {
+                request: p.id.clone(),
+            });
+        }
+    }
+    /// Refresh activity freshness; true when the visible activity changed.
+    fn report_activity(&mut self, state: goblins_protocol::AgentState) -> bool {
+        self.activity_at = Some(Instant::now());
+        self.record.set_agent_state(state)
+    }
+}
+#[derive(Clone)]
+enum Role {
+    Host,
+    Sandbox(String),
+}
+struct Connection {
+    id: u64,
+    role: Role,
+    /// Host transport only; relayed sandbox connections own no socket.
+    peer: Option<UnixStream>,
+    relay: Option<u64>,
+    incoming: Option<rpc::Call>,
+    messages: VecDeque<Value>,
+    decoder: Decoder,
+    input: Vec<u8>,
+    output: VecDeque<Vec<u8>>,
+    offset: usize,
+    queued: usize,
+    initialized: bool,
+    waiting: Option<(String, Value)>,
+    close: bool,
+    dead: bool,
+    calls: usize,
+    body_bytes: usize,
+    subscription: Option<String>,
+    /// Descriptors received with the pending frame, for `sessions.exec`.
+    fds: Vec<OwnedFd>,
+    /// The exec this connection holds open; only signals may follow.
+    exec: Option<u64>,
+}
+impl Connection {
+    /// Answer call `id` with what handling it gave: nothing yet while the
+    /// call waits. A sandbox connection closes after an error.
+    fn answer(&mut self, id: Value, outcome: std::result::Result<Option<Value>, Fault>) {
+        match outcome {
+            Ok(Some(result)) => self.queue(rpc::result(id, result)),
+            Ok(None) => (),
+            Err((code, message)) => {
+                self.queue(rpc::error(id, code, &message));
+                if matches!(self.role, Role::Sandbox(_)) {
+                    self.close = true;
+                }
+            }
+        }
+    }
+    fn new(id: u64, role: Role, peer: UnixStream) -> Result<Self> {
+        peer.set_nonblocking(true)?;
+        Ok(Self::base(id, role, Some(peer)))
+    }
+    fn relayed(id: u64, session: String, connection: u64) -> Self {
+        let mut peer = Self::base(id, Role::Sandbox(session), None);
+        peer.relay = Some(connection);
+        peer
+    }
+    fn base(id: u64, role: Role, peer: Option<UnixStream>) -> Self {
+        let limit = goblins_protocol::messages::MAX_REQUEST;
+        Self {
+            id,
+            role,
+            peer,
+            relay: None,
+            incoming: None,
+            messages: VecDeque::new(),
+            decoder: Decoder::new(limit, Some(Instant::now())),
+            input: vec![],
+            output: VecDeque::new(),
+            offset: 0,
+            queued: 0,
+            initialized: false,
+            waiting: None,
+            close: false,
+            dead: false,
+            calls: 0,
+            body_bytes: 0,
+            subscription: None,
+            fds: Vec::new(),
+            exec: None,
+        }
+    }
+    fn queue(&mut self, value: Value) {
+        if self.relay.is_some() {
+            self.messages.push_back(value);
+            return;
+        }
+        match rpc::encode(&value) {
+            Ok(data) if self.queued + data.len() <= QUEUE => {
+                self.queued += data.len();
+                self.output.push_back(data);
+            }
+            _ => self.dead = true,
+        }
+    }
+    fn flush(&mut self) {
+        let Some(peer) = &mut self.peer else { return };
+        // One bounded write per tick; a slow subscriber cannot hold authority.
+        if let Some(front) = self.output.front() {
+            match peer.write(&front[self.offset..]) {
+                Ok(0) => self.dead = true,
+                Ok(n) => {
+                    self.offset += n;
+                    self.queued -= n;
+                    if self.offset == front.len() {
+                        self.output.pop_front();
+                        self.offset = 0;
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) => {}
+                Err(_) => self.dead = true,
+            }
+        }
+        if self.close && self.output.is_empty() {
+            self.dead = true;
+        }
+    }
+    fn read(&mut self) -> Option<rpc::Call> {
+        if self.close || self.dead {
+            return None;
+        }
+        let Some(peer) = &self.peer else {
+            return self.incoming.take();
+        };
+        let mut bytes = [0; 16384];
+        let waiting = self.waiting.is_some() && self.exec.is_none();
+        match unix::ancillary::receive(peer.as_raw_fd(), &mut bytes, libc::MSG_DONTWAIT) {
+            Ok((0, _)) => {
+                self.dead = true;
+                return None;
+            }
+            Ok((n, fds)) => {
+                // Only host clients pass descriptors, and only for one exec.
+                if matches!(self.role, Role::Host) {
+                    self.fds.extend(fds);
+                }
+                if waiting
+                    || self.input.len() + n > 32768
+                    || self.fds.len() > goblins_protocol::HOST_MAX_FDS
+                {
+                    self.dead = true;
+                    return None;
+                }
+                self.input.extend_from_slice(&bytes[..n]);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => {
+                self.dead = true;
+                return None;
+            }
+        }
+        if waiting {
+            return None;
+        }
+        match self.decoder.push(&self.input, Instant::now()) {
+            Ok((n, body)) => {
+                self.input.drain(..n);
+                if let Some(body) = body {
+                    self.body_bytes = body.len();
+                    self.calls += 1;
+                    if self.calls > 4096 {
+                        self.dead = true;
+                        return None;
+                    }
+                    let limit = goblins_protocol::messages::MAX_REQUEST;
+                    self.decoder = Decoder::new(
+                        limit,
+                        if !self.initialized {
+                            Some(Instant::now())
+                        } else {
+                            None
+                        },
+                    );
+                    match rpc::call(&body) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            self.queue(e);
+                            self.close = true;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            Err(e) => {
+                self.queue(rpc::error(Value::Null, -32600, &e.to_string()));
+                self.close = true;
+                None
+            }
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Start {
+    key: String,
+    configuration: String,
+    /// Empty for a recreate, which takes it from the record.
+    #[serde(default)]
+    name: String,
+    agent_name: Option<String>,
+    #[serde(default)]
+    cwd: Option<PathBuf>,
+    /// Scope for a host launch; goblins a raid owner runs share its scope.
+    #[serde(default)]
+    scope: Option<String>,
+    /// Absolute `PATH[#ATTR]` of a host flake dev shell; shared the same way.
+    #[serde(default)]
+    dev_shell: Option<String>,
+    rows: u16,
+    cols: u16,
+    #[serde(default)]
+    detached: bool,
+    /// Join this raid, creating it with the new goblin as owner if absent.
+    #[serde(default)]
+    raid: Option<String>,
+    /// Recreate this recorded goblin (record id, unique id prefix or unique
+    /// agent name) from the current configuration of the same name.
+    #[serde(default)]
+    recreate: Option<String>,
+    /// The record a recreate launch uses, resolved by the daemon.
+    #[serde(skip)]
+    recorded: Option<Box<crate::history::Record>>,
+}
+use goblins_runtime::sandbox::MemberStart;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Stop {
+    session: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Initialize {
+    api: u32,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionId {
+    session: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RequestId {
+    request: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Decision {
+    session: String,
+    request: String,
+    approval: String,
+    approved: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Resize {
+    session: String,
+    rows: u16,
+    cols: u16,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Filter {
+    session: Option<String>,
+    state: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Subscription {
+    subscription: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Empty {}
+type Fault = (i32, String);
+/// Permission states the snapshot keeps whatever its size: the request still
+/// waits for, or is being carried out after, a decision.
+const UNEVICTABLE: &[&str] = &["pending", "realizing", "mounting", "publishing", "running"];
+/// A raid owner running a member, checked and holding its live scope.
+#[derive(Clone)]
+struct Owner {
+    id: String,
+    scope: Option<std::sync::Arc<OwnedFd>>,
+    /// The scope the owner is in, which a member must be able to join.
+    scope_name: Option<String>,
+}
+/// Dev-shell generations an auto-approve set holds.
+const AUTO_DEV_SHELLS: usize = 32;
+/// Approvals copied to a goblin when it is started.
+#[derive(Clone, Debug, Default)]
+struct AutoApprove {
+    packages: BTreeMap<String, PathBuf>,
+    dev_shells: BTreeSet<String>,
+}
+fn params<T: DeserializeOwned>(v: Value) -> std::result::Result<T, Fault> {
+    serde_json::from_value(v).map_err(|e| (-32602, e.to_string()))
+}
+fn missing() -> Fault {
+    (-32004, "record absent or no longer retained".into())
+}
+fn conflict() -> Fault {
+    (-32009, "stale or conflicting operation".into())
+}
+fn capacity() -> Fault {
+    (-32010, "resource limit reached".into())
+}
+fn dimensions(rows: u16, cols: u16) -> bool {
+    (1..=1000).contains(&rows) && (1..=1000).contains(&cols)
+}
+pub(crate) fn valid_agent_name(name: &str) -> bool {
+    (1..=32).contains(&name.len())
+        && name.as_bytes()[0].is_ascii_lowercase()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+// Rejection sampling avoids modulo bias. Bound retries even if the random
+// source fails or repeatedly supplies rejected values.
+fn random_name<'a>(
+    available: &[&'a str],
+    random: &mut impl Read,
+) -> std::result::Result<&'a str, Fault> {
+    if available.is_empty() {
+        return Err((-32010, "automatic agent name pool exhausted".into()));
+    }
+    let count = available.len() as u64;
+    let limit = u64::MAX - u64::MAX % count;
+    for _ in 0..8 {
+        let mut bytes = [0; 8];
+        random
+            .read_exact(&mut bytes)
+            .map_err(|_| (-32010, "cannot read randomness for agent name".into()))?;
+        let sample = u64::from_le_bytes(bytes);
+        if sample < limit {
+            return Ok(available[(sample % count) as usize]);
+        }
+    }
+    Err((
+        -32010,
+        "cannot select random agent name after 8 attempts".into(),
+    ))
+}
+#[derive(Clone, Copy)]
+enum RuntimeBackend {
+    Supervised,
+    #[cfg(test)]
+    Fake,
+}
+impl RuntimeBackend {
+    fn current() -> Self {
+        #[cfg(test)]
+        {
+            Self::Fake
+        }
+        #[cfg(not(test))]
+        {
+            Self::Supervised
+        }
+    }
+}
+pub struct Controller {
+    messaging: crate::messaging::Service,
+    /// As the messaging worker last reported it.
+    messaging_health: crate::mailbox::Health,
+    messaging_directory: crate::mailbox::Directory,
+    state: PathBuf,
+    workspace: Option<PathBuf>,
+    listener: UnixListener,
+    instance: String,
+    next: u64,
+    sequence: u64,
+    connections: Vec<Connection>,
+    sessions: BTreeMap<String, Active>,
+    scopes: crate::scopes::Scopes,
+    executable: Executable,
+    backend: RuntimeBackend,
+    /// Index retained handles through cleanup and later terminal service.
+    retiring: BTreeSet<String>,
+    execs: BTreeMap<u64, exec::Exec>,
+    edits: Vec<editor::Edit>,
+    host_jobs: Vec<host::Job>,
+    /// Finished host commands' results, by request.
+    host_outcomes: BTreeMap<String, Value>,
+    permissions: VecDeque<PermissionRecord>,
+    launches: BTreeMap<String, (Start, Value)>,
+    shutdown: Option<(u64, Instant)>,
+    dirty: bool,
+    /// Never persisted: raids end with the daemon.
+    raids: crate::raid::Raids,
+    /// Raid events not yet accepted by the messaging worker, in order.
+    raid_outbox: VecDeque<crate::raid::Event>,
+    raid_events: usize,
+    /// Operation lifecycle events not yet accepted by the messaging worker,
+    /// in order. Completions are never dropped; new requests are refused
+    /// while this is full.
+    operation_outbox: VecDeque<crate::operation::Event>,
+    /// Recreate records, or why this daemon keeps none.
+    history: std::result::Result<crate::history::Store, String>,
+    /// The history store's directory, protected from binds even when
+    /// another daemon owns it.
+    history_directory: Option<PathBuf>,
+    keep_sessions: usize,
+    /// The store, once the process that holds it lets go. A short CLI
+    /// call must not leave this server without history for good.
+    history_waiting: Option<std::sync::mpsc::Receiver<crate::history::Store>>,
+    /// Ends the waiting thread with this server.
+    history_token: std::sync::Arc<()>,
+    /// The last validated manifest the host used: what raid owners run
+    /// members from. Its root goes once nothing holds the lease.
+    current_manifest: Option<std::sync::Arc<goblins_runtime::config::ManifestLease>>,
+    /// The order of the last accepted host launch, and of the published
+    /// manifest: a slower, older launch never replaces a newer manifest.
+    manifest_sequence: u64,
+    manifest_published: u64,
+    // Fields drop in declaration order. Keep ownership through every worker,
+    // history store and manifest lease being released, including on errors.
+    _lock: File,
+}
+impl Controller {
+    pub fn new(state: &Path, workspace: Option<PathBuf>) -> Result<Self> {
+        unix::private_directory(state)?;
+        let state = fs::canonicalize(state)?;
+        let lock = unix::lock(&state.join("daemon.lock"))?;
+        let socket = state.join("host.sock");
+        if socket.is_symlink() {
+            return Err("refusing symlink host socket".into());
+        }
+        if socket.exists() {
+            fs::remove_file(&socket)?;
+        }
+        let listener = UnixListener::bind(socket.clone())?;
+        listener.set_nonblocking(true)?;
+        fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+        let mut bytes = [0; 16];
+        File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+        let instance: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let messaging = crate::messaging::Service::new(&state, &instance)?;
+        // Roots of manifests a previous server held.
+        let _ = fs::remove_dir_all(state.join("manifests"));
+        let executable = Executable::default();
+        Ok(Self {
+            executable: executable.clone(),
+            backend: RuntimeBackend::current(),
+            retiring: BTreeSet::new(),
+            messaging,
+            messaging_health: Default::default(),
+            messaging_directory: BTreeMap::new(),
+            state,
+            workspace,
+            _lock: lock,
+            listener,
+            instance,
+            next: 0,
+            sequence: 0,
+            connections: vec![],
+            sessions: BTreeMap::new(),
+            scopes: crate::scopes::Scopes::new(executable),
+            execs: BTreeMap::new(),
+            edits: Vec::new(),
+            host_jobs: Vec::new(),
+            host_outcomes: BTreeMap::new(),
+            permissions: VecDeque::new(),
+            launches: BTreeMap::new(),
+            shutdown: None,
+            dirty: false,
+            raids: Default::default(),
+            raid_outbox: VecDeque::new(),
+            raid_events: 0,
+            operation_outbox: VecDeque::new(),
+            history: Err("this server keeps no session history".into()),
+            history_directory: None,
+            keep_sessions: crate::history::DEFAULT_KEEP,
+            history_waiting: None,
+            history_token: std::sync::Arc::new(()),
+            current_manifest: None,
+            manifest_sequence: 0,
+            manifest_published: 0,
+        })
+    }
+    /// Finish cleanup while retaining the daemon lock for the caller's final
+    /// output. A stop command must not return before that output is flushed.
+    pub fn shutdown(self) -> Result<File> {
+        let lock = self._lock.try_clone()?;
+        drop(self);
+        Ok(lock)
+    }
+    /// Start with the manifest the server was started with as current, once
+    /// it validates. Call before the first launch.
+    pub fn use_manifest(&mut self, path: &Path) {
+        match crate::supervised::preflight::lease(
+            &self.executable,
+            path,
+            &self.state.join("manifests"),
+            0,
+        ) {
+            Ok(lease) => self.current_manifest = Some(std::sync::Arc::new(lease)),
+            Err(e) => eprintln!(
+                "goblins: no current configuration from {}: {e}",
+                path.display()
+            ),
+        }
+    }
+    /// Own the history store in `directory`. While another process holds
+    /// it, run without history and take it over once it is released.
+    /// Call before the first launch.
+    pub fn open_history(&mut self, directory: Result<PathBuf>, keep: usize) {
+        self.keep_sessions = keep;
+        let directory = match directory {
+            Ok(directory) => directory,
+            Err(e) => {
+                self.history = Err(format!("no session history: {e}"));
+                return;
+            }
+        };
+        let owner = format!(
+            "goblins server (pid {}, --state-dir {})",
+            std::process::id(),
+            self.state.display()
+        );
+        match crate::history::Store::open(&directory, &owner) {
+            Ok(store) => {
+                self.history_directory = Some(store.directory.clone());
+                self.history = Ok(store);
+            }
+            Err(error) => {
+                self.history_directory = Some(directory.clone());
+                self.history = Err(error.to_string());
+                if error.is::<crate::history::Held>() {
+                    self.history = Err(format!(
+                        "{error}; this server takes it over once it is released"
+                    ));
+                    let (found, waiting) = std::sync::mpsc::sync_channel(1);
+                    let alive = std::sync::Arc::downgrade(&self.history_token);
+                    std::thread::spawn(move || {
+                        while alive.upgrade().is_some() {
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            match crate::history::Store::open(&directory, &owner) {
+                                Ok(store) => {
+                                    let _ = found.send(store);
+                                    return;
+                                }
+                                Err(e) if e.is::<crate::history::Held>() => (),
+                                Err(_) => return,
+                            }
+                        }
+                    });
+                    self.history_waiting = Some(waiting);
+                }
+            }
+        }
+    }
+    /// Take over the history store once its holder released it.
+    fn poll_history(&mut self) {
+        let Some(store) = self
+            .history_waiting
+            .as_ref()
+            .and_then(|w| w.try_recv().ok())
+        else {
+            return;
+        };
+        println!("Session history in {}", store.directory.display());
+        self.history_waiting = None;
+        self.history_directory = Some(store.directory.clone());
+        self.history = Ok(store);
+        self.record_running();
+    }
+    /// The history store's directory and whether this daemon owns it.
+    pub fn history_status(&self) -> Value {
+        match &self.history {
+            Ok(store) => json!({"directory":store.directory,"owner":true,"keep":self.keep_sessions,
+                "recording":self.workspace.is_none()}),
+            Err(reason) => {
+                json!({"directory":self.history_directory,"owner":false,"reason":reason})
+            }
+        }
+    }
+    /// Records with a live goblin, which retention and prune never delete.
+    fn live_lines(&self) -> std::collections::BTreeSet<String> {
+        self.sessions
+            .values()
+            .filter(|a| a.live())
+            .map(|a| a.line.clone())
+            .collect()
+    }
+    /// Start the record of a goblin that reached running.
+    fn record_started(&mut self, a: &Active) {
+        if self.workspace.is_some() {
+            return;
+        }
+        let mut running = self.live_lines();
+        running.insert(a.line.clone());
+        let keep = self.keep_sessions;
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        // A recreated goblin continues its record; a new one starts its own.
+        let record = line_record(a, store.records.get(&a.line));
+        store.write(record);
+        store.retain(keep, &running);
+    }
+    /// Records for goblins that reached running before this server owned
+    /// the history store, so they can be recreated too.
+    fn record_running(&mut self) {
+        if self.workspace.is_some() {
+            return;
+        }
+        let running = self.live_lines();
+        let keep = self.keep_sessions;
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        for a in self.sessions.values() {
+            if a.record.state == "running"
+                && a.live()
+                && store
+                    .records
+                    .get(&a.line)
+                    .is_none_or(|r| r.latest() != a.record.id)
+            {
+                let record = line_record(a, store.records.get(&a.line));
+                store.write(record);
+            }
+        }
+        store.retain(keep, &running);
+    }
+    /// Fill a recreate launch from its record, refusing what cannot be
+    /// recreated now.
+    fn prepare_recreate(&self, p: &mut Start, target: &str) -> std::result::Result<(), Fault> {
+        if !p.name.is_empty()
+            || p.agent_name.is_some()
+            || p.cwd.is_some()
+            || p.scope.is_some()
+            || p.dev_shell.is_some()
+            || p.raid.is_some()
+        {
+            return Err((
+                -32602,
+                "resume takes the configuration, agent name, scope, dev shell and working directory from its record".into(),
+            ));
+        }
+        if self.workspace.is_some() {
+            return Err((
+                -32009,
+                "this server snapshots a --workspace for each goblin, so its goblins are neither recorded nor resumed".into(),
+            ));
+        }
+        let store = self
+            .history
+            .as_ref()
+            .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+        let record = store.resolve(target).map_err(|e| (-32004, e))?;
+        // A prune or retention queued it: it is gone once the writer
+        // confirms, so a goblin must not take it over now.
+        if store.deleting.contains(&record.id) {
+            return Err((-32009, format!("record {} is being removed", record.id)));
+        }
+        if let Some(cwd) = &record.cwd
+            && !cwd.is_dir()
+        {
+            return Err((
+                -32009,
+                format!(
+                    "the recorded working directory {} no longer exists",
+                    cwd.display()
+                ),
+            ));
+        }
+        // A record from disk is bounded like an owner's copied approvals.
+        if record.packages.auto_approve.len() > crate::history::MAX_NAMES {
+            return Err((
+                -32010,
+                format!(
+                    "record {} exceeds the auto-approve limit of {} packages",
+                    record.id,
+                    crate::history::MAX_NAMES
+                ),
+            ));
+        }
+        if let Some(reason) = self.recreate_conflict(record) {
+            return Err((
+                -32009,
+                format!("record {} cannot be resumed now: {reason}", record.id),
+            ));
+        }
+        p.name = record.configuration.clone();
+        // Its own name when that is free, otherwise a new one.
+        p.agent_name =
+            Some(record.agent_name.clone()).filter(|name| self.allocate_name(Some(name)).is_ok());
+        p.cwd = record.cwd.clone();
+        p.scope = record.scope.clone();
+        p.dev_shell = record.dev_shell.clone();
+        p.recorded = Some(Box::new(record.clone()));
+        Ok(())
+    }
+    /// Why a record cannot be recreated: a live goblin (starting, running
+    /// or stopping) runs it, so both would resume the same conversation.
+    fn recreate_conflict(&self, record: &crate::history::Record) -> Option<String> {
+        self.sessions
+            .values()
+            .filter(|a| a.live())
+            .find(|a| a.line == record.id)
+            .map(|a| {
+                format!(
+                    "goblin {} ({}) is live and runs it",
+                    a.record.agent_name, a.record.id
+                )
+            })
+    }
+    /// One record per agent conversation: when a goblin reports a
+    /// conversation another record holds, and no goblin runs that one, it
+    /// is merged into this goblin's record and removed.
+    fn merge_conversation(&mut self, line: &str) {
+        let live = self.live_lines();
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        let Some(mut merged) = store.records.get(line).cloned() else {
+            return;
+        };
+        let Some(conversation) = merged.conversation().map(String::from) else {
+            return;
+        };
+        let mut others: Vec<_> = store
+            .records
+            .values()
+            .filter(|r| {
+                r.id != line
+                    && r.conversation() == Some(conversation.as_str())
+                    && !live.contains(&r.id)
+                    && !store.deleting.contains(&r.id)
+            })
+            .cloned()
+            .collect();
+        if others.is_empty() {
+            return;
+        }
+        others.sort_by_key(|r| std::cmp::Reverse(r.created));
+        for other in &others {
+            // Their goblins ran first: their ids lead, and still find it.
+            let mut sessions = other.sessions.clone();
+            sessions.retain(|s| !merged.sessions.contains(s));
+            sessions.append(&mut merged.sessions);
+            merged.sessions = sessions;
+            let excess = merged
+                .sessions
+                .len()
+                .saturating_sub(crate::history::MAX_SESSIONS);
+            merged.sessions.drain(..excess);
+            for package in &other.packages.approved {
+                if !merged.packages.denied.contains(package) {
+                    let _ = merged.approve(package);
+                }
+            }
+            // Never over the merged record's own decisions.
+            for package in &other.packages.auto_approve {
+                if !merged.packages.denied.contains(package) {
+                    let _ = merged.auto(package);
+                }
+            }
+            merged.created = merged.created.min(other.created);
+        }
+        merged.updated = crate::messaging::now();
+        let ids: Vec<_> = others.into_iter().map(|r| r.id).collect();
+        store.merge(merged, &ids);
+    }
+    /// The history store's records for `goblins history`, newest first,
+    /// each marked running or not, within the response size.
+    fn history_list(&self) -> std::result::Result<Value, Fault> {
+        let store = self
+            .history
+            .as_ref()
+            .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+        let running = self.live_lines();
+        let mut records = vec![];
+        let mut size = 0;
+        let mut truncated = false;
+        for record in crate::history::newest_first(&store.records) {
+            if store.deleting.contains(&record.id) {
+                continue;
+            }
+            let mut value = json!(record);
+            value["running"] = json!(running.contains(&record.id));
+            size += serde_json::to_vec(&value).map_or(0, |v| v.len());
+            if size > 900 * 1024 {
+                truncated = true;
+                break;
+            }
+            records.push(value);
+        }
+        Ok(json!({"directory":store.directory,"records":records,"truncated":truncated}))
+    }
+    /// `history.prune`. Records go only once the writer has deleted them
+    /// durably, so the caller waits for that and learns what failed.
+    fn history_prune(
+        &mut self,
+        c: &mut Connection,
+        id: Value,
+        value: Value,
+    ) -> std::result::Result<Option<Value>, Fault> {
+        let p: crate::history::Prune = params(value)?;
+        if p.is_empty() {
+            return Err((-32602, "choose --older-than, --before or --keep".into()));
+        }
+        let mut excluded = self.live_lines();
+        let serial = self.number();
+        let store = self
+            .history
+            .as_mut()
+            .map_err(|reason| (-32009, format!("no session history: {reason}")))?;
+        excluded.extend(store.deleting.iter().cloned());
+        let removed = p.select(&store.records, &excluded, crate::messaging::now());
+        if p.dry_run || removed.is_empty() {
+            return Ok(Some(
+                json!({"removed":removed,"failed":[],"dry_run":p.dry_run}),
+            ));
+        }
+        // Ordered with every write: the writer drops queued revisions.
+        store.delete(&removed, Some(serial));
+        c.waiting = Some((prune_key(serial), id));
+        Ok(None)
+    }
+    /// Apply finished deletes and answer the prunes waiting for them.
+    fn poll_deletes(&mut self) {
+        let Ok(store) = &mut self.history else {
+            return;
+        };
+        for result in store.poll() {
+            let Some(tag) = result.tag else {
+                continue;
+            };
+            let failed: Vec<_> = result
+                .failed
+                .iter()
+                .map(|(id, reason)| json!({"id":id,"reason":reason}))
+                .collect();
+            let key = prune_key(tag);
+            for c in &mut self.connections {
+                if let Some((waiting, rpc_id)) = &c.waiting
+                    && *waiting == key
+                {
+                    c.queue(rpc::result(
+                        rpc_id.clone(),
+                        json!({"removed":result.removed,"failed":failed,"dry_run":false}),
+                    ));
+                    c.waiting = None;
+                }
+            }
+        }
+    }
+    /// Change the record of a live root goblin. Ok(false) when it has none;
+    /// Err with the reason when the change does not fit, leaving it as it was.
+    fn update_record(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut crate::history::Record) -> std::result::Result<bool, String>,
+    ) -> std::result::Result<bool, String> {
+        let Ok(store) = &mut self.history else {
+            return Ok(false);
+        };
+        // A stopped record is final, and a pruned one is not resurrected.
+        let Some(mut record) = store
+            .records
+            .get(id)
+            .filter(|r| r.stopped.is_none())
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        let changed = change(&mut record)?;
+        if changed {
+            record.updated = crate::messaging::now();
+            store.write(record);
+        }
+        Ok(changed)
+    }
+    fn number(&mut self) -> u64 {
+        self.next = self.next.checked_add(1).expect("daemon identity exhausted");
+        self.next
+    }
+    fn id(&mut self, kind: &str) -> String {
+        let n = self.number();
+        format!("{}-{kind}{n}", self.instance)
+    }
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            instance: self.instance.clone(),
+            sessions: self.sessions.values().map(|s| s.record.clone()).collect(),
+            permissions: self.permissions.iter().cloned().collect(),
+            raids: self.raid_records(),
+            messaging: self.messaging_health,
+        }
+    }
+    pub fn shutdown_ready(&self) -> bool {
+        self.shutdown.is_some_and(|(connection, deadline)| {
+            Instant::now() >= deadline
+                || !self
+                    .connections
+                    .iter()
+                    .any(|c| c.id == connection && c.queued != 0)
+        })
+    }
+    fn publish(&mut self) {
+        // A stop dispatched just before must not publish the old membership.
+        self.reconcile_raids();
+        self.refresh_raid_prompts();
+        if !self.dirty {
+            return;
+        }
+        // Count-based retention is supplemented by a total snapshot byte cap.
+        // Evictions are visible in the next replacement snapshot.
+        while serde_json::to_vec(&self.snapshot()).is_ok_and(|v| v.len() > 900 * 1024) {
+            if let Some(index) = self
+                .permissions
+                .iter()
+                .position(|p| !UNEVICTABLE.contains(&p.state.as_str()))
+            {
+                let removed = self.permissions.remove(index).unwrap();
+                self.host_outcomes.remove(&removed.id);
+            } else if let Some(id) = self
+                .sessions
+                .iter()
+                .filter(|(_, a)| a.runtime.is_none() && a.can_evict())
+                .min_by_key(|(_, a)| a.created)
+                .map(|(id, _)| id.clone())
+            {
+                if let Some(a) = self.sessions.remove(&id) {
+                    attach::remove_files(&a.directory);
+                    let _ = fs::remove_dir(a.directory);
+                }
+            } else {
+                break;
+            }
+        }
+        self.dirty = false;
+        self.sequence += 1;
+        let snapshot = self.snapshot();
+        for c in &mut self.connections {
+            if let Some(sub) = &c.subscription {
+                c.queue(json!({"jsonrpc":"2.0","method":"state.changed","params":{"subscription":sub,"sequence":self.sequence,"snapshot":snapshot}}));
+            }
+        }
+    }
+    fn permission_mut(&mut self, id: &str) -> Option<&mut PermissionRecord> {
+        self.permissions.iter_mut().find(|p| p.id == id)
+    }
+    fn operation(&mut self, request: &str, actor: &str, change: crate::operation::Change) {
+        if let Some(r) = self.permissions.iter().find(|r| r.id == request) {
+            self.operation_outbox.push_back(crate::operation::Event {
+                request: request.into(),
+                session: r.session.clone(),
+                actor: actor.into(),
+                change,
+            });
+        }
+    }
+    /// Queue the terminal outcome the record now holds. Call once per
+    /// request, after its state is final; `message` is what the sandbox sees.
+    fn operation_finished(&mut self, request: &str, notify: bool, message: Option<String>) {
+        let Some(r) = self.permissions.iter().find(|r| r.id == request) else {
+            return;
+        };
+        let change = crate::operation::Change::Completed {
+            kind: r.kind.clone(),
+            subject: r.package.clone(),
+            status: r.state.clone(),
+            message,
+            notify,
+        };
+        self.operation(request, goblins_protocol::messages::NOTICE_SENDER, change);
+    }
+    fn allocate_name(&self, requested: Option<&str>) -> std::result::Result<String, Fault> {
+        // Names are unique among live goblins: they address messages, execs
+        // and TRAMP. Allocation and insertion are serialized in this loop.
+        let available = |name: &str| {
+            !self
+                .sessions
+                .values()
+                .any(|a| a.live() && a.record.agent_name == name)
+        };
+        if let Some(name) = requested {
+            if !valid_agent_name(name) {
+                return Err((-32602, "agent_name must be 1..32 ASCII lowercase letters, digits or hyphens, starting with a letter".into()));
+            }
+            if !available(name) {
+                return Err((-32009, format!("agent name '{name}' is already in use")));
+            }
+            return Ok(name.into());
+        }
+        let available: Vec<_> = GOBLIN_NAMES
+            .lines()
+            .filter(|name| available(name))
+            .collect();
+        let mut random = File::open("/dev/urandom").map_err(|_| {
+            (
+                -32010,
+                "cannot open randomness source for agent name".into(),
+            )
+        })?;
+        random_name(&available, &mut random).map(str::to_owned)
+    }
+    /// A session by ID, or a live goblin by its unique agent name.
+    fn resolve_session(&self, target: &str) -> std::result::Result<String, Fault> {
+        if let Some(a) = self.sessions.get(target) {
+            return Ok(a.record.id.clone());
+        }
+        self.sessions
+            .values()
+            .find(|a| a.live() && a.record.agent_name == target)
+            .map(|a| a.record.id.clone())
+            .ok_or_else(missing)
+    }
+    /// Whether `owner` now owns the raid `member` was created in. Evaluated
+    /// on every call, so losing ownership or the member revokes it at once.
+    fn controls(&self, owner: &str, member: &str) -> bool {
+        member != owner
+            && self.raids.of(owner).is_some_and(|r| {
+                r.owner.as_deref() == Some(owner)
+                    && r.members
+                        .get(member)
+                        .is_some_and(|m| m.created_by.is_some())
+            })
+    }
+    /// A created member of the raid `owner` owns; anything else is absent.
+    fn resolve_member(&self, target: &str, owner: &str) -> std::result::Result<String, Fault> {
+        let id = self.resolve_session(target)?;
+        if self.controls(owner, &id) {
+            Ok(id)
+        } else {
+            Err(missing())
+        }
+    }
+    fn sandbox_record(&self, record: &SessionRecord) -> Value {
+        // No host paths, process IDs, terminal sockets or diagnostics cross the
+        // sandbox endpoint.
+        json!({"id":record.id,"agent_name":record.agent_name,"name":record.name,
+            "created_by":record.created_by,
+            "description":record.description,"state":record.state,"agent_state":record.agent_state,
+            "initial_packages":record.initial_packages,
+            "packages":record.packages,"auto_approve":record.auto_approve,
+            "scope":record.scope,"docker_enabled":record.docker_enabled,
+            "exit_code":record.exit_code,
+            "stop_reason":record.stop_reason,
+            "terminal_complete":record.terminal_complete,
+            "terminal_interrupted":record.terminal_interrupted,
+            "terminal_detached":record.terminal_detached,
+            "terminal_attached":record.terminal_attached})
+    }
+    /// A package granted without asking: the session's own grant, or one in
+    /// its auto-approve set. Never resolved again, never mounted proactively.
+    fn auto_output(&self, session: &str, package: &str) -> Option<PathBuf> {
+        let a = self.sessions.get(session)?;
+        a.granted_outputs
+            .get(package)
+            .or_else(|| a.auto_approve.get(package))
+            .cloned()
+    }
+    /// What a goblin a raid owner runs may be granted without asking: the
+    /// owner's approvals and its own auto-approve sets, copied now. Refused
+    /// rather than truncated beyond the bounds.
+    fn copied_approvals(&self, owner: &str) -> std::result::Result<AutoApprove, Fault> {
+        let a = &self.sessions[owner];
+        let mut packages = a.auto_approve.clone();
+        packages.extend(a.granted_outputs.clone());
+        let mut dev_shells = a.auto_approve_dev_shells.clone();
+        dev_shells.extend(a.dev_identity.clone());
+        if packages.len() > crate::history::MAX_NAMES {
+            return Err((
+                -32010,
+                format!(
+                    "the owner's approvals exceed the auto-approve limit of {} packages",
+                    crate::history::MAX_NAMES
+                ),
+            ));
+        }
+        if dev_shells.len() > AUTO_DEV_SHELLS {
+            return Err((
+                -32010,
+                format!(
+                    "the owner's approvals exceed the auto-approve limit of {AUTO_DEV_SHELLS} dev shells"
+                ),
+            ));
+        }
+        Ok(AutoApprove {
+            packages,
+            dev_shells,
+        })
+    }
+    fn detach(&mut self, id: &str) -> std::result::Result<Value, Fault> {
+        let a = self.sessions.get_mut(id).ok_or_else(missing)?;
+        if a.handlers.is_some() {
+            self.detach_client(id).map_err(|e| (-32009, e))?;
+            return Ok(json!({"accepted":true}));
+        }
+        if !a.terminal.connected || a.terminal.detached || a.terminal.complete {
+            return Err((-32009, "terminal is not attached".into()));
+        }
+        a.runtime
+            .as_mut()
+            .ok_or_else(conflict)?
+            .send(Command::Detach {
+                terminal: TerminalId::Main,
+            })
+            .map_err(|_| capacity())?;
+        a.terminal.attached = false;
+        a.terminal.detached = true;
+        a.record.terminal_attached = a.terminal.attached;
+        a.record.terminal_detached = a.terminal.detached;
+        self.dirty = true;
+        Ok(json!({"accepted":true}))
+    }
+    fn stop(&mut self, id: &str, reason: Option<String>) -> std::result::Result<Value, Fault> {
+        let a = self.sessions.get_mut(id).ok_or_else(missing)?;
+        // A member that stops no longer waits for its owner's handoff; one
+        // that arrives later is nobody's, and dropping it releases its leases.
+        a.exporting = None;
+        if a.live() {
+            self.retiring.insert(id.to_string());
+        }
+        if a.live()
+            && let Some(runtime) = &mut a.runtime
+        {
+            // Preserve the first cause, including a natural exit with no reason.
+            if !["stopping", "stopped", "failed"].contains(&a.record.state.as_str()) {
+                a.record.stop_reason = reason;
+            }
+            let _ = runtime.send(Command::Stop);
+            a.record.state = "stopping".into();
+        }
+        a.activity_at = None;
+        if a.record.set_agent_state(Default::default()) {
+            self.dirty = true;
+        }
+        if let Some(p) = a.take_preparing() {
+            self.refuse_preparing(p);
+        }
+        let a = self.sessions.get_mut(id).unwrap();
+        if let Some(p) = a.pending.take() {
+            a.cancel_pending(&p);
+            if let Some(r) = self.permission_mut(&p.id) {
+                r.state = "cancelled".into();
+            }
+            self.reply_permission(&p.id, "error", Some("session stopped".into()));
+            self.operation_finished(&p.id, p.notify, Some("session stopped".into()));
+        }
+        let a = self.sessions.get_mut(id).unwrap();
+        if let Some(w) = a.call.take() {
+            a.cancel_work(w.serial);
+            self.reply_waiting(&call_key(w.serial), Err("session stopped".into()));
+        }
+        let message = format!("goblin {} has stopped", self.sessions[id].record.agent_name);
+        self.end_execs(id, &message);
+        self.end_edits(id);
+        self.end_host_jobs(id);
+        self.dirty = true;
+        Ok(json!({"accepted":true}))
+    }
+    fn reply_permission(&mut self, id: &str, status: &str, message: Option<String>) {
+        for c in &mut self.connections {
+            if let Some((request, rpc_id)) = &c.waiting
+                && request == id
+            {
+                c.queue(rpc::result(
+                    rpc_id.clone(),
+                    json!({"request":id,"status":status,"message":message}),
+                ));
+                c.close = true;
+            }
+        }
+    }
+    /// Answer and close the connection waiting under `key`.
+    fn reply_waiting(&mut self, key: &str, result: std::result::Result<Value, String>) {
+        for c in &mut self.connections {
+            if let Some((waiting, rpc_id)) = &c.waiting
+                && waiting == key
+            {
+                c.queue(match &result {
+                    Ok(value) => rpc::result(rpc_id.clone(), value.clone()),
+                    Err(message) => rpc::error(rpc_id.clone(), -32009, message),
+                });
+                c.close = true;
+            }
+        }
+    }
+    fn withdraw(&mut self, connection: u64) {
+        self.exec_withdraw(connection);
+        self.edit_withdraw(connection);
+        self.host_withdraw(connection);
+        self.withdraw_preparing(connection);
+        // A disconnected caller no longer wants its app or preview.
+        for a in self.sessions.values_mut() {
+            if a.call.as_ref().is_some_and(|w| w.connection == connection) {
+                let serial = a.call.take().unwrap().serial;
+                a.cancel_work(serial);
+            }
+        }
+        let mut gone = None;
+        for a in self.sessions.values_mut() {
+            if a.pending
+                .as_ref()
+                .is_some_and(|p| p.connection == connection && !p.detached)
+            {
+                let p = a.pending.as_ref().unwrap();
+                if self
+                    .permissions
+                    .iter()
+                    .any(|r| r.id == p.id && r.state == "pending")
+                {
+                    let p = a.pending.take().unwrap();
+                    a.cancel_pending(&p);
+                    gone = Some((p.id, p.notify));
+                    break;
+                }
+            }
+        }
+        if let Some((id, notify)) = gone {
+            if let Some(r) = self.permission_mut(&id) {
+                r.state = "withdrawn".into();
+            }
+            self.operation_finished(&id, notify, None);
+            self.dirty = true;
+        }
+    }
+    fn start(&mut self, mut p: Start, scope: Option<&str>) -> std::result::Result<Value, Fault> {
+        if self.shutdown.is_some() {
+            return Err(conflict());
+        }
+        let key = format!("{}:{}", scope.unwrap_or("host"), p.key);
+        // A retried recreate returns its original acceptance even though its
+        // record is reserved by now; the record fills in everything else.
+        let original = p.recreate.is_some().then(|| p.clone());
+        if let Some(target) = p.recreate.clone() {
+            if let Some((old, result)) = self.launches.get(&key) {
+                return if old == &p {
+                    Ok(result.clone())
+                } else {
+                    Err(conflict())
+                };
+            }
+            self.prepare_recreate(&mut p, &target)?;
+        }
+        // A sandbox launch is a raid owner running a member: no tree, but
+        // the owner's workspace, scope, dev shell and approvals are shared.
+        let member = scope.is_some();
+        if !goblins_protocol::identifier(&p.key)
+            || !goblins_protocol::identifier(&p.name)
+            || !(member || Path::new(&p.configuration).is_absolute())
+            || p.cwd.as_ref().is_some_and(|cwd| !cwd.is_absolute())
+            || p.scope
+                .as_deref()
+                .is_some_and(|s| !goblins_protocol::scope_name(s))
+            || p.dev_shell
+                .as_deref()
+                .is_some_and(|d| goblins_runtime::devshell::parse_reference(d).is_err())
+            || !dimensions(p.rows, p.cols)
+        {
+            return Err((-32602, "invalid launch parameters".into()));
+        }
+        if let Some((old, result)) = self.launches.get(&key) {
+            return if old == &p {
+                Ok(result.clone())
+            } else {
+                Err(conflict())
+            };
+        }
+        let owner = match scope {
+            Some(owner) => Some(self.member_owner(owner, &p.name)?),
+            None => None,
+        };
+        let approvals = match &owner {
+            Some(owner) => self.copied_approvals(&owner.id)?,
+            None => AutoApprove::default(),
+        };
+        let manifest = match &owner {
+            // Taken after the retry comparison: a newer current manifest
+            // never turns an identical retry into a conflict.
+            Some(_) => Some(self.current_manifest.clone().ok_or((
+                -32009,
+                "no configuration is known yet; start the server with the installed goblins or run a goblin from the host".to_string(),
+            ))?),
+            None => None,
+        };
+        let join = self.launch_raid(&p, owner.as_ref().map(|o| o.id.as_str()))?;
+        let agent_name = self.allocate_name(p.agent_name.as_deref())?;
+        if self.launches.len() >= 4096
+            || self.sessions.values().filter(|a| a.live()).count() >= SESSIONS
+        {
+            return Err(capacity());
+        }
+        if self.sessions.len() >= 128 {
+            let old = self
+                .sessions
+                .iter()
+                .filter(|(_, a)| a.runtime.is_none() && a.can_evict())
+                .min_by_key(|(_, a)| a.created)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(capacity)?;
+            if let Some(a) = self.sessions.remove(&old) {
+                // A shared scope can still own a stopped member's resources.
+                attach::remove_files(&a.directory);
+                let _ = fs::remove_dir(a.directory);
+            }
+        }
+        let id = self.id("s");
+        // A member takes its owner's workspace, working directory, dev shell
+        // and leases from the owner's runtime, which answers without waiting
+        // for Nix work. A launch that fails after this leaves an answer
+        // nobody wants, which releases what it holds.
+        if let Some(owner) = &owner {
+            self.sessions
+                .get_mut(&owner.id)
+                .and_then(|a| a.runtime.as_mut())
+                .ok_or_else(conflict)?
+                .send(Command::Export { member: id.clone() })
+                .map_err(|_| capacity())?;
+        }
+        let directory = self.state.join(&id);
+        unix::private_directory(&directory).map_err(|e| (-32010, e.to_string()))?;
+        let terminal = TerminalStatus {
+            detached: p.detached,
+            ..Default::default()
+        };
+        let attach_path = directory.join("attach.sock");
+        let attach = attach::Attach::new(&attach_path).map_err(|e| (-32010, e.to_string()))?;
+        let recorded = p.recorded.take();
+        // A recreated goblin continues its record; a new root goblin gets a
+        // short record id of its own, used once it reaches running.
+        let line = match &recorded {
+            Some(record) => record.id.clone(),
+            None => {
+                let store = self.history.as_ref().ok();
+                crate::history::new_id(|candidate| {
+                    store.is_some_and(|s| s.records.contains_key(candidate))
+                        || self.sessions.values().any(|a| a.line == candidate)
+                })
+                .map_err(|e| (-32010, e.to_string()))?
+            }
+        };
+        let sequence = self.manifest_sequence + 1;
+        let launch_manifest = manifest.clone();
+        let source = match (owner.clone(), manifest) {
+            (Some(owner), Some(manifest)) => Source::Member {
+                scope: owner
+                    .scope
+                    .as_ref()
+                    .map(|fd| fd.try_clone().map(goblins_runtime::Fd::from))
+                    .transpose()
+                    .map_err(|e| (-32010, e.to_string()))?,
+                owner_scope: owner.scope_name,
+                manifest: manifest.path.clone(),
+                configuration: p.name.clone(),
+                auto: approvals.packages.clone(),
+                state: self.state.clone(),
+                history: self.history_directory.clone(),
+            },
+            _ => Source::Host {
+                configuration: p.configuration.clone().into(),
+                name: p.name.clone(),
+                scope: p.scope.clone(),
+                dev_shell: p.dev_shell.clone(),
+                workspace: self.workspace.clone(),
+                cwd: p.cwd.clone(),
+                state: self.state.clone(),
+                history: self.history_directory.clone(),
+                recreate: recorded.as_ref().map(|r| goblins_runtime::Recreate {
+                    packages: r.packages.approved.clone(),
+                    auto_approve: r.packages.auto_approve.clone(),
+                    docker: r.docker_enabled,
+                    variables: r.variables.clone(),
+                }),
+                sequence,
+            },
+        };
+        if owner.is_none() {
+            self.manifest_sequence = sequence;
+        }
+        let cwd = match &owner {
+            Some(owner) => self.sessions[&owner.id].record.cwd.clone(),
+            None => p.cwd.clone().filter(|_| self.workspace.is_none()),
+        };
+        let configuration = match &owner {
+            Some(_) => self
+                .current_manifest
+                .as_ref()
+                .map(|m| m.path.display().to_string())
+                .unwrap_or_default(),
+            None => p.configuration.clone(),
+        };
+        let runtime: Box<dyn Runtime> = match self.backend {
+            RuntimeBackend::Supervised => Box::new(
+                Supervised::start(
+                    self.executable.clone(),
+                    source,
+                    directory.join("resources"),
+                    (p.rows, p.cols),
+                    p.detached,
+                )
+                .map_err(|e| (-32010, e.to_string()))?,
+            ),
+            #[cfg(test)]
+            RuntimeBackend::Fake => Box::new(goblins_runtime::Fake::idle().holding(source)),
+        };
+        let record = SessionRecord {
+            agent_state: Default::default(),
+            agent_state_since: None,
+            inbox: 0,
+            docker_enabled: false,
+            scope: None,
+            dev_shell: None,
+            cwd,
+            id: id.clone(),
+            agent_name,
+            created_by: owner.as_ref().map(|o| CreatedBy {
+                id: o.id.clone(),
+                agent_name: self.sessions[&o.id].record.agent_name.clone(),
+            }),
+            name: p.name.clone(),
+            description: String::new(),
+            configuration,
+            state: "starting".into(),
+            identity: None,
+            initial_packages: vec![],
+            packages: vec![],
+            auto_approve: approvals.packages.keys().cloned().collect(),
+            terminal: directory.join("terminal.sock").display().to_string(),
+            attach: attach_path.display().to_string(),
+            server_log: None,
+            pty_eof: false,
+            terminal_complete: false,
+            terminal_interrupted: false,
+            terminal_attached: false,
+            terminal_detached: p.detached,
+            exit_code: None,
+            stop_reason: None,
+            detail: None,
+            raid: None,
+            shells: 0,
+            execs: 0,
+            recreated_from: recorded.as_ref().map(|r| r.id.clone()),
+            skipped: vec![],
+        };
+        let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
+        self.sessions.insert(
+            id.clone(),
+            Active {
+                activity_at: None,
+                member_scope: owner.as_ref().and_then(|o| o.scope_name.clone()),
+                launch_manifest,
+                exporting: owner.as_ref().map(|o| o.id.clone()),
+                policy: None,
+                support: Support::linux(),
+                dev_shell: None,
+                init: false,
+                granted_outputs: BTreeMap::new(),
+                auto_approve: approvals.packages,
+                auto_approve_dev_shells: approvals.dev_shells,
+                dev_identity: None,
+                call: None,
+                variables: recorded
+                    .as_ref()
+                    .map(|r| r.variables.clone())
+                    .unwrap_or_default(),
+                fresh: BTreeSet::new(),
+                attach,
+                handlers: None,
+                line,
+                recreated_from: recorded,
+                created: self.next,
+                record,
+                runtime: Some(runtime),
+                pending: None,
+                preparing: None,
+                terminal,
+                directory,
+            },
+        );
+        self.launches
+            .insert(key, (original.unwrap_or(p), result.clone()));
+        self.dirty = true;
+        if let Some(join) = join {
+            self.apply_launch_raid(&id, join)?;
+        }
+        Ok(result)
+    }
+    /// What a raid owner handed over for `member`, or why it could not: the
+    /// member starts with it, or its launch fails.
+    fn exported(
+        &mut self,
+        owner: &str,
+        member: String,
+        result: std::result::Result<Box<goblins_runtime::Handoff>, String>,
+    ) {
+        let Some(a) = self
+            .sessions
+            .get_mut(&member)
+            .filter(|a| a.exporting.as_deref() == Some(owner))
+        else {
+            // The launch never happened, or ended: nobody wants it, and
+            // dropping it releases what it holds.
+            return;
+        };
+        a.exporting = None;
+        match result {
+            Ok(handoff) => {
+                // A runtime that refuses it cannot start the member: it would
+                // wait for ever.
+                let refused = a
+                    .runtime
+                    .as_mut()
+                    .is_some_and(|runtime| runtime.send(Command::Start(handoff)).is_err());
+                if refused {
+                    self.fail_launch(
+                        &member,
+                        "the launch could not take its owner's handoff".into(),
+                    );
+                }
+            }
+            Err(error) => {
+                let name = self.sessions[owner].record.agent_name.clone();
+                self.fail_launch(
+                    &member,
+                    format!("goblin {name} could not hand over its resources: {error}"),
+                );
+            }
+        }
+    }
+    /// The members still waiting for `owner`'s handoff, which will not come.
+    fn fail_exports(&mut self, owner: &str, name: &str) {
+        let waiting: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|(_, a)| a.exporting.as_deref() == Some(owner))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for member in waiting {
+            self.fail_launch(
+                &member,
+                format!("goblin {name} stopped before it could hand over its resources"),
+            );
+        }
+    }
+    /// A member's launch that cannot start: it fails with `message` and its
+    /// runtime stops.
+    fn fail_launch(&mut self, id: &str, message: String) {
+        let Some(a) = self.sessions.get_mut(id) else {
+            return;
+        };
+        a.fail_launch(&message);
+        self.retiring.insert(id.to_string());
+        self.dirty = true;
+    }
+    /// The checks a raid owner's run passes before anything is allocated:
+    /// it owns an unpaused raid, runs, and its configuration permits the
+    /// target. Its live scope is held from here on.
+    fn member_owner(&mut self, owner: &str, _target: &str) -> std::result::Result<Owner, Fault> {
+        let raid = self.raids.of(owner);
+        if raid.is_none_or(|r| r.owner.as_deref() != Some(owner)) {
+            return Err((
+                -32009,
+                "only a raid owner can run goblins; create one with goblin raid create NAME".into(),
+            ));
+        }
+        let a = &self.sessions[owner];
+        if a.record.state != "running" || !a.live() {
+            return Err(conflict());
+        }
+        let policy = a.policy.as_deref().ok_or_else(conflict)?;
+        let scope = match &policy.scope {
+            None => None,
+            Some(scope) => {
+                if !self.scopes.live(&scope.name) {
+                    return Err((-32009, "the owner's scope has stopped".into()));
+                }
+                Some(std::sync::Arc::new(OwnedFd::from(
+                    self.scopes
+                        .membership(&self.state, &scope.name, false)
+                        .map_err(|e| (-32010, e.to_string()))?,
+                )))
+            }
+        };
+        Ok(Owner {
+            id: owner.into(),
+            scope,
+            scope_name: policy.scope.as_ref().map(|s| s.name.clone()),
+        })
+    }
+    #[cfg(test)]
+    fn sandbox_control_for_test(
+        &mut self,
+        session: &str,
+        method: &str,
+        value: Value,
+    ) -> std::result::Result<Value, Fault> {
+        let a = self.sessions.get(session).ok_or_else(missing)?;
+        let policy = a.policy.as_deref().ok_or_else(conflict)?;
+        let call = rpc::Call {
+            jsonrpc: "2.0".into(),
+            id: Some(json!(1)),
+            method: method.into(),
+            params: value.clone(),
+        };
+        goblins_runtime::sandbox::check(
+            &Capabilities {
+                policy,
+                support: &a.support,
+            },
+            &call,
+            0,
+            true,
+            a.record.state != "running",
+            false,
+        )
+        .map_err(policy::fault)?;
+        self.sandbox_control(session, method, value)
+    }
+    fn sandbox_control(
+        &mut self,
+        scope: &str,
+        method: &str,
+        value: Value,
+    ) -> std::result::Result<Value, Fault> {
+        match method {
+            "sessions.set-state" => {
+                let p: goblins_protocol::SetState = params(value)?;
+                let a = self.sessions.get_mut(scope).ok_or_else(missing)?;
+                if a.record.state != "running" || !a.live() {
+                    return Err(conflict());
+                }
+                self.dirty |= a.report_activity(p.state);
+                Ok(json!({"accepted":true}))
+            }
+            "sessions.set-variables" => {
+                let p: goblins_protocol::SetVariables = params(value)?;
+                let a = self.sessions.get(scope).ok_or_else(missing)?;
+                if a.record.state != "running" || !a.live() {
+                    return Err(conflict());
+                }
+                // Only the caller's own record. Without history the server
+                // keeps them, for a record created when it takes the store.
+                let line = a.line.clone();
+                let existing = self
+                    .history
+                    .as_ref()
+                    .ok()
+                    .and_then(|store| store.records.get(&line));
+                let recorded = existing.is_some();
+                let mut scratch = line_record(a, existing);
+                scratch
+                    .set_variables(&p.variables)
+                    .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
+                self.update_record(&line, |r| r.set_variables(&p.variables))
+                    .map_err(|e| (-32010, format!("variables not recorded: {e}")))?;
+                let a = self.sessions.get_mut(scope).unwrap();
+                a.variables = scratch.variables;
+                for (name, value) in &p.variables {
+                    if value.is_empty() {
+                        a.fresh.remove(name);
+                    } else {
+                        a.fresh.insert(name.clone());
+                    }
+                }
+                if recorded && p.variables.contains_key("session_id") {
+                    self.merge_conversation(&line);
+                }
+                Ok(json!({"accepted":true,"recorded":recorded}))
+            }
+            "sessions.status" => {
+                let _: Empty = params(value)?;
+                let record = &self.sessions[scope].record;
+                Ok(json!({"id":record.id,"agent_name":record.agent_name,
+                    "name":record.name,"description":record.description,
+                    "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
+                    "dev_shell":record.dev_shell,
+                    "attached":record.terminal_attached,
+                    "attached_since":self.sessions[scope].attach.since(),
+                    "nix":self.sessions[scope].policy.as_ref().is_some_and(|p| p.nix),
+                    "host_commands":self.sessions[scope].policy.as_ref().is_some_and(|p| p.host_commands),
+                    "permission_bypass":self.sessions[scope].policy.as_ref().and_then(|p| p.integration.as_ref().map(|_| p.bypass_permissions)),
+                    "allowed_run_targets":self.sessions[scope].policy.as_ref()
+                        .map_or(&[][..], |p| &p.run_targets[..]),
+                    "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
+                        "role":r.role,"owner":r.owner,"paused":r.paused,
+                        "owner_name":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.agent_name)})),
+                    "created_by":record.created_by}))
+            }
+            "devshell.lock" => {
+                let _: Empty = params(value)?;
+                let a = &self.sessions[scope];
+                let (Some(policy), Some(dev)) = (
+                    a.policy.as_ref().and_then(|p| p.dev_shell.as_ref()),
+                    a.dev_shell.as_ref(),
+                ) else {
+                    return Err((
+                        -32602,
+                        "this sandbox was not started with a dev shell".to_string(),
+                    ));
+                };
+                Ok(
+                    json!({"path":policy.path.join("flake.lock"),"lock":dev.lock,
+                    "generation":dev.generation}),
+                )
+            }
+            // A raid owner sees and stops only the members created in its
+            // raid, while it owns it. No goblin attaches to another's terminal.
+            "sessions.list" => {
+                let _: Empty = params(value)?;
+                Ok(json!(
+                    self.sessions
+                        .values()
+                        .filter(|a| a.live() && self.controls(scope, &a.record.id))
+                        .map(|a| self.sandbox_record(&a.record))
+                        .collect::<Vec<_>>()
+                ))
+            }
+            "sessions.get" => {
+                let p: SessionId = params(value)?;
+                let id = self.resolve_member(&p.session, scope)?;
+                Ok(self.sandbox_record(&self.sessions[&id].record))
+            }
+            "sessions.start" => {
+                let p: MemberStart = params(value)?;
+                let result = self.start(
+                    Start {
+                        key: p.key,
+                        name: p.name,
+                        agent_name: p.agent_name,
+                        configuration: String::new(),
+                        cwd: None,
+                        scope: None,
+                        dev_shell: None,
+                        rows: 24,
+                        cols: 80,
+                        detached: p.detached,
+                        raid: None,
+                        recreate: None,
+                        recorded: None,
+                    },
+                    Some(scope),
+                )?;
+                Ok(
+                    json!({"session":result["session"],"agent_name":result["agent_name"],
+                    "state":result["state"]}),
+                )
+            }
+            "sessions.stop" => {
+                let p: Stop = params(value)?;
+                let id = self.resolve_member(&p.session, scope)?;
+                let reason = format!(
+                    "stopped by raid owner {} ({scope})",
+                    self.sessions[scope].record.agent_name
+                );
+                self.stop(&id, Some(reason))
+            }
+            m if m.starts_with("raids.") => self.sandbox_raids(scope, m, value),
+            "host.status" | "host.list" | "host.cancel" => {
+                let scope = scope.to_string();
+                self.host_control(Some(&scope), method, value)
+            }
+            _ => Err((-32601, "method unavailable on sandbox endpoint".into())),
+        }
+    }
+    /// `actor` is `host`, or the daemon for an inherited approval.
+    fn decide(&mut self, p: Decision, actor: &str) -> std::result::Result<Value, Fault> {
+        let r = self
+            .permissions
+            .iter()
+            .find(|r| r.id == p.request)
+            .ok_or_else(missing)?;
+        if r.kind == raids::RAID_OWNER {
+            return Err((
+                -32602,
+                "use goblins raid set-owner or goblins raid destroy to resolve a paused raid"
+                    .into(),
+            ));
+        }
+        if r.session != p.session || r.approval != p.approval || r.state != "pending" {
+            return Err(conflict());
+        }
+        let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
+        let pending = a
+            .pending
+            .as_ref()
+            .filter(|r| r.id == p.request)
+            .ok_or_else(conflict)?;
+        // The preview is the approver's whole basis for a refresh, and approval
+        // applies the candidate it shows. Denial still cancels the evaluation.
+        if p.approved && r.kind == "devshell" && pending.dev_identity.is_none() {
+            return Err((
+                -32009,
+                "the dev shell refresh is still being evaluated; decide once its preview is shown"
+                    .into(),
+            ));
+        }
+        // The runtime reports EOF/unexpected input in SandboxClosed. An
+        // unobserved hang-up has the same outcome as a hang-up just after
+        // this synchronous decision: its reply has no reader.
+        if !pending.detached
+            && !self
+                .connections
+                .iter()
+                .any(|c| c.id == pending.connection && !c.dead)
+        {
+            let connection = pending.connection;
+            self.withdraw(connection);
+            return Err(conflict());
+        }
+        let request = self.permissions.iter().find(|r| r.id == p.request).unwrap();
+        let inherited = if request.kind == "package" {
+            self.auto_output(&p.session, &request.package)
+        } else {
+            None
+        };
+        let a = self.sessions.get_mut(&p.session).unwrap();
+        let pending = a.pending.as_ref().unwrap();
+        let (notify, serial, host) = (pending.notify, pending.serial, pending.host.is_some());
+        let output = inherited.or_else(|| pending.initial_output.clone());
+        a.cancel_work(serial);
+        if host {
+            return self.decide_host(p, actor);
+        }
+        if p.approved {
+            let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
+            a.runtime
+                .as_mut()
+                .ok_or_else(conflict)?
+                .send(Command::Decide {
+                    request: Request {
+                        kind: r.kind.clone(),
+                        id: p.request.clone(),
+                        package: r.package.clone(),
+                        reason: r.reason.clone(),
+                    },
+                    approved: true,
+                    output,
+                })
+                .map_err(|_| capacity())?;
+        } else {
+            a.pending.take();
+        }
+        let r = self.permission_mut(&p.request).unwrap();
+        r.approved = Some(p.approved);
+        r.state = if p.approved { "realizing" } else { "denied" }.into();
+        self.operation(
+            &p.request,
+            actor,
+            crate::operation::Change::Decided {
+                approved: p.approved,
+            },
+        );
+        if !p.approved {
+            self.reply_permission(&p.request, "denied", None);
+            self.operation_finished(&p.request, notify, None);
+            let r = self.permissions.iter().find(|r| r.id == p.request).unwrap();
+            if actor == "host" && r.kind == "package" {
+                let package = r.package.clone();
+                // Information only; a recreated goblin may ask again.
+                let line = self.sessions[&p.session].line.clone();
+                let _ = self.update_record(&line, |r| r.deny(&package));
+            }
+        }
+        self.dirty = true;
+        Ok(json!({"accepted":true,"request":p.request,"approved":p.approved}))
+    }
+    /// A refresh to this sandbox's current generation, or to one in its
+    /// auto-approve set, grants no new trust: the host launched or approved it.
+    fn auto_dev_shell(&self, session: &str, identity: &str) -> bool {
+        self.sessions.get(session).is_some_and(|a| {
+            a.dev_identity.as_deref() == Some(identity)
+                || a.auto_approve_dev_shells.contains(identity)
+        })
+    }
+    fn approve_inherited_requests(&mut self) {
+        let decisions: Vec<_> = self
+            .permissions
+            .iter()
+            .filter(|r| r.state == "pending" && ["package", "devshell"].contains(&r.kind.as_str()))
+            .filter(|r| {
+                self.sessions.get(&r.session).is_some_and(|a| {
+                    a.record.state == "running"
+                        && a.pending.as_ref().is_some_and(|p| {
+                            if r.kind == "devshell" {
+                                return p
+                                    .dev_identity
+                                    .as_deref()
+                                    .is_some_and(|i| self.auto_dev_shell(&r.session, i));
+                            }
+                            p.initial_output.is_some()
+                                || self.auto_output(&r.session, &r.package).is_some()
+                        })
+                })
+            })
+            .map(|r| Decision {
+                session: r.session.clone(),
+                request: r.id.clone(),
+                approval: r.approval.clone(),
+                approved: true,
+            })
+            .collect();
+        for decision in decisions {
+            let _ = self.decide(decision, goblins_protocol::messages::NOTICE_SENDER);
+        }
+    }
+    fn host(
+        &mut self,
+        c: &mut Connection,
+        method: &str,
+        value: Value,
+    ) -> std::result::Result<Value, Fault> {
+        if self.shutdown.is_some() && !["server.status", "server.stop"].contains(&method) {
+            return Err((-32009, "server is stopping".into()));
+        }
+        match method {
+            "server.status" => {
+                let _: Empty = params(value)?;
+                Ok(
+                    json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.live()).count(),"history":self.history_status(),
+                        "manifest":self.current_manifest.as_ref().map(|m| &m.path)}),
+                )
+            }
+            "server.stop" => {
+                let _: Empty = params(value)?;
+                // Flush acceptance before teardown, but a non-reading host
+                // cannot prevent shutdown by holding its response queue full.
+                self.shutdown
+                    .get_or_insert((c.id, Instant::now() + std::time::Duration::from_secs(1)));
+                c.subscription = None;
+                c.close = true;
+                Ok(json!({"accepted":true}))
+            }
+            "sessions.list" => {
+                let _: Empty = params(value)?;
+                Ok(json!(self.snapshot().sessions))
+            }
+            "sessions.get" => {
+                let p: SessionId = params(value)?;
+                let id = self.resolve_session(&p.session)?;
+                Ok(json!(self.sessions[&id].record))
+            }
+            "sessions.start" => self.start(params(value)?, None),
+            "history.list" => {
+                let _: Empty = params(value)?;
+                self.history_list()
+            }
+            "sessions.stop" => {
+                let p: Stop = params(value)?;
+                let id = self.resolve_session(&p.session)?;
+                self.stop(&id, Some("stopped by host".into()))
+            }
+            "sessions.detach" => {
+                let p: SessionId = params(value)?;
+                let id = self.resolve_session(&p.session)?;
+                self.detach(&id)
+            }
+            "sessions.kill_execs" => {
+                let p: SessionId = params(value)?;
+                self.kill_execs(&p.session)
+            }
+            "sessions.resize" => {
+                let p: Resize = params(value)?;
+                if !dimensions(p.rows, p.cols) {
+                    return Err((-32602, "invalid dimensions".into()));
+                }
+                let a = self.sessions.get_mut(&p.session).ok_or_else(missing)?;
+                let terminal = if a.handlers.is_some() {
+                    a.attach.terminal().ok_or_else(conflict)?
+                } else {
+                    TerminalId::Main
+                };
+                if let Some(runtime) = &mut a.runtime {
+                    runtime
+                        .send(Command::Resize {
+                            terminal,
+                            rows: p.rows,
+                            cols: p.cols,
+                        })
+                        .map_err(|_| capacity())?;
+                }
+                Ok(json!({"accepted":true}))
+            }
+            "permissions.list" => {
+                let p: Filter = params(value)?;
+                Ok(json!(
+                    self.permissions
+                        .iter()
+                        .filter(|r| p.session.as_ref().is_none_or(|s| *s == r.session)
+                            && p.state.as_ref().is_none_or(|s| *s == r.state))
+                        .collect::<Vec<_>>()
+                ))
+            }
+            "permissions.get" => {
+                let p: RequestId = params(value)?;
+                Ok(json!(
+                    self.permissions
+                        .iter()
+                        .find(|r| r.id == p.request)
+                        .ok_or_else(missing)?
+                ))
+            }
+            "permissions.decide" => self.decide(params(value)?, "host"),
+            "state.subscribe" => {
+                let _: Empty = params(value)?;
+                if c.subscription.is_some() {
+                    return Err(conflict());
+                }
+                // Every earlier mutation is published before taking this snapshot.
+                self.publish();
+                let id = self.id("sub");
+                c.subscription = Some(id.clone());
+                Ok(json!({"subscription":id,"sequence":self.sequence,"snapshot":self.snapshot()}))
+            }
+            "state.unsubscribe" => {
+                let p: Subscription = params(value)?;
+                if c.subscription.as_deref() != Some(&p.subscription) {
+                    return Err(conflict());
+                }
+                c.subscription = None;
+                Ok(json!({"accepted":true}))
+            }
+            m if m.starts_with("raids.") => self.host_raids(m, value),
+            "host.cancel" | "host.status" | "host.list" => self.host_control(None, method, value),
+            _ => Err((-32601, "method unavailable on host endpoint".into())),
+        }
+    }
+    fn dispatch(&mut self, c: &mut Connection, call: rpc::Call) {
+        // Older controller fixtures dispatch a sandbox call directly. Feed
+        // those through the real gate; production calls arrive already gated.
+        #[cfg(test)]
+        if c.relay.is_none()
+            && call.id.is_some()
+            && let Role::Sandbox(session) = &c.role
+        {
+            let fallback = Policy::fixture("shell", &[]);
+            let a = self.sessions.get(session);
+            let linux = Support::linux();
+            let capabilities = Capabilities {
+                policy: a.and_then(|a| a.policy.as_deref()).unwrap_or(&fallback),
+                support: a.map_or(&linux, |a| &a.support),
+            };
+            if let Err(refusal) = goblins_runtime::sandbox::check(
+                &capabilities,
+                &call,
+                c.body_bytes,
+                c.initialized,
+                a.is_some_and(|a| a.record.state != "running"),
+                !c.input.is_empty(),
+            ) {
+                c.answer(call.id.unwrap(), Err(policy::fault(refusal)));
+                return;
+            }
+        }
+
+        // Every authorization below sees current membership.
+        self.reconcile_raids();
+        // JSON-RPC notifications get no response and cannot authorize mutations.
+        let Some(id) = call.id else {
+            return;
+        };
+        let outcome = (|| -> std::result::Result<Option<Value>, Fault> {
+            let messaging = matches!(
+                call.method.as_str(),
+                "messages.send"
+                    | "messages.get"
+                    | "messages.reply"
+                    | "inbox.next"
+                    | "inbox.status"
+                    | "inbox.complete"
+                    | "inbox.requeue"
+                    | "communications.list"
+            );
+            // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
+            // Host commands carry argument lists (goblins_protocol::rpc::MAX_HOST_COMMAND).
+            let legacy_limit = 16384;
+            if matches!(c.role, Role::Host) && !messaging && c.body_bytes > legacy_limit {
+                return Err((-32602, "request exceeds method frame limit".into()));
+            }
+            if call.method == "initialize" {
+                let p: Initialize = params(call.params)?;
+                if c.initialized {
+                    return Err(conflict());
+                }
+                if p.api != 1 {
+                    return Err((-32002, "unsupported Goblins API".into()));
+                }
+                c.initialized = true;
+                if matches!(c.role, Role::Host) {
+                    c.decoder = Decoder::new(goblins_protocol::messages::MAX_REQUEST, None);
+                }
+                return Ok(Some(
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{match &c.role { Role::Sandbox(id) => self.sessions.get(id).map_or_else(|| Support::linux().sandbox_features(), |a| a.support.sandbox_features()), Role::Host => vec![] }},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                ));
+            }
+            if !c.initialized {
+                return Err((-32001, "initialize first".into()));
+            }
+            if messaging {
+                if self.shutdown.is_some() {
+                    return Err(conflict());
+                }
+                if call.method == "communications.list" && !matches!(c.role, Role::Host) {
+                    return Err((-32601, "method unavailable on sandbox endpoint".into()));
+                }
+                let actor = match &c.role {
+                    Role::Host => "host".to_owned(),
+                    Role::Sandbox(id) => id.clone(),
+                };
+                // The worker records queued membership before this call.
+                let work = crate::messaging::Work::Call {
+                    connection: c.id,
+                    id: id.clone(),
+                    actor,
+                    method: call.method,
+                    params: call.params,
+                    directory: self.message_directory(),
+                    raids: self.raid_outbox.drain(..).collect(),
+                    operations: self.operation_outbox.drain(..).collect(),
+                };
+                if let Err(e) = self.messaging.commands.try_send(work) {
+                    if let crate::messaging::Work::Call {
+                        raids, operations, ..
+                    } = unsent(e)
+                    {
+                        self.raid_outbox = raids.into();
+                        self.operation_outbox = operations.into();
+                    }
+                    return Err(capacity());
+                }
+                c.waiting = Some(("mailbox".into(), id.clone()));
+                return Ok(None);
+            }
+            match &c.role {
+                Role::Host if call.method == "sessions.exec" => {
+                    self.exec_start(c, id.clone(), call.params).map(|()| None)
+                }
+                Role::Host if call.method == "history.prune" => {
+                    self.history_prune(c, id.clone(), call.params)
+                }
+                Role::Host => self.host(c, &call.method, call.params).map(Some),
+                Role::Sandbox(session) => {
+                    let session = session.clone();
+                    if self.shutdown.is_some()
+                        || !self
+                            .sessions
+                            .get(&session)
+                            .is_some_and(|a| a.record.state == "running" && a.live())
+                    {
+                        return Err(conflict());
+                    }
+                    if call.method == "sessions.detach" {
+                        let _: Empty = params(call.params)?;
+                        // Endpoint identity selects this sandbox. No caller-
+                        // supplied session/name can affect another sandbox.
+                        let session = session.clone();
+                        let result = self.detach(&session)?;
+                        c.close = true;
+                        return Ok(Some(result));
+                    }
+                    if call.method == "sessions.attach" {
+                        // Attachments outlive any check of who may hold them.
+                        return Err((
+                            -32601,
+                            "goblins do not attach to other goblins' terminals; the host can, with goblins attach NAME".into(),
+                        ));
+                    }
+                    if call.method == "editor.open" {
+                        return self
+                            .editor_open(c, &session, id.clone(), call.params)
+                            .map(|()| None);
+                    }
+                    if matches!(call.method.as_str(), "flake.run" | "devshell.diff") {
+                        let serial = self.number();
+                        let command = if call.method == "flake.run" {
+                            let p: FlakeRunParams = params(call.params)?;
+                            // The trusted generation's own source and lock grant
+                            // no new trust, so nothing is asked of the host.
+                            Command::Run { serial, app: p.app }
+                        } else {
+                            let p: DevShellDiffParams = params(call.params)?;
+                            // A preview only: no record, no candidate, no change.
+                            Command::Diff {
+                                serial,
+                                changes: goblins_runtime::devshell::Changes {
+                                    update: p.update,
+                                    lock: p.lock,
+                                },
+                            }
+                        };
+                        let a = self.sessions.get_mut(&session).ok_or_else(missing)?;
+                        if a.call.is_some() {
+                            return Err((
+                                -32009,
+                                "another flake run or dev shell diff is in progress".into(),
+                            ));
+                        }
+                        a.runtime
+                            .as_mut()
+                            .ok_or_else(conflict)?
+                            .send(command)
+                            .map_err(|_| capacity())?;
+                        a.call = Some(Call {
+                            serial,
+                            connection: c.id,
+                        });
+                        c.waiting = Some((call_key(serial), id.clone()));
+                        return Ok(None);
+                    }
+                    if call.method != "permissions.request" {
+                        let result = self.sandbox_control(&session, &call.method, call.params)?;
+                        c.close = true;
+                        return Ok(Some(result));
+                    }
+                    let mut p: PermissionParams = params(call.params)?;
+                    let session = session.clone();
+                    let a = self.sessions.get(&session).ok_or_else(missing)?;
+                    if a.record.state != "running" || a.pending.is_some() || a.preparing.is_some() {
+                        return Err(conflict());
+                    }
+                    if p.kind == "docker" {
+                        p.package =
+                            format!("Docker scope: {}", a.docker_scope().unwrap_or_default());
+                    }
+                    if p.kind == "package" && a.record.packages.len() >= 64 {
+                        return Err(capacity());
+                    }
+                    // The approval shows the resolved host directory, and
+                    // approving runs exactly this: the request waits while
+                    // the runtime resolves and pins it.
+                    if p.kind == "host-command"
+                        && let Some(command) = &p.host
+                    {
+                        self.host_check(&session)?;
+                        let serial = self.number();
+                        let request = format!("{}-r{serial}", self.instance);
+                        let cwd = PathBuf::from(&command.cwd);
+                        let a = self.sessions.get_mut(&session).unwrap();
+                        a.runtime
+                            .as_mut()
+                            .ok_or_else(conflict)?
+                            .send(Command::PrepareHostJob {
+                                request: request.clone(),
+                                cwd,
+                            })
+                            .map_err(|_| capacity())?;
+                        c.waiting = Some((request.clone(), id.clone()));
+                        a.preparing = Some(host::Preparing {
+                            request,
+                            serial,
+                            connection: c.id,
+                            rpc: id.clone(),
+                            params: p,
+                        });
+                        return Ok(None);
+                    }
+                    if p.kind == "devshell" {
+                        p.package = match (&p.update, p.lock) {
+                            (Some(inputs), _) if inputs.is_empty() => {
+                                "refresh --update (all inputs)".into()
+                            }
+                            (Some(inputs), _) => format!("refresh --update {}", inputs.join(" ")),
+                            (None, true) => "refresh --lock".into(),
+                            (None, false) => "refresh".into(),
+                        };
+                    }
+                    self.submit(c, &id, &session, p, None, None)
+                }
+            }
+        })();
+        c.answer(id, outcome);
+    }
+    /// Show a checked permission request from `session` for approval, or
+    /// approve it at once when it is already this goblin's. `serial` is the
+    /// one a parked host command reserved; `host` is its checked command.
+    fn submit(
+        &mut self,
+        c: &mut Connection,
+        id: &Value,
+        session: &str,
+        p: PermissionParams,
+        serial: Option<u64>,
+        host: Option<host::Spec>,
+    ) -> std::result::Result<Option<Value>, Fault> {
+        let (session, mut p) = (session.to_string(), p);
+        if let Some(spec) = &host {
+            p.package = spec.subject();
+        }
+        let host_preview = host.as_ref().map(host::Spec::preview);
+        let detached = host.as_ref().is_some_and(|h| h.detach);
+        let docker_scope = self.sessions[&session].docker_scope().map(str::to_string);
+        // Completions must not be dropped, so a backlog the
+        // messaging worker has not accepted refuses new requests.
+        if self.operation_outbox.len() >= 1024 {
+            return Err(capacity());
+        }
+        // Raid-owner prompts (one per raid) never take a slot.
+        if self
+            .permissions
+            .iter()
+            .filter(|r| r.kind != raids::RAID_OWNER)
+            .count()
+            >= 256
+        {
+            let index = self
+                .permissions
+                .iter()
+                .position(|r| !UNEVICTABLE.contains(&r.state.as_str()))
+                .ok_or_else(capacity)?;
+            let removed = self.permissions.remove(index).unwrap();
+            self.host_outcomes.remove(&removed.id);
+        }
+        let serial = serial.unwrap_or_else(|| self.number());
+        let request = format!("{}-r{serial}", self.instance);
+        let approval = format!("{}-a{serial}", self.instance);
+        let inherited_output = if p.kind == "package" {
+            self.auto_output(&session, &p.package)
+        } else {
+            None
+        };
+        let auto_approve = inherited_output.is_some()
+            || (p.kind == "docker" && self.sessions[&session].record.docker_enabled);
+        let a = self.sessions.get_mut(&session).unwrap();
+        let notify = a
+            .policy
+            .as_ref()
+            .and_then(|p| p.integration.as_ref())
+            .is_some();
+        let runtime = a.runtime.as_mut().ok_or_else(conflict)?;
+        if p.kind == "devshell" {
+            runtime
+                .send(Command::Refresh {
+                    approval: serial,
+                    changes: goblins_runtime::devshell::Changes {
+                        update: p.update.clone(),
+                        lock: p.lock,
+                    },
+                })
+                .map_err(|_| capacity())?;
+        }
+        if auto_approve || p.kind == "package" {
+            runtime
+                .send(if auto_approve {
+                    Command::Decide {
+                        request: Request {
+                            kind: p.kind.clone(),
+                            id: request.clone(),
+                            package: p.package.clone(),
+                            reason: p.reason.clone(),
+                        },
+                        approved: true,
+                        output: inherited_output,
+                    }
+                } else {
+                    Command::Preview {
+                        approval: serial,
+                        package: p.package.clone(),
+                    }
+                })
+                .map_err(|_| capacity())?;
+        }
+        a.pending = Some(Pending {
+            initial_output: None,
+            dev_identity: None,
+            id: request.clone(),
+            serial,
+            connection: c.id,
+            notify,
+            host,
+            detached,
+        });
+        self.permissions.push_back(PermissionRecord {
+            kind: p.kind.clone(),
+            id: request.clone(),
+            session,
+            agent_name: a.record.agent_name.clone(),
+            approval,
+            package: p.package,
+            reason: p.reason,
+            state: if auto_approve { "realizing" } else { "pending" }.into(),
+            approved: if auto_approve { Some(true) } else { None },
+            preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
+            message: None,
+        });
+        let r = self.permissions.back().unwrap();
+        let change = crate::operation::Change::Requested {
+            kind: r.kind.clone(),
+            subject: r.package.clone(),
+            reason: r.reason.clone(),
+            automatic: auto_approve,
+        };
+        let session = r.session.clone();
+        let host = r.kind == "host-command";
+        self.operation(&request, &session, change);
+        self.dirty = true;
+        if detached {
+            // Its outcome arrives as an operation notice.
+            c.close = true;
+            return Ok(Some(json!({"request":request,"status":"pending"})));
+        }
+        if host {
+            // The ID comes first: it names the job's output.
+            c.queue(json!({"jsonrpc":"2.0","method":"host.submitted",
+                "params":{"request":request}}));
+        }
+        c.waiting = Some((request, id.clone()));
+        Ok(None)
+    }
+    fn message_directory(&self) -> crate::mailbox::Directory {
+        self.sessions
+            .iter()
+            .map(|(id, a)| {
+                (
+                    id.clone(),
+                    crate::mailbox::Session {
+                        id: id.clone(),
+                        agent_name: a.record.agent_name.clone(),
+                        stop_reason: a.record.stop_reason.clone(),
+                        running: matches!(a.record.state.as_str(), "starting" | "running"),
+                    },
+                )
+            })
+            .collect()
+    }
+    /// Read and handle at most one complete frame from `c`.
+    fn service(&mut self, c: &mut Connection) {
+        if let Some(call) = c.read() {
+            match c.exec {
+                Some(exec) => self.exec_input(c, exec, call),
+                None => self.dispatch(c, call),
+            }
+            // Descriptors arrive with their frame's first bytes, possibly
+            // several reads before it completes: they wait until it does,
+            // and those the completed frame did not take are closed.
+            c.fds.clear();
+        }
+    }
+    /// The messaging worker's latest report: inbox counts and log health.
+    fn messaging_report(&mut self, report: &crate::messaging::Report) {
+        self.inbox_counts(&report.queued);
+        if self.messaging_health != report.health {
+            self.messaging_health = report.health;
+            self.dirty = true;
+        }
+    }
+    /// Each goblin's queued inbox count, as the messaging worker reported it.
+    fn inbox_counts(&mut self, counts: &BTreeMap<String, u64>) {
+        for (id, a) in &mut self.sessions {
+            let queued = counts.get(id).copied().unwrap_or(0);
+            if a.record.inbox != queued {
+                a.record.inbox = queued;
+                self.dirty = true;
+            }
+        }
+    }
+    fn expire_activity(&mut self, now: Instant) {
+        for a in self.sessions.values_mut() {
+            if a.record.state != "running"
+                || a.activity_at.is_none_or(|at| {
+                    now.saturating_duration_since(at) >= std::time::Duration::from_secs(30)
+                })
+            {
+                a.activity_at = None;
+                self.dirty |= a.record.set_agent_state(Default::default());
+            }
+        }
+    }
+    pub fn tick(&mut self) -> Result<()> {
+        self.scopes.tick(&self.state);
+        self.expire_activity(Instant::now());
+        self.poll_history();
+        self.poll_deletes();
+        if let Some(report) = self.messaging.inbox.try_iter().last() {
+            self.messaging_report(&report);
+        }
+        let responses: Vec<_> = self.messaging.results.try_iter().collect();
+        for response in responses {
+            if let Some(c) = self
+                .connections
+                .iter_mut()
+                .find(|c| c.id == response.connection)
+            {
+                c.waiting = None;
+                c.close = matches!(c.role, Role::Sandbox(_));
+                c.queue(match response.result {
+                    Ok(result) => rpc::result(response.id, result),
+                    Err((code, message)) => rpc::error(response.id, code, &message),
+                });
+            }
+        }
+        // Drain every runtime's round. Process events go first, as they did
+        // when the daemon read every init channel before the sessions, and
+        // in order with the start that opened init.
+        let mut polled = BTreeMap::new();
+        for (id, a) in &mut self.sessions {
+            if let Some(runtime) = &mut a.runtime {
+                let events: Vec<_> = std::iter::from_fn(|| runtime.poll()).collect();
+                polled.insert(id.clone(), (events, runtime.ended()));
+            }
+        }
+        for (id, (events, _)) in &mut polled {
+            for event in std::mem::take(events) {
+                match event {
+                    Event::Terminal {
+                        terminal: TerminalId::Process(_),
+                        ..
+                    }
+                    | Event::Spawned { .. }
+                    | Event::SpawnFailed { .. }
+                    | Event::Exited { .. }
+                    | Event::InitLost => self.process_event(id, event),
+                    Event::HostJobPrepared { .. }
+                    | Event::HostJobFailed { .. }
+                    | Event::HostJobFinished { .. } => self.host_event(id, event),
+                    Event::Exported { member, result } => self.exported(id, member, result),
+                    event => {
+                        if matches!(event, Event::Started { .. })
+                            && let Some(a) = self.sessions.get_mut(id)
+                        {
+                            a.init = true;
+                        }
+                        events.push(event)
+                    }
+                }
+            }
+        }
+        self.poll_edits();
+        for _ in 0..HOSTS {
+            match self.listener.accept() {
+                Ok((p, _))
+                    if self
+                        .connections
+                        .iter()
+                        .filter(|c| matches!(c.role, Role::Host))
+                        .count()
+                        < HOSTS =>
+                {
+                    let id = self.number();
+                    self.connections.push(Connection::new(id, Role::Host, p)?);
+                }
+                Ok(_) => (),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let ids: Vec<_> = self.sessions.keys().cloned().collect();
+        for id in ids {
+            let mut a = self.sessions.remove(&id).unwrap();
+            let (results, runtime_ended) = polled.remove(&id).unwrap_or_default();
+            let mut payload_exited = false;
+            for result in results {
+                match result {
+                    Event::ScopeFailed { name } => {
+                        a.scope_failed(&name);
+                        for other in self.sessions.values_mut() {
+                            other.scope_failed(&name);
+                        }
+                    }
+                    Event::ScopeNeeded { name } => {
+                        a.member_scope = Some(name.clone());
+                        if !["stopped", "failed", "stopping"].contains(&a.record.state.as_str()) {
+                            let result = self
+                                .scopes
+                                .membership(&self.state, &name, true)
+                                .map_err(|e| e.to_string());
+                            if a.runtime.as_mut().is_none_or(|r| {
+                                r.send(Command::ScopeMembership { result }).is_err()
+                            }) {
+                                a.fail_launch("scope membership could not be delivered");
+                                self.dirty = true;
+                            }
+                        }
+                    }
+                    Event::SandboxOpened { connection } => {
+                        if !["stopped", "failed"].contains(&a.record.state.as_str()) {
+                            let cid = self.number();
+                            self.connections
+                                .push(Connection::relayed(cid, id.clone(), connection));
+                        } else if let Some(runtime) = &mut a.runtime {
+                            let _ = runtime.send(Command::SandboxClose { connection });
+                        }
+                    }
+                    Event::SandboxCall { connection, call } => {
+                        if !["stopped", "failed"].contains(&a.record.state.as_str())
+                            && let Some(c) = self.connections.iter_mut().find(|c| {
+                                matches!(&c.role, Role::Sandbox(s) if s == &id)
+                                    && c.relay == Some(connection)
+                                    && !c.dead
+                            })
+                            && c.incoming.is_none()
+                        {
+                            c.incoming = Some(call);
+                        } else if let Some(runtime) = &mut a.runtime {
+                            let _ = runtime.send(Command::SandboxClose { connection });
+                        }
+                    }
+                    Event::SandboxClosed { connection } => {
+                        if let Some(c) = self.connections.iter_mut().find(|c| {
+                            matches!(&c.role, Role::Sandbox(s) if s == &id)
+                                && c.relay == Some(connection)
+                        }) {
+                            c.dead = true;
+                        }
+                    }
+                    Event::PayloadExited => payload_exited = true,
+                    // Handled before the sessions, above.
+                    Event::Spawned { .. }
+                    | Event::SpawnFailed { .. }
+                    | Event::Exited { .. }
+                    | Event::InitLost
+                    | Event::HostJobPrepared { .. }
+                    | Event::HostJobFailed { .. }
+                    | Event::HostJobFinished { .. }
+                    | Event::Exported { .. } => (),
+                    Event::Started {
+                        docker_enabled,
+                        policy,
+                        support,
+                        dev_shell,
+                        identity,
+                        recreated,
+                        auto,
+                    } => {
+                        // Started: nothing the launch was accepted against
+                        // needs holding any more.
+                        a.launch_manifest = None;
+                        // Recreated grants are this goblin's own: children
+                        // asking for them are approved automatically.
+                        if let Some(recreated) = recreated {
+                            for (name, output) in recreated.packages {
+                                if !a.record.packages.contains(&name) {
+                                    a.record.packages.push(name.clone());
+                                }
+                                a.granted_outputs.insert(name, output);
+                            }
+                            a.record.skipped = recreated.skipped;
+                            a.record.detail = recreated.fresh.map(|reason| {
+                                bounded(&format!("resumed in a fresh conversation: {reason}"))
+                            });
+                        }
+                        // Only outputs the session rooted itself stay
+                        // auto-approved; the others are skipped.
+                        a.auto_approve = auto.rooted.into_iter().collect();
+                        a.record.auto_approve = a.auto_approve.keys().cloned().collect();
+                        a.record.skipped.extend(auto.skipped);
+                        a.record.docker_enabled = docker_enabled;
+                        a.record.scope = policy.scope.as_ref().map(|s| s.name.clone());
+                        a.member_scope = a.record.scope.clone();
+                        a.record.dev_shell = policy.dev_shell.as_ref().map(|d| d.reference.clone());
+                        a.dev_identity = dev_shell.as_ref().map(|d| d.identity.clone());
+                        a.dev_shell = dev_shell;
+                        a.record.description = policy.description.clone();
+                        if let Some(handlers) = policy.handlers.clone() {
+                            a.serve(handlers);
+                        }
+                        a.record.initial_packages = policy
+                            .initial_packages
+                            .iter()
+                            .filter_map(|p| p.file_name()?.to_str()?.get(33..).map(str::to_string))
+                            .collect();
+                        a.policy = Some(policy);
+                        a.support = support;
+                        a.record.identity = Some(identity);
+                        if a.record.state == "starting" {
+                            a.record.state = "running".into();
+                            self.record_started(&a);
+                        }
+                        self.dirty = true;
+                    }
+                    Event::Mode { .. } => (),
+                    Event::Terminal {
+                        terminal: TerminalId::Main,
+                        status,
+                        error,
+                    } => {
+                        self.dirty |= a.terminal != status;
+                        a.terminal = status;
+                        if let Some(error) = error {
+                            a.record.detail = Some(bounded(&error));
+                            self.dirty = true;
+                        }
+                    }
+                    Event::Terminal {
+                        terminal: TerminalId::Process(_),
+                        ..
+                    } => (),
+                    Event::Manifest { sequence, lease } => {
+                        let lease = std::sync::Arc::new(lease);
+                        if sequence > self.manifest_published {
+                            self.manifest_published = sequence;
+                            self.current_manifest = Some(lease.clone());
+                        }
+                        // The launch keeps it until it started, even once a
+                        // newer manifest replaces it as the current one.
+                        a.launch_manifest = Some(lease);
+                    }
+                    Event::Preview { approval, result } => {
+                        if let Some(p) = &mut a.pending
+                            && p.serial == approval
+                            && let Some(r) = self.permission_mut(&p.id)
+                            && r.state == "pending"
+                        {
+                            r.preview = Some(match result {
+                                Ok(preview) => {
+                                    p.initial_output = preview
+                                        .output_path
+                                        .as_ref()
+                                        .filter(|path| {
+                                            a.policy.as_ref().is_some_and(|p| {
+                                                p.initial_packages.iter().any(|i| i == *path)
+                                            })
+                                        })
+                                        .cloned();
+                                    json!(preview)
+                                }
+                                Err(e) => json!({"error":bounded(&e)}),
+                            });
+                            self.dirty = true;
+                        }
+                    }
+                    Event::Refresh { approval, result } => {
+                        let Some(p) = a.pending.as_mut().filter(|p| p.serial == approval) else {
+                            continue;
+                        };
+                        let id = p.id.clone();
+                        if !self
+                            .permissions
+                            .iter()
+                            .any(|r| r.id == id && r.state == "pending")
+                        {
+                            continue;
+                        }
+                        match result {
+                            Ok((preview, identity)) => {
+                                p.dev_identity = Some(identity);
+                                let r = self.permission_mut(&id).unwrap();
+                                r.preview = Some(preview);
+                            }
+                            Err(error) => {
+                                // A foreign lock or failed evaluation fails the
+                                // request; the agent gets the reason to act on.
+                                let p = a.pending.take().unwrap();
+                                a.cancel_work(p.serial);
+                                let r = self.permission_mut(&id).unwrap();
+                                r.state = "failed".into();
+                                r.message = Some(bounded(&error));
+                                self.reply_permission(&id, "error", Some(bounded(&error)));
+                                self.operation_finished(&id, p.notify, Some(bounded(&error)));
+                            }
+                        }
+                        self.dirty = true;
+                    }
+                    Event::Call { serial, result } => {
+                        if a.call.as_ref().is_some_and(|w| w.serial == serial) {
+                            a.call.take();
+                            self.reply_waiting(&call_key(serial), result.map_err(|e| bounded(&e)));
+                        }
+                    }
+                    Event::DevShell { summary } => {
+                        a.dev_identity = Some(summary.identity.clone());
+                        a.dev_shell = Some(summary);
+                        self.dirty = true;
+                    }
+                    Event::Progress { request, state } => {
+                        if a.pending.as_ref().is_some_and(|p| p.id == request)
+                            && let Some(r) = self.permission_mut(&request)
+                            && ["realizing", "mounting", "publishing"].contains(&r.state.as_str())
+                        {
+                            r.state = state.into();
+                            self.dirty = true;
+                        }
+                    }
+                    Event::Granted {
+                        reply,
+                        detail,
+                        output,
+                    } => {
+                        let mut granted = None;
+                        if let Some(p) = a.pending.take() {
+                            a.cancel_work(p.serial);
+                            if let Some(r) = self.permission_mut(&p.id) {
+                                r.state = if reply.status == "ready" {
+                                    "ready"
+                                } else {
+                                    "failed"
+                                }
+                                .into();
+                                // The sandbox gets a concise category; host
+                                // frontends need the diagnostic for this request.
+                                r.message = detail
+                                    .as_deref()
+                                    .map(bounded)
+                                    .or_else(|| reply.message.clone());
+                                if reply.status == "ready" {
+                                    granted = Some((r.kind.clone(), r.package.clone()));
+                                }
+                                if reply.status == "ready" && r.kind == "docker" {
+                                    a.record.docker_enabled = true;
+                                }
+                                if reply.status == "ready"
+                                    && r.kind == "package"
+                                    && !a.record.packages.contains(&r.package)
+                                {
+                                    a.record.packages.push(r.package.clone());
+                                    if let Some(output) = output {
+                                        a.granted_outputs.insert(r.package.clone(), output);
+                                    }
+                                }
+                            }
+                            self.operation_finished(&p.id, p.notify, reply.message.clone());
+                            self.reply_permission(&p.id, &reply.status, reply.message);
+                        }
+                        a.record.detail = detail.map(|e| bounded(&e));
+                        if let Some((kind, package)) = granted {
+                            let recorded = if kind == "docker" {
+                                self.update_record(&a.line, |r| {
+                                    r.update(|r| r.docker_enabled = true)
+                                })
+                            } else if kind == "package" {
+                                self.update_record(&a.line, |r| r.approve(&package))
+                            } else {
+                                Ok(false)
+                            };
+                            if let Err(reason) = recorded {
+                                let subject = if kind == "docker" {
+                                    "Docker".to_string()
+                                } else {
+                                    format!("package '{package}'")
+                                };
+                                a.record.detail = Some(bounded(&format!(
+                                    "{subject} is granted but not recorded for resume: {reason}"
+                                )));
+                            }
+                        }
+                        self.dirty = true;
+                    }
+                    Event::Failed(e) => {
+                        self.retiring.insert(id.clone());
+                        if let Some(runtime) = &mut a.runtime {
+                            let _ = runtime.send(Command::Stop);
+                        }
+                        a.launch_manifest = None;
+                        a.record.state = "failed".into();
+                        a.record.detail = Some(bounded(&e));
+                        a.terminal.eof = true;
+                        a.terminal.interrupted = true;
+                        self.dirty = true;
+                    }
+                    Event::Stopped { exit_code } => {
+                        self.retiring.insert(id.clone());
+                        a.launch_manifest = None;
+                        a.exporting = None;
+                        if a.record.identity.is_none() {
+                            a.terminal.eof = true;
+                            a.terminal.interrupted = true;
+                        }
+                        if a.record.state != "failed" {
+                            a.record.state = "stopped".into();
+                        }
+                        a.record.exit_code = exit_code;
+                        if let Some(p) = a.take_preparing() {
+                            self.refuse_preparing(p);
+                        }
+                        if let Some(p) = a.pending.take() {
+                            a.cancel_pending(&p);
+                            if let Some(r) = self.permission_mut(&p.id) {
+                                r.state = "cancelled".into();
+                            }
+                            self.reply_permission(&p.id, "error", Some("payload stopped".into()));
+                            self.operation_finished(
+                                &p.id,
+                                p.notify,
+                                Some("payload stopped".into()),
+                            );
+                        }
+                        if let Some(w) = a.call.take() {
+                            a.cancel_work(w.serial);
+                            self.reply_waiting(&call_key(w.serial), Err("payload stopped".into()));
+                        }
+                        self.dirty = true;
+                    }
+                }
+            }
+            if runtime_ended {
+                self.lost_host_jobs(&id);
+                self.retiring.remove(&id);
+                for c in &mut self.connections {
+                    if matches!(&c.role, Role::Sandbox(session) if session == &id) {
+                        c.dead = true;
+                    }
+                }
+                a.runtime.take();
+                a.policy.take();
+                a.launch_manifest = None;
+                a.init = false;
+                // A member still waiting for this goblin's handoff never
+                // gets it.
+                self.fail_exports(&id, &a.record.agent_name.clone());
+                // A worker can lose its final try_send when its bounded result
+                // queue is full (or panic). Never retain a live session after
+                // its producer is gone, even without a Stopped result.
+                if !["stopped", "failed"].contains(&a.record.state.as_str()) {
+                    a.record.state = "failed".into();
+                    a.record.detail =
+                        Some("session worker exited without a final lifecycle result".into());
+                    if a.record.identity.is_none() {
+                        a.terminal.eof = true;
+                        a.terminal.interrupted = true;
+                    }
+                    if let Some(p) = a.take_preparing() {
+                        self.refuse_preparing(p);
+                    }
+                    if let Some(p) = a.pending.take() {
+                        if let Some(r) = self.permission_mut(&p.id) {
+                            r.state = "cancelled".into();
+                        }
+                        self.reply_permission(&p.id, "error", Some("session worker exited".into()));
+                        self.operation_finished(
+                            &p.id,
+                            p.notify,
+                            Some("session worker exited".into()),
+                        );
+                    }
+                    self.dirty = true;
+                }
+            }
+            a.record.pty_eof = a.terminal.eof;
+            a.record.terminal_complete = a.terminal.complete;
+            a.record.terminal_interrupted = a.terminal.interrupted;
+            if a.handlers.is_none() {
+                a.record.terminal_attached = a.terminal.attached;
+                a.record.terminal_detached = a.terminal.detached;
+            }
+            self.attach_tick(&mut a);
+            // The runtime saw the payload exit, even while its worker is
+            // blocked on Nix.
+            let exited = payload_exited && a.record.state == "running";
+            let stopped = ["stopped", "failed"].contains(&a.record.state.as_str());
+            if a.record.state != "running" {
+                a.activity_at = None;
+                self.dirty |= a.record.set_agent_state(Default::default());
+            }
+            self.sessions.insert(id.clone(), a);
+            if stopped {
+                let now = crate::messaging::now();
+                let line = self.sessions[&id].line.clone();
+                // Only the goblin the record last ran as ends it.
+                let _ = self.update_record(&line, |r| {
+                    if r.latest() == id {
+                        r.update(|r| r.stopped = Some(now))
+                    } else {
+                        Ok(false)
+                    }
+                });
+            }
+            // Stopping stops only this goblin: raid members it ran keep
+            // running, and its raid pauses.
+            if exited {
+                let _ = self.stop(&id, None);
+            } else if stopped {
+                if self.execs.values().any(|e| e.session() == id) {
+                    let message = format!(
+                        "goblin {} has stopped",
+                        self.sessions[&id].record.agent_name
+                    );
+                    self.end_execs(&id, &message);
+                }
+                self.end_edits(&id);
+                self.end_host_jobs(&id);
+            }
+        }
+        self.reconcile_raids();
+        self.approve_inherited_requests();
+        let directory = self.message_directory();
+        // Queued raid events go out even when the directory is unchanged. A
+        // batch is cleared once accepted and kept for the next tick otherwise.
+        if directory != self.messaging_directory
+            || !self.raid_outbox.is_empty()
+            || !self.operation_outbox.is_empty()
+        {
+            let work = crate::messaging::Work::Sync {
+                directory: directory.clone(),
+                raids: self.raid_outbox.drain(..).collect(),
+                operations: self.operation_outbox.drain(..).collect(),
+            };
+            match self.messaging.commands.try_send(work) {
+                Ok(()) => self.messaging_directory = directory,
+                Err(e) => {
+                    if let crate::messaging::Work::Sync {
+                        raids, operations, ..
+                    } = unsent(e)
+                    {
+                        self.raid_outbox = raids.into();
+                        self.operation_outbox = operations.into();
+                    }
+                }
+            }
+        }
+        // Service pending sandbox connections before host decisions in this tick.
+        self.connections
+            .sort_by_key(|c| matches!(c.role, Role::Host));
+        let ids: Vec<_> = self.connections.iter().map(|c| c.id).collect();
+        for id in ids {
+            let Some(index) = self.connections.iter().position(|c| c.id == id) else {
+                continue;
+            };
+            let mut c = self.connections.remove(index);
+            if !c.dead {
+                self.service(&mut c);
+            }
+            if let (Role::Sandbox(session), Some(connection)) = (&c.role, c.relay) {
+                if let Some(runtime) = self
+                    .sessions
+                    .get_mut(session)
+                    .and_then(|a| a.runtime.as_mut())
+                {
+                    if !c.dead {
+                        for message in c.messages.drain(..) {
+                            let _ = runtime.send(Command::SandboxSend {
+                                connection,
+                                message,
+                            });
+                        }
+                    }
+                    if c.close || c.dead {
+                        let _ = runtime.send(Command::SandboxClose { connection });
+                        c.close = false;
+                    }
+                } else {
+                    c.dead = true;
+                }
+            } else {
+                c.flush();
+            }
+            if c.dead {
+                self.withdraw(c.id);
+            } else {
+                self.connections.push(c);
+            }
+            // Publishing here ensures a subscription snapshot and later events
+            // share one serialization order, including competing host clients.
+            self.publish();
+        }
+        self.publish();
+        Ok(())
+    }
+}
+/// A root goblin's record as it stands. A recreated goblin continues the
+/// record it came from, `existing` when the store still has it; a new one
+/// starts its own. Either way it adds what this goblin was granted.
+fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::history::Record {
+    let now = crate::messaging::now();
+    let mut record = match existing.or(a.recreated_from.as_deref()) {
+        Some(record) => record.clone(),
+        None => crate::history::Record::new(&a.line, &a.record.name, &a.record.agent_name, now),
+    };
+    record.version = crate::history::VERSION;
+    record.ran_as(&a.record.id);
+    record.configuration = a.record.name.clone();
+    record.agent_name = a.record.agent_name.clone();
+    record.cwd = a.record.cwd.clone();
+    record.scope = a.record.scope.clone();
+    record.dev_shell = a.record.dev_shell.clone();
+    // Recorded Docker stays, so an attach skipped now is tried again.
+    record.docker_enabled |= a.record.docker_enabled;
+    record.variables = a.variables.clone();
+    record.skipped = a.record.skipped.clone();
+    record.stopped = None;
+    record.updated = now;
+    for package in &a.record.packages {
+        // A full record keeps what fits, as a live grant would.
+        let _ = record.approve(package);
+    }
+    for package in &a.record.auto_approve {
+        let _ = record.auto(package);
+    }
+    record
+}
+fn unsent<T>(error: std::sync::mpsc::TrySendError<T>) -> T {
+    match error {
+        std::sync::mpsc::TrySendError::Full(work)
+        | std::sync::mpsc::TrySendError::Disconnected(work) => work,
+    }
+}
+fn bounded(text: &str) -> String {
+    text.chars().take(512).collect()
+}
+impl Drop for Controller {
+    fn drop(&mut self) {
+        // Hand queued raid events over before messaging::Service closes its
+        // channel. Drain results meanwhile so a full queue cannot deadlock.
+        // Send the current directory, not the last synced one: a member that
+        // joined this tick needs its session.started record first.
+        // Operations still pending end with the daemon; record that outcome.
+        let pending: Vec<_> = self
+            .sessions
+            .values_mut()
+            .filter_map(|a| {
+                let p = a.pending.take()?;
+                a.cancel_work(p.serial);
+                Some(p)
+            })
+            .collect();
+        for p in pending {
+            if let Some(r) = self.permission_mut(&p.id) {
+                r.state = "cancelled".into();
+            }
+            self.operation_finished(&p.id, p.notify, Some("daemon stopped".into()));
+        }
+        if !self.raid_outbox.is_empty() || !self.operation_outbox.is_empty() {
+            let mut directory = self.message_directory();
+            // Every session is going away: queue no notice that nobody can read.
+            if !self.operation_outbox.is_empty() {
+                for session in directory.values_mut() {
+                    session.running = false;
+                }
+            }
+            let mut work = crate::messaging::Work::Sync {
+                directory,
+                raids: self.raid_outbox.drain(..).collect(),
+                operations: self.operation_outbox.drain(..).collect(),
+            };
+            while let Err(std::sync::mpsc::TrySendError::Full(back)) =
+                self.messaging.commands.try_send(work)
+            {
+                work = back;
+                for _ in self.messaging.results.try_iter() {}
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        // Stop every runtime before waiting for any of them.
+        for a in self.sessions.values_mut() {
+            if let Some(runtime) = &mut a.runtime {
+                let _ = runtime.send(Command::Stop);
+            }
+        }
+        if matches!(self.backend, RuntimeBackend::Supervised) {
+            self.scopes.begin_shutdown();
+            let deadline = Instant::now() + crate::supervised::SHUTDOWN_TIMEOUT;
+            loop {
+                self.scopes.tick(&self.state);
+                let mut pending = false;
+                for a in self.sessions.values_mut() {
+                    if let Some(runtime) = &mut a.runtime {
+                        while runtime.poll().is_some() {}
+                        pending |= !runtime.released();
+                    }
+                }
+                if !pending && self.scopes.drained() || Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            // Kill every remaining child before any destructor can reap one.
+            for a in self.sessions.values_mut() {
+                if let Some(runtime) = &mut a.runtime {
+                    runtime.abort();
+                }
+            }
+            self.scopes.abort();
+        } else {
+            // Fake policy fixtures keep their test scope Leave pump.
+            self.scopes.shutdown(&self.state);
+        }
+        for (_, mut a) in std::mem::take(&mut self.sessions) {
+            a.runtime.take();
+            // What this goblin held of its resources went with its runtime.
+            // They are removed by whichever holder lets go last, in the
+            // daemon or outside it, or by `goblins gc`; only the goblin's
+            // own files and the then empty session directory are removed
+            // here.
+            attach::remove_files(&a.directory);
+            let _ = fs::remove_dir(&a.directory);
+        }
+        let _ = fs::remove_file(self.state.join("host.sock"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    mod supervised;
+    use super::*;
+
+    fn policy_fixture(configuration: &str, targets: &[&str]) -> Policy {
+        let mut policy = Policy::fixture(configuration, targets);
+        // The old implementation fixture had an empty launch description.
+        policy.description.clear();
+        policy
+    }
+    fn host_policy_fixture(configuration: &str, targets: &[&str]) -> Policy {
+        let mut policy = policy_fixture(configuration, targets);
+        policy.host_commands = true;
+        policy
+    }
+    fn handoff_fixture(directory: Option<PathBuf>) -> goblins_runtime::Handoff {
+        let directory = directory.unwrap_or_else(|| unix::temp_directory().unwrap());
+        let lease = goblins_runtime::ResourceLease::new(directory.clone()).unwrap();
+        let workspace = std::os::fd::OwnedFd::from(File::open(&directory).unwrap()).into();
+        goblins_runtime::Handoff {
+            leases: vec![lease],
+            workspace,
+            working_directory: None,
+            dev_shell: None,
+            docker: false,
+        }
+    }
+
+    fn daemon() -> Controller {
+        let path = unix::temp_directory().unwrap();
+        Controller::new(&path, None).unwrap()
+    }
+    fn connection(role: Role) -> (Connection, UnixStream) {
+        let (a, b) = UnixStream::pair().unwrap();
+        (Connection::new(1, role, a).unwrap(), b)
+    }
+    fn dispatch(
+        d: &mut Controller,
+        c: &mut Connection,
+        method: &str,
+        params: Value,
+        id: Option<Value>,
+    ) -> Value {
+        d.dispatch(
+            c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id,
+                method: method.into(),
+                params,
+            },
+        );
+        let data = c.output.pop_back().unwrap();
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        rpc::parse(&data[body..]).unwrap()
+    }
+    fn session_with_results(d: &mut Controller, results: Vec<Event>) -> String {
+        session_with_results_id(d, "test-session", results)
+    }
+    fn session_with_results_id(d: &mut Controller, id: &str, results: Vec<Event>) -> String {
+        let id = id.to_string();
+        let directory = d.state.join(&id);
+        unix::private_directory(&directory).unwrap();
+        let terminal = TerminalStatus::default();
+        d.sessions.insert(
+            id.clone(),
+            Active {
+                activity_at: None,
+                member_scope: None,
+                launch_manifest: None,
+                exporting: None,
+                policy: Some(Box::new(Policy::fixture("shell", &[]))),
+                support: Support::linux(),
+                dev_shell: None,
+                init: false,
+                granted_outputs: BTreeMap::new(),
+                auto_approve: BTreeMap::new(),
+                auto_approve_dev_shells: BTreeSet::new(),
+                dev_identity: None,
+                call: None,
+                recreated_from: None,
+                variables: BTreeMap::new(),
+                fresh: BTreeSet::new(),
+                attach: attach::Attach::new(&directory.join("attach.sock")).unwrap(),
+                handlers: None,
+                line: id.clone(),
+                created: 0,
+                record: SessionRecord {
+                    agent_state: Default::default(),
+                    agent_state_since: None,
+                    inbox: 0,
+                    docker_enabled: false,
+                    scope: None,
+                    dev_shell: None,
+                    cwd: None,
+                    id: id.clone(),
+                    agent_name: "snikk".into(),
+                    created_by: None,
+                    name: "shell".into(),
+                    description: "Test shell running in a Goblins sandbox".into(),
+                    configuration: "test".into(),
+                    state: "running".into(),
+                    identity: None,
+                    initial_packages: vec![],
+                    packages: vec![],
+                    auto_approve: vec![],
+                    terminal: String::new(),
+                    attach: String::new(),
+                    server_log: None,
+                    pty_eof: false,
+                    terminal_complete: false,
+                    terminal_interrupted: false,
+                    terminal_attached: false,
+                    terminal_detached: false,
+                    exit_code: None,
+                    stop_reason: None,
+                    detail: None,
+                    raid: None,
+                    shells: 0,
+                    execs: 0,
+                    recreated_from: None,
+                    skipped: vec![],
+                },
+                runtime: Some(Box::new(goblins_runtime::Fake::ended(results))),
+                preparing: None,
+                pending: Some(Pending {
+                    initial_output: None,
+                    dev_identity: None,
+                    id: "r".into(),
+                    serial: 1,
+                    connection: 99,
+                    notify: false,
+                    host: None,
+                    detached: false,
+                }),
+                terminal,
+                directory,
+            },
+        );
+        d.permissions.push_back(PermissionRecord {
+            kind: "package".into(),
+            id: "r".into(),
+            session: id.clone(),
+            agent_name: "snikk".into(),
+            approval: "a".into(),
+            package: "hello".into(),
+            reason: "test".into(),
+            state: "realizing".into(),
+            approved: Some(true),
+            preview: None,
+            message: None,
+        });
+        id
+    }
+    fn launch(key: &str, agent_name: Option<&str>) -> Value {
+        json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
+               "agent_name":agent_name,"rows":24,"cols":100})
+    }
+    #[test]
+    fn exec_descriptors_wait_for_their_whole_request() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results_id(&mut d, "target", vec![]);
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut(&id).unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let (mut c, mut peer) = connection(Role::Host);
+        peer.write_all(
+            &rpc::encode(&rpc::request(json!(1), "initialize", json!({"api":1}))).unwrap(),
+        )
+        .unwrap();
+        d.service(&mut c);
+        assert!(c.initialized);
+        // A request near the frame limit, split across reads, with the
+        // descriptors attached to its first part only.
+        let argv = vec!["x".repeat(15000)];
+        let frame = rpc::encode(&rpc::request(
+            json!(2),
+            "sessions.exec",
+            json!({"session":"target","argv":argv}),
+        ))
+        .unwrap();
+        let (a, b) = unix::pipe().unwrap();
+        let (cut, rest) = frame.split_at(100);
+        let fds = [a.as_raw_fd(), b.as_raw_fd(), b.as_raw_fd()];
+        unix::ancillary::send(peer.as_raw_fd(), cut, &fds, goblins_protocol::HOST_MAX_FDS).unwrap();
+        d.service(&mut c);
+        assert_eq!(c.fds.len(), 3);
+        assert!(c.exec.is_none());
+        peer.write_all(rest).unwrap();
+        for _ in 0..4 {
+            d.service(&mut c);
+        }
+        assert!(c.exec.is_some(), "{:?}", c.output);
+        let spawned = received.lock().unwrap().pop_front();
+        let Some(Command::Spawn {
+            argv: Some(sent),
+            stdio: goblins_runtime::Stdio::Fds(_),
+            ..
+        }) = spawned
+        else {
+            panic!("expected the exec's spawn with three descriptors: {spawned:?}");
+        };
+        assert_eq!(sent, argv);
+        // Init could not be asked: the client hears so as before.
+        events
+            .send(Event::SpawnFailed {
+                id: c.exec.unwrap(),
+                code: None,
+                message: "cannot reach the sandbox's init: busy".into(),
+            })
+            .unwrap();
+        d.connections.push(c);
+        // One frame a tick: the initialize reply goes out first.
+        let reply = (0..8)
+            .find_map(|_| {
+                d.tick().unwrap();
+                let reply = unix::readable(peer.as_raw_fd(), 10)
+                    .unwrap()
+                    .then(|| rpc::read(&mut peer).unwrap());
+                reply.filter(|reply| reply["id"] == 2)
+            })
+            .expect("the exec's reply");
+        assert_eq!(reply["error"]["code"], -32010);
+        assert_eq!(
+            reply["error"]["message"],
+            "cannot reach the sandbox's init: busy"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn run_target_policy_precedes_ownership_without_granting_raid_authority() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        for (targets, target, expected) in [
+            (
+                &[][..],
+                "reviewer",
+                (-32602, "configuration 'reviewer' permits no run targets"),
+            ),
+            (
+                &["reviewer"][..],
+                "reviewer",
+                (
+                    -32009,
+                    "only a raid owner can run goblins; create one with goblin raid create NAME",
+                ),
+            ),
+            (
+                &["reviewer"][..],
+                "other",
+                (
+                    -32602,
+                    "configuration 'other' is not an allowed run target of 'reviewer'; allowed: reviewer",
+                ),
+            ),
+        ] {
+            d.sessions
+                .get_mut("a")
+                .unwrap()
+                .set_policy(policy_fixture("reviewer", targets));
+            let error = d
+                .sandbox_control_for_test("a", "sessions.start", json!({"key":"k","name":target}))
+                .unwrap_err();
+            assert_eq!((error.0, error.1.as_str()), expected);
+            assert!(d.launches.is_empty());
+            assert_eq!(d.sessions.len(), 1);
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn raid_owners_run_their_own_targets_from_the_current_manifest() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let root = session_with_results_id(&mut d, "root", vec![]);
+        let member = session_with_results_id(&mut d, "member", vec![]);
+        for (id, name, targets) in [
+            (&root, "coordinator", &["reviewer", "shell"][..]),
+            (&member, "reviewer", &["shell"][..]),
+        ] {
+            let a = d.sessions.get_mut(id).unwrap();
+            a.record.name = name.into();
+            a.record.agent_name = id.clone();
+            a.record.cwd = Some("/project".into());
+            a.set_policy(policy_fixture(name, targets));
+        }
+        let keys = std::cell::Cell::new(0);
+        let start = |name: &str| {
+            keys.set(keys.get() + 1);
+            json!({"key": format!("k{}", keys.get()), "name": name, "agent_name": null})
+        };
+        let refused = |d: &mut Controller, scope: &str, p: Value| {
+            d.sandbox_control_for_test(scope, "sessions.start", p)
+                .unwrap_err()
+        };
+        // Only the owner of an unpaused raid runs goblins.
+        let not_owner = (
+            -32009,
+            "only a raid owner can run goblins; create one with goblin raid create NAME"
+                .to_string(),
+        );
+        assert_eq!(refused(&mut d, &root, start("shell")), not_owner);
+        d.sandbox_control_for_test(&root, "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let (mut host, _peer) = host_connection();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":[member]}),
+        )
+        .unwrap();
+        assert_eq!(refused(&mut d, &member, start("shell")), not_owner);
+        // The owner's own configuration decides what it may run.
+        assert_eq!(
+            refused(&mut d, &root, start("coordinator")),
+            (
+                -32602,
+                "configuration 'coordinator' is not an allowed run target of 'coordinator'; allowed: reviewer, shell".into()
+            )
+        );
+        // Without a current manifest there is nothing to run from.
+        assert_eq!(refused(&mut d, &root, start("shell")).0, -32009);
+        assert!(d.launches.is_empty());
+        assert_eq!(d.sessions.len(), 2);
+        let manifest = path.join("current.json");
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&manifest),
+        ));
+        d.sessions
+            .get_mut(&root)
+            .unwrap()
+            .granted_outputs
+            .insert("jq".into(), "/nix/store/x-jq".into());
+        let accepted = d
+            .sandbox_control_for_test(&root, "sessions.start", start("shell"))
+            .unwrap();
+        assert_eq!(accepted.as_object().unwrap().len(), 3);
+        let id = accepted["session"].as_str().unwrap();
+        let a = &d.sessions[id];
+        assert_eq!(a.record.name, "shell");
+        assert_eq!(a.record.configuration, manifest.display().to_string());
+        assert_eq!(a.record.cwd.as_deref(), Some(Path::new("/project")));
+        assert_eq!(
+            a.record.created_by,
+            Some(CreatedBy {
+                id: root.clone(),
+                agent_name: root.clone()
+            })
+        );
+        assert_eq!(a.record.auto_approve, ["jq"]);
+        let raid = d.raids.get("crew").unwrap();
+        assert_eq!(raid.members[id].created_by.as_deref(), Some(root.as_str()));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn owners_list_and_stop_only_members_created_in_the_raid_they_own() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["owner", "made", "invited", "other"] {
+            live(&mut d, id);
+        }
+        d.sandbox_control_for_test("owner", "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        let mut next = d.raids.clone();
+        let events = next.run("owner", "made").unwrap();
+        d.raid_commit(next, events).unwrap();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"crew","sessions":["invited"]}),
+        )
+        .unwrap();
+        let listed = d
+            .sandbox_control_for_test("owner", "sessions.list", json!({}))
+            .unwrap();
+        assert_eq!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["made"]
+        );
+        for target in ["invited", "other", "owner"] {
+            for method in ["sessions.get", "sessions.stop"] {
+                assert_eq!(
+                    d.sandbox_control_for_test("owner", method, json!({"session":target}))
+                        .unwrap_err()
+                        .0,
+                    -32004,
+                    "{method} {target}"
+                );
+            }
+        }
+        // A created member cannot leave; host-invited ones can.
+        assert_eq!(
+            d.sandbox_control_for_test("made", "raids.leave", json!({}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        // A new owner takes over control; the old one loses it at once.
+        d.host(
+            &mut host,
+            "raids.set_owner",
+            json!({"raid":"crew","session":"invited"}),
+        )
+        .unwrap();
+        assert_eq!(
+            d.sandbox_control_for_test("owner", "sessions.get", json!({"session":"made"}))
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        d.sandbox_control_for_test("invited", "sessions.stop", json!({"session":"made"}))
+            .unwrap();
+        assert_eq!(d.sessions["made"].record.state, "stopping");
+        assert_eq!(
+            d.sessions["made"].record.stop_reason.as_deref(),
+            Some("stopped by raid owner invited (invited)")
+        );
+        assert_eq!(d.sessions["owner"].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_current_manifest_follows_host_acceptance_order() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        // The roots a launch's worker made: the daemon owns them from the
+        // event on, and removes each with its last lease.
+        let roots = [path.join("newer-root"), path.join("older-root")];
+        for root in &roots {
+            fs::write(root, "").unwrap();
+        }
+        d.manifest_sequence = 3;
+        // The newest acceptance reports first; an older one reporting later
+        // must not replace it. A failed launch never reports one.
+        session_with_results_id(
+            &mut d,
+            "newer",
+            vec![Event::Manifest {
+                sequence: 3,
+                lease: goblins_runtime::config::ManifestLease::adopt(
+                    path.join("newer.json"),
+                    Some(roots[0].clone()),
+                ),
+            }],
+        );
+        d.tick().unwrap();
+        session_with_results_id(
+            &mut d,
+            "older",
+            vec![Event::Manifest {
+                sequence: 2,
+                lease: goblins_runtime::config::ManifestLease::adopt(
+                    path.join("older.json"),
+                    Some(roots[1].clone()),
+                ),
+            }],
+        );
+        session_with_results_id(&mut d, "failed", vec![Event::Failed("bad".into())]);
+        d.tick().unwrap();
+        assert_eq!(
+            d.current_manifest.as_ref().unwrap().path,
+            path.join("newer.json")
+        );
+        assert_eq!(d.manifest_published, 3);
+        // The older one never became current and its launch ended: its root
+        // went with it. The newer one is the daemon's current manifest.
+        assert!(roots[0].exists());
+        assert!(!roots[1].exists());
+        // A still newer acceptance replaces it, and its root goes.
+        d.manifest_sequence = 4;
+        session_with_results_id(
+            &mut d,
+            "newest",
+            vec![Event::Manifest {
+                sequence: 4,
+                lease: goblins_runtime::config::ManifestLease::adopt(
+                    path.join("newest.json"),
+                    None,
+                ),
+            }],
+        );
+        d.tick().unwrap();
+        assert!(!roots[0].exists());
+        drop(d);
+        fs::remove_dir_all(&path).unwrap();
+    }
+    #[test]
+    fn names_stay_reserved_while_their_goblin_is_live() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let goblin = session_with_results_id(&mut d, "goblin", vec![]);
+        let a = d.sessions.get_mut(&goblin).unwrap();
+        a.record.agent_name = "kid".into();
+        a.record.state = "stopping".into();
+        assert_eq!(d.allocate_name(Some("kid")).unwrap_err().0, -32009);
+        d.sessions.get_mut(&goblin).unwrap().runtime.take();
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn retained_terminal_output_does_not_reserve_names_history_or_live_capacity() {
+        use std::sync::atomic::Ordering;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results_id(&mut d, "retained", vec![]);
+        let (fake, sender, _) = goblins_runtime::Fake::new();
+        let released = fake.release_flag();
+        let a = d.sessions.get_mut(&id).unwrap();
+        a.runtime = Some(Box::new(fake));
+        a.record.agent_name = "kid".into();
+        a.record.state = "stopped".into();
+        let record = line_record(a, None);
+        let (mut c, _peer) = connection(Role::Host);
+        // A lifecycle label alone cannot release authority while cleanup is
+        // still in progress; starting/running use this same live predicate.
+        assert_eq!(d.allocate_name(Some("kid")).unwrap_err().0, -32009);
+        assert_eq!(d.resolve_session("kid").unwrap(), id);
+        assert!(d.recreate_conflict(&record).is_some());
+        assert!(d.live_lines().contains(&record.id));
+        assert_eq!(
+            d.host(&mut c, "server.status", json!({})).unwrap()["sessions"],
+            1
+        );
+        released.store(true, Ordering::SeqCst);
+        sender
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        // A queued late detach/status update cannot restore name/history
+        // authority or make Stop-by-ID revive an already stopped record.
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
+        assert!(d.resolve_session("kid").is_err());
+        assert_eq!(d.resolve_session(&id).unwrap(), id);
+        assert!(d.recreate_conflict(&record).is_none());
+        assert!(!d.live_lines().contains(&record.id));
+        assert_eq!(
+            d.host(&mut c, "server.status", json!({})).unwrap()["sessions"],
+            0
+        );
+        d.stop(&id, None).unwrap();
+        assert_eq!(
+            d.sessions[&id].record.state, "stopped",
+            "stopping a released terminal must not revive cleanup"
+        );
+        assert!(
+            d.sessions[&id].runtime.is_some(),
+            "late terminal output is still served"
+        );
+        d.tick().unwrap();
+        assert_eq!(d.sessions[&id].record.state, "stopped");
+        assert_eq!(d.allocate_name(Some("kid")).unwrap(), "kid");
+        assert!(d.recreate_conflict(&record).is_none());
+        assert!(
+            !d.sessions[&id].can_evict(),
+            "the retained runtime still owns its terminal buffer"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn agent_name_grammar_and_pool_cover_session_limit() {
+        let names: std::collections::BTreeSet<_> = GOBLIN_NAMES.lines().collect();
+        assert_eq!(names.len(), GOBLIN_NAMES.lines().count());
+        assert!(names.len() >= SESSIONS);
+        assert!(names.iter().all(|n| valid_agent_name(n)));
+        for name in ["a", "snikk-2", &"x".repeat(32)] {
+            assert!(valid_agent_name(name));
+        }
+        for name in [
+            "",
+            "Snikk",
+            "1snikk",
+            "-snikk",
+            "two words",
+            "../snikk",
+            "gøb",
+            "x\n",
+            &"x".repeat(33),
+        ] {
+            assert!(!valid_agent_name(name), "{name:?}");
+        }
+    }
+    #[test]
+    fn random_selection_covers_candidates_and_bounds_exhaustion_and_entropy_failures() {
+        let candidates = ["snikk", "grib", "zoggit"];
+        for (index, name) in candidates.iter().enumerate() {
+            let bytes = (index as u64).to_le_bytes();
+            assert_eq!(
+                random_name(&candidates, &mut bytes.as_slice()).unwrap(),
+                *name
+            );
+        }
+        // Reject the top incomplete bucket, then use a fresh sample.
+        let bytes = [u64::MAX.to_le_bytes(), 2_u64.to_le_bytes()].concat();
+        assert_eq!(
+            random_name(&candidates, &mut bytes.as_slice()).unwrap(),
+            "zoggit"
+        );
+        assert_eq!(
+            random_name(&[], &mut io::empty()).unwrap_err(),
+            (-32010, "automatic agent name pool exhausted".into())
+        );
+        assert!(
+            random_name(&candidates, &mut io::empty())
+                .unwrap_err()
+                .1
+                .contains("cannot read randomness")
+        );
+        let rejected = [255; 64];
+        assert!(
+            random_name(&candidates, &mut rejected.as_slice())
+                .unwrap_err()
+                .1
+                .contains("after 8 attempts")
+        );
+        assert_eq!(
+            random_name(&["grib"], &mut 0_u64.to_le_bytes().as_slice()).unwrap(),
+            "grib"
+        );
+    }
+    #[test]
+    fn allocation_is_bounded_and_retries_precede_capacity_and_collisions() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        let mut results = Vec::new();
+        let mut allocated = std::collections::BTreeSet::new();
+        for i in 0..SESSIONS {
+            let result = d
+                .host(&mut c, "sessions.start", launch(&format!("key{i}"), None))
+                .unwrap();
+            let name = result["agent_name"].as_str().unwrap();
+            assert!(GOBLIN_NAMES.lines().any(|candidate| candidate == name));
+            assert!(allocated.insert(name.to_owned()));
+            let record = &d.sessions[result["session"].as_str().unwrap()].record;
+            assert_eq!(record.agent_name, name);
+            assert_eq!(record.name, "shell");
+            assert_eq!(record.configuration, "/missing-goblins-test-manifest");
+            results.push(result);
+        }
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("overflow", None))
+                .unwrap_err(),
+            capacity()
+        );
+        assert_eq!(
+            d.host(
+                &mut c,
+                "sessions.start",
+                launch("collision", results[0]["agent_name"].as_str())
+            )
+            .unwrap_err()
+            .0,
+            -32009
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("capacity", Some("custom")))
+                .unwrap_err()
+                .0,
+            -32010
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("key0", None))
+                .unwrap(),
+            results[0]
+        );
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("key0", Some("custom")))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert_eq!(d.launches.len(), SESSIONS);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn explicit_names_reserve_through_cleanup_and_history_keeps_identity() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        for name in ["", "Snikk", "../snikk", &"a".repeat(33)] {
+            assert_eq!(
+                d.host(&mut c, "sessions.start", launch("bad", Some(name)))
+                    .unwrap_err()
+                    .0,
+                -32602
+            );
+        }
+        assert!(d.sessions.is_empty());
+        let first = d
+            .host(&mut c, "sessions.start", launch("first", Some("shell")))
+            .unwrap();
+        let id = first["session"].as_str().unwrap();
+        assert_eq!(d.resolve_session("shell").unwrap(), id);
+        assert_eq!(d.resolve_session(id).unwrap(), id);
+        d.host(&mut c, "sessions.stop", json!({"session":"shell"}))
+            .unwrap();
+        for state in ["starting", "running", "stopping", "stopped", "failed"] {
+            d.sessions.get_mut(id).unwrap().record.state = state.into();
+            assert_eq!(d.allocate_name(Some("shell")).unwrap_err().0, -32009);
+        }
+        d.sessions.get_mut(id).unwrap().runtime.take();
+        assert!(d.resolve_session("shell").is_err());
+        let second = d
+            .host(&mut c, "sessions.start", launch("second", Some("shell")))
+            .unwrap();
+        assert_ne!(first["session"], second["session"]);
+        assert_eq!(d.resolve_session("shell").unwrap(), second["session"]);
+        assert_eq!(
+            d.host(&mut c, "sessions.get", json!({"session":id}))
+                .unwrap()["agent_name"],
+            "shell"
+        );
+        // Even eviction and name reuse cannot redirect a retry to the successor.
+        d.sessions.remove(id);
+        assert_eq!(
+            d.host(&mut c, "sessions.start", launch("first", Some("shell")))
+                .unwrap(),
+            first
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn failed_grant_retains_diagnostic_on_permission_record() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let detail = "could not build package 'hello': actual Nix diagnostic";
+        let id = session_with_results(
+            &mut d,
+            vec![Event::Granted {
+                reply: goblins_protocol::Reply::new(
+                    Some("r".into()),
+                    "error",
+                    Some("grant failed; see tui terminal".into()),
+                ),
+                detail: Some(detail.into()),
+                output: None,
+            }],
+        );
+        d.tick().unwrap();
+        assert_eq!(d.permissions[0].state, "failed");
+        assert_eq!(d.permissions[0].message.as_deref(), Some(detail));
+        // A later session diagnostic must not erase this request's explanation.
+        d.sessions.get_mut(&id).unwrap().record.detail = None;
+        assert_eq!(d.snapshot().permissions[0].message.as_deref(), Some(detail));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn activity_is_endpoint_owned_fresh_and_separate_from_lifecycle() {
+        use goblins_protocol::AgentState;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        d.dirty = false;
+        let (mut host, _) = connection(Role::Host);
+        assert!(
+            d.host(&mut host, "sessions.set-state", json!({"state":"working"}))
+                .is_err()
+        );
+        for value in [
+            json!({"state":"busy"}),
+            json!({"state":"idle","session":id}),
+            json!({"state":"idle","target":"other"}),
+        ] {
+            assert!(
+                d.sandbox_control_for_test(&id, "sessions.set-state", value)
+                    .is_err()
+            );
+        }
+        d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"working"}))
+            .unwrap();
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.state, "running");
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Working);
+        let at = d.sessions[&id].activity_at.unwrap();
+        d.dirty = false;
+        d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"working"}))
+            .unwrap();
+        assert!(!d.dirty); // heartbeats refresh freshness without publishing
+        assert!(d.sessions[&id].activity_at.unwrap() >= at);
+        d.expire_activity(at + std::time::Duration::from_secs(31));
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
+        d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"waiting-input"}))
+            .unwrap();
+        d.stop(&id, None).unwrap();
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
+        assert!(
+            d.sandbox_control_for_test(&id, "sessions.set-state", json!({"state":"idle"}))
+                .is_err()
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn activity_changes_are_timestamped() {
+        use goblins_protocol::AgentState;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        let a = d.sessions.get_mut(&id).unwrap();
+        assert!(a.report_activity(AgentState::Working));
+        let since = a.record.agent_state_since.unwrap();
+        // A repeated report is a heartbeat, not a new state.
+        a.record.agent_state_since = Some(since - 5000);
+        assert!(!a.report_activity(AgentState::Working));
+        assert_eq!(a.record.agent_state_since, Some(since - 5000));
+        assert!(a.report_activity(AgentState::Idle));
+        assert!(a.record.agent_state_since.unwrap() >= since);
+        d.stop(&id, None).unwrap();
+        assert_eq!(d.sessions[&id].record.agent_state, AgentState::Unknown);
+        assert!(d.sessions[&id].record.agent_state_since.unwrap() >= since);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn inbox_counts_follow_the_worker_report() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        d.dirty = false;
+        d.inbox_counts(&[(id.clone(), 2), ("gone".into(), 1)].into());
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.inbox, 2);
+        d.dirty = false;
+        d.inbox_counts(&[(id.clone(), 2)].into());
+        assert!(!d.dirty);
+        d.inbox_counts(&BTreeMap::new());
+        assert!(d.dirty);
+        assert_eq!(d.sessions[&id].record.inbox, 0);
+        // A log failure reaches the host's snapshot without a count change.
+        d.dirty = false;
+        let health = crate::mailbox::Health {
+            audit_failed: false,
+            raid_audit_failed: true,
+        };
+        d.messaging_report(&crate::messaging::Report {
+            queued: BTreeMap::new(),
+            health,
+        });
+        assert!(d.dirty);
+        assert_eq!(d.snapshot().messaging, health);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn old_session_snapshots_default_activity_to_unknown() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(&mut d, vec![]);
+        let mut value = serde_json::to_value(&d.sessions[&id].record).unwrap();
+        for field in ["agent_state", "agent_state_since", "inbox"] {
+            value.as_object_mut().unwrap().remove(field);
+        }
+        let record: SessionRecord = serde_json::from_value(value).unwrap();
+        assert_eq!(record.agent_state, goblins_protocol::AgentState::Unknown);
+        assert_eq!(record.agent_state_since, None);
+        assert_eq!(record.inbox, 0);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn queued_progress_cannot_restore_cancelled_permission() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let id = session_with_results(
+            &mut d,
+            vec![
+                Event::Progress {
+                    request: "r".into(),
+                    state: "mounting".into(),
+                },
+                Event::Progress {
+                    request: "r".into(),
+                    state: "publishing".into(),
+                },
+                Event::Granted {
+                    reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
+                    detail: None,
+                    output: None,
+                },
+                Event::Stopped { exit_code: None },
+            ],
+        );
+        d.stop(&id, Some("stopped by host".into())).unwrap();
+        d.stop(&id, Some("stopped by another caller".into()))
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(
+            d.sessions[&id].record.stop_reason.as_deref(),
+            Some("stopped by host")
+        );
+        assert_eq!(d.permissions[0].state, "cancelled");
+        assert_eq!(d.sessions[&id].record.state, "stopped");
+        assert!(d.sessions[&id].runtime.is_none());
+        assert!(d.sessions[&id].record.packages.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn init_lost_in_the_round_that_started_it_stays_lost() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let events = live(&mut d, "a");
+        d.sessions.get_mut("a").unwrap().record.state = "starting".into();
+        let inheritance = policy_fixture("shell", &[]);
+        events
+            .send(Event::Started {
+                docker_enabled: false,
+                policy: Box::new(inheritance),
+                support: Support::linux(),
+                dev_shell: None,
+                identity: Identity {
+                    pid: 1,
+                    helper_userns: 0,
+                    mount_owner: 0,
+                    source_mountns: 0,
+                    mountns: 0,
+                },
+                recreated: None,
+                auto: Box::default(),
+            })
+            .unwrap();
+        events.send(Event::InitLost).unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sessions["a"].record.state, "running");
+        assert!(!d.sessions["a"].init);
+        assert_eq!(d.kill_execs("a").unwrap_err(), conflict());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn c4_runtime_exit_finishes_registered_host_jobs() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let state = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.set_policy(host_policy_fixture("shell", &[]));
+        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        c.id = d.number();
+        c.initialized = true;
+        d.dispatch(&mut c, rpc::Call { jsonrpc:"2.0".into(), id:Some(json!(7)), method:"permissions.request".into(), params:json!({"kind":"host-command","reason":"test","host":{"argv":["sleep","300"],"cwd":"/work","detach":true}}) });
+        let Some(Command::PrepareHostJob { request, .. }) = received.lock().unwrap().pop_front()
+        else {
+            panic!("missing preparation")
+        };
+        d.connections.push(c);
+        events
+            .send(Event::HostJobPrepared {
+                request: request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let record = d
+            .permissions
+            .iter()
+            .find(|r| r.id == request)
+            .unwrap()
+            .clone();
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: request.clone(),
+                approval: record.approval,
+                approved: true,
+            },
+            "host",
+        )
+        .unwrap();
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request)
+                .unwrap()
+                .state,
+            "running"
+        );
+        assert_eq!(d.host_jobs.len(), 1);
+        // No HostJobFinished can follow a disconnected runtime producer.
+        drop(events);
+        d.tick().unwrap();
+        assert!(d.sessions["a"].runtime.is_none());
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request)
+                .unwrap()
+                .state,
+            "cancelled"
+        );
+        assert!(d.host_jobs.is_empty());
+        assert_eq!(d.host_outcomes[&request]["status"], "cancelled");
+        assert!(d.host_outcomes[&request]["code"].is_null());
+        d.host_event(
+            "a",
+            Event::HostJobFinished {
+                request: request.clone(),
+                outcome: Ok(goblins_runtime::HostOutcome {
+                    exit_code: Some(0),
+                    ..Default::default()
+                }),
+            },
+        );
+        assert_eq!(d.host_outcomes[&request]["status"], "cancelled");
+        assert!(d.host_outcomes[&request]["code"].is_null());
+        drop(d);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn host_commands_wait_for_their_directory_and_a_disconnect_releases_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, runtime_events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.set_policy(host_policy_fixture("shell", &[]));
+        let reply = |c: &mut Connection| {
+            let data = c.output.pop_front().unwrap();
+            let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            rpc::parse(&data[body..]).unwrap()
+        };
+        let request = |d: &mut Controller| {
+            let (mut c, peer) = connection(Role::Sandbox("a".into()));
+            c.id = d.number();
+            c.initialized = true;
+            d.dispatch(
+                &mut c,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: Some(json!(7)),
+                    method: "permissions.request".into(),
+                    params: json!({"kind":"host-command","reason":"test",
+                        "host":{"argv":["make","check"],"cwd":"/work"}}),
+                },
+            );
+            (c, peer)
+        };
+        let next = || received.lock().unwrap().pop_front();
+        let prepare = || match next() {
+            Some(Command::PrepareHostJob { request, cwd }) => {
+                assert_eq!(cwd, PathBuf::from("/work"));
+                request
+            }
+            command => panic!("expected the directory's preparation: {command:?}"),
+        };
+        let shown = |d: &Controller| d.permissions.iter().any(|r| r.kind == "host-command");
+        // The request waits for its directory and holds the slot meanwhile.
+        let (first, _first_peer) = request(&mut d);
+        let first_request = prepare();
+        assert!(first.output.is_empty() && !shown(&d));
+        let (mut second, _peer) = request(&mut d);
+        assert_eq!(reply(&mut second)["error"]["code"], conflict().0);
+        // Its caller going away releases the directory and the slot; a
+        // late answer is not shown.
+        d.connections.push(first);
+        let first_id = d.connections.last().unwrap().id;
+        d.withdraw(first_id);
+        let cancelled = |command: Option<Command>| matches!(command, Some(Command::CancelHostJob { request }) if request == first_request);
+        assert!(cancelled(next()));
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: first_request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!shown(&d));
+        // Whatever an answer nobody waits for pinned is released again.
+        assert!(cancelled(next()));
+        // A directory that cannot be used answers as before.
+        let (third, mut peer) = request(&mut d);
+        let third_request = prepare();
+        d.connections.push(third);
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: third_request,
+                result: Err("/work is not shared with the host".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let refused = rpc::read(&mut peer).unwrap();
+        assert_eq!(refused["error"]["code"], -32602);
+        assert_eq!(
+            refused["error"]["message"],
+            "/work is not shared with the host"
+        );
+        assert!(!shown(&d));
+        // A resolved one is shown with the host directory, approved, run in
+        // the pinned directory and answered with its outcome.
+        let (fourth, mut peer) = request(&mut d);
+        let fourth_request = prepare();
+        d.connections.push(fourth);
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: fourth_request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let record = d
+            .permissions
+            .iter()
+            .find(|r| r.id == fourth_request)
+            .unwrap()
+            .clone();
+        assert_eq!(record.state, "pending");
+        assert_eq!(record.package, "make check (in /host/work)");
+        assert_eq!(rpc::read(&mut peer).unwrap()["method"], "host.submitted");
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: record.id.clone(),
+                approval: record.approval.clone(),
+                approved: true,
+            },
+            "host",
+        )
+        .unwrap();
+        let commands: Vec<_> = received.lock().unwrap().drain(..).collect();
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Cancel(_), Command::RunHostJob { request, argv, .. }]
+                if *request == fourth_request && argv == &["make", "check"]
+        ));
+        runtime_events
+            .send(Event::HostJobFinished {
+                request: fourth_request.clone(),
+                outcome: Ok(goblins_runtime::HostOutcome {
+                    exit_code: Some(0),
+                    ..Default::default()
+                }),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let result = rpc::read(&mut peer).unwrap();
+        assert_eq!(result["result"]["status"], "finished");
+        assert_eq!(result["result"]["code"], 0);
+        // An answer that arrives once the daemon is shutting down is refused,
+        // and what it pinned released.
+        let (fifth, mut peer) = request(&mut d);
+        let fifth_request = prepare();
+        d.connections.push(fifth);
+        d.shutdown = Some((0, Instant::now()));
+        runtime_events
+            .send(Event::HostJobPrepared {
+                request: fifth_request.clone(),
+                result: Ok("/host/work".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["error"]["code"], conflict().0);
+        assert!(
+            matches!(next(), Some(Command::CancelHostJob { request }) if request == fifth_request)
+        );
+        assert!(!d.permissions.iter().any(|r| r.id == fifth_request));
+        d.shutdown = None;
+        // A stop while the request waits answers it and releases its
+        // directory at once.
+        let (sixth, mut peer) = request(&mut d);
+        let sixth_request = prepare();
+        d.connections.push(sixth);
+        d.stop("a", None).unwrap();
+        let commands: Vec<_> = received.lock().unwrap().drain(..).collect();
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Stop, Command::CancelHostJob { request }] if *request == sixth_request
+        ));
+        d.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["error"]["code"], conflict().0);
+        assert!(!d.permissions.iter().any(|r| r.id == sixth_request));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_runtime_stopping_under_a_parked_host_command_releases_its_directory() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.set_policy(host_policy_fixture("shell", &[]));
+        let (mut c, mut peer) = connection(Role::Sandbox("a".into()));
+        c.initialized = true;
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(7)),
+                method: "permissions.request".into(),
+                params: json!({"kind":"host-command","reason":"test",
+                    "host":{"argv":["make"],"cwd":"/work"}}),
+            },
+        );
+        d.connections.push(c);
+        let command = received.lock().unwrap().pop_front();
+        let Some(Command::PrepareHostJob { request, .. }) = command else {
+            panic!("expected the directory's preparation: {command:?}");
+        };
+        // The payload stops on its own, while the daemon holds `a` apart.
+        events.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        d.tick().unwrap();
+        assert_eq!(rpc::read(&mut peer).unwrap()["error"]["code"], conflict().0);
+        let command = received.lock().unwrap().pop_front();
+        assert!(
+            matches!(&command, Some(Command::CancelHostJob { request: r }) if *r == request),
+            "{command:?}"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    /// A started goblin whose configuration allows everything, on a sandbox
+    /// implementation that reports `support`.
+    fn capable(d: &mut Controller, id: &str, support: Support) {
+        let a = d.sessions.get_mut(id).unwrap();
+        let mut policy = Policy::fixture("shell", &["shell"]);
+        policy.host_commands = true;
+        policy.scope = Some(goblins_runtime::policy::ScopePolicy {
+            name: "net".into(),
+            docker: true,
+            pid: false,
+        });
+        policy.dev_shell = Some(goblins_runtime::policy::DevShellPolicy {
+            reference: ".".into(),
+            path: "/work".into(),
+        });
+        policy.handlers = Some(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
+                command: vec!["client".into()],
+                timeout: 30,
+                wait_for: vec![],
+            },
+            on_detach: None,
+        });
+        a.policy = Some(Box::new(policy));
+        a.support = support;
+        a.pending = None;
+        a.preparing = None;
+    }
+    /// A call from goblin `id`'s sandbox: its immediate answer, or null while
+    /// the call waits.
+    fn sandbox_call(d: &mut Controller, id: &str, method: &str, params: Value) -> Value {
+        let (mut c, _peer) = connection(Role::Sandbox(id.into()));
+        c.initialized = true;
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(1)),
+                method: method.into(),
+                params,
+            },
+        );
+        let Some(data) = c.output.pop_back() else {
+            return Value::Null;
+        };
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        rpc::parse(&data[body..]).unwrap()
+    }
+    #[test]
+    fn a_sandbox_without_a_feature_refuses_its_operations_and_does_not_list_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let request = |d: &mut Controller, params: Value| {
+            let reply = sandbox_call(d, "a", "permissions.request", params);
+            (
+                reply["error"]["code"].clone(),
+                reply["error"]["message"].clone(),
+            )
+        };
+        let kinds = [
+            (
+                json!({"kind":"package","package":"hello","reason":"t"}),
+                "live-packages",
+            ),
+            (json!({"kind":"devshell","reason":"t"}), "dev-shells"),
+            (json!({"kind":"docker","reason":"t"}), "docker"),
+            (
+                json!({"kind":"host-command","reason":"t",
+                    "host":{"argv":["true"],"cwd":"/work"}}),
+                "host-jobs",
+            ),
+        ];
+        // Full support: nothing is refused for its feature.
+        capable(&mut d, "a", Support::linux());
+        for (params, _) in &kinds {
+            let (code, _) = request(&mut d, params.clone());
+            assert_ne!(code, json!(-32009), "{params}");
+            capable(&mut d, "a", Support::linux());
+            d.permissions.clear();
+        }
+        // Without support, each is refused as unsupported, whatever the
+        // configuration allows, and flake.run and devshell.diff with it.
+        capable(&mut d, "a", Support(Default::default()));
+        for (params, feature) in &kinds {
+            let (code, message) = request(&mut d, params.clone());
+            assert_eq!(code, -32009, "{params}");
+            assert_eq!(message, format!("not supported by this sandbox: {feature}"));
+        }
+        for (method, params, feature) in [
+            ("flake.run", json!({"app":"hello"}), "flake-apps"),
+            ("devshell.diff", json!({}), "dev-shells"),
+        ] {
+            let reply = sandbox_call(&mut d, "a", method, params);
+            assert_eq!(reply["error"]["code"], -32009, "{method}");
+            assert_eq!(
+                reply["error"]["message"],
+                format!("not supported by this sandbox: {feature}")
+            );
+        }
+        let a = &d.sessions["a"];
+        assert!(a.allow(&Operation::Exec).is_err());
+        assert!(a.allow(&Operation::Attach).is_err());
+        // The initialize list drops exactly what the implementation lacks.
+        let features = |d: &mut Controller| {
+            let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+            let reply = dispatch(d, &mut c, "initialize", json!({"api":1}), Some(json!(1)));
+            reply["result"]["features"].as_array().unwrap().clone()
+        };
+        let reduced = features(&mut d);
+        assert_eq!(reduced.len(), 15 - 6);
+        for dropped in [
+            "scopes",
+            "docker-enable",
+            "package-grants",
+            "flake-run",
+            "devshell-diff",
+            "host-commands",
+        ] {
+            assert!(!reduced.contains(&json!(dropped)), "{dropped}");
+        }
+        let mut support = Support::linux();
+        support
+            .0
+            .remove(&goblins_runtime::policy::Feature::DevShells);
+        capable(&mut d, "a", support);
+        let some = features(&mut d);
+        assert_eq!(some.len(), 14);
+        assert!(!some.contains(&json!("devshell-diff")));
+        // Linux lists today's literal, in today's order.
+        capable(&mut d, "a", Support::linux());
+        assert_eq!(
+            features(&mut d),
+            [
+                "scopes",
+                "docker-enable",
+                "package-grants",
+                "terminal-detach",
+                "sandbox-status",
+                "agent-activity-v1",
+                "agent-inbox-v1",
+                "flake-run",
+                "devshell-diff",
+                "run-targets",
+                "raids",
+                "raid-owner",
+                "editor-open",
+                "variables",
+                "host-commands"
+            ]
+            .map(|f| json!(f))
+        );
+        // The feature checks do not hold up initialize while the goblin
+        // starts or stops.
+        for state in ["starting", "stopping"] {
+            d.sessions.get_mut("a").unwrap().record.state = state.into();
+            assert_eq!(features(&mut d).len(), 15, "{state}");
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn sandbox_policy_refusals_precede_live_state_checks() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        {
+            let a = d.sessions.get_mut("a").unwrap();
+            a.policy.as_mut().unwrap().nix = true;
+            // A request is pending.
+            a.pending = Some(Pending {
+                initial_output: None,
+                dev_identity: None,
+                id: "r".into(),
+                serial: 1,
+                connection: 99,
+                notify: false,
+                host: None,
+                detached: false,
+            });
+        }
+        let reply = sandbox_call(
+            &mut d,
+            "a",
+            "permissions.request",
+            json!({"kind":"package","package":"hello","reason":"t"}),
+        );
+        // The runtime gate now refuses policy before the daemon sees pending.
+        assert_eq!(reply["error"]["code"], -32602);
+        assert_eq!(reply["error"]["message"], goblins_runtime::NIX_PACKAGES);
+        d.sessions.get_mut("a").unwrap().pending = None;
+        let reply = sandbox_call(
+            &mut d,
+            "a",
+            "permissions.request",
+            json!({"kind":"package","package":"hello","reason":"t"}),
+        );
+        assert_eq!(reply["error"]["message"], goblins_runtime::NIX_PACKAGES);
+        let reply = sandbox_call(&mut d, "a", "flake.run", json!({"app":"hello"}));
+        assert_eq!(reply["error"]["message"], goblins_runtime::NIX_DEV_SHELL);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn interactive_exec_records_typed_events_without_daemon_resource_writes() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let resources = a.directory.join("resources");
+        unix::private_directory(&resources).unwrap();
+        for interactive in [true, false] {
+            let (mut c, _peer) = connection(Role::Host);
+            c.id = d.number();
+            c.initialized = true;
+            c.fds = (0..if interactive { 1 } else { 3 })
+                .map(|_| unix::pipe().unwrap().0)
+                .collect();
+            d.dispatch(&mut c, rpc::Call { jsonrpc:"2.0".into(), id:Some(json!(5)), method:"sessions.exec".into(),
+                params:json!({"session":"a","argv":["sh"],"cwd":"/work","tty":interactive,"interactive":interactive}) });
+            let id = c.exec.expect("exec accepted");
+            d.connections.push(c);
+            assert!(
+                matches!(received.lock().unwrap().pop_front(), Some(Command::Spawn { id:actual, .. }) if actual==id)
+            );
+            d.process_event("a", Event::Spawned { id, pid: 42 });
+            if interactive {
+                let Some(Command::RecordEvent { event, fields }) =
+                    received.lock().unwrap().pop_front()
+                else {
+                    panic!("missing started diagnostic")
+                };
+                assert_eq!(event, "exec-started");
+                assert_eq!(
+                    fields,
+                    json!({"exec":id,"argv":["sh"],"cwd":"/work","pid":42})
+                );
+            } else {
+                assert!(received.lock().unwrap().is_empty());
+            }
+            d.process_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: Some(7),
+                    signal: None,
+                },
+            );
+            if interactive {
+                let Some(Command::RecordEvent { event, fields }) =
+                    received.lock().unwrap().pop_front()
+                else {
+                    panic!("missing exit diagnostic")
+                };
+                assert_eq!(event, "exec-exited");
+                assert_eq!(
+                    fields,
+                    json!({"exec":id,"outcome":{"code":7,"signal":null}})
+                );
+            } else {
+                assert!(received.lock().unwrap().is_empty());
+            }
+            assert!(
+                !resources.join("events.jsonl").exists(),
+                "daemon must not fall back to writing the resource log"
+            );
+            assert_eq!(d.sessions["a"].record.shells, 0);
+            assert_eq!(d.sessions["a"].record.execs, 0);
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn host_descriptor_budget_accumulates_across_reads_and_closes_on_drop() {
+        let _no_forks = unix::no_forks();
+        let (mut c, peer) = connection(Role::Host);
+        let (reader, writer) = unix::pipe().unwrap();
+        unix::nonblocking(reader.as_raw_fd()).unwrap();
+        let frame = rpc::encode(&rpc::request(json!(1), "initialize", json!({"api":1}))).unwrap();
+        let (first, rest) = frame.split_at(8);
+        for bytes in [first, rest] {
+            unix::ancillary::send(
+                peer.as_raw_fd(),
+                bytes,
+                &[writer.as_raw_fd(); 2],
+                goblins_protocol::HOST_MAX_FDS,
+            )
+            .unwrap();
+            assert!(c.read().is_none());
+        }
+        assert!(
+            c.dead,
+            "the fourth accumulated descriptor must close a host connection"
+        );
+        assert_eq!(
+            c.fds.len(),
+            4,
+            "retain owned descriptors until connection cleanup"
+        );
+        drop(writer);
+        drop(c);
+        assert_eq!(
+            File::from(reader).read(&mut [0]).unwrap(),
+            0,
+            "rejected descriptors leaked"
+        );
+    }
+
+    #[test]
+    fn exec_size_refusal_preserves_error_order_id_consumption_and_fd_ownership() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let params = json!({"session":"a", "argv":["x".repeat(65536)]});
+        for case in 0..4 {
+            let (mut c, _peer) = connection(Role::Host);
+            c.initialized = true;
+            let mut readers = Vec::new();
+            for _ in 0..if case == 0 { 2 } else { 3 } {
+                let (reader, writer) = unix::pipe().unwrap();
+                unix::nonblocking(reader.as_raw_fd()).unwrap();
+                readers.push(std::fs::File::from(reader));
+                c.fds.push(writer);
+            }
+            let before = d.number();
+            let mut value = params.clone();
+            if case == 1 {
+                value["session"] = json!("missing");
+            }
+            d.sessions.get_mut("a").unwrap().init = case != 2;
+            let error = d.exec_start(&mut c, json!(5), value).unwrap_err();
+            match case {
+                0 => assert_eq!(
+                    error,
+                    (
+                        -32602,
+                        "pass a PTY slave with tty, or stdin, stdout and stderr".into()
+                    )
+                ),
+                1 => assert_eq!(error, missing()),
+                2 => assert_eq!(error, (-32009, "the sandbox has no init channel".into())),
+                _ => assert_eq!(error, (-32602, "command too long".into())),
+            }
+            // Only checks after number() consume an exec id, as before.
+            assert_eq!(d.number() - before, if case >= 2 { 2 } else { 1 });
+            assert!(c.fds.is_empty());
+            assert!(c.exec.is_none() && c.waiting.is_none());
+            assert!(d.execs.is_empty());
+            assert!(received.lock().unwrap().is_empty());
+            for reader in &mut readers {
+                assert_eq!(reader.read(&mut [0]).unwrap(), 0, "refused stdio leaked");
+            }
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn exec_passes_a_pty_or_three_descriptors_and_runs_the_shell_without_argv() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        capable(&mut d, "a", Support::linux());
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        let spawn = |d: &mut Controller, fds: usize, params: Value| {
+            let (mut c, _peer) = connection(Role::Host);
+            c.initialized = true;
+            c.fds = (0..fds)
+                .map(|_| unix::pipe().unwrap().0)
+                .collect::<Vec<_>>();
+            d.dispatch(
+                &mut c,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: Some(json!(5)),
+                    method: "sessions.exec".into(),
+                    params,
+                },
+            );
+            assert!(c.exec.is_some(), "{:?}", c.output);
+            received.lock().unwrap().pop_front()
+        };
+        // A PTY slave and no argv: the sandbox's own shell.
+        let command = spawn(&mut d, 1, json!({"session":"a","tty":true}));
+        assert!(matches!(
+            command,
+            Some(Command::Spawn {
+                argv: None,
+                stdio: goblins_runtime::Stdio::Tty(_),
+                ..
+            })
+        ));
+        // Three descriptors, an argument vector and the rest.
+        let command = spawn(
+            &mut d,
+            3,
+            json!({"session":"a","argv":["ls","-l"],"cwd":"/work","env":[["A","b"]]}),
+        );
+        let Some(Command::Spawn {
+            argv,
+            cwd,
+            env,
+            stdio: goblins_runtime::Stdio::Fds(_),
+            ..
+        }) = command
+        else {
+            panic!("expected a spawn with three descriptors: {command:?}");
+        };
+        assert_eq!(argv, Some(vec!["ls".into(), "-l".into()]));
+        assert_eq!(cwd.as_deref(), Some("/work"));
+        assert_eq!(env, [("A".to_string(), "b".to_string())]);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn teardown_leaves_the_resources_another_holder_has_to_the_last_holder() {
+        let _no_forks = unix::no_forks();
+        for held in [false, true] {
+            let mut d = daemon();
+            let state = d.state.clone();
+            let id = session_with_results_id(&mut d, "a", vec![]);
+            let session = d.state.join(&id);
+            let resources = session.join("resources");
+            fs::create_dir(&resources).unwrap();
+            fs::write(resources.join("snapshot"), "x").unwrap();
+            // The goblin's runtime holds its resources...
+            let (runtime, _events, _received) = goblins_runtime::Fake::new();
+            d.sessions.get_mut(&id).unwrap().runtime = Some(Box::new(
+                runtime.holding(goblins_runtime::ResourceLease::new(resources.clone()).unwrap()),
+            ));
+            // ...and maybe another holder does, as a raid member that shares
+            // them or a helper that outlived it.
+            let lease =
+                held.then(|| goblins_runtime::ResourceLease::new(resources.clone()).unwrap());
+            drop(d);
+            // The goblin's own files are gone either way.
+            assert!(!session.join("terminal.sock").exists());
+            assert!(!session.join("attach.sock").exists());
+            if let Some(lease) = lease {
+                assert!(resources.join("snapshot").exists());
+                // The last holder removes the resources and the session.
+                drop(lease);
+            }
+            assert!(!session.exists(), "held: {held}");
+            fs::remove_dir_all(state).unwrap();
+        }
+    }
+    #[test]
+    fn shutdown_pumps_scope_control_before_joining_a_runtime_waiting_for_left() {
+        use goblins_runtime::{
+            channel::Channel,
+            scope::{self, Message},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
+        let _forking = unix::forking();
+        let state = unix::temp_directory().unwrap();
+        let mut daemon = Controller::new(&state, None).unwrap();
+        let (control, scope_control) = UnixStream::pair().unwrap();
+        let (member, scope_member) = UnixStream::pair().unwrap();
+        // The child supplies process lifetime only; the thread emulates the
+        // trusted scope protocol without namespaces, Bubblewrap or Docker.
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pidfd =
+            unix::owned(unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0) as i32 })
+                .unwrap();
+        daemon.scopes.insert_fake_process("work", child, control, 1);
+        let scope_thread = std::thread::spawn(move || {
+            let mut control = Channel::new(scope_control).unwrap();
+            let mut member = Channel::new(scope_member).unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(3);
+            let mut idle = false;
+            while Instant::now() < deadline {
+                if let Some(frame) = member.receive().unwrap() {
+                    assert!(matches!(
+                        scope::decode(frame.value).unwrap(),
+                        Message::Leave {}
+                    ));
+                    control
+                        .queue(&scope::encode(&Message::Idle { added: 1 }), &mut vec![])
+                        .unwrap();
+                    idle = true;
+                }
+                control.flush().unwrap();
+                if let Some(frame) = control.receive().unwrap() {
+                    assert!(idle);
+                    assert!(matches!(
+                        scope::decode(frame.value).unwrap(),
+                        Message::Stop {}
+                    ));
+                    member
+                        .queue(&scope::encode(&Message::Left {}), &mut vec![])
+                        .unwrap();
+                    member.flush().unwrap();
+                    break;
+                }
+                if control.closed() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGTERM,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                );
+            }
+        });
+        struct WaitingRuntime {
+            stop: Option<mpsc::SyncSender<()>>,
+            worker: Option<std::thread::JoinHandle<()>>,
+        }
+        impl Runtime for WaitingRuntime {
+            fn send(&mut self, command: Command) -> std::result::Result<(), Command> {
+                if matches!(command, Command::Stop) {
+                    if let Some(stop) = self.stop.take() {
+                        let _ = stop.try_send(());
+                    }
+                }
+                Ok(())
+            }
+            fn poll(&mut self) -> Option<Event> {
+                None
+            }
+            fn released(&self) -> bool {
+                false
+            }
+            fn ended(&self) -> bool {
+                false
+            }
+        }
+        impl Drop for WaitingRuntime {
+            fn drop(&mut self) {
+                if let Some(worker) = self.worker.take() {
+                    worker.join().unwrap();
+                }
+            }
+        }
+        let completed = Arc::new(AtomicBool::new(false));
+        let done = completed.clone();
+        let (stop, stopped) = mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            stopped.recv().unwrap();
+            let mut member = Channel::new(member).unwrap();
+            member
+                .queue(&scope::encode(&Message::Leave {}), &mut vec![])
+                .unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(1);
+            while Instant::now() < deadline {
+                member.flush().unwrap();
+                if let Some(frame) = member.receive().unwrap() {
+                    assert!(matches!(
+                        scope::decode(frame.value).unwrap(),
+                        Message::Left {}
+                    ));
+                    done.store(true, Ordering::SeqCst);
+                    break;
+                }
+                if member.closed() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        session_with_results_id(&mut daemon, "pump", vec![]);
+        daemon.sessions.get_mut("pump").unwrap().runtime = Some(Box::new(WaitingRuntime {
+            stop: Some(stop),
+            worker: Some(worker),
+        }));
+        drop(daemon);
+        scope_thread.join().unwrap();
+        assert!(
+            completed.load(Ordering::SeqCst),
+            "daemon joined its worker before pumping scope release"
+        );
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    #[test]
+    fn an_engine_failure_reaches_running_and_starting_members_only_in_its_scope() {
+        let state = unix::temp_directory().unwrap();
+        let mut daemon = Controller::new(&state, None).unwrap();
+        let mut senders = vec![];
+        let mut received = vec![];
+        for (id, scope) in [
+            ("docker", "work"),
+            ("idle", "work"),
+            ("pending", "work"),
+            ("other", "other"),
+        ] {
+            session_with_results_id(&mut daemon, id, vec![]);
+            let (runtime, events, commands) = goblins_runtime::Fake::new();
+            let active = daemon.sessions.get_mut(id).unwrap();
+            active.runtime = Some(Box::new(runtime));
+            active.member_scope = Some(scope.into());
+            active.record.docker_enabled = id == "docker";
+            if id == "pending" {
+                active.policy = None;
+                active.record.state = "starting".into();
+            }
+            senders.push(events);
+            received.push(commands);
+        }
+        senders[0]
+            .try_send(Event::ScopeFailed {
+                name: "work".into(),
+            })
+            .unwrap();
+        daemon.tick().unwrap();
+        for commands in &received[..3] {
+            assert!(matches!(
+                commands.lock().unwrap().pop_front(),
+                Some(Command::ScopeFailed)
+            ));
+        }
+        assert!(received[3].lock().unwrap().is_empty());
+        for sender in &senders[..3] {
+            sender
+                .try_send(Event::Stopped { exit_code: Some(1) })
+                .unwrap();
+        }
+        daemon.tick().unwrap();
+        for id in ["docker", "idle", "pending"] {
+            let record = &daemon.sessions[id].record;
+            assert_eq!(record.state, "stopped");
+            assert_eq!(record.exit_code, Some(1));
+            assert_eq!(record.detail, None);
+            assert_eq!(record.stop_reason, None);
+        }
+        let other = &daemon.sessions["other"].record;
+        assert_eq!(other.state, "running");
+        assert_eq!(other.exit_code, None);
+        assert_eq!(other.detail, None);
+        assert_eq!(other.stop_reason, None);
+        drop(daemon);
+        fs::remove_dir_all(state).unwrap();
+    }
+
+    /// A raid owner with a running runtime, a raid and a current manifest.
+    /// Its runtime records what it is sent and takes the events the test
+    /// sends.
+    fn raid_owner(
+        d: &mut Controller,
+    ) -> (
+        String,
+        std::sync::mpsc::SyncSender<Event>,
+        goblins_runtime::Received,
+    ) {
+        let root = session_with_results_id(d, "root", vec![]);
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut(&root).unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.pending = None;
+        a.record.name = "coordinator".into();
+        a.record.agent_name = "boss".into();
+        a.set_policy(policy_fixture("coordinator", &["shell"]));
+        d.sandbox_control_for_test(&root, "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&d.state.join("current.json")),
+        ));
+        (root, events, received)
+    }
+    fn run_member(d: &mut Controller, owner: &str, key: &str) -> String {
+        let accepted = d
+            .sandbox_control_for_test(
+                owner,
+                "sessions.start",
+                json!({"key": key, "name": "shell", "agent_name": null}),
+            )
+            .unwrap();
+        accepted["session"].as_str().unwrap().to_string()
+    }
+    fn tick_until(d: &mut Controller, done: impl Fn(&Controller) -> bool) {
+        for _ in 0..500 {
+            d.tick().unwrap();
+            if done(d) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("the daemon never got there");
+    }
+    #[test]
+    fn a_member_launch_asks_its_owner_for_a_handoff_and_starts_on_the_answer() {
+        let _forking = unix::forking();
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.backend = RuntimeBackend::Supervised;
+        d.executable = crate::supervised::tests::executable(&d.state, "engine");
+        let (owner, events, received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // Accepted: the owner is asked at once, and the member waits for it.
+        let asked = received.lock().unwrap().pop_front();
+        assert!(matches!(&asked, Some(Command::Export { member: m }) if *m == member));
+        assert_eq!(
+            d.sessions[&member].exporting.as_deref(),
+            Some(owner.as_str())
+        );
+        assert_eq!(d.sessions[&member].record.state, "starting");
+        // The answer reaches the member, which goes on to read its
+        // configuration: the manifest does not exist, so it fails for that,
+        // not for want of a handoff.
+        let handoff = handoff_fixture(None);
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        let a = &d.sessions[&member];
+        assert!(a.exporting.is_none());
+        let detail = a.record.detail.as_deref().unwrap();
+        assert!(!detail.contains("hand over"), "{detail}");
+        assert!(!detail.contains("given up"), "{detail}");
+        assert_eq!(
+            detail,
+            format!(
+                "cannot open configuration {}: {}",
+                path.join("current.json").display(),
+                io::Error::from_raw_os_error(libc::ENOENT)
+            )
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_member_whose_owner_stops_before_answering_fails_naming_the_owner() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // The owner's runtime ends without an answer.
+        drop(events);
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        let a = &d.sessions[&member];
+        assert!(a.exporting.is_none());
+        assert_eq!(
+            a.record.detail.as_deref(),
+            Some("goblin boss stopped before it could hand over its resources")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_member_whose_owner_cannot_hand_over_fails_with_the_reason_and_a_late_answer_is_released() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Err("no workspace".into()),
+            })
+            .unwrap();
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        assert_eq!(
+            d.sessions[&member].record.detail.as_deref(),
+            Some("goblin boss could not hand over its resources: no workspace")
+        );
+        // An answer for a launch that is not waiting for it holds a lease,
+        // which letting go of the answer releases.
+        let resources = path.join("late-resources");
+        fs::create_dir(&resources).unwrap();
+        let handoff = handoff_fixture(Some(resources.clone()));
+        events
+            .send(Event::Exported {
+                member: "nobody".into(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!resources.exists());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_owner_that_answers_and_stops_in_one_round_still_starts_its_member() {
+        let _forking = unix::forking();
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.backend = RuntimeBackend::Supervised;
+        d.executable = crate::supervised::tests::executable(&d.state, "engine");
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        let handoff = handoff_fixture(None);
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        events.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        drop(events);
+        tick_until(&mut d, |d| d.sessions[&member].record.state == "failed");
+        // It failed for its own configuration, not for want of its owner.
+        let detail = d.sessions[&member].record.detail.clone().unwrap();
+        assert!(!detail.contains("boss"), "{detail}");
+        assert!(!detail.contains("hand over"), "{detail}");
+        assert_eq!(
+            detail,
+            format!(
+                "cannot open configuration {}: {}",
+                path.join("current.json").display(),
+                io::Error::from_raw_os_error(libc::ENOENT)
+            )
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_member_stopped_while_it_waits_for_its_handoff_ends_and_a_late_handoff_is_released() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        d.stop(&member, None).unwrap();
+        tick_until(&mut d, |d| {
+            d.sessions[&member].runtime.is_none() && d.sessions[&member].record.state == "stopped"
+        });
+        // The owner's answer arrives afterwards, and nobody wants it.
+        let resources = path.join("late-resources");
+        fs::create_dir(&resources).unwrap();
+        let handoff = handoff_fixture(Some(resources.clone()));
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(!resources.exists());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_handoff_arriving_after_a_member_was_stopped_is_released_not_started_or_failed() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // The member's runtime records what it is sent and does not run.
+        let (runtime, _member_events, sent) = goblins_runtime::Fake::new();
+        d.sessions.get_mut(&member).unwrap().runtime = Some(Box::new(runtime));
+        d.stop(&member, None).unwrap();
+        assert!(d.sessions[&member].exporting.is_none());
+        let resources = path.join("late-resources");
+        fs::create_dir(&resources).unwrap();
+        let handoff = handoff_fixture(Some(resources.clone()));
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff)),
+            })
+            .unwrap();
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Err("late".into()),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        // Neither started the stopping member nor turned its stop into a failed
+        // launch; the handoff went and its lease with it.
+        assert_eq!(d.sessions[&member].record.state, "stopping");
+        let commands: Vec<_> = sent.lock().unwrap().drain(..).collect();
+        assert!(
+            matches!(commands.as_slice(), [Command::Stop]),
+            "{commands:?}"
+        );
+        assert!(!resources.exists());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_runtime_that_refuses_the_handoff_fails_its_launch_instead_of_waiting() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (owner, events, _received) = raid_owner(&mut d);
+        let member = run_member(&mut d, &owner, "k1");
+        // A member runtime whose queue is full refuses a Start.
+        let (runtime, _member_events, sent) = goblins_runtime::Fake::new();
+        for approval in 0..4 {
+            sent.lock().unwrap().push_back(Command::Preview {
+                approval,
+                package: "hello".into(),
+            });
+        }
+        d.sessions.get_mut(&member).unwrap().runtime = Some(Box::new(runtime));
+        events
+            .send(Event::Exported {
+                member: member.clone(),
+                result: Ok(Box::new(handoff_fixture(None))),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let a = &d.sessions[&member];
+        assert_eq!(a.record.state, "failed");
+        assert_eq!(
+            a.record.detail.as_deref(),
+            Some("the launch could not take its owner's handoff")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn full_result_queue_without_stopped_cannot_leave_session_running() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        // A full bounded queue can reject the worker's final try_send(Stopped).
+        let id = session_with_results(
+            &mut d,
+            (0..16)
+                .map(|_| Event::Progress {
+                    request: "r".into(),
+                    state: "mounting".into(),
+                })
+                .collect(),
+        );
+        d.tick().unwrap();
+        assert!(d.sessions[&id].runtime.is_some());
+        d.tick().unwrap();
+        assert!(d.sessions[&id].runtime.is_none());
+        assert_eq!(d.sessions[&id].record.state, "failed");
+        assert!(
+            d.sessions[&id]
+                .record
+                .detail
+                .as_ref()
+                .unwrap()
+                .contains("without a final")
+        );
+        assert!(d.sessions[&id].pending.is_none());
+        assert_eq!(d.permissions[0].state, "cancelled");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn endpoint_authority_initialization_and_notifications() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let session = session_with_results(&mut d, vec![]);
+        let (mut c, _peer) = connection(Role::Sandbox(session));
+        assert_eq!(
+            dispatch(&mut d, &mut c, "sessions.list", json!({}), Some(json!(1)))["error"]["code"],
+            -32001
+        );
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut c,
+                "initialize",
+                json!({"api":2}),
+                Some(json!(2))
+            )["error"]["code"],
+            -32002
+        );
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut c,
+                "initialize",
+                json!({"api":1,"role":"host"}),
+                Some(json!(3))
+            )["error"]["code"],
+            -32602
+        );
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut c,
+                "initialize",
+                json!({"api":1}),
+                Some(json!(4))
+            )["result"]["role"],
+            "sandbox"
+        );
+        let (mut host, _host_peer) = connection(Role::Host);
+        let _ = dispatch(
+            &mut d,
+            &mut host,
+            "initialize",
+            json!({"api":1}),
+            Some(json!(1)),
+        );
+        assert!(
+            !host
+                .decoder
+                .expired(Instant::now() + std::time::Duration::from_secs(4))
+        );
+        for method in [
+            "server.status",
+            "server.stop",
+            "permissions.decide",
+            "state.subscribe",
+        ] {
+            assert_eq!(
+                dispatch(&mut d, &mut c, method, json!({}), Some(json!(5)))["error"]["code"],
+                -32601
+            );
+        }
+        let before = d.snapshot().sessions.len();
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: None,
+                method: "sessions.start".into(),
+                params: json!({}),
+            },
+        );
+        assert!(c.output.is_empty());
+        assert_eq!(d.snapshot().sessions.len(), before);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn server_shutdown_flushes_acceptance_and_rejects_later_work() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        assert_eq!(
+            d.host(&mut c, "server.status", json!({})).unwrap()["state"],
+            "running"
+        );
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(2)),
+                method: "server.stop".into(),
+                params: json!({}),
+            },
+        );
+        assert!(c.queued > 0);
+        d.connections.push(c);
+        assert!(!d.shutdown_ready());
+        let (mut other, _other_peer) = connection(Role::Host);
+        assert_eq!(
+            d.host(&mut other, "sessions.start", launch("late", None))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert!(d.sessions.is_empty());
+        assert_eq!(
+            d.host(&mut other, "server.status", json!({})).unwrap()["state"],
+            "stopping"
+        );
+        d.connections[0].flush();
+        assert!(d.shutdown_ready());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn trailing_input_is_consumed_and_queue_overflow_disconnects() {
+        let (mut c, mut peer) = connection(Role::Sandbox("s".into()));
+        c.waiting = Some(("r".into(), json!(1)));
+        peer.write_all(b"x").unwrap();
+        drop(peer);
+        assert!(c.read().is_none());
+        assert!(c.dead);
+        let (mut c, _peer) = connection(Role::Host);
+        for _ in 0..4 {
+            c.queue(json!({"data":"x".repeat(700_000)}));
+        }
+        assert!(c.dead);
+        assert!(c.queued <= QUEUE);
+    }
+    #[test]
+    fn snapshot_and_event_share_one_order() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        d.dirty = true;
+        let initial = dispatch(&mut d, &mut c, "state.subscribe", json!({}), Some(json!(1)));
+        assert_eq!(initial["result"]["sequence"], 1);
+        d.connections.push(c);
+        d.dirty = true;
+        d.publish();
+        let data = d.connections[0].output.pop_back().unwrap();
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let event = rpc::parse(&data[body..]).unwrap();
+        assert_eq!(event["params"]["sequence"], 2);
+        assert_eq!(
+            event["params"]["subscription"],
+            initial["result"]["subscription"]
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    /// A running session whose worker results the test supplies.
+    fn operations(
+        queue: &std::sync::mpsc::Receiver<crate::messaging::Work>,
+    ) -> Vec<crate::operation::Event> {
+        queue
+            .try_iter()
+            .flat_map(|work| match work {
+                crate::messaging::Work::Sync { operations, .. }
+                | crate::messaging::Work::Call { operations, .. } => operations,
+            })
+            .collect()
+    }
+    fn outcome(event: &crate::operation::Event) -> (&str, Option<&str>, bool) {
+        match &event.change {
+            crate::operation::Change::Completed {
+                status,
+                message,
+                notify,
+                ..
+            } => (status, message.as_deref(), *notify),
+            other => panic!("not a completion: {other:?}"),
+        }
+    }
+    #[test]
+    fn every_terminal_outcome_is_queued_once_with_the_sandbox_message() {
+        for (results, status, message) in [
+            (
+                vec![Event::Granted {
+                    reply: goblins_protocol::Reply::new(Some("r".into()), "ready", None),
+                    detail: None,
+                    output: None,
+                }],
+                "ready",
+                None,
+            ),
+            (
+                vec![Event::Granted {
+                    reply: goblins_protocol::Reply::new(
+                        Some("r".into()),
+                        "error",
+                        Some("grant failed; see tui terminal".into()),
+                    ),
+                    detail: Some("host-only Nix diagnostic".into()),
+                    output: None,
+                }],
+                "failed",
+                Some("grant failed; see tui terminal"),
+            ),
+            (
+                vec![Event::Stopped { exit_code: Some(0) }],
+                "cancelled",
+                Some("payload stopped"),
+            ),
+        ] {
+            // Its own directory each time: a process another test forks while
+            // the previous daemon's lock is still open could hold that lock
+            // for a moment, and a new daemon on the same directory would
+            // find it taken.
+            let mut d = daemon();
+            let path = d.state.clone();
+            let (service, queue) = crate::messaging::Service::detached(8);
+            d.messaging = service;
+            let id = session_with_results(&mut d, results);
+            d.sessions
+                .get_mut(&id)
+                .unwrap()
+                .pending
+                .as_mut()
+                .unwrap()
+                .notify = true;
+            d.tick().unwrap();
+            d.tick().unwrap();
+            let events = operations(&queue);
+            assert_eq!(events.len(), 1, "{status}");
+            assert_eq!(events[0].request, "r");
+            assert_eq!(events[0].session, id);
+            assert_eq!(events[0].kind(), "operation.completed");
+            assert_eq!(outcome(&events[0]), (status, message, true));
+            drop(d);
+            // Nothing was pending at shutdown, so nothing more is reported.
+            assert!(operations(&queue).is_empty());
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+    #[test]
+    fn stop_withdrawal_and_shutdown_end_pending_operations() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(64);
+        d.messaging = service;
+        let stopped = session_with_results_id(&mut d, "stopped", vec![]);
+        d.stop(&stopped, Some("stopped by host".into())).unwrap();
+        let withdrawn = session_with_results_id(&mut d, "withdrawn", vec![]);
+        d.permissions.back_mut().unwrap().state = "pending".into();
+        d.permissions.back_mut().unwrap().id = "w".into();
+        d.sessions
+            .get_mut(&withdrawn)
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .id = "w".into();
+        d.withdraw(99);
+        // A second loss of the same connection reports nothing new.
+        d.withdraw(99);
+        let shutdown = session_with_results_id(&mut d, "shutdown", vec![]);
+        let (runtime, _results, _received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut(&shutdown).unwrap().runtime = Some(Box::new(runtime));
+        d.permissions.back_mut().unwrap().id = "s".into();
+        d.sessions
+            .get_mut(&shutdown)
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .id = "s".into();
+        d.tick().unwrap();
+        let events = operations(&queue);
+        let outcomes: Vec<_> = events
+            .iter()
+            .map(|e| (e.session.as_str(), outcome(e).0, outcome(e).1))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("stopped", "cancelled", Some("session stopped")),
+                ("withdrawn", "withdrawn", None),
+            ]
+        );
+        drop(d);
+        let events = operations(&queue);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].request, "s");
+        assert_eq!(outcome(&events[0]).1, Some("daemon stopped"));
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn records_follow_grants_denials_variables_and_stop() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a");
+        let _other = live(&mut d, "kid");
+        let record = |d: &Controller| d.history.as_ref().unwrap().records["a"].clone();
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record
+        });
+        // Variables: only the caller's own record, all keys together.
+        let set = |d: &mut Controller, id: &str, variables: Value| {
+            d.sandbox_control_for_test(id, "sessions.set-variables", json!({"variables":variables}))
+        };
+        assert_eq!(
+            set(
+                &mut d,
+                "a",
+                json!({"session_id":"c819","session_name":"Plan it"})
+            )
+            .unwrap(),
+            json!({"accepted":true,"recorded":true})
+        );
+        assert_eq!(record(&d).variables["session_name"], "Plan it");
+        assert!(record(&d).updated > 1);
+        assert_eq!(set(&mut d, "a", json!({"Bad":"x"})).unwrap_err().0, -32602);
+        assert_eq!(
+            set(&mut d, "a", json!({"session_name":""})).unwrap()["recorded"],
+            true
+        );
+        assert!(!record(&d).variables.contains_key("session_name"));
+        // A goblin whose record is not written yet records nothing.
+        assert_eq!(
+            set(&mut d, "kid", json!({"session_id":"other"})).unwrap(),
+            json!({"accepted":true,"recorded":false})
+        );
+        assert!(!d.history.as_ref().unwrap().records.contains_key("kid"));
+        // A host denial, then an approval of the same package.
+        let (runtime, sender, _received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        let request = |d: &mut Controller, kind: &str| {
+            let (mut c, peer) = connection(Role::Sandbox("a".into()));
+            c.initialized = true;
+            d.dispatch(
+                &mut c,
+                rpc::Call {
+                    jsonrpc: "2.0".into(),
+                    id: Some(json!(1)),
+                    method: "permissions.request".into(),
+                    params: json!({"kind":kind,"package":if kind == "package" {"hello"} else {""},"reason":"test"}),
+                },
+            );
+            d.connections.push(c);
+            (d.permissions.back().unwrap().clone(), peer)
+        };
+        let (denied, _peer) = request(&mut d, "package");
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: denied.id.clone(),
+                approval: denied.approval.clone(),
+                approved: false,
+            },
+            "host",
+        )
+        .unwrap();
+        assert_eq!(record(&d).packages.denied, ["hello"]);
+        let _peer = request(&mut d, "package");
+        sender
+            .send(Event::Granted {
+                reply: goblins_protocol::Reply::new(None, "ready", None),
+                detail: None,
+                output: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(record(&d).packages.approved, ["hello"]);
+        assert!(record(&d).packages.denied.is_empty());
+        // A full record leaves the grant in place and says so.
+        let mut full = record(&d);
+        full.packages.approved = (0..256).map(|i| format!("p{i}")).collect();
+        d.history.as_mut().unwrap().write(full);
+        d.sessions.get_mut("a").unwrap().record.packages.clear();
+        let _peer = request(&mut d, "package");
+        sender
+            .send(Event::Granted {
+                reply: goblins_protocol::Reply::new(None, "ready", None),
+                detail: None,
+                output: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sessions["a"].record.packages, ["hello"]);
+        assert!(
+            d.sessions["a"]
+                .record
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("not recorded for resume")
+        );
+        assert!(!record(&d).packages.approved.contains(&"hello".to_string()));
+        // The stop is recorded once, and the record is final afterwards.
+        sender.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        d.tick().unwrap();
+        let stopped = record(&d).stopped.unwrap();
+        assert_eq!(
+            set(&mut d, "a", json!({"session_id":"late"})).unwrap_err(),
+            conflict()
+        );
+        assert_eq!(
+            d.update_record("a", |r| r.update(|r| r.stopped = Some(0))),
+            Ok(false)
+        );
+        assert_eq!(record(&d).stopped, Some(stopped));
+        drop(d);
+        let records = crate::history::Store::open(&path.join("history"), "test").unwrap();
+        assert_eq!(records.records["a"].stopped, Some(stopped));
+        assert_eq!(records.records["a"].variables["session_id"], "c819");
+        drop(records);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_recreated_goblin_continues_its_record_and_merges_a_resumed_conversation() {
+        use crate::history::Record;
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let mut line = Record::new("r0", "shell", "morb", 1);
+        line.ran_as("g0");
+        line.packages.approved = vec!["jq".into()];
+        line.variables.insert("session_id".into(), "c1".into());
+        line.stopped = Some(2);
+        let mut other = Record::new("o1", "shell", "grib", 0);
+        other.ran_as("g1");
+        other.packages.approved = vec!["tree".into()];
+        other.variables.insert("session_id".into(), "c2".into());
+        other.stopped = Some(1);
+        let store = d.history.as_mut().unwrap();
+        store.write(line.clone());
+        store.write(other);
+        // Goblin s5, recreated from r0, reaches running with one more grant.
+        session_with_results_id(&mut d, "s5", vec![]);
+        let mut a = d.sessions.remove("s5").unwrap();
+        a.pending = None;
+        a.line = "r0".into();
+        a.variables = line.variables.clone();
+        a.recreated_from = Some(Box::new(line));
+        a.record.packages = vec!["jq".into(), "hello".into()];
+        d.record_started(&a);
+        d.sessions.insert("s5".into(), a);
+        let record =
+            |d: &Controller, id: &str| d.history.as_ref().unwrap().records.get(id).cloned();
+        let r0 = record(&d, "r0").unwrap();
+        assert_eq!(r0.sessions, ["g0", "s5"]);
+        assert_eq!(r0.packages.approved, ["jq", "hello"]);
+        assert_eq!(r0.stopped, None);
+        assert!(record(&d, "s5").is_none());
+        // It resumes o1's conversation: one record per conversation.
+        assert_eq!(
+            d.sandbox_control_for_test(
+                "s5",
+                "sessions.set-variables",
+                json!({"variables":{"session_id":"c2"}})
+            )
+            .unwrap()["recorded"],
+            true
+        );
+        let r0 = record(&d, "r0").unwrap();
+        assert_eq!(r0.sessions, ["g1", "g0", "s5"]);
+        assert_eq!(r0.packages.approved, ["jq", "hello", "tree"]);
+        assert_eq!(r0.created, 0);
+        assert!(d.history.as_ref().unwrap().deleting.contains("o1"));
+        assert_eq!(d.history.as_ref().unwrap().resolve("g1").unwrap().id, "r0");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_resumed_record_is_bounded_like_copied_approvals() {
+        use crate::history::MAX_NAMES;
+        use crate::history::Record;
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let store = d.history.as_mut().unwrap();
+        for (id, count) in [("fits", MAX_NAMES), ("oversize", MAX_NAMES + 1)] {
+            let mut record = Record::new(id, "shell", id, 1);
+            record.ran_as(id);
+            // As read from disk, past Record::update's own bound.
+            record.packages.auto_approve = (0..count).map(|i| format!("p{i}")).collect();
+            store.write(record);
+        }
+        let (mut host, _peer) = host_connection();
+        let recreate = |target: &str| {
+            json!({"key":target,"configuration":"/missing-goblins-test-manifest",
+                "recreate":target,"rows":24,"cols":80})
+        };
+        let refused = d
+            .host(&mut host, "sessions.start", recreate("oversize"))
+            .unwrap_err();
+        assert_eq!(refused.0, -32010);
+        assert!(refused.1.contains("auto-approve limit of 256"));
+        let sessions = d.sessions.len();
+        d.host(&mut host, "sessions.start", recreate("fits"))
+            .unwrap();
+        assert_eq!(d.sessions.len(), sessions + 1);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_record_is_refused_while_a_goblin_runs_it_and_retries_return_the_launch() {
+        use crate::history::Record;
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let store = d.history.as_mut().unwrap();
+        // A record that ran as goblins r0, r1 and r2.
+        let mut root = Record::new("r0", "shell", "morb", 1);
+        root.ran_as("r0");
+        root.packages.approved = vec!["hello".into()];
+        root.variables.insert("session_id".into(), "c819".into());
+        root.ran_as("r1");
+        root.ran_as("r2");
+        store.write(root);
+        store.write(Record::new("a3", "shell", "ugluk", 1));
+        store.write(Record::new("pruned", "shell", "snaga", 1));
+        // Queued for deletion, not yet confirmed by the writer.
+        store.deleting.insert("pruned".into());
+        let mut moved = Record::new("moved", "shell", "zog", 3);
+        moved.cwd = Some("/nonexistent-goblins-recreate-cwd".into());
+        store.write(moved);
+        let (mut host, _peer) = host_connection();
+        let recreate = |key: &str, target: &str| {
+            json!({"key":key,"configuration":"/missing-goblins-test-manifest","recreate":target,
+                "rows":24,"cols":80})
+        };
+        let mut start = |d: &mut Controller, p: Value| d.host(&mut host, "sessions.start", p);
+        // There is no tree to resume a goblin into.
+        let mut with_parent = recreate("k0", "r0");
+        with_parent["parent"] = json!("r0");
+        assert!(
+            start(&mut d, with_parent)
+                .unwrap_err()
+                .1
+                .contains("unknown field `parent`")
+        );
+        let mut with_name = recreate("k0", "r0");
+        with_name["name"] = json!("shell");
+        assert_eq!(start(&mut d, with_name).unwrap_err().0, -32602);
+        assert!(
+            start(&mut d, recreate("k0", "moved"))
+                .unwrap_err()
+                .1
+                .contains("no longer exists")
+        );
+        assert_eq!(
+            start(&mut d, recreate("k0", "nobody")).unwrap_err().0,
+            -32004
+        );
+        // Names are labels only.
+        assert_eq!(start(&mut d, recreate("k0", "morb")).unwrap_err().0, -32004);
+        // A record being removed is neither resumed nor listed.
+        assert!(
+            start(&mut d, recreate("k0", "pruned"))
+                .unwrap_err()
+                .1
+                .contains("is being removed")
+        );
+        let listed = d.history_list().unwrap();
+        assert!(
+            listed["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|r| r["id"] != "pruned")
+        );
+        // The record names the configuration and agent name; an old goblin
+        // id finds it.
+        let first = start(&mut d, recreate("k1", "r1")).unwrap();
+        let id = first["session"].as_str().unwrap().to_string();
+        let record = &d.sessions[&id].record;
+        assert_eq!(
+            (record.name.as_str(), record.agent_name.as_str()),
+            ("shell", "morb")
+        );
+        assert_eq!(record.recreated_from.as_deref(), Some("r0"));
+        assert_eq!(d.sessions[&id].line, "r0");
+        assert_eq!(d.sessions[&id].variables["session_id"], "c819");
+        // A retry is the same launch; another recreate is refused.
+        assert_eq!(start(&mut d, recreate("k1", "r1")).unwrap(), first);
+        let refused =
+            |d: &mut Controller,
+             start: &mut dyn FnMut(&mut Controller, Value) -> std::result::Result<Value, Fault>,
+             key: &str,
+             target: &str| { start(d, recreate(key, target)).unwrap_err().1 };
+        for target in ["r0", "r1", "r2", "c819"] {
+            assert!(refused(&mut d, &mut start, "k2", target).contains("is live and runs it"));
+        }
+        // Released when that session ends.
+        d.sessions.get_mut(&id).unwrap().runtime.take();
+        // The original goblin running its own record refuses too.
+        let _a3 = live(&mut d, "a3");
+        assert!(refused(&mut d, &mut start, "k7", "a3").contains("goblin a3 (a3)"));
+        d.sessions.get_mut("a3").unwrap().runtime.take();
+        // A goblin already using the name leaves a new name.
+        let _morb = live(&mut d, "morb");
+        let again = start(&mut d, recreate("k4", "r0")).unwrap();
+        assert_ne!(again["agent_name"], "morb");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        // A --workspace daemon records nothing and recreates nothing.
+        let path = unix::temp_directory().unwrap();
+        let mut d = Controller::new(&path, Some(path.clone())).unwrap();
+        d.open_history(Ok(path.join("history")), 100);
+        let (mut host, _peer) = host_connection();
+        assert!(
+            d.host(&mut host, "sessions.start", recreate("k1", "r0"))
+                .unwrap_err()
+                .1
+                .contains("--workspace")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_second_daemon_runs_without_history_and_records_its_goblins_on_takeover() {
+        let mut first = daemon();
+        let mut second = daemon();
+        let shared = first.state.join("history");
+        first.open_history(Ok(shared.clone()), 100);
+        second.open_history(Ok(shared.clone()), 100);
+        assert_eq!(first.history_status()["owner"], true);
+        let status = second.history_status();
+        assert_eq!(status["owner"], false);
+        let reason = status["reason"].as_str().unwrap();
+        assert!(
+            reason.contains(&format!("--state-dir {}) owns", first.state.display())),
+            "{reason}"
+        );
+        assert!(reason.contains("takes it over once it is released"));
+        // Its own goblins still cannot bind the store.
+        assert_eq!(
+            second.history_directory.as_deref(),
+            Some(fs::canonicalize(&shared).unwrap().as_path())
+        );
+        // A goblin running meanwhile keeps its variables in the server.
+        let _g = live(&mut second, "g");
+        let _kid = live(&mut second, "kid");
+        second.sessions.get_mut("g").unwrap().record.packages = vec!["hello".into()];
+        for id in ["g", "kid"] {
+            assert_eq!(
+                second
+                    .sandbox_control_for_test(
+                        id,
+                        "sessions.set-variables",
+                        json!({"variables":{"session_id":"c819"}})
+                    )
+                    .unwrap()["recorded"],
+                false
+            );
+        }
+        // Released, the store is taken over without a restart, and every
+        // running goblin gets its record.
+        let paths = [first.state.clone(), second.state.clone()];
+        drop(first);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while second.history.is_err() && Instant::now() < deadline {
+            second.tick().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(second.history_status()["owner"], true);
+        let store = second.history.as_ref().unwrap();
+        assert_eq!(store.records.keys().collect::<Vec<_>>(), ["g", "kid"]);
+        let record = &store.records["g"];
+        assert_eq!(record.packages.approved, ["hello"]);
+        assert_eq!(record.variables["session_id"], "c819");
+        assert_eq!(record.sessions, ["g"]);
+        drop(second);
+        for path in paths {
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+    #[test]
+    fn requests_are_logged_and_a_full_queue_keeps_outcomes_in_order() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(1);
+        d.messaging = service;
+        let _results = live(&mut d, "a");
+        let (runtime, _results, _received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        d.tick().unwrap();
+        while queue.try_recv().is_ok() {}
+        // Fill the queue so the next batches cannot be handed over.
+        d.messaging
+            .commands
+            .try_send(crate::messaging::Work::Sync {
+                directory: Default::default(),
+                raids: vec![],
+                operations: vec![],
+            })
+            .unwrap();
+        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        c.initialized = true;
+        d.dispatch(
+            &mut c,
+            rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(1)),
+                method: "permissions.request".into(),
+                params: json!({"kind":"package","package":"hello","reason":"test"}),
+            },
+        );
+        // The request waits for its terminal result.
+        assert!(c.output.is_empty());
+        let request = d.permissions.back().unwrap().clone();
+        assert_eq!(request.state, "pending");
+        d.connections.push(c);
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: request.id.clone(),
+                approval: request.approval.clone(),
+                approved: false,
+            },
+            "host",
+        )
+        .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.operation_outbox.len(), 3);
+        assert!(operations(&queue).is_empty());
+        d.tick().unwrap();
+        let kinds: Vec<_> = operations(&queue).iter().map(|e| e.kind()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "operation.requested",
+                "operation.decided",
+                "operation.completed"
+            ]
+        );
+        assert!(d.operation_outbox.is_empty());
+        // A backlog refuses new requests rather than dropping outcomes.
+        let filler = crate::operation::Event {
+            request: "x".into(),
+            session: "a".into(),
+            actor: "a".into(),
+            change: crate::operation::Change::Decided { approved: true },
+        };
+        d.operation_outbox.extend(std::iter::repeat_n(filler, 1024));
+        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        c.initialized = true;
+        assert_eq!(
+            dispatch(
+                &mut d,
+                &mut c,
+                "permissions.request",
+                json!({"kind":"package","package":"hello","reason":"again"}),
+                Some(json!(2))
+            )["error"]["code"],
+            -32010
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn attach_handlers_wait_start_refuse_and_detach_a_client() {
+        use goblins_runtime::Stdio;
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let (runtime, _events, received) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.init = true;
+        // As serve leaves it: the agent's own terminal has no frontend.
+        a.terminal.detached = true;
+        a.variables.insert("session_id".into(), "seeded".into());
+        let template = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        a.handlers = Some(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
+                command: template(&["client", "{session_id}"]),
+                timeout: 30,
+                wait_for: vec![],
+            },
+            on_detach: Some(template(&["stop", "{attach.pid}"])),
+        });
+        // As Started leaves it: the policy has the handlers too.
+        a.policy.as_mut().unwrap().handlers = a.handlers.clone();
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        // The fake runtime owns frontend streams. This test exercises the
+        // daemon's command/status boundary; real framing, PTYs and retention
+        // are covered by the supervisor's terminal tests.
+        let streams = std::cell::RefCell::new(BTreeMap::<TerminalId, (UnixStream, bool)>::new());
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            d.attach_tick(&mut a);
+            d.sessions.insert("a".into(), a);
+            let mut commands = received.lock().unwrap();
+            let mut pending = std::collections::VecDeque::new();
+            for command in commands.drain(..) {
+                match command {
+                    Command::Attach {
+                        terminal,
+                        stream,
+                        rows,
+                        cols,
+                    } => {
+                        assert!([20, 30].contains(&rows));
+                        assert_eq!(cols, 80);
+                        let mut stream = UnixStream::from(std::os::fd::OwnedFd::from(stream));
+                        stream
+                            .write_all(
+                                &rpc::encode(&rpc::result(json!(0), json!({"attached":true})))
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                        streams.borrow_mut().insert(terminal, (stream, false));
+                    }
+                    Command::Detach { terminal } => {
+                        let mut held = streams.borrow_mut();
+                        let (stream, detached) = held.get_mut(&terminal).unwrap();
+                        stream.shutdown(std::net::Shutdown::Write).unwrap();
+                        *detached = true;
+                    }
+                    command => pending.push_back(command),
+                }
+            }
+            *commands = pending;
+            drop(commands);
+            for (terminal, (stream, detached)) in streams.borrow().iter() {
+                let mut state = libc::pollfd {
+                    fd: stream.as_raw_fd(),
+                    events: libc::POLLRDHUP,
+                    revents: 0,
+                };
+                unsafe {
+                    libc::poll(&mut state, 1, 0);
+                }
+                let connected =
+                    state.revents & (libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR) == 0;
+                d.attach_event(
+                    "a",
+                    Event::Terminal {
+                        terminal: *terminal,
+                        status: TerminalStatus {
+                            connected,
+                            attached: connected && !detached,
+                            detached: *detached,
+                            ..Default::default()
+                        },
+                        error: None,
+                    },
+                );
+            }
+        };
+        // Hang up for good: shut the connection down, so the daemon sees the
+        // end whatever process another test forks holds a copy of it.
+        let close = |frontend: UnixStream| frontend.shutdown(std::net::Shutdown::Both).unwrap();
+        // Step until the frontend has a frame to read, however slowly its
+        // hello arrives.
+        let answer = |d: &mut Controller, frontend: &mut UnixStream| {
+            for _ in 0..500 {
+                if unix::readable(frontend.as_raw_fd(), 10).unwrap() {
+                    return rpc::read(frontend).unwrap();
+                }
+                step(d);
+            }
+            panic!("the frontend got no answer");
+        };
+        let hello = |rows: u16| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                        "params":{"version":1,"rows":rows,"cols":80}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
+        };
+        // Step until the runtime was sent a command.
+        let command = |d: &mut Controller| {
+            for _ in 0..500 {
+                step(d);
+                if let Some(command) = received.lock().unwrap().pop_front() {
+                    return command;
+                }
+                step(d);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("the runtime got no command");
+        };
+        let spawned = |id, pid| Event::Spawned { id, pid };
+        let cancelled = |command| match command {
+            Command::CancelProcess {
+                id,
+                everything: true,
+            } => id,
+            command => panic!("expected a cancellation: {command:?}"),
+        };
+        // A seeded value is not ready: the frontend hears it waits.
+        let mut frontend = hello(30);
+        let notice = answer(&mut d, &mut frontend);
+        assert_eq!(notice["method"], "attach.waiting");
+        assert_eq!(notice["params"]["missing"], json!(["session_id"]));
+        assert!(!d.sessions["a"].record.terminal_attached);
+        // Set during this run: the client starts on a PTY of its own.
+        d.sandbox_control_for_test(
+            "a",
+            "sessions.set-variables",
+            json!({"variables":{"session_id":"c819"}}),
+        )
+        .unwrap();
+        let Command::Spawn {
+            id,
+            argv,
+            env,
+            stdio: Stdio::NewPty { rows: 30, cols: 80 },
+            ..
+        } = command(&mut d)
+        else {
+            panic!("expected the client's spawn");
+        };
+        assert_eq!(argv, Some(template(&["client", "c819"])));
+        assert!(env.contains(&("GOBLIN_VAR_SESSION_ID".into(), "c819".into())));
+        assert!(d.attach_event("a", spawned(id, 42)).is_none());
+        let reply = answer(&mut d, &mut frontend);
+        assert_eq!(reply["result"]["attached"], true);
+        assert!(d.sessions["a"].record.terminal_attached);
+        assert!(d.sessions["a"].attach.since().is_some());
+        // One attachment: a second frontend is refused and changes nothing.
+        let mut second = hello(10);
+        let refused = answer(&mut d, &mut second);
+        assert_eq!(refused["error"]["message"], "terminal is already attached");
+        // Detach runs onDetach with the client's PID, then cancels the
+        // client's whole subtree; it is detached once the client exited.
+        d.detach("a").unwrap();
+        let Command::Spawn {
+            id: on_detach,
+            argv,
+            stdio: Stdio::Fds(_),
+            ..
+        } = command(&mut d)
+        else {
+            panic!("expected onDetach's spawn");
+        };
+        assert_eq!(argv, Some(template(&["stop", "42"])));
+        step(&mut d);
+        assert!(!d.sessions["a"].record.terminal_detached);
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id: on_detach,
+                    code: Some(0),
+                    signal: None
+                }
+            )
+            .is_none()
+        );
+        assert_eq!(cancelled(command(&mut d)), id);
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: None,
+                    signal: Some(1)
+                }
+            )
+            .is_none()
+        );
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        assert!(!d.sessions["a"].record.terminal_attached);
+        // A reattach arriving after exit waits for the old frontend to drain.
+        // It must not be refused while its disconnect event is still in flight.
+        let mut next = hello(20);
+        assert_eq!(answer(&mut d, &mut next)["method"], "attach.waiting");
+        for _ in 0..3 {
+            step(&mut d);
+        }
+        assert!(!unix::readable(next.as_raw_fd(), 0).unwrap());
+        assert!(received.lock().unwrap().is_empty());
+        // Closing the old frontend frees the slot before processing the hello.
+        close(frontend);
+        let Command::Spawn { id, .. } = command(&mut d) else {
+            panic!("expected a new client");
+        };
+        // A client that exits detaches without onDetach; its leftovers go.
+        assert!(d.attach_event("a", spawned(id, 43)).is_none());
+        assert_eq!(answer(&mut d, &mut next)["result"]["attached"], true);
+        // Its record stays while the client may still deliver output.
+        assert!(!d.sessions["a"].can_evict());
+        // A settled attachment publishes nothing on unchanged ticks.
+        d.tick().unwrap();
+        let sequence = d.sequence;
+        d.tick().unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.sequence, sequence);
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: Some(0),
+                    signal: None
+                }
+            )
+            .is_none()
+        );
+        assert_eq!(cancelled(command(&mut d)), id);
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        close(next);
+        step(&mut d);
+        step(&mut d);
+        assert!(d.sessions["a"].attach.can_evict());
+        assert!(
+            !d.sessions["a"].can_evict(),
+            "a live runtime retains its record"
+        );
+        // A client exiting while onDetach runs takes onDetach with it.
+        let mut third = hello(20);
+        let Command::Spawn { id, .. } = command(&mut d) else {
+            panic!("expected a new client");
+        };
+        assert!(d.attach_event("a", spawned(id, 44)).is_none());
+        assert_eq!(answer(&mut d, &mut third)["result"]["attached"], true);
+        d.detach("a").unwrap();
+        let Command::Spawn { id: on_detach, .. } = command(&mut d) else {
+            panic!("expected onDetach's spawn");
+        };
+        assert!(
+            d.attach_event(
+                "a",
+                Event::Exited {
+                    id,
+                    code: Some(0),
+                    signal: None
+                }
+            )
+            .is_none()
+        );
+        for id in [on_detach, id] {
+            assert_eq!(cancelled(command(&mut d)), id);
+        }
+        close(third);
+        step(&mut d);
+        step(&mut d);
+        assert!(d.sessions["a"].record.terminal_detached);
+        // A client init cannot start is refused with init's reason.
+        let mut refused = hello(20);
+        let Command::Spawn { id, .. } = command(&mut d) else {
+            panic!("expected a new client");
+        };
+        assert!(
+            d.attach_event(
+                "a",
+                Event::SpawnFailed {
+                    id,
+                    code: Some(127),
+                    message: "not found".into()
+                }
+            )
+            .is_none()
+        );
+        assert_eq!(
+            answer(&mut d, &mut refused)["error"]["message"],
+            "cannot start the attach client: not found"
+        );
+        // Init going away fails a starting attachment and frees the slot.
+        let mut fourth = hello(20);
+        let Command::Spawn { .. } = command(&mut d) else {
+            panic!("expected a new client");
+        };
+        d.process_event("a", Event::InitLost);
+        let refused = answer(&mut d, &mut fourth);
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("init")
+        );
+        // And none can start until it is back.
+        let mut fifth = hello(20);
+        let refused = answer(&mut d, &mut fifth);
+        assert_eq!(
+            refused["error"]["message"],
+            "cannot start the attach client: the goblin has no init channel"
+        );
+        d.sessions.get_mut("a").unwrap().init = true;
+        let _sixth = hello(20);
+        let Command::Spawn { .. } = command(&mut d) else {
+            panic!("expected the slot to be free");
+        };
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_server_goblin_refuses_older_frontends_and_can_be_evicted() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let directory = d.sessions["a"].directory.clone();
+        let a = d.sessions.get_mut("a").unwrap();
+        a.terminal.detached = false;
+        a.serve(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
+                command: vec!["client".into()],
+                timeout: 30,
+                wait_for: vec![],
+            },
+            on_detach: None,
+        });
+        // Stopped, it can be evicted although it was launched attached.
+        a.runtime = None;
+        assert!(a.can_evict());
+        // A frontend attaching after it stopped is told where to look.
+        a.record.state = "stopped".into();
+        a.record.detail = Some("the adapter stopped".into());
+        let mut frontend = UnixStream::connect(directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let mut a = d.sessions.remove("a").unwrap();
+        d.attach_tick(&mut a);
+        let refused = rpc::read(&mut frontend).unwrap();
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert_eq!(
+            message,
+            format!(
+                "the adapter stopped; its server log is {}",
+                directory.join("server.log").display()
+            )
+        );
+        d.sessions.insert("a".into(), a);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_single_terminal_goblin_reserves_before_runtime_acceptance() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        let socket = d.sessions["a"].directory.join("attach.sock");
+        let hello = |version| {
+            let mut frontend = UnixStream::connect(&socket).unwrap();
+            frontend
+                .write_all(
+                    &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                "params":{"version":version,"rows":24,"cols":80}}))
+                    .unwrap(),
+                )
+                .unwrap();
+            frontend
+        };
+        let _first = hello(1);
+        let mut second = hello(1);
+        d.tick().unwrap();
+        assert!(d.sessions["a"].record.terminal_attached);
+        assert_eq!(
+            rpc::read(&mut second).unwrap()["error"]["message"],
+            "terminal is already attached"
+        );
+        let Command::Attach {
+            terminal: TerminalId::Main,
+            stream,
+            rows: 24,
+            cols: 80,
+        } = received.lock().unwrap().pop_front().unwrap()
+        else {
+            panic!("expected main attachment");
+        };
+        drop(stream);
+        assert!(received.lock().unwrap().is_empty());
+        // A detached frontend still holding its outcome reserves the slot.
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    connected: true,
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let mut held = hello(1);
+        d.tick().unwrap();
+        assert_eq!(
+            rpc::read(&mut held).unwrap()["error"]["message"],
+            "terminal is already attached"
+        );
+        assert!(!d.sessions["a"].record.terminal_attached);
+        events
+            .send(Event::Terminal {
+                terminal: TerminalId::Main,
+                status: TerminalStatus {
+                    detached: true,
+                    ..Default::default()
+                },
+                error: None,
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let _next = hello(1);
+        d.tick().unwrap();
+        assert!(matches!(
+            received.lock().unwrap().pop_front(),
+            Some(Command::Attach {
+                terminal: TerminalId::Main,
+                ..
+            })
+        ));
+        let mut wrong = hello(2);
+        d.tick().unwrap();
+        assert_eq!(
+            rpc::read(&mut wrong).unwrap()["error"]["message"],
+            "unsupported attach.hello version"
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn an_attach_fails_when_its_variables_are_not_set_in_time() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "a");
+        d.sessions.get_mut("a").unwrap().handlers = Some(goblins_runtime::config::Handlers {
+            on_attach: goblins_runtime::config::OnAttach {
+                command: vec!["client".into(), "{session_id}".into()],
+                timeout: 1,
+                wait_for: vec!["ready".into()],
+            },
+            on_detach: None,
+        });
+        let mut frontend =
+            UnixStream::connect(d.sessions["a"].directory.join("attach.sock")).unwrap();
+        frontend
+            .write_all(
+                &rpc::encode(&json!({"jsonrpc":"2.0","method":"attach.hello",
+                    "params":{"version":1,"rows":24,"cols":80}}))
+                .unwrap(),
+            )
+            .unwrap();
+        let step = |d: &mut Controller| {
+            let mut a = d.sessions.remove("a").unwrap();
+            d.attach_tick(&mut a);
+            d.sessions.insert("a".into(), a);
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let reply = loop {
+            step(&mut d);
+            assert!(std::time::Instant::now() < deadline);
+            if !unix::readable(frontend.as_raw_fd(), 50).unwrap() {
+                continue;
+            }
+            let frame = rpc::read(&mut frontend).unwrap();
+            if frame["method"] != "attach.waiting" {
+                break frame;
+            }
+            assert_eq!(frame["params"]["missing"], json!(["ready", "session_id"]));
+        };
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains("ready, session_id") && message.contains("restart the goblin"));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn only_variables_set_in_this_run_are_fresh() {
+        let fresh = |d: &Controller, id: &str| {
+            let a = &d.sessions[id];
+            (
+                a.fresh.iter().cloned().collect::<Vec<_>>(),
+                a.variables.clone(),
+            )
+        };
+        let set = |d: &mut Controller, id: &str, variables: Value| {
+            d.sandbox_control_for_test(id, "sessions.set-variables", json!({"variables":variables}))
+                .unwrap()["recorded"]
+                .clone()
+        };
+        let seeded = BTreeMap::from([("session_id".to_string(), "old".to_string())]);
+        // With history: a recreated goblin starts with its record's values.
+        let mut d = daemon();
+        let path = d.state.clone();
+        d.open_history(Ok(path.join("history")), 100);
+        let _results = live(&mut d, "a");
+        d.history.as_mut().unwrap().write({
+            let mut record = crate::history::Record::new("a", "shell", "a", 1);
+            record.ran_as("a");
+            record.variables = seeded.clone();
+            record
+        });
+        d.sessions.get_mut("a").unwrap().variables = seeded.clone();
+        assert_eq!(fresh(&d, "a"), (vec![], seeded.clone()));
+        assert_eq!(set(&mut d, "a", json!({"session_name":"Plan it"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_name"]);
+        assert_eq!(set(&mut d, "a", json!({"session_id":"old"})), true);
+        assert_eq!(fresh(&d, "a").0, ["session_id", "session_name"]);
+        assert_eq!(
+            d.history.as_ref().unwrap().records["a"].variables["session_id"],
+            "old"
+        );
+        // Clearing a name removes its value and its freshness together.
+        assert_eq!(set(&mut d, "a", json!({"session_name":""})), true);
+        assert_eq!(
+            fresh(&d, "a"),
+            (vec!["session_id".to_string()], seeded.clone())
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+        // Without history, setting makes names fresh all the same.
+        let mut d = daemon();
+        let path = d.state.clone();
+        let _results = live(&mut d, "b");
+        d.sessions.get_mut("b").unwrap().variables = seeded.clone();
+        assert_eq!(set(&mut d, "b", json!({"session_id":"new"})), false);
+        assert_eq!(fresh(&d, "b").0, ["session_id"]);
+        assert_eq!(d.sessions["b"].variables["session_id"], "new");
+        assert_eq!(set(&mut d, "b", json!({"session_id":""})), false);
+        assert_eq!(fresh(&d, "b"), (vec![], BTreeMap::new()));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    fn live(d: &mut Controller, id: &str) -> std::sync::mpsc::SyncSender<Event> {
+        session_with_results_id(d, id, vec![]);
+        let (runtime, results, _) = goblins_runtime::Fake::new();
+        let a = d.sessions.get_mut(id).unwrap();
+        a.runtime = Some(Box::new(runtime));
+        a.pending = None;
+        a.record.agent_name = id.into();
+        results
+    }
+    fn sandbox_event(connection: u64, id: u64, method: &str, params: Value) -> Event {
+        Event::SandboxCall {
+            connection,
+            call: rpc::Call {
+                jsonrpc: "2.0".into(),
+                id: Some(json!(id)),
+                method: method.into(),
+                params,
+            },
+        }
+    }
+    #[test]
+    fn relayed_ids_are_scoped_and_closed_calls_withdraw_before_a_later_decision() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let mut peers = vec![];
+        for session in ["a", "b"] {
+            live(&mut d, session);
+            let (runtime, events, received) = goblins_runtime::Fake::new();
+            d.sessions.get_mut(session).unwrap().runtime = Some(Box::new(runtime));
+            events.send(Event::SandboxOpened { connection: 1 }).unwrap();
+            events
+                .send(sandbox_event(1, 1, "initialize", json!({"api":1})))
+                .unwrap();
+            peers.push((events, received));
+        }
+        d.tick().unwrap();
+        assert_eq!(d.connections.len(), 2);
+        assert_ne!(d.connections[0].id, d.connections[1].id);
+        assert!(
+            d.connections
+                .iter()
+                .all(|c| c.peer.is_none() && c.relay == Some(1))
+        );
+        for (events, received) in &peers {
+            assert!(
+                matches!(received.lock().unwrap().pop_front(), Some(Command::SandboxSend { message, .. }) if message["result"]["role"] == "sandbox")
+            );
+            events
+                .send(sandbox_event(
+                    1,
+                    2,
+                    "permissions.request",
+                    json!({"kind":"package","package":"hello","reason":"t"}),
+                ))
+                .unwrap();
+        }
+        d.tick().unwrap();
+        let pending = d.sessions["a"].pending.as_ref().unwrap();
+        let request = d
+            .permissions
+            .iter()
+            .find(|r| r.id == pending.id)
+            .unwrap()
+            .clone();
+        assert_eq!(request.state, "pending");
+        let other_request = d.sessions["b"].pending.as_ref().unwrap().id.clone();
+        peers[0]
+            .0
+            .send(Event::SandboxClosed { connection: 1 })
+            .unwrap();
+        d.tick().unwrap();
+        assert!(d.sessions["a"].pending.is_none());
+        assert_eq!(d.sessions["b"].pending.as_ref().unwrap().id, other_request);
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request.id)
+                .unwrap()
+                .state,
+            "withdrawn"
+        );
+        assert_eq!(
+            d.decide(
+                Decision {
+                    session: "a".into(),
+                    request: request.id,
+                    approval: request.approval,
+                    approved: false
+                },
+                "host"
+            )
+            .unwrap_err(),
+            conflict()
+        );
+        assert!(
+            peers[0]
+                .1
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::Cancel(_)))
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_decision_before_closed_is_observed_stands_and_post_stopped_calls_are_ignored() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        let (runtime, events, received) = goblins_runtime::Fake::new();
+        d.sessions.get_mut("a").unwrap().runtime = Some(Box::new(runtime));
+        events.send(Event::SandboxOpened { connection: 1 }).unwrap();
+        events
+            .send(sandbox_event(1, 1, "initialize", json!({"api":1})))
+            .unwrap();
+        d.tick().unwrap();
+        received.lock().unwrap().clear();
+        events
+            .send(sandbox_event(
+                1,
+                2,
+                "permissions.request",
+                json!({"kind":"package","package":"hello","reason":"t"}),
+            ))
+            .unwrap();
+        d.tick().unwrap();
+        let request = d.permissions.back().unwrap().clone();
+        events.send(Event::SandboxClosed { connection: 1 }).unwrap();
+        // One-hop observation window: the runtime closure has not been polled.
+        d.decide(
+            Decision {
+                session: "a".into(),
+                request: request.id.clone(),
+                approval: request.approval,
+                approved: false,
+            },
+            "host",
+        )
+        .unwrap();
+        d.tick().unwrap();
+        assert_eq!(
+            d.permissions
+                .iter()
+                .find(|r| r.id == request.id)
+                .unwrap()
+                .state,
+            "denied"
+        );
+        received.lock().unwrap().clear();
+        events.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        events.send(Event::SandboxOpened { connection: 2 }).unwrap();
+        events
+            .send(sandbox_event(
+                2,
+                1,
+                "permissions.request",
+                json!({"kind":"package","package":"late","reason":"t"}),
+            ))
+            .unwrap();
+        d.tick().unwrap();
+        assert!(d.connections.is_empty());
+        assert!(!d.permissions.iter().any(|r| r.package == "late"));
+        assert!(
+            received
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|c| matches!(c, Command::SandboxClose { connection: 2 }))
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    fn host_connection() -> (Connection, UnixStream) {
+        let (mut c, peer) = connection(Role::Host);
+        c.initialized = true;
+        (c, peer)
+    }
+    /// Raid events the controller handed to the (detached) messaging queue.
+    fn sent(queue: &std::sync::mpsc::Receiver<crate::messaging::Work>) -> Vec<(String, Value)> {
+        queue
+            .try_iter()
+            .flat_map(|work| match work {
+                crate::messaging::Work::Sync { raids, .. }
+                | crate::messaging::Work::Call { raids, .. } => raids,
+            })
+            .map(|e| (e.kind().to_string(), e.data()))
+            .collect()
+    }
+    #[test]
+    fn raid_membership_is_reconciled_after_every_way_a_session_ends() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(64);
+        d.messaging = service;
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a");
+        let exits = live(&mut d, "b");
+        let _c = live(&mut d, "c");
+        let fails = live(&mut d, "e");
+        let _f = live(&mut d, "f");
+        session_with_results_id(&mut d, "w", vec![]);
+        d.sessions.get_mut("w").unwrap().pending = None;
+        let record = d
+            .host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"review","sessions":["a","b","c","e","f","w"]}),
+            )
+            .unwrap();
+        assert_eq!(record["owner"], "a");
+        assert_eq!(
+            d.sessions["f"]
+                .record
+                .raid
+                .as_ref()
+                .unwrap()
+                .owner
+                .as_deref(),
+            Some("a")
+        );
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events[0].0, "raid.created");
+        // Worker loss: the completed test worker finishes on the first tick.
+        assert_eq!(events.last().unwrap().0, "raid.left");
+        assert_eq!(events.last().unwrap().1["session"], "w");
+        assert!(d.sessions["w"].record.raid.is_none());
+        // Stop, natural exit and failed launch.
+        d.stop("c", Some("stopped by host".into())).unwrap();
+        exits.send(Event::Stopped { exit_code: Some(0) }).unwrap();
+        fails.send(Event::Failed("boom".into())).unwrap();
+        d.tick().unwrap();
+        let left: Vec<_> = sent(&queue)
+            .into_iter()
+            .map(|(kind, data)| (kind, data["session"].clone(), data["reason"].clone()))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                ("raid.left".into(), json!("b"), json!("stopped")),
+                ("raid.left".into(), json!("c"), json!("stopped")),
+                ("raid.left".into(), json!("e"), json!("launch-failed")),
+            ]
+        );
+        // The owner stopping pauses the raid and asks the host to resolve it;
+        // the other member keeps running.
+        d.stop("a", None).unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.last().unwrap().0, "raid.paused");
+        assert_eq!(events.last().unwrap().1["former_owner"], "a");
+        assert_eq!(d.sessions["f"].record.state, "running");
+        let membership = d.sessions["f"].record.raid.clone().unwrap();
+        assert!(membership.paused && membership.owner.is_none());
+        let prompt = d
+            .permissions
+            .iter()
+            .find(|r| r.kind == raids::RAID_OWNER)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            (prompt.state.as_str(), prompt.session.as_str()),
+            ("pending", "a")
+        );
+        assert_eq!(prompt.preview.as_ref().unwrap()["members"][0]["id"], "f");
+        // The last member leaving dissolves it and cancels the prompt.
+        d.stop("f", None).unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.last().unwrap().0, "raid.dissolved");
+        assert_eq!(events.last().unwrap().1["reason"], "empty");
+        assert_eq!(d.permission_mut(&prompt.id).unwrap().state, "cancelled");
+        assert!(d.snapshot().raids.is_empty());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn approvals_are_copied_once_within_bounds() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "a");
+        live(&mut d, "b");
+        let output = |name: &str| PathBuf::from(format!("/nix/store/{}-{name}", "0".repeat(32)));
+        let a = d.sessions.get_mut("a").unwrap();
+        a.granted_outputs.insert("jq".into(), output("jq"));
+        a.auto_approve.insert("rg".into(), output("rg"));
+        a.dev_identity = Some("dev-1".into());
+        let copied = d.copied_approvals("a").unwrap();
+        assert_eq!(copied.packages.keys().collect::<Vec<_>>(), ["jq", "rg"]);
+        assert_eq!(copied.dev_shells, BTreeSet::from(["dev-1".to_string()]));
+        let b = d.sessions.get_mut("b").unwrap();
+        b.auto_approve = copied.packages;
+        b.auto_approve_dev_shells = copied.dev_shells;
+        b.granted_outputs.insert("own".into(), output("own"));
+        assert_eq!(d.auto_output("b", "jq"), Some(output("jq")));
+        assert_eq!(d.auto_output("b", "own"), Some(output("own")));
+        assert!(d.auto_dev_shell("b", "dev-1"));
+        // Copied once: a later grant to the owner does not reach it.
+        d.sessions
+            .get_mut("a")
+            .unwrap()
+            .granted_outputs
+            .insert("htop".into(), output("htop"));
+        assert_eq!(d.auto_output("b", "htop"), None);
+        assert!(!d.auto_dev_shell("b", "dev-2"));
+        // Beyond the bounds a launch is refused, never truncated.
+        let a = d.sessions.get_mut("a").unwrap();
+        for i in 0..crate::history::MAX_NAMES {
+            a.auto_approve
+                .insert(format!("p{i}"), output(&format!("p{i}")));
+        }
+        assert_eq!(d.copied_approvals("a").err().unwrap().0, -32010);
+        let a = d.sessions.get_mut("a").unwrap();
+        a.auto_approve.clear();
+        a.auto_approve_dev_shells = (0..AUTO_DEV_SHELLS).map(|i| format!("old-{i}")).collect();
+        assert!(
+            d.copied_approvals("a")
+                .err()
+                .unwrap()
+                .1
+                .contains("32 dev shells")
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_host_resolves_a_paused_raid_only_as_it_saw_it() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["a", "b", "c"] {
+            live(&mut d, id);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b","c"]}),
+        )
+        .unwrap();
+        // An active raid's ownership can move; the record names the owner.
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"b"}),
+            )
+            .unwrap();
+        assert_eq!(
+            (record["owner"].as_str(), &record["generation"]),
+            (Some("b"), &json!(1))
+        );
+        assert!(!d.permissions.iter().any(|r| r.kind == raids::RAID_OWNER));
+        // Kicking the owner pauses the raid and opens a prompt.
+        let kicked = d
+            .host(
+                &mut host,
+                "raids.kick",
+                json!({"raid":"review","session":"b"}),
+            )
+            .unwrap();
+        assert_eq!(
+            kicked,
+            json!({"accepted":true,"dissolved":false,"paused":true})
+        );
+        let prompt = d.permissions.back().unwrap().clone();
+        assert_eq!(prompt.kind, raids::RAID_OWNER);
+        let preview = prompt.preview.clone().unwrap();
+        assert_eq!(
+            (&preview["generation"], &preview["former_owner"]["id"]),
+            (&json!(2), &json!("b"))
+        );
+        // A plain decision is refused; a decision for another generation too.
+        let decision =
+            json!({"session":"b","request":prompt.id,"approval":prompt.approval,"approved":true});
+        assert_eq!(
+            d.host(&mut host, "permissions.decide", decision)
+                .unwrap_err()
+                .0,
+            -32602
+        );
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","generation":1})
+            )
+            .unwrap_err(),
+            (-32009, "the raid changed; reload the prompt".into())
+        );
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","id":"other","generation":2})
+            )
+            .unwrap_err()
+            .0,
+            -32009
+        );
+        // Selecting an owner resumes the raid and approves the prompt.
+        let id = preview["raid"].clone();
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_owner",
+                json!({"raid":"review","session":"c","id":id,"generation":2}),
+            )
+            .unwrap();
+        assert_eq!(
+            (record["owner"].as_str(), &record["paused"]),
+            (Some("c"), &json!(false))
+        );
+        let resolved = d.permission_mut(&prompt.id).unwrap().clone();
+        assert_eq!(
+            (resolved.state.as_str(), resolved.approved),
+            ("approved", Some(true))
+        );
+        // A new pause is a new prompt; dissolving with stop_members stops
+        // every live member and denies it.
+        d.stop("c", None).unwrap();
+        d.reconcile_raids();
+        let second = d.permissions.back().unwrap().clone();
+        assert_ne!(second.id, prompt.id);
+        assert_eq!(second.state, "pending");
+        let destroyed = d
+            .host(
+                &mut host,
+                "raids.destroy",
+                json!({"raid":"review","generation":4,"stop_members":true}),
+            )
+            .unwrap();
+        assert_eq!(destroyed, json!({"accepted":true,"stopped":["a"]}));
+        assert_eq!(d.sessions["a"].record.state, "stopping");
+        assert_eq!(d.permission_mut(&second.id).unwrap().state, "denied");
+        assert!(d.raids.get("review").is_none());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn raid_prompts_never_take_a_permission_slot() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        for id in ["a", "b"] {
+            live(&mut d, id);
+        }
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let existing = d.permissions.len();
+        for n in existing..256 {
+            d.permissions.push_back(PermissionRecord {
+                kind: "package".into(),
+                id: format!("p{n}"),
+                session: "b".into(),
+                agent_name: "b".into(),
+                approval: format!("a{n}"),
+                package: "hello".into(),
+                reason: String::new(),
+                state: "pending".into(),
+                approved: None,
+                preview: None,
+                message: None,
+            });
+        }
+        d.stop("a", None).unwrap();
+        d.reconcile_raids();
+        assert_eq!(d.permissions.len(), 257);
+        assert_eq!(d.permissions.back().unwrap().kind, raids::RAID_OWNER);
+        assert_eq!(d.permissions.back().unwrap().state, "pending");
+        assert!(d.raids.get("review").unwrap().paused.is_some());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_stop_never_publishes_the_old_membership() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let (mut subscriber, _sub_peer) = host_connection();
+        dispatch(
+            &mut d,
+            &mut subscriber,
+            "state.subscribe",
+            json!({}),
+            Some(json!(1)),
+        );
+        d.connections.push(subscriber);
+        dispatch(
+            &mut d,
+            &mut host,
+            "sessions.stop",
+            json!({"session":"b"}),
+            Some(json!(2)),
+        );
+        d.publish();
+        let data = d.connections[0].output.pop_back().unwrap();
+        let body = data.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let snapshot = &rpc::parse(&data[body..]).unwrap()["params"]["snapshot"];
+        let b = snapshot["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "b")
+            .unwrap();
+        assert_eq!(b["state"], "stopping");
+        assert_eq!(b["raid"], Value::Null);
+        assert_eq!(snapshot["raids"][0]["members"].as_array().unwrap().len(), 1);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn launch_joins_follow_the_owner_and_retries_do_not_join_again() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        live(&mut d, "root");
+        live(&mut d, "other");
+        for id in ["root", "other"] {
+            let a = d.sessions.get_mut(id).unwrap();
+            a.set_policy(policy_fixture("shell", &["shell"]));
+        }
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&path.join("current.json")),
+        ));
+        let member = |key: &str| json!({"key":key,"name":"shell","agent_name":null});
+        d.sandbox_control_for_test("root", "raids.create", json!({"raid":"review"}))
+            .unwrap();
+        let before = d.raid_outbox.len();
+        let accepted = d
+            .sandbox_control_for_test("root", "sessions.start", member("k1"))
+            .unwrap();
+        let id = accepted["session"].as_str().unwrap().to_string();
+        assert_eq!(d.sessions[&id].record.state, "starting");
+        let raid = d.sessions[&id].record.raid.clone().unwrap();
+        assert_eq!(
+            (raid.name.as_str(), raid.owner.as_deref().unwrap()),
+            ("review", "root")
+        );
+        let joined = d.raid_outbox.back().unwrap();
+        assert_eq!(
+            (joined.kind(), joined.actor.as_str()),
+            ("raid.joined", "root")
+        );
+        assert_eq!(d.raid_outbox.len(), before + 1);
+        // An identical retry returns the original acceptance without joining.
+        assert_eq!(
+            d.sandbox_control_for_test("root", "sessions.start", member("k1"))
+                .unwrap(),
+            accepted
+        );
+        assert_eq!(d.raid_outbox.len(), before + 1);
+        // Sandboxes invite nobody: the host invites, owners run members.
+        assert_eq!(
+            d.sandbox_control_for_test("root", "raids.invite", json!({"sessions":["other"]}))
+                .unwrap_err()
+                .0,
+            -32601
+        );
+        // A goblin in another raid cannot be moved.
+        d.sandbox_control_for_test("other", "raids.create", json!({"raid":"elsewhere"}))
+            .unwrap();
+        let (mut host, _peer) = host_connection();
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"review","sessions":["other"]})
+            )
+            .unwrap_err(),
+            (
+                -32009,
+                "goblin 'other' is already in raid 'elsewhere'".into()
+            )
+        );
+        // Host launches create or join by name; a retry after dissolution
+        // still returns the original acceptance.
+        let mut start = launch("h1", Some("fresh"));
+        start["raid"] = json!("brand-new");
+        let accepted = d.host(&mut host, "sessions.start", start.clone()).unwrap();
+        let fresh = accepted["session"].as_str().unwrap();
+        assert_eq!(
+            d.raids.get("brand-new").unwrap().owner.as_deref(),
+            Some(fresh)
+        );
+        d.host(&mut host, "raids.destroy", json!({"raid":"brand-new"}))
+            .unwrap();
+        assert_eq!(
+            d.host(&mut host, "sessions.start", start).unwrap(),
+            accepted
+        );
+        assert!(d.raids.get("brand-new").is_none());
+        let mut changed = launch("h1", Some("fresh"));
+        changed["raid"] = json!("other-name");
+        assert_eq!(
+            d.host(&mut host, "sessions.start", changed).unwrap_err(),
+            conflict()
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn host_invites_validate_every_target_and_roles_never_move_ownership() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
+        session_with_results_id(&mut d, "dead", vec![]);
+        d.sessions.get_mut("dead").unwrap().record.state = "stopped".into();
+        for (sessions, code) in [
+            (json!(["a", "absent"]), -32004),
+            (json!(["a", "dead"]), -32009),
+            (json!([]), -32602),
+        ] {
+            let error = d
+                .host(
+                    &mut host,
+                    "raids.invite",
+                    json!({"raid":"review","sessions":sessions}),
+                )
+                .unwrap_err();
+            assert_eq!(error.0, code, "{error:?}");
+            assert!(d.raids.get("review").is_none());
+        }
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"Bad Name","sessions":["a"]})
+            )
+            .unwrap_err()
+            .0,
+            -32602
+        );
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"review","sessions":["a","b"]}),
+        )
+        .unwrap();
+        let record = d
+            .host(
+                &mut host,
+                "raids.set_role",
+                json!({"raid":"review","session":"b","role":"owner"}),
+            )
+            .unwrap();
+        assert_eq!(record["owner"], "a");
+        assert_eq!(record["members"][1]["role"], "owner");
+        assert_eq!(record["members"][1]["owner"], false);
+        for role in [json!(null), json!("")] {
+            assert_eq!(
+                d.host(
+                    &mut host,
+                    "raids.set_role",
+                    json!({"raid":"review","session":"b","role":role})
+                )
+                .unwrap_err()
+                .0,
+                -32602
+            );
+        }
+        assert_eq!(
+            d.sandbox_control_for_test("b", "raids.create", json!({"raid":"another"}))
+                .unwrap_err()
+                .1,
+            "goblin 'b' is already in raid 'review'"
+        );
+        assert_eq!(
+            d.sandbox_control_for_test("b", "raids.leave", json!({}))
+                .unwrap(),
+            json!({"accepted":true,"dissolved":false,"paused":false})
+        );
+        assert_eq!(
+            d.sandbox_control_for_test("b", "raids.members", json!({}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        assert_eq!(
+            d.sandbox_control_for_test("a", "raids.leave", json!({}))
+                .unwrap(),
+            json!({"accepted":true,"dissolved":true,"paused":false})
+        );
+        assert_eq!(d.sessions["b"].record.state, "running");
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn the_raid_outbox_survives_a_full_queue_and_bounds_only_additions() {
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (service, queue) = crate::messaging::Service::detached(1);
+        d.messaging = service;
+        let (mut host, _peer) = host_connection();
+        let _a = live(&mut d, "a");
+        let _b = live(&mut d, "b");
+        d.tick().unwrap();
+        assert!(sent(&queue).is_empty());
+        // Sent even though the directory is unchanged.
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"one","sessions":["a"]}),
+        )
+        .unwrap();
+        d.tick().unwrap();
+        let events = sent(&queue);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "raid.created");
+        // A full queue keeps the batch, in order, for the next tick.
+        d.messaging
+            .commands
+            .try_send(crate::messaging::Work::Sync {
+                directory: Default::default(),
+                raids: vec![],
+                operations: vec![],
+            })
+            .unwrap();
+        d.host(
+            &mut host,
+            "raids.invite",
+            json!({"raid":"one","sessions":["b"]}),
+        )
+        .unwrap();
+        d.sandbox_control_for_test("b", "raids.set_role", json!({"role":"builder"}))
+            .unwrap();
+        d.tick().unwrap();
+        assert_eq!(d.raid_outbox.len(), 2);
+        assert!(sent(&queue).is_empty());
+        d.tick().unwrap();
+        let kinds: Vec<_> = sent(&queue).into_iter().map(|(k, _)| k).collect();
+        assert_eq!(kinds, ["raid.joined", "raid.role"]);
+        assert!(d.raid_outbox.is_empty());
+        // A full outbox or an exhausted budget refuses additions, not removals.
+        let filler = crate::raid::Event {
+            actor: "host".into(),
+            change: crate::raid::Change::Role {
+                raid: "x".into(),
+                session: "x".into(),
+                role: "x".into(),
+            },
+        };
+        d.raid_outbox
+            .extend(std::iter::repeat_n(filler, raids::RAID_OUTBOX));
+        assert_eq!(
+            d.sandbox_control_for_test("b", "raids.set_role", json!({"role":"reviewer"}))
+                .unwrap_err()
+                .0,
+            -32010
+        );
+        d.sandbox_control_for_test("b", "raids.leave", json!({}))
+            .unwrap();
+        assert_eq!(d.raid_outbox.len(), raids::RAID_OUTBOX + 1);
+        d.raid_outbox.clear();
+        d.raid_events = 4096;
+        assert_eq!(
+            d.host(
+                &mut host,
+                "raids.invite",
+                json!({"raid":"one","sessions":["b"]})
+            )
+            .unwrap_err()
+            .0,
+            -32010
+        );
+        d.host(&mut host, "raids.destroy", json!({"raid":"one"}))
+            .unwrap();
+        assert_eq!(d.raid_outbox.back().unwrap().kind(), "raid.dissolved");
+        // Orderly shutdown hands the outbox over before messaging closes.
+        while queue.try_recv().is_ok() {}
+        drop(d);
+        assert_eq!(sent(&queue).last().unwrap().0, "raid.dissolved");
+        fs::remove_dir_all(path).unwrap();
+    }
+}
