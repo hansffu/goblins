@@ -418,11 +418,35 @@ impl Controller {
             }
         }
         if a.record.state == "running" {
+            // An exited client can still be draining its frontend. Keep new
+            // hellos waiting until that stream closes, then release its slot
+            // before considering them. A live client still refuses competitors.
+            let draining = match &a.attach.client {
+                Some(Client::Running(running)) if running.exited => {
+                    if running.terminal.connected {
+                        true
+                    } else {
+                        a.attach.client = None;
+                        self.dirty = true;
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if draining {
+                a.attach.hellos.retain_mut(|hello| {
+                    if hello.size.is_some() && now >= hello.notice {
+                        hello.notice = now + NOTICE;
+                        return waiting(&mut hello.stream, &[]);
+                    }
+                    true
+                });
+            }
             let (ready, pending) = a
                 .attach
                 .hellos
                 .drain(..)
-                .partition::<Vec<_>, _>(|h| h.size.is_some());
+                .partition::<Vec<_>, _>(|h| h.size.is_some() && !draining);
             a.attach.hellos = pending;
             for mut hello in ready {
                 let size = hello.size.unwrap();

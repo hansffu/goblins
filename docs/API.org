@@ -46,7 +46,7 @@ Each session has two attachment sockets beside each other in its state directory
 
 A stopped goblin's retained terminal output does not reserve its agent name or recorded conversation, or retain its scope membership and storage. These are released after sandbox cleanup, independently of a frontend consuming the remaining output.
 
-A goblin with =onAttach= has no terminal of its own: each attachment runs its client, detaching (=sessions.detach= or the frontend closing) runs =onDetach= and then ends the client and everything it started, and the client exiting detaches. =terminal_detached= becomes true once the client has exited; processes it left behind are cancelled.
+A goblin with =onAttach= has no terminal of its own: each attachment runs its client, detaching (=sessions.detach= or the frontend closing) runs =onDetach= and then ends the client and everything it started, and the client exiting detaches. =terminal_detached= becomes true once the client has exited; processes it left behind are cancelled. A new attachment arriving while the exited client’s frontend is still draining receives =attach.waiting= with an empty =missing= list until the old stream closes; a client that has not exited still refuses competing attachments.
 
 ** Errors
 

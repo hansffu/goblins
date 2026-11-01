@@ -6680,11 +6680,17 @@ mod tests {
         step(&mut d);
         assert!(d.sessions["a"].record.terminal_detached);
         assert!(!d.sessions["a"].record.terminal_attached);
-        // The frontend closing frees the slot for the next attachment.
-        close(frontend);
-        step(&mut d);
-        step(&mut d);
+        // A reattach arriving after exit waits for the old frontend to drain.
+        // It must not be refused while its disconnect event is still in flight.
         let mut next = hello(20);
+        assert_eq!(answer(&mut d, &mut next)["method"], "attach.waiting");
+        for _ in 0..3 {
+            step(&mut d);
+        }
+        assert!(!unix::readable(next.as_raw_fd(), 0).unwrap());
+        assert!(received.lock().unwrap().is_empty());
+        // Closing the old frontend frees the slot before processing the hello.
+        close(frontend);
         let Command::Spawn { id, .. } = command(&mut d) else {
             panic!("expected a new client");
         };
