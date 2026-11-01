@@ -124,7 +124,7 @@ class NetworkTests(unittest.TestCase):
                     fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
                     if fields[0] != "Z" and fields[19] == start:
                         return False
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     pass
             return True
 
