@@ -931,6 +931,26 @@ history, without a terminal; print the new goblin's ID."
                            "\n▾ /p/two/\n  session-b (shell)\n"
                            "\n▾ unknown\n  session-e (shell)\n")))))
 
+(ert-deftest goblins-sidebar-shows-the-role-and-the-goblins-message-color ()
+  (let ((goblins--goblin-colors (make-hash-table :test #'equal)))
+    (goblins-test--sidebar
+     (list (goblins-test--session "session-a" :cwd "/p"
+                                  :raid '(:id "r1" :name "zeta" :role "reviewer"))
+           (goblins-test--session "session-b" :cwd "/p"
+                                  :raid '(:id "r1" :name "zeta")))
+     ;; The role is a line of its own under the name; no role, no line.
+     (should (equal (goblins-test--sidebar-plain)
+                    (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n    reviewer\n"
+                            "    ! hello (package)\n  ──\n    session-b (shell)\n")))
+     ;; The name wears the face the message list gives the same goblin.
+     (dolist (id '("session-a" "session-b"))
+       (goto-char (point-min))
+       (search-forward id)
+       (should (equal (get-text-property (match-beginning 0) 'face)
+                      (get-text-property 0 'face (goblins--messages-goblin id nil)))))
+     (should-not (equal (goblins--goblin-face "session-a")
+                        (goblins--goblin-face "session-b"))))))
+
 (ert-deftest goblins-sidebar-shows-each-goblin-as-a-block ()
   (let* ((since (- (* 1000 (float-time)) (* 4 60 1000)))
          (sessions

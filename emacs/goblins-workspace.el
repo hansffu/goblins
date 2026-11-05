@@ -72,8 +72,6 @@ A bar's colour is its face's foreground." :group 'goblins)
 (defface goblins-sidebar-bar-attached '((t :inherit shadow))
   "The bar of a goblin whose terminal buffer exists here but is not shown."
   :group 'goblins)
-(defface goblins-sidebar-name '((t :inherit font-lock-function-name-face :weight bold))
-  "Every goblin's name, whatever its agent." :group 'goblins)
 (defface goblins-sidebar-permission '((t :inherit error :weight bold))
   "A goblin's pending permission requests, and the counts of them." :group 'goblins)
 (defface goblins-sidebar-separator
@@ -313,7 +311,7 @@ movement."
               (if finished
                   (goblins--sidebar-finished-line session)
                 (concat (propertize (goblins--safe (plist-get session :agent_name))
-                                    'face 'goblins-sidebar-name)
+                                    'face (goblins--goblin-face id))
                         (propertize (format " (%s)" (goblins--safe (plist-get session :name)))
                                     'face 'goblins-dim)))
               "\n")
@@ -321,7 +319,12 @@ movement."
       (when requests
         (put-text-property start (point) 'goblins-pending t)))
     (unless finished
-      (dolist (line `(,(goblins--sidebar-status session)
+      (dolist (line `(,(when-let* ((raid (plist-get session :raid))
+                                   ((listp raid))
+                                   (role (plist-get raid :role))
+                                   ((stringp role)))
+                         (propertize (goblins--safe role) 'face 'goblins-key))
+                      ,(goblins--sidebar-status session)
                       ,(when-let* ((creator (goblins--created-by session)))
                          (propertize (format "created by %s" (goblins--safe creator))
                                      'face 'goblins-dim))

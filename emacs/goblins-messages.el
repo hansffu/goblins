@@ -44,12 +44,6 @@
 In a narrower window the reader goes below the list."
   :type 'integer :group 'goblins)
 
-(defcustom goblins-messages-goblin-faces
-  '(font-lock-keyword-face font-lock-warning-face font-lock-string-face
-    font-lock-constant-face font-lock-function-name-face font-lock-type-face)
-  "Faces that tell goblins apart in the message list, in order of appearance."
-  :type '(repeat face) :group 'goblins)
-
 (defface goblins-messages-filter '((t :inherit region))
   "An active filter in the message list's header line." :group 'goblins)
 (defface goblins-messages-ref '((t :inherit font-lock-constant-face))
@@ -69,8 +63,6 @@ In a narrower window the reader goes below the list."
   "Message IDs, newest first.")
 (defvar-local goblins--messages-raids nil
   "Raid ID to its name, as the log recorded it.")
-(defvar-local goblins--messages-colors nil
-  "Session ID to its index in `goblins-messages-goblin-faces'.")
 (defvar-local goblins--messages-fetching nil
   "Non-nil while a page of the log is being read.")
 (defvar-local goblins--messages-again nil
@@ -90,7 +82,6 @@ In a narrower window the reader goes below the list."
         goblins--messages (make-hash-table :test #'equal)
         goblins--messages-order nil
         goblins--messages-raids (make-hash-table :test #'equal)
-        goblins--messages-colors (make-hash-table :test #'equal)
         goblins--messages-error nil
         goblins--messages-again nil))
 
@@ -281,19 +272,10 @@ messages out of the last-minutes filter."
         (and session (plist-get session :agent_name)))
       (goblins--messages-short id)))
 
-(defun goblins--messages-goblin-face (id)
-  "The face that marks session ID, the next free one for a goblin new here."
-  (let ((faces goblins-messages-goblin-faces))
-    (if (null faces) 'bold
-      (let ((index (or (gethash id goblins--messages-colors)
-                       (puthash id (hash-table-count goblins--messages-colors)
-                                goblins--messages-colors))))
-        (list (nth (mod index (length faces)) faces) 'bold)))))
-
 (defun goblins--messages-goblin (id name)
   "NAME, the name of session ID, in its face."
   (propertize (goblins--safe (or name (goblins--messages-goblin-name id)))
-              'face (goblins--messages-goblin-face id)))
+              'face (goblins--goblin-face id)))
 
 (defun goblins--messages-raid-name (id)
   "The name of raid ID, from the log or the snapshot."

@@ -372,6 +372,25 @@ package is the raid's name, says what it waits for."
                                 ": pick a new owner" "")))
       (_ subject))))
 
+(defcustom goblins-messages-goblin-faces
+  '(font-lock-keyword-face font-lock-warning-face font-lock-string-face
+    font-lock-constant-face font-lock-function-name-face font-lock-type-face)
+  "Faces that tell goblins apart in the sidebar and message list.
+Goblins take them in order of first appearance."
+  :type '(repeat face) :group 'goblins)
+
+(defvar goblins--goblin-colors (make-hash-table :test #'equal)
+  "Session ID to its index in `goblins-messages-goblin-faces'.")
+
+(defun goblins--goblin-face (id)
+  "The face that marks session ID everywhere, the next free one for a new goblin."
+  (let ((faces goblins-messages-goblin-faces))
+    (if (null faces) 'bold
+      (let ((index (or (gethash id goblins--goblin-colors)
+                       (puthash id (hash-table-count goblins--goblin-colors)
+                                goblins--goblin-colors))))
+        (list (nth (mod index (length faces)) faces) 'bold)))))
+
 (defun goblins--created-by (session)
   "The name of the raid owner that ran SESSION, or nil if the host started it."
   (let ((creator (plist-get session :created_by)))
