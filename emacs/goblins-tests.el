@@ -927,10 +927,13 @@ before the edge."
     (dotimes (i (- (point-max) (point-min)))
       (let* ((pos (+ (point-min) i))
              (display (get-text-property pos 'display))
+             (align (plist-get (cdr-safe display) :align-to))
+             ;; The right edge is that of a sidebar of `goblins-sidebar-width'.
+             (align (pcase align
+                      (`(- right ,n) (- goblins-sidebar-width n))
+                      ((pred integerp) align)))
              (text (cond ((get-text-property pos 'goblins-rule) "──")
-                         ((integerp (plist-get (cdr-safe display) :align-to))
-                          (make-string (max 0 (- (plist-get (cdr display) :align-to) column))
-                                       ?\s))
+                         (align (make-string (max 0 (- align column)) ?\s))
                          (t (string (char-after pos))))))
         (setq column (if (equal text "\n") 0 (+ column (string-width text))))
         (push text out)))
@@ -1909,14 +1912,13 @@ project's root, a directory inside it and a directory in no project."
       (should (equal (get-text-property (point) 'help-echo) root))
       (search-forward (abbreviate-file-name plain))
       (should (eq (get-text-property (1- (point)) 'face) 'goblins-sidebar-directory))
-      ;; In a narrow sidebar the path is cut, then dropped.
-      (let ((goblins--sidebar-columns 22))
-        (should (equal (substring-no-properties (goblins--sidebar-directory-label root 18))
-                       (concat "goblins (" (truncate-string-to-width
-                                            (abbreviate-file-name root) 8 nil nil "…")
-                               ")")))
-        (should (equal (substring-no-properties (goblins--sidebar-directory-label root 9))
-                       "goblins"))))))
+      ;; The path is cut to the room left; without room, only the name shows.
+      (should (equal (substring-no-properties (goblins--sidebar-directory-label root 18))
+                     (concat "goblins (" (truncate-string-to-width
+                                          (abbreviate-file-name root) 8 nil nil "…")
+                             ")")))
+      (should (equal (substring-no-properties (goblins--sidebar-directory-label root))
+                     "goblins")))))
 
 (ert-deftest goblins-sidebar-merges-a-raid-in-one-project ()
   (goblins-test--projects (root inside _plain)
@@ -2057,18 +2059,18 @@ project's root, a directory inside it and a directory in no project."
   (goblins-test--manifest file
       "{\"goblins\":{\"c\":{\"integration\":\"claude\"},\"x\":{\"integration\":\"codex\"},\"a\":{\"integration\":\"aider\"},\"s\":{}}}"
     (let ((icon (lambda (name)
-                  (let ((icon (goblins--agent-icon (list :configuration file :name name))))
-                    (cons (substring-no-properties (car icon)) (cdr icon))))))
-      ;; Without images, each icon is its text, with its width.
-      (should (equal (funcall icon "c") '("✻" . 1)))
-      (should (equal (funcall icon "x") '("◎" . 1)))
-      (should (equal (funcall icon "a") '("›" . 1)))
-      (should (equal (funcall icon "s") '("›" . 1)))
+                  (substring-no-properties
+                   (goblins--agent-icon (list :configuration file :name name))))))
+      ;; Without images, each icon is its text.
+      (should (equal (funcall icon "c") "✻"))
+      (should (equal (funcall icon "x") "◎"))
+      (should (equal (funcall icon "a") "›"))
+      (should (equal (funcall icon "s") "›"))
       ;; Users add their own.
-      (let ((goblins-agent-icons (cons '("aider" :text "AI" :color "red") goblins-agent-icons)))
-        (should (equal (funcall icon "a") '("AI" . 2)))
-        (should (equal (get-text-property 0 'face (car (goblins--agent-icon
-                                                        (list :configuration file :name "a"))))
+      (let ((goblins-agent-icons (cons '("aider" :text "A" :color "red") goblins-agent-icons)))
+        (should (equal (funcall icon "a") "A"))
+        (should (equal (get-text-property 0 'face (goblins--agent-icon
+                                                   (list :configuration file :name "a")))
                        '(:foreground "red")))))))
 
 (ert-deftest goblins-icons-fall-back-to-text-unless-the-svg-can-be-made ()
@@ -2081,8 +2083,7 @@ project's root, a directory inside it and a directory in no project."
               ((symbol-function 'create-image)
                (lambda (file &rest props) (setq made (cons file props)) (list 'image :file file))))
       (let ((icon (goblins--icon spec)))
-        (should (equal (cdr icon) 2))
-        (should (equal (get-text-property 0 'display (car icon))
+        (should (equal (get-text-property 0 'display icon)
                        (list 'image :file (expand-file-name "terminal.svg"
                                                             goblins--icons-directory))))
         ;; Sized to the line, at most two columns wide, unscaled, in its colour.
@@ -2096,67 +2097,19 @@ project's root, a directory inside it and a directory in no project."
       (goblins--icon spec)
       (should-not made)
       ;; A missing file shows the text.
-      (should (equal (substring-no-properties (car (goblins--icon '(:svg "missing.svg" :text "?"))))
+      (should (equal (substring-no-properties (goblins--icon '(:svg "missing.svg" :text "?")))
                      "?")))
     (dolist (failure (list (lambda (&rest _) nil) (lambda (&rest _) (error "Bad SVG"))))
       (clrhash goblins--icon-images)
       (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
                 ((symbol-function 'image-type-available-p) (lambda (_) t))
                 ((symbol-function 'create-image) failure))
-        (should (equal (substring-no-properties (car (goblins--icon spec))) "›"))))
+        (should (equal (substring-no-properties (goblins--icon spec)) "›"))))
     ;; A face gives its foreground.
     (make-face 'goblins-test-red)
     (set-face-foreground 'goblins-test-red "red")
     (should (equal (goblins--icon-color 'goblins-test-red) "red"))
     (should (equal (goblins--icon-color "blue") "blue"))))
-
-(ert-deftest goblins-sidebar-fits-the-name-beside-the-badges ()
-  (should (equal (goblins--sidebar-fit "brakka" "builder" 20) '("brakka" "builder")))
-  ;; The role is cut, then dropped, then the name is cut.
-  (should (equal (goblins--sidebar-fit "brakka" "builder" 14) '("brakka" "buil…")))
-  (should (equal (goblins--sidebar-fit "brakka" "builder" 10) '("brakka" nil)))
-  (should (equal (goblins--sidebar-fit "architecture" nil 8) '("archite…" nil)))
-  (should-not (goblins--sidebar-fit "architecture" nil 3))
-  (let ((session (goblins-test--session "a-very-long-goblin-name" :agent_state "idle"
-                                        :raid '(:id "r" :name "r" :role "reviewer"))))
-    (dolist (columns '(20 34 50))
-      (let* ((goblins--sidebar-columns columns)
-             (line (goblins--sidebar-name-line session 4 "✉123 ○")))
-        (with-temp-buffer
-          (insert "    " line "\n")
-          (let ((plain (goblins-test--sidebar-plain)))
-            ;; Never wider than the sidebar, keeping its last column free.
-            (should (= (string-width (string-trim-right plain "\n")) (1- columns)))
-            (pcase columns
-              (20 (should (string-match-p "\\`    › a-ver… +✉123 ○\n\\'" plain)))
-              (34 (should (string-match-p "\\`    › a-very-long-goblin-… ✉123 ○\n\\'" plain)))
-              (50 (should (string-match-p "(reviewer) +✉123 ○\n\\'" plain)))))))))
-  ;; Without room for even four columns of the name, the badges go, and the
-  ;; name is cut to what is left, down to nothing.
-  (dolist (case '((14 "    › a-long…\n") (10 "    › a-…\n") (7 "    › \n") (4 "    › \n")))
-    (with-temp-buffer
-      (let ((goblins--sidebar-columns (car case)))
-        (insert "    " (goblins--sidebar-name-line (goblins-test--session "a-long-name") 4
-                                                  "✉123 ○")
-                "\n"))
-      (should (equal (goblins-test--sidebar-plain) (cadr case)))))
-  ;; A wider icon takes its own width from the name, in a GUI's two-column
-  ;; image slot as in a wide text glyph.
-  (dolist (icon '((:text "XX") (:svg "terminal.svg" :text "›")))
-    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
-              ((symbol-function 'image-type-available-p) (lambda (_) t))
-              ((symbol-function 'create-image) (lambda (&rest _) '(image))))
-      (let ((goblins-agent-icons (list (cons t icon)))
-            (goblins--icon-images (make-hash-table :test #'equal)))
-        (with-temp-buffer
-          (let ((goblins--sidebar-columns 20))
-            (insert "    " (goblins--sidebar-name-line
-                            (goblins-test--session "a-very-long-goblin-name") 4 nil)
-                    "\n"))
-          ;; The name starts after the icon's slot, aligned, so the line
-          ;; keeps the sidebar's last column free.
-          (should (= (string-width (string-trim-right (goblins-test--sidebar-plain) "\n"))
-                     19)))))))
 
 (ert-deftest goblins-sidebar-shows-the-agent-icon-not-the-configuration ()
   (goblins-test--raid-sidebar

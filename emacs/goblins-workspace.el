@@ -112,15 +112,8 @@ goblin on its name line, and `all' every goblin with its details."
 (defvar goblins--sidebar-projects (make-hash-table :test #'equal)
   "Directory to its project as (NAME . ROOT), or nil, as last looked up.")
 
-(defvar goblins--sidebar-columns nil
-  "The width of the sidebar being drawn, in columns; nil for
-`goblins-sidebar-width'.")
-
 (defvar-local goblins--sidebar-view nil
   "The sidebar's view, one of `goblins-sidebar-initial-view''s values.")
-(defvar-local goblins--sidebar-drawn-columns nil
-  "The width the sidebar was last drawn for.")
-
 (defvar-local goblins--sidebar-toggled nil
   "Keys of groups and goblins folded otherwise than the view folds them.
 A group's key is its `goblins-group' value, a goblin's (goblin ID).")
@@ -282,45 +275,43 @@ holding it, for restoring point when a fold hides the line."
   (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-sidebar-permission) ""))
 
 (defun goblins--sidebar-room (indent pending)
-  "The columns left for a heading's label at INDENT with a PENDING badge."
-  (- (or goblins--sidebar-columns goblins-sidebar-width) 1 indent 2
-     (string-width (goblins--sidebar-badge (or pending 0)))))
+  "The columns of `goblins-sidebar-width' left for a heading's label at INDENT
+with a PENDING badge."
+  (- goblins-sidebar-width 1 indent 2 (string-width (goblins--sidebar-badge (or pending 0)))))
 
-(defun goblins--sidebar-directory-label (dir room &optional short)
-  "The label of DIR's heading in ROOM columns: its project's name and its path,
+(defun goblins--sidebar-directory-label (dir &optional room)
+  "The label of DIR's heading: its project's name and its path,
 \"goblins (~/code/goblins)\", or its path when it belongs to no project.
-SHORT gives only the project's name, or the path."
-  (let ((project (goblins--sidebar-project dir))
-        (path (if (string-empty-p dir) "unknown"
-                (abbreviate-file-name (file-name-as-directory dir)))))
+The path is cut to fit ROOM columns; without ROOM, a project shows only its
+name."
+  (let* ((project (goblins--sidebar-project dir))
+         (path (if (string-empty-p dir) "unknown"
+                 (abbreviate-file-name (file-name-as-directory dir))))
+         (cut (lambda (text room)
+                (if room (truncate-string-to-width text (max room 1) nil nil "…") text))))
     (propertize
      (if (not project)
-         (propertize (truncate-string-to-width (goblins--safe path) (max room 1) nil nil "…")
-                     'face 'goblins-sidebar-directory)
-       (let* ((name (goblins--safe (car project)))
-              (left (- room (string-width name) 3)))
-         (concat (propertize (truncate-string-to-width name (max room 1) nil nil "…")
-                             'face 'goblins-sidebar-project)
-                 (if (or short (< left 2)) ""
-                   (propertize (format " (%s)" (truncate-string-to-width
-                                                (goblins--safe (directory-file-name path))
-                                                left nil nil "…"))
-                               'face 'goblins-dim)))))
+         (propertize (funcall cut (goblins--safe path) room) 'face 'goblins-sidebar-directory)
+       (let ((name (goblins--safe (car project))))
+         (concat (propertize name 'face 'goblins-sidebar-project)
+                 (if room
+                     (propertize (format " (%s)" (funcall cut (goblins--safe (directory-file-name path))
+                                                          (- room (string-width name) 3)))
+                                 'face 'goblins-dim)
+                   ""))))
      'help-echo (if (string-empty-p dir) "Directory unknown" dir))))
 
-(defun goblins--sidebar-raid-label (name paused dir room)
-  "The label of raid NAME's heading in ROOM columns: the raid icon and its
-name, \"· paused\" while PAUSED, and with DIR, the one directory of its
-goblins, that directory's project."
-  (let* ((icon (goblins--icon goblins-sidebar-raid-icon))
-         (head (concat (car icon) " "
-                       (propertize (goblins--safe name) 'face 'goblins-sidebar-header)
-                       (if paused (propertize " · paused" 'face 'goblins-sidebar-header) "")))
-         (used (+ (cdr icon) (string-width (substring-no-properties head (length (car icon)))))))
-    (if (and dir (> (- room used 3) 0))
-        (concat head (propertize " · " 'face 'goblins-dim)
-                (goblins--sidebar-directory-label dir (- room used 3) t))
-      head)))
+(defun goblins--sidebar-raid-label (name paused dir)
+  "The label of raid NAME's heading: the raid icon and its name, \"· paused\"
+while PAUSED, and with DIR, the one directory of its goblins, that
+directory's project."
+  (concat (goblins--icon goblins-sidebar-raid-icon) " "
+          (propertize (goblins--safe name) 'face 'goblins-sidebar-header)
+          (if paused (propertize " · paused" 'face 'goblins-sidebar-header) "")
+          (if dir
+              (concat (propertize " · " 'face 'goblins-dim)
+                      (goblins--sidebar-directory-label dir))
+            "")))
 
 (defun goblins--sidebar-insert-group (key indent label folds &optional properties pending)
   "Insert the heading of group KEY with LABEL, text PROPERTIES and a PENDING
@@ -454,45 +445,21 @@ activity.  SHELLS are its shell buffers the sidebar lists.  Nil when empty."
                            (goblins--sidebar-activity session)))))
     (and parts (string-join parts " "))))
 
-(defun goblins--sidebar-fit (name role room &optional least)
-  "NAME and ROLE cut to fit ROOM columns as \"NAME (ROLE)\", as a list.
-The role is cut first, then dropped, then the name cut; nil when fewer than
-LEAST columns of the name (default 4) would be left."
-  (let ((width (string-width name))
-        (least (or least 4)))
-    (cond ((and role (<= (+ width 3 (string-width role)) room)) (list name role))
-          ((and role (>= (- room width 3) 2))
-           (list name (truncate-string-to-width role (- room width 3) nil nil "…")))
-          ((<= width room) (list name nil))
-          ((>= room (max least 1)) (list (truncate-string-to-width name room nil nil "…") nil))
-          ((<= least 0) (list "" nil)))))
-
-(defun goblins--sidebar-name-line (session indent badges)
-  "SESSION's name line at INDENT columns: its agent's icon, its name in its
-colour and its role, and BADGES, if any, at the right edge.  The badges are
-dropped when the name would not fit beside them."
-  (let* ((id (plist-get session :id))
-         (name (goblins--safe (plist-get session :agent_name)))
-         (role (when-let* ((raid (plist-get session :raid)) ((listp raid))
-                           (role (plist-get raid :role)) ((stringp role)))
-                 (goblins--safe role)))
-         ;; The last column stays free for a terminal's truncation glyph.
-         (end (1- (or goblins--sidebar-columns goblins-sidebar-width)))
-         (icon (goblins--agent-icon session))
-         ;; The icon, then a space; aligned, so an image narrower than its
-         ;; slot cannot shift the name.
-         (left (+ indent (cdr icon) 1))
-         (fit (and badges
-                   (goblins--sidebar-fit name role (- end (string-width badges) 1 left))))
-         (badges (and fit badges))
-         (fit (or fit (goblins--sidebar-fit name role (- end left) 0))))
-    (concat (car icon)
-            (propertize " " 'display `(space :align-to ,left))
-            (propertize (car fit) 'face (goblins--goblin-face id))
-            (if (cadr fit) (propertize (format " (%s)" (cadr fit)) 'face 'goblins-dim) "")
+(defun goblins--sidebar-name-line (session badges)
+  "SESSION's name line: its agent's icon, its name in its colour and its
+role, and BADGES, if any, at the right edge."
+  (let ((role (when-let* ((raid (plist-get session :raid)) ((listp raid))
+                          (role (plist-get raid :role)) ((stringp role)))
+                (goblins--safe role))))
+    (concat (goblins--agent-icon session) " "
+            (propertize (goblins--safe (plist-get session :agent_name))
+                        'face (goblins--goblin-face (plist-get session :id)))
+            (if role (propertize (format " (%s)" role) 'face 'goblins-dim) "")
             (if badges
+                ;; A column short of the edge, where a terminal shows its
+                ;; truncation glyph.
                 (concat (propertize " " 'display
-                                    `(space :align-to ,(- end (string-width badges))))
+                                    `(space :align-to (- right ,(1+ (string-width badges)))))
                         badges)
               ""))))
 
@@ -517,7 +484,7 @@ the shells follow it.  Only the name and the shells are stops for movement."
       (insert (make-string (* 2 depth) ?\s)
               (if finished
                   (goblins--sidebar-finished-line session)
-                (goblins--sidebar-name-line session (* 2 depth)
+                (goblins--sidebar-name-line session
                                             (and folded (goblins--sidebar-badges session own))))
               "\n")
       (add-text-properties start (point) (list 'goblins-id id 'goblins-in-group group-key))
@@ -601,8 +568,7 @@ text is built apart from the sidebar so a failure cannot blank it."
                                                     :test #'equal)
                                            :paused)
                                 t)
-                            (and merged (car (nth 2 raid)))
-                            (goblins--sidebar-room 0 pending))
+                            (and merged (car (nth 2 raid))))
                            folds
                            (append (list 'goblins-raid (or (cadr raid) rkey))
                                    (and merged (list 'goblins-directory (car (nth 2 raid)))))
@@ -632,11 +598,7 @@ text is built apart from the sidebar so a failure cannot blank it."
 
 (defun goblins--sidebar-render ()
   "Redraw the sidebar from its source buffer's snapshot, keeping point."
-  (let* ((columns (if-let* ((window (get-buffer-window (current-buffer) t)))
-                       (window-body-width window)
-                     goblins-sidebar-width))
-         (text (let ((goblins--sidebar-columns columns))
-                 (goblins--sidebar-text goblins--sidebar-source (goblins--sidebar-folds))))
+  (let* ((text (goblins--sidebar-text goblins--sidebar-source (goblins--sidebar-folds)))
          (inhibit-read-only t)
          (windows (get-buffer-window-list (current-buffer) nil t))
          (keys (mapcar (lambda (w) (cons w (goblins--sidebar-keys-at (window-point w))))
@@ -654,16 +616,9 @@ text is built apart from the sidebar so a failure cannot blank it."
                                               (point))))))
     (goto-char (or (cl-some #'goblins--sidebar-find point-keys)
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
-    (setq goblins--sidebar-drawn-columns columns)
     (goblins--sidebar-mask-margins)
     (goblins--sidebar-highlight-selection)
     (goblins--sidebar-update-active)))
-
-(defun goblins--sidebar-resized (window)
-  "Redraw the sidebar in WINDOW if its width changed, so names and badges fit."
-  (with-current-buffer (window-buffer window)
-    (unless (eql (window-body-width window) goblins--sidebar-drawn-columns)
-      (goblins--sidebar-render))))
 
 (defun goblins--sidebar-highlight-selection (&optional window)
   "Highlight the selection only while a window of the sidebar is selected.
@@ -1466,7 +1421,6 @@ On a raid, show those sent within it."
     (set (make-local-variable cursor) (list nil)))
   (hl-line-mode 1)
   (add-hook 'window-selection-change-functions #'goblins--sidebar-highlight-selection nil t)
-  (add-hook 'window-size-change-functions #'goblins--sidebar-resized nil t)
   (goblins--sidebar-highlight-selection))
 
 ;;;; Entry points

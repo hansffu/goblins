@@ -467,20 +467,17 @@ most two wide, or nil where it cannot be drawn."
             (puthash key image goblins--icon-images))))))
 
 (defun goblins--icon (spec)
-  "The icon of SPEC, a plist like those of `goblins-agent-icons', as
-\(STRING . COLUMNS): its SVG where Emacs can draw it, at most two columns
-wide, else its text."
+  "The icon of SPEC, a plist like those of `goblins-agent-icons': its SVG
+where Emacs can draw it, else its text."
   (let* ((color (goblins--icon-color (plist-get spec :color)))
-         (image (goblins--icon-image (plist-get spec :svg) color))
-         (text (or (plist-get spec :text) " ")))
+         (image (goblins--icon-image (plist-get spec :svg) color)))
     (if image
-        (cons (propertize "*" 'display image) 2)
-      (cons (propertize text 'face (and color (list :foreground color)))
-            (max 1 (string-width text))))))
+        (propertize "*" 'display image)
+      (propertize (or (plist-get spec :text) " ")
+                  'face (and color (list :foreground color))))))
 
 (defun goblins--agent-icon (session)
-  "The icon of SESSION's agent, from `goblins-agent-icons', as
-\(STRING . COLUMNS)."
+  "The icon of SESSION's agent, from `goblins-agent-icons'."
   (goblins--icon (cdr (or (assoc (goblins--session-integration session) goblins-agent-icons)
                           (assq t goblins-agent-icons)))))
 
