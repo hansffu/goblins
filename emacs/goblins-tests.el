@@ -2563,7 +2563,8 @@ project's root, a directory inside it and a directory in no project."
     (should (string-match-p "▾ /p/ !1\n    › session-a (lead) +✉1 ○\n    ! hello"
                             (goblins-test--sidebar-plain)))
     (should-not (string-match-p "◐ working" (buffer-string)))
-    (should (eq (key-binding (kbd "<backtab>")) #'goblins-sidebar-cycle))))
+    (should (eq (key-binding (kbd "<backtab>")) #'goblins-sidebar-cycle))
+    (should (equal line-spacing goblins-sidebar-line-spacing))))
 
 (ert-deftest goblins-sidebar-folding-keeps-point-on-what-stays ()
   (goblins-test--sidebar goblins-test--fold-sessions

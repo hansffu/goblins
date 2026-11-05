@@ -100,6 +100,11 @@ A bar's colour is its face's foreground." :group 'goblins)
 The status buffer always lists them."
   :type 'boolean :group 'goblins)
 
+(defcustom goblins-sidebar-line-spacing 0.25
+  "Extra space below each sidebar line, as for `line-spacing'.
+A float is a fraction of the line height, an integer pixels."
+  :type '(choice (const :tag "None" nil) number) :group 'goblins)
+
 (defcustom goblins-sidebar-initial-view 'contents
   "How much the sidebar shows when it opens, as \\[goblins-sidebar-cycle] cycles it.
 `overview' shows only the raid and directory headings, `contents' every
@@ -1405,6 +1410,8 @@ On a raid, show those sent within it."
 \\[goblins-sidebar-next] and \\[goblins-sidebar-previous] move, \\[goblins-sidebar-dwim] opens or attaches,
 \\[goblins-sidebar-permissions] shows permission requests, \\[goblins-sidebar-fold] folds, \\[goblins-workspace-quit] leaves."
   (setq-local truncate-lines t
+              ;; Room above and below each line, so the icons do not crowd.
+              line-spacing goblins-sidebar-line-spacing
               cursor-type nil
               window-size-fixed 'width
               mode-line-format nil
