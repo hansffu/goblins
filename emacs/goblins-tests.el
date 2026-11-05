@@ -3459,7 +3459,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   (with-temp-buffer
     (let ((code (call-process
                  (expand-file-name invocation-name invocation-directory) nil t nil
-                 "--batch" "-Q" "-l"
+                 "--batch" "-Q" (concat "--init-directory=" user-emacs-directory) "-l"
                  (expand-file-name "../tests/emacs-init.el"
                                    (file-name-directory (file-truename (locate-library "goblins"))))
                  "-L" (file-name-directory (locate-library "goblins"))
@@ -3473,7 +3473,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   (with-temp-buffer
     (let ((code (call-process
                  (expand-file-name invocation-name invocation-directory) nil t nil
-                 "--batch" "-Q" "-l"
+                 "--batch" "-Q" (concat "--init-directory=" user-emacs-directory) "-l"
                  (expand-file-name "../tests/emacs-init.el"
                                    (file-name-directory (file-truename (locate-library "goblins"))))
                  "-L" (file-name-directory (locate-library "goblins"))

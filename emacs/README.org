@@ -387,15 +387,19 @@ the daemon of =goblins-state-directory=.
 
 * Checks
 
-Enter =nix develop= once, using your configured Emacs with =magit-section=, Transient and optional Ghostel on its load path. =just test-emacs= runs the ERT suite; =just test-python test_emacs= runs the integration tests with the incremental Cargo controller. The direct commands are:
+Enter =nix develop= once.  The tests run the dev shell's own Emacs, =$GOBLINS_TEST_EMACS=: a current Emacs from nixos-unstable with =magit-section=, Transient, Ghostel, Evil, Consult, Embark and Marginalia, so they do not depend on your Emacs or its packages; it is not put on =PATH=, so =just emacs= still runs yours.  Each test Emacs gets a temporary Emacs directory (=--init-directory=), so nothing is written to yours.  =just test-emacs= runs the ERT suite; =just test-python test_emacs= runs the integration tests with the incremental Cargo controller.  The direct commands are:
 
 #+begin_src sh
-emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
+home=$(mktemp -d)
+"$GOBLINS_TEST_EMACS" --batch -Q --init-directory="$home" -L emacs \
+  --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
   emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
   emacs/goblins-tramp.el emacs/goblins-completion.el emacs/goblins-messages.el
-emacs --batch -Q -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
+"$GOBLINS_TEST_EMACS" --batch -Q --init-directory="$home" \
+  -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
+rm -rf "$home"
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
 
-The Python integration tests exercise server start/stop/restart, real approvals, two simultaneous Ghostel launches with working-directory input and status links, and the whole workspace (sidebar, permissions, raids, stopping, reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a blocking =goblins-editor= against daemons built with =editor.emacs.enable=. Each starts its own daemon on a temporary state directory and socket, so a daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test also requires its installed native module. These commands use =-Q= and do not load your init file or install Emacs packages.
+The Python integration tests exercise server start/stop/restart, real approvals, two simultaneous Ghostel launches with working-directory input and status links, and the whole workspace (sidebar, permissions, raids, stopping, reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a blocking =goblins-editor= against daemons built with =editor.emacs.enable=. Each starts its own daemon on a temporary state directory and socket, so a daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test also requires its installed native module. These commands use =-Q= and do not load your init file or install Emacs packages.  Without the dev shell, the tests fall back to the =emacs= on =PATH=.
