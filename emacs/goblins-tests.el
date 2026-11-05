@@ -2564,7 +2564,11 @@ project's root, a directory inside it and a directory in no project."
                             (goblins-test--sidebar-plain)))
     (should-not (string-match-p "◐ working" (buffer-string)))
     (should (eq (key-binding (kbd "<backtab>")) #'goblins-sidebar-cycle))
-    (should (equal line-spacing goblins-sidebar-line-spacing))))
+    ;; Half the room below each line, half above it, none around rules.
+    (should (equal line-spacing (/ goblins-sidebar-line-spacing 2.0)))
+    (goto-char (point-min))
+    (should (equal (get-text-property (line-end-position) 'line-height)
+                   (1+ (/ goblins-sidebar-line-spacing 2.0))))))
 
 (ert-deftest goblins-sidebar-folding-keeps-point-on-what-stays ()
   (goblins-test--sidebar goblins-test--fold-sessions

@@ -101,9 +101,9 @@ The status buffer always lists them."
   :type 'boolean :group 'goblins)
 
 (defcustom goblins-sidebar-line-spacing 0.25
-  "Extra space below each sidebar line, as for `line-spacing'.
-A float is a fraction of the line height, an integer pixels."
-  :type '(choice (const :tag "None" nil) number) :group 'goblins)
+  "Extra space around each sidebar line, as a fraction of the line height.
+Half goes above the line and half below it.  Nil adds none."
+  :type '(choice (const :tag "None" nil) float) :group 'goblins)
 
 (defcustom goblins-sidebar-initial-view 'contents
   "How much the sidebar shows when it opens, as \\[goblins-sidebar-cycle] cycles it.
@@ -621,9 +621,22 @@ text is built apart from the sidebar so a failure cannot blank it."
                                               (point))))))
     (goto-char (or (cl-some #'goblins--sidebar-find point-keys)
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
+    (goblins--sidebar-pad)
     (goblins--sidebar-mask-margins)
     (goblins--sidebar-highlight-selection)
     (goblins--sidebar-update-active)))
+
+(defun goblins--sidebar-pad ()
+  "Put the upper half of `goblins-sidebar-line-spacing' above each line but
+the rules: a line taller than its text gets the extra height above it."
+  (when goblins-sidebar-line-spacing
+    (let ((inhibit-read-only t)
+          (height (1+ (/ goblins-sidebar-line-spacing 2.0))))
+      (save-excursion
+        (goto-char (point-min))
+        (while (search-forward "\n" nil t)
+          (unless (get-text-property (max (point-min) (- (point) 2)) 'goblins-rule)
+            (put-text-property (1- (point)) (point) 'line-height height)))))))
 
 (defun goblins--sidebar-highlight-selection (&optional window)
   "Highlight the selection only while a window of the sidebar is selected.
@@ -1411,7 +1424,10 @@ On a raid, show those sent within it."
 \\[goblins-sidebar-permissions] shows permission requests, \\[goblins-sidebar-fold] folds, \\[goblins-workspace-quit] leaves."
   (setq-local truncate-lines t
               ;; Room above and below each line, so the icons do not crowd.
-              line-spacing goblins-sidebar-line-spacing
+              ;; The lower half of the room; `goblins--sidebar-pad' adds
+              ;; the upper.
+              line-spacing (and goblins-sidebar-line-spacing
+                                (/ goblins-sidebar-line-spacing 2.0))
               cursor-type nil
               window-size-fixed 'width
               mode-line-format nil
