@@ -65,6 +65,8 @@ The default closes the sidebar and restores the configuration saved by
     (((class color) (background light)) :foreground "#0e7c86" :weight bold)
     (t :weight bold))
   "The project name on a directory heading in the sidebar." :group 'goblins)
+(defface goblins-sidebar-configuration '((t :inherit goblins-dim))
+  "An unfolded goblin's configuration, such as goblins-claude." :group 'goblins)
 (defface goblins-sidebar-directory '((t :inherit shadow :weight bold))
   "A directory heading in the sidebar that belongs to no project." :group 'goblins)
 
@@ -498,7 +500,9 @@ the shells follow it.  Only the name and the shells are stops for movement."
     (unless finished
       (dolist (line (if folded
                         (mapcar #'goblins--sidebar-permission-line requests)
-                      `(,(goblins--sidebar-status session)
+                      `(,(when-let* ((name (plist-get session :name)) ((stringp name)))
+                           (propertize (goblins--safe name) 'face 'goblins-sidebar-configuration))
+                        ,(goblins--sidebar-status session)
                         ,@(mapcar #'goblins--sidebar-permission-line requests)
                         ,(goblins--sidebar-inbox-line session))))
         (when line (goblins--sidebar-insert-detail depth id group-key line))))

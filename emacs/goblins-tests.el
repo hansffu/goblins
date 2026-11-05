@@ -963,8 +963,8 @@ before the edge."
      ;; The role follows the name in parentheses; no role, no parentheses,
      ;; and who created a goblin is not shown.
      (should (equal (goblins-test--sidebar-plain)
-                    (concat "▾ ⚔ zeta · /p/ !1\n  › session-a (reviewer)\n"
-                            "  ! hello (package)\n──\n  › session-b\n")))
+                    (concat "▾ ⚔ zeta · /p/ !1\n  › session-a (reviewer)\n  shell\n"
+                            "  ! hello (package)\n──\n  › session-b\n  shell\n")))
      ;; The name wears the face the message list gives the same goblin.
      (dolist (id '("session-a" "session-b"))
        (goto-char (point-min))
@@ -1001,12 +1001,12 @@ before the edge."
         (goblins--sidebar-render)
         ;; One rule before every goblin but the first, never two in a row.
         (should (equal (goblins-test--sidebar-plain)
-                       (concat "▾ /p/ !2\n  › chief\n  ◐ working · 4m\n"
+                       (concat "▾ /p/ !2\n  › chief\n  claude\n  ◐ working · 4m\n"
                                "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · Tramp connected\n"
-                               "──\n  › scout\n  ◆ needs approval · 4m\n"
+                               "──\n  › scout\n  codex\n  ◆ needs approval · 4m\n"
                                "  ! docker\n"
-                               "──\n  › helper\n  ○ idle\n  ✉ 1 message\n"
-                               "──\n  › beta\n  ◌ starting\n"
+                               "──\n  › helper\n  shell\n  ○ idle\n  ✉ 1 message\n"
+                               "──\n  › beta\n  shell\n  ◌ starting\n"
                                "──\n  ✗ old (claude) · exited 1\n")))
         ;; Every rule looks the same: no goblin nests under another.
         (should (equal (cl-loop for pos from (point-min) below (point-max)
@@ -1039,7 +1039,7 @@ before the edge."
     (goblins-sidebar-previous)
     (let ((range (goblins--sidebar-selection)))
       (should (equal (buffer-substring-no-properties (car range) (cdr range))
-                     "  › chief\n  ◐ working\n  ✉ 1 message\n")))
+                     "  › chief\n  shell\n  ◐ working\n  ✉ 1 message\n")))
     ;; On a detail line, the goblin's commands still apply, and point
     ;; stays with its goblin across renders.
     (forward-line 1)
@@ -1126,18 +1126,18 @@ before the edge."
               (should block)
               (should (equal (buffer-substring-no-properties (overlay-start block)
                                                              (overlay-end block))
-                             "  › session-b\n  ○ idle\n"))
+                             "  › session-b\n  shell\n  ○ idle\n"))
               (should (< (overlay-get block 'priority) hl-line-overlay-priority))
               (let ((bars (cl-remove-if-not (lambda (o) (equal (overlay-get o 'display) "▌"))
                                             (overlays-in (overlay-start block)
                                                          (overlay-end block)))))
-                (should (= (length bars) 2))
+                (should (= (length bars) 3))
                 (should (equal (mapcar (lambda (o) (- (overlay-start o)
                                                       (save-excursion
                                                         (goto-char (overlay-start o))
                                                         (line-beginning-position))))
                                        bars)
-                               '(0 0))))
+                               '(0 0 0))))
               ;; A GUI draws strips half a column wide instead, the goblin's
               ;; outside a shown shell's with a gap between, and the text keeps
               ;; its column.
@@ -2522,7 +2522,7 @@ project's root, a directory inside it and a directory in no project."
     (should (equal (get-text-property (point) 'goblins-id) "session-a"))
     ;; Rules mark where its block starts and ends.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ ⚔ zeta !1\n  ▾ /p/ !1\n    › session-a (lead)\n"
+                   (concat "▾ ⚔ zeta !1\n  ▾ /p/ !1\n    › session-a (lead)\n    shell\n"
                            "    ○ idle\n    ! hello (package)\n    ✉ 1 message\n"
                            "  ──\n" (goblins-test--row "    › session-c" "◐")
                            "\n  ▾ /r/\n" (goblins-test--row "    › session-d" "○")
@@ -3703,9 +3703,9 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
             (setq goblins--sidebar-view 'all)
             (goblins--sidebar-render-all)
             (should (equal (goblins-test--sidebar-plain)
-                           (concat "▾ /p/ !1\n  › session-a\n  ! hello (package)\n"
+                           (concat "▾ /p/ !1\n  › session-a\n  shell\n  ! hello (package)\n"
                                    "  ⇄ Tramp connected\n  › shell\n  › shell 2 · exited\n"
-                                   "──\n  › session-b\n")))
+                                   "──\n  › session-b\n  shell\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
             (goto-char (point-min))
