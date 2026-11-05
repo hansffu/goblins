@@ -8,6 +8,8 @@ emacs *args:
     goblins=$(nix build --no-link --print-out-paths .#dev-goblins)
     setup="(progn
       (add-to-list 'load-path \"{{justfile_directory()}}/emacs\")
+      ;; Never a stale .elc beside the checkout's sources.
+      (setq load-prefer-newer t)
       (setq goblins-executable \"$goblins/bin/goblins\")
       (let ((state (getenv \"GOBLINS_STATE_DIR\")))
         (when state (setq goblins-state-directory state)))
@@ -76,8 +78,11 @@ test-cache-clean:
 test-roots-clean:
     nix-store --gc --print-roots --quiet > /dev/null
 
+# The dev shell's pinned Emacs, with its own throwaway Emacs directory.
 test-emacs:
-    emacs --batch -Q -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
+    home=$(mktemp -d "${TMPDIR:-/tmp}/goblins-test-emacs.XXXXXX") && trap 'rm -rf "$home"' EXIT && \
+      "${GOBLINS_TEST_EMACS:-emacs}" --batch -Q --init-directory="$home" \
+      -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
 
 # Full packaging/Nix validation stays available separately from the edit loop.
 test-nix:

@@ -3,6 +3,9 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/21a67dc470149f337cecafbe965d8d252a390518";
+    # Only for the Emacs the tests run: a current Emacs and Ghostel, as the
+    # Emacs package expects, independent of the developer's own Emacs.
+    nixpkgs-unstable.url = "github:NixOS/nixpkgs/nixos-unstable";
     # Agent packages for the demo goblins, updated daily. Not following
     # nixpkgs: this is the combination numtide builds and caches.
     llm-agents.url = "github:numtide/llm-agents.nix/69d1f4621804d13b9658ff9ac9b2a151815132cb";
@@ -15,6 +18,7 @@
   outputs =
     {
       nixpkgs,
+      nixpkgs-unstable,
       agent-sandbox,
       llm-agents,
       ...
@@ -78,7 +82,25 @@
             shell = dockerShell;
           };
       };
+      # The Emacs the tests run, with the packages the Emacs code and its
+      # optional integrations need, so no test depends on a local Emacs.
+      testEmacs =
+        let
+          unstable = nixpkgs-unstable.legacyPackages.${system};
+        in
+        (unstable.emacsPackagesFor unstable.emacs-nox).emacsWithPackages (e: [
+          e.magit-section
+          e.transient
+          e.ghostel
+          e.evil
+          e.consult
+          e.embark
+          e.embark-consult
+          e.marginalia
+        ]);
       devShell = pkgs.mkShell {
+        # Not on PATH: `just emacs` keeps running the developer's own Emacs.
+        GOBLINS_TEST_EMACS = "${testEmacs}/bin/emacs";
         packages = [
           pkgs.rustc
           pkgs.cargo

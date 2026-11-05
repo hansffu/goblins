@@ -115,23 +115,30 @@ directly; there is no need to download another copy of Magit.
 
 =M-x goblins-workspace= opens a sidebar listing the running goblins, grouped by raid and then by project directory, and selects it; in the workspace it opens a menu for moving around (see [[*Moving around][Moving around]]).  Stopped and failed goblins are hidden (the status buffer still lists them; set =goblins-sidebar-show-finished= to show them, one dimmed line each).
 
-Each goblin is a block: its name and type, then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  A rule parts the goblins of a directory, starting at the column of each goblin's bar, two columns before its text; a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
+A raid's heading is the raid icon and its name (=⚔ crew=, from =goblins-sidebar-raid-icon=, crossed swords where Emacs draws SVG), with =· paused= while it waits for a new owner.  A directory's heading names its project and the directory's path, =goblins (~/code/goblins)=, for a project's root and for directories inside it alike; a directory in no project shows its path in grey (=goblins-sidebar-project= and =goblins-sidebar-directory=).  The name comes from project.el (=project-name=, or the root's name before Emacs 29); remote and missing directories are not looked up, and projects are looked up again when the sidebar opens.  When all of a raid's goblins share one directory the two headings are one, =⚔ crew · goblins=, and its goblins sit right under it; the full path shows when you hover a heading.  Paths are cut with … to fit the sidebar.  =goblins-sidebar-line-spacing= (a quarter of a line by default) puts some room around the sidebar's lines, half above and half below.
 
-The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  A bar down a goblin's block, two columns before its text, says where its terminal is: blue while it or the goblin's page is shown beside the sidebar (=goblins-sidebar-bar-shown=), grey while its terminal buffer exists here but is hidden (=goblins-sidebar-bar-attached=), and no bar without one.  A bar's colour is its face's foreground.  A shell shown beside the sidebar has its own blue bar inside its goblin's, with a gap between them.  Give =goblins-sidebar-active= a background to tint the shown blocks and shells as well.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  The other faces are =goblins-sidebar-name=, =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox= and =goblins-sidebar-separator=.
+Each goblin's line is its agent's icon, its name and, in a raid, its role in parentheses (=✻ brakka (builder)=).  Unfolded, the goblin is a block: that line, its configuration (=goblins-claude=, in =goblins-sidebar-configuration=), then what its agent is doing and for how long (=◐ working · 4m=, =◆ needs input=, =◆ needs approval=, =○ idle=; no line while that is unknown), each pending permission request (=! jq (package)=), its queued inbox messages (=✉ 2 messages=), the shells and TRAMP connections opened elsewhere (=⇄ 1 shell · Tramp connected=), and last its shell terminals.  Folded, the line says the same in short at its right edge (=⇄ ✉2 ◐ 4m=), and only the pending requests and the shells follow it.  A rule, starting at the column of each goblin's bar, two columns before its text, parts an unfolded goblin's block from the goblins before and after it in its directory (none above the first goblin or below the last); a blank line parts the groups.  =!N= on a heading counts the pending permission requests below it.
+
+The sidebar has no cursor: the goblin or line at point is highlighted like the region (=goblins-sidebar-selected=) while the sidebar's window is selected.  =j= and =k= move by goblin, shell and heading, so a goblin's detail lines take a single step, like one line.  A bar down a goblin's block, two columns before its text, says where its terminal is: blue while it or the goblin's page is shown beside the sidebar (=goblins-sidebar-bar-shown=), grey while its terminal buffer exists here but is hidden (=goblins-sidebar-bar-attached=), and no bar without one.  A bar's colour is its face's foreground.  A shell shown beside the sidebar has its own blue bar inside its goblin's, with a gap between them.  Give =goblins-sidebar-active= a background to tint the shown blocks and shells as well.  Neither highlight reaches the bars' columns, so a gap parts the bars from them.  A goblin's name wears the same colour as in the message list, taken in order from =goblins-messages-goblin-faces=.  The other faces are =goblins-activity-working=, =goblins-activity-waiting=, =goblins-activity-idle=, =goblins-sidebar-permission=, =goblins-inbox= =goblins-sidebar-separator=, =goblins-sidebar-header= (raid headings and the fold arrows), =goblins-sidebar-project= and =goblins-sidebar-directory=.
 
 In Evil's motion state the sidebar's own keys take precedence over every minor
 mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
 work as usual.  Shell
 terminals opened with =t= are listed in their goblin's block (=› shell=, =› shell
 2=, marked =· exited= once their shell ends) until you kill their buffer;
-Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
+Eshell and Dired buffers are not listed.
+
+Goblins start folded: a folded goblin keeps only its name line, its pending permission requests and its shells.  =TAB= on a goblin, or on any of its lines, unfolds it into the full block, and =TAB= again folds it; on a heading it folds or unfolds the group.  =S-TAB= cycles the whole sidebar as in Org: only the headings, then every goblin folded, then everything unfolded, forgetting single folds made with =TAB=.  =goblins-sidebar-initial-view= (=overview=, =contents= or =all=; default =contents=) sets where a sidebar starts.
+
+The icon comes from =goblins-agent-icons=, by the =integration= of the goblin's configuration: Claude's and Codex's marks in their colours, and a terminal for every other goblin.  Each entry has an SVG file (=:svg=), a colour or face for single-colour icons (=:color=) and the text shown where Emacs cannot draw SVG, as in a terminal (=:text=: =✻=, =◎= and =›=).  Add an entry for another integration with =add-to-list=.  A broken SVG file shows as Emacs's empty image.  The shipped icons, their sources and licences are in =emacs/icons/=.  Folds last while the sidebar lives: redraws and =g r= keep them, hiding and showing the sidebar keeps them, and leaving the workspace or showing another server's goblins starts over.
 
 | Key (also Evil motion state) | Action                                                   |
 |------------------------------+----------------------------------------------------------|
 | =j= / =k=                    | next / previous goblin, shell or group                   |
 | =n= / =N=                    | next / previous goblin waiting for a decision (unfolds groups) |
 | =RET=                        | goblin: show or attach; shell: show it; raid: open its page; directory: fold |
-| =TAB=                        | fold the group                                           |
+| =TAB=                        | fold or unfold the goblin or group                       |
+| =S-TAB=                      | cycle: headings only, goblins folded, everything unfolded |
 | =p=                          | permissions of the goblin: current request, history      |
 | =I=                          | info: everything the daemon knows about the goblin       |
 | =K=                          | stop the goblin (only it: no other goblin stops with it) |
@@ -380,15 +387,19 @@ the daemon of =goblins-state-directory=.
 
 * Checks
 
-Enter =nix develop= once, using your configured Emacs with =magit-section=, Transient and optional Ghostel on its load path. =just test-emacs= runs the ERT suite; =just test-python test_emacs= runs the integration tests with the incremental Cargo controller. The direct commands are:
+Enter =nix develop= once.  The tests run the dev shell's own Emacs, =$GOBLINS_TEST_EMACS=: a current Emacs from nixos-unstable with =magit-section=, Transient, Ghostel, Evil, Consult, Embark and Marginalia, so they do not depend on your Emacs or its packages; it is not put on =PATH=, so =just emacs= still runs yours.  Each test Emacs gets a temporary Emacs directory (=--init-directory=), so nothing is written to yours.  =just test-emacs= runs the ERT suite; =just test-python test_emacs= runs the integration tests with the incremental Cargo controller.  The direct commands are:
 
 #+begin_src sh
-emacs --batch -Q -L emacs --eval '(setq byte-compile-error-on-warn t)' \
+home=$(mktemp -d)
+"$GOBLINS_TEST_EMACS" --batch -Q --init-directory="$home" -L emacs \
+  --eval '(setq byte-compile-error-on-warn t)' \
   -f batch-byte-compile emacs/goblins.el emacs/goblins-views.el \
   emacs/goblins-raids.el emacs/goblins-terminal.el emacs/goblins-workspace.el \
   emacs/goblins-tramp.el emacs/goblins-completion.el emacs/goblins-messages.el
-emacs --batch -Q -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
+"$GOBLINS_TEST_EMACS" --batch -Q --init-directory="$home" \
+  -l tests/emacs-init.el -l goblins-tests -f ert-run-tests-batch-and-exit
+rm -rf "$home"
 python3 -m unittest discover -s tests -p test_emacs.py
 #+end_src
 
-The Python integration tests exercise server start/stop/restart, real approvals, two simultaneous Ghostel launches with working-directory input and status links, and the whole workspace (sidebar, permissions, raids, stopping, reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a blocking =goblins-editor= against daemons built with =editor.emacs.enable=. Each starts its own daemon on a temporary state directory and socket, so a daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test also requires its installed native module. These commands use =-Q= and do not load your init file or install Emacs packages.
+The Python integration tests exercise server start/stop/restart, real approvals, two simultaneous Ghostel launches with working-directory input and status links, and the whole workspace (sidebar, permissions, raids, stopping, reconnecting, switching) in a real =emacs -nw= running in a pseudo terminal, as well as =/goblins:= TRAMP, eshell, cancellation, pinning, =goblins-shell= and a blocking =goblins-editor= against daemons built with =editor.emacs.enable=. Each starts its own daemon on a temporary state directory and socket, so a daemon you are running is never touched. They skip when Emacs or =magit-section= is unavailable; the Ghostel test also requires its installed native module. These commands use =-Q= and do not load your init file or install Emacs packages.  Without the dev shell, the tests fall back to the =emacs= on =PATH=.

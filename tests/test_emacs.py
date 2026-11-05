@@ -20,16 +20,22 @@ from build_support import fixture_app
 from daemon_support import Daemon, ROOT, RPC, app, receive
 
 EMACS_INIT = str(ROOT / "tests/emacs-init.el")
+# The dev shell's pinned test Emacs; any Emacs on PATH otherwise.
+EMACS = os.environ.get("GOBLINS_TEST_EMACS", "emacs")
+# Every test Emacs keeps its files (caches, Tramp's, auto-saves) here, never
+# in the developer's Emacs directory.
+_emacs_home = tempfile.TemporaryDirectory(prefix="goblins-test-emacs-")
+EMACS_HOME = "--init-directory=" + _emacs_home.name
 
 
-@unittest.skipUnless(shutil.which("emacs"), "Emacs is not installed")
+@unittest.skipUnless(shutil.which(EMACS), "Emacs is not installed")
 class EmacsTests(unittest.TestCase):
     maxDiff = None
 
     @classmethod
     def setUpClass(cls):
         available = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval",
+            [EMACS, EMACS_HOME, "--batch", "-Q", "--eval",
              '(kill-emacs (if (locate-library "magit-section") 0 1))'],
             capture_output=True, timeout=10,
         )
@@ -39,7 +45,7 @@ class EmacsTests(unittest.TestCase):
     def test_live_activity_updates_overview_sidebar_and_details(self):
         daemon = Daemon(); self.addCleanup(daemon.close)
         agent = daemon.start(agent_name='activity')['session']
-        result = subprocess.run(['emacs', '--batch', '-Q', '-l', EMACS_INIT,
+        result = subprocess.run([EMACS, EMACS_HOME, '--batch', '-Q', '-l', EMACS_INIT,
             '-l', 'goblins-tests', '-f', 'goblins-test-activity-live'],
             env={**os.environ, 'GOBLINS_APP':str(daemon.app), 'GOBLINS_TEST_STATE':str(daemon.state),
                  'GOBLINS_TEST_AGENT':agent}, capture_output=True, text=True, timeout=60)
@@ -65,7 +71,7 @@ class EmacsTests(unittest.TestCase):
                                    "claim_generation": claim["claim_generation"],
                                    "body": "First answer"})
         ready = Path(daemon.temp.name) / "ready"
-        emacs = subprocess.Popen(['emacs', '--batch', '-Q', '-l', EMACS_INIT,
+        emacs = subprocess.Popen([EMACS, EMACS_HOME, '--batch', '-Q', '-l', EMACS_INIT,
             '-l', 'goblins-tests', '-f', 'goblins-test-messages-live'],
             env={**os.environ, 'GOBLINS_TEST_STATE': str(daemon.state),
                  'GOBLINS_TEST_READY': str(ready)},
@@ -88,7 +94,7 @@ class EmacsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="ge-start-") as state:
             try:
                 result = subprocess.run(
-                    ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-start-live"],
+                    [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-start-live"],
                     env={**os.environ, "GOBLINS_APP": str(application),
                          "GOBLINS_TEST_STATE": state,
                          # Its server keeps a private history, never the user's.
@@ -121,7 +127,7 @@ class EmacsTests(unittest.TestCase):
                 session=agent["session"], state="pending")), None)))
             peers.append(peer)
         result = subprocess.run(
-            ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-live"],
+            [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-live"],
             env={**os.environ, "GOBLINS_TEST_STATE": str(daemon.state),
                  "GOBLINS_TEST_ACCEPT": requests[0]["id"],
                  "GOBLINS_TEST_DENY": requests[1]["id"]},
@@ -135,7 +141,7 @@ class EmacsTests(unittest.TestCase):
 
     def test_run_in_ghostel_and_visit_from_status(self):
         available = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval",
+            [EMACS, EMACS_HOME, "--batch", "-Q", "--eval",
              '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
             capture_output=True, timeout=10,
         )
@@ -155,7 +161,7 @@ class EmacsTests(unittest.TestCase):
         launcher.chmod(0o700)
         with tempfile.TemporaryDirectory(prefix="ge-workspace-") as workspace:
             result = subprocess.run(
-                ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-run-live"],
+                [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-run-live"],
                 env={**os.environ, "GOBLINS_APP": str(launcher),
                      "GOBLINS_TEST_STATE": str(daemon.state),
                      "GOBLINS_TEST_WORKSPACE": workspace,
@@ -180,7 +186,7 @@ class EmacsTests(unittest.TestCase):
         daemon.wait(lambda: daemon.record(session)["stopped"])
         daemon.wait_record_released(record["id"])
         result = subprocess.run(
-            ["emacs", "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
+            [EMACS, EMACS_HOME, "--batch", "-Q", "-l", EMACS_INIT, "-l", "goblins-tests", "-f", "goblins-test-resume-live"],
             env={**os.environ, "GOBLINS_APP": str(daemon.app), "GOBLINS_TEST_STATE": str(daemon.state),
                  "GOBLINS_TEST_RECORD": record["id"]},
             capture_output=True, text=True, timeout=120,
@@ -220,7 +226,7 @@ class EmacsTests(unittest.TestCase):
         peer, request = daemon.pending(ids["gamma"], "hello")
         self.addCleanup(peer.close)
         result = Path(projects.name) / "result"
-        argv = ["emacs", "-nw", "-Q", "-l", EMACS_INIT,
+        argv = [EMACS, EMACS_HOME, "-nw", "-Q", "-l", EMACS_INIT,
                 "-l", "goblins-tests",
                 "--eval", "(goblins-test-workspace-live)"]
         env = {**os.environ, "TERM": "xterm-256color",
@@ -250,7 +256,7 @@ class EmacsTests(unittest.TestCase):
         self.assertIsNotNone(status, "terminal Emacs timed out: " + screen.decode(errors="replace")[-2000:])
         self.assertTrue(result.exists(), screen.decode(errors="replace")[-2000:])
         ghostel = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval",
+            [EMACS, EMACS_HOME, "--batch", "-Q", "--eval",
              '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
             capture_output=True, timeout=10).returncode == 0
         # Attaching a terminal is covered whenever Ghostel is installed.
@@ -269,16 +275,18 @@ class EmacsTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         server_dir = Path(temp.name) / "server"
         server_dir.mkdir(mode=0o700)
-        # The daemon runs emacsclient against this test Emacs only.
-        daemon = Daemon(application, env={**os.environ,
-                                          "EMACS_SOCKET_NAME": str(server_dir / "goblins-test")})
+        # The daemon runs emacsclient against this test Emacs only, and the
+        # test Emacs's own emacsclient first.
+        client_env = {**os.environ, "EMACS_SOCKET_NAME": str(server_dir / "goblins-test")}
+        if os.path.dirname(EMACS):
+            client_env["PATH"] = os.path.dirname(EMACS) + os.pathsep + os.environ.get("PATH", "")
+        daemon = Daemon(application, env=client_env)
         self.addCleanup(daemon.close)
-        other = Daemon(application, env={**os.environ,
-                                          "EMACS_SOCKET_NAME": str(server_dir / "goblins-test")})
+        other = Daemon(application, env=client_env)
         self.addCleanup(other.close)
         other.start(name="plain", agent_name="gribble")
         result = Path(temp.name) / "result"
-        argv = ["emacs", "-nw", "-Q", "-l", EMACS_INIT,
+        argv = [EMACS, EMACS_HOME, "-nw", "-Q", "-l", EMACS_INIT,
                 "-l", "goblins-tests",
                 "--eval", "(goblins-test-tramp-live)"]
         env = {**os.environ, "TERM": "xterm-256color",
@@ -311,7 +319,7 @@ class EmacsTests(unittest.TestCase):
         self.assertIsNotNone(status, "terminal Emacs timed out: " + screen.decode(errors="replace")[-2000:])
         self.assertTrue(result.exists(), screen.decode(errors="replace")[-2000:])
         ghostel = subprocess.run(
-            ["emacs", "--batch", "-Q", "--eval",
+            [EMACS, EMACS_HOME, "--batch", "-Q", "--eval",
              '(kill-emacs (if (and (locate-library "ghostel") (locate-library "ghostel-module")) 0 1))'],
             capture_output=True, timeout=10).returncode == 0
         self.assertEqual(result.read_text(), "ok ghostel" if ghostel else "ok")
