@@ -8,6 +8,8 @@ emacs *args:
     goblins=$(nix build --no-link --print-out-paths .#dev-goblins)
     setup="(progn
       (add-to-list 'load-path \"{{justfile_directory()}}/emacs\")
+      ;; Never a stale .elc beside the checkout's sources.
+      (setq load-prefer-newer t)
       (setq goblins-executable \"$goblins/bin/goblins\")
       (let ((state (getenv \"GOBLINS_STATE_DIR\")))
         (when state (setq goblins-state-directory state)))
