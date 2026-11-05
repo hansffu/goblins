@@ -124,14 +124,17 @@ mode (evil-snipe's =t=, for example); other keys, such as a leader on =SPC=,
 work as usual.  Shell
 terminals opened with =t= are listed in their goblin's block (=› shell=, =› shell
 2=, marked =· exited= once their shell ends) until you kill their buffer;
-Eshell and Dired buffers are not listed.  Folds last for the Emacs session.
+Eshell and Dired buffers are not listed.
+
+Goblins start folded: a folded goblin keeps only its name line, its pending permission requests and its shells.  =TAB= on a goblin, or on any of its lines, unfolds it into the full block, and =TAB= again folds it; on a heading it folds or unfolds the group.  =S-TAB= cycles the whole sidebar as in Org: only the headings, then every goblin folded, then everything unfolded, forgetting single folds made with =TAB=.  =goblins-sidebar-initial-view= (=overview=, =contents= or =all=; default =contents=) sets where a sidebar starts.  Folds last while the sidebar lives: redraws and =g r= keep them, hiding and showing the sidebar keeps them, and leaving the workspace or showing another server's goblins starts over.
 
 | Key (also Evil motion state) | Action                                                   |
 |------------------------------+----------------------------------------------------------|
 | =j= / =k=                    | next / previous goblin, shell or group                   |
 | =n= / =N=                    | next / previous goblin waiting for a decision (unfolds groups) |
 | =RET=                        | goblin: show or attach; shell: show it; raid: open its page; directory: fold |
-| =TAB=                        | fold the group                                           |
+| =TAB=                        | fold or unfold the goblin or group                       |
+| =S-TAB=                      | cycle: headings only, goblins folded, everything unfolded |
 | =p=                          | permissions of the goblin: current request, history      |
 | =I=                          | info: everything the daemon knows about the goblin       |
 | =K=                          | stop the goblin (only it: no other goblin stops with it) |

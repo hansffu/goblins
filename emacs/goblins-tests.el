@@ -835,7 +835,9 @@ history, without a terminal; print the new goblin's ID."
           (with-current-buffer sidebar
             (goblins-sidebar-mode)
             (setq goblins--sidebar-source source
-                  goblins--directory (getenv "GOBLINS_TEST_STATE"))
+                  goblins--directory (getenv "GOBLINS_TEST_STATE")
+                  ;; The activity lines are a goblin's details.
+                  goblins--sidebar-view 'all)
             (goblins--sidebar-render))
           (dolist (state '("working" "waiting-input" "idle"))
             (should (= 0 (call-process (getenv "GOBLINS_APP") nil nil nil
@@ -877,7 +879,6 @@ history, without a terminal; print the new goblin's ID."
   (declare (indent 1))
   `(let ((source (generate-new-buffer " *goblins test source*"))
          (sidebar (generate-new-buffer " *goblins test sidebar*")))
-     (clrhash goblins--sidebar-folds)
      (unwind-protect
          (progn
            (with-current-buffer source
@@ -896,6 +897,11 @@ history, without a terminal; print the new goblin's ID."
          (with-current-buffer source (setq goblins--connection nil))
          (kill-buffer source))
        (kill-buffer sidebar))))
+
+(defun goblins-test--show-all ()
+  "Unfold every goblin of the sidebar, for tests about the full blocks."
+  (setq goblins--sidebar-view 'all)
+  (goblins--sidebar-render))
 
 (defconst goblins-test--raid-sessions
   (list (goblins-test--session "session-a" :cwd "/p/one"
@@ -939,6 +945,7 @@ history, without a terminal; print the new goblin's ID."
            (goblins-test--session "session-b" :cwd "/p"
                                   :raid '(:id "r1" :name "zeta")
                                   :created_by '(:agent_name "owner")))
+     (goblins-test--show-all)
      ;; The role is a line of its own under the name in parentheses; no role, no
      ;; line, and who created a goblin is not shown.
      (should (equal (goblins-test--sidebar-plain)
@@ -967,6 +974,7 @@ history, without a terminal; print the new goblin's ID."
                 (goblins-test--session "old" :cwd "/p" :name "claude"
                                        :state "stopped" :exit_code 1))))
     (goblins-test--sidebar sessions
+      (setq goblins--sidebar-view 'all)
       (with-current-buffer source
         (setq goblins--snapshot
               (plist-put goblins--snapshot :permissions
@@ -1004,6 +1012,7 @@ history, without a terminal; print the new goblin's ID."
       (list (goblins-test--session "chief" :cwd "/p" :agent_state "working" :inbox 1)
             (goblins-test--session "scout" :cwd "/p" :agent_state "idle")
             (goblins-test--session "beta" :cwd "/p"))
+    (goblins-test--show-all)
     (goto-char (point-min))
     (let ((stops nil))
       (while (progn (push (goblins--sidebar-key-at (point)) stops)
@@ -1072,6 +1081,7 @@ history, without a terminal; print the new goblin's ID."
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
                                (goblins-test--session "session-b" :cwd "/p"
                                                       :agent_state "idle"))
+    (goblins-test--show-all)
     (let ((terminal (generate-new-buffer " *goblins test terminal*")))
       (unwind-protect
           (save-window-excursion
@@ -1645,7 +1655,7 @@ keeps the parameters of windows that live on."
             (should (equal (funcall shown) "session-a"))
             ;; Even in a folded group.
             (with-current-buffer sidebar
-              (goblins--sidebar-set-collapsed '((dir nil "/q")))
+              (goblins--sidebar-toggle '(dir nil "/q"))
               (goblins--sidebar-render))
             (goblins-workspace-previous-waiting)
             (should (equal (funcall shown) "session-c"))
@@ -2145,6 +2155,7 @@ keeps the parameters of windows that live on."
   (goblins-test--sidebar
       (list (goblins-test--session "chief" :cwd "/p" :agent_state "idle" :inbox 2)
             (goblins-test--session "scout" :cwd "/p" :agent_state "idle"))
+    (goblins-test--show-all)
     (evil-local-mode 1)
     (unwind-protect
         (progn
@@ -2266,19 +2277,129 @@ keeps the parameters of windows that live on."
     (goblins--sidebar-render)
     (should (string-match-p "No running goblins" (buffer-string)))))
 
-(ert-deftest goblins-sidebar-folds-outlive-the-sidebar-buffer-but-not-emacs ()
-  (goblins-test--sidebar goblins-test--raid-sessions
+(defconst goblins-test--fold-sessions
+  (list (goblins-test--session "session-a" :cwd "/p" :agent_state "idle" :inbox 1
+                               :raid '(:id "r1" :name "zeta" :role "lead"))
+        (goblins-test--session "session-c" :cwd "/p" :agent_state "working"
+                               :raid '(:id "r1" :name "zeta"))
+        (goblins-test--session "session-b" :cwd "/q" :agent_state "idle")))
+
+(ert-deftest goblins-sidebar-folds-goblins-until-tab-unfolds-one ()
+  (goblins-test--sidebar goblins-test--fold-sessions
+    ;; By default each goblin keeps its name, its pending requests and its
+    ;; shells; headings stay open.
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n"
+                           "    ! hello (package)\n  ──\n    session-c (shell)\n"
+                           "\n▾ /q/\n  session-b (shell)\n")))
+    ;; TAB on a goblin unfolds it alone, and point stays on it.
+    (goto-char (point-min))
+    (re-search-forward "session-a")
+    (goblins-sidebar-fold)
+    (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n    (lead)\n"
+                           "    ○ idle\n    ! hello (package)\n    ✉ 1 message\n"
+                           "  ──\n    session-c (shell)\n"
+                           "\n▾ /q/\n  session-b (shell)\n")))
+    ;; TAB on one of its detail lines folds it again.
+    (re-search-forward "✉ 1 message")
+    (goblins-sidebar-fold)
+    (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+    (should-not (string-match-p "✉" (buffer-string)))
+    ;; TAB on a heading folds the group; point stays on the heading.
     (goto-char (point-min))
     (goblins-sidebar-fold)
-    (should (member '(raid "r0") (gethash "/tmp/goblins-test" goblins--sidebar-folds)))
-    ;; A new sidebar for the same server starts with the same folds.
-    (with-temp-buffer
-      (goblins-sidebar-mode)
-      (setq goblins--sidebar-source source goblins--directory "/tmp/goblins-test")
-      (goblins--sidebar-render)
-      (should (string-match-p "▸ raid alpha" (buffer-string))))
-    ;; They live only in this variable: nothing is written to disk.
-    (should-not (get 'goblins--sidebar-folds 'saved-value))))
+    (should (equal (get-text-property (point) 'goblins-group) '(raid "r1")))
+    (should (string-match-p "\\`▸ raid zeta !1\n▾ /q/" (goblins-test--sidebar-plain)))))
+
+(ert-deftest goblins-sidebar-cycles-views-like-org ()
+  (goblins-test--sidebar goblins-test--fold-sessions
+    (goto-char (point-min))
+    (re-search-forward "session-c")
+    (goblins-sidebar-fold)
+    (should (string-match-p "◐ working" (buffer-string)))
+    ;; Show all: every goblin unfolded; the TAB above is forgotten.
+    (goblins-sidebar-cycle)
+    (should (eq goblins--sidebar-view 'all))
+    (should-not goblins--sidebar-toggled)
+    (should (string-match-p "○ idle" (buffer-string)))
+    (should (string-match-p "◐ working" (buffer-string)))
+    ;; Overview: headings only, and point moves to the heading holding it.
+    (goblins-sidebar-cycle)
+    (should (equal (goblins-test--sidebar-plain) "▸ raid zeta !1\n▸ /q/\n"))
+    (should (equal (get-text-property (point) 'goblins-group) '(raid "r1")))
+    ;; TAB on a raid in the overview shows its directories, still folded.
+    (goblins-sidebar-fold)
+    (should (equal (goblins-test--sidebar-plain) "▾ raid zeta !1\n  ▸ /p/ !1\n▸ /q/\n"))
+    ;; Contents again: goblins folded, headings open.
+    (goblins-sidebar-cycle)
+    (should (eq goblins--sidebar-view 'contents))
+    (should (string-match-p "▾ /p/ !1\n    session-a (shell)\n    ! hello" (goblins-test--sidebar-plain)))
+    (should-not (string-match-p "◐ working" (buffer-string)))
+    (should (eq (key-binding (kbd "<backtab>")) #'goblins-sidebar-cycle))))
+
+(ert-deftest goblins-sidebar-folding-keeps-point-on-what-stays ()
+  (goblins-test--sidebar goblins-test--fold-sessions
+    (let ((shell (goblins-test--shell "session-a" 1)))
+      (unwind-protect
+          (progn
+            (goblins--sidebar-render)
+            ;; TAB on a shell unfolds its goblin and stays on the shell.
+            (goto-char (goblins--sidebar-find (cons 'terminal shell)))
+            (goblins-sidebar-fold)
+            (should (string-match-p "○ idle" (buffer-string)))
+            (should (eq (get-text-property (point) 'goblins-terminal) shell))
+            ;; A directory heading the overview hides gives way to its raid.
+            (goblins-sidebar-cycle)
+            (goto-char (goblins--sidebar-find '(group dir "r1" "/p")))
+            (goblins-sidebar-cycle)
+            (should (eq goblins--sidebar-view 'overview))
+            (should (equal (get-text-property (point) 'goblins-group) '(raid "r1"))))
+        (kill-buffer shell)))))
+
+(ert-deftest goblins-sidebar-starts-from-the-initial-view ()
+  (let ((goblins-sidebar-initial-view 'overview))
+    (goblins-test--sidebar goblins-test--fold-sessions
+      (should (equal (goblins-test--sidebar-plain) "▸ raid zeta !1\n▸ /q/\n"))
+      ;; n reaches a waiting goblin from the overview, opening its groups only.
+      (goto-char (point-min))
+      (goblins-sidebar-next-pending)
+      (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+      (should (equal (goblins-test--sidebar-plain)
+                     (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n"
+                             "    ! hello (package)\n  ──\n    session-c (shell)\n\n▸ /q/\n"))))))
+
+(ert-deftest goblins-sidebar-folds-last-until-the-workspace-quits ()
+  (goblins-test--sidebar goblins-test--fold-sessions
+    (goto-char (point-min))
+    (goblins-sidebar-cycle)
+    (goblins-sidebar-fold)
+    ;; Redraws, as g r and every new snapshot cause, keep them.
+    (goblins--sidebar-render)
+    (should (eq goblins--sidebar-view 'all))
+    (should (equal goblins--sidebar-toggled '((raid "r1"))))
+    ;; Showing the same server again keeps them; another server starts afresh.
+    (rename-buffer goblins--sidebar-buffer-name)
+    (should (eq (goblins--sidebar-buffer source) sidebar))
+    (should (eq goblins--sidebar-view 'all))
+    (let ((other (generate-new-buffer " *goblins test other source*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer other
+              (goblins-status-mode)
+              (setq goblins--directory "/tmp/goblins-other"))
+            (goblins--sidebar-buffer other)
+            (should (eq goblins--sidebar-view 'contents))
+            (should-not goblins--sidebar-toggled))
+        (kill-buffer other)))
+    ;; Quitting resets them even when the quit function keeps the buffer.
+    (goblins--sidebar-buffer source)
+    (goblins-sidebar-cycle)
+    (cl-letf (((symbol-function 'goblins--save-layout) #'ignore))
+      (let ((goblins-workspace-quit-function #'ignore))
+        (goblins-workspace-quit)))
+    (should (eq goblins--sidebar-view 'contents))))
 
 (ert-deftest goblins-sidebar-jumps-to-the-next-waiting-goblin ()
   (goblins-test--sidebar goblins-test--raid-sessions
@@ -3310,6 +3431,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
           (progn
             ;; Another daemon's shell with the same session ID is not listed.
             (with-current-buffer elsewhere (setq goblins--directory "/elsewhere"))
+            (setq goblins--sidebar-view 'all)
             (goblins--sidebar-render-all)
             (should (equal (goblins-test--sidebar-plain)
                            (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
