@@ -898,6 +898,14 @@ history, without a terminal; print the new goblin's ID."
          (kill-buffer source))
        (kill-buffer sidebar))))
 
+(defun goblins-test--row (left right)
+  "A folded goblin's line as `goblins-test--sidebar-plain' shows it in a
+sidebar of `goblins-sidebar-width' columns: LEFT, then RIGHT ending a column
+before the edge."
+  (concat left (make-string (- goblins-sidebar-width 1 (string-width left) (string-width right))
+                            ?\s)
+          right "\n"))
+
 (defun goblins-test--show-all ()
   "Unfold every goblin of the sidebar, for tests about the full blocks."
   (setq goblins--sidebar-view 'all)
@@ -915,15 +923,17 @@ history, without a terminal; print the new goblin's ID."
 
 (defun goblins-test--sidebar-plain ()
   "The sidebar's text, with each rule drawn as \"──\" after its indentation."
-  (let ((out nil))
+  (let ((out nil) (column 0))
     (dotimes (i (- (point-max) (point-min)))
       (let* ((pos (+ (point-min) i))
-             (display (get-text-property pos 'display)))
-        (push (cond ((get-text-property pos 'goblins-rule) "──")
-                    ((integerp (plist-get (cdr-safe display) :align-to))
-                     (make-string (plist-get (cdr display) :align-to) ?\s))
-                    (t (string (char-after pos))))
-              out)))
+             (display (get-text-property pos 'display))
+             (text (cond ((get-text-property pos 'goblins-rule) "──")
+                         ((integerp (plist-get (cdr-safe display) :align-to))
+                          (make-string (max 0 (- (plist-get (cdr display) :align-to) column))
+                                       ?\s))
+                         (t (string (char-after pos))))))
+        (setq column (if (equal text "\n") 0 (+ column (string-width text))))
+        (push text out)))
     (apply #'concat (nreverse out))))
 
 (ert-deftest goblins-sidebar-groups-by-raid-then-directory ()
@@ -931,11 +941,11 @@ history, without a terminal; print the new goblin's ID."
     ;; Raids first, then directories; a blank line before each group, and a
     ;; rule between goblins of a group.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ raid alpha\n  ▾ /p/two/\n    session-d (shell)\n"
-                           "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    session-a (shell)\n"
-                           "    ! hello (package)\n  ──\n    session-c (shell)\n"
-                           "\n▾ /p/two/\n  session-b (shell)\n"
-                           "\n▾ unknown\n  session-e (shell)\n")))))
+                   (concat "▾ raid alpha\n  ▾ /p/two/\n    › session-d\n"
+                           "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    › session-a\n"
+                           "    ! hello (package)\n    › session-c\n"
+                           "\n▾ /p/two/\n  › session-b\n"
+                           "\n▾ unknown\n  › session-e\n")))))
 
 (ert-deftest goblins-sidebar-shows-the-role-and-the-goblins-message-color ()
   (let ((goblins--goblin-colors (make-hash-table :test #'equal)))
@@ -946,11 +956,11 @@ history, without a terminal; print the new goblin's ID."
                                   :raid '(:id "r1" :name "zeta")
                                   :created_by '(:agent_name "owner")))
      (goblins-test--show-all)
-     ;; The role is a line of its own under the name in parentheses; no role, no
-     ;; line, and who created a goblin is not shown.
+     ;; The role follows the name in parentheses; no role, no parentheses,
+     ;; and who created a goblin is not shown.
      (should (equal (goblins-test--sidebar-plain)
-                    (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n    (reviewer)\n"
-                            "    ! hello (package)\n  ──\n    session-b (shell)\n")))
+                    (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    › session-a (reviewer)\n"
+                            "    ! hello (package)\n  ──\n    › session-b\n")))
      ;; The name wears the face the message list gives the same goblin.
      (dolist (id '("session-a" "session-b"))
        (goto-char (point-min))
@@ -987,12 +997,12 @@ history, without a terminal; print the new goblin's ID."
         (goblins--sidebar-render)
         ;; One rule before every goblin but the first, never two in a row.
         (should (equal (goblins-test--sidebar-plain)
-                       (concat "▾ /p/ !2\n  chief (claude)\n  ◐ working · 4m\n"
+                       (concat "▾ /p/ !2\n  › chief\n  ◐ working · 4m\n"
                                "  ! jq (package)\n  ✉ 2 messages\n  ⇄ 2 shells · Tramp connected\n"
-                               "──\n  scout (codex)\n  ◆ needs approval · 4m\n"
+                               "──\n  › scout\n  ◆ needs approval · 4m\n"
                                "  ! docker\n"
-                               "──\n  helper (shell)\n  ○ idle\n  ✉ 1 message\n"
-                               "──\n  beta (shell)\n  ◌ starting\n"
+                               "──\n  › helper\n  ○ idle\n  ✉ 1 message\n"
+                               "──\n  › beta\n  ◌ starting\n"
                                "──\n  ✗ old (claude) · exited 1\n")))
         ;; Every rule looks the same: no goblin nests under another.
         (should (equal (cl-loop for pos from (point-min) below (point-max)
@@ -1025,7 +1035,7 @@ history, without a terminal; print the new goblin's ID."
     (goblins-sidebar-previous)
     (let ((range (goblins--sidebar-selection)))
       (should (equal (buffer-substring-no-properties (car range) (cdr range))
-                     "  chief (shell)\n  ◐ working\n  ✉ 1 message\n")))
+                     "  › chief\n  ◐ working\n  ✉ 1 message\n")))
     ;; On a detail line, the goblin's commands still apply, and point
     ;; stays with its goblin across renders.
     (forward-line 1)
@@ -1111,7 +1121,7 @@ history, without a terminal; print the new goblin's ID."
               (should block)
               (should (equal (buffer-substring-no-properties (overlay-start block)
                                                              (overlay-end block))
-                             "  session-b (shell)\n  ○ idle\n"))
+                             "  › session-b\n  ○ idle\n"))
               (should (< (overlay-get block 'priority) hl-line-overlay-priority))
               (let ((bars (cl-remove-if-not (lambda (o) (equal (overlay-get o 'display) "▌"))
                                             (overlays-in (overlay-start block)
@@ -1898,9 +1908,142 @@ keeps the parameters of windows that live on."
                ((symbol-function 'goblins--display-main) #'ignore))
        ,@body)))
 
-(ert-deftest goblins-sidebar-shows-the-goblin-type-next-to-the-name ()
+(defmacro goblins-test--manifest (var json &rest body)
+  "Run BODY with VAR naming a temporary manifest file holding JSON."
+  (declare (indent 2))
+  `(let ((,var (make-temp-file "goblins-config" nil ".json" ,json))
+         (goblins--integrations (make-hash-table :test #'equal)))
+     (unwind-protect (progn ,@body) (delete-file ,var))))
+
+(ert-deftest goblins-integration-comes-from-the-configuration-file ()
+  (goblins-test--manifest file
+      "{\"api\":2,\"goblins\":{\"goblins-claude\":{\"integration\":\"claude\"},\"codex\":{\"integration\":\"codex\"},\"shell\":{\"integration\":null},\"plain\":{}}}"
+    (let ((of (lambda (name) (goblins--session-integration
+                              (list :configuration file :name name)))))
+      (should (equal (funcall of "goblins-claude") "claude"))
+      (should (equal (funcall of "codex") "codex"))
+      (should-not (funcall of "shell"))
+      (should-not (funcall of "plain"))
+      (should-not (funcall of "missing"))
+      ;; Read once: the configuration never changes.
+      (with-temp-file file (insert "{}"))
+      (should (equal (funcall of "goblins-claude") "claude"))))
+  (goblins-test--manifest file "{not json"
+    (should-not (goblins--session-integration (list :configuration file :name "x"))))
+  (should-not (goblins--session-integration
+               (list :configuration "/nonexistent/goblins-config.json" :name "x")))
+  (should-not (goblins--session-integration (list :configuration nil :name "x"))))
+
+(ert-deftest goblins-agent-icons-follow-the-integration ()
+  (goblins-test--manifest file
+      "{\"goblins\":{\"c\":{\"integration\":\"claude\"},\"x\":{\"integration\":\"codex\"},\"a\":{\"integration\":\"aider\"},\"s\":{}}}"
+    (let ((icon (lambda (name)
+                  (let ((icon (goblins--agent-icon (list :configuration file :name name))))
+                    (cons (substring-no-properties (car icon)) (cdr icon))))))
+      ;; Without images, each icon is its text, with its width.
+      (should (equal (funcall icon "c") '("✻" . 1)))
+      (should (equal (funcall icon "x") '("◎" . 1)))
+      (should (equal (funcall icon "a") '("›" . 1)))
+      (should (equal (funcall icon "s") '("›" . 1)))
+      ;; Users add their own.
+      (let ((goblins-agent-icons (cons '("aider" :text "AI" :color "red") goblins-agent-icons)))
+        (should (equal (funcall icon "a") '("AI" . 2)))
+        (should (equal (get-text-property 0 'face (car (goblins--agent-icon
+                                                        (list :configuration file :name "a"))))
+                       '(:foreground "red")))))))
+
+(ert-deftest goblins-icons-fall-back-to-text-unless-the-svg-can-be-made ()
+  (let ((goblins--icon-images (make-hash-table :test #'equal))
+        (spec '(:svg "terminal.svg" :color "red" :text "›"))
+        made)
+    (should (file-readable-p (expand-file-name "terminal.svg" goblins--icons-directory)))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
+              ((symbol-function 'image-type-available-p) (lambda (_) t))
+              ((symbol-function 'create-image)
+               (lambda (file &rest props) (setq made (cons file props)) (list 'image :file file))))
+      (let ((icon (goblins--icon spec)))
+        (should (equal (cdr icon) 2))
+        (should (equal (get-text-property 0 'display (car icon))
+                       (list 'image :file (expand-file-name "terminal.svg"
+                                                            goblins--icons-directory))))
+        ;; Sized to the line, at most two columns wide, unscaled, in its colour.
+        (should (eq (cadr made) 'svg))
+        (should (equal (plist-get (cdddr made) :height) (frame-char-height)))
+        (should (equal (plist-get (cdddr made) :max-width) (* 2 (frame-char-width))))
+        (should (equal (plist-get (cdddr made) :scale) 1))
+        (should (equal (plist-get (cdddr made) :foreground) "red")))
+      ;; Made once per file, colour and size.
+      (setq made nil)
+      (goblins--icon spec)
+      (should-not made)
+      ;; A missing file shows the text.
+      (should (equal (substring-no-properties (car (goblins--icon '(:svg "missing.svg" :text "?"))))
+                     "?")))
+    (dolist (failure (list (lambda (&rest _) nil) (lambda (&rest _) (error "Bad SVG"))))
+      (clrhash goblins--icon-images)
+      (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
+                ((symbol-function 'image-type-available-p) (lambda (_) t))
+                ((symbol-function 'create-image) failure))
+        (should (equal (substring-no-properties (car (goblins--icon spec))) "›"))))
+    ;; A face gives its foreground.
+    (make-face 'goblins-test-red)
+    (set-face-foreground 'goblins-test-red "red")
+    (should (equal (goblins--icon-color 'goblins-test-red) "red"))
+    (should (equal (goblins--icon-color "blue") "blue"))))
+
+(ert-deftest goblins-sidebar-fits-the-name-beside-the-badges ()
+  (should (equal (goblins--sidebar-fit "brakka" "builder" 20) '("brakka" "builder")))
+  ;; The role is cut, then dropped, then the name is cut.
+  (should (equal (goblins--sidebar-fit "brakka" "builder" 14) '("brakka" "buil…")))
+  (should (equal (goblins--sidebar-fit "brakka" "builder" 10) '("brakka" nil)))
+  (should (equal (goblins--sidebar-fit "architecture" nil 8) '("archite…" nil)))
+  (should-not (goblins--sidebar-fit "architecture" nil 3))
+  (let ((session (goblins-test--session "a-very-long-goblin-name" :agent_state "idle"
+                                        :raid '(:id "r" :name "r" :role "reviewer"))))
+    (dolist (columns '(20 34 50))
+      (let* ((goblins--sidebar-columns columns)
+             (line (goblins--sidebar-name-line session 4 "✉123 ○")))
+        (with-temp-buffer
+          (insert "    " line "\n")
+          (let ((plain (goblins-test--sidebar-plain)))
+            ;; Never wider than the sidebar, keeping its last column free.
+            (should (= (string-width (string-trim-right plain "\n")) (1- columns)))
+            (pcase columns
+              (20 (should (string-match-p "\\`    › a-ver… +✉123 ○\n\\'" plain)))
+              (34 (should (string-match-p "\\`    › a-very-long-goblin-… ✉123 ○\n\\'" plain)))
+              (50 (should (string-match-p "(reviewer) +✉123 ○\n\\'" plain)))))))))
+  ;; Without room for even four columns of the name, the badges go, and the
+  ;; name is cut to what is left, down to nothing.
+  (dolist (case '((14 "    › a-long…\n") (10 "    › a-…\n") (7 "    › \n") (4 "    › \n")))
+    (with-temp-buffer
+      (let ((goblins--sidebar-columns (car case)))
+        (insert "    " (goblins--sidebar-name-line (goblins-test--session "a-long-name") 4
+                                                  "✉123 ○")
+                "\n"))
+      (should (equal (goblins-test--sidebar-plain) (cadr case)))))
+  ;; A wider icon takes its own width from the name, in a GUI's two-column
+  ;; image slot as in a wide text glyph.
+  (dolist (icon '((:text "XX") (:svg "terminal.svg" :text "›")))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
+              ((symbol-function 'image-type-available-p) (lambda (_) t))
+              ((symbol-function 'create-image) (lambda (&rest _) '(image))))
+      (let ((goblins-agent-icons (list (cons t icon)))
+            (goblins--icon-images (make-hash-table :test #'equal)))
+        (with-temp-buffer
+          (let ((goblins--sidebar-columns 20))
+            (insert "    " (goblins--sidebar-name-line
+                            (goblins-test--session "a-very-long-goblin-name") 4 nil)
+                    "\n"))
+          ;; The name starts after the icon's slot, aligned, so the line
+          ;; keeps the sidebar's last column free.
+          (should (= (string-width (string-trim-right (goblins-test--sidebar-plain) "\n"))
+                     19)))))))
+
+(ert-deftest goblins-sidebar-shows-the-agent-icon-not-the-configuration ()
   (goblins-test--raid-sidebar
-    (should (string-match-p "session-a (shell)" (buffer-string)))))
+    ;; Without images the icon is its text: › for an unknown integration.
+    (should (string-match-p "› session-a\n" (buffer-string)))
+    (should-not (string-match-p "(shell)" (buffer-string)))))
 
 (ert-deftest goblins-sidebar-ret-on-a-raid-opens-its-page ()
   (goblins-test--raid-sidebar
@@ -2164,9 +2307,9 @@ keeps the parameters of windows that live on."
           (beginning-of-line)
           ;; Down passes chief's detail lines and the rule, as j does.
           (call-interactively (key-binding (kbd "<down>")))
-          (should (looking-at-p "\\s-*scout"))
+          (should (looking-at-p "\\s-*› scout"))
           (call-interactively (key-binding (kbd "<up>")))
-          (should (looking-at-p "\\s-*chief")))
+          (should (looking-at-p "\\s-*› chief")))
       (evil-local-mode -1))))
 
 (ert-deftest goblins-sidebar-keys-follow-the-raid-bindings ()
@@ -2289,24 +2432,28 @@ keeps the parameters of windows that live on."
     ;; By default each goblin keeps its name, its pending requests and its
     ;; shells; headings stay open.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n"
-                           "    ! hello (package)\n  ──\n    session-c (shell)\n"
-                           "\n▾ /q/\n  session-b (shell)\n")))
+                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n"
+                           (goblins-test--row "    › session-a (lead)" "✉1 ○")
+                           "    ! hello (package)\n"
+                           (goblins-test--row "    › session-c" "◐")
+                           "\n▾ /q/\n"
+                           (goblins-test--row "  › session-b" "○"))))
     ;; TAB on a goblin unfolds it alone, and point stays on it.
     (goto-char (point-min))
     (re-search-forward "session-a")
     (goblins-sidebar-fold)
     (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+    ;; Rules mark where its block starts and ends.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n    (lead)\n"
+                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    › session-a (lead)\n"
                            "    ○ idle\n    ! hello (package)\n    ✉ 1 message\n"
-                           "  ──\n    session-c (shell)\n"
-                           "\n▾ /q/\n  session-b (shell)\n")))
+                           "  ──\n" (goblins-test--row "    › session-c" "◐")
+                           "\n▾ /q/\n" (goblins-test--row "  › session-b" "○"))))
     ;; TAB on one of its detail lines folds it again.
     (re-search-forward "✉ 1 message")
     (goblins-sidebar-fold)
     (should (equal (get-text-property (point) 'goblins-id) "session-a"))
-    (should-not (string-match-p "✉" (buffer-string)))
+    (should-not (string-match-p "✉ 1 message" (buffer-string)))
     ;; TAB on a heading folds the group; point stays on the heading.
     (goto-char (point-min))
     (goblins-sidebar-fold)
@@ -2335,7 +2482,8 @@ keeps the parameters of windows that live on."
     ;; Contents again: goblins folded, headings open.
     (goblins-sidebar-cycle)
     (should (eq goblins--sidebar-view 'contents))
-    (should (string-match-p "▾ /p/ !1\n    session-a (shell)\n    ! hello" (goblins-test--sidebar-plain)))
+    (should (string-match-p "▾ /p/ !1\n    › session-a (lead) +✉1 ○\n    ! hello"
+                            (goblins-test--sidebar-plain)))
     (should-not (string-match-p "◐ working" (buffer-string)))
     (should (eq (key-binding (kbd "<backtab>")) #'goblins-sidebar-cycle))))
 
@@ -2367,8 +2515,11 @@ keeps the parameters of windows that live on."
       (goblins-sidebar-next-pending)
       (should (equal (get-text-property (point) 'goblins-id) "session-a"))
       (should (equal (goblins-test--sidebar-plain)
-                     (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n"
-                             "    ! hello (package)\n  ──\n    session-c (shell)\n\n▸ /q/\n"))))))
+                     (concat "▾ raid zeta !1\n  ▾ /p/ !1\n"
+                             (goblins-test--row "    › session-a (lead)" "✉1 ○")
+                             "    ! hello (package)\n"
+                             (goblins-test--row "    › session-c" "◐")
+                             "\n▸ /q/\n"))))))
 
 (ert-deftest goblins-sidebar-folds-last-until-the-workspace-quits ()
   (goblins-test--sidebar goblins-test--fold-sessions
@@ -3055,14 +3206,15 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (should (window-parameter (get-buffer-window sidebar) 'window-side))
     ;; The main window shows the status buffer: no goblin terminal yet.
     (should (eq (window-buffer (goblins--main-window)) source))
-    (goblins-test--wait (lambda () (string-match-p "gamma (shell)\n  ! hello (package)"
+    (goblins-test--wait (lambda () (string-match-p "› gamma.*\n  ! hello (package)"
                                                    (goblins-test--sidebar-text))))
     (let ((text (goblins-test--sidebar-text)))
-      ;; A rule (blank in plain text) parts the goblins of a directory.
-      (should (string-match-p (concat (regexp-quote project-one) "\n  alpha (shell)\n +\n  beta (shell)")
+      ;; Folded goblins are a line each, with their agent's icon (text in a
+      ;; terminal) before the name.
+      (should (string-match-p (concat (regexp-quote project-one) "\n  › alpha.*\n  › beta")
                               text))
       ;; The directory of the waiting goblin carries its count too.
-      (should (string-match-p "/ !1\n  delta (shell)\n +\n  gamma (shell)\n  ! hello (package)\n"
+      (should (string-match-p "/ !1\n  › delta.*\n  › gamma.*\n  ! hello (package)\n"
                               text)))
     ;; Selecting the waiting goblin pops up its request at the bottom.
     (goblins-select-goblin source (plist-get (goblins-test--live-session source "gamma") :id))
@@ -3075,7 +3227,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     ;; n finds the waiting goblin, p shows its request focused, d denies it.
     (goblins-test--in-sidebar)
     (goblins-sidebar-next-pending)
-    (should (looking-at-p "  gamma"))
+    (should (looking-at-p "  › gamma"))
     (goblins-sidebar-permissions)
     ;; Views open right of the status buffer, which holds the agent's place.
     (should (eq (window-buffer (goblins--main-window)) source))
@@ -3089,7 +3241,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     ;; Decided: the popup is gone.
     (should-not (get-buffer-window goblins--popup-buffer-name))
     ;; I shows the goblin's info.
-    (goblins-test--in-sidebar "^  alpha")
+    (goblins-test--in-sidebar "^  › alpha")
     (goblins-sidebar-info)
     (with-current-buffer (window-buffer (goblins--right-window))
       (should (string-match-p (concat "Directory +" (regexp-quote (directory-file-name project-one)))
@@ -3104,7 +3256,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (call-interactively (key-binding "q"))
     (should (equal (mapcar #'window-buffer (goblins--main-windows)) (list source)))
     ;; r creates a raid around alpha and opens its page.
-    (goblins-test--in-sidebar "^  alpha")
+    (goblins-test--in-sidebar "^  › alpha")
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
       (goblins-raid))
     (setq page (get-buffer goblins--raid-buffer-name))
@@ -3130,14 +3282,14 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (goblins-test--wait (lambda () (string-match-p "Members (1)" (buffer-string)))))
     ;; i in the sidebar invites beta again, choosing the raid.
     (goblins-test--wait (lambda () (string-match-p "raid crew" (goblins-test--sidebar-text))))
-    (goblins-test--in-sidebar "^  beta")
+    (goblins-test--in-sidebar "^  › beta")
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
       (goblins-sidebar-invite))
     (goblins-test--wait
      (lambda () (equal (plist-get (plist-get (goblins-test--live-session source "beta") :raid) :name)
                        "crew")))
     ;; K stops delta, which then leaves the sidebar.
-    (goblins-test--in-sidebar "^  delta")
+    (goblins-test--in-sidebar "^  › delta")
     (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
       (goblins-sidebar-stop))
     (goblins-test--wait (lambda () (not (string-match-p "delta" (goblins-test--sidebar-text)))))
@@ -3165,7 +3317,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
           (should (derived-mode-p 'ghostel-mode))
           (should goblins-goblin-mode)
           (should (eq (key-binding (kbd "C-c g p")) #'goblins-permissions)))
-        (goblins-test--in-sidebar "^  alpha")
+        (goblins-test--in-sidebar "^  › alpha")
         (should (overlays-at (point)))
         (kill-buffer terminal)
         (setq ghostel-used t)))
@@ -3434,9 +3586,9 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
             (setq goblins--sidebar-view 'all)
             (goblins--sidebar-render-all)
             (should (equal (goblins-test--sidebar-plain)
-                           (concat "▾ /p/ !1\n  session-a (shell)\n  ! hello (package)\n"
+                           (concat "▾ /p/ !1\n  › session-a\n  ! hello (package)\n"
                                    "  ⇄ Tramp connected\n  › shell\n  › shell 2 · exited\n"
-                                   "──\n  session-b (shell)\n")))
+                                   "──\n  › session-b\n")))
             (should (eq (goblins-tramp--shell-number "/tmp/goblins-test" "session-a") 3))
             ;; Movement stops on shells; the goblin's commands apply there too.
             (goto-char (point-min))

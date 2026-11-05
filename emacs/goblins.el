@@ -391,6 +391,99 @@ Goblins take them in order of first appearance."
                                 goblins--goblin-colors))))
         (list (nth (mod index (length faces)) faces) 'bold)))))
 
+(defconst goblins--icons-directory
+  (expand-file-name "icons" (file-name-directory
+                             (file-truename (or load-file-name buffer-file-name))))
+  "The icons shipped with Goblins.")
+
+(defcustom goblins-agent-icons
+  '(("claude" :svg "claude.svg" :color "#D97757" :text "✻")
+    ("codex" :svg "codex.svg" :color "#7A9DFF" :text "◎")
+    (t :svg "terminal.svg" :color goblins-dim :text "›"))
+  "Icons for goblins, keyed by their configuration's integration.
+Each entry is (INTEGRATION . PLIST), where INTEGRATION is the
+\"integration\" of the goblin's configuration, such as \"claude\", and the t
+entry is for every other goblin.  :svg is an SVG file, relative to the icons
+shipped with Goblins or absolute, drawn at line height; :color, a colour or a
+face, colours a single-colour SVG (its currentColor) and :text; :text is
+shown where Emacs cannot draw the SVG.  A broken SVG file shows as Emacs's
+empty image."
+  :type '(alist :key-type (choice string (const :tag "Any other" t))
+                :value-type (plist :options ((:svg file) (:color (choice color face))
+                                             (:text string))))
+  :group 'goblins)
+
+(defvar goblins--integrations (make-hash-table :test #'equal)
+  "(CONFIGURATION . NAME) to that configuration's integration, or nil.")
+
+(defun goblins--read-integration (file name)
+  "The integration of configuration NAME in the manifest FILE, or nil."
+  (condition-case nil
+      (with-temp-buffer
+        (insert-file-contents file)
+        (let* ((manifest (json-parse-buffer :object-type 'hash-table :null-object nil))
+               (goblin (gethash name (gethash "goblins" manifest)))
+               (integration (gethash "integration" goblin)))
+          (and (stringp integration) integration)))
+    (error nil)))
+
+(defun goblins--session-integration (session)
+  "The integration of SESSION's configuration, such as \"claude\", or nil.
+It is read from the configuration's manifest once per Emacs session: a
+configuration lives in the Nix store and never changes."
+  (let ((file (plist-get session :configuration))
+        (name (plist-get session :name)))
+    (when (and (stringp file) (stringp name) (file-name-absolute-p file)
+               (not (file-remote-p file)))
+      (let* ((key (cons file name))
+             (known (gethash key goblins--integrations 'unread)))
+        (if (eq known 'unread)
+            (puthash key (goblins--read-integration file name) goblins--integrations)
+          known)))))
+
+(defvar goblins--icon-images (make-hash-table :test #'equal)
+  "Icon images by file, colour and the pixel sizes they were made for.")
+
+(defun goblins--icon-color (color)
+  "COLOR, a colour name or a face, as a colour name, or nil."
+  (cond ((stringp color) color)
+        ((and color (symbolp color) (facep color)) (face-foreground color nil t))))
+
+(defun goblins--icon-image (file color)
+  "An image of the SVG FILE in COLOR, as big as a character is high and at
+most two wide, or nil where it cannot be drawn."
+  (when (and file (display-images-p) (image-type-available-p 'svg))
+    (let* ((file (expand-file-name file goblins--icons-directory))
+           (height (frame-char-height))
+           (width (* 2 (frame-char-width)))
+           (key (list file color height width)))
+      (or (gethash key goblins--icon-images)
+          (when-let* (((file-readable-p file))
+                      (image (ignore-errors
+                               (apply #'create-image file 'svg nil
+                                      :height height :max-height height :max-width width
+                                      :scale 1 :ascent 'center
+                                      (and color (list :foreground color))))))
+            (puthash key image goblins--icon-images))))))
+
+(defun goblins--icon (spec)
+  "The icon of SPEC, a plist like those of `goblins-agent-icons', as
+\(STRING . COLUMNS): its SVG where Emacs can draw it, at most two columns
+wide, else its text."
+  (let* ((color (goblins--icon-color (plist-get spec :color)))
+         (image (goblins--icon-image (plist-get spec :svg) color))
+         (text (or (plist-get spec :text) " ")))
+    (if image
+        (cons (propertize "*" 'display image) 2)
+      (cons (propertize text 'face (and color (list :foreground color)))
+            (max 1 (string-width text))))))
+
+(defun goblins--agent-icon (session)
+  "The icon of SESSION's agent, from `goblins-agent-icons', as
+\(STRING . COLUMNS)."
+  (goblins--icon (cdr (or (assoc (goblins--session-integration session) goblins-agent-icons)
+                          (assq t goblins-agent-icons)))))
+
 (defun goblins--created-by (session)
   "The name of the raid owner that ran SESSION, or nil if the host started it."
   (let ((creator (plist-get session :created_by)))

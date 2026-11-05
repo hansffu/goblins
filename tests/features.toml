@@ -110,7 +110,7 @@ paths = ["packages/daemon/src/tui.rs", "packages/daemon/src/plain.rs", "packages
 description = "Live Emacs integration and the complete fast ERT suite"
 python = ["test_emacs"]
 checks = ["rust", "emacs"]
-paths = ["emacs/*.el", "tests/emacs-init.el"]
+paths = ["emacs/*.el", "emacs/icons/*", "tests/emacs-init.el"]
 
 [features.infrastructure]
 description = "Test selection, scheduler, fixture ownership and routing checks"
