@@ -1164,6 +1164,8 @@ On a raid, show those sent within it."
   (evil-define-key* 'motion goblins-sidebar-mode-map
     (kbd "j") #'goblins-sidebar-next
     (kbd "k") #'goblins-sidebar-previous
+    (kbd "<down>") #'goblins-sidebar-next
+    (kbd "<up>") #'goblins-sidebar-previous
     (kbd "RET") #'goblins-sidebar-dwim
     (kbd "p") #'goblins-sidebar-permissions
     (kbd "i") #'goblins-sidebar-invite

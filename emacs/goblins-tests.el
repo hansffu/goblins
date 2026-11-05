@@ -2140,6 +2140,24 @@ keeps the parameters of windows that live on."
     (should (eq (key-binding "gr") #'goblins-sidebar-refresh))
     (evil-local-mode -1)))
 
+(ert-deftest goblins-sidebar-arrows-move-like-j-and-k-under-evil ()
+  (skip-unless (require 'evil nil t))
+  (goblins-test--sidebar
+      (list (goblins-test--session "chief" :cwd "/p" :agent_state "idle" :inbox 2)
+            (goblins-test--session "scout" :cwd "/p" :agent_state "idle"))
+    (evil-local-mode 1)
+    (unwind-protect
+        (progn
+          (goto-char (point-min))
+          (search-forward "chief")
+          (beginning-of-line)
+          ;; Down passes chief's detail lines and the rule, as j does.
+          (call-interactively (key-binding (kbd "<down>")))
+          (should (looking-at-p "\\s-*scout"))
+          (call-interactively (key-binding (kbd "<up>")))
+          (should (looking-at-p "\\s-*chief")))
+      (evil-local-mode -1))))
+
 (ert-deftest goblins-sidebar-keys-follow-the-raid-bindings ()
   (with-temp-buffer
     (goblins-sidebar-mode)
