@@ -2088,7 +2088,7 @@ project's root, a directory inside it and a directory in no project."
                                                             goblins--icons-directory))))
         ;; Sized to the line, at most two columns wide, unscaled, in its colour.
         (should (eq (cadr made) 'svg))
-        (should (equal (plist-get (cdddr made) :height) (frame-char-height)))
+        (should (equal (plist-get (cdddr made) :height) (round (* 0.8 (frame-char-height)))))
         (should (equal (plist-get (cdddr made) :max-width) (* 2 (frame-char-width))))
         (should (equal (plist-get (cdddr made) :scale) 1))
         (should (equal (plist-get (cdddr made) :foreground) "red")))

@@ -450,11 +450,12 @@ configuration lives in the Nix store and never changes."
         ((and color (symbolp color) (facep color)) (face-foreground color nil t))))
 
 (defun goblins--icon-image (file color)
-  "An image of the SVG FILE in COLOR, as big as a character is high and at
+  "An image of the SVG FILE in COLOR, four fifths as high as a character and at
 most two wide, or nil where it cannot be drawn."
   (when (and file (display-images-p) (image-type-available-p 'svg))
     (let* ((file (expand-file-name file goblins--icons-directory))
-           (height (frame-char-height))
+           ;; A little under the line height, so rows keep some air.
+           (height (round (* 0.8 (frame-char-height))))
            (width (* 2 (frame-char-width)))
            (key (list file color height width)))
       (or (gethash key goblins--icon-images)
