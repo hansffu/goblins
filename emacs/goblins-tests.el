@@ -937,10 +937,12 @@ history, without a terminal; print the new goblin's ID."
      (list (goblins-test--session "session-a" :cwd "/p"
                                   :raid '(:id "r1" :name "zeta" :role "reviewer"))
            (goblins-test--session "session-b" :cwd "/p"
-                                  :raid '(:id "r1" :name "zeta")))
-     ;; The role is a line of its own under the name; no role, no line.
+                                  :raid '(:id "r1" :name "zeta")
+                                  :created_by '(:agent_name "owner")))
+     ;; The role is a line of its own under the name in parentheses; no role, no
+     ;; line, and who created a goblin is not shown.
      (should (equal (goblins-test--sidebar-plain)
-                    (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n    reviewer\n"
+                    (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    session-a (shell)\n    (reviewer)\n"
                             "    ! hello (package)\n  ──\n    session-b (shell)\n")))
      ;; The name wears the face the message list gives the same goblin.
      (dolist (id '("session-a" "session-b"))

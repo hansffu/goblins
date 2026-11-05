@@ -295,8 +295,7 @@ SHELLS are its shell buffers the sidebar lists."
 (defun goblins--sidebar-insert-goblin (session depth group-key permissions shells &optional rule)
   "Insert the block of SESSION's goblin at DEPTH.
 A RULE face draws a separator above it.  The block is the goblin's name, its
-activity, the raid owner that created it, pending requests and queued
-messages, then its SHELLS; only the name and the shells are stops for
+role, its activity, pending requests and queued messages, then its SHELLS; only the name and the shells are stops for
 movement."
   (let* ((id (plist-get session :id))
          (finished (goblins--sidebar-finished-p session))
@@ -323,11 +322,8 @@ movement."
                                    ((listp raid))
                                    (role (plist-get raid :role))
                                    ((stringp role)))
-                         (propertize (goblins--safe role) 'face 'goblins-key))
+                         (propertize (format "(%s)" (goblins--safe role)) 'face 'goblins-dim))
                       ,(goblins--sidebar-status session)
-                      ,(when-let* ((creator (goblins--created-by session)))
-                         (propertize (format "created by %s" (goblins--safe creator))
-                                     'face 'goblins-dim))
                       ,@(mapcar #'goblins--sidebar-permission-line requests)
                       ,(goblins--sidebar-inbox-line session)))
         (when line (goblins--sidebar-insert-detail depth id group-key line))))
