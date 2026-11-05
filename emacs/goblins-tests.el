@@ -941,9 +941,10 @@ before the edge."
     ;; Raids first, then directories; a blank line before each group, and a
     ;; rule between goblins of a group.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ raid alpha\n  ▾ /p/two/\n    › session-d\n"
-                           "\n▾ raid zeta !1\n  ▾ /p/one/ !1\n    › session-a\n"
-                           "    ! hello (package)\n    › session-c\n"
+                   ;; A raid in one directory has one heading for both.
+                   (concat "▾ ⚔ alpha · /p/two/\n  › session-d\n"
+                           "\n▾ ⚔ zeta · /p/one/ !1\n  › session-a\n"
+                           "  ! hello (package)\n  › session-c\n"
                            "\n▾ /p/two/\n  › session-b\n"
                            "\n▾ unknown\n  › session-e\n")))))
 
@@ -959,8 +960,8 @@ before the edge."
      ;; The role follows the name in parentheses; no role, no parentheses,
      ;; and who created a goblin is not shown.
      (should (equal (goblins-test--sidebar-plain)
-                    (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    › session-a (reviewer)\n"
-                            "    ! hello (package)\n  ──\n    › session-b\n")))
+                    (concat "▾ ⚔ zeta · /p/ !1\n  › session-a (reviewer)\n"
+                            "  ! hello (package)\n──\n  › session-b\n")))
      ;; The name wears the face the message list gives the same goblin.
      (dolist (id '("session-a" "session-b"))
        (goto-char (point-min))
@@ -1050,10 +1051,11 @@ before the edge."
   (goblins-test--sidebar goblins-test--raid-sessions
     (should buffer-read-only)
     (goto-char (point-min))
-    (goblins-sidebar-next)
-    (should (get-text-property (point) 'goblins-group))
+    (should (equal (get-text-property (point) 'goblins-group) '(raid "r0")))
     (goblins-sidebar-next)
     (should (equal (get-text-property (point) 'goblins-id) "session-d"))
+    (goblins-sidebar-next)
+    (should (equal (get-text-property (point) 'goblins-group) '(raid "r1")))
     (goblins-sidebar-previous)
     (goblins-sidebar-previous)
     (should (equal (get-text-property (point) 'goblins-group) '(raid "r0")))
@@ -1063,7 +1065,7 @@ before the edge."
     (should (eq (key-binding (kbd "RET")) #'goblins-sidebar-dwim))
     (goblins-sidebar-fold)
     (should-not (string-match-p "session-d" (buffer-string)))
-    (should (string-match-p "▸ raid alpha" (buffer-string)))
+    (should (string-match-p "▸ ⚔ alpha" (buffer-string)))
     ;; Folds survive re-renders, and point stays on the same line.
     (goblins--sidebar-render)
     (should-not (string-match-p "session-d" (buffer-string)))
@@ -1863,6 +1865,123 @@ keeps the parameters of windows that live on."
         (goblins-sidebar-next 3)
         (should-error (goblins-sidebar-run) :type 'user-error)))))
 
+(defmacro goblins-test--projects (vars &rest body)
+  "Run BODY with VARS, (ROOT INSIDE PLAIN), bound to real directories: a
+project's root, a directory inside it and a directory in no project."
+  (declare (indent 1))
+  `(let* ((base (file-name-as-directory (make-temp-file "goblins-projects" t)))
+          (,(nth 0 vars) (expand-file-name "goblins" base))
+          (,(nth 1 vars) (expand-file-name "goblins/emacs" base))
+          (,(nth 2 vars) (expand-file-name "plain" base))
+          (project-find-functions
+           (list (lambda (dir)
+                   (let ((root (file-name-as-directory ,(nth 0 vars))))
+                     (and (string-prefix-p root (file-name-as-directory (expand-file-name dir)))
+                          (cons 'transient root))))))
+          (goblins-sidebar-width 80))
+     (make-directory ,(nth 1 vars) t)
+     (make-directory ,(nth 2 vars) t)
+     (clrhash goblins--sidebar-projects)
+     (unwind-protect (progn ,@body)
+       (clrhash goblins--sidebar-projects)
+       (delete-directory base t))))
+
+(ert-deftest goblins-sidebar-names-projects-on-directory-headings ()
+  (goblins-test--projects (root inside plain)
+    (goblins-test--sidebar
+        (list (goblins-test--session "session-a" :cwd root)
+              (goblins-test--session "session-b" :cwd inside)
+              (goblins-test--session "session-c" :cwd plain))
+      (let ((text (goblins-test--sidebar-plain)))
+        ;; A project's root and a directory inside it show the project's
+        ;; name and their own path; another directory keeps its path.
+        (should (string-match-p (concat "^▾ goblins (" (regexp-quote (abbreviate-file-name root))
+                                        ") !1$")
+                                text))
+        (should (string-match-p (concat "^▾ goblins (" (regexp-quote (abbreviate-file-name inside))
+                                        ")$")
+                                text))
+        (should (string-match-p (concat "^▾ " (regexp-quote (abbreviate-file-name plain)) "/$")
+                                text)))
+      (goto-char (point-min))
+      (search-forward "▾ goblins")
+      (should (eq (get-text-property (1- (point)) 'face) 'goblins-sidebar-project))
+      (should (equal (get-text-property (point) 'help-echo) root))
+      (search-forward (abbreviate-file-name plain))
+      (should (eq (get-text-property (1- (point)) 'face) 'goblins-sidebar-directory))
+      ;; In a narrow sidebar the path is cut, then dropped.
+      (let ((goblins--sidebar-columns 22))
+        (should (equal (substring-no-properties (goblins--sidebar-directory-label root 18))
+                       (concat "goblins (" (truncate-string-to-width
+                                            (abbreviate-file-name root) 8 nil nil "…")
+                               ")")))
+        (should (equal (substring-no-properties (goblins--sidebar-directory-label root 9))
+                       "goblins"))))))
+
+(ert-deftest goblins-sidebar-merges-a-raid-in-one-project ()
+  (goblins-test--projects (root inside _plain)
+    (goblins-test--sidebar
+        (list (goblins-test--session "session-a" :cwd root :raid '(:id "r1" :name "crew"))
+              (goblins-test--session "session-b" :cwd root :raid '(:id "r1" :name "crew"))
+              (goblins-test--session "session-c" :cwd root :raid '(:id "r2" :name "split"))
+              (goblins-test--session "session-d" :cwd inside :raid '(:id "r2" :name "split")))
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :raids [(:id "r1" :name "crew" :paused t)])))
+      (goblins--sidebar-render)
+      (should (equal (goblins-test--sidebar-plain)
+                     (concat "▾ ⚔ crew · paused · goblins !1\n  › session-a\n"
+                             "  ! hello (package)\n  › session-b\n"
+                             "\n▾ ⚔ split\n  ▾ goblins (" (abbreviate-file-name root) ")\n"
+                             "    › session-c\n"
+                             "\n  ▾ goblins (" (abbreviate-file-name inside) ")\n"
+                             "    › session-d\n")))
+      ;; The merged heading is the raid's: RET opens its page, TAB folds the
+      ;; raid, and c runs a goblin in its directory.
+      (goto-char (point-min))
+      (should (equal (get-text-property (point) 'goblins-raid) "crew"))
+      (should (equal (goblins--sidebar-directory-at-point) root))
+      (goblins-sidebar-fold)
+      (should (string-match-p "\\`▸ ⚔ crew · paused · goblins !1\n▾ ⚔ split"
+                              (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-keeps-a-merged-raids-directory-fold ()
+  (let ((sessions (list (goblins-test--session "session-a" :cwd "/p" :raid '(:id "r1" :name "crew"))
+                        (goblins-test--session "session-b" :cwd "/q" :raid '(:id "r1" :name "crew")))))
+    (goblins-test--sidebar sessions
+      ;; Split: fold /p.
+      (goto-char (goblins--sidebar-find '(group dir "r1" "/p")))
+      (goblins-sidebar-fold)
+      (should (member '(dir "r1" "/p") goblins--sidebar-toggled))
+      ;; Merged once session-b leaves /q: n reaches session-a without
+      ;; touching the hidden fold of /p.
+      (with-current-buffer source
+        (setq goblins--snapshot (plist-put goblins--snapshot :sessions (vector (car sessions)))))
+      (goblins--sidebar-render)
+      (goto-char (point-max))
+      (goblins-sidebar-next-pending)
+      (should (equal (get-text-property (point) 'goblins-id) "session-a"))
+      (should (member '(dir "r1" "/p") goblins--sidebar-toggled))
+      ;; Split again: /p is still folded.
+      (with-current-buffer source
+        (setq goblins--snapshot (plist-put goblins--snapshot :sessions (vconcat sessions))))
+      (goblins--sidebar-render)
+      (should (string-match-p "▸ /p/" (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-looks-up-projects-safely ()
+  (let ((goblins--sidebar-projects (make-hash-table :test #'equal))
+        (asked nil))
+    (let ((project-find-functions (list (lambda (dir) (push dir asked) (error "Broken")))))
+      ;; A failing backend means no project, once per directory.
+      (should-not (goblins--sidebar-project temporary-file-directory))
+      (should-not (goblins--sidebar-project temporary-file-directory))
+      (should (= (length asked) 1))
+      ;; Remote, missing and unknown directories are not looked up.
+      (should-not (goblins--sidebar-project "/ssh:host:/srv"))
+      (should-not (goblins--sidebar-project "/nonexistent/goblins"))
+      (should-not (goblins--sidebar-project ""))
+      (should (= (length asked) 1)))))
+
 (ert-deftest goblins-sidebar-recovers-when-its-status-buffer-is-killed ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p"))
     (let ((refreshed nil))
@@ -2055,9 +2174,10 @@ keeps the parameters of windows that live on."
         (should (eq (buffer-local-value 'goblins--view-source shown) source))
         (should (equal (buffer-local-value 'goblins--view-session shown) "crew"))
         ;; Directory headings still fold.
-        (goblins-sidebar-next)
+        (re-search-forward "^▾ /p/two/")
+        (beginning-of-line)
         (goblins-sidebar-dwim)
-        (should-not (string-match-p "session-a" (buffer-string)))
+        (should-not (string-match-p "session-c" (buffer-string)))
         (kill-buffer shown)))))
 
 (ert-deftest goblins-raid-page-lists-members-and-who-could-join ()
@@ -2425,17 +2545,21 @@ keeps the parameters of windows that live on."
                                :raid '(:id "r1" :name "zeta" :role "lead"))
         (goblins-test--session "session-c" :cwd "/p" :agent_state "working"
                                :raid '(:id "r1" :name "zeta"))
-        (goblins-test--session "session-b" :cwd "/q" :agent_state "idle")))
+        (goblins-test--session "session-b" :cwd "/q" :agent_state "idle")
+        ;; The raid spans two directories, so each has its own heading.
+        (goblins-test--session "session-d" :cwd "/r" :agent_state "idle"
+                               :raid '(:id "r1" :name "zeta"))))
 
 (ert-deftest goblins-sidebar-folds-goblins-until-tab-unfolds-one ()
   (goblins-test--sidebar goblins-test--fold-sessions
     ;; By default each goblin keeps its name, its pending requests and its
     ;; shells; headings stay open.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n"
+                   (concat "▾ ⚔ zeta !1\n  ▾ /p/ !1\n"
                            (goblins-test--row "    › session-a (lead)" "✉1 ○")
                            "    ! hello (package)\n"
                            (goblins-test--row "    › session-c" "◐")
+                           "\n  ▾ /r/\n" (goblins-test--row "    › session-d" "○")
                            "\n▾ /q/\n"
                            (goblins-test--row "  › session-b" "○"))))
     ;; TAB on a goblin unfolds it alone, and point stays on it.
@@ -2445,9 +2569,10 @@ keeps the parameters of windows that live on."
     (should (equal (get-text-property (point) 'goblins-id) "session-a"))
     ;; Rules mark where its block starts and ends.
     (should (equal (goblins-test--sidebar-plain)
-                   (concat "▾ raid zeta !1\n  ▾ /p/ !1\n    › session-a (lead)\n"
+                   (concat "▾ ⚔ zeta !1\n  ▾ /p/ !1\n    › session-a (lead)\n"
                            "    ○ idle\n    ! hello (package)\n    ✉ 1 message\n"
                            "  ──\n" (goblins-test--row "    › session-c" "◐")
+                           "\n  ▾ /r/\n" (goblins-test--row "    › session-d" "○")
                            "\n▾ /q/\n" (goblins-test--row "  › session-b" "○"))))
     ;; TAB on one of its detail lines folds it again.
     (re-search-forward "✉ 1 message")
@@ -2458,7 +2583,7 @@ keeps the parameters of windows that live on."
     (goto-char (point-min))
     (goblins-sidebar-fold)
     (should (equal (get-text-property (point) 'goblins-group) '(raid "r1")))
-    (should (string-match-p "\\`▸ raid zeta !1\n▾ /q/" (goblins-test--sidebar-plain)))))
+    (should (string-match-p "\\`▸ ⚔ zeta !1\n▾ /q/" (goblins-test--sidebar-plain)))))
 
 (ert-deftest goblins-sidebar-cycles-views-like-org ()
   (goblins-test--sidebar goblins-test--fold-sessions
@@ -2474,11 +2599,11 @@ keeps the parameters of windows that live on."
     (should (string-match-p "◐ working" (buffer-string)))
     ;; Overview: headings only, and point moves to the heading holding it.
     (goblins-sidebar-cycle)
-    (should (equal (goblins-test--sidebar-plain) "▸ raid zeta !1\n▸ /q/\n"))
+    (should (equal (goblins-test--sidebar-plain) "▸ ⚔ zeta !1\n▸ /q/\n"))
     (should (equal (get-text-property (point) 'goblins-group) '(raid "r1")))
     ;; TAB on a raid in the overview shows its directories, still folded.
     (goblins-sidebar-fold)
-    (should (equal (goblins-test--sidebar-plain) "▾ raid zeta !1\n  ▸ /p/ !1\n▸ /q/\n"))
+    (should (equal (goblins-test--sidebar-plain) "▾ ⚔ zeta !1\n  ▸ /p/ !1\n  ▸ /r/\n▸ /q/\n"))
     ;; Contents again: goblins folded, headings open.
     (goblins-sidebar-cycle)
     (should (eq goblins--sidebar-view 'contents))
@@ -2509,17 +2634,17 @@ keeps the parameters of windows that live on."
 (ert-deftest goblins-sidebar-starts-from-the-initial-view ()
   (let ((goblins-sidebar-initial-view 'overview))
     (goblins-test--sidebar goblins-test--fold-sessions
-      (should (equal (goblins-test--sidebar-plain) "▸ raid zeta !1\n▸ /q/\n"))
+      (should (equal (goblins-test--sidebar-plain) "▸ ⚔ zeta !1\n▸ /q/\n"))
       ;; n reaches a waiting goblin from the overview, opening its groups only.
       (goto-char (point-min))
       (goblins-sidebar-next-pending)
       (should (equal (get-text-property (point) 'goblins-id) "session-a"))
       (should (equal (goblins-test--sidebar-plain)
-                     (concat "▾ raid zeta !1\n  ▾ /p/ !1\n"
+                     (concat "▾ ⚔ zeta !1\n  ▾ /p/ !1\n"
                              (goblins-test--row "    › session-a (lead)" "✉1 ○")
                              "    ! hello (package)\n"
                              (goblins-test--row "    › session-c" "◐")
-                             "\n▸ /q/\n"))))))
+                             "\n  ▸ /r/\n▸ /q/\n"))))))
 
 (ert-deftest goblins-sidebar-folds-last-until-the-workspace-quits ()
   (goblins-test--sidebar goblins-test--fold-sessions
@@ -2569,7 +2694,7 @@ keeps the parameters of windows that live on."
     (should (equal (get-text-property (point) 'goblins-id) "session-a"))
     ;; Folded groups open to show a waiting goblin.
     (goto-char (point-min))
-    (re-search-forward "raid zeta")
+    (re-search-forward "⚔ zeta")
     (goblins-sidebar-fold)
     (should-not (string-match-p "session-a" (buffer-string)))
     (goto-char (point-min))
@@ -3188,6 +3313,35 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
   (with-current-buffer goblins--sidebar-buffer-name
     (substring-no-properties (buffer-string))))
 
+(defun goblins-test--heading-at (dir)
+  "The start of the sidebar heading of directory DIR."
+  (with-current-buffer goblins--sidebar-buffer-name
+    (let ((dir (directory-file-name (expand-file-name dir)))
+          (pos (point-min)) found)
+      (while (and (not found) pos)
+        (when (equal (and (get-text-property pos 'goblins-directory)
+                          (expand-file-name (get-text-property pos 'goblins-directory)))
+                     dir)
+          (setq found pos))
+        (setq pos (next-single-property-change pos 'goblins-directory)))
+      (or found (error "No heading for %s" dir)))))
+
+(defun goblins-test--heading-text (dir)
+  "The text of directory DIR's sidebar heading line."
+  (with-current-buffer goblins--sidebar-buffer-name
+    (save-excursion
+      (goto-char (goblins-test--heading-at dir))
+      (buffer-substring-no-properties (point) (line-end-position)))))
+
+(defun goblins-test--group-text (dir)
+  "The lines under directory DIR's sidebar heading, up to the next blank line."
+  (with-current-buffer goblins--sidebar-buffer-name
+    (save-excursion
+      (goto-char (goblins-test--heading-at dir))
+      (forward-line 1)
+      (buffer-substring-no-properties
+       (point) (if (re-search-forward "^$" nil t) (point) (point-max))))))
+
 (defun goblins-test--live-session (source name)
   (cl-find name (append (plist-get (buffer-local-value 'goblins--snapshot source) :sessions) nil)
            :key (lambda (s) (plist-get s :agent_name)) :test #'equal))
@@ -3199,6 +3353,9 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
          (project-one (abbreviate-file-name
                        (file-name-as-directory (getenv "GOBLINS_TEST_PROJECT_ONE"))))
          (ghostel-query-before-killing nil)
+         ;; Headings show plain paths: the test projects belong to no project
+         ;; (a /tmp under version control would otherwise name them).
+         (project-find-functions nil)
          ghostel-used source sidebar page)
     (goblins-workspace)
     (setq sidebar (get-buffer goblins--sidebar-buffer-name)
@@ -3208,14 +3365,16 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (should (eq (window-buffer (goblins--main-window)) source))
     (goblins-test--wait (lambda () (string-match-p "› gamma.*\n  ! hello (package)"
                                                    (goblins-test--sidebar-text))))
-    (let ((text (goblins-test--sidebar-text)))
-      ;; Folded goblins are a line each, with their agent's icon (text in a
-      ;; terminal) before the name.
-      (should (string-match-p (concat (regexp-quote project-one) "\n  › alpha.*\n  › beta")
-                              text))
-      ;; The directory of the waiting goblin carries its count too.
-      (should (string-match-p "/ !1\n  › delta.*\n  › gamma.*\n  ! hello (package)\n"
-                              text)))
+    ;; Folded goblins are a line each, with their agent's icon (text in a
+    ;; terminal) before the name.  Headings are found by their directory:
+    ;; a long temporary path is cut to fit the sidebar.
+    (should (string-match-p "\\`  › alpha.*\n  › beta"
+                            (goblins-test--group-text (getenv "GOBLINS_TEST_PROJECT_ONE"))))
+    ;; The directory of the waiting goblin carries its count too.
+    (let ((dir (plist-get (goblins-test--live-session source "gamma") :cwd)))
+      (should (string-match-p " !1\\'" (goblins-test--heading-text dir)))
+      (should (string-match-p "\\`  › delta.*\n  › gamma.*\n  ! hello (package)\n"
+                              (goblins-test--group-text dir))))
     ;; Selecting the waiting goblin pops up its request at the bottom.
     (goblins-select-goblin source (plist-get (goblins-test--live-session source "gamma") :id))
     (should (window-parameter (get-buffer-window goblins--popup-buffer-name) 'window-side))
@@ -3281,7 +3440,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (goblins-raid-kick))
       (goblins-test--wait (lambda () (string-match-p "Members (1)" (buffer-string)))))
     ;; i in the sidebar invites beta again, choosing the raid.
-    (goblins-test--wait (lambda () (string-match-p "raid crew" (goblins-test--sidebar-text))))
+    (goblins-test--wait (lambda () (string-match-p "⚔ crew" (goblins-test--sidebar-text))))
     (goblins-test--in-sidebar "^  › beta")
     (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "crew")))
       (goblins-sidebar-invite))
@@ -3294,10 +3453,10 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (goblins-sidebar-stop))
     (goblins-test--wait (lambda () (not (string-match-p "delta" (goblins-test--sidebar-text)))))
     ;; D on the raid heading dissolves the raid; the page says so.
-    (goblins-test--in-sidebar "raid crew")
+    (goblins-test--in-sidebar "⚔ crew")
     (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
       (goblins-sidebar-destroy-raid))
-    (goblins-test--wait (lambda () (not (string-match-p "raid crew" (goblins-test--sidebar-text)))))
+    (goblins-test--wait (lambda () (not (string-match-p "⚔ crew" (goblins-test--sidebar-text)))))
     (with-current-buffer page
       (should (string-match-p "no longer exists" (buffer-string))))
     ;; A lost stream reconnects by itself.
@@ -3396,7 +3555,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (push (get-text-property (point) 'goblins-id) visited))
       (should (equal (nreverse visited) '("session-a" "session-b" "session-e" "session-a"))))
     ;; Only the group of the goblin moved to was unfolded.
-    (should (string-match-p "▸ raid alpha" (buffer-string)))
+    (should (string-match-p "▸ ⚔ alpha" (buffer-string)))
     (should (string-match-p "▾ /p/two/" (buffer-string)))
     ;; With nobody else waiting, n stays put.
     (with-current-buffer source

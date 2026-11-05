@@ -59,7 +59,21 @@ The default closes the sidebar and restores the configuration saved by
   :type 'function :group 'goblins)
 
 (defface goblins-sidebar-header '((t :inherit goblins-heading))
-  "Raid and directory headings in the sidebar." :group 'goblins)
+  "Raid headings in the sidebar, and their fold arrows." :group 'goblins)
+(defface goblins-sidebar-project
+  '((((class color) (background dark)) :foreground "#4db5bd" :weight bold)
+    (((class color) (background light)) :foreground "#0e7c86" :weight bold)
+    (t :weight bold))
+  "The project name on a directory heading in the sidebar." :group 'goblins)
+(defface goblins-sidebar-directory '((t :inherit shadow :weight bold))
+  "A directory heading in the sidebar that belongs to no project." :group 'goblins)
+
+(defcustom goblins-sidebar-raid-icon
+  '(:svg "swords.svg" :color goblins-sidebar-header :text "⚔")
+  "The icon before a raid's name in the sidebar, a plist like the entries of
+`goblins-agent-icons'."
+  :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
+  :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
 (defface goblins-sidebar-active '((t))
@@ -95,6 +109,13 @@ goblin on its name line, and `all' every goblin with its details."
                  (const :tag "Everything unfolded" all))
   :group 'goblins)
 
+(defvar goblins--sidebar-projects (make-hash-table :test #'equal)
+  "Directory to its project as (NAME . ROOT), or nil, as last looked up.")
+
+(defvar goblins--sidebar-columns nil
+  "The width of the sidebar being drawn, in columns; nil for
+`goblins-sidebar-width'.")
+
 (defvar-local goblins--sidebar-view nil
   "The sidebar's view, one of `goblins-sidebar-initial-view''s values.")
 (defvar-local goblins--sidebar-drawn-columns nil
@@ -105,9 +126,32 @@ goblin on its name line, and `all' every goblin with its details."
 A group's key is its `goblins-group' value, a goblin's (goblin ID).")
 
 (defun goblins--sidebar-reset-folds ()
-  "Start this sidebar over from `goblins-sidebar-initial-view'."
+  "Start this sidebar over from `goblins-sidebar-initial-view'.
+Projects are looked up again, too."
   (setq goblins--sidebar-view goblins-sidebar-initial-view
-        goblins--sidebar-toggled nil))
+        goblins--sidebar-toggled nil)
+  (clrhash goblins--sidebar-projects))
+
+(defun goblins--sidebar-project (dir)
+  "The project of the local directory DIR as (NAME . ROOT), or nil.
+A remote, missing or projectless directory, or a failing project backend,
+gives nil."
+  (when (and (stringp dir) (not (string-empty-p dir)) (not (file-remote-p dir)))
+    (let ((known (gethash dir goblins--sidebar-projects 'unknown)))
+      (if (not (eq known 'unknown))
+          known
+        (puthash dir
+                 (condition-case nil
+                     (when-let* (((file-directory-p dir))
+                                 (project (project-current nil dir))
+                                 (root (directory-file-name
+                                        (expand-file-name (project-root project)))))
+                       (cons (if (fboundp 'project-name)
+                                 (project-name project)
+                               (file-name-nondirectory root))
+                             root))
+                   (error nil))
+                 goblins--sidebar-projects)))))
 
 (defun goblins--sidebar-folds ()
   "This sidebar's fold state, for `goblins--sidebar-text'."
@@ -237,16 +281,56 @@ holding it, for restoring point when a fold hides the line."
 (defun goblins--sidebar-badge (pending)
   (if (> pending 0) (propertize (format " !%d" pending) 'face 'goblins-sidebar-permission) ""))
 
+(defun goblins--sidebar-room (indent pending)
+  "The columns left for a heading's label at INDENT with a PENDING badge."
+  (- (or goblins--sidebar-columns goblins-sidebar-width) 1 indent 2
+     (string-width (goblins--sidebar-badge (or pending 0)))))
+
+(defun goblins--sidebar-directory-label (dir room &optional short)
+  "The label of DIR's heading in ROOM columns: its project's name and its path,
+\"goblins (~/code/goblins)\", or its path when it belongs to no project.
+SHORT gives only the project's name, or the path."
+  (let ((project (goblins--sidebar-project dir))
+        (path (if (string-empty-p dir) "unknown"
+                (abbreviate-file-name (file-name-as-directory dir)))))
+    (propertize
+     (if (not project)
+         (propertize (truncate-string-to-width (goblins--safe path) (max room 1) nil nil "…")
+                     'face 'goblins-sidebar-directory)
+       (let* ((name (goblins--safe (car project)))
+              (left (- room (string-width name) 3)))
+         (concat (propertize (truncate-string-to-width name (max room 1) nil nil "…")
+                             'face 'goblins-sidebar-project)
+                 (if (or short (< left 2)) ""
+                   (propertize (format " (%s)" (truncate-string-to-width
+                                                (goblins--safe (directory-file-name path))
+                                                left nil nil "…"))
+                               'face 'goblins-dim)))))
+     'help-echo (if (string-empty-p dir) "Directory unknown" dir))))
+
+(defun goblins--sidebar-raid-label (name paused dir room)
+  "The label of raid NAME's heading in ROOM columns: the raid icon and its
+name, \"· paused\" while PAUSED, and with DIR, the one directory of its
+goblins, that directory's project."
+  (let* ((icon (goblins--icon goblins-sidebar-raid-icon))
+         (head (concat (car icon) " "
+                       (propertize (goblins--safe name) 'face 'goblins-sidebar-header)
+                       (if paused (propertize " · paused" 'face 'goblins-sidebar-header) "")))
+         (used (+ (cdr icon) (string-width (substring-no-properties head (length (car icon)))))))
+    (if (and dir (> (- room used 3) 0))
+        (concat head (propertize " · " 'face 'goblins-dim)
+                (goblins--sidebar-directory-label dir (- room used 3) t))
+      head)))
+
 (defun goblins--sidebar-insert-group (key indent label folds &optional properties pending)
-  "Insert the heading of group KEY, with text PROPERTIES and a PENDING badge.
-A blank line parts it from the goblins above.  Return non-nil unless KEY is
-folded in FOLDS."
+  "Insert the heading of group KEY with LABEL, text PROPERTIES and a PENDING
+badge.  A blank line parts it from the goblins above.  Return non-nil unless
+KEY is folded in FOLDS."
   (let* ((folded (goblins--sidebar-folded-p key folds))
          (text (concat
-                (propertize
-                 (concat (make-string indent ?\s) (if folded "▸ " "▾ ")
-                         (goblins--safe label))
-                 'face 'goblins-sidebar-header)
+                (propertize (concat (make-string indent ?\s) (if folded "▸ " "▾ "))
+                            'face 'goblins-sidebar-header)
+                label
                 (goblins--sidebar-badge (or pending 0))
                 "\n")))
     (add-text-properties 0 (length text) (list 'goblins-group key) text)
@@ -339,10 +423,6 @@ SHELLS are its shell buffers the sidebar lists."
                                      (and (> execs 0) "Tramp connected")))
                      " · "))
        'face 'goblins-dim))))
-
-(defvar goblins--sidebar-columns nil
-  "The width of the sidebar being drawn, in columns; nil for
-`goblins-sidebar-width'.")
 
 (defun goblins--sidebar-activity (session)
   "SESSION's activity in short, like \"◐ 4m\", or its state while it is not
@@ -502,30 +582,40 @@ text is built apart from the sidebar so a failure cannot blank it."
               (insert (propertize "No running goblins\n" 'face 'goblins-dim))
             (dolist (raid (goblins--sidebar-groups sessions))
               (let* ((rkey (car raid))
-                     (indent (if rkey 2 0)))
+                     ;; A raid whose goblins share one directory has one
+                     ;; heading for both; its goblins sit under the raid.
+                     (merged (and rkey (null (cdr (cddr raid)))))
+                     (indent (if (and rkey (not merged)) 2 0))
+                     ;; A paused raid's prompt is its former owner's,
+                     ;; which may no longer be a member.
+                     (pending (and rkey
+                                   (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
+                                      (goblins--sidebar-raid-prompts rkey permissions)))))
                 (when (or (null rkey)
                           (goblins--sidebar-insert-group
                            (list 'raid rkey) 0
-                           (format "raid %s%s" (or (cadr raid) rkey)
-                                   (if (eq (plist-get (cl-find rkey raids
-                                                               :key (lambda (r) (plist-get r :id))
-                                                               :test #'equal)
-                                                      :paused)
-                                           t)
-                                       " · paused" ""))
+                           (goblins--sidebar-raid-label
+                            (or (cadr raid) rkey)
+                            (eq (plist-get (cl-find rkey raids
+                                                    :key (lambda (r) (plist-get r :id))
+                                                    :test #'equal)
+                                           :paused)
+                                t)
+                            (and merged (car (nth 2 raid)))
+                            (goblins--sidebar-room 0 pending))
                            folds
-                           (list 'goblins-raid (or (cadr raid) rkey))
-                           ;; A paused raid's prompt is its former owner's,
-                           ;; which may no longer be a member.
-                           (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
-                              (goblins--sidebar-raid-prompts rkey permissions))))
+                           (append (list 'goblins-raid (or (cadr raid) rkey))
+                                   (and merged (list 'goblins-directory (car (nth 2 raid)))))
+                           pending))
                   (dolist (dir (cddr raid))
                     (let ((gkey (list 'dir rkey (car dir))))
-                      (when (goblins--sidebar-insert-group
-                             gkey indent
-                             (if (string-empty-p (car dir)) "unknown"
-                               (abbreviate-file-name (file-name-as-directory (car dir))))
-                             folds nil (funcall count (cdr dir)))
+                      (when (or merged
+                                (goblins--sidebar-insert-group
+                                 gkey indent
+                                 (goblins--sidebar-directory-label
+                                  (car dir) (goblins--sidebar-room indent (funcall count (cdr dir))))
+                                 folds (list 'goblins-directory (car dir))
+                                 (funcall count (cdr dir))))
                         ;; A rule parts an unfolded goblin's block from its
                         ;; neighbours; folded goblins are one line each.
                         (let ((first t) (open nil))
@@ -901,7 +991,8 @@ On a raid heading, invite a goblin you choose into that raid."
                     (get-text-property (line-beginning-position) 'goblins-in-group)))
          (cwd (if id
                   (plist-get (goblins--sidebar-session id) :cwd)
-                (and (eq (car-safe group) 'dir) (nth 2 group)))))
+                (or (get-text-property (line-beginning-position) 'goblins-directory)
+                    (and (eq (car-safe group) 'dir) (nth 2 group))))))
     (if (and (stringp cwd) (not (string-empty-p cwd)))
         cwd
       (user-error "Select a goblin or a directory with a known project"))))
@@ -949,11 +1040,13 @@ unfolding its groups."
               (session (goblins--snapshot-session
                         (buffer-local-value 'goblins--snapshot source) id)))
     (with-current-buffer sidebar
-      (let ((folded (cl-remove-if-not
-                     (lambda (key) (goblins--sidebar-folded-p key (goblins--sidebar-folds)))
-                     (goblins--sidebar-group-keys session))))
-        (when folded
-          (mapc #'goblins--sidebar-toggle folded)
+      ;; Outermost first, and only until the goblin shows: a raid merged
+      ;; with its one directory has no directory heading to open, and that
+      ;; directory's fold must outlive the merge.
+      (dolist (key (goblins--sidebar-group-keys session))
+        (when (and (not (goblins--sidebar-find (cons 'id id)))
+                   (goblins--sidebar-folded-p key (goblins--sidebar-folds)))
+          (goblins--sidebar-toggle key)
           (goblins--sidebar-render)))
       (when-let* ((pos (goblins--sidebar-find (cons 'id id))))
         (goto-char pos)

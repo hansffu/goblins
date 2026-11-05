@@ -7,6 +7,7 @@ The sidebar draws these icons; see =goblins-agent-icons= and =goblins-sidebar-ra
 | =claude.svg=   | Claude mark                     | =@lobehub/icons-static-svg= 1.102.0, =claude-color.svg= | MIT     |
 | =codex.svg=    | Codex mark, in its colour gradient | =@lobehub/icons-static-svg= 1.102.0, =codex.svg= and =codex-color.svg= | MIT     |
 | =terminal.svg= | Terminal                        | =lucide-static= 0.460.0, =square-terminal.svg= | ISC     |
+| =swords.svg=   | Crossed swords, for raids       | =lucide-static= 0.460.0, =swords.svg=      | ISC     |
 
 Each file keeps the source's path data; the SVG wrapper was reduced to what Emacs needs.  The Claude and Codex marks are trademarks of Anthropic and OpenAI; the licences below cover the drawings, not the marks.
 
