@@ -177,6 +177,24 @@ pair; nil FOLDS unfolds everything."
 
 ;;;; Data
 
+(defun goblins--sidebar-directory (session)
+  "The directory SESSION is grouped under: its worktree when it works in
+one, else its working directory, without a trailing slash; \"\" if unknown."
+  (let ((directory (goblins--session-directory session)))
+    (if directory (directory-file-name directory) "")))
+
+(defun goblins--sidebar-group-worktree (dir sessions)
+  "The worktree (REPOSITORY . NAME) that SESSIONS share as directory DIR, or nil.
+REPOSITORY is the name of the folder that holds it, the main checkout's
+basename."
+  (when-let* ((worktree (cl-some (lambda (session)
+                                   (let ((w (goblins--session-worktree session)))
+                                     (and w (equal (directory-file-name (plist-get w :path)) dir) w)))
+                                 sessions)))
+    (cons (file-name-nondirectory
+           (directory-file-name (file-name-directory (directory-file-name dir))))
+          (plist-get worktree :name))))
+
 (defun goblins--sidebar-groups (sessions)
   "Return SESSIONS as ((RAID-KEY RAID-NAME (DIR . SESSIONS)...)...).
 Raids come first by name, then goblins outside any raid (RAID-KEY nil).
@@ -185,8 +203,7 @@ Directories and sessions keep snapshot order inside each group."
     (dolist (session sessions)
       (let* ((raid (plist-get session :raid))
              (rkey (plist-get raid :id))
-             (dir (let ((cwd (plist-get session :cwd)))
-                    (if (stringp cwd) (directory-file-name cwd) "")))
+             (dir (goblins--sidebar-directory session))
              (entry (or (assoc rkey raids)
                         (car (push (list rkey (plist-get raid :name)) raids))))
              (dirs (cddr entry))
@@ -286,12 +303,16 @@ holding it, for restoring point when a fold hides the line."
 with a PENDING badge."
   (- goblins-sidebar-width 1 indent 2 (string-width (goblins--sidebar-badge (or pending 0)))))
 
-(defun goblins--sidebar-directory-label (dir &optional room)
+(defun goblins--sidebar-directory-label (dir &optional room worktree)
   "The label of DIR's heading: its project's name and its path,
 \"goblins (~/code/goblins)\", or its path when it belongs to no project.
 The path is cut to fit ROOM columns; without ROOM, a project shows only its
-name."
-  (let* ((project (goblins--sidebar-project dir))
+name.  For a WORKTREE, (REPOSITORY . NAME), the name is \"goblins ⎇ fix-login\"."
+  (let* ((project (if worktree
+                      (cons (format "%s ⎇ %s" (goblins--safe (car worktree))
+                                    (goblins--safe (cdr worktree)))
+                            dir)
+                    (goblins--sidebar-project dir)))
          (path (if (string-empty-p dir) "unknown"
                  (abbreviate-file-name (file-name-as-directory dir))))
          (cut (lambda (text room)
@@ -308,16 +329,16 @@ name."
                    ""))))
      'help-echo (if (string-empty-p dir) "Directory unknown" dir))))
 
-(defun goblins--sidebar-raid-label (name paused dir)
+(defun goblins--sidebar-raid-label (name paused dir &optional worktree)
   "The label of raid NAME's heading: the raid icon and its name, \"· paused\"
 while PAUSED, and with DIR, the one directory of its goblins, that
-directory's project."
+directory's project, or the WORKTREE (REPOSITORY . NAME) it is."
   (concat (goblins--icon goblins-sidebar-raid-icon) " "
           (propertize (goblins--safe name) 'face 'goblins-sidebar-header)
           (if paused (propertize " · paused" 'face 'goblins-sidebar-header) "")
           (if dir
               (concat (propertize " · " 'face 'goblins-dim)
-                      (goblins--sidebar-directory-label dir))
+                      (goblins--sidebar-directory-label dir nil worktree))
             "")))
 
 (defun goblins--sidebar-insert-group (key indent label folds &optional properties pending)
@@ -526,8 +547,7 @@ the shells follow it.  Only the name and the shells are stops for movement."
 (defun goblins--sidebar-group-keys (session)
   "The keys of the groups that contain SESSION."
   (let* ((rkey (goblins--session-raid-id session))
-         (cwd (plist-get session :cwd))
-         (dir (if (stringp cwd) (directory-file-name cwd) "")))
+         (dir (goblins--sidebar-directory session)))
     (delq nil (list (and rkey (list 'raid rkey)) (list 'dir rkey dir)))))
 
 (defun goblins--sidebar-text (source folds)
@@ -577,7 +597,10 @@ text is built apart from the sidebar so a failure cannot blank it."
                                                     :test #'equal)
                                            :paused)
                                 t)
-                            (and merged (car (nth 2 raid))))
+                            (and merged (car (nth 2 raid)))
+                            (and merged
+                                 (goblins--sidebar-group-worktree
+                                  (car (nth 2 raid)) (cdr (nth 2 raid)))))
                            folds
                            (append (list 'goblins-raid (or (cadr raid) rkey))
                                    (and merged (list 'goblins-directory (car (nth 2 raid)))))
@@ -588,7 +611,8 @@ text is built apart from the sidebar so a failure cannot blank it."
                                 (goblins--sidebar-insert-group
                                  gkey indent
                                  (goblins--sidebar-directory-label
-                                  (car dir) (goblins--sidebar-room indent (funcall count (cdr dir))))
+                                  (car dir) (goblins--sidebar-room indent (funcall count (cdr dir)))
+                                  (goblins--sidebar-group-worktree (car dir) (cdr dir)))
                                  folds (list 'goblins-directory (car dir))
                                  (funcall count (cdr dir))))
                         ;; A rule parts an unfolded goblin's block from its
@@ -967,7 +991,7 @@ On a raid heading, invite a goblin you choose into that raid."
          (group (or (cadr props)
                     (get-text-property (line-beginning-position) 'goblins-in-group)))
          (cwd (if id
-                  (plist-get (goblins--sidebar-session id) :cwd)
+                  (goblins--session-directory (goblins--sidebar-session id))
                 (or (get-text-property (line-beginning-position) 'goblins-directory)
                     (and (eq (car-safe group) 'dir) (nth 2 group))))))
     (if (and (stringp cwd) (not (string-empty-p cwd)))

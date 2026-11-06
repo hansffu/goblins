@@ -414,6 +414,7 @@ Main commands:
 | =goblins-workspace=                            | Sidebar of running goblins, with each goblin's terminals and windows |
 | =goblins-status=                               | Magit-style tree of goblins and requests; =a= / =d= accept or deny       |
 | =goblins-run=                                  | Pick a configuration and start it in a Ghostel buffer                |
+| =goblins-run-with-worktree=                    | Make a Git worktree of this repository and run a goblin in it        |
 | =goblins-switch=                               | Jump to a running goblin                                             |
 | =goblins-accept=, =goblins-deny=                 | Decide a pending request from anywhere                               |
 | =goblins-shell=, =goblins-eshell=, =goblins-dired= | A shell, Eshell or Dired inside a goblin                             |

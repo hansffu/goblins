@@ -496,8 +496,8 @@ Outside the workspace RIGHT, or the terminal, is popped up."
         (user-error "This goblin has finished"))
       (goblins--open-terminal
        id (plist-get session :agent_name)
-       (if (stringp (plist-get session :cwd))
-           (file-name-as-directory (plist-get session :cwd))
+       (if-let* ((directory (goblins--session-directory session)))
+           (file-name-as-directory directory)
          default-directory)
        display))))
 
@@ -659,6 +659,9 @@ end of the buffer.  Add your own to show more."
       (goblins--info-row "Session" (plist-get session :id))
       (goblins--info-row "Directory" (let ((cwd (plist-get session :cwd)))
                                        (and (stringp cwd) (abbreviate-file-name cwd))))
+      (goblins--info-row "Worktree" (when-let* ((worktree (goblins--session-worktree session)))
+                                      (format "%s (%s)" (plist-get worktree :name)
+                                              (abbreviate-file-name (plist-get worktree :path)))))
       (goblins--info-row "Configuration" (plist-get session :name))
       (goblins--info-row "Manifest" (plist-get session :configuration))
       (goblins--info-row "Created by" (goblins--created-by session))

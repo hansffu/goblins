@@ -1328,16 +1328,58 @@ Pinned before any TRAMP use, from the terminal's identity."
                         (alist-get 'instance ghostel-identity)
                         (alist-get 'session ghostel-identity))))
 
+(defun goblins--session-worktree (session)
+  "SESSION's worktree as a plist (:name NAME :path PATH), or nil."
+  (let ((worktree (plist-get session :worktree)))
+    (and (listp worktree) (stringp (plist-get worktree :path))
+         (not (string-empty-p (plist-get worktree :path)))
+         worktree)))
+
+(defun goblins--session-directory (session)
+  "The local directory SESSION's goblin works in, or nil.
+That is its worktree when it works in one, else its working directory: the
+project, bound at the same path inside the sandbox."
+  (let ((directory (or (plist-get (goblins--session-worktree session) :path)
+                       (plist-get session :cwd))))
+    (and (stringp directory) (not (string-empty-p directory)) directory)))
+
 (defun goblins--agent-directory ()
-  "The directory of this agent terminal: its goblin's working directory.
+  "The directory of this agent terminal: its goblin's worktree, or else its
+working directory.
 That is the project, bound at the same path inside the sandbox, so
 `project-find-file' and friends work on the host.  A goblin without one
 works in its own /workspace, which only exists inside it."
-  (let ((cwd (plist-get (goblins--terminal-session) :cwd)))
-    (if (and (stringp cwd) (not (string-empty-p cwd)))
-        (file-name-as-directory cwd)
+  (let ((directory (goblins--session-directory (goblins--terminal-session))))
+    (if directory
+        (file-name-as-directory directory)
       (when-let* ((host (goblins--pinned-terminal-host)))
         (format "/goblins:%s:/workspace/" host)))))
+
+(defun goblins--follow-worktrees ()
+  "Move each running agent terminal's `default-directory' to its goblin's
+worktree, or back to its working directory, as the snapshot says.
+Magit, `project-find-file' and `find-file' from the terminal then open where
+the goblin works."
+  (when (and goblins--snapshot goblins--instance)
+    (let ((directory goblins--directory)
+          (instance goblins--instance)
+          (sessions (append (plist-get goblins--snapshot :sessions) nil)))
+      (dolist (buffer (buffer-list))
+        (with-current-buffer buffer
+          (let* ((identity (bound-and-true-p ghostel-identity))
+                 (session (and (eq (alist-get 'kind identity) 'goblins)
+                               (equal goblins--directory directory)
+                               (equal (alist-get 'instance identity) instance)
+                               (cl-find (alist-get 'session identity) sessions
+                                        :key (lambda (s) (plist-get s :id))
+                                        :test #'equal)))
+                 (target (and session
+                              (equal (plist-get session :state) "running")
+                              (goblins--session-directory session))))
+            (when (and target
+                       (not (equal (file-name-as-directory target) default-directory)))
+              (setq default-directory (file-name-as-directory target)))))))))
+(add-hook 'goblins-snapshot-hook #'goblins--follow-worktrees)
 
 (defun goblins--ghostel-directory (function directory)
   "Track DIRECTORY reports of goblin terminals.
@@ -1519,6 +1561,70 @@ Only launches made here are linked by the terminal command."
              (ignore-errors
                (jsonrpc-request connection 'sessions.stop (list :session session) :timeout 3))
              (signal (car err) (cdr err)))))))))
+
+(defconst goblins--worktree-name-regexp "\\`[A-Za-z0-9][A-Za-z0-9._-]\\{0,99\\}\\'"
+  "What a worktree's name looks like: its branch and its directory name.")
+
+(defun goblins--git-output (directory &rest arguments)
+  "Run Git with ARGUMENTS in DIRECTORY on the host and return its output.
+Signal a `user-error' with Git's own message if it fails.  The daemon never
+runs Git on the host; this is Emacs doing so, as the user."
+  (let ((default-directory (file-name-as-directory directory)))
+    (with-temp-buffer
+      (let ((status (apply #'process-file "git" nil t nil arguments)))
+        (unless (eq status 0)
+          (user-error "git %s: %s" (string-join arguments " ")
+                      (string-trim (buffer-string))))
+        (string-trim (buffer-string))))))
+
+(defun goblins--worktree-path (status name)
+  "The directory of worktree NAME of the current repository on STATUS's server.
+Beneath `worktrees_directory', in the folder named after the main checkout
+(DIRECTORY/REPO/NAME); signal a `user-error' when worktrees are off or the
+current directory is in no repository."
+  (let* ((directory (plist-get (goblins--host-call status 'server.status (make-hash-table))
+                               :worktrees_directory))
+         (common (progn
+                   (unless (and (stringp directory) (not (string-empty-p directory)))
+                     (user-error "Worktrees are off: set mkGoblins.worktrees.directory"))
+                   (goblins--git-output default-directory "rev-parse" "--path-format=absolute"
+                                        "--git-common-dir")))
+         (checkout (and (string-suffix-p "/.git" common)
+                        (directory-file-name (file-name-directory common)))))
+    (unless checkout (user-error "Not in a Git repository with a .git directory"))
+    (expand-file-name name (expand-file-name (file-name-nondirectory checkout) directory))))
+
+;;;###autoload
+(cl-defun goblins-run-with-worktree (name &key prompt display)
+  "Create worktree NAME of this repository and run a goblin in it.
+The worktree is made here, on the host, beneath the server's worktrees
+directory as DIRECTORY/REPO/NAME on a branch NAME (an existing one is checked
+out, a new one starts at HEAD); one that exists is reused.  The goblin is
+then launched there as `goblins-run' launches one.  With PROMPT, a string, it
+is sent to the new goblin as a message.  DISPLAY is as for `goblins-run'.
+Return the goblin's terminal buffer."
+  (interactive (list (read-string "Worktree name: ")))
+  (unless (string-match-p goblins--worktree-name-regexp name)
+    (user-error "A worktree name uses letters, digits, `.', `_' and `-', starting with a letter or digit"))
+  (let* ((state-directory (or goblins--directory goblins-state-directory
+                              (goblins--default-directory)))
+         (status (goblins--connect state-directory))
+         (path (goblins--worktree-path status name)))
+    (unless (file-directory-p path)
+      (make-directory (file-name-directory path) t)
+      (let ((exists (with-temp-buffer
+                      (eq 0 (process-file "git" nil t nil "show-ref" "--verify" "--quiet"
+                                          (concat "refs/heads/" name))))))
+        (if exists
+            (goblins--git-output default-directory "worktree" "add" path name)
+          (goblins--git-output default-directory "worktree" "add" "-b" name path))))
+    (let ((buffer (goblins-run path display)))
+      (when (and prompt (buffer-live-p buffer))
+        (goblins--host-call status 'messages.send
+                            (list :key (goblins--launch-key)
+                                  :to (nth 2 (buffer-local-value 'goblins--session-key buffer))
+                                  :body prompt)))
+      buffer)))
 
 (defvar goblins-status-mode-map
   (let ((map (make-sparse-keymap)))

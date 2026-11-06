@@ -3595,6 +3595,128 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
         (should (equal default-directory "/goblins:snaga:/workspace/"))
         (should (equal (goblins-pin "snaga") '("/tmp/goblins-test" "daemon-a" "session-b")))))))
 
+;; A goblin that works in a worktree: its terminal, the sidebar and the launch command.
+(ert-deftest goblins-agent-terminals-follow-their-worktree ()
+  (let ((worktree '(:name "fix" :path "/w/api/fix")))
+    (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/api" :worktree worktree)
+                                 (goblins-test--session "session-b" :cwd "/p/api")
+                                 (goblins-test--session "session-c" :cwd "/p/api"
+                                                        :worktree '(:name "x" :path "/w/api/x")
+                                                        :state "stopped"))
+      (should (equal (goblins--session-directory (goblins-test--session "s" :cwd "/p/api" :worktree worktree))
+                     "/w/api/fix"))
+      (should (equal (goblins--session-directory (goblins-test--session "s" :cwd "/p/api"))
+                     "/p/api"))
+      (should-not (goblins--session-directory (goblins-test--session "s")))
+      (let* ((terminal (lambda (session)
+                         (with-current-buffer (generate-new-buffer " *goblins test terminal*")
+                           (setq-local goblins--directory "/tmp/goblins-test"
+                                       ghostel-identity `((kind . goblins) (session . ,session)
+                                                          (instance . "daemon-a"))
+                                       default-directory "/p/api/")
+                           (current-buffer))))
+             (a (funcall terminal "session-a"))
+             (b (funcall terminal "session-b"))
+             (c (funcall terminal "session-c")))
+        (unwind-protect
+            (progn
+              ;; The snapshot moves a running terminal into its goblin's worktree.
+              (with-current-buffer source (goblins--follow-worktrees))
+              (should (equal (buffer-local-value 'default-directory a) "/w/api/fix/"))
+              (should (equal (buffer-local-value 'default-directory b) "/p/api/"))
+              (should (equal (buffer-local-value 'default-directory c) "/p/api/"))
+              ;; Cleared again, it is back in the working directory.
+              (with-current-buffer source
+                (setq goblins--snapshot
+                      (list :instance "daemon-a"
+                            :sessions (vector (goblins-test--session "session-a" :cwd "/p/api")))))
+              (with-current-buffer source (goblins--follow-worktrees))
+              (should (equal (buffer-local-value 'default-directory a) "/p/api/"))
+              ;; Directory reports from the agent still do not move it.
+              (with-current-buffer a
+                (goblins--ghostel-directory #'ignore "file://sandbox/tmp/x")
+                (should (equal default-directory "/p/api/"))))
+          (mapc #'kill-buffer (list a b c)))))))
+
+(ert-deftest goblins-sidebar-groups-by-worktree ()
+  (let ((fix '(:name "fix-login" :path "/w/api/fix-login"))
+        (goblins-sidebar-width 80))
+    (goblins-test--sidebar
+        (list (goblins-test--session "session-a" :cwd "/p/api")
+              (goblins-test--session "session-b" :cwd "/p/api" :worktree fix)
+              (goblins-test--session "session-c" :cwd "/p/api" :worktree fix))
+      (let ((text (goblins-test--sidebar-plain)))
+        ;; The worktree is its own group, named by its repository's folder and itself.
+        (should (string-match-p "^▾ api ⎇ fix-login (/w/api/fix-login)$" text))
+        (should (string-match-p "^▾ /p/api/ !1$" text))
+        (should (string-match-p "^▾ api ⎇ fix-login.*\n  › session-b\n  › session-c" text))
+        (should (equal (goblins--sidebar-group-keys (goblins-test--session "s" :cwd "/p/api" :worktree fix))
+                       '((dir nil "/w/api/fix-login")))))
+      (goto-char (point-min))
+      (search-forward "▾ api ⎇ fix-login")
+      (should (eq (get-text-property (1- (point)) 'face) 'goblins-sidebar-project))
+      ;; Starting another goblin from the heading starts it in the worktree.
+      (should (equal (goblins--sidebar-directory-at-point) "/w/api/fix-login"))
+      (should (equal (substring-no-properties (goblins--sidebar-directory-label "/w/api/fix-login" nil '("api" . "fix-login")))
+                     "api ⎇ fix-login")))))
+
+(ert-deftest goblins-run-with-worktree-makes-the-worktree-and-runs-a-goblin ()
+  (let* ((root (file-name-as-directory (make-temp-file "goblins-worktrees" t)))
+         (status (generate-new-buffer " *goblins test status*"))
+         (terminal (generate-new-buffer " *goblins test terminal*"))
+         (default-directory (file-name-as-directory (make-temp-file "goblins-repo" t)))
+         git calls launched (branch-exists nil) (common "/code/api/.git")
+         (directory root))
+    (with-current-buffer terminal
+      (setq-local goblins--session-key '("/tmp/goblins-test" "daemon-a" "session-w")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'goblins--connect) (lambda (&optional _) status))
+                  ((symbol-function 'goblins--host-call)
+                   (lambda (_source method params)
+                     (push (cons method params) calls)
+                     (when (eq method 'server.status) (list :worktrees_directory directory))))
+                  ((symbol-function 'goblins-run)
+                   (lambda (directory &optional _) (push directory launched) terminal))
+                  ((symbol-function 'process-file)
+                   (lambda (_program _in _out _display &rest arguments)
+                     (push arguments git)
+                     (cond ((equal (car arguments) "rev-parse")
+                            (insert common "\n") 0)
+                           ((equal (car arguments) "show-ref") (if branch-exists 0 1))
+                           (t 0)))))
+          ;; A new branch: one Git call to make the worktree, then the goblin, then the prompt.
+          (should (eq (goblins-run-with-worktree "fix" :prompt "Fix the login.") terminal))
+          (let ((path (expand-file-name "fix" (expand-file-name "api" root))))
+            (should (equal launched (list path)))
+            (should (member (list "worktree" "add" "-b" "fix" path) git))
+            (should (equal (cdr (assq 'messages.send calls))
+                           (list :key (plist-get (cdr (assq 'messages.send calls)) :key)
+                                 :to "session-w" :body "Fix the login."))))
+          ;; An existing branch is checked out; an existing worktree is reused; no prompt, no message.
+          (setq git nil calls nil launched nil branch-exists t)
+          (goblins-run-with-worktree "old")
+          (should (member (list "worktree" "add" (expand-file-name "old" (expand-file-name "api" root)) "old")
+                          git))
+          (should-not (assq 'messages.send calls))
+          (setq git nil launched nil)
+          (make-directory (expand-file-name "old" (expand-file-name "api" root)) t)
+          (goblins-run-with-worktree "old")
+          (should-not (cl-find "add" git :key #'cadr :test #'equal))
+          (should (equal launched (list (expand-file-name "old" (expand-file-name "api" root)))))
+          ;; Bad names, no repository and worktrees off are refused before anything runs.
+          (setq launched nil)
+          (dolist (bad '("a/b" ".git" "-x" ""))
+            (should-error (goblins-run-with-worktree bad) :type 'user-error))
+          (setq common "/code/api")
+          (should-error (goblins-run-with-worktree "ok") :type 'user-error)
+          (setq common "/code/api/.git")
+          (setq directory nil)
+          (should-error (goblins-run-with-worktree "ok") :type 'user-error)
+          (should-not launched))
+      (mapc #'kill-buffer (list status terminal))
+      (delete-directory default-directory t)
+      (delete-directory root t))))
+
 (ert-deftest goblins-find-file-visits-any-path-inside-the-goblin ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :agent_name "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
