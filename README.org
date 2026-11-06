@@ -287,6 +287,19 @@ goblin flake run '#fmt' -- --check         # run the flake's apps
 
 The approval shows what changed: inputs, Nix files, packages, environment and what will be built. A goblin cannot change =flake.lock= behind your back; only locks you launched with or approved are trusted. See [[file:docs/USAGE.org::*Flake dev shells][the dev shell reference]].
 
+* Git worktrees
+
+A goblin can work on its own branch in its own Git worktree of its repository, without planning it before the launch, and you open the same directories natively on the host:
+
+#+begin_src nix
+mkGoblins {
+  worktrees.directory = "$HOME/code/worktrees";   # worktrees live in DIRECTORY/REPO/NAME
+  goblins.claude = mkClaudeGoblin { };
+}
+#+end_src
+
+A goblin launched at a repository's root gets its worktree folder read-write and =GOBLINS_WORKTREES=. Inside the goblin, =goblin worktree NAME= creates or enters a worktree on branch =NAME= and prints its path; Emacs follows the goblin there and =goblins resume= brings it back. The daemon never runs Git on the host. See [[file:docs/USAGE.org::*Git worktrees][Git worktrees]] for the layout, the checks and =goblin run --worktree=.
+
 * Raids
 
 A /raid/ is a group of goblins that can message each other; goblins outside it are not reachable, apart from the host. The host invites goblins into a raid, or a goblin creates one and owns it. The owner can run new goblins into its raid with =goblin run CONFIG=, using only the configurations its =allowedRunTargets= lists, by default none, not even its own:
@@ -358,6 +371,7 @@ goblin devshell refresh | diff | restore-lock
 goblin flake run [#APP] [-- ARGS]
 goblin raid create NAME               # create a raid and own it
 goblin run CONFIG --name NAME         # as owner: run a member into the raid
+goblin worktree NAME                  # work in a Git worktree on its own branch (see Git worktrees)
 goblin list | stop NAME               # as owner: the members you can stop
 goblin detach                         # detach this goblin's terminal
 goblin send NAME --message TEXT       # message a raid member

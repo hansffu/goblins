@@ -113,6 +113,12 @@ pub struct SessionRecord {
     /// What could not be restored when it was recreated, and why.
     #[serde(default)]
     pub skipped: Vec<goblins_runtime::history::Skipped>,
+    /// The worktree the goblin works in, when it works in one: set at launch
+    /// for a goblin in a worktree and by `goblin worktree`. The daemon does
+    /// not watch the filesystem, so a removed worktree stays set until the
+    /// goblin changes it.
+    #[serde(default)]
+    pub worktree: Option<goblins_runtime::worktrees::Worktree>,
 }
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
@@ -186,6 +192,9 @@ fn prune_key(serial: u64) -> String {
     format!("prune-{serial}")
 }
 struct Active {
+    /// The mounted worktree folder, from `Started`: what `sessions.set-worktree`
+    /// and `goblin run --worktree` resolve names in.
+    worktree_folder: Option<PathBuf>,
     activity_at: Option<Instant>,
     created: u64,
     record: SessionRecord,
@@ -552,8 +561,16 @@ struct Start {
     /// The record a recreate launch uses, resolved by the daemon.
     #[serde(skip)]
     recorded: Option<Box<crate::history::Record>>,
+    /// The worktree a goblin a raid owner runs starts in; never from a host.
+    #[serde(skip)]
+    worktree: Option<String>,
 }
 use goblins_runtime::sandbox::MemberStart;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetWorktree {
+    name: Option<String>,
+}
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Stop {
@@ -1374,7 +1391,17 @@ impl Controller {
             "terminal_complete":record.terminal_complete,
             "terminal_interrupted":record.terminal_interrupted,
             "terminal_detached":record.terminal_detached,
-            "terminal_attached":record.terminal_attached})
+            "terminal_attached":record.terminal_attached,
+            "worktree":record.worktree})
+    }
+    /// `mkGoblins.worktrees.directory` of the current configuration, expanded;
+    /// None when worktrees are off or no configuration is known yet.
+    fn worktrees_directory(&self) -> Option<PathBuf> {
+        let lease = self.current_manifest.as_ref()?;
+        let manifest = goblins_runtime::config::read(&lease.path).ok()?;
+        goblins_runtime::config::worktrees_directory(&manifest, |name| std::env::var(name).ok())
+            .ok()
+            .flatten()
     }
     /// A package granted without asking: the session's own grant, or one in
     /// its auto-approve set. Never resolved again, never mounted proactively.
@@ -1666,6 +1693,22 @@ impl Controller {
                 .map_err(|e| (-32010, e.to_string()))?
             }
         };
+        // A member asked for a worktree starts in that directory of its owner's
+        // folder, which its supervisor checks to be a worktree.
+        let worktree_path = match (&p.worktree, &owner) {
+            (Some(name), Some(owner)) => Some(
+                self.sessions[&owner.id]
+                    .worktree_folder
+                    .as_ref()
+                    .ok_or((
+                        -32009,
+                        "this goblin has no worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off"
+                            .to_string(),
+                    ))?
+                    .join(name),
+            ),
+            _ => None,
+        };
         let sequence = self.manifest_sequence + 1;
         let launch_manifest = manifest.clone();
         let source = match (owner.clone(), manifest) {
@@ -1682,6 +1725,7 @@ impl Controller {
                 auto: approvals.packages.clone(),
                 state: self.state.clone(),
                 history: self.history_directory.clone(),
+                worktree: worktree_path.clone(),
             },
             _ => Source::Host {
                 configuration: p.configuration.clone().into(),
@@ -1697,6 +1741,7 @@ impl Controller {
                     auto_approve: r.packages.auto_approve.clone(),
                     docker: r.docker_enabled,
                     variables: r.variables.clone(),
+                    worktree: r.worktree.clone(),
                 }),
                 sequence,
             },
@@ -1705,7 +1750,9 @@ impl Controller {
             self.manifest_sequence = sequence;
         }
         let cwd = match &owner {
-            Some(owner) => self.sessions[&owner.id].record.cwd.clone(),
+            Some(owner) => worktree_path
+                .clone()
+                .or_else(|| self.sessions[&owner.id].record.cwd.clone()),
             None => p.cwd.clone().filter(|_| self.workspace.is_none()),
         };
         let configuration = match &owner {
@@ -1768,11 +1815,13 @@ impl Controller {
             execs: 0,
             recreated_from: recorded.as_ref().map(|r| r.id.clone()),
             skipped: vec![],
+            worktree: None,
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
         self.sessions.insert(
             id.clone(),
             Active {
+                worktree_folder: None,
                 activity_at: None,
                 member_scope: owner.as_ref().and_then(|o| o.scope_name.clone()),
                 launch_manifest,
@@ -1959,6 +2008,43 @@ impl Controller {
                 self.dirty |= a.report_activity(p.state);
                 Ok(json!({"accepted":true}))
             }
+            "sessions.set-worktree" => {
+                let p: SetWorktree = params(value)?;
+                let a = self.sessions.get(scope).ok_or_else(missing)?;
+                if a.record.state != "running" || !a.live() {
+                    return Err(conflict());
+                }
+                let worktree = match p.name {
+                    None => None,
+                    Some(name) => {
+                        let folder = a.worktree_folder.as_ref().ok_or((
+                            -32009,
+                            "this goblin has no worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off (see its session detail)"
+                                .to_string(),
+                        ))?;
+                        if !goblins_runtime::worktrees::is_worktree(folder, &name) {
+                            return Err((
+                                -32009,
+                                format!("{name} is not a worktree in {}", folder.display()),
+                            ));
+                        }
+                        Some(goblins_runtime::worktrees::Worktree {
+                            path: folder.join(&name),
+                            name,
+                        })
+                    }
+                };
+                let line = a.line.clone();
+                self.sessions.get_mut(scope).unwrap().record.worktree = worktree.clone();
+                self.dirty = true;
+                // The record follows, whenever it changes.
+                let recorded = worktree.clone();
+                let _ = self.update_record(&line, |r| {
+                    r.worktree = recorded;
+                    Ok(true)
+                });
+                Ok(json!({"worktree":worktree}))
+            }
             "sessions.set-variables" => {
                 let p: goblins_protocol::SetVariables = params(value)?;
                 let a = self.sessions.get(scope).ok_or_else(missing)?;
@@ -2001,6 +2087,7 @@ impl Controller {
                     "name":record.name,"description":record.description,
                     "state":record.state,"agent_state":record.agent_state,"scope":record.scope,"docker_enabled":record.docker_enabled,
                     "dev_shell":record.dev_shell,
+                    "worktree":record.worktree,
                     "attached":record.terminal_attached,
                     "attached_since":self.sessions[scope].attach.since(),
                     "nix":self.sessions[scope].policy.as_ref().is_some_and(|p| p.nix),
@@ -2064,6 +2151,7 @@ impl Controller {
                         raid: None,
                         recreate: None,
                         recorded: None,
+                        worktree: p.worktree,
                     },
                     Some(scope),
                 )?;
@@ -2244,7 +2332,8 @@ impl Controller {
                 let _: Empty = params(value)?;
                 Ok(
                     json!({"instance":self.instance,"state":if self.shutdown.is_some(){"stopping"}else{"running"},"sessions":self.sessions.values().filter(|a| a.live()).count(),"history":self.history_status(),
-                        "manifest":self.current_manifest.as_ref().map(|m| &m.path)}),
+                        "manifest":self.current_manifest.as_ref().map(|m| &m.path),
+                        "worktrees_directory":self.worktrees_directory()}),
                 )
             }
             "server.stop" => {
@@ -2946,7 +3035,26 @@ impl Controller {
                         identity,
                         recreated,
                         auto,
+                        worktrees,
                     } => {
+                        // The worktree folder, and the worktree the goblin starts in.
+                        a.record.worktree = worktrees.folder.as_ref().and_then(|folder| {
+                            worktrees.worktree.as_ref().map(|name| {
+                                goblins_runtime::worktrees::Worktree {
+                                    name: name.clone(),
+                                    path: folder.join(name),
+                                }
+                            })
+                        });
+                        a.worktree_folder = worktrees.folder;
+                        // Why a launch that should have worktrees has none.
+                        if let Some(reason) = worktrees.detail {
+                            let note = format!("worktrees: {reason}");
+                            a.record.detail = Some(bounded(&match a.record.detail.take() {
+                                Some(detail) => format!("{detail}; {note}"),
+                                None => note,
+                            }));
+                        }
                         // Started: nothing the launch was accepted against
                         // needs holding any more.
                         a.launch_manifest = None;
@@ -3387,6 +3495,7 @@ fn line_record(a: &Active, existing: Option<&crate::history::Record>) -> crate::
     record.cwd = a.record.cwd.clone();
     record.scope = a.record.scope.clone();
     record.dev_shell = a.record.dev_shell.clone();
+    record.worktree = a.record.worktree.clone();
     // Recorded Docker stays, so an attach skipped now is tried again.
     record.docker_enabled |= a.record.docker_enabled;
     record.variables = a.variables.clone();
@@ -3570,6 +3679,7 @@ mod tests {
         d.sessions.insert(
             id.clone(),
             Active {
+                worktree_folder: None,
                 activity_at: None,
                 member_scope: None,
                 launch_manifest: None,
@@ -3625,6 +3735,7 @@ mod tests {
                     execs: 0,
                     recreated_from: None,
                     skipped: vec![],
+                    worktree: None,
                 },
                 runtime: Some(Box::new(goblins_runtime::Fake::ended(results))),
                 preparing: None,
@@ -4446,6 +4557,7 @@ mod tests {
                 },
                 recreated: None,
                 auto: Box::default(),
+                worktrees: Box::default(),
             })
             .unwrap();
         events.send(Event::InitLost).unwrap();
@@ -4453,6 +4565,66 @@ mod tests {
         assert_eq!(d.sessions["a"].record.state, "running");
         assert!(!d.sessions["a"].init);
         assert_eq!(d.kill_execs("a").unwrap_err(), conflict());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn a_goblin_declares_a_worktree_in_its_own_folder() {
+        use goblins_runtime::worktrees::{Report, Worktree};
+        let mut d = daemon();
+        let path = d.state.clone();
+        let events = live(&mut d, "a");
+        d.sessions.get_mut("a").unwrap().record.state = "starting".into();
+        let folder = path.join("folder");
+        for name in ["fix", "other"] {
+            fs::create_dir_all(folder.join(name)).unwrap();
+            fs::write(folder.join(name).join(".git"), "gitdir: x\n").unwrap();
+        }
+        fs::create_dir(folder.join("plain")).unwrap();
+        events
+            .send(Event::Started {
+                docker_enabled: false,
+                policy: Box::new(policy_fixture("shell", &[])),
+                support: Support::linux(),
+                dev_shell: None,
+                identity: Identity {
+                    pid: 1,
+                    helper_userns: 0,
+                    mount_owner: 0,
+                    source_mountns: 0,
+                    mountns: 0,
+                },
+                recreated: None,
+                auto: Box::default(),
+                worktrees: Box::new(Report {
+                    folder: Some(folder.clone()),
+                    worktree: Some("fix".into()),
+                    detail: None,
+                }),
+            })
+            .unwrap();
+        d.tick().unwrap();
+        let worktree = |name: &str| Worktree {
+            name: name.into(),
+            path: folder.join(name),
+        };
+        // A goblin launched in a worktree works in it.
+        assert_eq!(d.sessions["a"].record.worktree, Some(worktree("fix")));
+        let set = |d: &mut Controller, name: Value| {
+            d.sandbox_control_for_test("a", "sessions.set-worktree", json!({"name":name}))
+        };
+        assert_eq!(
+            set(&mut d, json!("other")).unwrap(),
+            json!({"worktree":worktree("other")})
+        );
+        assert_eq!(d.sessions["a"].record.worktree, Some(worktree("other")));
+        // Only a worktree directory in its own folder.
+        for bad in ["plain", "missing", "../folder"] {
+            assert!(set(&mut d, json!(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(d.sessions["a"].record.worktree, Some(worktree("other")));
+        assert_eq!(set(&mut d, Value::Null).unwrap(), json!({"worktree":null}));
+        assert_eq!(d.sessions["a"].record.worktree, None);
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

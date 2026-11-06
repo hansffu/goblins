@@ -90,6 +90,21 @@ fn check(manifest: &Manifest) -> Result<()> {
     }
     Ok(())
 }
+/// mkGoblins' `worktrees.directory`, expanded like file grants from the
+/// daemon's environment. None when worktrees are off.
+pub fn worktrees_directory(
+    manifest: &Manifest,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<std::path::PathBuf>> {
+    let Some(raw) = &manifest.worktrees.directory else {
+        return Ok(None);
+    };
+    let path = crate::binds::expand(raw, env)?;
+    if path.parent().is_none() {
+        return Err("worktrees.directory cannot be the root".into());
+    }
+    Ok(Some(path))
+}
 /// The configurations a top-level configuration may run as raid
 /// members; unknown names have none. Scope variants never carry the list.
 pub fn run_targets(manifest: &Manifest, name: &str) -> Vec<String> {

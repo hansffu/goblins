@@ -676,6 +676,8 @@ Each conversation has a record with a short id of its own, such as =k3f9x2ab=. =
 
 Resuming launches the recorded configuration with the recorded scope, dev shell and working directory, using the manifest of the =goblins= you run, like =goblins run=. The agent name is reused when it is free. Before the agent starts, the recorded package grants are mounted in the order they were granted, so the agent's first command already has them, and a goblin that had Docker attaches to its scope's engine.
 
+A goblin that worked in a Git worktree (see Git worktrees) has it in its record. Resuming launches in the recorded working directory, as always, and restores the worktree if its name is still a worktree in the new launch's folder; otherwise =resume= reports =Skipped: worktree — REASON= and none is set. Nothing is created in its place.
+
 Resuming is best effort: a package that cannot be restored, because it is gone, broken, unfree or failed to download or build, is skipped with the reason and the goblin starts without it. If the current configuration's scope no longer offers Docker, the goblin starts without Docker. =resume= prints each skipped item as =Skipped: NAME — REASON=, =goblins history= lists them, and they stay in the record, so the next resume tries them again. Without =--detached=, =resume= waits until the goblin runs, reports what it skipped, and attaches.
 
 The record lives in =$XDG_STATE_HOME/goblins/sessions= (default =~/.local/state/goblins/sessions=), one private JSON file per conversation. Resuming continues the record instead of starting a new one, so it always describes the latest goblin, including packages granted after an earlier resume, and it lists every goblin id it ran as. If a goblin resumes a conversation another record holds, for example with =claude --resume= by hand, that record is merged into its own; if its agent switches to a new conversation (=/clear=, =/new=), the record follows the goblin. The server writes it whenever it changes: when the goblin starts running, when a package grant or Docker becomes ready, when the host denies a package, when the goblin records a variable, and when it stops. Nothing depends on a clean exit. Denied packages are listed for information only; a resumed goblin can request them again.
@@ -929,7 +931,7 @@ Host =goblins list= records and sandbox =goblin status= show each goblin's raid 
 
 * Running raid members
 
-A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME]=. It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
+A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME] [--worktree NAME]=; =--worktree= starts the member in that worktree of the owner's worktree folder (see Git worktrees). It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
 
 #+begin_src nix
 mkGoblins {
@@ -950,6 +952,39 @@ A created member's configuration comes from the daemon's /current manifest/: the
 Created members are not children. Their owner exiting or stopping does not stop them; the raid pauses instead. Inside a goblin, =goblin list= shows the members created in the raid it owns, and =goblin stop NAME= (or =kill=) stops one, with the reason "stopped by raid owner NAME (ID)". Members the host invited, the owner itself and goblins elsewhere return the same absent-record error as nonexistent IDs. A new owner takes over the members any earlier owner created; an owner that loses ownership loses them at once. A created member cannot leave the raid on its own; the host can kick it. The daemon enforces all of this on the session's authenticated socket; changing CLI arguments or sending raw RPC cannot select another identity, host manifest, terminal socket, filesystem grant or approval authority.
 
 Package requests always go through the host. When an owner runs a member, the member gets an /auto-approve/ copy of the owner's approved packages and of the owner's own auto-approve set, and of the dev shell generations it has: a request for one of them is granted without asking, with the exact output the owner had. Nothing is mounted until the member asks. Packages the owner is granted later do not reach members it already ran. A goblin's own repeated request for a package it has, or a refresh to its current dev shell, is also approved automatically. A member whose copied approvals would exceed 256 packages or 32 dev shells is refused. The member's history record keeps its auto-approve list, so a resumed member keeps it.
+
+* Git worktrees
+
+A goblin can work on its own branch in its own Git worktree of its repository, without planning it before the launch. Nothing changes for a goblin that does not use one, apart from one extra mount and one environment variable. The design is in [[file:specs/WORKTREES.org][specs/WORKTREES.org]] and [[file:adr/0019-worktrees.md][ADR 0019]].
+
+#+begin_src nix
+mkGoblins {
+  worktrees.directory = "$HOME/code/worktrees";   # null (default): no worktree support
+  goblins.claude = mkClaudeGoblin { };
+  goblins.shell = mkGoblin { worktrees.enable = false; /* ... */ };
+}
+#+end_src
+
+- =mkGoblins.worktrees.directory= is an absolute or =$HOME=-relative path, expanded like file grants from the daemon's environment. Null turns worktrees off.
+- =mkGoblin.worktrees.enable= (default true): false gives that configuration no worktree folder, no =GOBLINS_WORKTREES= and a failing =goblin worktree=.
+
+Worktrees live at =DIRECTORY/REPO/NAME=, where =REPO= is the basename of the main checkout and =NAME= is both the directory and the branch. Two checkouts with the same basename share a folder. At launch the working directory decides:
+
+- A checkout's root (it contains a =.git= directory): the goblin also gets =DIRECTORY/REPO= read-write, created if it is missing, and =GOBLINS_WORKTREES= is set to it.
+- A worktree, =DIRECTORY/REPO/NAME= or below, whose =.git= file names =CHECKOUT/.git/worktrees/ID= where =gitdir= points back at the worktree: the goblin also gets the checkout and the folder, and its worktree is =NAME=. A =.git= file that points elsewhere is refused, so a goblin cannot redirect the mount to another repository by editing it.
+- Anything else, including below a checkout's root: nothing changes.
+
+Both mounts are validated like the working directory, including protected paths, the folder and the checkout must not contain each other, and a launch that fails a check starts without worktree support and says why in its =detail=. Raid members follow the same rules from the working directory they inherit, and the dev shell evaluator gets the main =.git= read-only for a flake in a worktree. Every worktree of a repository is visible to every goblin of that repository, other raids' included. The daemon never runs Git on the host: goblins can write the repository's =.git=, so host-side Git there could run code a goblin planted.
+
+*Inside a goblin.*
+
+#+begin_src sh
+goblin worktree NAME [--base REF]   # create or enter a worktree, record it, print its path
+goblin worktree --main              # clear: this goblin works in the main checkout
+goblin run CONFIG --worktree NAME   # as owner: start a member in a worktree
+#+end_src
+
+=goblin worktree NAME= runs =git worktree add= in the sandbox when =$GOBLINS_WORKTREES/NAME= does not exist (on branch =NAME= if it exists, otherwise =-b NAME= from =REF=, default =HEAD=), sets the goblin's worktree to =NAME= and prints the path. =NAME= matches =[A-Za-z0-9][A-Za-z0-9._-]{0,99}=. The daemon records the worktree in the session (=worktree=, followed by Emacs and other host clients) and in the history record, but does not watch the filesystem: a removed worktree stays set until the goblin changes it. Listing and removing are plain Git (=git worktree list=, =git worktree remove=). The =goblins-worktrees= skill tells agents to run =goblin worktree NAME= and work in the printed path, and not to use Claude Code's =--worktree= or EnterWorktree, or Codex's own worktree features, because Goblins does not track those and installs no agent hooks.
 
 * State, workspace and authority
 

@@ -3,6 +3,7 @@ mod cli;
 mod host;
 mod init;
 mod preview;
+mod worktree;
 use clap::Parser;
 use goblins_jsonrpc as rpc;
 use goblins_protocol::REQUEST_SOCKET;
@@ -124,6 +125,9 @@ fn run() -> Result<i32, String> {
             }
             cli::Command::Complete { words } => return cli::complete(words),
             cli::Command::Raid { command } => return raid(command),
+            cli::Command::Worktree { name, base, main } => {
+                return worktree::run(name, base, main);
+            }
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
@@ -203,9 +207,17 @@ fn run() -> Result<i32, String> {
             }
             // Goblins do not attach to each other's terminals: a member always
             // starts detached, and the host can attach to it.
-            cli::Command::Run { config, name, .. } => {
-                let params = json!({"key":random_key()?,
+            cli::Command::Run {
+                config,
+                name,
+                worktree,
+                ..
+            } => {
+                let mut params = json!({"key":random_key()?,
                     "name":config,"agent_name":name,"detached":true});
+                if let Some(worktree) = worktree {
+                    params["worktree"] = json!(worktree);
+                }
                 println!("{}", call("sessions.start", params)?);
                 return Ok(0);
             }
@@ -521,7 +533,7 @@ fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String
         }
     }
 }
-fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+pub(crate) fn call(method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
     let (mut socket, _) = connect()?;
     rpc::exchange(&mut socket, json!(1), method, params).map_err(|e| e.to_string())
 }

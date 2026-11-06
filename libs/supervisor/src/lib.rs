@@ -31,6 +31,7 @@ mod snapshot;
 mod terminal;
 mod terminals;
 mod worker;
+mod worktrees;
 // Legacy descriptor fixtures travel with the ignored Session driver.
 #[cfg(test)]
 #[allow(dead_code)]

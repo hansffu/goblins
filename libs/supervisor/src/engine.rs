@@ -1687,6 +1687,7 @@ mod tests {
             },
             recreated: None,
             auto: Box::default(),
+            worktrees: Box::default(),
         }
     }
     /// A local runtime that has started on a plain configuration.

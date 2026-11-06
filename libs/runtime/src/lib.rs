@@ -22,6 +22,7 @@ pub mod policy;
 pub mod sandbox;
 pub mod scope;
 pub mod supervisor;
+pub mod worktrees;
 /// Why an allowNix goblin gets no package grants.
 pub const NIX_PACKAGES: &str =
     "this goblin has Nix; use nix shell nixpkgs#NAME instead of a package request";
@@ -38,6 +39,10 @@ pub struct Recreate {
     pub auto_approve: Vec<String>,
     pub docker: bool,
     pub variables: std::collections::BTreeMap<String, String>,
+    /// The worktree the record says it worked in, restored if the new launch's
+    /// folder still has it.
+    #[serde(default)]
+    pub worktree: Option<crate::worktrees::Worktree>,
 }
 /// What recreating staged, for the controller's hand-over.
 #[derive(Serialize, Deserialize)]
@@ -88,6 +93,9 @@ pub enum Source {
         state: PathBuf,
         /// The history store, protected like the daemon's state.
         history: Option<PathBuf>,
+        /// Start in this worktree, a directory in the owner's worktree folder
+        /// (`goblin run --worktree`), instead of in the owner's directory.
+        worktree: Option<PathBuf>,
     },
 }
 /// The daemon's view of one goblin's runtime. Neither method blocks.
@@ -390,6 +398,8 @@ pub enum Event {
         identity: Identity,
         recreated: Option<Box<Recreated>>,
         auto: Box<Auto>,
+        /// The launch's worktree folder and worktree, or why it has none.
+        worktrees: Box<crate::worktrees::Report>,
     },
     Progress {
         request: String,

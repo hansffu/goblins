@@ -38,14 +38,21 @@ pub struct Plan {
     /// Kept apart from the declared mounts so a child with another
     /// configuration can share its parent's pinned directory.
     working_directory: Option<Mount>,
+    /// A repository's worktree folder and, for a goblin in a worktree, its
+    /// main checkout (docs/specs/WORKTREES.org).
+    worktrees: Vec<Mount>,
     mounts: Vec<Mount>,
     pub store_targets: BTreeMap<PathBuf, PathBuf>,
 }
 impl Plan {
-    /// Every mount in bind order: the working directory first, so declared
-    /// read-only paths beneath it still take precedence.
+    /// Every mount in bind order: the worktree folder and checkout, then the
+    /// working directory, which may lie inside them, before the declared mounts,
+    /// so declared read-only paths beneath any of them still take precedence.
     pub(crate) fn mounts(&self) -> impl Iterator<Item = &Mount> {
-        self.working_directory.iter().chain(&self.mounts)
+        self.worktrees
+            .iter()
+            .chain(&self.working_directory)
+            .chain(&self.mounts)
     }
     pub(crate) fn destinations(&self) -> impl Iterator<Item = &Path> {
         self.mounts().map(|m| m.destination.as_path())
@@ -67,6 +74,7 @@ pub fn plan(
     let mut plan = Plan {
         home,
         working_directory: None,
+        worktrees: vec![],
         mounts: vec![],
         store_targets: BTreeMap::new(),
     };
@@ -231,15 +239,21 @@ fn scan(
     }
     Ok(())
 }
+/// Open a directory that will be mounted as a goblin's working directory,
+/// validated like it: the pinned descriptor and the path it resolved to.
+pub(crate) fn pin_directory(path: &Path, private: &[PathBuf]) -> Result<(File, PathBuf)> {
+    validate(path, private)?;
+    let source_fd = open_source(path)?;
+    let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
+    validate(&source, private)?;
+    if !source_fd.metadata()?.is_dir() {
+        return Err("working directory must be a directory".into());
+    }
+    Ok((source_fd, source))
+}
 impl Plan {
     pub fn add_working_directory(&mut self, cwd: &Path, private: &[PathBuf]) -> Result<()> {
-        validate(cwd, private)?;
-        let source_fd = open_source(cwd)?;
-        let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
-        validate(&source, private)?;
-        if !source_fd.metadata()?.is_dir() {
-            return Err("working directory must be a directory".into());
-        }
+        let (source_fd, source) = pin_directory(cwd, private)?;
         // A directory bind includes descendants. Mount it before explicit binds
         // so configured read-only paths still take precedence. Pin the source
         // using the same descriptor mechanism as other startup grants.
@@ -249,6 +263,29 @@ impl Plan {
             destination: cwd.to_path_buf(),
             readonly: false,
         });
+        Ok(())
+    }
+    /// Mount a repository's worktree folder and, for a goblin in a worktree,
+    /// its main checkout, each read-write at its own path and validated as the
+    /// working directory is.
+    pub(crate) fn add_worktrees(&mut self, paths: &[&Path], private: &[PathBuf]) -> Result<()> {
+        let mut mounts = vec![];
+        for path in paths {
+            validate(path, private)?;
+            let source_fd = open_source(path)?;
+            let source = fs::read_link(format!("/proc/self/fd/{}", source_fd.as_raw_fd()))?;
+            validate(&source, private)?;
+            if !source_fd.metadata()?.is_dir() {
+                return Err(format!("{} must be a directory", path.display()).into());
+            }
+            mounts.push(Mount {
+                source_fd,
+                source,
+                destination: path.to_path_buf(),
+                readonly: false,
+            });
+        }
+        self.worktrees = mounts;
         Ok(())
     }
     /// The pinned working directory, for a goblin this one runs: a copy of

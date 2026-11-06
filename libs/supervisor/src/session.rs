@@ -268,6 +268,8 @@ pub(crate) struct Member<'a> {
     pub protected_paths: Vec<PathBuf>,
     pub manifest: &'a Path,
     pub configuration: &'a str,
+    /// The directory in the owner's worktree folder to start in.
+    pub worktree: Option<PathBuf>,
 }
 /// Recorded grants that resolved, in order, and the names that did not.
 pub(crate) type Resolved = (
@@ -321,6 +323,17 @@ pub struct Session {
     /// The agent's arguments for this sandbox only, instead of
     /// `launch.shell_args` (a resumed conversation).
     pub(crate) arguments: Option<Vec<String>>,
+    /// The launch's worktree folder and worktree, or why it has none; settled
+    /// once by `settle_layout`.
+    pub(crate) worktrees: goblins_runtime::worktrees::Report,
+    layout: Option<goblins_runtime::worktrees::Layout>,
+    layout_settled: bool,
+    /// A member asked to start in a worktree of its owner's folder
+    /// (`goblin run --worktree`): that directory, as the owner's folder names it.
+    worktree_start: Option<PathBuf>,
+    /// The launch's working directory, opened once and validated: the object
+    /// the layout is read from and the one mounted.
+    pinned_cwd: Option<(File, PathBuf)>,
 }
 impl Session {
     #[cfg(test)]
@@ -376,6 +389,11 @@ impl Session {
             run_targets: Arc::new([]),
             recreated: Vec::new(),
             arguments: None,
+            worktrees: Default::default(),
+            layout: None,
+            layout_settled: false,
+            worktree_start: None,
+            pinned_cwd: None,
         };
         for name in ["store", "packages", "roots", "workspace"] {
             fs::create_dir(session.directory.join(name))?;
@@ -412,6 +430,7 @@ impl Session {
             protected_paths,
             manifest,
             configuration,
+            worktree,
         } = member;
         let manifest = crate::config::validate(manifest)?;
         let editor = crate::config::editor(&manifest)?;
@@ -424,7 +443,13 @@ impl Session {
             return Err("initial package limit is 128".into());
         }
         launch.protected_paths = protected_paths;
+        let mut directory_error = None;
+        match crate::config::worktrees_directory(&manifest) {
+            Ok(path) => launch.worktrees_directory = path,
+            Err(error) => directory_error = Some(format!("worktrees.directory: {error}")),
+        }
         let mut session = Self::new_in(launch, None, cancel, directory)?;
+        session.worktrees.detail = directory_error;
         // new_in canonicalizes cwd for host launches only. Keep the owner's
         // pinned namespace path even when its host pathname was renamed.
         session.launch.cwd = handoff
@@ -457,6 +482,19 @@ impl Session {
         session.inherited_cwd = handoff
             .working_directory
             .map(|w| (File::from(OwnedFd::from(w.fd)), w.source, w.destination));
+        if let Some(path) = worktree {
+            // In a worktree of the owner's folder, instead of in the owner's
+            // directory: opened like a host launch's, and checked to be a
+            // worktree when the layout is settled.
+            if !session.launch.worktrees.enable {
+                return Err("worktrees are not enabled for this goblin".into());
+            }
+            // Checked to be that directory of the owner's folder when it is
+            // pinned: see `pin_working_directory`.
+            session.inherited_cwd = None;
+            session.launch.cwd = Some(path.clone());
+            session.worktree_start = Some(path);
+        }
         session.workspace = Some(Arc::new(SharedWorkspace {
             file: File::from(OwnedFd::from(handoff.workspace)),
         }));
@@ -542,13 +580,139 @@ impl Session {
         }
         Ok(())
     }
-    pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
-        let etc = crate::sandbox_etc::launch_mounts(&self.launch)?;
+    /// The launch's repository layout, once settled.
+    pub(crate) fn layout(&self) -> Option<&goblins_runtime::worktrees::Layout> {
+        self.layout.as_ref()
+    }
+    /// Look at the launch's working directory for a repository layout, once
+    /// (docs/specs/WORKTREES.org): a member looks at the directory it
+    /// inherits. A dev shell evaluates its flake before start builds the
+    /// mounts, so both ask for the same answer.
+    pub(crate) fn settle_layout(&mut self) -> Result<()> {
+        if std::mem::replace(&mut self.layout_settled, true) {
+            return Ok(());
+        }
+        let wanted = self
+            .worktree_start
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned());
+        if self.launch.worktrees.enable
+            && self.worktrees.detail.is_none()
+            && let Some(directory) = self.launch.worktrees_directory.clone()
+        {
+            // Everything is read from the pinned working directory, never from
+            // a pathname a goblin can swap while the launch starts.
+            let pinned = match &self.inherited_cwd {
+                Some((fd, _, _)) => Some(fd.try_clone()?),
+                None => {
+                    self.pin_working_directory()?;
+                    self.pinned_cwd
+                        .as_ref()
+                        .map(|(fd, _)| fd.try_clone())
+                        .transpose()?
+                }
+            };
+            if let Some(cwd) = pinned {
+                match goblins_runtime::worktrees::detect(&directory, &cwd) {
+                    Ok(Some(layout)) => {
+                        // Nothing is exposed, not even to a dev shell's
+                        // evaluation, that a mount would refuse.
+                        let private = self.private_paths()?;
+                        let refusal = [&layout.folder, &layout.checkout]
+                            .into_iter()
+                            .find_map(|path| crate::binds::validate(path, &private).err())
+                            .map(|error| error.to_string());
+                        match refusal {
+                            None => {
+                                self.worktrees.folder = Some(layout.folder.clone());
+                                self.worktrees.worktree = layout.worktree.clone();
+                                self.layout = Some(layout);
+                            }
+                            Some(error) => self.worktrees.detail = Some(error),
+                        }
+                    }
+                    Ok(None) => (),
+                    Err(detail) => self.worktrees.detail = Some(detail),
+                }
+            }
+        }
+        if let Some(name) = wanted
+            && self.worktrees.worktree.as_deref() != Some(name.as_str())
+        {
+            return Err(match &self.worktrees.detail {
+                Some(detail) => {
+                    format!("{name} is not a worktree of the owner's repository: {detail}")
+                }
+                None => format!("{name} is not a worktree of the owner's repository"),
+            }
+            .into());
+        }
+        Ok(())
+    }
+    /// Open and validate the launch's own working directory once, as a host
+    /// launch's mount would, and keep the descriptor: a member started in a
+    /// worktree must find it directly in the owner's folder, whatever a
+    /// goblin has planted there.
+    fn pin_working_directory(&mut self) -> Result<()> {
+        let Some(cwd) = self
+            .launch
+            .cwd
+            .clone()
+            .filter(|_| self.pinned_cwd.is_none())
+        else {
+            return Ok(());
+        };
+        let private = self.private_paths()?;
+        let (fd, source) =
+            crate::binds::pin_directory(&cwd, &private).map_err(|error| {
+                match &self.worktree_start {
+                    Some(named) => format!(
+                        "{} is not a worktree of the owner's repository: {error}",
+                        named.display()
+                    ),
+                    None => error.to_string(),
+                }
+            })?;
+        if let Some(named) = &self.worktree_start {
+            let folder = named.parent().map(fs::canonicalize).transpose();
+            let name = named.file_name();
+            let expected = match (folder, name) {
+                (Ok(Some(folder)), Some(name)) => Some(folder.join(name)),
+                _ => None,
+            };
+            if expected.as_deref() != Some(source.as_path()) {
+                return Err(format!(
+                    "{} is not a worktree of the owner's repository: it is not a directory of the owner's worktree folder",
+                    named.display()
+                )
+                .into());
+            }
+        }
+        self.pinned_cwd = Some((fd, source));
+        Ok(())
+    }
+    /// What no startup grant may overlap: the launch's protected paths, the
+    /// Docker and scope storage, this session's directory and the files
+    /// injected into /etc, whether or not a dev shell is evaluated yet.
+    fn private_paths(&self) -> Result<Vec<PathBuf>> {
         let mut private = self.launch.protected_paths.clone();
         private.push(crate::docker::storage_root(false)?);
         private.push(crate::scope_storage::root(false)?);
         private.push(self.directory.clone());
-        private.extend(etc.iter().map(|(_, destination)| destination.clone()));
+        private.extend(
+            crate::sandbox_etc::mounts(
+                &self.launch.sandbox_etc,
+                &self.launch.dev_shell_sandbox_etc,
+            )?
+            .into_iter()
+            .map(|(_, destination)| destination),
+        );
+        Ok(private)
+    }
+    pub fn start(&mut self, terminal: Option<OwnedFd>) -> Result<()> {
+        let etc = crate::sandbox_etc::launch_mounts(&self.launch)?;
+        let private = self.private_paths()?;
         // allowNix: the host store and the daemon's socket, as (what to bind at
         // its own path, the socket). The default socket's directory holds
         // nothing else, and binding it survives the socket being recreated; a
@@ -566,11 +730,38 @@ impl Session {
             None
         };
         if self.binds.is_none() {
+            // Before the working directory is mounted: it is pinned here.
+            self.settle_layout()?;
             let mut binds = crate::binds::plan(&self.launch.binds, &private, &self.cancel)?;
             if let Some((fd, source, destination)) = self.inherited_cwd.take() {
                 binds.use_working_directory(fd, source, destination);
+            } else if let Some((fd, source)) = self.pinned_cwd.take() {
+                binds.use_working_directory(fd, source, self.launch.cwd.clone().unwrap());
             } else if let Some(cwd) = &self.launch.cwd {
                 binds.add_working_directory(cwd, &private)?;
+            }
+            // The worktree folder, and for a goblin in a worktree its checkout.
+            // A launch that fails a check starts without worktree support.
+            if let Some(layout) = self.layout.clone() {
+                let mut paths = vec![layout.folder.as_path()];
+                if layout.worktree.is_some() {
+                    paths.push(layout.checkout.as_path());
+                }
+                match binds.add_worktrees(&paths, &private) {
+                    Ok(()) => {
+                        self.launch.env.insert(
+                            goblins_runtime::worktrees::ENV.into(),
+                            layout.folder.display().to_string(),
+                        );
+                    }
+                    Err(error) => {
+                        self.layout = None;
+                        self.worktrees = goblins_runtime::worktrees::Report {
+                            detail: Some(error.to_string()),
+                            ..Default::default()
+                        };
+                    }
+                }
             }
             self.binds = Some(Arc::new(binds));
         }
@@ -1361,6 +1552,20 @@ impl Session {
         }
         error
     }
+    /// A flake in a worktree is a Git flake whose common directory is the main
+    /// `.git`: the evaluator gets it read-only.
+    fn bind_checkout_git(
+        &self,
+        evaluator: &mut crate::evaluator::Evaluator,
+        tree: &Path,
+    ) -> Result<()> {
+        if let Some(layout) = &self.layout
+            && let Some((git, destination)) = crate::worktrees::evaluator_git(layout, tree)?
+        {
+            evaluator.bind_pinned(git, destination);
+        }
+        Ok(())
+    }
     /// Evaluation-time network for a refresh: the goblin's own.
     fn evaluation_network(&self) -> crate::evaluator::Network {
         use crate::evaluator::Network;
@@ -1408,8 +1613,10 @@ impl Session {
         let cwd = self.launch.cwd.as_ref().ok_or(
             "dev shell refresh and diff are not supported with a daemon --workspace snapshot",
         )?;
-        let tree = crate::devshell::visible_tree(&current.path, cwd)?;
-        let evaluator = self.evaluator()?;
+        let tree =
+            crate::devshell::visible_tree(&current.path, cwd, self.worktrees.folder.as_deref())?;
+        let mut evaluator = self.evaluator()?;
+        self.bind_checkout_git(&mut evaluator, &tree)?;
         // A flake whose evaluation never ends must not keep the request
         // pending until someone denies it.
         let cancel = cancel.with_limit(evaluation_limit());
@@ -1505,8 +1712,10 @@ impl Session {
             .cwd
             .as_ref()
             .ok_or("flake run is not supported with a daemon --workspace snapshot")?;
-        let tree = crate::devshell::visible_tree(&current.path, cwd)?;
-        let evaluator = self.evaluator()?;
+        let tree =
+            crate::devshell::visible_tree(&current.path, cwd, self.worktrees.folder.as_deref())?;
+        let mut evaluator = self.evaluator()?;
+        self.bind_checkout_git(&mut evaluator, &tree)?;
         let app = crate::devshell::app(
             current,
             name,

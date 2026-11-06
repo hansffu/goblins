@@ -30,7 +30,7 @@ class HistoryTests(unittest.TestCase):
         session = launch["session"]
         record = d.wait(lambda: d.record(session))
         self.assertEqual((record["version"], record["sessions"], record["configuration"], record["agent_name"]),
-                         (2, [session], "shell", launch["agent_name"]))
+                         (3, [session], "shell", launch["agent_name"]))
         # A short random id of its own, unlike the goblin's.
         self.assertRegex(record["id"], r"^[0-9a-hjkmnp-tv-z]{8}$")
         self.assertEqual(record["packages"], {"approved": [], "denied": [], "auto_approve": []})

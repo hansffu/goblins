@@ -46,6 +46,10 @@ fn construct_root(
     Ok(lease)
 }
 pub use goblins_runtime::config::{editor, read, run_targets, validate};
+/// mkGoblins' `worktrees.directory`, expanded from the daemon's environment.
+pub fn worktrees_directory(manifest: &Manifest) -> Result<Option<PathBuf>> {
+    goblins_runtime::config::worktrees_directory(manifest, |name| std::env::var(name).ok())
+}
 pub fn select(manifest: Manifest, name: &str, scope: Option<&str>) -> Result<Configuration> {
     goblins_runtime::config::select(manifest, name, scope, |name| std::env::var(name).ok())
 }
@@ -75,6 +79,9 @@ pub struct Launch {
     pub dev_shell: Option<goblins_runtime::devshell::DevShell>,
     #[serde(skip)]
     pub editor: Option<Editor>,
+    /// Where worktrees live, expanded; None turns them off.
+    #[serde(skip)]
+    pub worktrees_directory: Option<PathBuf>,
 }
 impl std::ops::Deref for Launch {
     type Target = Definition;
@@ -157,6 +164,7 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
             dev_shell_sandbox_etc: config.dev_shell_sandbox_etc.clone(),
             integration: config.integration.clone(),
             docker: config.docker.clone(),
+            worktrees: config.worktrees.clone(),
             binds: serde_json::from_value(serde_json::json!({
                 "rw_dirs": spec["rw_dirs"], "rw_files": spec["rw_files"],
                 "ro_dirs": spec["ro_dirs"], "ro_files": spec["ro_files"],
@@ -171,6 +179,7 @@ pub fn launch(config: &Configuration) -> Result<Launch> {
         scope: config.selected_scope.clone(),
         dev_shell: None,
         editor: None,
+        worktrees_directory: None,
     })
 }
 #[cfg(test)]

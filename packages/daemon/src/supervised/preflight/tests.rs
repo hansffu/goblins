@@ -287,6 +287,7 @@ pub(crate) fn wrong_direction_handoff(
                 auto: Default::default(),
                 state: root.into(),
                 history: None,
+                worktree: None,
             },
             directory: root.into(),
             dimensions: (24, 80),
