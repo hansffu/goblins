@@ -1,0 +1,93 @@
+#+title: Git worktrees for goblins
+
+Status: proposed, 2026-11-06. The decision is [[file:../adr/0019-worktrees.md][ADR 0019]].
+
+* Goal
+
+A goblin can work in a Git worktree of its repository when asked, without planning it before the launch. One command creates or enters the worktree, records it, and returns its path. Emacs follows the goblin there, and resume brings it back.
+
+* Configuration
+
+#+begin_src nix
+mkGoblins {
+  worktrees.directory = "$HOME/code/worktrees";   # null (default): no worktree support
+  goblins.shell = mkGoblin { worktrees.enable = false; };   # default true
+}
+#+end_src
+
+The directory is expanded like file grants. A goblin with =worktrees.enable = false= gets nothing from this spec.
+
+* Layout and mounts
+
+Worktrees live at =DIRECTORY/REPO/NAME=, where =REPO= is the basename of the main checkout and =NAME= is both the directory and the branch. Two checkouts with the same basename share a folder; that is accepted.
+
+At launch the daemon looks at the working directory:
+
+- *A checkout's root* (it contains a =.git= directory): the goblin also gets =DIRECTORY/REPO= read-write. The daemon creates the folder if it is missing.
+- *A worktree*, =DIRECTORY/REPO/NAME= or below: the worktree's =.git= file names =CHECKOUT/.git/worktrees/ID=. The daemon accepts it only if =CHECKOUT/.git/worktrees/ID/gitdir= points back to this worktree, so a goblin cannot redirect the mount to another repository by editing the =.git= file. The goblin then also gets =CHECKOUT= and =DIRECTORY/REPO= read-write, and its worktree is =NAME=.
+- *Anything else*, including below a checkout's root: nothing changes.
+
+Both mounts go through the same validation as the working directory, including protected paths, and come before declared binds. The folder and the checkout must not contain each other. A launch that fails a check starts without worktree support and says why in =detail=. =GOBLINS_WORKTREES= is set to the folder whenever it is mounted.
+
+Raid members follow the same rules from the working directory they inherit. The dev shell evaluator gets =CHECKOUT/.git= read-only when the flake is in a worktree, so dev shells work there.
+
+* The command
+
+=goblin worktree NAME [--base REF]=
+
+1. If =$GOBLINS_WORKTREES/NAME= does not exist, it runs =git worktree add= inside the sandbox: on branch =NAME= if it exists, otherwise with =-b NAME= from =REF= (default =HEAD=).
+2. It sets the goblin's worktree to =NAME=. The daemon publishes the change in the session state, which Emacs and other host clients follow.
+3. It prints the worktree's absolute path.
+
+=goblin worktree --main= clears the goblin's worktree.
+
+=NAME= matches =[A-Za-z0-9][A-Za-z0-9._-]{0,99}=. Listing and removing are plain Git (=git worktree list=, =git worktree remove=).
+
+=goblin run CONFIG --worktree NAME= starts a raid member with =$GOBLINS_WORKTREES/NAME= as its working directory.
+
+The daemon never runs Git on the host: goblins can write the repository's =.git=, so host-side Git there could run code a goblin planted.
+
+* API
+
+Updated in =docs/API.org= with the implementation.
+
+- =Session= and =SandboxSession= get =worktree=: ={"name", "path"}= or null.
+- Sandbox =sessions.set-worktree= ={"name"}= or ={"name": null}=: the name must be a worktree directory in the caller's folder.
+- Sandbox =sessions.start= gets an optional =worktree= name.
+- =server.status= gets =worktrees_directory=.
+
+* History and resume
+
+History records (version 3) keep =worktree=. =goblins resume= launches in the recorded working directory as today, and restores the worktree if =NAME= still exists in the new launch's folder. Otherwise it reports the worktree as skipped.
+
+* Agents
+
+No agent hooks or integration changes. The =goblins-worktrees= skill tells agents to run =goblin worktree NAME= and work in the printed path, and not to use Claude Code's =--worktree= or EnterWorktree, or Codex's own worktree features, because Goblins does not track those.
+
+* Emacs
+
+- A goblin's agent terminal's =default-directory= follows its worktree, so Magit and =C-x p f= open it.
+- The sidebar groups by the worktree when set, with headings like =goblins ⎇ fix-login=.
+- =goblins-run-with-worktree= creates the worktree on the host under =worktrees_directory= and runs a goblin there; =:prompt= is sent with =messages.send=.
+
+* Not included
+
+A registry of repository keys, worktrees outside =DIRECTORY=, launches below a checkout's root, branch names with =/=, removal safety checks, and agent hooks. A goblin can also already write =.git/config= and hooks in its repository, which run when Git runs on the host; that gap predates worktrees and is left for a separate change.
+
+* Tests
+
+=worktrees= task in =tests/features.toml=:
+- a root launch gets the folder;
+- a worktree launch gets the checkout;
+- a forged =.git= file is refused;
+- overlapping layouts and protected paths are refused;
+- =goblin worktree= creates and enters a worktree that can commit;
+- =goblin run --worktree=;
+- a dev shell in a worktree;
+- resume with the worktree present and removed;
+- Emacs =default-directory= and sidebar grouping.
+
+* Phases
+
+1. Daemon, command, API, history, skill and docs.
+2. Emacs.
