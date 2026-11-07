@@ -10,6 +10,10 @@ in
   # editor.emacs.enable: sandboxes open files in the host's Emacs over TRAMP
   # (EDITOR and VISUAL), and get the tools the /goblins: TRAMP method needs.
   editor ? { },
+  # directory: where Git worktrees live (DIRECTORY/REPO/NAME), an absolute or
+  # $HOME-relative path expanded from the daemon's environment. Null turns
+  # worktrees off. See docs/specs/WORKTREES.org.
+  worktrees ? { },
 }:
 let
   fail = message: throw "mkGoblins: ${message}";
@@ -109,6 +113,11 @@ let
 in
 assert validate.goblins goblins;
 assert lib.assertMsg (
+  builtins.isAttrs worktrees
+  && builtins.all (name: name == "directory") (builtins.attrNames worktrees)
+  && (worktrees.directory or null == null || validate.worktreesDirectory worktrees.directory)
+) "mkGoblins: worktrees accepts only directory = null or an absolute or $HOME path outside /nix, /proc, /dev and /run/goblins";
+assert lib.assertMsg (
   builtins.isAttrs editor
   && builtins.all (name: name == "emacs") (builtins.attrNames editor)
   && builtins.isAttrs (editor.emacs or { })
@@ -140,6 +149,9 @@ assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
 )) "mkGoblins: members of a scope with Docker must have the same allowNix";
 import ../../packages/daemon/wrapper.nix {
   inherit pkgs goblins configurations;
+  worktrees = {
+    directory = worktrees.directory or null;
+  };
   editor =
     if emacs.enable then
       {

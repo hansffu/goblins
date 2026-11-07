@@ -4,6 +4,7 @@
   configurations,
   scopes ? { },
   editor ? null,
+  worktrees ? { },
 }:
 let
   inherit (pkgs) lib;
@@ -29,7 +30,7 @@ let
     builtins.toJSON {
       api = 2;
       helper_api = 6;
-      inherit scopes editor;
+      inherit scopes editor worktrees;
       goblins = lib.mapAttrs (
         _: configuration:
         prepare configuration

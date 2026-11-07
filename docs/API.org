@@ -85,7 +85,7 @@ While the server is stopping, every method except =server.status= and =server.st
 Reports whether the server is running and how many goblins it has.
 
 - Input :: ={}=
-- Output :: ={"instance", "state": "running"|"stopping", "sessions": N, "history", "manifest"}=. =sessions= counts goblins with a live worker. =history= is ={"directory", "owner": true, "keep", "recording"}= when this server owns the history store, or ={"directory", "owner": false, "reason"}= when it does not. =manifest= is the current runtime manifest path or null.
+- Output :: ={"instance", "state": "running"|"stopping", "sessions": N, "history", "manifest", "worktrees_directory"}=. =sessions= counts goblins with a live worker. =history= is ={"directory", "owner": true, "keep", "recording"}= when this server owns the history store, or ={"directory", "owner": false, "reason"}= when it does not. =manifest= is the current runtime manifest path or null. =worktrees_directory= is the expanded =mkGoblins.worktrees.directory= of the current configuration, or null when worktrees are off (see [[file:specs/WORKTREES.org][specs/WORKTREES.org]]); a host client creates worktrees beneath =DIRECTORY/REPO= with Git.
 
 *** =server.stop=
 
@@ -351,7 +351,7 @@ Sandbox requests pass transport and parameter validation, then configuration pol
 *** =sessions.status=
 
 - Input :: ={}=
-- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "created_by"}=. =attached= is whether a frontend is attached. =attached_since= is when the attached client started, in Unix milliseconds, for a goblin with =onAttach=; otherwise null. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
+- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "worktree", "created_by"}=. =worktree= is the =Worktree= the goblin works in, or null. =attached= is whether a frontend is attached. =attached_since= is when the attached client started, in Unix milliseconds, for a goblin with =onAttach=; otherwise null. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
 
 *** =sessions.set-state=
 
@@ -429,19 +429,28 @@ A raid owner sees and stops only the goblins it ran in its raid, while it owns i
 *** =sessions.list= / =sessions.get=
 
 - Input :: ={}= / ={"session"}=
-- Output :: =[SandboxSession]= / =SandboxSession=, a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached=.
+- Output :: =[SandboxSession]= / =SandboxSession=, a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached, worktree=.
 
 *** =sessions.start=
 
 Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals.
 
-- Input :: ={"key", "name", "agent_name", "detached"?}=
+- Input :: ={"key", "name", "agent_name", "detached"?, "worktree"?}=. =worktree= (optional, may be null) is the name of a worktree in the caller's worktree folder to start the member in, as =goblin run --worktree= does. The member's working directory is =FOLDER/NAME=, opened like a host launch's, and its launch is refused with a =detail= unless that directory is a worktree whose =.git= file and the checkout's record of it agree. The call is refused (=-32009=) when the caller has no worktree folder, and the member's launch when its configuration has =worktrees.enable = false=.
 - Output :: ={"session", "agent_name", "state"}=
 
 *** =sessions.stop=
 
 - Input :: ={"session"}=
 - Output :: ={"accepted": true}=
+
+** Worktrees
+
+*** =sessions.set-worktree=
+
+Records the worktree the goblin works in, which Emacs and other host clients follow and a resume restores. The daemon does not watch the filesystem: a removed worktree stays set until the goblin changes it or stops. Refused (=-32009=) for a goblin without a worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off for its configuration (its =detail= says why).
+
+- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. =null= clears the worktree: the goblin works in its main checkout (=Session.checkout=), even if it was launched in a worktree.
+- Output :: ={"worktree": Worktree_OR_NULL}=
 
 ** Raids
 
@@ -503,6 +512,8 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =scope=, =dev_shell=, =cwd=                   | Launch scope, dev shell reference and directory, or null                 |
 | =docker_enabled=                              | Whether Docker is attached                                               |
 | =created_by=                                  | ={"id", "agent_name"}= of the raid owner that ran it, or null            |
+| =worktree=                                    | =Worktree= the goblin works in, or null (see below)                      |
+| =checkout=                                    | Main checkout of a goblin with a worktree folder (=GOBLINS_CHECKOUT=), where it works without a =worktree=, or null |
 | =raid=                                        | ={"id", "name", "role", "owner", "paused"}= or null                      |
 | =identity=                                    | ={"pid", "helper_userns", "mount_owner", "source_mountns", "mountns"}= or null |
 | =initial_packages=, =packages=, =auto_approve= | Package names                                                           |
@@ -514,6 +525,10 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =stop_reason=, =detail=                       | Why it stopped; diagnostic detail                                        |
 | =recreated_from=                              | History record it was recreated from, or null                            |
 | =skipped=                                     | =[{"name", "reason"}]= that a recreate could not restore                 |
+
+** Worktree
+
+={"name", "path"}=: the worktree =name= (its branch and directory name) at =path=, a directory of the goblin's worktree folder =DIRECTORY/REPO=. It is set at launch for a goblin in a worktree, restored by a resume, and set or cleared by =sessions.set-worktree=; =Session= and =SandboxSession= carry it, and a history record keeps it.
 
 ** Permission
 
@@ -565,7 +580,9 @@ A communications log entry: ={"instance", "sequence", "timestamp", "kind", "acto
 
 ** HistoryRecord
 
-={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "created", "updated", "stopped"}=
+={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "worktree", "created", "updated", "stopped"}=
+
+=version= is 3. Version 1 and 2 records read as the current version, with =worktree: null=. =worktree= is the =Worktree= the goblin works in, written whenever it changes. =goblins resume= launches in the recorded working directory and restores the worktree if its name is still a worktree in the new launch's worktree folder; otherwise the record's =skipped= lists ={"name": "worktree", "reason"}= and none is set. A record with =worktree: null= resumes without one, in the main checkout, even when its working directory is a worktree.
 
 * Private init channel (same build)
 
@@ -706,7 +723,7 @@ Maintenance shares preflight's synchronous private one-shot loop outside daemon 
 
 Deletion policy remains private and unchanged: scope clearing holds the storage gate and preflights every selected scope/Docker lock and path before any deletion, retains stable persistent lock inodes, and respects live leases. GC separates its exclusive temporary-store gate from server-control/daemon lock protection, keeps live/guardian-owned resources and preserves history/logs. Cancellation is checked during enumeration/preflight and before deletion/unlink/helper phases. Removal helpers keep the selected parent-directory and lease descriptors, run in their own process group, and reuse the WNOWAIT/group-kill/direct-reap guard so graceful mapping/readiness/write/cancel errors reap helper/mapping groups before scratch and outer locks unwind. Helper parent-death SIGKILL is rearmed against the original parent after namespace setup and credential calls, including before reporting a credential error, and immediately before deletion; failed arm/parent mismatch exits immediately without potentially blocked diagnostics or deletion. Forced supervisor death confirms only direct-supervisor reap: helper death via the kernel backstop and inherited lease release are separate guarantees, with orphan reaping left to the OS. No cleanup service or synchronous descendant-reap claim is added.
 
-=Source= has a =kind= discriminator. =Host= has =configuration:PATH=, =name:STRING=, =scope:STRING_OR_NULL=, =dev_shell:STRING_OR_NULL=, =workspace:PATH_OR_NULL=, =cwd:PATH_OR_NULL=, =state:PATH=, =history:PATH_OR_NULL=, =recreate:Recreate_OR_NULL= and =sequence:U64=. =Member= has =scope:DESCRIPTOR_OR_NULL=, =owner_scope:STRING_OR_NULL=, =manifest:PATH=, =configuration:STRING=, =auto:{PACKAGE:PATH,...}=, =state:PATH= and =history:PATH_OR_NULL=. The scope descriptor is the membership held from acceptance, not a namespace path. Source variants reject unknown fields.
+=Source= has a =kind= discriminator. =Host= has =configuration:PATH=, =name:STRING=, =scope:STRING_OR_NULL=, =dev_shell:STRING_OR_NULL=, =workspace:PATH_OR_NULL=, =cwd:PATH_OR_NULL=, =state:PATH=, =history:PATH_OR_NULL=, =recreate:Recreate_OR_NULL= and =sequence:U64=. =Member= has =scope:DESCRIPTOR_OR_NULL=, =owner_scope:STRING_OR_NULL=, =manifest:PATH=, =configuration:STRING=, =auto:{PACKAGE:PATH,...}=, =state:PATH=, =history:PATH_OR_NULL= and =worktree:PATH_OR_NULL=, the worktree directory in the owner's worktree folder that the member starts in instead of in the owner's working directory (=goblin run --worktree=; absent decodes as null). The scope descriptor is the membership held from acceptance, not a namespace path. Source variants reject unknown fields.
 
 =SupervisorStart.payload_nofile= is required and nullable. At construction the foreground daemon snapshots its process-local original soft =RLIMIT_NOFILE= value if it successfully raised its own soft limit; null means no original value was recorded. The supervisor retains its inherited ambient soft and hard limits through exec and bootstrap. After complete logical startup validation, including any multipart handoff, and before creating an engine or worker or sending =Adopted=, it installs this value as process-local payload restoration metadata only. A non-null value must be a positive finite unsigned integer representable as =rlim_t= and no greater than either actual ambient soft or hard limit. Zero, infinity, conversion failure and out-of-bounds values fail startup with =invalid payload descriptor limit=; a failed =getrlimit= also fails startup with its OS error. Rejection leaves existing metadata and kernel limits unchanged and releases received capabilities and leases without an acknowledgement or engine side effects. Null clears restoration metadata without changing kernel limits. Payload launch restores the recorded soft value while retaining the ambient hard limit, so controller and supervisor capacity remains raised. The separate background =server start= self-exec path still loses process-local original-limit metadata; this preexisting limitation is outside this propagation mechanism.
 
@@ -776,7 +793,7 @@ All methods in this table are supervisor-to-daemon notifications. There is no co
 | =Event.ScopeFailed= | ={"name":STRING}= | Reports scope failure. |
 | =Event.ScopeNeeded= | ={"name":STRING}= | Requests scope membership. The daemon uses its captured executable pin. |
 | =Event.Preview= | ={"approval":U64,"result":Result<Preview,String>}= | Returns a package preview including the private output path. |
-| =Event.Started= | ={"docker_enabled":BOOL,"policy":Policy,"support":Support,"dev_shell":OPAQUE_OPTIONAL_DEV_SHELL_SUMMARY,"identity":Identity,"recreated":Recreated_OR_NULL,"auto":Auto}= | Publishes descriptor-free launch metadata; every PTY remains in the runtime. |
+| =Event.Started= | ={"docker_enabled":BOOL,"policy":Policy,"support":Support,"dev_shell":OPAQUE_OPTIONAL_DEV_SHELL_SUMMARY,"identity":Identity,"recreated":Recreated_OR_NULL,"auto":Auto,"worktrees":WorktreeReport}= | Publishes descriptor-free launch metadata; every PTY remains in the runtime. =WorktreeReport= is ={"folder":PATH_OR_NULL,"checkout":PATH_OR_NULL,"worktree":STRING_OR_NULL,"detail":STRING_OR_NULL}=: the mounted worktree folder (=GOBLINS_WORKTREES=), the main checkout (=GOBLINS_CHECKOUT=, set with the folder), the worktree the goblin starts in (its working directory is in one, or a resume restored the recorded one) and why a launch that should have worktree support has none, which the daemon adds to the session's =detail=. |
 | =Event.Progress= | ={"request":STRING,"state":STRING}= | Reports grant progress without restricting state to a compile-time string. |
 | =Event.Mode= | ={"server":BOOL}= | Announces whether the payload runs without a terminal. |
 | =Event.Refresh= | ={"approval":U64,"result":OPAQUE_RESULT}= | Contains =Result<[JSON_PREVIEW,CANDIDATE_ID],String>=. |
@@ -808,7 +825,7 @@ All methods in this table are supervisor-to-daemon notifications. There is no co
 | =Preview= | =output_path:PATH_OR_NULL= (private selected store output), =in_store:BOOL=, =download:STRING_OR_NULL=, =build_required:BOOL=. Public preview serialization still omits output_path. |
 | =TerminalStatus= | =eof:BOOL=, =complete:BOOL=, =interrupted:BOOL=, =attached:BOOL=, =detached:BOOL=, =connected:BOOL=. Connected includes a half-closed frontend that still holds its outcome; attached excludes a detached stream. |
 | =Identity= | =pid:U32=, =helper_userns:U64=, =mount_owner:U64=, =source_mountns:U64=, =mountns:U64=. These identify the payload/helper namespaces, not the supervisor process. |
-| =Recreate= | =packages:[STRING,...]=, =auto_approve:[STRING,...]=, =docker:BOOL=, =variables:{KEY:STRING,...}=. |
+| =Recreate= | =packages:[STRING,...]=, =auto_approve:[STRING,...]=, =docker:BOOL=, =variables:{KEY:STRING,...}= and =worktree:Worktree_OR_NULL=, the recorded worktree (absent decodes as null). |
 | =Recreated= | =packages:[[NAME,PATH],...]=, =auto_approve:[[NAME,PATH],...]=, =skipped:[Skipped,...]=, =fresh:STRING_OR_NULL=. |
 | =Auto= | =rooted:[[NAME,PATH],...]=, =skipped:[Skipped,...]=. |
 | =Skipped= | =name:STRING= and =reason:STRING=, existing bounded plain-text history diagnostics. |

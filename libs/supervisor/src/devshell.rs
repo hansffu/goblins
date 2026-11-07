@@ -277,9 +277,12 @@ fn realize(
 /// The flake's source tree, which evaluation sees, if it lies inside the
 /// sandbox's working directory `cwd`. Evaluation may see only what the
 /// sandbox itself can see.
-pub fn visible_tree(flake: &Path, cwd: &Path) -> Result<PathBuf> {
+///
+/// A goblin with a worktree folder also sees it, so the tree of a worktree of
+/// its repository is visible too.
+pub fn visible_tree(flake: &Path, cwd: &Path, folder: Option<&Path>) -> Result<PathBuf> {
     let tree = source_tree(flake);
-    if !tree.starts_with(cwd) {
+    if !tree.starts_with(cwd) && !folder.is_some_and(|f| tree.starts_with(f)) {
         return Err(format!(
             "the flake's source tree {} is outside the sandbox's working directory {}\n  \
              start the sandbox in {} or a directory containing it",
@@ -299,6 +302,7 @@ pub fn visible_tree(flake: &Path, cwd: &Path) -> Result<PathBuf> {
 pub fn prepare(
     reference: &str,
     cwd: &Path,
+    folder: Option<&Path>,
     evaluator: &Evaluator,
     directory: &Path,
     cancel: &Cancellation,
@@ -309,7 +313,7 @@ pub fn prepare(
         return Err(format!("dev shell flake {} is not a directory", path.display()).into());
     }
     // Only the flake's own source tree is visible to evaluation.
-    let visible = [visible_tree(&path, cwd)?];
+    let visible = [visible_tree(&path, cwd, folder)?];
     let (root, flake, _) = snapshot(
         evaluator,
         path.as_os_str(),

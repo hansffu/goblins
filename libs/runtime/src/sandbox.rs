@@ -40,6 +40,14 @@ pub struct MemberStart {
     pub agent_name: Option<String>,
     #[serde(default)]
     pub detached: bool,
+    /// Start in this worktree of the owner's folder (`goblin run --worktree`).
+    #[serde(default)]
+    pub worktree: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetWorktree {
+    name: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -127,6 +135,7 @@ pub fn check(
             | "editor.open"
             | "sessions.set-state"
             | "sessions.set-variables"
+            | "sessions.set-worktree"
             | "sessions.status"
             | "sessions.list"
             | "sessions.get"
@@ -190,7 +199,12 @@ pub fn check(
         }
         "sessions.start" => {
             let p: MemberStart = parse(&call.params)?;
-            if !goblins_protocol::identifier(&p.key) || !goblins_protocol::identifier(&p.name) {
+            if !goblins_protocol::identifier(&p.key)
+                || !goblins_protocol::identifier(&p.name)
+                || p.worktree
+                    .as_deref()
+                    .is_some_and(|n| !crate::worktrees::valid_name(n))
+            {
                 return Err(invalid("invalid launch parameters"));
             }
             Some(Operation::RunMember {
@@ -215,6 +229,16 @@ pub fn check(
         "sessions.set-variables" => {
             let p: goblins_protocol::SetVariables = parse(&call.params)?;
             p.validate().map_err(invalid)?;
+            None
+        }
+        "sessions.set-worktree" => {
+            let p: SetWorktree = parse(&call.params)?;
+            if p.name
+                .as_deref()
+                .is_some_and(|n| !crate::worktrees::valid_name(n))
+            {
+                return Err(invalid("invalid worktree name"));
+            }
             None
         }
         "sessions.get" | "sessions.stop" => {

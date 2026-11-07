@@ -69,6 +69,12 @@ python = ["test_raids", "test_run_targets"]
 checks = ["rust"]
 paths = ["packages/daemon/src/raid.rs", "packages/daemon/src/controller/raids.rs", "skills/goblins-raids/*", "skills/goblins-spawn/*"]
 
+[features.worktrees]
+description = "Git worktrees: folders, mounts, the goblin worktree command, members, dev shells and resume"
+python = ["test_worktrees"]
+checks = ["rust"]
+paths = ["libs/runtime/src/worktrees.rs", "libs/supervisor/src/worktrees.rs", "packages/sandbox-cli/src/worktree.rs", "skills/goblins-worktrees/*"]
+
 [features.messaging]
 description = "Mailboxes, activity and operation completion notices"
 python = ["test_mailbox", "test_activity", "test_operation_notices"]

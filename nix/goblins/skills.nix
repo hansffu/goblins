@@ -14,6 +14,7 @@ let
     "goblins-messaging"
     "goblins-docker"
     "goblins-raids"
+    "goblins-worktrees"
   ];
 in
 {

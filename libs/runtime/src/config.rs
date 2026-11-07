@@ -2,6 +2,7 @@ mod manifest;
 use crate::Result;
 pub use manifest::{
     allows_nix, build_spec, editor, read, run_targets, select, select_inherited, validate,
+    worktrees_directory,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -58,8 +59,36 @@ pub struct Configuration {
     /// Configurations this one may run as raid members; none when absent.
     #[serde(default)]
     pub allowed_run_targets: Vec<String>,
+    /// mkGoblin's `worktrees` (docs/specs/WORKTREES.org).
+    #[serde(default)]
+    pub worktrees: WorktreeOptions,
     #[serde(skip)]
     pub selected_scope: Option<Scope>,
+}
+/// mkGoblin's `worktrees.enable`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreeOptions {
+    /// False: no worktree folder, no `GOBLINS_WORKTREES`, no `goblin worktree`.
+    #[serde(default = "enabled")]
+    pub enable: bool,
+}
+impl Default for WorktreeOptions {
+    fn default() -> Self {
+        Self { enable: true }
+    }
+}
+fn enabled() -> bool {
+    true
+}
+/// mkGoblins' `worktrees`: where Git worktrees live, from the manifest.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Worktrees {
+    /// An absolute or `$HOME`-relative path, expanded like file grants from the
+    /// daemon's environment. Absent turns worktrees off.
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,6 +128,9 @@ pub struct Manifest {
     /// The host editor sandboxes may open files in (`editor.emacs.enable`).
     #[serde(default)]
     pub editor: Option<Editor>,
+    /// mkGoblins' `worktrees`.
+    #[serde(default)]
+    pub worktrees: Worktrees,
 }
 /// A host editor command, run without a shell with editor-specific arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +382,9 @@ pub struct Launch {
     pub integration: Option<String>,
     #[serde(default)]
     pub docker: Option<Docker>,
+    /// mkGoblin's `worktrees`.
+    #[serde(default)]
+    pub worktrees: WorktreeOptions,
 }
 fn default_args() -> Vec<String> {
     vec!["--noprofile".into(), "--norc".into()]

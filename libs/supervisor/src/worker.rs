@@ -132,6 +132,7 @@ impl Worker {
                         auto,
                         state,
                         history,
+                        worktree,
                     } => {
                         copied = auto;
                         // Wait for what the owner hands over. Stopping ends
@@ -158,6 +159,7 @@ impl Worker {
                                 protected_paths: protected,
                                 manifest: &manifest,
                                 configuration: &configuration,
+                                worktree,
                             },
                             token.clone(),
                             directory,
@@ -217,11 +219,19 @@ impl Worker {
                         let editor = crate::config::editor(&manifest)?;
                         let run_targets: std::sync::Arc<[String]> =
                             crate::config::run_targets(&manifest, &name).into();
+                        let worktrees_directory = crate::config::worktrees_directory(&manifest);
                         let config = crate::config::select(manifest, &name, scope.as_deref())?;
                         token.check()?;
                         let mut launch = crate::config::launch(&config)?;
                         launch.editor = editor;
                         launch.cwd = cwd;
+                        let mut directory_error = None;
+                        match worktrees_directory {
+                            Ok(path) => launch.worktrees_directory = path,
+                            Err(error) => {
+                                directory_error = Some(format!("worktrees.directory: {error}"))
+                            }
+                        }
                         if launch.initial_packages.len() > 128 {
                             return Err("initial package limit is 128".into());
                         }
@@ -242,11 +252,12 @@ impl Worker {
                         }
                         session.configuration = name;
                         session.run_targets = run_targets;
+                        session.worktrees.detail = directory_error;
                         if let Some(reference) = dev_shell {
                             let cwd = session.launch.cwd.clone().ok_or(
                                 "a dev shell needs a host working directory containing the flake",
                             )?;
-                            let evaluator = crate::evaluator::Evaluator::new(
+                            let mut evaluator = crate::evaluator::Evaluator::new(
                                 &session.directory,
                                 &session.launch.bwrap,
                                 session.launch.env.get("SSL_CERT_FILE").map(String::as_str),
@@ -254,9 +265,23 @@ impl Worker {
                                 // The host chose this flake; launch may use IFD.
                                 true,
                             )?;
+                            // The mounts are built later, at start: a flake in a
+                            // worktree needs the layout, and the checkout's
+                            // `.git`, now.
+                            session.settle_layout()?;
+                            let tree = goblins_runtime::devshell::parse_reference(&reference)
+                                .map(|(path, _)| crate::evaluator::source_tree(&path))?;
+                            if let Some(layout) = session.layout()
+                                && let Some((git, destination)) =
+                                    crate::worktrees::evaluator_git(layout, &tree)?
+                            {
+                                evaluator.bind_pinned(git, destination);
+                            }
+                            let folder = session.worktrees.folder.clone();
                             session.launch.dev_shell = Some(crate::devshell::prepare(
                                 &reference,
                                 &cwd,
+                                folder.as_deref(),
                                 &evaluator,
                                 &session.directory,
                                 &token,
@@ -347,6 +372,7 @@ impl Worker {
                     identity: session.identity.clone().unwrap(),
                     recreated: recreated.map(Box::new),
                     auto: Box::new(auto),
+                    worktrees: Box::new(session.worktrees.clone()),
                 };
                 // What an export hands over, before the daemon can ask.
                 if let Ok(mut published) = published.lock() {
@@ -586,6 +612,39 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
         }
     }
     session.recreated = packages.clone();
+    // The recorded worktree, if this launch's folder still has it. A record
+    // without one worked in the main checkout, even if it was launched in a
+    // worktree: the launch directory does not make it one again.
+    if recreate.worktree.is_none() {
+        session.settle_layout()?;
+        session.worktrees.worktree = None;
+    }
+    if let Some(recorded) = &recreate.worktree {
+        session.settle_layout()?;
+        match session.layout() {
+            Some(layout)
+                if goblins_runtime::worktrees::is_worktree(&layout.folder, &recorded.name) =>
+            {
+                session.worktrees.worktree = Some(recorded.name.clone());
+            }
+            Some(layout) => skipped.push(goblins_runtime::history::Skipped::new(
+                "worktree",
+                &format!(
+                    "{} no longer exists in {}",
+                    recorded.name,
+                    layout.folder.display()
+                ),
+            )),
+            None => skipped.push(goblins_runtime::history::Skipped::new(
+                "worktree",
+                session
+                    .worktrees
+                    .detail
+                    .as_deref()
+                    .unwrap_or("this launch has no worktree folder"),
+            )),
+        }
+    }
     let fresh = match &session.launch.resume_command {
         None => None,
         Some(template) => {

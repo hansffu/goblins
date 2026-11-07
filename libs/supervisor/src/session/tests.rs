@@ -438,3 +438,100 @@ fn a_capability_held_elsewhere_keeps_every_directory_of_its_chain_for_the_engine
     assert!(!a_session.exists());
     assert!(!b_session.exists());
 }
+
+#[test]
+fn a_layout_whose_checkout_is_protected_is_refused_before_anything_uses_it() {
+    let root = std::fs::canonicalize(unix::temp_directory().unwrap()).unwrap();
+    // A checkout that holds protected state, and a worktree of it in the folder.
+    let checkout = root.join("code/api");
+    let admin = checkout.join(".git/worktrees/fix");
+    let worktree = root.join("trees/api/fix");
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", worktree.join(".git").display()),
+    )
+    .unwrap();
+    let state = checkout.join(".git/state");
+    std::fs::create_dir_all(&state).unwrap();
+    let launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+    let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+    session.launch.cwd = Some(worktree.clone());
+    session.launch.worktrees_directory = Some(root.join("trees"));
+    session.launch.protected_paths.push(state);
+    session.settle_layout().unwrap();
+    assert!(
+        session.layout().is_none(),
+        "no layout, so no evaluator gets the checkout's .git"
+    );
+    assert_eq!(session.worktrees.folder, None);
+    assert!(session.worktrees.detail.is_some());
+    // The same launch without the protected state has its layout.
+    let launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+    let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+    session.launch.cwd = Some(worktree);
+    session.launch.worktrees_directory = Some(root.join("trees"));
+    session.settle_layout().unwrap();
+    assert_eq!(session.worktrees.worktree.as_deref(), Some("fix"));
+    assert_eq!(session.layout().map(|l| l.checkout.clone()), Some(checkout));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn a_member_asked_for_a_worktree_must_find_it_directly_in_the_owners_folder() {
+    let root = std::fs::canonicalize(unix::temp_directory().unwrap()).unwrap();
+    // Two repositories with genuine worktrees named fix, each in its own folder.
+    let mut trees = vec![];
+    for repo in ["a", "b"] {
+        let checkout = root.join("code").join(repo);
+        let admin = checkout.join(".git/worktrees/fix");
+        let worktree = root.join("trees").join(repo).join("fix");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", admin.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            admin.join("gitdir"),
+            format!("{}\n", worktree.join(".git").display()),
+        )
+        .unwrap();
+        trees.push(worktree);
+    }
+    let member = |named: &Path| {
+        let launch: Launch = serde_json::from_value(json!({"shell":"/unused", "posix_shell":"/unused", "helper":"/unused", "bwrap":"/unused", "flake":"unused", "client_package":"/unused"})).unwrap();
+        let mut session = Session::new(launch, None, Cancel::default()).unwrap();
+        session.launch.cwd = Some(named.to_path_buf());
+        session.launch.worktrees_directory = Some(root.join("trees"));
+        session.worktree_start = Some(named.to_path_buf());
+        session
+    };
+    // The genuine one.
+    let mut session = member(&trees[0]);
+    session.settle_layout().unwrap();
+    assert_eq!(session.worktrees.worktree.as_deref(), Some("fix"));
+    assert_eq!(
+        session.layout().map(|l| l.folder.clone()),
+        Some(root.join("trees/a"))
+    );
+    // a's folder holds a symlink to b's worktree, under the same name and another.
+    std::fs::remove_dir_all(&trees[0]).unwrap();
+    std::os::unix::fs::symlink(&trees[1], &trees[0]).unwrap();
+    std::os::unix::fs::symlink(&trees[1], root.join("trees/a/other")).unwrap();
+    for named in [trees[0].clone(), root.join("trees/a/other")] {
+        let error = member(&named).settle_layout().unwrap_err().to_string();
+        assert!(
+            error.contains("not a directory of the owner's worktree folder"),
+            "{error}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

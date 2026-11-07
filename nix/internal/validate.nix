@@ -59,6 +59,9 @@ let
 in
 {
   inherit scopes validName storageMounts;
+  # Absolute, or beneath the sandbox home like file grants, and outside the
+  # paths no mount may cover.
+  worktreesDirectory = mountPath;
   scopeDefaults =
     defaults:
     lib.assertMsg (
@@ -96,6 +99,7 @@ in
         scopeStorage
         allowedRunTargets
         bypassPermissions
+        worktrees
         ;
     in
     if !validName binName || !validName outName then
@@ -130,6 +134,14 @@ in
       || !builtins.isBool hostCommands.enable
     then
       fail "hostCommands accepts only enable (boolean)"
+    else if
+      !(
+        builtins.isAttrs worktrees
+        && builtins.all (name: name == "enable") (builtins.attrNames worktrees)
+        && builtins.isBool (worktrees.enable or true)
+      )
+    then
+      fail "worktrees accepts only enable (boolean)"
     else if !builtins.isBool bypassPermissions then
       fail "bypassPermissions must be a boolean"
     # Only an agent has permission prompts to bypass.

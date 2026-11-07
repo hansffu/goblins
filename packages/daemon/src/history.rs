@@ -16,9 +16,9 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// Older versions read as the current one, which they are a subset of.
-const READABLE: &[u32] = &[1, VERSION];
+const READABLE: &[u32] = &[1, 2, VERSION];
 /// Records kept by default; `goblins server start --keep-sessions N`.
 pub const DEFAULT_KEEP: usize = 100;
 /// Names per package list.
@@ -62,6 +62,10 @@ pub struct Record {
     /// What could not be restored when this goblin was last recreated, and why.
     /// Skipped packages stay in `approved`, so the next recreate tries again.
     pub skipped: Vec<Skipped>,
+    /// The worktree the goblin works in, written whenever it changes. A resume
+    /// restores it if the new launch's folder still has it.
+    #[serde(default)]
+    pub worktree: Option<goblins_runtime::worktrees::Worktree>,
     /// Unix milliseconds.
     pub created: u64,
     pub updated: u64,
@@ -153,6 +157,7 @@ impl Record {
             variables: BTreeMap::new(),
             sessions: vec![],
             skipped: vec![],
+            worktree: None,
             created: now,
             updated: now,
             stopped: None,
@@ -858,7 +863,7 @@ mod tests {
         r.deny("jq").unwrap();
         assert_eq!(r.packages.approved, ["htop"]);
         assert_eq!(r.packages.denied, ["nmap", "jq"]);
-        // A version 1 record has no auto_approve and is read as version 2.
+        // A version 1 record has no auto_approve and is read as the current version.
         let (_store, root) = store();
         let directory = root.join("v1");
         fs::create_dir(&directory).unwrap();
@@ -869,17 +874,46 @@ mod tests {
             .unwrap()
             .remove("auto_approve");
         fs::write(directory.join("old.json"), v1.to_string()).unwrap();
-        let mut v3 = v1.clone();
-        v3["version"] = 3.into();
+        // A version this build does not know is ignored.
+        let mut future = v1.clone();
+        future["version"] = (VERSION + 1).into();
         fs::write(
             directory.join("new.json"),
-            v3.to_string().replace("\"old\"", "\"new\""),
+            future.to_string().replace("\"old\"", "\"new\""),
         )
         .unwrap();
         let loaded = load(&directory).unwrap();
         assert_eq!(loaded.keys().collect::<Vec<_>>(), ["old"]);
         assert_eq!(loaded["old"].version, VERSION);
         assert!(loaded["old"].packages.auto_approve.is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn version_three_adds_the_worktree_and_version_two_reads_without_one() {
+        let (_store, root) = store();
+        let directory = root.join("worktrees");
+        fs::create_dir(&directory).unwrap();
+        // A version 2 record has no worktree field at all.
+        let mut v2 = serde_json::to_value(record("old", 1)).unwrap();
+        v2["version"] = 2.into();
+        v2.as_object_mut().unwrap().remove("worktree");
+        fs::write(directory.join("old.json"), v2.to_string()).unwrap();
+        // A version 3 record keeps the worktree it was written with.
+        let mut recorded = record("new", 2);
+        recorded.worktree = Some(goblins_runtime::worktrees::Worktree {
+            name: "fix".into(),
+            path: "/w/api/fix".into(),
+        });
+        fs::write(
+            directory.join("new.json"),
+            serde_json::to_vec_pretty(&recorded).unwrap(),
+        )
+        .unwrap();
+        let loaded = load(&directory).unwrap();
+        assert_eq!(loaded["old"].version, VERSION);
+        assert_eq!(loaded["old"].worktree, None);
+        assert_eq!(loaded["new"].worktree, recorded.worktree);
+        assert_eq!(VERSION, 3);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

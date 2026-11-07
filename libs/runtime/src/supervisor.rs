@@ -527,7 +527,7 @@ event_codec! {
     ScopeFailed { name:String=>plain },
     ScopeNeeded { name:String=>plain },
     Preview { approval:u64=>plain, result:Result<crate::catalog::Preview,String> =>preview },
-    Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>plain, support:crate::policy::Support=>plain, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>plain, recreated:Option<Box<crate::Recreated>> =>plain, auto:Box<crate::Auto> =>plain },
+    Started { docker_enabled:bool=>plain, policy:Box<crate::policy::Policy> =>plain, support:crate::policy::Support=>plain, dev_shell:Option<crate::policy::DevShellSummary> =>opaque, identity:crate::Identity=>plain, recreated:Option<Box<crate::Recreated>> =>plain, auto:Box<crate::Auto> =>plain, worktrees:Box<crate::worktrees::Report> =>plain },
     Progress { request:String=>plain, state:String=>plain },
     Mode { server:bool=>plain },
     Refresh { approval:u64=>plain, result:Result<(Value,String),String> =>opaque },

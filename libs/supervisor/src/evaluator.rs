@@ -65,6 +65,9 @@ pub struct Evaluator {
     git: Option<PathBuf>,
     cacert: Option<String>,
     network: Network,
+    /// Read-only binds by pinned descriptor, such as a worktree's checkout
+    /// `.git` (docs/specs/WORKTREES.org).
+    pinned: Vec<(std::fs::File, PathBuf)>,
 }
 
 /// Resolve a host command to its canonical store path; the evaluator sees the
@@ -118,7 +121,14 @@ impl Evaluator {
             git: store_command("git"),
             cacert: cacert.map(str::to_string),
             network,
+            pinned: vec![],
         })
+    }
+
+    /// Bind `directory` read-only at `destination` in every command, by the
+    /// descriptor it was opened with, never by a path.
+    pub fn bind_pinned(&mut self, directory: std::fs::File, destination: PathBuf) {
+        self.pinned.push((directory, destination));
     }
 
     /// A private writable copy for computing a candidate lock.
@@ -187,6 +197,14 @@ impl Evaluator {
         command.args(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]);
         for dir in visible {
             command.arg("--ro-bind").arg(dir).arg(dir);
+        }
+        for (directory, destination) in &self.pinned {
+            use std::os::fd::AsRawFd;
+            command
+                .arg("--ro-bind-fd")
+                .arg(directory.as_raw_fd().to_string())
+                .arg(destination);
+            keep.push(directory.as_raw_fd());
         }
         command.arg("--bind").arg(&self.root).arg(&self.root);
         let env: [(&str, OsString); 9] = [

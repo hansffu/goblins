@@ -154,11 +154,32 @@ pub enum Command {
         #[command(subcommand)]
         command: FlakeCommand,
     },
+    /// Work in a Git worktree of this goblin's repository, creating it if needed
+    ///
+    /// Creates $GOBLINS_WORKTREES/NAME on a branch NAME (an existing branch is
+    /// checked out; a new one starts at HEAD or --base), makes it this goblin's
+    /// worktree and prints its path. Run it inside the repository, then work in
+    /// the printed path. --main goes back to the main checkout, which has the
+    /// branch it has checked out (such as main or master).
+    Worktree {
+        #[arg(required_unless_present = "main", conflicts_with = "main")]
+        name: Option<String>,
+        /// The commit or branch a new branch starts from (default: HEAD)
+        #[arg(long, conflicts_with = "main")]
+        base: Option<String>,
+        /// Clear this goblin's worktree: it works in the main checkout, whose
+        /// path is printed
+        #[arg(long)]
+        main: bool,
+    },
     /// Run a raid member with a configuration this goblin may run (raid owners only)
     Run {
         config: String,
         #[arg(long)]
         name: Option<String>,
+        /// Start the member in this worktree of this goblin's worktree folder
+        #[arg(long)]
+        worktree: Option<String>,
         /// Return once it is starting (the only mode: goblins do not attach)
         #[arg(long, visible_alias = "detached")]
         detatched: bool,

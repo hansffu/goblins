@@ -21,6 +21,7 @@ fn host() -> Source {
             auto_approve: vec!["jq".into()],
             docker: true,
             variables: [("session".into(), "abc".into())].into(),
+            worktree: None,
         }),
         sequence: 23,
     }
@@ -269,6 +270,7 @@ fn all_descriptor_free_events_preserve_private_and_public_data() {
                 rooted: vec![("hello".into(), "/output".into())],
                 skipped: vec![],
             }),
+            worktrees: Default::default(),
         },
         Event::Progress {
             request: "r".into(),
@@ -458,6 +460,7 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
         auto: [("hello".into(), "/output".into())].into(),
         state: "/state".into(),
         history: Some("/history".into()),
+        worktree: None,
     };
     let Message::SupervisorStart(mut start) =
         startup(source, Some(handoff(&root, channel::MAX_FDS + 1)))
@@ -541,6 +544,7 @@ fn startup_listener_is_closed_with_partial_handoff_on_eof_or_invalid_continuatio
             auto: Default::default(),
             state: root.clone(),
             history: None,
+            worktree: None,
         };
         let Message::SupervisorStart(mut start) =
             startup(source, Some(handoff(&root, channel::MAX_FDS + 1)))
@@ -749,6 +753,7 @@ fn startup_version_and_handoff_shape_fail_before_any_launch_side_effect() {
         auto: Default::default(),
         state: "/s".into(),
         history: None,
+        worktree: None,
     };
     assert!(Encoder::default().prepare(startup(source, None)).is_err());
 }
@@ -1214,6 +1219,7 @@ fn member_startup_version_rejection_keeps_sender_ownership_until_receiver_eof() 
         auto: Default::default(),
         state: "/state".into(),
         history: None,
+        worktree: None,
     };
     let mut prepared = Encoder::default()
         .prepare(startup(source, Some(handoff(&root, 1))))

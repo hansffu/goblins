@@ -41,7 +41,7 @@ class ClaudeConfigTests(unittest.TestCase):
         self.settings = json.loads(Path(source).read_text())
         for skill in [
             "goblins-spawn", "goblins-messaging", "goblins-packages", "goblins-docker",
-            "goblins-raids", "goblins-devshell",
+            "goblins-raids", "goblins-devshell", "goblins-worktrees",
         ]:
             self.assertEqual(self.settings["skillOverrides"][skill], "on")
 

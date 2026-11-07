@@ -113,9 +113,9 @@ class RecreateTests(unittest.TestCase):
         self.assertIn("does not provide attribute", r["skipped"][0]["reason"])
         # The record continues: same lists and variables, the skipped name
         # kept, and this goblin added to the goblins it ran as. The version 1
-        # record is written back as version 2, with an empty auto-approve set.
+        # record is written back as version 3, with an empty auto-approve set.
         own = d.wait(lambda: (r if (r := d.record("rec-a"))["sessions"] == ["rec-a", session] else None))
-        self.assertEqual(own["version"], 2)
+        self.assertEqual(own["version"], 3)
         self.assertEqual(own["packages"], dict(source["packages"], auto_approve=[]))
         self.assertEqual(own["variables"], source["variables"])
         self.assertEqual((own["skipped"], own["stopped"]), (r["skipped"], None))

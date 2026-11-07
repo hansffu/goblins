@@ -58,6 +58,8 @@ enum WireSource {
         auto: BTreeMap<String, PathBuf>,
         state: PathBuf,
         history: Option<PathBuf>,
+        #[serde(default)]
+        worktree: Option<PathBuf>,
     },
 }
 pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Value> {
@@ -84,9 +86,10 @@ pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Valu
             auto,
             state,
             history,
+            worktree,
         } => {
             let scope = scope.as_ref().map(|fd| b.fd(fd)).transpose()?;
-            json!({"kind":"Member","scope":scope,"owner_scope":owner_scope,"manifest":manifest,"configuration":configuration,"auto":auto,"state":state,"history":history})
+            json!({"kind":"Member","scope":scope,"owner_scope":owner_scope,"manifest":manifest,"configuration":configuration,"auto":auto,"state":state,"history":history,"worktree":worktree})
         }
     })
 }
@@ -123,6 +126,7 @@ fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
             auto,
             state,
             history,
+            worktree,
         } => Source::Member {
             scope: scope.map(|fd| d.take(fd).map(Fd::from)).transpose()?,
             owner_scope,
@@ -131,6 +135,7 @@ fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
             auto,
             state,
             history,
+            worktree,
         },
     })
 }

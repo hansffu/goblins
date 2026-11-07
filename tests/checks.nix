@@ -361,6 +361,39 @@ in
       allowedRunTargets = [ "shell" ];
     };
   };
+  # Worktree tests set HOME to a private directory: worktrees live in
+  # $HOME/worktrees, and `plain` has none.
+  worktree-goblins =
+    let
+      bash =
+        options:
+        mkGoblin (
+          {
+            pkg = pkgs.bashInteractive;
+            binName = "bash";
+            args = [
+              "--noprofile"
+              "--norc"
+              "-i"
+            ];
+            allowedPackages = [
+              pkgs.coreutils
+              pkgs.git
+            ];
+            allowedDomains = [ ];
+            allowedRunTargets = [
+              "shell"
+              "plain"
+            ];
+          }
+          // options
+        );
+    in
+    mkGoblins {
+      worktrees.directory = "$HOME/worktrees";
+      goblins.shell = bash { };
+      goblins.plain = bash { worktrees.enable = false; };
+    };
   exec-goblins = mkGoblins {
     goblins.shell = mkGoblin {
       pkg = pkgs.bashInteractive;
@@ -425,6 +458,13 @@ in
       # `! grep` would not stop the build under set -e.
       if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
       grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
+      # A worktree folder and its checkout become working directories, ahead
+      # of the prompt.
+      for launcher in ${own.claude} ${bypass.claude}; do
+        grep -Fq -- 'worktrees=(--add-dir "$GOBLINS_WORKTREES")' $launcher/bin/claude
+        grep -Fq -- 'worktrees+=(--add-dir "$GOBLINS_CHECKOUT")' $launcher/bin/claude
+        grep -Fq -- 'exec "$claude_executable" "''${worktrees[@]}" --plugin-dir' $launcher/bin/claude
+      done
       for launcher in ${own.codex} ${bypass.codex}; do
         # `codex` on PATH runs its own engine with full access.
         grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher/bin/codex
@@ -501,6 +541,7 @@ in
           "goblins-packages"
           "goblins-raids"
           "goblins-spawn"
+          "goblins-worktrees"
         ];
         claude-nix = [
           "goblins-docker"
@@ -508,6 +549,7 @@ in
           "goblins-nix"
           "goblins-raids"
           "goblins-spawn"
+          "goblins-worktrees"
         ];
       };
       settings = name: variants.${name}.goblin.sandbox_etc."claude-code/managed-settings.json";
@@ -534,8 +576,8 @@ in
       }
       ''
           # Claude enables exactly the skills it mounts, dev shell skill included.
-          test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn"]'
-          test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn"]'
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn","goblins-worktrees"]'
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn","goblins-worktrees"]'
           # With Nix, no installed skill offers the package or dev shell workflows.
           if grep -nE 'request-package|devshell (refresh|diff)|flake run|no `?nix`? command' ${installed "claude-nix"} ${installed "codex-nix"}; then
             echo 'A Nix goblin skill presents a workflow it does not have' >&2

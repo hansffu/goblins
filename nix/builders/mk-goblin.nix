@@ -75,8 +75,16 @@ let
       # even itself. Not a scope default: mkGoblins resolves it once per
       # configuration.
       allowedRunTargets ? [ ],
+      # Git worktrees (docs/specs/WORKTREES.org); they need
+      # mkGoblins.worktrees.directory. enable: false gives this configuration no
+      # worktree folder and no working `goblin worktree`.
+      worktrees ? { },
     }@options:
     let
+      worktreeOptions = {
+        enable = true;
+      }
+      // worktrees;
       dockerOptions = {
         enable = false;
       }
@@ -144,6 +152,7 @@ let
           ;
         docker = dockerOptions;
         hostCommands = hostCommandOptions;
+        inherit worktrees;
       }
     );
     wrapped
@@ -179,6 +188,9 @@ let
         nix = allowNix;
         host_commands = hostCommandOptions.enable;
         bypass_permissions = bypassPermissions;
+        worktrees = {
+          inherit (worktreeOptions) enable;
+        };
         docker = {
           daemon = "${dockerDaemon}/bin/dockerd";
           client = "${pkgs.docker-client}";
