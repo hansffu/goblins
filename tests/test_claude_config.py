@@ -196,6 +196,41 @@ class ClaudeConfigTests(unittest.TestCase):
         self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="third"), {})
         self.assertEqual(self.hook(terminal, "Stop")["decision"], "block")
 
+    def test_a_claude_started_inside_the_goblin_leaves_the_integration_alone(self):
+        terminal = self.terminal()
+        terminal.expect(r"CLAUDE_ARG=--plugin-dir", timeout=60)
+        terminal.expect("claude-probe>")
+        owner = self.d.rpc.call("sessions.get", {"session": "chief"})["id"]
+        self.assertEqual(self.hook(terminal, "SessionStart"), {})
+        self.assertEqual(self.hook(terminal, "UserPromptSubmit", prompt="task"), {})
+        run = "jq -r .run /tmp/goblins-claude/ledger.json"
+        terminal.send(f"printf 'RUN=%s\\n' \"$({run})\"\n")
+        before = terminal.expect(r"(?:^|\n)RUN=([0-9a-f]+)\r?\n").group(1).decode()
+        # The probe shell runs inside the launched Claude, as its tools do.
+        # A claude started there gets no plugin and no new run, which would
+        # end the live monitor; the probe runs the command fed to its shell.
+        terminal.send(
+            "printf 'BEGIN_%s\\n' NESTED; "
+            "printf 'printf \"INNER=%%s\\\\n\" \"$GOBLINS_CLAUDE_SESSION\"\\n' | claude --version; "
+            f"printf 'AFTER=%s\\n' \"$({run})\"\n"
+        )
+        terminal.expect(r"BEGIN_NESTED\r?\nCLAUDE_DIR=[^\n]*\nCLAUDE_ARG=--version\r?\n")
+        terminal.expect(r"(?:^|\n)INNER=nested\r?\n")
+        terminal.expect(r"(?:^|\n)AFTER=" + before + r"\r?\n")
+        # Its hooks answer nothing and change nothing: no activity, and a
+        # queued message never turns its Stop into an inbox continuation.
+        self.d.rpc.call("messages.send", {"key": "nested", "to": owner, "body": "private body"})
+        for event in ["Notification", "Stop"]:
+            handler = self.settings["hooks"][event][0]["hooks"][0]["command"]
+            payload = json.dumps({"hook_event_name": event, "notification_type": "idle_prompt"})
+            terminal.send(
+                f"printf 'NESTED_HOOK=%s\\n' \"$(printf '%s' {shlex.quote(payload)} | "
+                f"GOBLINS_CLAUDE_SESSION=nested {shlex.quote(handler)})\"\n"
+            )
+            terminal.expect(r"(?:^|\n)NESTED_HOOK=\{\}\r?\n")
+        self.assertEqual(self.integration(owner)["activity"], "working")
+        self.assertEqual(self.hook(terminal, "Stop")["decision"], "block")
+
     def test_hooks_record_the_conversation_and_recreate_resumes_it(self):
         self.assertEqual(self.manifest["goblins"]["claude"]["resume_command"],
                          ["literal $(false) argument", "--resume", "{session_id}"])

@@ -42,6 +42,12 @@ report_variables() {
       mv -f "$cache.next" "$cache"
   fi
 }
+# A Claude started from inside the goblin's Claude leaves the integration
+# alone: its hooks would otherwise move the session's activity and inbox.
+if [[ ${GOBLINS_CLAUDE_SESSION:-} == nested ]]; then
+  printf '{}\n'
+  exit 0
+fi
 if [[ ${1:-} == --report-variables ]]; then
   report_variables || true
   exit 0
