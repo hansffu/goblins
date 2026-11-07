@@ -1577,11 +1577,11 @@ runs Git on the host; this is Emacs doing so, as the user."
                       (string-trim (buffer-string))))
         (string-trim (buffer-string))))))
 
-(defun goblins--worktree-path (status name)
-  "The directory of worktree NAME of the current repository on STATUS's server.
-Beneath `worktrees_directory', in the folder named after the main checkout
-(DIRECTORY/REPO/NAME); signal a `user-error' when worktrees are off or the
-current directory is in no repository."
+(defun goblins--worktree-folder (status)
+  "The worktree folder of the current repository on STATUS's server.
+That is DIRECTORY/REPO: beneath `worktrees_directory', named after the main
+checkout.  Signal a `user-error' when worktrees are off or the current
+directory is in no repository."
   (let* ((directory (plist-get (goblins--host-call status 'server.status (make-hash-table))
                                :worktrees_directory))
          (common (progn
@@ -1592,7 +1592,28 @@ current directory is in no repository."
          (checkout (and (string-suffix-p "/.git" common)
                         (directory-file-name (file-name-directory common)))))
     (unless checkout (user-error "Not in a Git repository with a .git directory"))
-    (expand-file-name name (expand-file-name (file-name-nondirectory checkout) directory))))
+    (expand-file-name (file-name-nondirectory checkout) directory)))
+
+(defun goblins--worktree-path (status name)
+  "The directory of worktree NAME of the current repository on STATUS's server."
+  (expand-file-name name (goblins--worktree-folder status)))
+
+(defun goblins--worktree-names (folder)
+  "The names of the worktrees in FOLDER, sorted: its directories with a .git file."
+  (and (file-directory-p folder)
+       (sort (cl-remove-if-not
+              (lambda (name)
+                (file-regular-p (expand-file-name ".git" (expand-file-name name folder))))
+              (directory-files folder nil "\\`[^.]"))
+             #'string<)))
+
+(defun goblins--read-worktree-name ()
+  "Read a worktree name, completing the current repository's worktrees.
+A name that is not one of them is accepted too, for a new worktree."
+  (let* ((status (goblins--connect (or goblins--directory goblins-state-directory
+                                       (goblins--default-directory))))
+         (names (goblins--worktree-names (goblins--worktree-folder status))))
+    (completing-read "Worktree name: " names nil nil)))
 
 ;;;###autoload
 (cl-defun goblins-run-with-worktree (name &key prompt display)
@@ -1603,7 +1624,7 @@ out, a new one starts at HEAD); one that exists is reused.  The goblin is
 then launched there as `goblins-run' launches one.  With PROMPT, a string, it
 is sent to the new goblin as a message.  DISPLAY is as for `goblins-run'.
 Return the goblin's terminal buffer."
-  (interactive (list (read-string "Worktree name: ")))
+  (interactive (list (goblins--read-worktree-name)))
   (unless (string-match-p goblins--worktree-name-regexp name)
     (user-error "A worktree name uses letters, digits, `.', `_' and `-', starting with a letter or digit"))
   (let* ((state-directory (or goblins--directory goblins-state-directory

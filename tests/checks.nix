@@ -458,6 +458,11 @@ in
       # `! grep` would not stop the build under set -e.
       if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
       grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
+      # A worktree folder becomes a working directory, ahead of the prompt.
+      for launcher in ${own.claude} ${bypass.claude}; do
+        grep -Fq -- 'worktrees=(--add-dir "$GOBLINS_WORKTREES")' $launcher/bin/claude
+        grep -Fq -- 'exec "$claude_executable" "''${worktrees[@]}" --plugin-dir' $launcher/bin/claude
+      done
       for launcher in ${own.codex} ${bypass.codex}; do
         # `codex` on PATH runs its own engine with full access.
         grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher/bin/codex

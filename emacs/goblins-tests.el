@@ -3717,6 +3717,40 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (delete-directory default-directory t)
       (delete-directory root t))))
 
+(ert-deftest goblins-run-with-worktree-completes-the-repository-worktrees ()
+  (let* ((root (file-name-as-directory (make-temp-file "goblins-worktrees" t)))
+         (folder (expand-file-name "api" root))
+         (status (generate-new-buffer " *goblins test status*"))
+         asked)
+    ;; Worktrees have a .git file; other directories and files are not offered.
+    (dolist (name '("fix-login" "b-feature"))
+      (make-directory (expand-file-name name folder) t)
+      (write-region "gitdir: /code/api/.git/worktrees/x\n" nil
+                    (expand-file-name ".git" (expand-file-name name folder))))
+    (make-directory (expand-file-name "plain" folder) t)
+    (write-region "" nil (expand-file-name "notes" folder))
+    (unwind-protect
+        (cl-letf (((symbol-function 'goblins--connect) (lambda (&optional _) status))
+                  ((symbol-function 'goblins--host-call)
+                   (lambda (_source method _params)
+                     (when (eq method 'server.status) (list :worktrees_directory root))))
+                  ((symbol-function 'process-file)
+                   (lambda (_program _in _out _display &rest _arguments)
+                     (insert "/code/api/.git\n") 0))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt collection &optional _pred require-match &rest _)
+                     (setq asked (list collection require-match))
+                     "new-one")))
+          (should (equal (goblins--read-worktree-name) "new-one"))
+          ;; Sorted, and a new name is allowed.
+          (should (equal asked '(("b-feature" "fix-login") nil)))
+          ;; No folder yet: nothing to offer, but a name can still be typed.
+          (delete-directory folder t)
+          (goblins--read-worktree-name)
+          (should (equal asked '(nil nil))))
+      (kill-buffer status)
+      (delete-directory root t))))
+
 (ert-deftest goblins-find-file-visits-any-path-inside-the-goblin ()
   (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p/one" :agent_name "gribble"))
     (let ((goblins--pins (make-hash-table :test #'equal))
