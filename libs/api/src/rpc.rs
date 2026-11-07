@@ -42,6 +42,25 @@ pub struct HostCommand {
     /// survives its connection closing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub detach: bool,
+    /// A short label the human recognises in lists and approvals; the
+    /// command's first word stands for it when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+/// What a host command's name may be, for messages that refuse one.
+pub const HOST_NAME_RULE: &str = "a host command name is 1-32 characters: ASCII letters, digits, spaces and . _ - :, without a leading or trailing space";
+/// The longest host command name.
+pub const HOST_NAME_LIMIT: usize = 32;
+/// Whether `name` is an allowed host command name. The set is small enough
+/// that a name cannot imitate other text or hide characters, so displays
+/// show it as it is.
+pub fn host_name(name: &str) -> bool {
+    (1..=HOST_NAME_LIMIT).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b" ._-:".contains(&b))
+        && !name.starts_with(' ')
+        && !name.ends_with(' ')
 }
 /// Variables a host command's environment may not override.
 pub const HOST_RESERVED_ENV: &[&str] = &["GOBLINS_HOST_JOB"];
@@ -67,6 +86,7 @@ impl HostCommand {
                 crate::env_name(k) && text(v) && !HOST_RESERVED_ENV.contains(&k.as_str())
             })
             && self.timeout.is_none_or(|t| t > 0)
+            && self.name.as_deref().is_none_or(host_name)
             && size <= MAX_HOST_COMMAND
     }
 }
@@ -151,6 +171,10 @@ mod tests {
         let ok =
             json!({"argv":["cargo","test"],"cwd":"/home/u/project","env":[["RUST_LOG","debug"]]});
         assert!(request(ok.clone()).validate());
+        for name in ["a", "docker-tests", "Run 1.2_x:y", &"a".repeat(32), "a b"] {
+            let named = json!({"argv":["true"],"cwd":"/p","name":name});
+            assert!(request(named).validate(), "{name}");
+        }
         for bad in [
             json!({"argv":[],"cwd":"/p"}),
             json!({"argv":[""],"cwd":"/p"}),
@@ -159,6 +183,15 @@ mod tests {
             json!({"argv":["true"],"cwd":"/p","env":[["BAD-NAME","x"]]}),
             json!({"argv":["true"],"cwd":"/p","env":[["GOBLINS_HOST_JOB","x"]]}),
             json!({"argv":["true"],"cwd":"/p","timeout":0}),
+            json!({"argv":["true"],"cwd":"/p","name":""}),
+            json!({"argv":["true"],"cwd":"/p","name":" x"}),
+            json!({"argv":["true"],"cwd":"/p","name":"x "}),
+            json!({"argv":["true"],"cwd":"/p","name":"a".repeat(33)}),
+            json!({"argv":["true"],"cwd":"/p","name":"a\nb"}),
+            json!({"argv":["true"],"cwd":"/p","name":"a\tb"}),
+            json!({"argv":["true"],"cwd":"/p","name":"a/b"}),
+            json!({"argv":["true"],"cwd":"/p","name":"café"}),
+            json!({"argv":["true"],"cwd":"/p","name":"a\u{202E}b"}),
             json!({"argv":["x".repeat(MAX_HOST_COMMAND)],"cwd":"/p"}),
         ] {
             assert!(!request(bad.clone()).validate(), "{bad}");

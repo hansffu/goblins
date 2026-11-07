@@ -1298,6 +1298,9 @@ mod tests {
                 "members":[{"id":"m1","agent_name":"kid"},{"id":"m2","agent_name":"other"}]}),
             ),
             message: None,
+            name: None,
+            started_at: None,
+            log: None,
         };
         let snapshot = Snapshot {
             instance: "test".into(),

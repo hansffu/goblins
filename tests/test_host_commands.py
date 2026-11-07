@@ -83,9 +83,18 @@ class HostCommandTests(unittest.TestCase):
             'echo out; echo err >&2; pwd; echo "JOB=$GOBLINS_HOST_JOB"; echo "EXTRA=$EXTRA"\n'
             "test -e /run/goblins/request.sock && echo IN-SANDBOX || echo ON-HOST\n"
             'echo made-on-host > from-host; cat from-sandbox; echo "TMP=${TMPDIR-unset}"; exit 3\n')
-        marker = self.send(terminal, "echo made-in-sandbox > from-sandbox; goblin host run --reason 'host test' --env EXTRA='a b' -- bash job.sh")
+        marker = self.send(terminal, "echo made-in-sandbox > from-sandbox; goblin host run --name 'host test' --reason 'host test' --env EXTRA='a b' -- bash job.sh")
         record = self.pending(session)
         self.assertEqual(record["kind"], "host-command")
+        # The name, and where the output will be, are known before approval;
+        # the start time only once the job is sent.
+        self.assertEqual(record["name"], "host test")
+        self.assertEqual(record["preview"]["name"], "host test")
+        self.assertEqual(record["preview"]["description"].splitlines()[1], "Name: host test")
+        self.assertTrue(record["package"].startswith("host test: "), record["package"])
+        self.assertNotIn("started_at", record)
+        self.assertEqual(record["log"], str(self.d.state / session / "resources" / "host-jobs" / record["id"] / "output.log"))
+        before = int(time.time())
         self.assertIn("bash job.sh", record["package"])
         self.assertIn(str(self.project), record["package"])
         self.assertIn("Runs on the host as you", record["preview"]["description"])
@@ -100,6 +109,8 @@ class HostCommandTests(unittest.TestCase):
         self.assertIn("TMP=unset", output)
         final = self.record(record["id"])
         self.assertEqual((final["state"], final["message"]), ("finished", "exit code 3"))
+        self.assertTrue(before - 1 <= final["started_at"] <= int(time.time()) + 1, final)
+        self.assertIn("made-in-sandbox", Path(final["log"]).read_text())
         # The output stays readable in the sandbox, which cannot change it.
         log = f"/run/goblins/host-jobs/{record['id']}/output.log"
         output, code = self.run_in(terminal, f"cat {log}")
@@ -109,16 +120,37 @@ class HostCommandTests(unittest.TestCase):
         self.assertNotEqual(code, 0, output)
         self.assertIn("Read-only file system", output)
 
+    def test_names_are_required_restricted_and_default_for_older_clients(self):
+        session, terminal = self.launch()
+        output, code = self.run_in(terminal, "goblin host run --reason r -- true")
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("--name", output)
+        for bad in ["'a/b'", "' x'", "''", "'" + "a" * 33 + "'", "'caf\u00e9'"]:
+            output, code = self.run_in(terminal, f"goblin host run --name {bad} --reason r -- true")
+            self.assertNotEqual(code, 0, output)
+            self.assertIn("1-32 characters", output)
+        self.assertFalse(self.d.permissions(session=session, state="pending"))
+        # An in-sandbox client without a name still works: the label is the
+        # program's base name.
+        peer = RPC(self.d.state / session / "resources/request.sock")
+        peer.call("permissions.request", {"kind": "host-command", "reason": "old", "host": {
+            "argv": ["/bin/true"], "cwd": str(self.project), "detach": True}})
+        record = self.pending(session)
+        self.assertEqual(record["name"], "true")
+        self.assertEqual(record["preview"]["description"].splitlines()[1], "Name: true")
+        self.d.decide(record, False)
+        peer.close()
+
     def test_denied_withdrawn_and_unshared_commands_do_not_run(self):
         session, terminal = self.launch()
-        marker = self.send(terminal, "goblin host run --reason denied -- touch ran")
+        marker = self.send(terminal, "goblin host run --name job --reason denied -- touch ran")
         self.d.decide(self.pending(session), False)
         output, code = self.done(terminal, marker)
         self.assertEqual(code, 125, output)
         self.assertIn("denied", output)
         self.assertFalse((self.project / "ran").exists())
         # Interrupting the client withdraws the request.
-        terminal.send("goblin host run --reason withdrawn -- touch ran\n")
+        terminal.send("goblin host run --name job --reason withdrawn -- touch ran\n")
         record = self.pending(session)
         terminal.send("\x03")
         terminal.expect(PROMPT)
@@ -126,14 +158,14 @@ class HostCommandTests(unittest.TestCase):
         self.assertFalse((self.project / "ran").exists())
         # The sandbox's own home and /tmp are not the host's.
         for cwd in ["$HOME", "/tmp", "/run/goblins"]:
-            output, code = self.run_in(terminal, f"goblin host run --reason unshared --cwd {cwd} -- true")
+            output, code = self.run_in(terminal, f"goblin host run --name job --reason unshared --cwd {cwd} -- true")
             self.assertEqual(code, 125, output)
             self.assertIn("not shared with the host", output)
         self.assertFalse(self.d.permissions(session=session, state="pending"))
 
     def test_detached_jobs_status_logs_wait_and_cancel(self):
         session, terminal = self.launch()
-        output, code = self.run_in(terminal, "goblin host run --detach --reason long -- bash -c 'echo started; exec sleep 300'")
+        output, code = self.run_in(terminal, "goblin host run --name job --detach --reason long -- bash -c 'echo started; exec sleep 300'")
         self.assertEqual(code, 0, output)
         request = json.loads(re.search(r"\{.*\}", output)[0])["request"]
         self.d.decide(self.pending(session), True)
@@ -155,11 +187,30 @@ class HostCommandTests(unittest.TestCase):
         self.assertEqual([e["kind"] for e in events][-3:],
                          ["operation.requested", "operation.decided", "operation.completed"])
 
+    def test_the_host_lists_and_cancels_running_commands(self):
+        session, terminal = self.launch()
+        self.run_in(terminal, "goblin host run --name sleeper --detach --reason host-cancel -- sleep 300")
+        record = self.pending(session)
+        self.d.decide(record, True)
+        self.d.wait(lambda: self.record(record["id"])["state"] == "running")
+        listed = json.loads(self.d.cli("host", "list").stdout)["jobs"]
+        self.assertEqual([(j["request"], j["name"], j["status"]) for j in listed],
+                         [(record["id"], "sleeper", "running")])
+        self.assertIsInstance(listed[0]["started_at"], int)
+        # The sandbox sees the same name and start.
+        sandbox = json.loads(re.search(r"\{.*\}", self.run_in(terminal, f"goblin host status {record['id']}")[0])[0])
+        self.assertEqual((sandbox["name"], sandbox["started_at"]), ("sleeper", listed[0]["started_at"]))
+        self.d.cli("host", "cancel", record["id"])
+        self.d.wait(lambda: self.record(record["id"])["state"] == "cancelled")
+        self.assertIn("cancelled by the host", self.record(record["id"])["message"])
+        refused = self.d.cli("host", "cancel", record["id"], check=False)
+        self.assertNotEqual(refused.returncode, 0)
+
     def test_processes_left_behind_are_stopped_whatever_the_ending(self):
         session, terminal = self.launch()
         leave = "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > {name}.pid; exit {code}"
         for name, code in [("success", 0), ("failure", 4)]:
-            marker = self.send(terminal, f"goblin host run --reason cleanup -- bash -c '{leave.format(name=name, code=code)}'")
+            marker = self.send(terminal, f"goblin host run --name job --reason cleanup -- bash -c '{leave.format(name=name, code=code)}'")
             self.d.decide(self.pending(session), True)
             output, status = self.done(terminal, marker)
             self.assertEqual(status, code, output)
@@ -167,7 +218,7 @@ class HostCommandTests(unittest.TestCase):
             self.assertFalse(alive(pid), f"{name}: background process {pid} survived")
         # Orphans that exit are reaped while the job runs, as init would:
         # an exiting PID namespace waits for its processes' reaping.
-        marker = self.send(terminal, "goblin host run --reason reap -- bash -c 'echo $PPID > supervisor.pid; (sleep 0.1 &); sleep 2'")
+        marker = self.send(terminal, "goblin host run --name job --reason reap -- bash -c 'echo $PPID > supervisor.pid; (sleep 0.1 &); sleep 2'")
         self.d.decide(self.pending(session), True)
         self.d.wait(lambda: (self.project / "supervisor.pid").exists())
         supervisor = int((self.project / "supervisor.pid").read_text())
@@ -178,7 +229,7 @@ class HostCommandTests(unittest.TestCase):
         self.assertEqual(self.done(terminal, marker)[1], 0)
         # Stopping the goblin stops its job and what it started.
         stopped = "setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > stopped.pid; exec sleep 300"
-        self.run_in(terminal, f"goblin host run --detach --reason stop -- bash -c '{stopped}'")
+        self.run_in(terminal, f"goblin host run --name job --detach --reason stop -- bash -c '{stopped}'")
         record = self.pending(session)
         self.d.decide(record, True)
         self.d.wait(lambda: (self.project / "stopped.pid").exists())
@@ -190,7 +241,7 @@ class HostCommandTests(unittest.TestCase):
 
     def test_the_daemon_dying_stops_its_jobs(self):
         session, terminal = self.launch()
-        self.run_in(terminal, "goblin host run --detach --reason orphan -- bash -c 'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > orphan.pid; exec sleep 300'")
+        self.run_in(terminal, "goblin host run --name job --detach --reason orphan -- bash -c 'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > orphan.pid; exec sleep 300'")
         self.d.decide(self.pending(session), True)
         self.d.wait(lambda: (self.project / "orphan.pid").exists())
         pid = int((self.project / "orphan.pid").read_text())
@@ -201,7 +252,7 @@ class HostCommandTests(unittest.TestCase):
     def test_the_supervisor_dying_stops_its_jobs(self):
         self.assertNotIn("GOBLINS_DEBUG_LOCAL_RUNTIME", self.d.env)
         session, terminal = self.launch()
-        self.run_in(terminal, "goblin host run --detach --reason supervisor-orphan -- bash -c 'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > supervisor-orphan.pid; exec sleep 300'")
+        self.run_in(terminal, "goblin host run --name job --detach --reason supervisor-orphan -- bash -c 'setsid sleep 300 </dev/null >/dev/null 2>&1 & echo $! > supervisor-orphan.pid; exec sleep 300'")
         record = self.pending(session)
         self.d.decide(record, True)
         self.d.wait(lambda: (self.project / "supervisor-orphan.pid").exists())
@@ -229,7 +280,7 @@ class HostCommandTests(unittest.TestCase):
     def test_host_commands_name_their_own_server(self):
         session, terminal = self.launch()
         cli = f"{self.d.binary} --runtime {self.d.manifest}"
-        marker = self.send(terminal, f"goblin host run --reason guard -- {cli} server status")
+        marker = self.send(terminal, f"goblin host run --name job --reason guard -- {cli} server status")
         self.d.decide(self.pending(session), True)
         output, code = self.done(terminal, marker)
         self.assertNotEqual(code, 0, output)
@@ -238,7 +289,7 @@ class HostCommandTests(unittest.TestCase):
         script = (f"state=$(mktemp -d); {cli} --state-dir $state server start >/dev/null && "
                   f"{cli} --state-dir $state server status && {cli} --state-dir $state server stop; "
                   "code=$?; rm -rf $state; exit $code")
-        marker = self.send(terminal, f"goblin host run --reason nested -- bash -c '{script}'")
+        marker = self.send(terminal, f"goblin host run --name job --reason nested -- bash -c '{script}'")
         self.d.decide(self.pending(session), True)
         output, code = self.done(terminal, marker, timeout=120)
         self.assertEqual(code, 0, output)
@@ -280,7 +331,7 @@ class HostCommandTests(unittest.TestCase):
 
     def test_a_goblin_without_host_commands_cannot_ask(self):
         session, terminal = self.launch("plain")
-        output, code = self.run_in(terminal, "goblin host run --reason no -- true")
+        output, code = self.run_in(terminal, "goblin host run --name job --reason no -- true")
         self.assertEqual(code, 125, output)
         self.assertIn("may not run host commands", output)
         self.assertIn("Host commands: none", self.run_in(terminal, "goblin status")[0])
@@ -307,7 +358,7 @@ class HostDockerAcceptance(unittest.TestCase):
         terminal = Terminal([str(app), "--state-dir", str(d.state), "attach", session])
         self.addCleanup(terminal.close)
         terminal.expect(PROMPT, timeout=60)
-        terminal.send("goblin host run --reason 'Docker tests' -- nix develop -c python3 -m unittest "
+        terminal.send("goblin host run --name job --reason 'Docker tests' -- nix develop -c python3 -m unittest "
                       "discover -s tests -p test_docker.py -v; printf '\\nACCEPTANCE=%s\\n' $?\n")
         d.decide(d.wait(lambda: next(iter(d.permissions(session=session, state="pending")), None)), True)
         result = terminal.expect(r"([\s\S]*)\nACCEPTANCE=(\d+)\n", timeout=1800)

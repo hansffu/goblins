@@ -252,6 +252,17 @@ fn execute(cli: Cli) -> Result<i32> {
             Client::connect(&state)?
                 .call("sessions.detach", serde_json::json!({"session":id_or_name}))?
         ),
+        Command::Host { command } => {
+            let mut client = Client::connect(&state)?;
+            println!(
+                "{}",
+                match command {
+                    cli::HostCommand::List => client.call("host.list", serde_json::json!({}))?,
+                    cli::HostCommand::Cancel { job } =>
+                        client.call("host.cancel", serde_json::json!({"request":job}))?,
+                }
+            );
+        }
         Command::Rpc {
             method,
             params_json,

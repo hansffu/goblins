@@ -10,10 +10,15 @@ UID/GID mappings, Goblins' integration tests and its Docker tests, or a real
 Goblins daemon. Build and test everything else in the sandbox.
 
 ```sh
-goblin host run --reason "Run the Docker integration tests" --detach -- \
+goblin host run --name docker-tests --reason "Run the Docker integration tests" --detach -- \
   nix develop -c python3 -m unittest discover -s tests -p 'test_docker.py' -v
 ```
 
+- `--name` is required: a short label a human recognises at a glance, such as
+  `docker-tests` (1-32 characters: ASCII letters, digits, space and `._-:`).
+  The human sees running host commands by this name in Emacs, with how long
+  each has run, can read their output, and can stop one. Names need not be
+  unique; commands still take the job ID.
 - `--reason` is required. Name the task it serves; batch related work into one
   command, for example one test-suite run, since each run needs its own
   approval. Don't resubmit a denied command unchanged.
