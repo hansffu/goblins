@@ -424,7 +424,10 @@ in
     pkgs.runCommand "goblins-agent-permissions" { } ''
       # `! grep` would not stop the build under set -e.
       if grep -q -- --dangerously-skip-permissions ${own.claude}/bin/claude; then exit 1; fi
-      grep -q -- '--plugin-dir [^ ]* --dangerously-skip-permissions "$@"' ${bypass.claude}/bin/claude
+      grep -Fq -- 'permissions=(--dangerously-skip-permissions)' ${bypass.claude}/bin/claude
+      # The session's own launch and a nested one both pass it.
+      grep -q -- '--plugin-dir [^ ]* "''${permissions\[@\]}" "$@"' ${bypass.claude}/bin/claude
+      grep -Fq -- 'exec "$claude_executable" "''${permissions[@]}" "$@"' ${bypass.claude}/bin/claude
       for launcher in ${own.codex} ${bypass.codex}; do
         # `codex` on PATH runs its own engine with full access.
         grep -Fq -- 'exec "$codex_executable" --sandbox danger-full-access' $launcher/bin/codex
