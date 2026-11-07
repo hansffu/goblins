@@ -159,14 +159,16 @@ pub enum Command {
     /// Creates $GOBLINS_WORKTREES/NAME on a branch NAME (an existing branch is
     /// checked out; a new one starts at HEAD or --base), makes it this goblin's
     /// worktree and prints its path. Run it inside the repository, then work in
-    /// the printed path.
+    /// the printed path. --main goes back to the main checkout, which has the
+    /// branch it has checked out (such as main or master).
     Worktree {
         #[arg(required_unless_present = "main", conflicts_with = "main")]
         name: Option<String>,
         /// The commit or branch a new branch starts from (default: HEAD)
         #[arg(long, conflicts_with = "main")]
         base: Option<String>,
-        /// Clear this goblin's worktree: it works in the main checkout
+        /// Clear this goblin's worktree: it works in the main checkout, whose
+        /// path is printed
         #[arg(long)]
         main: bool,
     },

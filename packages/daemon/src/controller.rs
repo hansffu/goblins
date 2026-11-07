@@ -119,6 +119,10 @@ pub struct SessionRecord {
     /// goblin changes it.
     #[serde(default)]
     pub worktree: Option<goblins_runtime::worktrees::Worktree>,
+    /// The main checkout of a goblin with a worktree folder: where it works
+    /// when it works in no worktree, even when launched in one.
+    #[serde(default)]
+    pub checkout: Option<PathBuf>,
 }
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
@@ -1816,6 +1820,7 @@ impl Controller {
             recreated_from: recorded.as_ref().map(|r| r.id.clone()),
             skipped: vec![],
             worktree: None,
+            checkout: None,
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
         self.sessions.insert(
@@ -3046,6 +3051,7 @@ impl Controller {
                                 }
                             })
                         });
+                        a.record.checkout = worktrees.checkout;
                         a.worktree_folder = worktrees.folder;
                         // Why a launch that should have worktrees has none.
                         if let Some(reason) = worktrees.detail {
@@ -3736,6 +3742,7 @@ mod tests {
                     recreated_from: None,
                     skipped: vec![],
                     worktree: None,
+                    checkout: None,
                 },
                 runtime: Some(Box::new(goblins_runtime::Fake::ended(results))),
                 preparing: None,
@@ -4598,6 +4605,7 @@ mod tests {
                 auto: Box::default(),
                 worktrees: Box::new(Report {
                     folder: Some(folder.clone()),
+                    checkout: Some("/p/api".into()),
                     worktree: Some("fix".into()),
                     detail: None,
                 }),
@@ -4608,8 +4616,9 @@ mod tests {
             name: name.into(),
             path: folder.join(name),
         };
-        // A goblin launched in a worktree works in it.
+        // A goblin launched in a worktree works in it, and knows its checkout.
         assert_eq!(d.sessions["a"].record.worktree, Some(worktree("fix")));
+        assert_eq!(d.sessions["a"].record.checkout, Some("/p/api".into()));
         let set = |d: &mut Controller, name: Value| {
             d.sandbox_control_for_test("a", "sessions.set-worktree", json!({"name":name}))
         };
@@ -4625,6 +4634,7 @@ mod tests {
         assert_eq!(d.sessions["a"].record.worktree, Some(worktree("other")));
         assert_eq!(set(&mut d, Value::Null).unwrap(), json!({"worktree":null}));
         assert_eq!(d.sessions["a"].record.worktree, None);
+        assert_eq!(d.sessions["a"].record.checkout, Some("/p/api".into()));
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }

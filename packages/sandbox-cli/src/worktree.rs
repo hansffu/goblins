@@ -10,8 +10,10 @@ const NO_FOLDER: &str = "this goblin has no worktree folder: it was not launched
 pub fn run(name: Option<String>, base: Option<String>, main: bool) -> Result<i32, String> {
     let folder = std::env::var_os("GOBLINS_WORKTREES").ok_or(NO_FOLDER)?;
     let Some(name) = name.filter(|_| !main) else {
+        // The folder and the checkout are set together.
+        let checkout = std::env::var_os("GOBLINS_CHECKOUT").ok_or(NO_FOLDER)?;
         call("sessions.set-worktree", json!({"name":null}))?;
-        println!("main checkout");
+        println!("{}", Path::new(&checkout).display());
         return Ok(0);
     };
     if !valid_name(&name) {

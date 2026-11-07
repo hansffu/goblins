@@ -612,7 +612,13 @@ fn prepare_recreate(session: &mut Session, recreate: Recreate) -> Result<Recreat
         }
     }
     session.recreated = packages.clone();
-    // The recorded worktree, if this launch's folder still has it.
+    // The recorded worktree, if this launch's folder still has it. A record
+    // without one worked in the main checkout, even if it was launched in a
+    // worktree: the launch directory does not make it one again.
+    if recreate.worktree.is_none() {
+        session.settle_layout()?;
+        session.worktrees.worktree = None;
+    }
     if let Some(recorded) = &recreate.worktree {
         session.settle_layout()?;
         match session.layout() {

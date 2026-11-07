@@ -16,7 +16,8 @@ Run it again for an existing worktree and nothing is created.
 Names use letters, digits, `.`, `_` and `-`, start with a letter or digit, and are at most 100 characters.
 
 Your process keeps running in its launch directory: work in the printed path, with `git -C PATH ...`, `cd PATH && ...` and absolute paths in file edits.
-`goblin worktree --main` clears the record when you go back to the main checkout.
+To work in the main checkout again, run `goblin worktree --main`: it clears the record and prints the main checkout's path (also in `$GOBLINS_CHECKOUT`), which you then work in the same way.
+The branch the main checkout has, such as `main` or `master`, cannot be a worktree: when asked to work on it, run `goblin worktree --main` instead of `goblin worktree main`.
 
 Do not use Claude Code's `--worktree` or EnterWorktree, or Codex's own worktree features (`create_worktree`, `--worktree`): they put worktrees where Goblins does not look and do not tell it where you work.
 Do not use plain `git worktree add` for a worktree Goblins should know about: use `goblin worktree NAME`.

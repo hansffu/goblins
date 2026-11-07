@@ -12,6 +12,8 @@ use std::{
 
 /// The environment variable that holds the folder, in goblins that have one.
 pub const ENV: &str = "GOBLINS_WORKTREES";
+/// The environment variable that holds the main checkout, set with [`ENV`].
+pub const CHECKOUT_ENV: &str = "GOBLINS_CHECKOUT";
 /// Bytes read from a `.git` file or a `gitdir` record.
 const MAX_GIT_FILE: u64 = 4096;
 
@@ -39,6 +41,10 @@ pub struct Worktree {
 pub struct Report {
     /// The mounted folder, `GOBLINS_WORKTREES`; None without worktree support.
     pub folder: Option<PathBuf>,
+    /// The main checkout, `GOBLINS_CHECKOUT`, set with the folder: where a
+    /// goblin works when it works in no worktree.
+    #[serde(default)]
+    pub checkout: Option<PathBuf>,
     /// The worktree the goblin starts in: its launch directory is in one, or
     /// a resume restored the recorded one.
     pub worktree: Option<String>,

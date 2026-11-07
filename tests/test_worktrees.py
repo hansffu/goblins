@@ -89,9 +89,10 @@ class WorktreeTests(unittest.TestCase):
         folder = self.worktrees / "api"
         self.assertTrue(folder.is_dir())
         self.assertIsNone(record["worktree"])
+        self.assertEqual(record["checkout"], str(checkout))
         self.assertFalse(record.get("detail"))
-        code, out, err = self.run_in(record["id"], 'echo "$GOBLINS_WORKTREES"; touch "$GOBLINS_WORKTREES/made"')
-        self.assertEqual((code, out), (0, str(folder)), err)
+        code, out, err = self.run_in(record["id"], 'echo "$GOBLINS_WORKTREES"; echo "$GOBLINS_CHECKOUT"; touch "$GOBLINS_WORKTREES/made"')
+        self.assertEqual((code, out.split("\n")), (0, [str(folder), str(checkout)]), err)
         self.assertTrue((folder / "made").exists(), "the folder is writable and shared with the host")
         self.assertEqual(self.d.rpc.call("server.status", {})["worktrees_directory"], str(self.worktrees))
 
@@ -101,8 +102,9 @@ class WorktreeTests(unittest.TestCase):
         off = self.manifest("off")
         for cwd, name, manifest in ((checkout / "src", "shell", None), (checkout, "plain", None), (checkout, "shell", off)):
             record = self.launch(cwd, name, manifest)
-            code, out, err = self.run_in(record["id"], 'echo "[${GOBLINS_WORKTREES-unset}]"')
-            self.assertEqual((code, out), (0, "[unset]"), err)
+            code, out, err = self.run_in(record["id"], 'echo "[${GOBLINS_WORKTREES-unset}${GOBLINS_CHECKOUT-unset}]"')
+            self.assertEqual((code, out), (0, "[unsetunset]"), err)
+            self.assertIsNone(record["checkout"])
             self.assertFalse(record.get("detail"))
         self.assertFalse(self.worktrees.exists())
         code, out, err = self.run_in(record["id"], "goblin worktree fix")
@@ -117,9 +119,17 @@ class WorktreeTests(unittest.TestCase):
             record = self.launch(cwd)
             self.assertFalse(record.get("detail"), record)
             self.assertEqual(record["worktree"], {"name": "fix", "path": str(worktree)})
+            self.assertEqual(record["checkout"], str(checkout))
             code, out, err = self.run_in(
-                record["id"], f'pwd; cat "{checkout}/file"; echo "$GOBLINS_WORKTREES"; git -C "{worktree}" status --short --branch')
-            self.assertEqual((code, out.split("\n")), (0, [str(cwd), "main", str(self.worktrees / "api"), "## fix"]), err)
+                record["id"], f'pwd; cat "{checkout}/file"; echo "$GOBLINS_WORKTREES"; echo "$GOBLINS_CHECKOUT"; '
+                              f'git -C "{worktree}" status --short --branch')
+            self.assertEqual((code, out.split("\n")),
+                             (0, [str(cwd), "main", str(self.worktrees / "api"), str(checkout), "## fix"]), err)
+            # Back to the main checkout, which the command prints, from a launch in a worktree.
+            code, out, err = self.run_in(record["id"], "goblin worktree --main")
+            self.assertEqual((code, out), (0, str(checkout)), err)
+            self.assertIsNone(self.d.get(record["id"])["worktree"])
+            self.assertEqual(self.d.get(record["id"])["checkout"], str(checkout))
 
     def test_a_forged_git_file_is_refused(self):
         checkout = self.repository()
@@ -171,9 +181,9 @@ class WorktreeTests(unittest.TestCase):
         self.assertEqual((code, out), (0, str(folder / "two")), err)
         self.assertEqual(self.git(folder / "two", "log", "--oneline").count("\n"), 0, "two starts at main, without fix's commit")
         self.assertEqual(self.d.get(owner)["worktree"]["name"], "two")
-        # --main clears it, and the record follows.
+        # --main clears it and prints the main checkout, and the record follows.
         code, out, err = self.run_in(owner, "goblin worktree --main")
-        self.assertEqual(code, 0, err)
+        self.assertEqual((code, out), (0, str(checkout)), err)
         self.assertIsNone(self.d.get(owner)["worktree"])
         record = self.d.wait(lambda: (r if (r := self.d.record(owner)) and r.get("version") == 3 else None))
         self.assertIsNone(record["worktree"])
@@ -268,6 +278,27 @@ class WorktreeTests(unittest.TestCase):
     def test_resume_restores_a_worktree_that_still_exists(self):
         resumed, folder = self.resume()
         self.assertEqual(resumed["worktree"], {"name": "fix", "path": str(folder / "fix")})
+        self.assertEqual(resumed["skipped"], [])
+
+    def test_resume_keeps_a_worktree_launch_in_the_main_checkout(self):
+        checkout = self.repository()
+        worktree = self.link(checkout, "fix")
+        first = self.launch(worktree)["id"]
+        self.assertEqual(self.run_in(first, "goblin worktree --main")[0], 0)
+        recorded = self.d.wait(lambda: (r if (r := self.d.record(first)) and r.get("version") == 3
+                                        and r.get("worktree") is None else None))
+        self.d.rpc.call("sessions.stop", {"session": first})
+        self.d.wait_record_released(recorded["id"])
+        launch = self.d.rpc.call("sessions.start", {
+            "key": uuid.uuid4().hex, "configuration": str(self.d.manifest), "recreate": recorded["id"],
+            "rows": 24, "cols": 100, "detached": True})
+        resumed = self.d.wait(lambda: (r if (r := self.d.get(launch["session"]))["state"] != "starting" else None),
+                              timeout=60)
+        self.assertEqual(resumed["state"], "running", resumed)
+        # Relaunched in the worktree, it still works in the main checkout.
+        self.assertEqual(resumed["cwd"], str(worktree))
+        self.assertIsNone(resumed["worktree"])
+        self.assertEqual(resumed["checkout"], str(checkout))
         self.assertEqual(resumed["skipped"], [])
 
     def test_resume_skips_a_worktree_that_was_removed(self):

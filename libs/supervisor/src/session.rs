@@ -626,6 +626,7 @@ impl Session {
                         match refusal {
                             None => {
                                 self.worktrees.folder = Some(layout.folder.clone());
+                                self.worktrees.checkout = Some(layout.checkout.clone());
                                 self.worktrees.worktree = layout.worktree.clone();
                                 self.layout = Some(layout);
                             }
@@ -752,6 +753,10 @@ impl Session {
                         self.launch.env.insert(
                             goblins_runtime::worktrees::ENV.into(),
                             layout.folder.display().to_string(),
+                        );
+                        self.launch.env.insert(
+                            goblins_runtime::worktrees::CHECKOUT_ENV.into(),
+                            layout.checkout.display().to_string(),
                         );
                     }
                     Err(error) => {

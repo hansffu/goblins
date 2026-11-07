@@ -3607,6 +3607,10 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
                      "/w/api/fix"))
       (should (equal (goblins--session-directory (goblins-test--session "s" :cwd "/p/api"))
                      "/p/api"))
+      ;; Launched in a worktree and cleared, it works in the main checkout.
+      (should (equal (goblins--session-directory
+                      (goblins-test--session "s" :cwd "/w/api/fix" :checkout "/p/api"))
+                     "/p/api"))
       (should-not (goblins--session-directory (goblins-test--session "s")))
       (let* ((terminal (lambda (session)
                          (with-current-buffer (generate-new-buffer " *goblins test terminal*")
@@ -3630,6 +3634,15 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
                 (setq goblins--snapshot
                       (list :instance "daemon-a"
                             :sessions (vector (goblins-test--session "session-a" :cwd "/p/api")))))
+              (with-current-buffer source (goblins--follow-worktrees))
+              (should (equal (buffer-local-value 'default-directory a) "/p/api/"))
+              ;; One launched in its worktree goes back to the main checkout.
+              (with-current-buffer a (setq default-directory "/w/api/fix/"))
+              (with-current-buffer source
+                (setq goblins--snapshot
+                      (list :instance "daemon-a"
+                            :sessions (vector (goblins-test--session "session-a" :cwd "/w/api/fix"
+                                                                     :checkout "/p/api")))))
               (with-current-buffer source (goblins--follow-worktrees))
               (should (equal (buffer-local-value 'default-directory a) "/p/api/"))
               ;; Directory reports from the agent still do not move it.

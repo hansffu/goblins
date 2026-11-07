@@ -449,7 +449,7 @@ Runs a member in the caller's raid, sharing its workspace, scope, dev shell and 
 
 Records the worktree the goblin works in, which Emacs and other host clients follow and a resume restores. The daemon does not watch the filesystem: a removed worktree stays set until the goblin changes it or stops. Refused (=-32009=) for a goblin without a worktree folder: it was not launched at a repository's root or in one of its worktrees, or worktrees are off for its configuration (its =detail= says why).
 
-- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. =null= clears the worktree.
+- Input :: ={"name"}= or ={"name": null}=. =name= must match =[A-Za-z0-9][A-Za-z0-9._-]{0,99}= and be a directory in the goblin's worktree folder, not a symlink, holding a =.git= file. =null= clears the worktree: the goblin works in its main checkout (=Session.checkout=), even if it was launched in a worktree.
 - Output :: ={"worktree": Worktree_OR_NULL}=
 
 ** Raids
@@ -513,6 +513,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =docker_enabled=                              | Whether Docker is attached                                               |
 | =created_by=                                  | ={"id", "agent_name"}= of the raid owner that ran it, or null            |
 | =worktree=                                    | =Worktree= the goblin works in, or null (see below)                      |
+| =checkout=                                    | Main checkout of a goblin with a worktree folder (=GOBLINS_CHECKOUT=), where it works without a =worktree=, or null |
 | =raid=                                        | ={"id", "name", "role", "owner", "paused"}= or null                      |
 | =identity=                                    | ={"pid", "helper_userns", "mount_owner", "source_mountns", "mountns"}= or null |
 | =initial_packages=, =packages=, =auto_approve= | Package names                                                           |
@@ -581,7 +582,7 @@ A communications log entry: ={"instance", "sequence", "timestamp", "kind", "acto
 
 ={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "worktree", "created", "updated", "stopped"}=
 
-=version= is 3. Version 1 and 2 records read as the current version, with =worktree: null=. =worktree= is the =Worktree= the goblin works in, written whenever it changes. =goblins resume= launches in the recorded working directory and restores the worktree if its name is still a worktree in the new launch's worktree folder; otherwise the record's =skipped= lists ={"name": "worktree", "reason"}= and none is set.
+=version= is 3. Version 1 and 2 records read as the current version, with =worktree: null=. =worktree= is the =Worktree= the goblin works in, written whenever it changes. =goblins resume= launches in the recorded working directory and restores the worktree if its name is still a worktree in the new launch's worktree folder; otherwise the record's =skipped= lists ={"name": "worktree", "reason"}= and none is set. A record with =worktree: null= resumes without one, in the main checkout, even when its working directory is a worktree.
 
 * Private init channel (same build)
 
@@ -792,7 +793,7 @@ All methods in this table are supervisor-to-daemon notifications. There is no co
 | =Event.ScopeFailed= | ={"name":STRING}= | Reports scope failure. |
 | =Event.ScopeNeeded= | ={"name":STRING}= | Requests scope membership. The daemon uses its captured executable pin. |
 | =Event.Preview= | ={"approval":U64,"result":Result<Preview,String>}= | Returns a package preview including the private output path. |
-| =Event.Started= | ={"docker_enabled":BOOL,"policy":Policy,"support":Support,"dev_shell":OPAQUE_OPTIONAL_DEV_SHELL_SUMMARY,"identity":Identity,"recreated":Recreated_OR_NULL,"auto":Auto,"worktrees":WorktreeReport}= | Publishes descriptor-free launch metadata; every PTY remains in the runtime. =WorktreeReport= is ={"folder":PATH_OR_NULL,"worktree":STRING_OR_NULL,"detail":STRING_OR_NULL}=: the mounted worktree folder (=GOBLINS_WORKTREES=), the worktree the goblin starts in (its working directory is in one, or a resume restored the recorded one) and why a launch that should have worktree support has none, which the daemon adds to the session's =detail=. |
+| =Event.Started= | ={"docker_enabled":BOOL,"policy":Policy,"support":Support,"dev_shell":OPAQUE_OPTIONAL_DEV_SHELL_SUMMARY,"identity":Identity,"recreated":Recreated_OR_NULL,"auto":Auto,"worktrees":WorktreeReport}= | Publishes descriptor-free launch metadata; every PTY remains in the runtime. =WorktreeReport= is ={"folder":PATH_OR_NULL,"checkout":PATH_OR_NULL,"worktree":STRING_OR_NULL,"detail":STRING_OR_NULL}=: the mounted worktree folder (=GOBLINS_WORKTREES=), the main checkout (=GOBLINS_CHECKOUT=, set with the folder), the worktree the goblin starts in (its working directory is in one, or a resume restored the recorded one) and why a launch that should have worktree support has none, which the daemon adds to the session's =detail=. |
 | =Event.Progress= | ={"request":STRING,"state":STRING}= | Reports grant progress without restricting state to a compile-time string. |
 | =Event.Mode= | ={"server":BOOL}= | Announces whether the payload runs without a terminal. |
 | =Event.Refresh= | ={"approval":U64,"result":OPAQUE_RESULT}= | Contains =Result<[JSON_PREVIEW,CANDIDATE_ID],String>=. |

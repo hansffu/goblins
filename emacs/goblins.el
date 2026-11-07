@@ -1337,9 +1337,14 @@ Pinned before any TRAMP use, from the terminal's identity."
 
 (defun goblins--session-directory (session)
   "The local directory SESSION's goblin works in, or nil.
-That is its worktree when it works in one, else its working directory: the
-project, bound at the same path inside the sandbox."
+That is its worktree when it works in one, else its repository's main
+checkout when it has a worktree folder (even when launched in a worktree),
+else its working directory: the project, bound at the same path inside the
+sandbox."
   (let ((directory (or (plist-get (goblins--session-worktree session) :path)
+                       (let ((checkout (plist-get session :checkout)))
+                         (and (stringp checkout) (not (string-empty-p checkout))
+                              checkout))
                        (plist-get session :cwd))))
     (and (stringp directory) (not (string-empty-p directory)) directory)))
 
@@ -1357,7 +1362,8 @@ works in its own /workspace, which only exists inside it."
 
 (defun goblins--follow-worktrees ()
   "Move each running agent terminal's `default-directory' to its goblin's
-worktree, or back to its working directory, as the snapshot says.
+worktree, or back to its main checkout or working directory, as the snapshot
+says.
 Magit, `project-find-file' and `find-file' from the terminal then open where
 the goblin works."
   (when (and goblins--snapshot goblins--instance)
