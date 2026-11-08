@@ -3922,6 +3922,81 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
                 (should (equal default-directory "/p/api/"))))
           (mapc #'kill-buffer (list a b c)))))))
 
+;; A raid of goblins in a worktree named after it: its merged heading is too
+;; wide for the sidebar.
+(defconst goblins-test--worktree-raid
+  (let ((worktree '(:name "sidebar-mouse" :path "/w/goblins/sidebar-mouse")))
+    (list (goblins-test--session "nugget" :cwd "/p/goblins" :worktree worktree
+                                 :agent_state "idle" :raid '(:id "r1" :name "sidebar-mouse"))
+          (goblins-test--session "sidebar-review" :cwd "/p/goblins" :worktree worktree
+                                 :agent_state "idle"
+                                 :raid '(:id "r1" :name "sidebar-mouse" :role "reviewer")))))
+
+(ert-deftest goblins-sidebar-wraps-a-merged-heading-that-does-not-fit ()
+  (goblins-test--sidebar goblins-test--worktree-raid
+    (should (equal (goblins-test--sidebar-plain)
+                   (concat "▾ ⚔ sidebar-mouse\n    goblins ⎇ sidebar-mouse\n"
+                           (goblins-test--row "  › nugget" "○")
+                           (goblins-test--row "  › sidebar-review (reviewer)" "○"))))
+    ;; The second line is part of the heading: one step, one selection, and
+    ;; it acts on the raid.
+    (goto-char (point-min))
+    (goblins-sidebar-next)
+    (should (equal (get-text-property (point) 'goblins-id) "nugget"))
+    (goblins-sidebar-previous)
+    (should (bobp))
+    (forward-line 1)
+    (should (equal (goblins--sidebar-selection) (cons (point-min) (line-beginning-position 2))))
+    (should (equal (get-text-property (point) 'goblins-raid) "sidebar-mouse"))
+    (goblins-sidebar-fold)
+    (should (equal (goblins-test--sidebar-plain)
+                   "▸ ⚔ sidebar-mouse\n    goblins ⎇ sidebar-mouse\n"))
+    ;; Where it fits it stays on one line.
+    (let ((goblins-sidebar-width 60))
+      (goblins-sidebar-fold)
+      (should (string-prefix-p "▾ ⚔ sidebar-mouse · goblins ⎇ sidebar-mouse\n  › nugget"
+                               (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-cuts-the-role-then-the-name-to-keep-the-badges ()
+  (let ((goblins-sidebar-width 28))
+    (goblins-test--sidebar goblins-test--worktree-raid
+      ;; The icon may take two columns, where Emacs draws it as an image.
+      (should (string-suffix-p "  › sidebar-review (re…)  ○\n" (goblins-test--sidebar-plain))))
+    (goblins-test--sidebar
+        (list (goblins-test--session "a-very-long-goblin-name" :cwd "/p" :agent_state "idle"
+                                     :raid '(:id "r1" :name "zeta" :role "reviewer")))
+      (should (string-suffix-p "  › a-very-long-goblin-…  ○\n" (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-can-be-resized ()
+  (let ((goblins--sidebar-resized-width nil))
+    (goblins-test--sidebar goblins-test--worktree-raid
+      (rename-buffer goblins--sidebar-buffer-name)
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((window (goblins--sidebar-show source)))
+          (should (eql (window-total-width window) goblins-sidebar-width))
+          (should-not window-size-fixed)
+          ;; Dragging its edge resizes it; its text fits the new width.
+          (adjust-window-trailing-edge window 26 t)
+          (goblins--sidebar-resized window)
+          (should (eql goblins--sidebar-resized-width 60))
+          (should (string-prefix-p "▾ ⚔ sidebar-mouse · goblins ⎇ sidebar-mouse\n"
+                                   (buffer-substring-no-properties (point-min) (point-max))))
+          ;; Other windows splitting and balancing leave it alone.
+          (balance-windows)
+          (should (eql (window-total-width window) 60))
+          ;; Remembered even when a redraw came first and already fits it.
+          (adjust-window-trailing-edge window -6 t)
+          (goblins--sidebar-render)
+          (goblins--sidebar-resized window)
+          (should (eql goblins--sidebar-resized-width 54))
+          (should (eql (window-preserved-size window t) (window-body-width window t)))
+          (adjust-window-trailing-edge window 6 t)
+          (goblins--sidebar-resized window)
+          ;; The next sidebar opens at that width.
+          (delete-window window)
+          (should (eql (window-total-width (goblins--sidebar-show source)) 60)))))))
+
 (ert-deftest goblins-sidebar-groups-by-worktree ()
   (let ((fix '(:name "fix-login" :path "/w/api/fix-login"))
         (goblins-sidebar-width 80))
