@@ -54,9 +54,22 @@ has at most 16 terminals.
   (as a paste when the program asked for bracketed paste), then `--keys` presses
   keys. Keys are `enter`, `tab`, `esc`, `backspace`, `space`, `up`, `down`,
   `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `insert`, `delete`,
-  `f1` to `f12`, `shift+tab`, `ctrl+LETTER` and `alt+CHARACTER`. For example,
-  `send t1 --keys ctrl+c` interrupts a program, and `send t1 --text y --keys
-  enter` answers a prompt. An unknown key name refuses the whole call.
+  `f1` to `f12`, `shift+tab`, `ctrl+LETTER`, `alt+CHARACTER`, and any single
+  character that is not a control character (`g`, `A`, `:`, `/`), which is
+  typed as that keystroke and never as a paste. For example, `send t1 --keys
+  ctrl+c` interrupts a program, and `send t1 --text y --keys enter` answers a
+  prompt. An entry that is not a key name and not one character, like `gg`,
+  refuses the whole call.
+- Drive full-screen programs with keys, and put text in with `--text`: navigate
+  and run commands with keys, so each character is a keystroke the program acts
+  on; insert with text. In Vim:
+
+  ```
+  goblin terminal send T --keys g g A                # first line, append at its end
+  goblin terminal send T --text ' START' --keys esc  # type the text, leave insert mode
+  goblin terminal send T --keys : w q enter          # save and quit
+  ```
+
 - Wait instead of polling or sleeping. `wait` returns when a line of the
   screen, or of the last `--lines` recent lines (default 100), contains
   `--match TEXT` or matches `--regex RE`, and output that is already there

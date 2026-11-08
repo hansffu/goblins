@@ -700,4 +700,21 @@ mod tests {
         assert_eq!(split.visible(), screen.visible());
     }
 
+    #[test]
+    fn single_characters_are_typed_after_the_text_and_never_pasted() {
+        let mut screen = Screen::new(24, 80);
+        screen.feed(b"\x1b[?2004h");
+        let keys = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        // Vim: `gg`, `A`, then text as a paste, then escape and `:wq`.
+        assert_eq!(screen.input(None, &keys(&["g", "g", "A"])), b"ggA");
+        assert_eq!(
+            screen.input(Some(" START"), &keys(&["esc", ":", "w", "q", "enter"])),
+            b"\x1b[200~ START\x1b[201~\x1b:wq\r"
+        );
+        // Keys follow the text in the order given, and a letter keeps its case.
+        assert_eq!(screen.input(Some("x"), &keys(&["Y", "z"])), b"\x1b[200~x\x1b[201~Yz");
+        // A multi-character entry that is no key is not typed.
+        assert_eq!(screen.input(None, &keys(&["gg", "g"])), b"g");
+    }
+
 }

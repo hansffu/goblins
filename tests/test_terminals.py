@@ -235,6 +235,18 @@ class TerminalTests(unittest.TestCase):
                           "--timeout", "20000")
         self.assertEqual(r.returncode, 0, r.stderr + self.terminal("read", "gribble", "asker").stdout)
 
+    def test_single_characters_are_keystrokes_and_longer_unknown_names_are_refused(self):
+        self.create("--name", "keys", "--", "bash", "-c",
+                    'read -r -n 1 a; read -r -n 1 b; read -r -n 1 c; echo "GOT=$a$b$c"; sleep 600')
+        # Vim's `gg` and `A` are one key each, with their case.
+        r = self.terminal("send", "gribble", "keys", "--keys", "g", "A", ":")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.terminal("wait", "gribble", "keys", "--match", "GOT=gA:")
+        self.assertEqual(r.returncode, 0, r.stderr + self.terminal("read", "gribble", "keys").stdout)
+        r = self.terminal("send", "gribble", "keys", "--keys", "gg")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unknown key", r.stderr)
+
     def test_a_terminal_and_an_exec_run_in_a_utf_8_locale(self):
         # less and btop treat the C locale's charset as binary: both must see
         # the same UTF-8 locale, in which an accented letter is one character.

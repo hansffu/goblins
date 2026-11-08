@@ -124,7 +124,7 @@ pub enum TerminalCommand {
         /// Text to type first
         #[arg(long)]
         text: Option<String>,
-        /// Keys to press then: enter, tab, esc, up, ctrl+c, f1, …
+        /// Keys to press then: enter, tab, esc, up, ctrl+c, f1, … or one character such as g, A or :
         #[arg(long, num_args = 1.., value_name = "KEY")]
         keys: Vec<String>,
     },

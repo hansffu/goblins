@@ -212,7 +212,7 @@ Reads what a terminal shows.
 
 Types into a terminal: =text=, then =keys=.
 
-- Input :: ={"session", "terminal", "text", "keys"}=. At least one of them is required. =text= is at most 64 KiB (and the request frame at most 64 KiB, so the longest text that fits is shorter), wrapped in bracketed-paste markers when the program enabled bracketed paste. =keys= has at most 64 names: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =shift+tab=, =ctrl+X= (a letter) and =alt+X= (a printable ASCII character); cursor keys follow the cursor mode the program set. An unknown name refuses the whole call with =-32602=.
+- Input :: ={"session", "terminal", "text", "keys"}=. At least one of them is required. =text= is at most 64 KiB (and the request frame at most 64 KiB, so the longest text that fits is shorter), wrapped in bracketed-paste markers when the program enabled bracketed paste. =keys= has at most 64 names: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =shift+tab=, =ctrl+X= (a letter) and =alt+X= (a printable ASCII character), or an entry of exactly one character that is not a control character (=g=, =A=, =:=; a Unicode scalar value other than C0, DEL and C1 controls), which is typed as that keystroke, never wrapped in bracketed-paste markers, with its case kept; cursor keys follow the cursor mode the program set. An unknown name, such as a longer entry that is not a key name (=gg=), refuses the whole call with =-32602=.
 - Output :: ={"accepted": true}=. =-32009= when the program has ended or its input is full.
 
 *** =terminals.wait=

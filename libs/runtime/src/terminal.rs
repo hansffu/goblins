@@ -145,8 +145,14 @@ fn lines_ok(lines: Option<usize>) -> Result<(), String> {
 }
 
 /// The bytes a terminal program reads for key `name`; `application` is the
-/// cursor mode the program set. None for a name that is not a key.
+/// cursor mode the program set. A name is a key's name, or exactly one
+/// character that is not a control character, which is that keystroke as
+/// typed (never a paste, and not case folded). None for anything else.
 pub fn key_bytes(name: &str, application: bool) -> Option<Vec<u8>> {
+    let mut characters = name.chars();
+    if let (Some(character), None) = (characters.next(), characters.next()) {
+        return (!character.is_control()).then(|| character.to_string().into_bytes());
+    }
     let name = name.to_ascii_lowercase();
     let cursor = |letter: u8| {
         if application {
@@ -244,6 +250,30 @@ mod tests {
     }
 
     #[test]
+    fn one_printable_character_is_a_plain_keystroke() {
+        for (key, bytes) in [
+            ("g", &b"g"[..]),
+            ("A", b"A"),
+            (":", b":"),
+            ("/", b"/"),
+            (" ", b" "),
+            ("1", b"1"),
+            ("$", b"$"),
+            ("\u{e9}", "\u{e9}".as_bytes()),
+        ] {
+            assert_eq!(key_bytes(key, false).unwrap(), bytes, "{key:?}");
+            assert_eq!(key_bytes(key, true).unwrap(), bytes, "{key:?} in application mode");
+        }
+        // Not folded to lower case, unlike key names.
+        assert_ne!(key_bytes("A", false), key_bytes("a", false));
+        assert_eq!(key_bytes("Enter", false).unwrap(), b"\r");
+        // Several characters that are not a key's name stay an error; so does a control character.
+        for bad in ["gg", "g g", "AA", ":w", "", "\n", "\r", "\t", "\u{1b}", "\u{7f}", "\0"] {
+            assert!(key_bytes(bad, false).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn calls_are_checked_before_anything_is_done() {
         let send = |text: Option<&str>, keys: &[&str]| Call::Send {
             text: text.map(Into::into),
@@ -251,6 +281,8 @@ mod tests {
         };
         assert!(validate(&send(Some("ls"), &["enter"])).is_ok());
         assert!(validate(&send(None, &["nope"])).is_err());
+        assert!(validate(&send(None, &["g", "g", "A", ":", "enter"])).is_ok());
+        assert!(validate(&send(None, &["gg"])).is_err());
         assert!(validate(&send(Some("ls"), &["enter", "nope"])).is_err());
         assert!(validate(&send(None, &[])).is_err());
         assert!(validate(&send(Some(&"x".repeat(MAX_TEXT + 1)), &[])).is_err());
