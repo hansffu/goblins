@@ -94,8 +94,6 @@ its agent created wear the colour of its goblin's icon in `goblins-agent-icons'.
   :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
-(defface goblins-sidebar-hover '((t :inherit highlight :extend t))
-  "The sidebar line under the mouse, which a click acts on." :group 'goblins)
 (defface goblins-sidebar-active '((t))
   "The goblin block or shell whose terminal is shown in the main window.
 Plain by default, so the bar alone marks it; give it a background to tint it."
@@ -735,7 +733,6 @@ text is built apart from the sidebar so a failure cannot blank it."
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
     (goblins--sidebar-pad)
     (goblins--sidebar-mask-margins)
-    (goblins--sidebar-add-hover)
     (goblins--sidebar-highlight-selection)
     (goblins--sidebar-update-active)
     ;; A running host command may have come into view or gone.
@@ -786,20 +783,6 @@ from `window-selection-change-functions', shows the sidebar."
     (goto-char pos)
     (let ((start (line-beginning-position)))
       (cl-some (lambda (p) (get-text-property start p)) goblins--sidebar-target-properties))))
-
-(defun goblins--sidebar-add-hover ()
-  "Highlight each line that a click acts on while the mouse is over it, from
-its text to the window's edge, clear of the indentation and its bars."
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (goto-char (point-min))
-      (while (not (eobp))
-        (when (goblins--sidebar-target-p (point))
-          ;; A fresh face per line: neighbouring lines highlight apart.
-          (put-text-property (+ (point) (current-indentation))
-                             (min (point-max) (line-beginning-position 2))
-                             'mouse-face (list 'goblins-sidebar-hover)))
-        (forward-line 1)))))
 
 (defun goblins--sidebar-mask-margins ()
   "Keep highlights off each line's indentation and the active bars' columns.

@@ -2619,38 +2619,6 @@ project's root, a directory inside it and a directory in no project."
   "A left click at POS in WINDOW."
   (list 'mouse-1 (list window pos '(0 . 0) 0)))
 
-(ert-deftest goblins-sidebar-lines-highlight-under-the-mouse ()
-  (goblins-test--sidebar
-      (list (goblins-test--session "chief" :cwd "/p" :agent_state "idle" :inbox 2)
-            (goblins-test--session "scout" :cwd "/p" :agent_state "idle"))
-    (goblins-test--show-all)
-    (goto-char (point-min))
-    (search-forward "chief")
-    (beginning-of-line)
-    (let* ((name (point))
-           (text (+ name (current-indentation)))
-           (detail (line-beginning-position 2)))
-      ;; From the text on, clear of the indentation and its bars.
-      (should-not (get-text-property name 'mouse-face))
-      (should (equal (get-text-property text 'mouse-face) '(goblins-sidebar-hover)))
-      ;; Each line apart, the detail lines included.
-      (should (get-text-property (+ detail (save-excursion (goto-char detail)
-                                                           (current-indentation)))
-                                 'mouse-face))
-      (should (eq (get-text-property text 'mouse-face)
-                  (get-text-property (1- detail) 'mouse-face)))
-      (should-not (eq (get-text-property (1- detail) 'mouse-face)
-                      (get-text-property (+ detail (save-excursion (goto-char detail)
-                                                                   (current-indentation)))
-                                         'mouse-face))))
-    ;; Not on rules and blank lines.
-    (goto-char (point-min))
-    (while (not (eobp))
-      (unless (goblins--sidebar-target-p (point))
-        (should-not (text-property-not-all (line-beginning-position) (line-end-position)
-                                           'mouse-face nil)))
-      (forward-line 1))))
-
 (ert-deftest goblins-sidebar-click-acts-like-ret ()
   (goblins-test--sidebar
       (list (goblins-test--session "chief" :cwd "/p" :agent_state "idle" :inbox 2)
