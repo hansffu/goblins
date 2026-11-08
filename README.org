@@ -378,6 +378,7 @@ goblin detach                         # detach this goblin's terminal
 goblin send NAME --message TEXT       # message a raid member
 goblin inbox status | next            # read messages
 goblin editor open FILE               # open a file in your Emacs
+goblin terminal create|list|read|send|run|wait|close ...  # named terminals you and the human share
 #+end_src
 
 =request-package= takes a nixpkgs attribute name, such as =cowsay= or =python3Packages.black=, from Goblins' pinned nixpkgs.

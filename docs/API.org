@@ -243,6 +243,13 @@ Resizes a terminal's PTY and screen.
 - Input :: ={"session", "terminal", "rows", "cols"}=, each 1–500.
 - Output :: ={"accepted": true}=
 
+*** Terminals on the sandbox endpoint
+
+A goblin reaches its own terminals with =terminals.create=, =terminals.list=, =terminals.read=, =terminals.send=, =terminals.wait= and =terminals.close= on the sandbox endpoint (=terminals= is in the sandbox's =features=). They are the host endpoint's methods with the same parameters, results and limits, except that no call names a goblin: a call with a =session= is refused with =-32602=, and the goblin is the caller's, so another goblin's terminals cannot be reached or even told apart from missing ones (=-32004=). =terminals.attach=, =terminals.detach= and =terminals.resize= do not exist there (=-32601=). A request is at most 4 KiB, except =terminals.create= (16 KiB) and =terminals.send= (64 KiB, the request body limit). As for =sessions.exec=, a configuration that refuses exec refuses =terminals.create=. A wait holds its connection, which serves no other call meanwhile; a connection that closes cancels its wait, and a goblin has at most 16 waits in all, the host's included.
+
+- Authority :: the goblin can list, read, send to and wait on all of its terminals, those the human created (origin =host=) included, and create new ones, whose origin is =agent=. It can close only terminals with origin =agent=: closing a =host= terminal is refused with =-32009= and a message saying that only the human can close it.
+- =terminals.create= also takes =notify= (a boolean, default false; refused on the host endpoint). With it, the daemon puts one operation notice from =goblins= in the goblin's inbox when the terminal's program exits, whether or not the goblin's configuration has an agent integration. A program that was ended by =terminals.close=, or by the goblin stopping, sends none. The notice is the operation notice of an outcome with =message.operation= ={"request": "SESSION-tN", "kind": "terminal", "subject": LABEL, "status": "exited", "message"}= (=request= is the goblin's session ID and the terminal's ID joined by =-=, which names it for good as an ID is not reused in a goblin's run), where =message= is =exit code N= or =killed by signal N=, then the last 20 lines of the terminal's screen at the end, cut to 4 KiB with the newest lines kept (a cut starts with =…=). The notice body says =terminal LABEL exited=, then =message=. The daemon asks the supervisor to report the exit when it starts the terminal, as a wait that exists from the start and counts toward no limit, so a program that exits at once still sends its notice.
+
 ** Permissions
 
 *** =permissions.list=
@@ -455,6 +462,10 @@ Asks the host for a grant. The reply arrives after the decision and its executio
 
 As on the host endpoint, limited to the caller's own host commands.
 
+** Terminals
+
+=terminals.create=, =terminals.list=, =terminals.read=, =terminals.send=, =terminals.wait= and =terminals.close= act on the caller's own goblin and take no =session=. See /Terminals on the sandbox endpoint/ under Terminals above for their differences from the host endpoint, the authority and the exit notice.
+
 ** Dev shell and flake apps
 
 *** =devshell.lock=
@@ -597,7 +608,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =id=         | =t1=, =t2=, …, counting up for the goblin's run, never reused in it              |
 | =name=       | Name or null                                                                     |
 | =label=      | For display: the name, else the basename of =argv[0]=, else =shell=               |
-| =origin=     | =host=: created on the host endpoint                                             |
+| =origin=     | =host=: created on the host endpoint; =agent=: created by the goblin on the sandbox endpoint |
 | =started_at= | When the program started                                                         |
 | =rows=, =cols= | Size: the creation size, or the last frontend's or =terminals.resize=          |
 | =attached=   | Whether a frontend is attached                                                   |
@@ -636,7 +647,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 
 ={"id", "conversation", "sender", "recipient", "sender_name", "recipient_name", "in_reply_to", "body", "created_sequence", "created_at", "state", "claim_generation", "failure"}=, plus =operation= on operation notices and =raid= on raid notices. =state= is =queued=, =claimed=, =completed= or =failed=.
 
-- =operation= :: ={"request", "kind", "subject", "status", "message"}=: the outcome of an operation the goblin requested. =status= is =ready=, =denied=, =failed=, =withdrawn= or =cancelled= (=finished= for a host command that ran). Its sender is =goblins=.
+- =operation= :: ={"request", "kind", "subject", "status", "message"}=: the outcome of an operation the goblin requested. =status= is =ready=, =denied=, =failed=, =withdrawn= or =cancelled= (=finished= for a host command that ran). Its sender is =goblins=. With =kind= =terminal= it is not an outcome of a request: the program of a terminal the goblin created with =notify= exited, =status= is =exited=, =subject= is the terminal's label and =message= says how and quotes its last lines (see Terminals on the sandbox endpoint).
 - =raid= :: ={"id", "name", "event": "resumed", "owner"}=: a paused raid the goblin could not message has resumed under =owner= (a session ID).
 
 ** Event
@@ -845,7 +856,7 @@ All methods in this table are daemon-to-supervisor notifications. Approval, seri
 | =Command.CancelHostJob= | ={"request":STRING}= | Cancels a host job. |
 | =Command.Stop= | ={}= | Begins cancellation and teardown. |
 
-=TerminalId= is ="Main"= or ={"Process":U64}=. =SpawnKind= is ="Exec"=, ="Attach"= or ="Terminal"=. A =Terminal= spawn is checked as an exec; its =NewPty= is owned by the supervisor, which emulates its screen (see Terminals), and an =Attach= of its =Process= ID is checked as an exec, not as attaching an =onAttach= client. Its =Event.Exited= is reported once its output has been read and the waits on it have been answered, and the supervisor then cancels everything it started. =Stdio= uses =kind:"Fds"= with =fds:[DESCRIPTOR,DESCRIPTOR,DESCRIPTOR]=, =kind:"Tty"= with =slave:DESCRIPTOR=, or =kind:"NewPty"= with =rows:U16= and =cols:U16=. NewPty allocates a terminal owned by the runtime; no master comes back to the daemon. =Changes= has =update:[INPUT_NAME,...]_OR_NULL= and =lock:BOOL=; a non-null empty update array selects all inputs. =Request= is the existing permission request record, with =id=, =kind=, =package= and =reason= strings.
+=TerminalId= is ="Main"= or ={"Process":U64}=. =SpawnKind= is ="Exec"=, ="Attach"= or ={"Terminal": {"exit_report": U64_OR_NULL}}=. A =Terminal= spawn is checked as an exec; with an =exit_report= request ID the supervisor holds a wait for the exit from the start and answers that request with =Event.TerminalResult= (the exit's result, with the last 20 lines) before it reports the exit, so a program that ends at once cannot outrun it; its =NewPty= is owned by the supervisor, which emulates its screen (see Terminals), and an =Attach= of its =Process= ID is checked as an exec, not as attaching an =onAttach= client. Its =Event.Exited= is reported once its output has been read and the waits on it have been answered, and the supervisor then cancels everything it started. =Stdio= uses =kind:"Fds"= with =fds:[DESCRIPTOR,DESCRIPTOR,DESCRIPTOR]=, =kind:"Tty"= with =slave:DESCRIPTOR=, or =kind:"NewPty"= with =rows:U16= and =cols:U16=. NewPty allocates a terminal owned by the runtime; no master comes back to the daemon. =Changes= has =update:[INPUT_NAME,...]_OR_NULL= and =lock:BOOL=; a non-null empty update array selects all inputs. =Request= is the existing permission request record, with =id=, =kind=, =package= and =reason= strings.
 
 A full daemon sender queue still refuses admission synchronously with =-32010=, =resource limit reached=. A command already transmitted may instead encounter a full engine worker/deferred queue. The supervisor keeps running and reports =resource limit reached= through that command's existing correlated failure; no admission acknowledgement or refusal method is added. Output backpressure pauses input only while the actor's bounded output is full; it never waits on worker admission. Cancel and Stop continue dispatching when the worker is full. Public results retain the following shapes:
 

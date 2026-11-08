@@ -91,7 +91,7 @@ fn create_starts_a_terminal_and_answers_when_it_runs() {
     else {
         panic!("expected a spawn")
     };
-    assert_eq!(kind, SpawnKind::Terminal);
+    assert_eq!(kind, SpawnKind::Terminal { exit_report: None });
     assert_eq!(argv, Some(vec!["/bin/fish".to_string(), "-l".into()]));
     assert_eq!(cwd.as_deref(), Some("/work"));
     assert_eq!(env, [("A".to_string(), "b".to_string())]);
@@ -497,4 +497,318 @@ fn a_hello_for_a_terminal_that_cannot_be_attached_is_refused_at_once() {
     }
     assert!(rpc::read(&mut frontend).unwrap()["error"]["message"].is_string());
     assert!(received.lock().unwrap().is_empty());
+}
+
+// The sandbox endpoint: the same methods on the caller's own goblin.
+
+/// A sandbox connection of goblin `a` with a call made and its answer given back.
+fn sandbox_ask(d: &mut Controller, method: &str, params: Value) -> Value {
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.initialized = true;
+    call(d, &mut c, method, params);
+    frame(&mut c)
+}
+/// Create a terminal on the sandbox endpoint, with a started program.
+fn agent_create(d: &mut Controller, received: &Received, params: Value) -> Value {
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.id = d.number();
+    c.initialized = true;
+    call(d, &mut c, "terminals.create", params);
+    assert!(c.output.is_empty(), "the answer waits for the program to start");
+    d.connections.push(c);
+    let Command::Spawn { id, .. } = take(received) else {
+        panic!("expected a spawn")
+    };
+    d.process_event("a", Event::Spawned { id, pid: 42 });
+    let mut c = d.connections.pop().unwrap();
+    frame(&mut c)["result"].clone()
+}
+
+#[test]
+fn a_goblin_creates_and_lists_its_own_terminals_with_origin_agent() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    live(&mut d, "b");
+    let host = create(&mut d, &received, json!({"session":"a","name":"mine"}));
+    let agent = agent_create(&mut d, &received, json!({"argv":["/bin/sleep","9"],"name":"srv"}));
+    assert_eq!((host["origin"].as_str(), agent["origin"].as_str()), (Some("host"), Some("agent")));
+    assert_eq!((agent["id"].as_str(), agent["label"].as_str()), (Some("t2"), Some("srv")));
+    // The sandbox lists all of its goblin's terminals, of both origins.
+    let list = sandbox_ask(&mut d, "terminals.list", json!({}));
+    let origins: Vec<_> = list["result"]["terminals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["origin"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(origins, ["host", "agent"]);
+    // Absent params are no params.
+    let list = sandbox_ask(&mut d, "terminals.list", Value::Null);
+    assert_eq!(list["result"]["terminals"].as_array().unwrap().len(), 2);
+    // The host sees the same, and the snapshot shows the origin.
+    assert_eq!(d.sessions["a"].record.terminals[1].origin, "agent");
+    // A goblin that is not the caller has none of the caller's.
+    assert!(d.sessions["b"].record.terminals.is_empty());
+}
+
+#[test]
+fn the_sandbox_endpoint_takes_no_session_and_reaches_no_other_goblin() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    live(&mut d, "b");
+    let b = d.sessions.get_mut("b").unwrap();
+    b.init = true;
+    let (runtime, _events, other) = goblins_runtime::Fake::new();
+    b.runtime = Some(Box::new(runtime));
+    for (method, params) in [
+        ("terminals.create", json!({"session":"b"})),
+        ("terminals.list", json!({"session":"a"})),
+        ("terminals.read", json!({"session":"b","terminal":"t1"})),
+        ("terminals.send", json!({"session":"b","terminal":"t1","text":"x"})),
+        ("terminals.wait", json!({"session":"b","terminal":"t1","exit":true})),
+        ("terminals.close", json!({"session":"b","terminal":"t1"})),
+    ] {
+        let reply = sandbox_ask(&mut d, method, params);
+        assert_eq!(reply["error"]["code"], -32602, "{method}: {reply}");
+        assert!(
+            reply["error"]["message"].as_str().unwrap().contains("no session"),
+            "{reply}"
+        );
+    }
+    // Names of another goblin's terminals mean nothing here.
+    let (mut c, _peer) = connection(Role::Host);
+    c.initialized = true;
+    c.id = d.number();
+    call(&mut d, &mut c, "terminals.create", json!({"session":"b","name":"theirs"}));
+    d.connections.push(c);
+    let Command::Spawn { id, .. } = take(&other) else {
+        panic!()
+    };
+    d.process_event("b", Event::Spawned { id, pid: 7 });
+    assert_eq!(d.sessions["b"].record.terminals.len(), 1);
+    let reply = sandbox_ask(&mut d, "terminals.read", json!({"terminal":"theirs"}));
+    assert_eq!(reply["error"]["code"], -32004, "{reply}");
+    let reply = sandbox_ask(&mut d, "terminals.read", json!({"terminal":"t1"}));
+    assert_eq!(reply["error"]["code"], -32004, "{reply}");
+    assert!(received.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_goblin_closes_only_the_terminals_its_agent_created() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    create(&mut d, &received, json!({"session":"a","name":"human"}));
+    agent_create(&mut d, &received, json!({"name":"mine"}));
+    let refused = sandbox_ask(&mut d, "terminals.close", json!({"terminal":"human"}));
+    assert_eq!(refused["error"]["code"], -32009, "{refused}");
+    let message = refused["error"]["message"].as_str().unwrap();
+    assert!(message.contains("only the human can close it"), "{message}");
+    assert!(received.lock().unwrap().is_empty(), "nothing was cancelled");
+    let accepted = sandbox_ask(&mut d, "terminals.close", json!({"terminal":"mine"}));
+    assert_eq!(accepted["result"], json!({"accepted":true}));
+    let Command::CancelProcess { id, everything } = take(&received) else {
+        panic!("expected a cancel")
+    };
+    assert_eq!(id, d.sessions["a"].terminals.entries[1].exec);
+    assert!(!everything);
+    // The human can close either.
+    let reply = ask(&mut d, "terminals.close", json!({"session":"a","terminal":"human"}));
+    assert_eq!(reply["result"], json!({"accepted":true}));
+    assert!(matches!(take(&received), Command::CancelProcess { .. }));
+}
+
+#[test]
+fn a_goblin_cannot_attach_detach_or_resize_a_terminal() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    create(&mut d, &received, json!({"session":"a","name":"app"}));
+    for (method, params) in [
+        ("terminals.attach", json!({"terminal":"app"})),
+        ("terminals.detach", json!({"terminal":"app"})),
+        ("terminals.resize", json!({"terminal":"app","rows":30,"cols":100})),
+    ] {
+        let reply = sandbox_ask(&mut d, method, params);
+        assert_eq!(reply["error"]["code"], -32601, "{method}: {reply}");
+    }
+    assert!(received.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_goblin_reads_sends_and_waits_on_all_of_its_terminals() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    create(&mut d, &received, json!({"session":"a","name":"human"}));
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.id = d.number();
+    c.initialized = true;
+    call(&mut d, &mut c, "terminals.read", json!({"terminal":"human","source":"recent","lines":3}));
+    d.connections.push(c);
+    let Command::TerminalCall { request, call: TerminalCall::Read { source, lines }, .. } = take(&received) else {
+        panic!("expected a read")
+    };
+    assert_eq!((source, lines), (Source::Recent, Some(3)));
+    d.process_event(
+        "a",
+        Event::TerminalResult {
+            request,
+            result: Ok(json!({"text":"hello","alternate_screen":false,"rows":40,"cols":120})),
+        },
+    );
+    let mut c = d.connections.pop().unwrap();
+    assert_eq!(frame(&mut c)["result"]["text"], "hello");
+    // Keys are typed into a terminal of either origin; a wait is limited like the host's.
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.id = d.number();
+    c.initialized = true;
+    call(&mut d, &mut c, "terminals.send", json!({"terminal":"t1","text":"ls","keys":["enter"]}));
+    d.connections.push(c);
+    assert!(matches!(
+        take(&received),
+        Command::TerminalCall { call: TerminalCall::Send { .. }, .. }
+    ));
+    let bad = sandbox_ask(&mut d, "terminals.wait", json!({"terminal":"human"}));
+    assert_eq!(bad["error"]["code"], -32602, "{bad}");
+}
+
+#[test]
+fn only_a_goblins_own_agent_can_ask_for_an_exit_notice() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    let reply = ask(&mut d, "terminals.create", json!({"session":"a","notify":true}));
+    assert_eq!(reply["error"]["code"], -32602, "{reply}");
+    assert!(received.lock().unwrap().is_empty());
+}
+
+/// Create an agent terminal that asked for a notice; returns the request
+/// the supervisor is to report its exit under.
+fn notified(d: &mut Controller, received: &Received, params: Value) -> (Value, u64) {
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.id = d.number();
+    c.initialized = true;
+    call(d, &mut c, "terminals.create", params);
+    d.connections.push(c);
+    let Command::Spawn { id, kind: SpawnKind::Terminal { exit_report: Some(request) }, .. } =
+        take(received)
+    else {
+        panic!("expected a spawn that asks for the exit report")
+    };
+    d.process_event("a", Event::Spawned { id, pid: 42 });
+    let mut c = d.connections.pop().unwrap();
+    (frame(&mut c)["result"].clone(), request)
+}
+
+#[test]
+fn a_terminal_that_asked_for_a_notice_reports_its_exit_once_with_the_last_lines() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    // Without notify the supervisor is asked for no report.
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.id = d.number();
+    c.initialized = true;
+    call(&mut d, &mut c, "terminals.create", json!({"name":"quiet"}));
+    let Command::Spawn { kind, .. } = take(&received) else {
+        panic!()
+    };
+    assert_eq!(kind, SpawnKind::Terminal { exit_report: None });
+    let (record, request) = notified(&mut d, &received, json!({"name":"build","notify":true}));
+    assert_eq!(record["origin"], "agent");
+    // Nothing is asked of the supervisor later, and nothing is a call anyone waits for.
+    assert!(received.lock().unwrap().is_empty());
+    assert_eq!(d.terminal_calls.len(), 1);
+    assert!(d.operation_outbox.is_empty());
+    // The program exits.
+    d.process_event(
+        "a",
+        Event::TerminalResult {
+            request,
+            result: Ok(json!({"status":"exited","code":3,"signal":null,"text":"compiling\nerror: boom"})),
+        },
+    );
+    assert!(d.terminal_calls.is_empty());
+    let exec = d.sessions["a"].terminals.entries.last().unwrap().exec;
+    d.process_event("a", Event::Exited { id: exec, code: Some(3), signal: None });
+    assert_eq!(d.operation_outbox.len(), 1);
+    let event = d.operation_outbox.pop_front().unwrap();
+    assert_eq!((event.session.as_str(), event.actor.as_str()), ("a", "goblins"));
+    assert_eq!(event.request, "a-t2", "the goblin and the terminal");
+    let crate::operation::Change::Completed { kind, subject, status, message, notify } = event.change
+    else {
+        panic!("expected an outcome")
+    };
+    assert_eq!((kind.as_str(), subject.as_str(), status.as_str()), ("terminal", "build", "exited"));
+    assert_eq!(message.as_deref(), Some("exit code 3\ncompiling\nerror: boom"));
+    assert!(notify);
+    assert!(received.lock().unwrap().is_empty());
+    assert!(d.operation_outbox.is_empty());
+    // The notice text names the terminal and the status, and ends with the screen.
+    let text = crate::operation::notice("r", "terminal", "build", "exited", Some("exit code 3\nboom"));
+    assert!(text.starts_with("Goblins operation r: terminal build exited: exit code 3\nboom\n\nThis notice"), "{text}");
+}
+
+#[test]
+fn closing_a_terminal_or_stopping_its_goblin_is_no_exit_notice() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    let (_, first) = notified(&mut d, &received, json!({"name":"one","notify":true}));
+    let (_, second) = notified(&mut d, &received, json!({"name":"two","notify":true}));
+    // Closed: the program exits because it was asked to.
+    let reply = sandbox_ask(&mut d, "terminals.close", json!({"terminal":"one"}));
+    assert_eq!(reply["result"], json!({"accepted":true}));
+    assert!(matches!(take(&received), Command::CancelProcess { .. }));
+    d.process_event(
+        "a",
+        Event::TerminalResult {
+            request: first,
+            result: Ok(json!({"status":"exited","code":null,"signal":15,"text":""})),
+        },
+    );
+    assert!(d.operation_outbox.is_empty());
+    // The goblin stops: its terminals end with it, and the report is not awaited.
+    d.end_terminals("a", "goblin a has stopped");
+    assert!(d.terminal_calls.is_empty());
+    d.process_event(
+        "a",
+        Event::TerminalResult {
+            request: second,
+            result: Ok(json!({"status":"exited","code":0,"signal":null,"text":"bye"})),
+        },
+    );
+    assert!(d.operation_outbox.is_empty());
+}
+
+#[test]
+fn a_program_that_cannot_start_leaves_no_report_to_wait_for() {
+    let _no_forks = unix::no_forks();
+    let (mut d, _events, received) = goblin();
+    let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+    c.id = d.number();
+    c.initialized = true;
+    call(&mut d, &mut c, "terminals.create", json!({"argv":["nothing"],"notify":true}));
+    d.connections.push(c);
+    let Command::Spawn { id, .. } = take(&received) else {
+        panic!()
+    };
+    assert_eq!(d.terminal_calls.len(), 1);
+    d.process_event(
+        "a",
+        Event::SpawnFailed { id, code: Some(2), message: "no such file".into() },
+    );
+    assert!(d.terminal_calls.is_empty());
+    assert!(d.sessions["a"].record.terminals.is_empty());
+}
+
+#[test]
+fn an_exit_notice_says_how_the_program_ended_and_cuts_its_lines_to_4_kib() {
+    assert_eq!(super::super::terminals::notice_message(Some(0), None, ""), "exit code 0");
+    assert_eq!(
+        super::super::terminals::notice_message(None, Some(9), "a\nb\n\n"),
+        "killed by signal 9\na\nb"
+    );
+    assert_eq!(super::super::terminals::notice_message(None, None, "x"), "no exit status\nx");
+    // The newest lines stay, whole characters only, within 4 KiB.
+    let text = (0..2000).map(|n| format!("line {n} é")).collect::<Vec<_>>().join("\n");
+    let message = super::super::terminals::notice_message(Some(1), None, &text);
+    assert!(message.len() <= 4096, "{}", message.len());
+    assert!(message.starts_with("exit code 1\n…"));
+    assert!(message.ends_with("line 1999 é"));
 }

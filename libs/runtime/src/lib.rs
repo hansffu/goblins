@@ -210,8 +210,10 @@ pub enum SpawnKind {
     /// An attach client or its `onDetach`.
     Attach,
     /// A terminal the supervisor emulates (`terminals.create`), checked as
-    /// an exec.
-    Terminal,
+    /// an exec. With `exit_report` the supervisor answers that request ID
+    /// with the exit and the last lines of the screen, before it reports the
+    /// exit itself: a wait made from the start, which no exit can overtake.
+    Terminal { exit_report: Option<u64> },
 }
 
 /// What the daemon asks of a runtime.
@@ -359,7 +361,7 @@ impl Command {
             Command::Run { .. } => Some(Operation::FlakeRun),
             Command::Diff { .. } => Some(Operation::DevShellDiff),
             Command::Spawn {
-                kind: SpawnKind::Exec | SpawnKind::Terminal,
+                kind: SpawnKind::Exec | SpawnKind::Terminal { .. },
                 ..
             } => Some(Operation::Exec),
             Command::Spawn {

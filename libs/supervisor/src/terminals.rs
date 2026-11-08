@@ -24,6 +24,8 @@ pub(crate) const UPGRADE: &str =
 /// After its program exits, how long a terminal keeps reading its output,
 /// and then how long an attached frontend gets to read what is queued.
 const DRAIN: Duration = Duration::from_secs(1);
+/// The lines of the screen an exit report holds.
+const EXIT_REPORT_LINES: usize = 20;
 
 /// What a terminal the supervisor emulates keeps beyond its PTY.
 struct Pane {
@@ -198,16 +200,36 @@ impl Terminals {
         );
     }
     /// A terminal the supervisor emulates, for process `id`.
-    pub fn pane(&mut self, id: u64, master: OwnedFd, rows: u16, cols: u16) -> crate::Result<()> {
+    /// With `exit_report`, request ID that is answered with the exit and the
+    /// last lines of the screen when the program ends: a wait for the exit
+    /// that exists from the start.
+    pub fn pane(
+        &mut self,
+        id: u64,
+        master: OwnedFd,
+        rows: u16,
+        cols: u16,
+        exit_report: Option<u64>,
+    ) -> crate::Result<()> {
         self.insert(
             TerminalId::Process(id),
             Terminal::emulated(master, rows, cols)?,
             true,
         );
+        let waits = exit_report
+            .map(|request| Wait {
+                request,
+                matcher: None,
+                lines: Some(EXIT_REPORT_LINES),
+                // No timeout: only the exit answers it.
+                deadline: Instant::now() + Duration::from_secs(100 * 365 * 24 * 3600),
+            })
+            .into_iter()
+            .collect();
         self.entries.get_mut(&TerminalId::Process(id)).unwrap().pane = Some(Pane {
             exit: None,
             exited_at: None,
-            waits: vec![],
+            waits,
             closing: None,
         });
         Ok(())
@@ -726,7 +748,7 @@ mod tests {
         let mut terminals = Terminals::default();
         let (master, slave) = unix::pty(24, 80).unwrap();
         raw(&slave);
-        terminals.pane(id, master, 24, 80).unwrap();
+        terminals.pane(id, master, 24, 80, None).unwrap();
         (terminals, slave, VecDeque::new())
     }
     fn print(slave: &std::os::fd::OwnedFd, text: &str) {
@@ -860,6 +882,32 @@ mod tests {
         assert!(!terminals.has(5), "with nobody attached the terminal is gone at once");
         terminals.call(4, 5, wait(Condition::Exit, 1), &mut events);
         assert_eq!(result(&mut events, 4).unwrap_err(), "no such terminal");
+    }
+
+    #[test]
+    fn an_exit_report_is_a_wait_from_the_start_that_answers_before_the_exit() {
+        let _no_forks = unix::no_forks();
+        let mut terminals = Terminals::default();
+        let (master, slave) = unix::pty(24, 80).unwrap();
+        raw(&slave);
+        terminals.pane(5, master, 24, 80, Some(9)).unwrap();
+        let mut events = VecDeque::new();
+        // The program says something and ends before anyone has asked
+        // anything: the report still has its last lines.
+        let lines: String = (0..30).map(|n| format!("line {n}\r\n")).collect();
+        print(&slave, &lines);
+        assert!(terminals.pane_exited(5, None, Some(9)));
+        drop(slave);
+        for _ in 0..3 {
+            terminals.tick(false, &mut events);
+        }
+        let report = result(&mut events, 9).unwrap();
+        assert_eq!(report["status"], "exited");
+        assert_eq!((report["code"].clone(), report["signal"].clone()), (Value::Null, json!(9)));
+        let text = report["text"].as_str().unwrap();
+        assert_eq!(text.lines().count(), 20);
+        assert!(text.starts_with("line 10\n") && text.ends_with("line 29"), "{text}");
+        assert!(events.iter().any(|e| matches!(e, Event::Exited { id: 5, .. })));
     }
 
     #[test]
@@ -1034,7 +1082,7 @@ mod tests {
         let mut terminals = Terminals::default();
         let (master, slave) = unix::pty(40, 120).unwrap();
         raw(&slave);
-        terminals.pane(5, master, 40, 120).unwrap();
+        terminals.pane(5, master, 40, 120, None).unwrap();
         let mut events = VecDeque::new();
         let output: String = (0..39).map(|i| format!("line {i}\r\n")).collect();
         print(&slave, &output);

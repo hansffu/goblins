@@ -106,8 +106,15 @@ A notice reports the operation's outcome; it never resubmits the operation. An
 operation command that exited 2 (unknown outcome) is finished once its notice
 arrives, so do not request it again before then.
 
-Only operations Goblins carries out get notices. Your own shell commands,
-builds and background processes do not.
+Only operations Goblins carries out get notices, and one more event: a
+terminal you created with `goblin terminal create --notify` that exits (see
+[goblins-terminals](../goblins-terminals/SKILL.md)). That notice has
+`kind` `terminal`, the terminal's label as its `subject`, `status` `exited` and
+a `message` with the exit code or signal and the last lines of its screen. It
+reports what a program you started did, not the outcome of a request, so there
+is nothing to resubmit: complete it, then act on what the program left. Closing
+the terminal or stopping the goblin sends none. Your own shell commands,
+builds and background processes do not get notices.
 
 ## Uncertain operations
 

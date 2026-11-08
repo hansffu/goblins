@@ -2584,7 +2584,7 @@ impl Controller {
                     self.exec_start(c, id.clone(), call.params).map(|()| None)
                 }
                 Role::Host if call.method.starts_with("terminals.") => {
-                    self.host_terminals(c, id.clone(), &call.method, call.params)
+                    self.terminals(c, id.clone(), terminals::Caller::Host, &call.method, call.params)
                 }
                 Role::Host if call.method == "history.prune" => {
                     self.history_prune(c, id.clone(), call.params)
@@ -2620,6 +2620,15 @@ impl Controller {
                         return self
                             .editor_open(c, &session, id.clone(), call.params)
                             .map(|()| None);
+                    }
+                    if call.method.starts_with("terminals.") {
+                        return self.sandbox_terminals(
+                            c,
+                            &session,
+                            id.clone(),
+                            &call.method,
+                            call.params,
+                        );
                     }
                     if matches!(call.method.as_str(), "flake.run" | "devshell.diff") {
                         let serial = self.number();
@@ -5092,7 +5101,7 @@ mod tests {
             reply["result"]["features"].as_array().unwrap().clone()
         };
         let reduced = features(&mut d);
-        assert_eq!(reduced.len(), 15 - 6);
+        assert_eq!(reduced.len(), 16 - 6);
         for dropped in [
             "scopes",
             "docker-enable",
@@ -5109,7 +5118,7 @@ mod tests {
             .remove(&goblins_runtime::policy::Feature::DevShells);
         capable(&mut d, "a", support);
         let some = features(&mut d);
-        assert_eq!(some.len(), 14);
+        assert_eq!(some.len(), 15);
         assert!(!some.contains(&json!("devshell-diff")));
         // Linux lists today's literal, in today's order.
         capable(&mut d, "a", Support::linux());
@@ -5130,7 +5139,8 @@ mod tests {
                 "raid-owner",
                 "editor-open",
                 "variables",
-                "host-commands"
+                "host-commands",
+                "terminals"
             ]
             .map(|f| json!(f))
         );
@@ -5138,7 +5148,7 @@ mod tests {
         // starts or stops.
         for state in ["starting", "stopping"] {
             d.sessions.get_mut("a").unwrap().record.state = state.into();
-            assert_eq!(features(&mut d).len(), 15, "{state}");
+            assert_eq!(features(&mut d).len(), 16, "{state}");
         }
         drop(d);
         fs::remove_dir_all(path).unwrap();

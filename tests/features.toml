@@ -46,10 +46,10 @@ checks = ["rust"]
 paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs", "packages/daemon/src/host.rs", "libs/runtime/src/exec.rs", "libs/api/src/init.rs", "libs/unix/src/ancillary.rs"]
 
 [features.terminals]
-description = "Terminals in the sandbox: supervisor-emulated PTYs, their host API, attachment and CLI"
+description = "Terminals in the sandbox: supervisor-emulated PTYs, their host and sandbox APIs, attachment, exit notices and CLIs"
 python = ["test_terminals"]
 checks = ["rust"]
-paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packages/daemon/src/controller/terminals.rs", "packages/daemon/src/terminal.rs", "libs/api/src/terminal.rs"]
+paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packages/daemon/src/controller/terminals.rs", "packages/daemon/src/terminal.rs", "libs/api/src/terminal.rs", "packages/sandbox-cli/src/terminal.rs", "skills/goblins-terminals/*"]
 
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"

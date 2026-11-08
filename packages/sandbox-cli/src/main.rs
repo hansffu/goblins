@@ -3,6 +3,7 @@ mod cli;
 mod host;
 mod init;
 mod preview;
+mod terminal;
 mod worktree;
 use clap::Parser;
 use goblins_jsonrpc as rpc;
@@ -113,6 +114,7 @@ fn run() -> Result<i32, String> {
             }
             cli::Command::Devshell { command } => return devshell(command),
             cli::Command::Host { command } => return host::command(command),
+            cli::Command::Terminal { command } => return terminal::run(command),
             cli::Command::Editor {
                 command: cli::EditorCommand::Open { args },
             } => return editor_open(&args),

@@ -83,6 +83,86 @@ pub enum VariableCommand {
     },
 }
 #[derive(Subcommand)]
+pub enum TerminalCommand {
+    /// Start a terminal running a program (the sandbox's shell by default); prints its ID
+    Create {
+        /// Name it, to use instead of its ID: lowercase letters, digits, - and _
+        #[arg(long)]
+        name: Option<String>,
+        /// Working directory (default: this goblin's)
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<std::path::PathBuf>,
+        /// Set an environment variable for the program
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Size to start with, until the human attaches
+        #[arg(long, value_name = "ROWSxCOLS", value_parser = parse_size)]
+        size: Option<(u16, u16)>,
+        /// Put one notice in this goblin's inbox when the program exits
+        #[arg(long)]
+        notify: bool,
+        /// Program and arguments, after --
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
+    /// List this goblin's terminals, the human's included
+    List,
+    /// Print what a terminal shows
+    Read {
+        /// ID or name
+        terminal: String,
+        /// The screen, or its recent lines with their scrollback
+        #[arg(long, value_parser = ["visible", "recent"])]
+        source: Option<String>,
+        /// Lines of recent output (default 100, at most 5000)
+        #[arg(long)]
+        lines: Option<usize>,
+    },
+    /// Type text and keys into a terminal
+    Send {
+        terminal: String,
+        /// Text to type first
+        #[arg(long)]
+        text: Option<String>,
+        /// Keys to press then: enter, tab, esc, up, ctrl+c, f1, …
+        #[arg(long, num_args = 1.., value_name = "KEY")]
+        keys: Vec<String>,
+    },
+    /// Type a command line into a terminal and press enter
+    Run { terminal: String, command: String },
+    /// Wait for a line to appear, or for the program to exit; exits 1 on a timeout
+    #[command(group = clap::ArgGroup::new("condition").required(true))]
+    Wait {
+        terminal: String,
+        /// A line containing this text
+        #[arg(long = "match", value_name = "TEXT", group = "condition")]
+        text: Option<String>,
+        /// A line matching this regular expression
+        #[arg(long, value_name = "RE", group = "condition")]
+        regex: Option<String>,
+        /// The program exiting
+        #[arg(long, group = "condition")]
+        exit: bool,
+        /// Milliseconds to wait (default 30000)
+        #[arg(long, value_name = "MS")]
+        timeout: Option<u64>,
+        /// Lines of recent output to look at (default 100)
+        #[arg(long)]
+        lines: Option<usize>,
+    },
+    /// End a terminal's program, if this goblin created it (the human's only they can close)
+    Close { terminal: String },
+}
+fn parse_size(text: &str) -> std::result::Result<(u16, u16), String> {
+    let (rows, cols) = text
+        .split_once('x')
+        .ok_or("a size is ROWSxCOLS, such as 40x120")?;
+    Ok((
+        rows.parse::<u16>().map_err(|e| e.to_string())?,
+        cols.parse::<u16>().map_err(|e| e.to_string())?,
+    ))
+}
+#[derive(Subcommand)]
 pub enum Command {
     /// Report this sandbox's current agent activity
     SetState {
@@ -183,6 +263,15 @@ pub enum Command {
         /// Return once it is starting (the only mode: goblins do not attach)
         #[arg(long, visible_alias = "detached")]
         detatched: bool,
+    },
+    /// Named terminals in this sandbox, which keep running with nobody attached
+    ///
+    /// The human sees them in their sidebar and can attach to them. Name a
+    /// terminal, read it before typing into it, and wait with an anchored
+    /// regular expression instead of polling.
+    Terminal {
+        #[command(subcommand)]
+        command: TerminalCommand,
     },
     /// Show the name and identity of this sandbox
     Status,
@@ -350,6 +439,37 @@ mod tests {
         assert!(Cli::try_parse_from(["goblin", "run", "shell", "--detatched"]).is_ok());
         assert!(Cli::try_parse_from(["goblin", "attach", "member"]).is_err());
         assert!(Cli::try_parse_from(["goblin", "status"]).is_ok());
+        // Terminals are the caller's own: no goblin, no attachment.
+        for args in [
+            vec!["goblin", "terminal", "list", "other"],
+            vec!["goblin", "terminal", "attach", "t1"],
+            vec!["goblin", "terminal", "detach", "t1"],
+            vec!["goblin", "terminal", "wait", "t1"],
+            vec!["goblin", "terminal", "create", "--size", "40"],
+            vec!["goblin", "terminal", "create", "--session", "x"],
+        ] {
+            assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["goblin", "terminal", "create", "--name", "app", "--notify",
+                                 "--size", "30x100", "--", "gradle", "run"]).unwrap().command,
+            Command::Terminal { command: TerminalCommand::Create { name: Some(name), notify: true,
+                size: Some((30, 100)), argv, .. } } if name == "app" && argv == ["gradle", "run"]
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["goblin", "terminal", "send", "app", "--text", "y",
+                                 "--keys", "enter", "ctrl+c"]).unwrap().command,
+            Command::Terminal { command: TerminalCommand::Send { text: Some(_), keys, .. } }
+                if keys == ["enter", "ctrl+c"]
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["goblin", "terminal", "wait", "t1", "--regex", "^done$",
+                                 "--timeout", "5"]).unwrap().command,
+            Command::Terminal { command: TerminalCommand::Wait { regex: Some(_), timeout: Some(5),
+                exit: false, .. } }
+        ));
+        assert!(Cli::try_parse_from(["goblin", "terminal", "run", "t1", "ls"]).is_ok());
+        assert!(Cli::try_parse_from(["goblin", "terminal", "close", "t1"]).is_ok());
         assert!(Cli::try_parse_from(["goblin", "detach"]).is_ok());
         assert!(Cli::try_parse_from(["goblin", "detatch"]).is_err());
         assert_eq!(

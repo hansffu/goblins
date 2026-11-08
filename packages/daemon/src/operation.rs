@@ -80,6 +80,7 @@ pub fn notice(
         "package" => format!("package request '{subject}'"),
         "devshell" => format!("dev shell {subject}"),
         "host-command" => format!("host command {subject}"),
+        "terminal" => format!("terminal {subject}"),
         other => format!("{other} request '{subject}'"),
     };
     let outcome = match status {
@@ -92,8 +93,10 @@ pub fn notice(
         other => other,
     };
     let detail = message.map(|m| format!(": {m}")).unwrap_or_default();
+    // A terminal's message ends with the lines of its screen.
+    let end = if kind == "terminal" { "\n\n" } else { ".\n" };
     format!(
-        "Goblins operation {request}: {what} {outcome}{detail}.\n\
+        "Goblins operation {request}: {what} {outcome}{detail}{end}\
          This notice needs no reply. Complete it with goblin inbox complete, then \
          continue the work that waited for this result. If you already handled the \
          result, completing the notice is all that is needed."

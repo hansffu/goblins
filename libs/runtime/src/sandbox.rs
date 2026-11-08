@@ -98,10 +98,11 @@ pub fn check(
     trailing: bool,
 ) -> Result<(), Refusal> {
     let method = call.method.as_str();
-    let limit = if matches!(method, "sessions.set-variables" | "permissions.request") {
-        16384
-    } else {
-        4096
+    let limit = match method {
+        "sessions.set-variables" | "permissions.request" | "terminals.create" => 16384,
+        // A terminal takes up to 64 KiB of text to type.
+        "terminals.send" => goblins_protocol::messages::MAX_REQUEST,
+        _ => 4096,
     };
     if !messaging(method) && method != "communications.list" && body_bytes > limit {
         return Err(invalid("request exceeds method frame limit"));
@@ -149,6 +150,12 @@ pub fn check(
             | "host.status"
             | "host.list"
             | "host.cancel"
+            | "terminals.create"
+            | "terminals.list"
+            | "terminals.read"
+            | "terminals.send"
+            | "terminals.wait"
+            | "terminals.close"
     ) {
         return Err(Refusal::Policy {
             code: -32601,
@@ -256,6 +263,11 @@ pub fn check(
             let Job { request: _request } = parse(&call.params)?;
             None
         }
+        // A terminal is an exec. The daemon checks the parameters; the call
+        // never names a goblin, so it reaches only the caller's own.
+        "terminals.create" => Some(Operation::Exec),
+        "terminals.list" | "terminals.read" | "terminals.send" | "terminals.wait"
+        | "terminals.close" => None,
         "raids.create" => {
             let Raid { raid: _raid } = parse(&call.params)?;
             None
@@ -491,5 +503,55 @@ mod tests {
             fault(check(&caps, &c, 100, true, false, false).unwrap_err()).1,
             "invalid launch parameters"
         );
+    }
+    #[test]
+    fn terminals_are_an_exec_and_the_sandbox_endpoint_has_no_attachment_methods() {
+        let policy = policy();
+        let mut support = Support::linux();
+        let gate = |support: &Support, method: &str, bytes: usize| {
+            check(
+                &Capabilities {
+                    policy: &policy,
+                    support,
+                },
+                &call(method, json!({})),
+                bytes,
+                true,
+                false,
+                false,
+            )
+        };
+        for method in [
+            "terminals.create",
+            "terminals.list",
+            "terminals.read",
+            "terminals.send",
+            "terminals.wait",
+            "terminals.close",
+        ] {
+            assert_eq!(gate(&support, method, 100), Ok(()), "{method}");
+        }
+        // A goblin cannot attach, detach or resize a terminal.
+        for method in ["terminals.attach", "terminals.detach", "terminals.resize"] {
+            assert_eq!(
+                fault(gate(&support, method, 100).unwrap_err()),
+                (-32601, "method unavailable on sandbox endpoint".into()),
+                "{method}"
+            );
+        }
+        // Only text for a terminal may fill a request, and a program its arguments.
+        let limit = goblins_protocol::messages::MAX_REQUEST;
+        assert_eq!(gate(&support, "terminals.send", limit), Ok(()));
+        assert!(gate(&support, "terminals.send", limit + 1).is_err());
+        assert_eq!(gate(&support, "terminals.create", 16384), Ok(()));
+        assert!(gate(&support, "terminals.create", 16385).is_err());
+        assert!(gate(&support, "terminals.read", 4097).is_err());
+        // Creating one is the exec operation: without exec it is refused.
+        support.0.remove(&Feature::Exec);
+        assert_eq!(
+            gate(&support, "terminals.create", 100),
+            Err(Refusal::Unsupported(Feature::Exec))
+        );
+        assert_eq!(gate(&support, "terminals.list", 100), Ok(()));
     }
 }

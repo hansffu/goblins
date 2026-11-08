@@ -548,8 +548,8 @@ impl Engine {
             Ok(()) => {
                 if let Some(master) = master {
                     if let Some((rows, cols)) = size {
-                        let kept = if kind == SpawnKind::Terminal {
-                            self.terminals.pane(id, master, rows, cols)
+                        let kept = if let SpawnKind::Terminal { exit_report } = kind {
+                            self.terminals.pane(id, master, rows, cols, exit_report)
                         } else {
                             self.terminals.process(id, master, rows, cols)
                         };
@@ -2059,7 +2059,7 @@ mod tests {
                 .try_send(started(support, false))
                 .unwrap_or_else(|_| panic!());
             assert!(matches!(local.poll(), Some(Event::Started { .. })));
-            local.send(spawn(SpawnKind::Terminal)).unwrap();
+            local.send(spawn(SpawnKind::Terminal { exit_report: None })).unwrap();
             let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
             assert_eq!(
                 matches!(events.as_slice(), [Event::Failed(_)]),
@@ -2077,7 +2077,7 @@ mod tests {
             .unwrap_or_else(|_| panic!());
         assert!(matches!(local.poll(), Some(Event::Started { .. })));
         let (master, _slave) = unix::pty(24, 80).unwrap();
-        local.terminals.pane(7, master, 24, 80).unwrap();
+        local.terminals.pane(7, master, 24, 80, None).unwrap();
         let (master, _slave) = unix::pty(24, 80).unwrap();
         local.terminals.process(8, master, 24, 80).unwrap();
         let attach = |id| {
@@ -2113,7 +2113,7 @@ mod tests {
         let round = |local: &mut Engine| std::iter::from_fn(|| local.poll()).collect::<Vec<_>>();
         let (control, sandbox) = init::pair().unwrap();
         local.init = Some(control);
-        local.send(spawn(SpawnKind::Terminal)).unwrap();
+        local.send(spawn(SpawnKind::Terminal { exit_report: None })).unwrap();
         let mut buffer = vec![0; init::MAX_MESSAGE];
         let (n, mut fds) = init::receive(sandbox.as_raw_fd(), &mut buffer, 0).unwrap();
         assert!(matches!(

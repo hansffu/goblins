@@ -198,7 +198,7 @@ fn all_commands_roundtrip_their_parameters_and_stdio_shapes() {
         },
         Command::Spawn {
             id: 14,
-            kind: crate::SpawnKind::Terminal,
+            kind: crate::SpawnKind::Terminal { exit_report: Some(15) },
             argv: Some(vec!["fish".into()]),
             cwd: None,
             env: vec![],

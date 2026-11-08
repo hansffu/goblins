@@ -37,8 +37,26 @@ struct Create {
     rpc: Value,
 }
 
+/// Who a `terminals.*` call comes from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Caller {
+    /// The host endpoint: any goblin's terminals, named by `session`.
+    Host,
+    /// The sandbox endpoint: the caller's own goblin, which no call names.
+    Sandbox,
+}
+
+/// The most an exit notice's message holds.
+const NOTICE_BYTES: usize = 4096;
+/// A connection that no connection has: the daemon's own calls.
+const NO_CONNECTION: u64 = u64::MAX;
+
 pub(super) struct Entry {
     pub(super) record: TerminalRecord,
+    /// `create` asked for a notice when the program exits.
+    notify: bool,
+    /// `terminals.close` was called: the exit that follows is no notice.
+    closing: bool,
     /// The ID of its process in the sandbox.
     pub(super) exec: u64,
     /// Until it has started, its creation waits for the reply.
@@ -81,6 +99,9 @@ pub(super) struct Pending {
     connection: u64,
     rpc: Value,
     wait: bool,
+    /// The daemon's own wait for the exit of this terminal (its process ID),
+    /// which an exit notice reports.
+    notice: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -99,6 +120,8 @@ struct Create1 {
     rows: Option<u16>,
     #[serde(default)]
     cols: Option<u16>,
+    #[serde(default)]
+    notify: bool,
 }
 
 #[derive(Deserialize)]
@@ -256,12 +279,49 @@ impl Controller {
         })?;
         Ok((id, index))
     }
-    /// The `terminals.*` methods of the host endpoint. A call answered by the
-    /// supervisor returns None and is answered when the supervisor does.
-    pub(super) fn host_terminals(
+    /// The `terminals.*` methods of the sandbox endpoint: those of the host
+    /// endpoint on the caller's own goblin, which no call names, without
+    /// attaching, detaching or resizing.
+    pub(super) fn sandbox_terminals(
+        &mut self,
+        c: &mut Connection,
+        session: &str,
+        rpc_id: Value,
+        method: &str,
+        mut value: Value,
+    ) -> Result<Option<Value>, Fault> {
+        if !matches!(
+            method,
+            "terminals.create"
+                | "terminals.list"
+                | "terminals.read"
+                | "terminals.send"
+                | "terminals.wait"
+                | "terminals.close"
+        ) {
+            return Err((-32601, "method unavailable on sandbox endpoint".into()));
+        }
+        if value.is_null() {
+            value = json!({});
+        }
+        let Value::Object(map) = &mut value else {
+            return Err(invalid("params must be an object"));
+        };
+        if map.contains_key("session") {
+            return Err(invalid(
+                "the sandbox endpoint takes no session: a goblin reaches only its own terminals",
+            ));
+        }
+        map.insert("session".into(), json!(session));
+        self.terminals(c, rpc_id, Caller::Sandbox, method, value)
+    }
+    /// The `terminals.*` methods. A call answered by the supervisor returns
+    /// None and is answered when the supervisor does.
+    pub(super) fn terminals(
         &mut self,
         c: &mut Connection,
         rpc_id: Value,
+        caller: Caller,
         method: &str,
         value: Value,
     ) -> Result<Option<Value>, Fault> {
@@ -272,7 +332,7 @@ impl Controller {
             return Err(conflict());
         }
         match method {
-            "terminals.create" => self.terminal_create(c, rpc_id, params(value)?),
+            "terminals.create" => self.terminal_create(c, rpc_id, caller, params(value)?),
             "terminals.list" => {
                 let p: Session = params(value)?;
                 let id = self.resolve_session(&p.session)?;
@@ -318,7 +378,17 @@ impl Controller {
                 let p: Target = params(value)?;
                 let (session, index) = self.terminal_target(&p.session, &p.terminal)?;
                 let a = self.sessions.get_mut(&session).unwrap();
-                let exec = a.terminals.entries[index].exec;
+                let entry = &mut a.terminals.entries[index];
+                if caller == Caller::Sandbox && entry.record.origin != "agent" {
+                    return Err((
+                        -32009,
+                        format!(
+                            "terminal {} was created by the human; only the human can close it",
+                            entry.record.id
+                        ),
+                    ));
+                }
+                let exec = entry.exec;
                 // As a withdrawn exec is cancelled: its process group.
                 a.runtime
                     .as_mut()
@@ -328,7 +398,11 @@ impl Controller {
                         everything: false,
                     })
                     .map_err(|_| capacity())?;
+                a.terminals.entries[index].closing = true;
                 Ok(Some(json!({"accepted":true})))
+            }
+            "terminals.detach" | "terminals.resize" if caller == Caller::Sandbox => {
+                Err((-32601, "method unavailable on sandbox endpoint".into()))
             }
             "terminals.detach" => {
                 let p: Target = params(value)?;
@@ -381,8 +455,12 @@ impl Controller {
         &mut self,
         c: &mut Connection,
         rpc_id: Value,
+        caller: Caller,
         p: Create1,
     ) -> Result<Option<Value>, Fault> {
+        if p.notify && caller == Caller::Host {
+            return Err(invalid("notify is for the goblin's own agent: use the sandbox endpoint"));
+        }
         validate_command(&p.argv, &p.cwd, &p.env)?;
         if let Some(name) = &p.name
             && !terminal::valid_name(name)
@@ -430,27 +508,52 @@ impl Controller {
         let exec = self.number();
         exec::validate_spawn(exec, &p.argv, &p.cwd, &p.env, true)
             .map_err(|message| invalid(&message))?;
+        // The supervisor reports the exit of a terminal that wants a notice
+        // under this request, from the moment it starts: a program that
+        // exits at once cannot outrun it.
+        let report = p.notify.then(|| self.number());
         let a = self.sessions.get_mut(&session).unwrap();
         a.runtime
             .as_mut()
             .ok_or_else(conflict)?
             .send(Command::Spawn {
                 id: exec,
-                kind: SpawnKind::Terminal,
+                kind: SpawnKind::Terminal {
+                    exit_report: report,
+                },
                 argv: p.argv.clone(),
                 cwd: p.cwd,
                 env: p.env,
                 stdio: Stdio::NewPty { rows, cols },
             })
             .map_err(|_| capacity())?;
+        if let Some(request) = report {
+            self.terminal_calls.insert(
+                request,
+                Pending {
+                    session: session.clone(),
+                    connection: NO_CONNECTION,
+                    rpc: Value::Null,
+                    wait: false,
+                    notice: Some(exec),
+                },
+            );
+        }
+        let a = self.sessions.get_mut(&session).unwrap();
         a.terminals.next += 1;
         let id = format!("t{}", a.terminals.next);
         a.terminals.entries.push(Entry {
+            notify: p.notify,
+            closing: false,
             record: TerminalRecord {
                 label: p.name.clone().unwrap_or_else(|| label(&p.argv)),
                 id,
                 name: p.name,
-                origin: "host".into(),
+                origin: match caller {
+                    Caller::Host => "host",
+                    Caller::Sandbox => "agent",
+                }
+                .into(),
                 started_at: 0,
                 rows,
                 cols,
@@ -509,6 +612,7 @@ impl Controller {
                 connection: c.id,
                 rpc: rpc_id.clone(),
                 wait,
+                notice: None,
             },
         );
         c.waiting = Some((format!("terminal-call-{request}"), rpc_id));
@@ -530,11 +634,15 @@ impl Controller {
         match event {
             Event::TerminalResult { request, result } => {
                 if let Some(call) = self.terminal_calls.remove(&request) {
-                    self.terminal_answer(
-                        call.connection,
-                        call.rpc,
-                        result.map_err(|message| (-32009, message)),
-                    );
+                    if let Some(exec) = call.notice {
+                        self.exit_notice(session, exec, &result);
+                    } else {
+                        self.terminal_answer(
+                            call.connection,
+                            call.rpc,
+                            result.map_err(|message| (-32009, message)),
+                        );
+                    }
                 }
                 None
             }
@@ -569,6 +677,8 @@ impl Controller {
                 let entry = a.terminals.entries.remove(index);
                 a.sync_terminals();
                 self.dirty = true;
+                self.terminal_calls
+                    .retain(|_, call| call.notice != Some(id) || call.session != session);
                 if let Some(create) = entry.create {
                     let fault = match code {
                         Some(_) => (-32009, message),
@@ -610,6 +720,47 @@ impl Controller {
             }
             event => Some(event),
         }
+    }
+    /// The supervisor's report on the exit of terminal `exec`, which it was
+    /// asked for when the terminal started: when the program exited, and was
+    /// not closed, its agent gets one notice.
+    fn exit_notice(&mut self, session: &str, exec: u64, result: &Result<Value, String>) {
+        let Ok(value) = result else {
+            return;
+        };
+        let Some(a) = self.sessions.get_mut(session) else {
+            return;
+        };
+        let Some(index) = a.terminals.by_exec(exec) else {
+            return;
+        };
+        if value["status"].as_str() != Some("exited") {
+            return;
+        }
+        let entry = &a.terminals.entries[index];
+        if entry.closing || !entry.notify {
+            return;
+        }
+        let message = notice_message(
+            value["code"].as_i64(),
+            value["signal"].as_i64(),
+            value["text"].as_str().unwrap_or_default(),
+        );
+        let change = crate::operation::Change::Completed {
+            kind: "terminal".into(),
+            subject: entry.record.label.clone(),
+            status: "exited".into(),
+            message: Some(message),
+            notify: true,
+        };
+        // Session IDs carry the daemon's instance and a terminal's ID is never
+        // reused in a goblin's run, so this names the terminal for good.
+        self.operation_outbox.push_back(crate::operation::Event {
+            request: format!("{session}-{}", entry.record.id),
+            session: session.into(),
+            actor: goblins_protocol::messages::NOTICE_SENDER.into(),
+            change,
+        });
     }
     /// The sandbox stopped or its init went away: no terminal is left, and
     /// no call on one will be answered.
@@ -666,4 +817,27 @@ impl Controller {
             }
         }
     }
+}
+
+/// An exit notice's message: how the program ended, then the last lines of
+/// its screen, the newest kept when they must be cut to fit.
+pub(super) fn notice_message(code: Option<i64>, signal: Option<i64>, text: &str) -> String {
+    let how = match (code, signal) {
+        (Some(code), _) => format!("exit code {code}"),
+        (None, Some(signal)) => format!("killed by signal {signal}"),
+        (None, None) => "no exit status".into(),
+    };
+    let text = text.trim_end();
+    if text.is_empty() {
+        return how;
+    }
+    let room = NOTICE_BYTES.saturating_sub(how.len() + 1);
+    if text.len() <= room {
+        return format!("{how}\n{text}");
+    }
+    let mut start = text.len() - room.saturating_sub("…".len());
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("{how}\n…{}", &text[start..])
 }

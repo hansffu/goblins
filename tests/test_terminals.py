@@ -10,7 +10,7 @@ import time
 import unittest
 import uuid
 
-from daemon_support import Daemon
+from daemon_support import Daemon, RPC
 from terminal_support import Terminal
 from build_support import fixture_app
 
@@ -222,6 +222,123 @@ class TerminalTests(unittest.TestCase):
         # The same name may exist in each.
         self.assertEqual(self.create("--name", "mine", "--", "sleep", "600", goblin="snaga"), "t1")
         self.assertEqual(other["agent_name"], "snaga")
+
+    # What a goblin does with `goblin terminal` and the sandbox endpoint.
+
+    def inside(self, *args, goblin="gribble"):
+        return subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), "exec", goblin, "--",
+                               "goblin", "terminal", *args], capture_output=True, text=True, timeout=60)
+
+    def sandbox(self, method, params, session=None):
+        # The request socket answers one call per connection.
+        peer = RPC(self.d.state / (session or self.agent["session"]) / "resources/request.sock")
+        try:
+            return peer.call(method, params)
+        finally:
+            peer.close()
+
+    def notice(self, timeout=30):
+        """The next inbox message of gribble, claimed and completed."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            claim = self.sandbox("inbox.next", {"key": uuid.uuid4().hex})
+            if claim["message"] is not None:
+                self.sandbox("inbox.complete", {"message": claim["message"]["id"], "key": uuid.uuid4().hex,
+                                                "claim_generation": claim["claim_generation"]})
+                return claim["message"]
+            time.sleep(.2)
+        self.fail("no notice arrived")
+
+    def test_a_goblin_creates_and_drives_its_own_terminals_and_closes_only_its_own(self):
+        r = self.inside("create", "--name", "srv", "--", "sh", "-c", "echo UP; read x; echo GOT-$x; sleep 600")
+        self.assertEqual((r.returncode, r.stdout), (0, "t1\n"), r.stderr)
+        (record,) = self.listed()
+        self.assertEqual((record["id"], record["name"], record["origin"]), ("t1", "srv", "agent"))
+        r = self.inside("list")
+        self.assertEqual(r.stdout.split("\t")[:3], ["t1", "srv", "agent"], r.stderr)
+        r = self.inside("wait", "srv", "--regex", "^UP$")
+        self.assertEqual((r.returncode, r.stdout), (0, "UP\n"), r.stderr)
+        self.assertEqual(self.inside("send", "srv", "--text", "hi", "--keys", "enter").returncode, 0)
+        r = self.inside("wait", "srv", "--match", "GOT-hi")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("GOT-hi", self.inside("read", "srv").stdout.splitlines())
+        r = self.inside("wait", "srv", "--match", "NEVER-PRINTED", "--timeout", "300")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("timed out", r.stderr)
+        # The human's terminals are the goblin's to read and type into, not to close.
+        human = self.d.rpc.call("terminals.create", {"session": "gribble", "name": "human"})
+        self.assertEqual(human["origin"], "host")
+        self.assertEqual(self.inside("run", "human", "echo $((6*7))").returncode, 0)
+        r = self.inside("wait", "human", "--regex", "^42$")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.inside("close", "human")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("only the human can close it", r.stderr)
+        self.assertEqual(len(self.listed()), 2)
+        self.assertEqual(self.inside("close", "srv").returncode, 0)
+        self.d.wait(lambda: [t["name"] for t in self.listed()] == ["human"])
+        # An unknown terminal and an unknown key are refused.
+        self.assertEqual(self.inside("read", "t9").returncode, 2)
+        r = self.inside("send", "human", "--keys", "no-such-key")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unknown key", r.stderr)
+
+    def test_a_goblin_reaches_only_its_own_terminals_and_has_no_attachment_methods(self):
+        self.d.start(agent_name="snaga")
+        self.d.rpc.call("terminals.create", {"session": "snaga", "name": "theirs"})
+        self.d.rpc.call("terminals.create", {"session": "gribble", "name": "mine"})
+        self.assertEqual([t["name"] for t in self.sandbox("terminals.list", {})["terminals"]], ["mine"])
+        r = self.inside("read", "theirs")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no terminal theirs", r.stderr)
+        # No call names a goblin, and attaching, detaching and resizing do not exist.
+        for method, params, code in [
+            ("terminals.list", {"session": "snaga"}, -32602),
+            ("terminals.read", {"session": "snaga", "terminal": "theirs"}, -32602),
+            ("terminals.attach", {"terminal": "mine"}, -32601),
+            ("terminals.detach", {"terminal": "mine"}, -32601),
+            ("terminals.resize", {"terminal": "mine", "rows": 20, "cols": 80}, -32601),
+        ]:
+            with self.assertRaises(ValueError, msg=method) as caught:
+                self.sandbox(method, params)
+            self.assertEqual(caught.exception.args[0]["code"], code, method)
+        # The notice is the goblin's alone to ask for.
+        with self.assertRaises(ValueError) as caught:
+            self.d.rpc.call("terminals.create", {"session": "gribble", "notify": True})
+        self.assertEqual(caught.exception.args[0]["code"], -32602)
+
+    def test_notify_puts_one_notice_in_the_inbox_when_the_program_exits(self):
+        r = self.inside("create", "--name", "job", "--notify", "--", "sh", "-c",
+                        "echo working; echo done-line; exit 3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        message = self.notice()
+        self.assertEqual(message["sender_name"], "goblins")
+        operation = message["operation"]
+        self.assertEqual((operation["kind"], operation["subject"], operation["status"]),
+                         ("terminal", "job", "exited"))
+        self.assertTrue(operation["message"].startswith("exit code 3\n"), operation)
+        self.assertIn("done-line", operation["message"])
+        self.assertIn("terminal job exited: exit code 3", message["body"])
+        # Closing a terminal sends none: the next notice is the next program's.
+        self.assertEqual(self.inside("create", "--name", "closed", "--notify", "--", "sleep", "600").returncode, 0)
+        self.assertEqual(self.inside("close", "closed").returncode, 0)
+        self.d.wait(lambda: self.listed() == [])
+        self.assertEqual(self.inside("create", "--name", "second", "--notify", "--", "sh", "-c",
+                                     "echo bye").returncode, 0)
+        message = self.notice()
+        self.assertEqual(message["operation"]["subject"], "second")
+        self.assertEqual(self.sandbox("inbox.next", {"key": uuid.uuid4().hex})["message"], None)
+        # Without notify nothing is sent.
+        self.assertEqual(self.inside("create", "--name", "quiet", "--", "sh", "-c", "exit 0").returncode, 0)
+        self.d.wait(lambda: self.listed() == [])
+        time.sleep(1)
+        self.assertEqual(self.sandbox("inbox.next", {"key": uuid.uuid4().hex})["message"], None)
+
+    def test_a_goblin_stopping_with_a_notified_terminal_ends_cleanly(self):
+        self.assertEqual(self.inside("create", "--name", "stays", "--notify", "--", "sleep", "600").returncode, 0)
+        self.d.rpc.call("sessions.stop", {"session": self.agent["session"]})
+        self.d.wait(lambda: self.d.get(self.agent["session"])["state"] == "stopped")
+        self.assertEqual(self.d.get(self.agent["session"])["terminals"], [])
 
 
 if __name__ == "__main__":
