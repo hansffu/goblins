@@ -545,6 +545,7 @@ in
           "goblins-packages"
           "goblins-raids"
           "goblins-spawn"
+          "goblins-terminals"
           "goblins-worktrees"
         ];
         claude-nix = [
@@ -553,6 +554,7 @@ in
           "goblins-nix"
           "goblins-raids"
           "goblins-spawn"
+          "goblins-terminals"
           "goblins-worktrees"
         ];
       };
@@ -580,8 +582,8 @@ in
       }
       ''
           # Claude enables exactly the skills it mounts, dev shell skill included.
-          test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn","goblins-worktrees"]'
-          test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn","goblins-worktrees"]'
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude"})" = '["goblins-devshell","goblins-docker","goblins-messaging","goblins-packages","goblins-raids","goblins-spawn","goblins-terminals","goblins-worktrees"]'
+          test "$(jq -c '.skillOverrides | keys' ${settings "claude-nix"})" = '["goblins-docker","goblins-messaging","goblins-nix","goblins-raids","goblins-spawn","goblins-terminals","goblins-worktrees"]'
           # With Nix, no installed skill offers the package or dev shell workflows.
           if grep -nE 'request-package|devshell (refresh|diff)|flake run|no `?nix`? command' ${installed "claude-nix"} ${installed "codex-nix"}; then
             echo 'A Nix goblin skill presents a workflow it does not have' >&2

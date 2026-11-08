@@ -730,3 +730,52 @@ fn cancellation_outcomes_take_the_removed_request_slots_until_reported() {
     assert!(matches!(commands.pop(), Some(Command::Spawn { id: 4, .. })));
     assert!(commands.is_empty());
 }
+
+fn terminal_call(request: u64) -> Command {
+    Command::TerminalCall {
+        request,
+        terminal: 7,
+        call: crate::terminal::Call::Wait {
+            condition: crate::terminal::Condition::Exit,
+            timeout: 1000,
+            lines: None,
+        },
+    }
+}
+
+#[test]
+fn terminal_calls_are_bounded_requests_and_their_cancellation_overtakes_blocked_work() {
+    let mut commands = Commands::default();
+    for request in 0..REQUESTS as u64 {
+        push(&mut commands, terminal_call(request));
+    }
+    assert_eq!(commands.unsent_requests(), REQUESTS);
+    // Admission is shared with every other request: a full queue refuses.
+    assert!(matches!(
+        commands.push(terminal_call(99)),
+        Err(Command::TerminalCall { request: 99, .. })
+    ));
+    assert!(commands.push(run(1)).is_err());
+    // Cancelling an unsent call removes it, with no answer owed and no
+    // cancellation left to send.
+    push(&mut commands, Command::TerminalCancel { request: 1 });
+    assert_eq!(commands.unsent_requests(), REQUESTS - 1);
+    assert!(commands.pop_cancellation().is_none());
+    assert!(commands.pop_cancelled().is_none());
+    push(&mut commands, terminal_call(100));
+    // A call that was sent is cancelled ahead of the work still queued, once.
+    push(&mut commands, Command::TerminalCancel { request: 55 });
+    push(&mut commands, Command::TerminalCancel { request: 55 });
+    assert!(matches!(
+        commands.pop_cancellation(),
+        Some(Command::TerminalCancel { request: 55 })
+    ));
+    assert!(commands.pop_cancellation().is_none());
+    let order: Vec<_> = std::iter::from_fn(|| commands.pop())
+        .map(|c| match c {
+            Command::TerminalCall { request, .. } => request,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(order, [0, 2, 3, 100]);
+}

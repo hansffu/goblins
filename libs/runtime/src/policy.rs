@@ -317,6 +317,7 @@ impl Support {
             Some("editor-open"),
             Some("variables"),
             gated(Feature::HostJobs, "host-commands"),
+            Some("terminals"),
         ]
         .into_iter()
         .flatten()

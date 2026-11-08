@@ -25,6 +25,7 @@
 (declare-function goblins--session-label "goblins-views" (snapshot id))
 (defvar ghostel-kill-buffer-on-exit)
 (defvar ghostel-identity)
+(defvar ghostel--process)
 (declare-function goblins-goblin-mode "goblins-terminal" (&optional arg))
 
 (defgroup goblins nil "Goblins agent status and approvals." :group 'tools)
@@ -56,7 +57,12 @@ Set this to the directory passed to `goblins --state-dir'."
   "Emacs-only mapping from (directory instance session) to Ghostel buffers.")
 (defvar-local goblins--session-key nil)
 (defvar-local goblins--shell-number nil
-  "This goblin shell's number among its goblin's open shells, from 1.")
+  "This goblin shell's number among its goblin's open shells, from 1.
+Set only for the exec shells of a daemon without terminals.")
+(defvar-local goblins--terminal-id nil
+  "The ID, like \"t1\", of the daemon terminal this Ghostel buffer is attached to.")
+(defvar-local goblins--features nil
+  "The features, strings, of the daemon this status buffer is connected to.")
 (defvar goblins-run-history nil)
 
 (defcustom goblins-reconnect-delays '(1 2 5 10 30)
@@ -1044,7 +1050,8 @@ reports in the echo area, so it suits init files and hooks."
                            (equal (plist-get result :role) "host")
                            (stringp (plist-get result :instance))))
                  (goblins--fail "Incompatible Goblins daemon")
-               (setq goblins--instance (plist-get result :instance))
+               (setq goblins--instance (plist-get result :instance)
+                     goblins--features (append (plist-get result :features) nil))
                (goblins--request
                 'state.subscribe (make-hash-table)
                 (lambda (state)
@@ -1219,6 +1226,32 @@ Otherwise its details open instead."
   (let ((buffer (gethash (list goblins--directory goblins--instance session)
                          goblins--terminal-buffers)))
     (and (buffer-live-p buffer) buffer)))
+
+(defun goblins--terminal-label (record)
+  "The label of terminal RECORD, safe to show."
+  (goblins--safe (or (plist-get record :label) (plist-get record :id))))
+
+(defun goblins--session-terminal (session terminal)
+  "The record of TERMINAL (an ID) among SESSION's terminals, or nil."
+  (cl-find terminal (append (plist-get session :terminals) nil)
+           :key (lambda (r) (plist-get r :id)) :test #'equal))
+
+(defun goblins--session-terminal-buffer (source session terminal)
+  "The live Ghostel buffer of this Emacs attached to TERMINAL (an ID like
+\"t1\") of goblin SESSION of SOURCE's daemon, or nil."
+  (let ((directory (buffer-local-value 'goblins--directory source))
+        (instance (buffer-local-value 'goblins--instance source)))
+    (cl-find-if
+     (lambda (buffer)
+       (with-current-buffer buffer
+         (and (equal goblins--terminal-id terminal)
+              (equal goblins--directory directory)
+              (let ((identity (bound-and-true-p ghostel-identity)))
+                (and (equal (alist-get 'session identity) session)
+                     (equal (alist-get 'instance identity) instance)))
+              (bound-and-true-p ghostel--process)
+              (process-live-p ghostel--process))))
+     (buffer-list))))
 
 (defun goblins--render-status-buffers ()
   (dolist (buffer (buffer-list))
@@ -1782,6 +1815,8 @@ Unlike `goblins-status' this never displays the buffer."
 (autoload 'goblins-show-in-workspace "goblins-workspace" nil t)
 (autoload 'goblins-messages "goblins-messages" nil t)
 (autoload 'goblins-shell "goblins-tramp" nil t)
+(autoload 'goblins-terminal "goblins-tramp" nil t)
+(autoload 'goblins-terminal-attach "goblins-tramp" nil t)
 (autoload 'goblins-eshell "goblins-tramp" nil t)
 (autoload 'goblins-dired "goblins-tramp" nil t)
 (autoload 'goblins-find-file "goblins-tramp" nil t)

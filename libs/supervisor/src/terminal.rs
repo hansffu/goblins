@@ -1,6 +1,6 @@
 //! Runtime-owned PTY with one terminal consumer at a time.
 //! A framed acceptance precedes raw bytes; detach half-closes that stream.
-use crate::Result;
+use crate::{Result, screen::Screen};
 use goblins_unix as unix;
 use std::{
     fs::{self, File},
@@ -37,6 +37,11 @@ pub struct Terminal {
     hello: Vec<u8>,
     to_peer: Vec<u8>,
     to_pty: Vec<u8>,
+    /// For a terminal the supervisor emulates: its screen, which is fed all
+    /// output and keeps it while nobody is attached.
+    screen: Option<Screen>,
+    /// The screen was fed since `take_fed`.
+    fed: bool,
 }
 fn read(source: &mut impl Read, dest: &mut Vec<u8>) -> io::Result<bool> {
     if dest.len() >= CAP {
@@ -135,6 +140,8 @@ impl Terminal {
             hello: vec![],
             to_peer: vec![],
             to_pty: vec![],
+            screen: None,
+            fed: false,
         })
     }
     /// A terminal for one attach client's PTY, sized for its frontend.
@@ -154,10 +161,77 @@ impl Terminal {
             hello: vec![],
             to_peer: vec![],
             to_pty: vec![],
+            screen: None,
+            fed: false,
         };
         terminal.resize(rows, cols)?;
         terminal.master(master)?;
         Ok(terminal)
+    }
+    /// A terminal the supervisor emulates, which nobody needs to be attached
+    /// to: it keeps reading, and a frontend that attaches gets the screen.
+    pub fn emulated(master: OwnedFd, rows: u16, cols: u16) -> Result<Self> {
+        let mut terminal = Self::client(master, rows, cols)?;
+        terminal.screen = Some(Screen::new(rows, cols));
+        Ok(terminal)
+    }
+    /// The screen of an emulated terminal.
+    pub fn screen(&mut self) -> Option<&mut Screen> {
+        self.screen.as_mut()
+    }
+    /// Count output as new to the screen's watchers again.
+    pub fn refeed(&mut self) {
+        self.fed = true;
+    }
+    /// Whether output reached the screen since this was last asked.
+    pub fn take_fed(&mut self) -> bool {
+        std::mem::take(&mut self.fed)
+    }
+    /// Queue what brings the attached frontend to the screen, ahead of live
+    /// output.
+    pub fn redraw(&mut self) {
+        if let Some(screen) = &mut self.screen {
+            self.to_peer = screen.redraw();
+        }
+    }
+    /// What waits to be written to the program.
+    #[cfg(test)]
+    pub fn queued_input(&self) -> usize {
+        self.to_pty.len()
+    }
+    /// Write `bytes` to the program as if typed.
+    pub fn input(&mut self, bytes: &[u8]) -> Result<()> {
+        if self.eof || self.master.is_none() {
+            return Err("the terminal's program has ended".into());
+        }
+        if self.detached && self.peer.is_some() {
+            return Err("the terminal is being detached".into());
+        }
+        if self.to_pty.len() + bytes.len() > 4 * CAP {
+            return Err("the terminal's input is full".into());
+        }
+        self.to_pty.extend_from_slice(bytes);
+        Ok(())
+    }
+    /// Signal the PTY's foreground process group that the window changed,
+    /// also when its size did not, so full-screen programs repaint.
+    pub fn winch(&self) {
+        let Some(master) = &self.master else {
+            return;
+        };
+        let group = unsafe { libc::tcgetpgrp(master.as_raw_fd()) };
+        if group > 1 && group != unsafe { libc::getpgrp() } {
+            unsafe { libc::kill(-group, libc::SIGWINCH) };
+        }
+    }
+    /// End the frontend's stream now, whatever it has not read.
+    pub fn close_stream(&mut self) {
+        if let Some(peer) = self.peer.take() {
+            let _ = peer.shutdown(Shutdown::Both);
+        }
+        self.hello.clear();
+        self.to_peer.clear();
+        self.to_pty.clear();
     }
     /// Answer no connection until released, refused, or the payload starts
     /// on this terminal or fails.
@@ -188,6 +262,9 @@ impl Terminal {
     }
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.dimensions = Some((rows, cols));
+        if let Some(screen) = &mut self.screen {
+            screen.resize(rows, cols);
+        }
         let Some(master) = self.master.as_ref() else {
             return Ok(());
         };
@@ -269,7 +346,11 @@ impl Terminal {
             {
                 self.peer.take();
                 self.hello.clear();
-                if !self.complete && !self.detached {
+                if self.screen.is_some() {
+                    // The terminal goes on: the frontend left, or finished
+                    // reading what a detach told it.
+                    self.detached = false;
+                } else if !self.complete && !self.detached {
                     self.interrupted = true;
                 }
                 self.to_pty.clear();
@@ -314,7 +395,12 @@ impl Terminal {
             // backpressure. Detached payloads keep running: retain only a
             // bounded tail, making room for the next read when necessary.
             let mut newest = Vec::new();
-            let tail = self.detached || (self.connected && self.peer.is_none());
+            let consumer = self.peer.is_some() && !self.detached;
+            let tail = if self.screen.is_some() {
+                !consumer
+            } else {
+                self.detached || (self.connected && self.peer.is_none())
+            };
             let result = if tail || self.to_peer.len() < CAP {
                 // Preserve backpressure by limiting the read to remaining room.
                 let mut buf = [0; 8192];
@@ -342,9 +428,24 @@ impl Terminal {
                 Ok(false)
             };
             if !newest.is_empty() {
-                let overflow = (self.to_peer.len() + newest.len()).saturating_sub(CAP);
-                self.to_peer.drain(..overflow);
-                self.to_peer.extend(newest);
+                if let Some(screen) = &mut self.screen {
+                    screen.feed(&newest);
+                    self.fed = true;
+                    // With nobody attached nobody would answer a query of
+                    // the program (a shell waits for its device
+                    // attributes); an attached frontend answers its own.
+                    let replies = screen.take_replies();
+                    if !consumer && self.to_pty.len() + replies.len() <= CAP {
+                        self.to_pty.extend_from_slice(&replies);
+                    }
+                }
+                // An emulated terminal keeps its output on the screen, and
+                // queues it only for a frontend that is reading.
+                if self.screen.is_none() || consumer {
+                    let overflow = (self.to_peer.len() + newest.len()).saturating_sub(CAP);
+                    self.to_peer.drain(..overflow);
+                    self.to_peer.extend(newest);
+                }
             }
             match result {
                 Ok(eof) => self.eof = eof,

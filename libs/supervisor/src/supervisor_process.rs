@@ -192,6 +192,10 @@ fn refuse(command: Command, engine: &Engine) -> Result<Option<Event>> {
             detail: Some(CAPACITY.into()),
             output: None,
         },
+        Command::TerminalCall { request, .. } => Event::TerminalResult {
+            request,
+            result: Err(CAPACITY.into()),
+        },
         Command::Spawn { id, .. } => Event::SpawnFailed {
             id,
             code: None,

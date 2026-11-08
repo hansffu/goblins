@@ -22,6 +22,7 @@ pub mod policy;
 pub mod sandbox;
 pub mod scope;
 pub mod supervisor;
+pub mod terminal;
 pub mod worktrees;
 /// Why an allowNix goblin gets no package grants.
 pub const NIX_PACKAGES: &str =
@@ -208,6 +209,11 @@ pub enum SpawnKind {
     Exec,
     /// An attach client or its `onDetach`.
     Attach,
+    /// A terminal the supervisor emulates (`terminals.create`), checked as
+    /// an exec. With `exit_report` the supervisor answers that request ID
+    /// with the exit and the last lines of the screen, before it reports the
+    /// exit itself: a wait made from the start, which no exit can overtake.
+    Terminal { exit_report: Option<u64> },
 }
 
 /// What the daemon asks of a runtime.
@@ -301,6 +307,17 @@ pub enum Command {
     },
     /// End every process started with `Spawn`.
     KillAll,
+    /// A call on terminal `terminal`, the ID of its `Spawn`. Answered with
+    /// `Event::TerminalResult` under `request`.
+    TerminalCall {
+        request: u64,
+        terminal: u64,
+        call: crate::terminal::Call,
+    },
+    /// Stop a `wait` the caller no longer wants.
+    TerminalCancel {
+        request: u64,
+    },
     /// Hand over what a goblin the owner runs takes from it. Answered with
     /// `Event::Exported` without waiting for Nix work.
     Export {
@@ -344,7 +361,7 @@ impl Command {
             Command::Run { .. } => Some(Operation::FlakeRun),
             Command::Diff { .. } => Some(Operation::DevShellDiff),
             Command::Spawn {
-                kind: SpawnKind::Exec,
+                kind: SpawnKind::Exec | SpawnKind::Terminal { .. },
                 ..
             } => Some(Operation::Exec),
             Command::Spawn {
@@ -453,6 +470,12 @@ pub enum Event {
         terminal: TerminalId,
         status: TerminalStatus,
         error: Option<String>,
+    },
+    /// The answer to `Command::TerminalCall`: the result as JSON, or why the
+    /// call failed.
+    TerminalResult {
+        request: u64,
+        result: std::result::Result<serde_json::Value, String>,
     },
     /// Process `id` did not start. `code` is what a shell would report, as
     /// init gives it; None when init could not be asked.
@@ -595,6 +618,7 @@ impl Runtime for Fake {
                     | Command::SandboxClose { .. }
                     | Command::Signal { .. }
                     | Command::CancelProcess { .. }
+                    | Command::TerminalCancel { .. }
                     | Command::KillAll
                     | Command::Stop
             )

@@ -152,20 +152,41 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
 /// attach handlers takes a hello with this terminal's size on `attach.sock`;
 /// an older one attaches `terminal.sock` at once.
 fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Result<i32> {
+    let terminal = handshake(&control, session, record, None)?;
+    goblins_protocol::terminal::relay(
+        terminal,
+        session,
+        |method, params| control.call(method, params),
+        &STOP,
+        &RESIZE,
+    )
+}
+
+/// Connect to a goblin's attach socket and be accepted: for the goblin's own
+/// terminal, or with `terminal` for one of its terminals.
+pub fn handshake(
+    control: &Client,
+    session: &str,
+    record: &serde_json::Value,
+    terminal: Option<&str>,
+) -> Result<std::os::unix::net::UnixStream> {
     use goblins_jsonrpc as rpc;
     use std::{io::Write, os::unix::net::UnixStream};
     let attach = record["attach"]
         .as_str()
-        .filter(|_| control.features.iter().any(|f| f == "attach-handlers"));
-    let mut terminal = match attach {
+        .filter(|_| terminal.is_some() || control.features.iter().any(|f| f == "attach-handlers"));
+    let mut terminal_stream = match attach {
         Some(path) => {
-            let mut terminal = UnixStream::connect(path)?;
+            let mut stream = UnixStream::connect(path)?;
             let d = size(0)?;
-            terminal.write_all(&rpc::encode(
-                &json!({"jsonrpc":"2.0","method":"attach.hello",
-                "params":{"version":1,"rows":d.ws_row.max(1),"cols":d.ws_col.max(1)}}),
+            let mut params = json!({"version":1,"rows":d.ws_row.max(1),"cols":d.ws_col.max(1)});
+            if let Some(terminal) = terminal {
+                params["terminal"] = json!(terminal);
+            }
+            stream.write_all(&rpc::encode(
+                &json!({"jsonrpc":"2.0","method":"attach.hello","params":params}),
             )?)?;
-            terminal
+            stream
         }
         None => UnixStream::connect(record["terminal"].as_str().ok_or("missing terminal path")?)?,
     };
@@ -181,14 +202,14 @@ fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Resu
                 return Err(format!("interrupted before {session} was attached").into());
             }
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if unix::readable(terminal.as_raw_fd(), left.as_millis() as i32)? {
+            if unix::readable(terminal_stream.as_raw_fd(), left.as_millis() as i32)? {
                 break;
             }
             if left.is_zero() {
                 return Err("terminal attachment timed out".into());
             }
         }
-        let frame = rpc::read(&mut terminal)?;
+        let frame = rpc::read(&mut terminal_stream)?;
         if frame["method"] != "attach.waiting" {
             break frame;
         }
@@ -212,11 +233,5 @@ fn relay(mut control: Client, session: &str, record: &serde_json::Value) -> Resu
     if hello["result"]["attached"] != true {
         return Err("invalid terminal handshake".into());
     }
-    goblins_protocol::terminal::relay(
-        terminal,
-        session,
-        |method, params| control.call(method, params),
-        &STOP,
-        &RESIZE,
-    )
+    Ok(terminal_stream)
 }

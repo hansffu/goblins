@@ -24,6 +24,7 @@ mod scope_process;
 mod supervisor_process;
 pub use entry::main as control_main;
 mod scope_storage;
+mod screen;
 mod seccomp;
 mod server_log;
 mod session;

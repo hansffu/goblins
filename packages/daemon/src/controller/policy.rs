@@ -77,7 +77,8 @@ mod tests {
                 "raid-owner",
                 "editor-open",
                 "variables",
-                "host-commands"
+                "host-commands",
+                "terminals"
             ]
         );
         assert_eq!(support.lacks(&policy, false), None);
@@ -116,7 +117,7 @@ mod tests {
             };
             assert_eq!(
                 features.len(),
-                15 - usize::from(name.is_some()),
+                16 - usize::from(name.is_some()),
                 "{operation:?}"
             );
             if let Some(name) = name {

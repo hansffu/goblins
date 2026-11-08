@@ -45,6 +45,12 @@ python = ["test_exec", "test_attachment", "test_attach_handlers", "test_connecte
 checks = ["rust"]
 paths = ["packages/daemon/src/exec.rs", "packages/daemon/src/controller/exec.rs", "packages/daemon/src/attachment.rs", "packages/daemon/src/controller/attach.rs", "packages/daemon/src/host.rs", "libs/runtime/src/exec.rs", "libs/api/src/init.rs", "libs/unix/src/ancillary.rs"]
 
+[features.terminals]
+description = "Terminals in the sandbox: supervisor-emulated PTYs, their host and sandbox APIs, attachment, exit notices and CLIs"
+python = ["test_terminals"]
+checks = ["rust"]
+paths = ["libs/runtime/src/terminal.rs", "libs/supervisor/src/screen.rs", "packages/daemon/src/controller/terminals.rs", "packages/daemon/src/terminal.rs", "libs/api/src/terminal.rs", "packages/sandbox-cli/src/terminal.rs", "skills/goblins-terminals/*"]
+
 [features.scopes]
 description = "Shared namespaces, networking and scope storage"
 python = ["test_scopes", "test_scope_process", "test_scope_cleanup", "test_cleanup", "test_network", "test_run_targets.RunTargetTests.test_member_shares_the_owners_scope"]

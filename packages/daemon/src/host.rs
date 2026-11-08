@@ -6,7 +6,7 @@ use goblins_jsonrpc::{self as rpc, Decoder};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    io::{self, Read},
+    io::{self, Read, Write},
     os::unix::net::UnixStream,
     path::Path,
     time::Instant,
@@ -58,6 +58,36 @@ impl Client {
             method,
             params,
         )?)
+    }
+    /// A call whose reply may take as long as its work does, such as a
+    /// terminal wait: the reply is waited for without a deadline, until
+    /// `stop` is set. Giving up drops this connection, which cancels the call.
+    pub fn call_patient(
+        &mut self,
+        method: &str,
+        params: Value,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<Value> {
+        use std::os::fd::AsRawFd;
+        self.next += 1;
+        let id = json!(self.next);
+        self.stream.set_write_timeout(Some(rpc::TIMEOUT))?;
+        self.stream
+            .write_all(&rpc::encode(&rpc::request(id.clone(), method, params))?)?;
+        while !goblins_unix::readable(self.stream.as_raw_fd(), 100)? {
+            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("interrupted".into());
+            }
+        }
+        let reply = rpc::read(&mut self.stream)?;
+        rpc::validate_response(&reply, &id)?;
+        if let Some(error) = reply.get("error") {
+            return Err(error["message"]
+                .as_str()
+                .unwrap_or("the daemon refused the call")
+                .into());
+        }
+        Ok(reply["result"].clone())
     }
     /// Send a request with descriptors attached, without reading its reply.
     /// Returns the request ID.
@@ -224,5 +254,31 @@ mod tests {
             goblins_unix::ancillary::receive(peer.as_raw_fd(), &mut [0; 1024], 0).unwrap();
         assert!(n > 0);
         assert_eq!(fds.len(), 3);
+    }
+
+    #[test]
+    fn a_patient_call_gives_up_when_asked_and_drops_its_connection() {
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let mut client = Client {
+            instance: String::new(),
+            features: vec![],
+            stream,
+            next: 1,
+        };
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let error = std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            });
+            // The daemon never answers.
+            client.call_patient("terminals.wait", json!({}), &stop)
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "interrupted");
+        // The request went out, and closing the client closes the connection.
+        assert!(rpc::read(&mut peer).unwrap()["method"] == "terminals.wait");
+        drop(client);
+        assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
     }
 }

@@ -39,6 +39,7 @@ fn request(command: &Command) -> bool {
             | Command::Diff { .. }
             | Command::Spawn { .. }
             | Command::Attach { .. }
+            | Command::TerminalCall { .. }
             | Command::PrepareHostJob { .. }
             | Command::RunHostJob { .. }
             | Command::Export { .. }
@@ -111,6 +112,22 @@ impl Commands {
                         .any(|c| matches!(c,Command::Cancel(other) if *other == id))
                 {
                     self.cancellations.push_back(Command::Cancel(id));
+                }
+            }
+            Command::TerminalCancel { request } => {
+                // An unsent call needs no cancelling and no answer. One
+                // already sent is stopped ahead of the work queued behind it.
+                let before = self.ordered.len();
+                self.ordered.retain(
+                    |c| !matches!(c,Command::TerminalCall { request:other,.. } if *other == request),
+                );
+                if before == self.ordered.len()
+                    && !self.cancellations.iter().any(
+                        |c| matches!(c,Command::TerminalCancel { request:other } if *other == request),
+                    )
+                {
+                    self.cancellations
+                        .push_back(Command::TerminalCancel { request });
                 }
             }
             Command::CancelProcess { id, everything } => {

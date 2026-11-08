@@ -592,8 +592,9 @@ arguments.  The program must be available inside the sandbox."
     (goblins--sidebar-render-all)))
 
 (defun goblins-tramp--shell-closed ()
-  "Take this shell out of the sidebar as it is killed."
-  (setq goblins--shell-number nil)
+  "Take this shell or terminal buffer out of the sidebar as it is killed."
+  (setq goblins--shell-number nil
+        goblins--terminal-id nil)
   (goblins-tramp--shells-changed))
 
 (defun goblins-tramp--shell-exited (&rest _)
@@ -604,7 +605,10 @@ arguments.  The program must be available inside the sandbox."
   "Open a shell inside a running goblin, in a new Ghostel buffer.
 It runs `goblins-shell-program', by default the sandbox's own $SHELL, with
 its dev shell environment, alongside the agent's terminal, and the sidebar
-lists it under its goblin.  SESSION is
+lists it under its goblin.  The shell is a terminal of the goblin, which keeps
+running when the buffer is killed: attach it again from the sidebar or with
+`goblins-terminal-attach'.  A daemon without terminals runs it as a command
+that ends with the buffer instead.  SESSION is
 a session record of SOURCE's daemon, by default that of
 `goblins-state-directory'; interactively, the goblin of the current terminal
 or /goblins: buffer, else (or with a prefix argument) one you choose.
@@ -614,13 +618,33 @@ right of the goblin's agent and remembers it for the goblin."
   (goblins--require-ghostel)
   (let* ((goblin (goblins-tramp--goblin source session "Shell in goblin: "))
          (source (car goblin))
-         (session (cdr goblin))
-         (directory (buffer-local-value 'goblins--directory source))
+         (session (cdr goblin)))
+    (if (goblins-tramp--terminals-p source)
+        (goblins-tramp--create-terminal
+         source session (and goblins-shell-program (ensure-list goblins-shell-program))
+         nil display)
+      (goblins-tramp--exec-shell source session display))))
+
+(defun goblins-tramp--terminals-p (source)
+  "Whether the daemon of SOURCE has terminals."
+  (member "terminals" (buffer-local-value 'goblins--features source)))
+
+(defun goblins-tramp--require-terminals (source)
+  "Signal a `user-error' unless the daemon of SOURCE has terminals."
+  (unless (goblins-tramp--terminals-p source)
+    (user-error "This Goblins daemon has no terminals; restart it")))
+
+(defun goblins-tramp--open-buffer (source session name display start)
+  "Open a Ghostel buffer named NAME for goblin SESSION of SOURCE's daemon.
+DISPLAY shows it, by default right of the goblin's agent.  START is called
+with the buffer, the daemon's directory and instance, the goblin's ID and its
+/goblins: host, and must start the program with `ghostel-exec'.  On failure the
+buffer is killed and the error re-signalled."
+  (let* ((directory (buffer-local-value 'goblins--directory source))
          (instance (buffer-local-value 'goblins--instance source))
          (id (plist-get session :id))
          (host (goblins-tramp--session-host source session))
-         (number (goblins-tramp--shell-number directory id))
-         (buffer (generate-new-buffer (format "*Goblin shell: %s*" (plist-get session :agent_name)))))
+         (buffer (generate-new-buffer name)))
     (condition-case err
         (progn
           ;; Spawn from a local directory: Ghostel would otherwise run the
@@ -628,24 +652,159 @@ right of the goblin's agent and remembers it for the goblin."
           (with-current-buffer buffer (setq default-directory (expand-file-name "~/")))
           (funcall (or display (goblins-tramp--show-for source id)) buffer)
           (let ((ghostel-kill-buffer-on-exit nil))
-            (ghostel-exec buffer goblins-executable
-                          (append (list "--state-dir" directory "exec" "-t" "--instance" instance
-                                        "--session" id host)
-                                  (and goblins-shell-program
-                                       (cons "--" (ensure-list goblins-shell-program))))
-                          `((kind . goblins-shell) (session . ,id) (instance . ,instance)
-                            (directory . ,directory) (host . ,host))))
+            (funcall start buffer directory instance id host))
           (with-current-buffer buffer
+            ;; Ghostel reads this when the process ends, long after the
+            ;; binding above: an ended terminal keeps its last screen, and a
+            ;; refused attachment its error.
+            (setq-local ghostel-kill-buffer-on-exit nil)
             (setq-local goblins--directory directory)
-            (setq-local goblins--shell-number number)
             (add-hook 'kill-buffer-hook #'goblins-tramp--shell-closed nil t)
             (add-hook 'ghostel-exit-functions #'goblins-tramp--shell-exited nil t)
             (setq default-directory (format "/%s:%s:/" goblins-tramp-method host)))
-          (goblins-tramp--shells-changed)
           buffer)
       (error
        (when (buffer-live-p buffer) (kill-buffer buffer))
        (signal (car err) (cdr err))))))
+
+(defun goblins-tramp--exec-shell (source session display)
+  "Open an exec shell in goblin SESSION of SOURCE's daemon, shown by DISPLAY."
+  (let* ((number (goblins-tramp--shell-number (buffer-local-value 'goblins--directory source)
+                                              (plist-get session :id)))
+         (buffer (goblins-tramp--open-buffer
+                  source session
+                  (format "*Goblin shell: %s*" (plist-get session :agent_name)) display
+                  (lambda (buffer directory instance id host)
+                    (ghostel-exec buffer goblins-executable
+                                  (append (list "--state-dir" directory "exec" "-t" "--instance" instance
+                                                "--session" id host)
+                                          (and goblins-shell-program
+                                               (cons "--" (ensure-list goblins-shell-program))))
+                                  `((kind . goblins-shell) (session . ,id) (instance . ,instance)
+                                    (directory . ,directory) (host . ,host)))))))
+    (with-current-buffer buffer (setq-local goblins--shell-number number))
+    (goblins-tramp--shells-changed)
+    buffer))
+
+(defun goblins-tramp--attach-terminal (source session record display)
+  "Open a Ghostel buffer attached to RECORD, a terminal of goblin SESSION.
+SOURCE is the status buffer of the goblin's daemon and DISPLAY shows the
+buffer.  The buffer's process is `goblins terminal attach': killing the
+buffer detaches the terminal, which keeps running."
+  (let* ((terminal (plist-get record :id))
+         (buffer (goblins-tramp--open-buffer
+                  source session
+                  (format "*Goblin terminal: %s %s*" (plist-get session :agent_name)
+                          (goblins--terminal-label record))
+                  display
+                  (lambda (buffer directory instance id host)
+                    (ghostel-exec buffer goblins-executable
+                                  (list "--state-dir" directory "terminal" "attach" id terminal)
+                                  `((kind . goblins-shell) (session . ,id) (instance . ,instance)
+                                    (directory . ,directory) (host . ,host)
+                                    (terminal . ,terminal)))))))
+    (with-current-buffer buffer (setq-local goblins--terminal-id terminal))
+    (goblins-tramp--shells-changed)
+    buffer))
+
+(defun goblins-tramp--create-terminal (source session argv name display)
+  "Create a terminal running ARGV (nil for the sandbox's shell) in goblin SESSION
+of SOURCE's daemon, optionally called NAME, and attach it, shown by DISPLAY."
+  (goblins-tramp--require-terminals source)
+  (let* ((record (goblins--host-call
+                  source 'terminals.create
+                  (append (list :session (plist-get session :id))
+                          (and argv (list :argv (vconcat argv)))
+                          (and name (list :name name))))))
+    (condition-case err
+        (goblins-tramp--attach-terminal source session record display)
+      (error
+       (ignore-errors
+         (goblins--host-call source 'terminals.close
+                             (list :session (plist-get session :id) :terminal (plist-get record :id))))
+       (signal (car err) (cdr err))))))
+
+(defun goblins-tramp--read-command-line ()
+  "Read a command line, split into a program and its arguments like a shell
+would split it, without running one.  Nil for an empty line."
+  (let ((line (string-trim (read-string "Command (empty: the sandbox's shell): "))))
+    (unless (string-empty-p line)
+      (if (fboundp 'split-string-shell-command)
+          (split-string-shell-command line)
+        (split-string-and-unquote line)))))
+
+;;;###autoload
+(defun goblins-terminal (&optional argv name session display source)
+  "Run a command in a new terminal of a running goblin, attached in Ghostel.
+Interactively, read the command line from the minibuffer, split like a shell
+would split it but without running one; an empty line runs the sandbox's own
+shell.  Then read an optional NAME, which commands and the sidebar use for
+the terminal.  The terminal belongs to the goblin and keeps running when its
+buffer is killed; `goblins-terminal-attach' attaches it again.  ARGV is the
+program and its arguments, SESSION, DISPLAY and SOURCE are as for `goblins-shell'."
+  (interactive
+   (let* ((goblin (goblins-tramp--goblin nil nil "Terminal in goblin: ")))
+     (goblins-tramp--require-terminals (car goblin))
+     (let* ((argv (goblins-tramp--read-command-line))
+            (name (string-trim (read-string "Name (optional): "))))
+       (list argv (unless (string-empty-p name) name) (cdr goblin) nil (car goblin)))))
+  (goblins--require-ghostel)
+  (let ((goblin (goblins-tramp--goblin source session "Terminal in goblin: ")))
+    (goblins-tramp--create-terminal (car goblin) (cdr goblin) argv name display)))
+
+(defun goblins-tramp--show-terminal (source session terminal &optional display)
+  "Show terminal TERMINAL (an ID) of goblin SESSION, a record of SOURCE's daemon.
+This Emacs's buffer for it is shown; without one the terminal is attached in a
+new buffer.  DISPLAY shows the buffer, by default right of the goblin's
+agent.  Return the buffer."
+  (goblins-tramp--require-terminals source)
+  (let ((record (goblins--session-terminal session terminal))
+        (buffer (goblins--session-terminal-buffer source (plist-get session :id) terminal)))
+    (cond (buffer
+           (funcall (or display (goblins-tramp--show-for source (plist-get session :id))) buffer)
+           buffer)
+          ((null record) (user-error "This terminal has ended"))
+          (t (goblins-tramp--attach-terminal source session record display)))))
+
+;;;###autoload
+(defun goblins-terminal-attach (&optional terminal session display source)
+  "Attach a terminal of a running goblin, chosen with completion, in a Ghostel buffer.
+This Emacs's buffer for the terminal is shown if it has one.  TERMINAL is the
+terminal's ID; SESSION, DISPLAY and SOURCE are as for `goblins-shell'."
+  (interactive
+   (let ((goblin (goblins-tramp--goblin nil nil "Attach a terminal of goblin: ")))
+     (goblins-tramp--require-terminals (car goblin))
+     (list (goblins-tramp--read-terminal (cdr goblin)) (cdr goblin) nil (car goblin))))
+  (goblins--require-ghostel)
+  (let ((goblin (goblins-tramp--goblin source session "Attach a terminal of goblin: ")))
+    (goblins-tramp--show-terminal (car goblin) (cdr goblin)
+                            (or terminal (goblins-tramp--read-terminal (cdr goblin)))
+                            display)))
+
+(defun goblins-tramp--read-terminal (session)
+  "Read one of SESSION's terminals with completion and return its ID."
+  (let* ((records (append (plist-get session :terminals) nil))
+         (candidates
+          (mapcar (lambda (record)
+                    (cons (format "%s (%s)" (goblins--terminal-label record) (plist-get record :id))
+                          record))
+                  records)))
+    (unless candidates
+      (user-error "%s has no terminals" (plist-get session :agent_name)))
+    (let ((choice (completing-read
+                   (format "Terminal of %s: " (plist-get session :agent_name))
+                   (lambda (string predicate action)
+                     (if (eq action 'metadata)
+                         `(metadata
+                           (annotation-function
+                            . ,(lambda (candidate)
+                                 (when-let* ((record (cdr (assoc candidate candidates))))
+                                   (format "  %s%s" (goblins--safe (plist-get record :origin))
+                                           (if (eq (plist-get record :attached) t)
+                                               ", attached" ""))))))
+                       (complete-with-action action candidates string predicate)))
+                   nil t)))
+      (plist-get (cdr (assoc choice candidates)) :id))))
 
 (defvar-local goblins-tramp--eshell-goblin nil
   "(DIRECTORY SESSION-ID) of the goblin this Eshell buffer was opened in.")

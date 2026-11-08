@@ -466,6 +466,7 @@ impl Runtime for Supervised {
                 }
                 Command::Cancel(_)
                 | Command::CancelProcess { .. }
+                | Command::TerminalCancel { .. }
                 | Command::CancelHostJob { .. } => (),
                 other => return Err(other),
             }

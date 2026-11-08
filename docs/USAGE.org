@@ -742,6 +742,33 @@ goblins rpc sessions.kill_execs '{"session":"snikk"}'
   =execs= (TRAMP, eshell, scripts); interactive shells also appear in the
   session's =events.jsonl=. The agent is not told.
 
+** Terminals
+
+A terminal is a named, long-lived program on a PTY that the goblin's supervisor owns, so it keeps running with nobody attached: start a server or a long build, close the window and come back to the same screen later. Unlike =goblins exec -t=, it is not tied to the connection that started it.
+
+#+begin_src sh
+goblins terminal create snikk --name app -- gradle run  # prints the ID, t1
+goblins terminal create snikk                           # the sandbox's own shell
+goblins terminal list snikk
+goblins terminal attach snikk app                       # the same screen, every time
+goblins terminal detach snikk app                       # disconnect whoever is attached
+goblins terminal run snikk t2 'gradle run'              # type a command line and press enter
+goblins terminal send snikk t2 --text 'y' --keys enter ctrl+c
+goblins terminal read snikk app --source recent --lines 50
+goblins terminal wait snikk app --regex '^BUILD SUCCESSFUL' --timeout 120000
+goblins terminal wait snikk app --exit
+goblins terminal close snikk app
+#+end_src
+
+- A terminal runs any program, not only a shell. With a program of its own it ends when the program exits. To keep a shell and its scrollback after a program ends, create a terminal without a program and =run= the program in it.
+- Names are lowercase letters, digits, =-= and =_=, start with a letter and are at most 32 characters, and are not of the form =t1=. The ID or the name selects a terminal. A goblin has at most 16 terminals; IDs are never reused during its run.
+- The supervisor runs each terminal's output through an emulator, so =read= and =wait= see the screen and 5,000 lines of scrollback even while nobody is attached, and a frontend that attaches gets the screen back, including a full-screen program such as =vim= on the alternate screen. =wait= matches a line of the screen or of the recent lines, at once and after each output; anchor a regular expression (=^done$=) so the echoed command line does not match. It exits 0 on a match or the program's exit, and 1 on a timeout.
+- A terminal ends when its program exits, when it is closed, or when the goblin stops. Closing signals the program's process group, as cancelling an exec does. Terminals are not restored when a goblin is recreated.
+- =attach= connects the current terminal like =goblins attach=, with one frontend per terminal; leaving it detaches, and it prints =detached from t1= or =t1 ended=. It works in a goblin without =onAttach=, as in one with it.
+- In Emacs, =M-x goblins-shell= creates a terminal and attaches it in a Ghostel buffer, =M-x goblins-terminal= runs a command line in a new one and =M-x goblins-terminal-attach= attaches one you choose. The sidebar lists each goblin's terminals: =RET= shows or attaches one and =K= closes it. Killing the buffer only detaches. See the Emacs README.
+- *Inside a goblin*, =goblin terminal create|list|read|send|run|wait|close= does the same for the goblin's own terminals, with the same options and no goblin name; =create --notify= puts one notice in the goblin's inbox when the program exits (not when it is closed or the goblin stops), with its exit code or signal and the last 20 lines of its screen. Terminals created in a goblin are marked =agent= in =list=, and the human sees and can attach to them in Emacs. A goblin can read, type into and wait on every terminal of its own goblin, the human's included, but can close only its own; it cannot attach, detach or resize, and never reaches another goblin's terminals. Errors exit 2 and =wait= exits 1 on a timeout. The =goblins-terminals= skill tells agents when and how to use them.
+- The API is the =terminals.*= methods of the host endpoint, listed in [[file:API.org][API.org]]; the supervisors' part is documented there too.
+
 ** Opening sandbox files in Emacs
 
 With =editor.emacs.enable = true;= on =mkGoblins= (see the Nix API), every
@@ -863,6 +890,8 @@ environment fragments, Goblin =env= values are literal: =$HOME= and =$(...)=
 are not expanded or executed on the host. =PATH=, =HOME=, =SHELL=, =USER=,
 =LOGNAME=, and =PYTHONNOUSERSITE= are reserved. Store paths used in =env= must
 also be included through an allowed package's closure to be visible inside.
+
+A sandbox starts in the =C.UTF-8= locale (=LC_ALL=), which has the C locale's byte-order collation and English messages but a UTF-8 charset, so =less=, =btop= and other terminal programs show and accept UTF-8. A goblin's =env= may set =LC_ALL= to something else for its sandbox; a dev shell cannot.
 
 The four bind options use the agent-sandbox names and string-list format. Paths
 expand =$VAR=, =${VAR}= and leading =~/= using the host =daemon= environment;
