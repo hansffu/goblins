@@ -1021,6 +1021,207 @@ before the edge."
         (should (equal (goblins--sidebar-duration (- (* 1000 (float-time)) (* 3 3600 1000)))
                        "3h"))))))
 
+(defun goblins-test--host-job (id session state &rest props)
+  "A host command's permission record ID of SESSION in STATE."
+  (append props (list :id id :session session :approval (concat "approval-" id)
+                      :agent_name session :kind "host-command" :state state
+                      :package "docker-tests: nix develop -c just test-all (in /p)"
+                      :reason "because")))
+
+(defmacro goblins-test--sidebar-jobs (jobs &rest body)
+  "Run BODY in a sidebar of goblins chief (running) and gone (stopped) with JOBS."
+  (declare (indent 1))
+  `(goblins-test--sidebar (list (goblins-test--session "chief" :cwd "/p")
+                                (goblins-test--session "gone" :cwd "/p" :state "stopped"))
+     (with-current-buffer source
+       (setq goblins--snapshot (plist-put goblins--snapshot :permissions (vconcat ,jobs))))
+     (goblins--sidebar-render)
+     ,@body))
+
+(ert-deftest goblins-sidebar-lists-running-host-commands-after-the-shells ()
+  (let* ((started (- (float-time) 192.5))
+         (jobs (list (goblins-test--host-job "p" "chief" "pending" :name "queued"
+                                             :started_at nil)
+                     (goblins-test--host-job "r1" "chief" "running" :name "docker-tests"
+                                             :started_at started)
+                     (goblins-test--host-job "r2" "chief" "running" :name "x"
+                                             :started_at (- started 100))
+                     (goblins-test--host-job "d" "chief" "finished" :name "done"
+                                             :started_at started)
+                     (goblins-test--host-job "g" "gone" "running" :name "orphan"
+                                             :started_at started)))
+         (shell (generate-new-buffer " *goblins test shell*")))
+    (unwind-protect
+        (goblins-test--sidebar-jobs jobs
+          (with-current-buffer shell
+            (setq goblins--shell-number 1 goblins--directory "/tmp/goblins-test")
+            (setq-local ghostel-identity '((session . "chief")))
+            (setq-local ghostel--process nil))
+          (progn
+            (dolist (view '(contents all))
+              (setq goblins--sidebar-view view)
+              (goblins--sidebar-render)
+              (let ((plain (goblins-test--sidebar-plain)))
+                ;; The pending request is a permission line above the shells;
+                ;; the running lines follow them, oldest first, their ages
+                ;; ending a column short of the edge.
+                (should (string-match-p (regexp-quote "  ! queued (host command)\n") plain))
+                (should (string-suffix-p
+                         (concat "  › shell · exited\n"
+                                 (goblins-test--row "  ⚠ x" "4m52s")
+                                 (goblins-test--row "  ⚠ docker-tests" "3m12s"))
+                         plain))
+                (should-not (string-match-p "done\\|orphan" plain)))))
+          ;; Point stops on a host command, and is restored there.
+          (goblins--sidebar-render)
+          (goto-char (goblins--sidebar-find '(host-job . "r1")))
+          (should (equal (goblins--sidebar-key-at (point)) '(host-job . "r1")))
+          (should (equal (goblins--sidebar-goblin-at-point) (cons source "chief")))
+          (goblins-sidebar-previous)
+          (should (equal (goblins--sidebar-key-at (point)) '(host-job . "r2")))
+          (goblins-sidebar-next)
+          (should (equal (goblins--sidebar-key-at (point)) '(host-job . "r1")))
+          (should (string-match-p "^  ⚠ docker-tests"
+                                  (buffer-substring (line-beginning-position)
+                                                    (line-end-position)))))
+      (kill-buffer shell))))
+
+(ert-deftest goblins-sidebar-host-command-icon-is-a-red-shield-with-a-text-fallback ()
+  (should (equal goblins-sidebar-host-command-icon
+                 '(:svg "shield-alert.svg" :color error :text "⚠")))
+  (should (file-readable-p (expand-file-name "shield-alert.svg" goblins--icons-directory)))
+  (goblins-test--sidebar-jobs (list (goblins-test--host-job "r1" "chief" "running" :name "job"
+                                                            :started_at (float-time)))
+    (let ((goblins-sidebar-host-command-icon '(:text "!!")))
+      (goblins--sidebar-render)
+      (should (string-match-p "^  !! job" (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-redraws-every-second-only-while-a-host-command-is-shown ()
+  (let ((goblins--sidebar-timer nil) (goblins--sidebar-timer-interval nil)
+        started cancelled)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay repeat _fn) (push (list delay repeat) started) (list 'timer delay)))
+              ((symbol-function 'cancel-timer) (lambda (timer) (push timer cancelled))))
+      (goblins-test--sidebar-jobs (list (goblins-test--host-job "r1" "chief" "running"
+                                                                :name "job" :started_at 1))
+        ;; Not shown in a window: the slow rate.
+        (goblins--sidebar-schedule)
+        (should (equal started '((30 30))))
+        (goblins--sidebar-schedule)
+        (should (equal started '((30 30))))
+        ;; Shown: every second, replacing the slow timer.
+        (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) t)))
+          (goblins--sidebar-schedule)
+          (should (equal (car started) '(1 1)))
+          (should (equal cancelled '((timer 30))))
+          (goblins--sidebar-schedule)
+          (should (= (length started) 2))
+          ;; The command ends: back to 30 seconds.
+          (with-current-buffer source
+            (setq goblins--snapshot (plist-put goblins--snapshot :permissions [])))
+          (goblins--sidebar-render)
+          (goblins--sidebar-schedule)
+          (should (equal (car started) '(30 30)))
+          (should (equal cancelled '((timer 1) (timer 30)))))))))
+
+(ert-deftest goblins-sidebar-reschedules-when-a-host-command-comes-into-view ()
+  (let ((goblins--sidebar-timer nil) (goblins--sidebar-timer-interval nil) started)
+    (cl-letf (((symbol-function 'run-with-timer)
+               (lambda (delay repeat _fn) (push (list delay repeat) started) (list 'timer delay)))
+              ((symbol-function 'cancel-timer) #'ignore))
+      (goblins-test--sidebar-jobs (list (goblins-test--host-job "r1" "chief" "running"
+                                                                :name "job" :started_at 1))
+        (goblins--sidebar-schedule)
+        (should (equal started '((30 30))))
+        (let ((shown nil))
+          (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) shown)))
+            ;; Shown later, as a window change reports it.
+            (setq shown t)
+            (goblins--sidebar-window-changed nil)
+            (should (equal (car started) '(1 1)))
+            ;; Folding the goblin keeps the line; the interval stays.
+            (setq goblins--sidebar-view 'overview)
+            (goblins--sidebar-render)
+            (should (equal (car started) '(30 30)))
+            ;; Unfolding brings it back.
+            (setq goblins--sidebar-view 'contents)
+            (goblins--sidebar-render)
+            (should (equal (car started) '(1 1)))))))))
+
+(ert-deftest goblins-sidebar-ret-follows-a-host-commands-log-and-k-stops-it ()
+  (let* ((log (make-temp-file "goblins-test-log"))
+         (job (goblins-test--host-job "r1" "chief" "running" :name "job" :started_at (float-time)
+                                      :log log))
+         shown calls)
+    (unwind-protect
+        (goblins-test--sidebar-jobs (list job)
+          (goto-char (goblins--sidebar-find '(host-job . "r1")))
+          ;; The file does not exist yet.
+          (delete-file log)
+          (let ((err (should-error (goblins-sidebar-dwim) :type 'user-error)))
+            (should (equal (cadr err) "No output yet")))
+          ;; The output is the job's: nothing in it is acted on.
+          (with-temp-file log
+            (insert "Content-Type: text/enriched\nText-Width: 70\n\n#!/bin/sh\n<bold>first</bold> é\n\nLocal Variables:\neval: (setq goblins-test--evaluated t)\nEnd:\n"))
+          (defvar goblins-test--evaluated nil)
+          (setq goblins-test--evaluated nil)
+          (cl-letf (((symbol-function 'goblins--display-main)
+                     (lambda (buffer) (setq shown buffer))))
+            (goblins-sidebar-dwim))
+          (should (buffer-live-p shown))
+          (with-current-buffer shown
+            (should buffer-read-only)
+            (should auto-revert-tail-mode)
+            (should (eq major-mode 'fundamental-mode))
+            (should (string-prefix-p "Content-Type: text/enriched\nText-Width: 70\n\n#!/bin/sh\n<bold>first</bold> é"
+                                     (buffer-string)))
+            (should-not (bound-and-true-p enriched-mode))
+            (should (= (point) (point-max)))
+            ;; Reads that follow the file as it grows are not decoded either.
+            (with-temp-file log
+              (insert-file-contents log)
+              (goto-char (point-max))
+              (insert "\nContent-Type: text/enriched\n\n<italic>more</italic>\n"))
+            (auto-revert-tail-handler (file-attribute-size (file-attributes log)))
+            (should (string-suffix-p "Content-Type: text/enriched\n\n<italic>more</italic>\n"
+                                     (buffer-string)))
+            (should-not (bound-and-true-p enriched-mode)))
+          (should-not goblins-test--evaluated)
+          ;; K asks for the job, then cancels it by ID.
+          (cl-letf (((symbol-function 'y-or-n-p)
+                     (lambda (prompt) (push prompt calls) t))
+                    ((symbol-function 'goblins--host-call)
+                     (lambda (_source method params) (push (list method params) calls))))
+            (goblins-sidebar-stop)
+            (should (equal (reverse calls)
+                           '("Stop host command job? " (host.cancel (:request "r1")))))
+            ;; On the goblin, K still stops the goblin.
+            (setq calls nil)
+            (goto-char (goblins--sidebar-find '(id . "chief")))
+            (goblins-sidebar-stop)
+            (should (equal (reverse calls)
+                           '("Stop chief? " (sessions.stop (:session "chief")))))))
+      (when (buffer-live-p shown) (kill-buffer shown))
+      (delete-file log))))
+
+(ert-deftest goblins-views-show-the-host-command-name-and-how-long-it-has-run ()
+  (let ((record (goblins-test--host-job "r1" "chief" "running" :name "job"
+                                        :started_at (- (float-time) 3725.5)
+                                        :preview '(:name "job" :command "true" :directory "/p"
+                                                   :time_limit "none"
+                                                   :description "Runs on the host as you."))))
+    (should (equal (goblins--host-duration (- (float-time) 7.5)) "7s"))
+    (should (equal (goblins--host-duration (- (float-time) 192.5)) "3m12s"))
+    (should (equal (goblins--host-duration (- (float-time) 3725.5)) "1h02m"))
+    (should (equal (goblins--host-duration (- (float-time) (+ 86400 7300.5))) "1d02h"))
+    (should (equal (goblins--request-state record) "running 1h02m"))
+    (should (equal (goblins--request-state '(:state "ready" :kind "package")) "ready"))
+    (should (equal (goblins--permission-outcome record) "running 1h02m"))
+    (with-temp-buffer
+      (goblins--insert-host-command (plist-get record :preview))
+      (should (string-match-p "^    Name: +job$" (buffer-string)))
+      (should (string-match-p "^    Command: +true$" (buffer-string))))))
+
 (ert-deftest goblins-sidebar-moves-past-a-goblins-details-in-one-step ()
   (goblins-test--sidebar
       (list (goblins-test--session "chief" :cwd "/p" :agent_state "working" :inbox 1)
