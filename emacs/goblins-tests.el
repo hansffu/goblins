@@ -2573,6 +2573,10 @@ project's root, a directory inside it and a directory in no project."
     (should (eq (key-binding (kbd "SPC")) #'ignore))
     (should (eq (key-binding "gg") #'evil-goto-first-line))
     (should (eq (key-binding "gr") #'goblins-sidebar-refresh))
+    ;; Evil's motion state neither drags nor selects a region with the mouse.
+    (should (eq (key-binding [mouse-1]) #'goblins-sidebar-click))
+    (dolist (key '([down-mouse-1] [drag-mouse-1] [double-mouse-1]))
+      (should (eq (key-binding key) #'ignore)))
     (evil-local-mode -1)))
 
 (ert-deftest goblins-sidebar-arrows-move-like-j-and-k-under-evil ()
@@ -2593,6 +2597,92 @@ project's root, a directory inside it and a directory in no project."
           (call-interactively (key-binding (kbd "<up>")))
           (should (looking-at-p "\\s-*› chief")))
       (evil-local-mode -1))))
+
+(ert-deftest goblins-sidebar-returns-to-motion-state-when-selected ()
+  (skip-unless (require 'evil nil t))
+  (with-temp-buffer
+    (goblins-sidebar-mode)
+    (evil-local-mode 1)
+    (unwind-protect
+        (save-window-excursion
+          (evil-normal-state)
+          ;; Not while another buffer is selected.
+          (goblins--sidebar-restore-motion-state)
+          (should (eq evil-state 'normal))
+          (set-window-buffer (selected-window) (current-buffer))
+          (goblins--sidebar-restore-motion-state (selected-window))
+          (should (eq evil-state 'motion))
+          (should (eq (key-binding "j") #'goblins-sidebar-next)))
+      (evil-local-mode -1))))
+
+(defun goblins-test--click (window pos)
+  "A left click at POS in WINDOW."
+  (list 'mouse-1 (list window pos '(0 . 0) 0)))
+
+(ert-deftest goblins-sidebar-lines-highlight-under-the-mouse ()
+  (goblins-test--sidebar
+      (list (goblins-test--session "chief" :cwd "/p" :agent_state "idle" :inbox 2)
+            (goblins-test--session "scout" :cwd "/p" :agent_state "idle"))
+    (goblins-test--show-all)
+    (goto-char (point-min))
+    (search-forward "chief")
+    (beginning-of-line)
+    (let* ((name (point))
+           (text (+ name (current-indentation)))
+           (detail (line-beginning-position 2)))
+      ;; From the text on, clear of the indentation and its bars.
+      (should-not (get-text-property name 'mouse-face))
+      (should (equal (get-text-property text 'mouse-face) '(goblins-sidebar-hover)))
+      ;; Each line apart, the detail lines included.
+      (should (get-text-property (+ detail (save-excursion (goto-char detail)
+                                                           (current-indentation)))
+                                 'mouse-face))
+      (should (eq (get-text-property text 'mouse-face)
+                  (get-text-property (1- detail) 'mouse-face)))
+      (should-not (eq (get-text-property (1- detail) 'mouse-face)
+                      (get-text-property (+ detail (save-excursion (goto-char detail)
+                                                                   (current-indentation)))
+                                         'mouse-face))))
+    ;; Not on rules and blank lines.
+    (goto-char (point-min))
+    (while (not (eobp))
+      (unless (goblins--sidebar-target-p (point))
+        (should-not (text-property-not-all (line-beginning-position) (line-end-position)
+                                           'mouse-face nil)))
+      (forward-line 1))))
+
+(ert-deftest goblins-sidebar-click-acts-like-ret ()
+  (goblins-test--sidebar
+      (list (goblins-test--session "chief" :cwd "/p" :agent_state "idle" :inbox 2)
+            (goblins-test--session "scout" :cwd "/p" :agent_state "idle"))
+    (goblins-test--show-all)
+    (save-window-excursion
+      (set-window-buffer (selected-window) (current-buffer))
+      (let (acted)
+        (cl-letf (((symbol-function 'goblins-sidebar-dwim)
+                   (lambda () (interactive) (push (point) acted))))
+          (should (eq (key-binding [mouse-1]) #'goblins-sidebar-click))
+          (dolist (key '([down-mouse-1] [drag-mouse-1] [double-mouse-1]))
+            (should (eq (key-binding key) #'ignore)))
+          (goto-char (point-min))
+          (search-forward "chief")
+          (let ((name (line-beginning-position))
+                (detail (line-end-position 2)))
+            ;; A click on a detail line acts there, at its start.
+            (goto-char (point-min))
+            (goblins-sidebar-click (goblins-test--click (selected-window) detail))
+            (should (equal acted (list (save-excursion (goto-char detail)
+                                                       (line-beginning-position)))))
+            (goblins-sidebar-click (goblins-test--click (selected-window) (+ name 5)))
+            (should (eql (car acted) name)))
+          ;; A click on the rule between the goblins does nothing.
+          (setq acted nil)
+          (goto-char (point-min))
+          (let ((rule (text-property-any (point-min) (point-max) 'goblins-rule t)))
+            (should rule)
+            (goblins-sidebar-click (goblins-test--click (selected-window) rule))
+            (should-not acted)
+            (should (eql (point) (point-min)))))))))
 
 (ert-deftest goblins-sidebar-keys-follow-the-raid-bindings ()
   (with-temp-buffer
@@ -2836,13 +2926,17 @@ project's root, a directory inside it and a directory in no project."
             (should (eq goblins--sidebar-view 'contents))
             (should-not goblins--sidebar-toggled))
         (kill-buffer other)))
-    ;; Quitting resets them even when the quit function keeps the buffer.
+    ;; Quitting kills the sidebar even when the quit function keeps it, so
+    ;; the next one starts afresh.
     (goblins--sidebar-buffer source)
     (goblins-sidebar-cycle)
     (cl-letf (((symbol-function 'goblins--save-layout) #'ignore))
       (let ((goblins-workspace-quit-function #'ignore))
         (goblins-workspace-quit)))
-    (should (eq goblins--sidebar-view 'contents))))
+    (should-not (buffer-live-p sidebar))
+    (with-current-buffer (goblins--sidebar-buffer source)
+      (should (eq goblins--sidebar-view 'contents))
+      (kill-buffer))))
 
 (ert-deftest goblins-sidebar-jumps-to-the-next-waiting-goblin ()
   (goblins-test--sidebar goblins-test--raid-sessions

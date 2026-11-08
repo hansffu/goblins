@@ -94,6 +94,8 @@ its agent created wear the colour of its goblin's icon in `goblins-agent-icons'.
   :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
+(defface goblins-sidebar-hover '((t :inherit highlight :extend t))
+  "The sidebar line under the mouse, which a click acts on." :group 'goblins)
 (defface goblins-sidebar-active '((t))
   "The goblin block or shell whose terminal is shown in the main window.
 Plain by default, so the bar alone marks it; give it a background to tint it."
@@ -733,6 +735,7 @@ text is built apart from the sidebar so a failure cannot blank it."
                    (progn (goto-char (point-min)) (forward-line (1- line)) (point))))
     (goblins--sidebar-pad)
     (goblins--sidebar-mask-margins)
+    (goblins--sidebar-add-hover)
     (goblins--sidebar-highlight-selection)
     (goblins--sidebar-update-active)
     ;; A running host command may have come into view or gone.
@@ -750,6 +753,18 @@ the rules: a line taller than its text gets the extra height above it."
           (unless (get-text-property (max (point-min) (- (point) 2)) 'goblins-rule)
             (put-text-property (1- (point)) (point) 'line-height height)))))))
 
+(defun goblins--sidebar-restore-motion-state (&optional window)
+  "Put the sidebar back in Evil's motion state once its window is selected.
+Its keys are bound in motion state; a stray switch to another state, such as
+normal or Emacs state, would otherwise leave them shadowed or unbound.
+WINDOW, from `window-selection-change-functions', shows the sidebar."
+  (with-current-buffer (if window (window-buffer window) (current-buffer))
+    (when (and (eq (window-buffer) (current-buffer))
+               (bound-and-true-p evil-local-mode)
+               (fboundp 'evil-motion-state)
+               (not (eq (bound-and-true-p evil-state) 'motion)))
+      (evil-motion-state))))
+
 (defun goblins--sidebar-highlight-selection (&optional window)
   "Highlight the selection only while a window of the sidebar is selected.
 Elsewhere it would mark a goblin that the active bar may contradict.  WINDOW,
@@ -759,6 +774,32 @@ from `window-selection-change-functions', shows the sidebar."
       (if (eq (window-buffer) (current-buffer))
           (hl-line-highlight)
         (hl-line-unhighlight)))))
+
+(defconst goblins--sidebar-target-properties
+  '(goblins-id goblins-detail goblins-terminal goblins-session-terminal
+    goblins-host-job goblins-group)
+  "Text properties of the sidebar lines that RET and a click act on.")
+
+(defun goblins--sidebar-target-p (pos)
+  "Whether the line at POS is one that RET and a click act on."
+  (save-excursion
+    (goto-char pos)
+    (let ((start (line-beginning-position)))
+      (cl-some (lambda (p) (get-text-property start p)) goblins--sidebar-target-properties))))
+
+(defun goblins--sidebar-add-hover ()
+  "Highlight each line that a click acts on while the mouse is over it, from
+its text to the window's edge, clear of the indentation and its bars."
+  (let ((inhibit-read-only t))
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (when (goblins--sidebar-target-p (point))
+          ;; A fresh face per line: neighbouring lines highlight apart.
+          (put-text-property (+ (point) (current-indentation))
+                             (min (point-max) (line-beginning-position 2))
+                             'mouse-face (list 'goblins-sidebar-hover)))
+        (forward-line 1)))))
 
 (defun goblins--sidebar-mask-margins ()
   "Keep highlights off each line's indentation and the active bars' columns.
@@ -772,9 +813,7 @@ column before it in a terminal."
     (while (not (eobp))
       (let ((indent (current-indentation)))
         (when (and (> indent 1)
-                   (cl-some (lambda (p) (get-text-property (point) p))
-                            '(goblins-id goblins-detail goblins-terminal goblins-session-terminal
-                              goblins-host-job goblins-group)))
+                   (goblins--sidebar-target-p (point)))
           (let ((mask (make-overlay (point) (+ (point) indent -1))))
             (overlay-put mask 'goblins-margin t)
             (overlay-put mask 'face 'default)
@@ -1085,6 +1124,22 @@ the sidebar as needed."
                           (get-text-property (line-beginning-position) 'goblins-raid))))
    (t (goblins-sidebar-fold))))
 
+(defun goblins-sidebar-click (event)
+  "Act on the sidebar line clicked in EVENT as \\[goblins-sidebar-dwim] does.
+A click on a rule or a blank line does nothing."
+  (interactive "e")
+  (let* ((posn (event-start event))
+         (window (posn-window posn))
+         (pos (posn-point posn)))
+    (when (and (windowp window) (integer-or-marker-p pos)
+               (with-current-buffer (window-buffer window)
+                 (and (derived-mode-p 'goblins-sidebar-mode)
+                      (goblins--sidebar-target-p pos))))
+      (select-window window)
+      (goto-char pos)
+      (beginning-of-line)
+      (goblins-sidebar-dwim))))
+
 (defun goblins--sidebar-goblin-at-point ()
   "Return (SOURCE . SESSION-ID) for the goblin on this line, or of its shell."
   (let ((id (or (get-text-property (line-beginning-position) 'goblins-id)
@@ -1323,9 +1378,11 @@ running; with a prefix argument STOP, they are stopped too."
       (goblins--release-agent-window window)
       (set-window-parameter window 'goblins-workspace nil)))
   (funcall goblins-workspace-quit-function)
-  ;; Whatever the quit function does with it, the next sidebar starts afresh.
+  ;; Whatever the quit function does with it, the next sidebar starts afresh:
+  ;; its folds, and its modes and Evil state, which a stray key may have
+  ;; changed.  Its window goes with it.
   (when-let* ((sidebar (get-buffer goblins--sidebar-buffer-name)))
-    (with-current-buffer sidebar (goblins--sidebar-reset-folds))))
+    (kill-buffer sidebar)))
 
 (defun goblins--workspace-source ()
   "The status buffer of the workspace's server: the sidebar's, else that of
@@ -1550,7 +1607,12 @@ On a raid, show those sent within it."
                        ("<backtab>" . goblins-sidebar-cycle)
                        ("g" . goblins-sidebar-refresh)
                        ("c" . goblins-sidebar-run) ("C" . goblins-sidebar-run-in-project)
-                       ("q" . goblins-workspace-quit)))
+                       ("q" . goblins-workspace-quit)
+                       ("<mouse-1>" . goblins-sidebar-click)
+                       ;; No region to drag; a double click is not two.
+                       ("<down-mouse-1>" . ignore) ("<drag-mouse-1>" . ignore)
+                       ("<double-mouse-1>" . ignore)
+                       ("<triple-mouse-1>" . ignore)))
       (define-key map (kbd (car binding)) (cdr binding)))
     (define-key map (kbd "m") goblins-sidebar-messages-map)
     map))
@@ -1588,7 +1650,13 @@ On a raid, show those sent within it."
     (kbd "c") #'goblins-sidebar-run
     (kbd "C") #'goblins-sidebar-run-in-project
     (kbd "q") #'goblins-workspace-quit
-    (kbd "m") goblins-sidebar-messages-map)
+    (kbd "m") goblins-sidebar-messages-map
+    ;; Evil's motion state drags a region with the mouse.
+    (kbd "<mouse-1>") #'goblins-sidebar-click
+    (kbd "<down-mouse-1>") #'ignore
+    (kbd "<drag-mouse-1>") #'ignore
+    (kbd "<double-mouse-1>") #'ignore
+    (kbd "<triple-mouse-1>") #'ignore)
   (evil-make-intercept-map goblins-sidebar-mode-map 'motion t))
 
 (define-derived-mode goblins-sidebar-mode special-mode "Goblins-Sidebar"
@@ -1617,6 +1685,7 @@ On a raid, show those sent within it."
     (set (make-local-variable cursor) (list nil)))
   (hl-line-mode 1)
   (add-hook 'window-selection-change-functions #'goblins--sidebar-highlight-selection nil t)
+  (add-hook 'window-selection-change-functions #'goblins--sidebar-restore-motion-state nil t)
   (goblins--sidebar-highlight-selection))
 
 ;;;; Entry points
