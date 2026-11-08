@@ -26,7 +26,7 @@ A terminal belongs to one goblin. It has:
 
 - an ID, =t1=, =t2=, … counting up for the goblin's run and never reused in it;
 - an optional name, =[a-z][a-z0-9_-]{0,31}= but not of the ID form =t= followed by digits, unique among the goblin's live terminals; commands accept the ID or the name;
-- a label for display: the name, else the basename of =argv[0]= (the sandbox shell's when =argv= is omitted);
+- a label for display: the name, else the basename of =argv[0]=, else =shell= when =argv= is omitted (the daemon does not know the sandbox's =$SHELL=);
 - its origin, =host= (created on the host endpoint) or =agent= (created by the goblin's agent on the sandbox endpoint);
 - its start time, size and whether a frontend is attached.
 
@@ -85,7 +85,7 @@ Host endpoint methods take =session=; the same methods on the sandbox endpoint t
 
 - =create= validates =argv=, =cwd= and =env= like =sessions.exec=.
 - =read=: =visible= (the default) is the screen. =recent= is the last =lines= (default 100, at most 5,000) lines of scrollback and screen, with soft-wrapped rows joined into one line. Trailing blank lines are dropped.
-- =send=: =text= (at most 64 KiB) is written first, then =keys= (at most 64), each a name: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =ctrl+X=, =alt+X= and =shift+tab=. An unknown name refuses the whole call.
+- =send=: =text= (at most 64 KiB, and within the 64 KiB request body limit, so the longest text that fits is shorter) is written first, then =keys= (at most 64), each a name: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =ctrl+X=, =alt+X= and =shift+tab=. An unknown name refuses the whole call.
 - =wait= takes exactly one of =match= (a literal substring), =regex= (a Rust =regex= with a size limit) or =exit: true=. =match= and =regex= test each line of the =visible= screen and of the last =lines= =recent= lines (default 100), at once and after each output, so output already there matches. =timeout= is milliseconds, default 30,000, at most 3,600,000. The result is ={"status": "matched", "line"}=, ={"status": "timeout"}= or, when the terminal exits first, ={"status": "exited", "code", "signal", "text"}= with the last =lines= =recent= lines (default 50). At most 16 waits per goblin.
 - =detach= ends the terminal's attachment from elsewhere, like =sessions.detach=.
 - Text in results is bounded in bytes so a reply stays under the 1 MiB body limit: =read='s =text= and an exit's =text= keep the newest lines up to 256 KiB, a matched =line= is cut to 4 KiB, and a cut result says =truncated: true=. The caps count text bytes; emulator text holds only printable characters and newlines, which JSON encodes to at most twice their size.

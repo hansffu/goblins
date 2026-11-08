@@ -344,6 +344,7 @@ goblins attach NAME                  # reconnect a terminal
 goblins detach NAME                  # detach it, leave the goblin running
 goblins exec -t NAME                 # an extra shell inside the goblin
 goblins exec NAME -- git status      # run a command inside it
+goblins terminal create|list|read|send|run|wait|close|attach|detach NAME ...  # long-lived terminals in it
 goblins kill NAME                    # stop a goblin
 
 goblins send NAME --message TEXT     # message a goblin

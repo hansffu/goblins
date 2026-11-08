@@ -26,7 +26,8 @@ const LOG_LIMIT: u64 = 16 * 1024 * 1024;
 const KEPT: usize = 8;
 pub(crate) const EVENTS: usize = 16;
 
-use goblins_runtime::{Command, Event, Runtime, Stdio};
+use goblins_runtime::{Command, Event, Runtime, SpawnKind, Stdio, TerminalId};
+use goblins_runtime::policy::Operation;
 
 /// The goblin's current capability, replaced under the lock whenever a dev
 /// shell refresh publishes, so an export never waits for Nix work.
@@ -425,7 +426,17 @@ impl Engine {
                 5 => self.finish_host_jobs(),
                 6 => {
                     self.finish_stop();
-                    self.terminals.tick(self.ended, &mut self.events);
+                    // A descendant of a terminal's program may still hold
+                    // its PTY: end everything the program started.
+                    for id in self.terminals.tick(self.ended, &mut self.events) {
+                        let _ = self.to_init(
+                            &init::Command::Cancel {
+                                id,
+                                everything: true,
+                            },
+                            &[],
+                        );
+                    }
                 }
                 7 => self.collect_payload(),
                 _ => unreachable!(),
@@ -470,6 +481,11 @@ impl Engine {
                             }
                         }
                         init::Event::Exited { id, code, signal } => {
+                            // A terminal the supervisor emulates reports its
+                            // exit once its output has been read.
+                            if self.terminals.pane_exited(id, code, signal) {
+                                continue;
+                            }
                             self.terminals.exited(id);
                             Event::Exited { id, code, signal }
                         }
@@ -496,6 +512,7 @@ impl Engine {
     fn spawn(
         &mut self,
         id: u64,
+        kind: SpawnKind,
         argv: Option<Vec<String>>,
         cwd: Option<String>,
         env: Vec<(String, String)>,
@@ -531,7 +548,12 @@ impl Engine {
             Ok(()) => {
                 if let Some(master) = master {
                     if let Some((rows, cols)) = size {
-                        if let Err(error) = self.terminals.process(id, master, rows, cols) {
+                        let kept = if kind == SpawnKind::Terminal {
+                            self.terminals.pane(id, master, rows, cols)
+                        } else {
+                            self.terminals.process(id, master, rows, cols)
+                        };
+                        if let Err(error) = kept {
                             let _ = self.to_init(
                                 &init::Command::Cancel {
                                     id,
@@ -676,7 +698,21 @@ impl Engine {
         // The daemon checks too; a command the goblin may not be sent fails
         // the goblin closed instead of running, and so does one that needs a
         // capability before `Started` has reported them.
-        if let Some(operation) = command.operation() {
+        // A terminal the supervisor emulates is attached as an exec is run;
+        // an attach client's is the attach handlers'. One that is already
+        // gone asks nothing: the attachment says it completed.
+        let operation = match &command {
+            Command::Attach {
+                terminal: TerminalId::Process(id),
+                ..
+            } if self.terminals.is_pane(*id) => Some(Operation::Exec),
+            Command::Attach {
+                terminal: TerminalId::Process(id),
+                ..
+            } if !self.terminals.has(*id) => None,
+            command => command.operation(),
+        };
+        if let Some(operation) = operation {
             let refused = match &self.capabilities {
                 Some((policy, support)) => (Capabilities { policy, support })
                     .check(&operation)
@@ -755,12 +791,20 @@ impl Engine {
             }
             Command::Spawn {
                 id,
+                kind,
                 argv,
                 cwd,
                 env,
                 stdio,
-                ..
-            } => self.spawn(id, argv, cwd, env, stdio),
+            } => self.spawn(id, kind, argv, cwd, env, stdio),
+            Command::TerminalCall {
+                request,
+                terminal,
+                call,
+            } => self
+                .terminals
+                .call(request, terminal, call, &mut self.events),
+            Command::TerminalCancel { request } => self.terminals.cancel_wait(request),
             // Best effort, like init's own delivery.
             Command::Signal { id, signal } => {
                 let _ = self.to_init(&init::Command::Signal { id, signal }, &[]);
@@ -854,6 +898,7 @@ impl Runtime for Engine {
             command @ Command::RecordEvent { .. } => self.deferred.push(command),
             command @ (Command::Cancel(_)
             | Command::CancelProcess { .. }
+            | Command::TerminalCancel { .. }
             | Command::CancelHostJob { .. }) => {
                 self.deferred.push(command)?;
                 while let Some(command) = self.deferred.pop_cancellation() {
@@ -934,7 +979,6 @@ mod tests {
     use super::*;
     use crate::process::Cancellation as Cancel;
     use goblins_runtime::Identity;
-    use goblins_runtime::SpawnKind;
     use goblins_runtime::policy::{Policy, Support};
     use std::os::unix::net::UnixListener;
 
@@ -1998,6 +2042,146 @@ mod tests {
             cases,
             ["refused", "allowed", "refused", "refused", "allowed"]
         );
+    }
+
+    #[test]
+    fn a_terminal_is_an_exec_and_its_attachment_is_not_an_attach_client() {
+        use goblins_runtime::policy::Feature;
+        // Terminals need exec, and nothing else.
+        for (missing, refused) in [(Some(Feature::Exec), true), (None, false)] {
+            let (idle, _received, results) = worker();
+            let mut local = Engine::new(idle, PathBuf::from("/nonexistent"));
+            let mut support = Support::linux();
+            if let Some(missing) = missing {
+                support.0.remove(&missing);
+            }
+            results
+                .try_send(started(support, false))
+                .unwrap_or_else(|_| panic!());
+            assert!(matches!(local.poll(), Some(Event::Started { .. })));
+            local.send(spawn(SpawnKind::Terminal)).unwrap();
+            let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+            assert_eq!(
+                matches!(events.as_slice(), [Event::Failed(_)]),
+                refused,
+                "{events:?}",
+                events = events.len()
+            );
+        }
+        // Without attach handlers a terminal attaches, an attach client's
+        // terminal does not, and one that is gone only reports it completed.
+        let (idle, _received, results) = worker();
+        let mut local = Engine::new(idle, PathBuf::from("/nonexistent"));
+        results
+            .try_send(started(Support::linux(), false))
+            .unwrap_or_else(|_| panic!());
+        assert!(matches!(local.poll(), Some(Event::Started { .. })));
+        let (master, _slave) = unix::pty(24, 80).unwrap();
+        local.terminals.pane(7, master, 24, 80).unwrap();
+        let (master, _slave) = unix::pty(24, 80).unwrap();
+        local.terminals.process(8, master, 24, 80).unwrap();
+        let attach = |id| {
+            let (stream, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+            Command::Attach {
+                terminal: TerminalId::Process(id),
+                stream: OwnedFd::from(stream).into(),
+                rows: 24,
+                cols: 80,
+            }
+        };
+        local.send(attach(7)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(
+            events.iter().all(|e| !matches!(e, Event::Failed(_))),
+            "a terminal's attachment is checked as an exec"
+        );
+        local.send(attach(9)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(events.iter().all(|e| !matches!(e, Event::Failed(_))));
+        local.send(attach(8)).unwrap();
+        let events: Vec<_> = std::iter::from_fn(|| local.poll()).collect();
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Failed(message)] if message == "no attach handlers"
+        ));
+    }
+
+    #[test]
+    fn a_terminals_exit_is_reported_once_its_output_is_read_and_its_group_cancelled() {
+        let (worker, _, _results) = worker();
+        let mut local = ready(worker);
+        let round = |local: &mut Engine| std::iter::from_fn(|| local.poll()).collect::<Vec<_>>();
+        let (control, sandbox) = init::pair().unwrap();
+        local.init = Some(control);
+        local.send(spawn(SpawnKind::Terminal)).unwrap();
+        let mut buffer = vec![0; init::MAX_MESSAGE];
+        let (n, mut fds) = init::receive(sandbox.as_raw_fd(), &mut buffer, 0).unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<init::Command>(&buffer[..n]).unwrap(),
+            init::Command::Spawn { id: 1, tty: true, .. }
+        ));
+        let slave = fds.pop().unwrap();
+        unsafe {
+            let mut mode: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(slave.as_raw_fd(), &mut mode);
+            libc::cfmakeraw(&mut mode);
+            libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &mode);
+        }
+        let reply = |event: init::Event| {
+            let bytes = serde_json::to_vec(&event).unwrap();
+            init::send(sandbox.as_raw_fd(), &bytes, &[]).unwrap();
+        };
+        reply(init::Event::Spawned { id: 1, pid: 42 });
+        std::io::Write::write_all(&mut std::fs::File::from(slave.try_clone().unwrap()), b"hello\r\n")
+            .unwrap();
+        assert!(matches!(round(&mut local).as_slice(), [Event::Spawned { id: 1, pid: 42 }]));
+        // Calls reach the terminal and are answered by request.
+        local
+            .send(Command::TerminalCall {
+                request: 5,
+                terminal: 1,
+                call: goblins_runtime::terminal::Call::Read {
+                    source: goblins_runtime::terminal::Source::Visible,
+                    lines: None,
+                },
+            })
+            .unwrap();
+        let events = round(&mut local);
+        assert!(matches!(
+            events.as_slice(),
+            [Event::TerminalResult { request: 5, result: Ok(value) }] if value["text"] == "hello"
+        ));
+        local
+            .send(Command::TerminalCall {
+                request: 6,
+                terminal: 1,
+                call: goblins_runtime::terminal::Call::Wait {
+                    condition: goblins_runtime::terminal::Condition::Exit,
+                    timeout: 60_000,
+                    lines: None,
+                },
+            })
+            .unwrap();
+        assert!(round(&mut local).is_empty());
+        // The program exits with its descendants still holding the PTY: the
+        // exit is held back.
+        reply(init::Event::Exited { id: 1, code: Some(0), signal: None });
+        assert!(round(&mut local).is_empty());
+        drop(slave);
+        let events = round(&mut local);
+        assert!(matches!(
+            events.as_slice(),
+            [
+                Event::TerminalResult { request: 6, result: Ok(value) },
+                Event::Exited { id: 1, code: Some(0), signal: None },
+                Event::Terminal { terminal: TerminalId::Process(1), .. },
+            ] if value["status"] == "exited" && value["text"] == "hello"
+        ));
+        let (n, _) = init::receive(sandbox.as_raw_fd(), &mut buffer, 0).unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<init::Command>(&buffer[..n]).unwrap(),
+            init::Command::Cancel { id: 1, everything: true }
+        ));
     }
 
     #[test]

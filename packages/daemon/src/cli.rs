@@ -166,6 +166,11 @@ pub enum Command {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// Named terminals in a goblin's sandbox, which keep running with nobody attached
+    Terminal {
+        #[command(subcommand)]
+        command: TerminalCommand,
+    },
     /// Detach a sandbox's terminal by live name or immutable session ID
     Detach { id_or_name: String },
     /// List agent names, session IDs, configurations and lifecycle state
@@ -191,6 +196,120 @@ pub enum Command {
         #[arg(last = true)]
         words: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum TerminalCommand {
+    /// Start a terminal running a program (the sandbox's shell by default); prints its ID
+    Create {
+        /// Agent name or session ID
+        goblin: String,
+        /// Name it, to use instead of its ID: lowercase letters, digits, - and _
+        #[arg(long)]
+        name: Option<String>,
+        /// Working directory inside the sandbox
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<String>,
+        /// Set an environment variable for the program
+        #[arg(long = "env", value_name = "NAME=VALUE")]
+        env: Vec<String>,
+        /// Size to start with, until a frontend attaches
+        #[arg(long, value_name = "ROWSxCOLS", value_parser = parse_size)]
+        size: Option<(u16, u16)>,
+        /// Program and arguments, after --
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
+    /// List a goblin's terminals
+    List { goblin: String },
+    /// Print what a terminal shows
+    Read {
+        goblin: String,
+        /// ID or name
+        terminal: String,
+        /// The screen, or its recent lines with their scrollback
+        #[arg(long, value_parser = ["visible", "recent"])]
+        source: Option<String>,
+        /// Lines of recent output (default 100, at most 5000)
+        #[arg(long)]
+        lines: Option<usize>,
+    },
+    /// Type text and keys into a terminal
+    Send {
+        goblin: String,
+        terminal: String,
+        /// Text to type first
+        #[arg(long)]
+        text: Option<String>,
+        /// Keys to press then: enter, tab, esc, up, ctrl+c, f1, …
+        #[arg(long, num_args = 1.., value_name = "KEY")]
+        keys: Vec<String>,
+    },
+    /// Type a command line into a terminal and press enter
+    Run {
+        goblin: String,
+        terminal: String,
+        command: String,
+    },
+    /// Wait for a line to appear, or for the program to exit; exits 1 on a timeout
+    #[command(group = clap::ArgGroup::new("condition").required(true))]
+    Wait {
+        goblin: String,
+        terminal: String,
+        /// A line containing this text
+        #[arg(long = "match", value_name = "TEXT", group = "condition")]
+        text: Option<String>,
+        /// A line matching this regular expression
+        #[arg(long, value_name = "RE", group = "condition")]
+        regex: Option<String>,
+        /// The program exiting
+        #[arg(long, group = "condition")]
+        exit: bool,
+        /// Milliseconds to wait (default 30000)
+        #[arg(long, value_name = "MS")]
+        timeout: Option<u64>,
+        /// Lines of recent output to look at (default 100)
+        #[arg(long)]
+        lines: Option<usize>,
+    },
+    /// End a terminal's program
+    Close { goblin: String, terminal: String },
+    /// Connect this terminal to one; leaving it detaches
+    Attach { goblin: String, terminal: String },
+    /// Disconnect whoever is attached to a terminal; it keeps running
+    Detach { goblin: String, terminal: String },
+}
+impl TerminalCommand {
+    fn goblin(&self) -> &str {
+        match self {
+            Self::Create { goblin, .. }
+            | Self::List { goblin }
+            | Self::Read { goblin, .. }
+            | Self::Send { goblin, .. }
+            | Self::Run { goblin, .. }
+            | Self::Wait { goblin, .. }
+            | Self::Close { goblin, .. }
+            | Self::Attach { goblin, .. }
+            | Self::Detach { goblin, .. } => goblin,
+        }
+    }
+}
+fn parse_size(text: &str) -> std::result::Result<(u16, u16), String> {
+    let (rows, cols) = text
+        .split_once('x')
+        .ok_or("a size is ROWSxCOLS, such as 40x120")?;
+    let size = (
+        rows.parse::<u16>().map_err(|e| e.to_string())?,
+        cols.parse::<u16>().map_err(|e| e.to_string())?,
+    );
+    if goblins_runtime::terminal::valid_size(size.0, size.1) {
+        Ok(size)
+    } else {
+        Err(format!(
+            "rows and columns are 1 to {}",
+            goblins_runtime::terminal::MAX_SIZE
+        ))
+    }
 }
 
 #[derive(Subcommand)]
@@ -428,6 +547,7 @@ fn completion_target(words: Vec<String>) -> Option<(Option<PathBuf>, Slot)> {
         {
             Slot::Goblin
         }
+        Command::Terminal { command } if command.goblin() == TARGET => Slot::Goblin,
         Command::Run {
             raid: Some(raid), ..
         } if raid == TARGET => Slot::Raid,
@@ -583,6 +703,10 @@ mod tests {
             vec!["goblins", "detach"],
             vec!["goblins", "kill"],
             vec!["goblins", "stop"],
+            vec!["goblins", "terminal", "create"],
+            vec!["goblins", "terminal", "read"],
+            vec!["goblins", "terminal", "run"],
+            vec!["goblins", "terminal", "wait", "--exit"],
         ] {
             assert_eq!(
                 completion_target(words.into_iter().map(String::from).collect()),
@@ -644,6 +768,74 @@ mod tests {
                 None
             );
         }
+    }
+    #[test]
+    fn terminal_commands_parse_their_options() {
+        let terminal = |args: &[&str]| {
+            let mut words = vec!["goblins", "terminal"];
+            words.extend_from_slice(args);
+            Cli::try_parse_from(words).map(|cli| match cli.command {
+                Some(Command::Terminal { command }) => command,
+                _ => panic!("not a terminal command"),
+            })
+        };
+        let Ok(TerminalCommand::Create {
+            goblin,
+            name,
+            size,
+            env,
+            argv,
+            ..
+        }) = terminal(&[
+            "create", "snikk", "--name", "app", "--size", "30x100", "--env", "A=b", "--", "gradle",
+            "run",
+        ])
+        else {
+            panic!("create")
+        };
+        assert_eq!(
+            (goblin.as_str(), name.as_deref(), size, env, argv),
+            (
+                "snikk",
+                Some("app"),
+                Some((30, 100)),
+                vec!["A=b".to_string()],
+                vec!["gradle".to_string(), "run".into()]
+            )
+        );
+        assert!(matches!(
+            terminal(&["create", "snikk"]),
+            Ok(TerminalCommand::Create { argv, size: None, .. }) if argv.is_empty()
+        ));
+        for size in ["0x80", "30x501", "30", "ax1"] {
+            assert!(terminal(&["create", "snikk", "--size", size]).is_err(), "{size}");
+        }
+        assert!(matches!(
+            terminal(&["send", "snikk", "t1", "--text", "ls", "--keys", "enter", "tab"]),
+            Ok(TerminalCommand::Send { text: Some(text), keys, .. })
+                if text == "ls" && keys == ["enter", "tab"]
+        ));
+        assert!(matches!(
+            terminal(&["run", "snikk", "app", "gradle run"]),
+            Ok(TerminalCommand::Run { command, .. }) if command == "gradle run"
+        ));
+        assert!(matches!(
+            terminal(&["wait", "snikk", "t1", "--regex", "^done$", "--timeout", "5", "--lines", "9"]),
+            Ok(TerminalCommand::Wait { regex: Some(_), timeout: Some(5), lines: Some(9), exit: false, .. })
+        ));
+        assert!(matches!(
+            terminal(&["wait", "snikk", "t1", "--exit"]),
+            Ok(TerminalCommand::Wait { exit: true, .. })
+        ));
+        // Exactly one condition.
+        assert!(terminal(&["wait", "snikk", "t1"]).is_err());
+        assert!(terminal(&["wait", "snikk", "t1", "--exit", "--match", "x"]).is_err());
+        assert!(terminal(&["read", "snikk", "t1", "--source", "all"]).is_err());
+        for command in ["attach", "detach", "close"] {
+            assert!(terminal(&[command, "snikk", "t1"]).is_ok());
+            assert!(terminal(&[command, "snikk"]).is_err());
+        }
+        assert!(terminal(&["list", "snikk"]).is_ok());
     }
     #[test]
     fn prune_needs_a_criterion() {

@@ -6,6 +6,7 @@ mod exec;
 mod plain;
 mod records;
 mod server;
+mod terminal;
 mod tui;
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Command, ServerCommand};
@@ -410,6 +411,7 @@ fn execute(cli: Cli) -> Result<i32> {
         Command::Attach { session, instance } => {
             return attachment::attach(state, session, instance);
         }
+        Command::Terminal { command } => return terminal::run(state, command),
         Command::Completions { shell } => cli::completions(shell, cli.runtime.as_deref())?,
         Command::CompleteNames { words } => {
             return Ok(cli::complete_names(

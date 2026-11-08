@@ -196,7 +196,41 @@ fn all_commands_roundtrip_their_parameters_and_stdio_shapes() {
             id: 11,
             everything: true,
         },
+        Command::Spawn {
+            id: 14,
+            kind: crate::SpawnKind::Terminal,
+            argv: Some(vec!["fish".into()]),
+            cwd: None,
+            env: vec![],
+            stdio: Stdio::NewPty { rows: 40, cols: 120 },
+        },
         Command::KillAll,
+        Command::TerminalCall {
+            request: 21,
+            terminal: 14,
+            call: crate::terminal::Call::Read {
+                source: crate::terminal::Source::Recent,
+                lines: Some(50),
+            },
+        },
+        Command::TerminalCall {
+            request: 22,
+            terminal: 14,
+            call: crate::terminal::Call::Send {
+                text: Some("ls\n".into()),
+                keys: vec!["enter".into(), "ctrl+c".into()],
+            },
+        },
+        Command::TerminalCall {
+            request: 23,
+            terminal: 14,
+            call: crate::terminal::Call::Wait {
+                condition: crate::terminal::Condition::Regex("^done$".into()),
+                timeout: 30_000,
+                lines: None,
+            },
+        },
+        Command::TerminalCancel { request: 23 },
         Command::Export {
             member: "child".into(),
         },
@@ -319,6 +353,14 @@ fn all_descriptor_free_events_preserve_private_and_public_data() {
                 connected: true,
             },
             error: Some("diagnostic".into()),
+        },
+        Event::TerminalResult {
+            request: 21,
+            result: Ok(json!({"text":"{\"$fd\":0}","alternate_screen":false})),
+        },
+        Event::TerminalResult {
+            request: 22,
+            result: Err("no such terminal".into()),
         },
         Event::SpawnFailed {
             id: 2,

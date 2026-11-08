@@ -43,6 +43,10 @@ struct HelloParams {
     version: u64,
     rows: u16,
     cols: u16,
+    /// A terminal of the goblin (`terminals.create`), by ID or name, instead
+    /// of the goblin's own.
+    #[serde(default)]
+    terminal: Option<String>,
 }
 
 struct Hello {
@@ -50,6 +54,8 @@ struct Hello {
     decoder: rpc::Decoder,
     /// The frontend's size, once its hello arrived.
     size: Option<(u16, u16)>,
+    /// The terminal it asked for, once its hello arrived.
+    terminal: Option<String>,
     notice: Instant,
 }
 
@@ -100,7 +106,7 @@ fn frame(stream: &mut UnixStream, value: &Value) -> bool {
     rpc::encode(value).is_ok_and(|bytes| stream.write_all(&bytes).is_ok())
 }
 
-fn refuse(stream: &mut UnixStream, message: &str) {
+pub(super) fn refuse(stream: &mut UnixStream, message: &str) {
     frame(stream, &rpc::error(json!(0), -32009, message));
 }
 
@@ -185,6 +191,7 @@ impl Attach {
                             stream,
                             decoder: rpc::Decoder::new(4096, Some(now)),
                             size: None,
+                            terminal: None,
                             notice: now,
                         });
                     }
@@ -228,6 +235,7 @@ impl Attach {
             match parsed {
                 Ok(p) if p.version == VERSION && p.rows > 0 && p.cols > 0 => {
                     hello.size = Some((p.rows, p.cols));
+                    hello.terminal = p.terminal;
                     true
                 }
                 Ok(_) => {
@@ -380,6 +388,19 @@ impl Controller {
     /// session map for the tick.
     pub(super) fn attach_tick(&mut self, a: &mut Active) {
         a.attach.accept();
+        // Frontends that want one of the goblin's terminals are independent
+        // of the goblin's own attachment: attach or refuse them at once.
+        let (terminal, own) = a
+            .attach
+            .hellos
+            .drain(..)
+            .partition::<Vec<_>, _>(|h| h.size.is_some() && h.terminal.is_some());
+        a.attach.hellos = own;
+        for hello in terminal {
+            let size = hello.size.unwrap();
+            a.attach_terminal(hello.stream, &hello.terminal.unwrap(), size);
+            self.dirty = true;
+        }
         let now = Instant::now();
         match a.record.state.as_str() {
             "running" => (),

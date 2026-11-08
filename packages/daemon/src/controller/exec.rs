@@ -73,35 +73,45 @@ fn invalid(message: &str) -> Fault {
 
 impl ExecParams {
     fn validate(&self) -> Result<(), Fault> {
-        let text = |s: &String| !s.contains('\0') && s.len() <= 65536;
-        if let Some(argv) = &self.argv
-            && (argv.is_empty()
-                || argv.len() > goblins_protocol::MAX_ARGS
-                || !argv.iter().all(text))
-        {
-            return Err(invalid("invalid command"));
-        }
-        if let Some(cwd) = &self.cwd
-            && (!cwd.starts_with('/') || !text(cwd) || cwd.len() > 4096)
-        {
-            return Err(invalid("the working directory must be an absolute path"));
-        }
-        if self.env.len() > goblins_protocol::MAX_ENV
-            || !self
-                .env
-                .iter()
-                .all(|(k, v)| goblins_protocol::env_name(k) && text(v))
-        {
-            return Err(invalid("invalid environment variable"));
-        }
-        Ok(())
+        validate_command(&self.argv, &self.cwd, &self.env)
     }
+}
+
+/// The program, directory and environment of an exec or a terminal.
+pub(super) fn validate_command(
+    argv: &Option<Vec<String>>,
+    cwd: &Option<String>,
+    env: &[(String, String)],
+) -> Result<(), Fault> {
+    let text = |s: &String| !s.contains('\0') && s.len() <= 65536;
+    if let Some(argv) = argv
+        && (argv.is_empty() || argv.len() > goblins_protocol::MAX_ARGS || !argv.iter().all(text))
+    {
+        return Err(invalid("invalid command"));
+    }
+    if let Some(cwd) = cwd
+        && (!cwd.starts_with('/') || !text(cwd) || cwd.len() > 4096)
+    {
+        return Err(invalid("the working directory must be an absolute path"));
+    }
+    if env.len() > goblins_protocol::MAX_ENV
+        || !env
+            .iter()
+            .all(|(k, v)| goblins_protocol::env_name(k) && text(v))
+    {
+        return Err(invalid("invalid environment variable"));
+    }
+    Ok(())
 }
 
 impl Controller {
     /// Resolve an exec target. A pin names the exact session: a stopped or
     /// different goblin fails instead of falling back to the name.
-    fn exec_target(&self, designator: &str, pin: Option<&str>) -> Result<String, Fault> {
+    pub(super) fn exec_target(
+        &self,
+        designator: &str,
+        pin: Option<&str>,
+    ) -> Result<String, Fault> {
         let id = match pin {
             Some(pin) => {
                 let a = self.sessions.get(pin).ok_or_else(|| {
@@ -361,9 +371,13 @@ impl Controller {
                     a.init = false;
                 }
                 self.end_execs(session, "the goblin has stopped");
+                self.end_terminals(session, "the goblin has stopped");
                 self.attach_lost(session);
             }
             event => {
+                let Some(event) = self.terminal_event(session, event) else {
+                    return;
+                };
                 if let Some(event) = self.attach_event(session, event) {
                     self.exec_event(session, event);
                 }

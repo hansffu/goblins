@@ -60,9 +60,35 @@ pub fn size(fd: RawFd) -> Result<libc::winsize> {
     Ok(s)
 }
 pub fn relay(
-    mut terminal: UnixStream,
+    terminal: UnixStream,
     session: &str,
     mut control: impl FnMut(&str, Value) -> Result<Value>,
+    stop: &AtomicBool,
+    resize: &AtomicBool,
+) -> Result<i32> {
+    relay_with(
+        terminal,
+        &mut control,
+        |control, rows, cols| {
+            control(
+                "sessions.resize",
+                json!({"session":session,"rows":rows,"cols":cols}),
+            )
+            .map(drop)
+        },
+        |control| wait_outcome(session, control, stop),
+        stop,
+        resize,
+    )
+}
+/// Relay the frontend's terminal to `terminal` until the stream ends. The
+/// caller says how to resize what is attached and how to find the outcome,
+/// each with `context`, whatever the caller calls the daemon with.
+pub fn relay_with<C>(
+    mut terminal: UnixStream,
+    mut context: C,
+    mut resize_to: impl FnMut(&mut C, u16, u16) -> Result<()>,
+    outcome: impl FnOnce(&mut C) -> Result<i32>,
     stop: &AtomicBool,
     resize: &AtomicBool,
 ) -> Result<i32> {
@@ -81,12 +107,7 @@ pub fn relay(
         if resize.swap(false, Ordering::Relaxed) && !eof {
             let d = size(0)?;
             // Startup may not have a PTY yet; retry the first dimensions later.
-            if control(
-                "sessions.resize",
-                json!({"session":session,"rows":d.ws_row.max(1),"cols":d.ws_col.max(1)}),
-            )
-            .is_err()
-            {
+            if resize_to(&mut context, d.ws_row.max(1), d.ws_col.max(1)).is_err() {
                 resize.store(true, Ordering::Relaxed);
             }
         }
@@ -187,7 +208,7 @@ pub fn relay(
             }
         }
     }
-    wait_outcome(session, control, stop)
+    outcome(&mut context)
 }
 
 // Shared completion phase, kept separate from process-global terminal mode.

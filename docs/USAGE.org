@@ -742,6 +742,31 @@ goblins rpc sessions.kill_execs '{"session":"snikk"}'
   =execs= (TRAMP, eshell, scripts); interactive shells also appear in the
   session's =events.jsonl=. The agent is not told.
 
+** Terminals
+
+A terminal is a named, long-lived program on a PTY that the goblin's supervisor owns, so it keeps running with nobody attached: start a server or a long build, close the window and come back to the same screen later. Unlike =goblins exec -t=, it is not tied to the connection that started it.
+
+#+begin_src sh
+goblins terminal create snikk --name app -- gradle run  # prints the ID, t1
+goblins terminal create snikk                           # the sandbox's own shell
+goblins terminal list snikk
+goblins terminal attach snikk app                       # the same screen, every time
+goblins terminal detach snikk app                       # disconnect whoever is attached
+goblins terminal run snikk t2 'gradle run'              # type a command line and press enter
+goblins terminal send snikk t2 --text 'y' --keys enter ctrl+c
+goblins terminal read snikk app --source recent --lines 50
+goblins terminal wait snikk app --regex '^BUILD SUCCESSFUL' --timeout 120000
+goblins terminal wait snikk app --exit
+goblins terminal close snikk app
+#+end_src
+
+- A terminal runs any program, not only a shell. With a program of its own it ends when the program exits. To keep a shell and its scrollback after a program ends, create a terminal without a program and =run= the program in it.
+- Names are lowercase letters, digits, =-= and =_=, start with a letter and are at most 32 characters, and are not of the form =t1=. The ID or the name selects a terminal. A goblin has at most 16 terminals; IDs are never reused during its run.
+- The supervisor runs each terminal's output through an emulator, so =read= and =wait= see the screen and 5,000 lines of scrollback even while nobody is attached, and a frontend that attaches gets the screen back, including a full-screen program such as =vim= on the alternate screen. =wait= matches a line of the screen or of the recent lines, at once and after each output; anchor a regular expression (=^done$=) so the echoed command line does not match. It exits 0 on a match or the program's exit, and 1 on a timeout.
+- A terminal ends when its program exits, when it is closed, or when the goblin stops. Closing signals the program's process group, as cancelling an exec does. Terminals are not restored when a goblin is recreated.
+- =attach= connects the current terminal like =goblins attach=, with one frontend per terminal; leaving it detaches, and it prints =detached from t1= or =t1 ended=. It works in a goblin without =onAttach=, as in one with it.
+- The API is the =terminals.*= methods of the host endpoint, listed in [[file:API.org][API.org]]; the supervisors' part is documented there too.
+
 ** Opening sandbox files in Emacs
 
 With =editor.emacs.enable = true;= on =mkGoblins= (see the Nix API), every

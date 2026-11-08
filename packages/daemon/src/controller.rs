@@ -33,7 +33,9 @@ mod exec;
 mod host;
 pub(crate) mod policy;
 mod raids;
+mod terminals;
 pub use raids::{RaidMemberRecord, RaidMembership, RaidRecord};
+pub use terminals::TerminalRecord;
 
 const HOSTS: usize = 32;
 const SESSIONS: usize = 16;
@@ -107,6 +109,9 @@ pub struct SessionRecord {
     /// Live non-interactive execs: TRAMP, eshell and scripts.
     #[serde(default)]
     pub execs: u32,
+    /// The goblin's terminals (`terminals.create`).
+    #[serde(default)]
+    pub terminals: Vec<TerminalRecord>,
     /// The history record this goblin was recreated from.
     #[serde(default)]
     pub recreated_from: Option<String>,
@@ -250,6 +255,7 @@ struct Active {
     /// Values seeded from the history record are not in it.
     fresh: BTreeSet<String>,
     attach: attach::Attach,
+    terminals: terminals::Set,
     /// Known once started: the agent runs without a terminal and each attach
     /// starts a client.
     handlers: Option<goblins_runtime::config::Handlers>,
@@ -738,6 +744,8 @@ pub struct Controller {
     /// Index retained handles through cleanup and later terminal service.
     retiring: BTreeSet<String>,
     execs: BTreeMap<u64, exec::Exec>,
+    /// Calls on terminals the supervisors have yet to answer, by request.
+    terminal_calls: BTreeMap<u64, terminals::Pending>,
     edits: Vec<editor::Edit>,
     host_jobs: Vec<host::Job>,
     /// Finished host commands' results, by request.
@@ -817,6 +825,7 @@ impl Controller {
             sessions: BTreeMap::new(),
             scopes: crate::scopes::Scopes::new(executable),
             execs: BTreeMap::new(),
+            terminal_calls: BTreeMap::new(),
             edits: Vec::new(),
             host_jobs: Vec::new(),
             host_outcomes: BTreeMap::new(),
@@ -1520,6 +1529,7 @@ impl Controller {
         }
         let message = format!("goblin {} has stopped", self.sessions[id].record.agent_name);
         self.end_execs(id, &message);
+        self.end_terminals(id, &message);
         self.end_edits(id);
         self.end_host_jobs(id);
         self.dirty = true;
@@ -1554,6 +1564,7 @@ impl Controller {
     }
     fn withdraw(&mut self, connection: u64) {
         self.exec_withdraw(connection);
+        self.terminal_withdraw(connection);
         self.edit_withdraw(connection);
         self.host_withdraw(connection);
         self.withdraw_preparing(connection);
@@ -1826,6 +1837,7 @@ impl Controller {
             raid: None,
             shells: 0,
             execs: 0,
+            terminals: vec![],
             recreated_from: recorded.as_ref().map(|r| r.id.clone()),
             skipped: vec![],
             worktree: None,
@@ -1855,6 +1867,7 @@ impl Controller {
                     .unwrap_or_default(),
                 fresh: BTreeSet::new(),
                 attach,
+                terminals: Default::default(),
                 handlers: None,
                 line,
                 recreated_from: recorded,
@@ -2503,6 +2516,12 @@ impl Controller {
             // Sixteen variables of 256 bytes, escaped, exceed the usual frame.
             // Host commands carry argument lists (goblins_protocol::rpc::MAX_HOST_COMMAND).
             let legacy_limit = 16384;
+            // A terminal takes up to 64 KiB of text to type.
+            let legacy_limit = if call.method == "terminals.send" {
+                goblins_protocol::messages::MAX_REQUEST
+            } else {
+                legacy_limit
+            };
             if matches!(c.role, Role::Host) && !messaging && c.body_bytes > legacy_limit {
                 return Err((-32602, "request exceeds method frame limit".into()));
             }
@@ -2519,7 +2538,7 @@ impl Controller {
                     c.decoder = Decoder::new(goblins_protocol::messages::MAX_REQUEST, None);
                 }
                 return Ok(Some(
-                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate"]}else{match &c.role { Role::Sandbox(id) => self.sessions.get(id).map_or_else(|| Support::linux().sandbox_features(), |a| a.support.sandbox_features()), Role::Host => vec![] }},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
+                    json!({"api":1,"instance":self.instance,"configuration":match &c.role { Role::Sandbox(id) => self.sessions.get(id).map(|a| a.record.name.as_str()), Role::Host => None },"role":if matches!(c.role,Role::Host){"host"}else{"sandbox"},"features":if matches!(c.role,Role::Host){vec!["scopes","docker-enable","package-grants","same-daemon-reconnect","state-subscribe","agent-activity-v1","raw-terminal","agent-names","server-control","terminal-reattach","attach-handlers","agent-inbox-v1","communications-log-v1","run-targets","raids","raid-owner","exec","recreate","terminals"]}else{match &c.role { Role::Sandbox(id) => self.sessions.get(id).map_or_else(|| Support::linux().sandbox_features(), |a| a.support.sandbox_features()), Role::Host => vec![] }},"limits":{"header":256,"body":goblins_protocol::messages::MAX_REQUEST,"frame_seconds":3,"depth":32,"response_body":rpc::MAX_BODY,"calls":if matches!(c.role,Role::Host){4096}else{2},"connections":if matches!(c.role,Role::Host){HOSTS}else{8},"sessions":SESSIONS,"output_queue":QUEUE,"snapshot":900*1024,"terminal_buffer":65536}}),
                 ));
             }
             if !c.initialized {
@@ -2563,6 +2582,9 @@ impl Controller {
             match &c.role {
                 Role::Host if call.method == "sessions.exec" => {
                     self.exec_start(c, id.clone(), call.params).map(|()| None)
+                }
+                Role::Host if call.method.starts_with("terminals.") => {
+                    self.host_terminals(c, id.clone(), &call.method, call.params)
                 }
                 Role::Host if call.method == "history.prune" => {
                     self.history_prune(c, id.clone(), call.params)
@@ -2949,6 +2971,7 @@ impl Controller {
                     | Event::Spawned { .. }
                     | Event::SpawnFailed { .. }
                     | Event::Exited { .. }
+                    | Event::TerminalResult { .. }
                     | Event::InitLost => self.process_event(id, event),
                     Event::HostJobPrepared { .. }
                     | Event::HostJobFailed { .. }
@@ -3048,6 +3071,7 @@ impl Controller {
                     Event::Spawned { .. }
                     | Event::SpawnFailed { .. }
                     | Event::Exited { .. }
+                    | Event::TerminalResult { .. }
                     | Event::InitLost
                     | Event::HostJobPrepared { .. }
                     | Event::HostJobFailed { .. }
@@ -3426,6 +3450,13 @@ impl Controller {
                     );
                     self.end_execs(&id, &message);
                 }
+                if !self.sessions[&id].terminals.is_empty() {
+                    let message = format!(
+                        "goblin {} has stopped",
+                        self.sessions[&id].record.agent_name
+                    );
+                    self.end_terminals(&id, &message);
+                }
                 self.end_edits(&id);
                 self.end_host_jobs(&id);
             }
@@ -3641,6 +3672,7 @@ impl Drop for Controller {
 #[cfg(test)]
 mod tests {
     mod supervised;
+    mod terminals;
     use super::*;
 
     fn policy_fixture(configuration: &str, targets: &[&str]) -> Policy {
@@ -3724,6 +3756,7 @@ mod tests {
                 variables: BTreeMap::new(),
                 fresh: BTreeSet::new(),
                 attach: attach::Attach::new(&directory.join("attach.sock")).unwrap(),
+                terminals: Default::default(),
                 handlers: None,
                 line: id.clone(),
                 created: 0,
@@ -3760,6 +3793,7 @@ mod tests {
                     raid: None,
                     shells: 0,
                     execs: 0,
+                    terminals: vec![],
                     recreated_from: None,
                     skipped: vec![],
                     worktree: None,
