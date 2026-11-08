@@ -1,0 +1,152 @@
+#+title: Terminals in the sandbox
+
+Status: approved, 2026-11-08. Inspired by herdr's programmable panes (create, list, read, send, wait), adapted to goblins: every terminal runs inside its goblin's sandbox, and goblins see only their own.
+
+* Goal
+
+A goblin can have named, long-lived terminals beside its agent. Each one runs a program (by default the sandbox's shell) on a PTY that the goblin's supervisor owns, so it keeps running with nobody attached.
+
+- The human opens a shell in a goblin, runs something long, closes the window, and attaches again later to the same screen.
+- The agent creates terminals for dev servers, watchers and long builds, sends them input, reads their screens and waits for output; the human can attach to watch or take over.
+- Both read and write the same terminals: the agent can drive the human's shells in its own sandbox and the human can drive the agent's.
+
+* Non-goals
+
+- No herdr-style agent awareness (idle, working, blocked) and no layout (workspaces, tabs, splits).
+- No control over Emacs windows or buffers. Neither the agent nor the API opens, places, focuses or arranges anything: a terminal an agent creates is not shown until the human opens it from the sidebar or with =goblins-terminal-attach=, and buffers are placed by Emacs as for any other goblin buffer.
+- No event stream. An agent waits with a bounded =wait=, or gets one inbox notice when a terminal it created exits.
+- No access across goblins. Raid members, the owner included, cannot see or touch each other's terminals.
+- Terminals are not restored when a goblin is recreated ([[file:../adr/0010-recreate-not-restore.md][ADR 0010]]).
+- Plain =goblins exec= (TRAMP, eshell, magit, scripts) is unchanged: it stays tied to its connection.
+- The goblin's own agent terminal and =onAttach= clients keep today's behaviour.
+
+* Terminals
+
+A terminal belongs to one goblin. It has:
+
+- an ID, =t1=, =t2=, … counting up for the goblin's run and never reused in it;
+- an optional name, =[a-z][a-z0-9_-]{0,31}= but not of the ID form =t= followed by digits, unique among the goblin's live terminals; commands accept the ID or the name;
+- a label for display: the name, else the basename of =argv[0]= (the sandbox shell's when =argv= is omitted);
+- its origin, =host= (created on the host endpoint) or =agent= (created by the goblin's agent on the sandbox endpoint);
+- its start time, size and whether a frontend is attached.
+
+The program runs through goblins-init like an exec, with the exec's environment (dev shell, =TERM=), in =cwd= or the goblin's working directory. Configurations that refuse exec refuse terminals.
+
+A terminal runs any program, not only a shell. For example:
+
+- an interactive shell: =goblins terminal create GOBLIN -- fish=, or no =argv= for the sandbox's shell;
+- a long-lived program on its own: =goblins terminal create GOBLIN --name app -- gradle run=, which ends when =gradle= exits;
+- a program inside a shell, so the shell and its scrollback stay after the program ends: create a =fish= terminal, then =goblins terminal run GOBLIN TERMINAL 'gradle run'=.
+
+Creating and attaching are checked as exec, not as attaching an =onAttach= client: today =Command::Attach= on a =TerminalId::Process= is the =Attach= operation, which needs attach handlers, and the runtime has to tell the two kinds of process terminal apart.
+
+A terminal ends only when its program exits, when it is closed, or when the goblin stops. Detaching never ends it. Closing cancels its process group the way a withdrawn exec is cancelled today. The exit event can arrive before the program's last output has been read, so when the program exits the supervisor keeps reading the PTY into the emulator until EOF or for at most one second. Then waits and the exit notice settle from that final state, the terminal leaves the list, everything it started is cancelled (a descendant may still hold the PTY), and an attached frontend gets its queued output for up to one more second before its stream is closed.
+
+At most 16 terminals per goblin; creating a 17th fails with a message naming the limit. Sizes are 1–500 rows and 1–500 columns, checked before the emulator is sized, for =create=, a terminal attach and =terminals.resize=.
+
+* Emulator
+
+The supervisor feeds each terminal's output through a terminal emulator, the =vt100= crate (pure Rust, no =unsafe=), sized like the PTY with 5,000 lines of scrollback. The emulator serves reading, waiting, key encoding and the redraw on attach. While nobody is attached the supervisor keeps reading the PTY into the emulator, so a chatty program never blocks; while attached, output also goes to the frontend as today.
+
+The emulator parses untrusted sandbox output on the host, as Ghostel already does in Emacs. It runs inside the goblin's supervisor, so a fault there takes down that goblin's supervisor only.
+
+A cell takes 32 bytes, so a full scrollback at 120 columns is about 19 MB, and at the 500-column limit about 80 MB (1.3 GB for 16 terminals); a terminal that has printed little costs little.
+
+** Full-screen programs
+
+Programs like vim, less, htop and full-screen Claude switch to the alternate screen, which has no scrollback. The emulator tracks both screens and the input modes the program sets.
+
+- Reads return the screen in use and say =alternate_screen=. While the alternate screen is active, =recent= returns the alternate screen like =visible=, since =vt100= only exposes the active screen; the normal screen's scrollback is back once the program leaves it.
+- =send= encodes cursor keys for the cursor mode the program set, and wraps =text= in bracketed-paste markers when the program enabled bracketed paste.
+- An attach redraws the screen in use, entering the alternate screen first when it is active (=vt100= does not emit that), and restores the input modes (application cursor and keypad, bracketed paste, mouse reporting, cursor visibility). Scroll margins, origin mode and the saved cursor are not restored. The redraw is best effort: afterwards the supervisor resizes the PTY to the frontend and sends SIGWINCH to its foreground process group even when the size did not change, so full-screen programs repaint. Attaching while the alternate screen is active brings no normal-screen history into the frontend.
+
+* Attaching
+
+=attach.sock='s hello gets an optional =terminal= (ID or name): ={"version": 1, "rows", "cols", "terminal"}=. With it, the attachment is to that terminal instead of the goblin's own; without it nothing changes. One frontend per terminal at a time, independent of the goblin's own attachment; a second is refused as today.
+
+On attach the supervisor writes the redraw before live output: on the normal screen, the scrollback as lines followed by the screen, with colours where the emulator gives them; on the alternate screen, as above. The PTY is then resized to the frontend. When the frontend closes its stream, it is detached and the terminal keeps the last size. A terminal nobody has attached to yet is 40×120 unless =create= sets a size.
+
+The attach client resizes with =terminals.resize=, not =sessions.resize=, and does not wait on =sessions.get= for an outcome: a terminal attachment has none. The stream ends when the terminal is detached or ends; the client then checks =terminals.list= once and prints =detached from tN= or =tN ended=, and exits 0.
+
+* API
+
+Host endpoint methods take =session=; the same methods on the sandbox endpoint take no =session= and act on the caller's own goblin. =initialize= lists the feature =terminals=. =docs/API.org= documents every method, record and field below in the same change.
+
+| Method              | Input                                                                                         | Output                     |
+|---------------------+-----------------------------------------------------------------------------------------------+----------------------------|
+| =terminals.create=  | ={argv?, cwd?, env?, name?, rows?, cols?}=; sandbox endpoint also =notify?=                   | =Terminal=                 |
+| =terminals.list=    | ={}=                                                                                          | ={"terminals": [Terminal]}= |
+| =terminals.read=    | ={terminal, source?: "visible"\vert"recent", lines?}=                                          | ={text, alternate_screen, rows, cols}= |
+| =terminals.send=    | ={terminal, text?, keys?}=                                                                    | ={"accepted": true}=       |
+| =terminals.wait=    | ={terminal, match?\vert{}regex?\vert{}exit?, timeout?, lines?}=                                 | see below                  |
+| =terminals.close=   | ={terminal}=                                                                                  | ={"accepted": true}=       |
+| =terminals.detach=  | ={terminal}= (host endpoint only)                                                              | ={"accepted": true}=       |
+| =terminals.resize=  | ={terminal, rows, cols}= (host endpoint only)                                                  | ={"accepted": true}=       |
+
+- =create= validates =argv=, =cwd= and =env= like =sessions.exec=.
+- =read=: =visible= (the default) is the screen. =recent= is the last =lines= (default 100, at most 5,000) lines of scrollback and screen, with soft-wrapped rows joined into one line. Trailing blank lines are dropped.
+- =send=: =text= (at most 64 KiB) is written first, then =keys= (at most 64), each a name: =enter=, =tab=, =esc=, =backspace=, =space=, =up=, =down=, =left=, =right=, =home=, =end=, =pageup=, =pagedown=, =insert=, =delete=, =f1=–=f12=, =ctrl+X=, =alt+X= and =shift+tab=. An unknown name refuses the whole call.
+- =wait= takes exactly one of =match= (a literal substring), =regex= (a Rust =regex= with a size limit) or =exit: true=. =match= and =regex= test each line of the =visible= screen and of the last =lines= =recent= lines (default 100), at once and after each output, so output already there matches. =timeout= is milliseconds, default 30,000, at most 3,600,000. The result is ={"status": "matched", "line"}=, ={"status": "timeout"}= or, when the terminal exits first, ={"status": "exited", "code", "signal", "text"}= with the last =lines= =recent= lines (default 50). At most 16 waits per goblin.
+- =detach= ends the terminal's attachment from elsewhere, like =sessions.detach=.
+- Text in results is bounded in bytes so a reply stays under the 1 MiB body limit: =read='s =text= and an exit's =text= keep the newest lines up to 256 KiB, a matched =line= is cut to 4 KiB, and a cut result says =truncated: true=. The caps count text bytes; emulator text holds only printable characters and newlines, which JSON encodes to at most twice their size.
+
+=Terminal= is ={"id", "name", "label", "origin", "started_at", "rows", "cols", "attached"}=. Each =Session= in the snapshot gets =terminals: [Terminal]=.
+
+** Authority
+
+- The host endpoint can do everything to any goblin's terminals.
+- The sandbox endpoint reaches only the caller's own terminals: it can list, read, send to and wait on all of them, create new ones, and close only those with origin =agent=. Closing a =host= terminal is refused with a message saying only the human can close it. It cannot attach, detach or resize.
+
+** Exit notice
+
+=create= with =notify: true= (sandbox endpoint only) puts one inbox notice from =goblins= in the agent's inbox when that terminal's program exits, not when it is closed or the goblin stops. It has the operation notice's shape, with =message.operation= ={"request": ID, "kind": "terminal", "subject": LABEL, "status": "exited", "message"}=, and the message gives the exit code or signal and the last 20 lines, cut to 4 KiB.
+
+* Supervisor and daemon
+
+The daemon keeps the terminal records (ID, name, origin, start time) and starts the program with =Command.Spawn= and =Stdio::NewPty=, so the supervisor owns the PTY under =TerminalId::Process(exec)=. The supervisor owns the emulator and answers reads, input and waits through new correlated commands and events, documented under the private supervisor channel in =docs/API.org=. Terminal processes do not count toward =shells= or =execs=.
+
+* Host CLI
+
+#+begin_example
+goblins terminal create GOBLIN [--name NAME] [--cwd DIR] [--env NAME=VALUE]... [--size ROWSxCOLS] [-- ARGV...]
+goblins terminal list GOBLIN
+goblins terminal read GOBLIN TERMINAL [--source visible|recent] [--lines N]
+goblins terminal send GOBLIN TERMINAL [--text TEXT] [--keys KEY...]
+goblins terminal run GOBLIN TERMINAL COMMAND
+goblins terminal wait GOBLIN TERMINAL (--match TEXT | --regex RE | --exit) [--timeout MS] [--lines N]
+goblins terminal close GOBLIN TERMINAL
+goblins terminal attach GOBLIN TERMINAL
+goblins terminal detach GOBLIN TERMINAL
+#+end_example
+
+=run= sends =COMMAND= as text followed by =enter=. =read= prints the text; =wait= exits 0 on a match or exit, 1 on a timeout. =attach= connects the current terminal like =goblins attach=.
+
+* Sandbox CLI and skill
+
+=goblin terminal create|list|read|send|run|wait|close= with the same options and no =GOBLIN=, plus =create --notify=.
+
+A new =goblins-terminals= skill, modelled on herdr's, says when to use a terminal instead of a plain command (servers, watchers, anything the human may want to see or take over, anything that needs input), to name terminals, to read before sending, to prefer =run= in the default shell so the output stays readable after the command ends, to anchor =wait= regexes (=^done$=) so the echoed command line does not match, to use =--notify= or =wait --exit= rather than polling, and that the human sees and can attach to these terminals and may also use them. The =goblins-messaging= skill's statement that only operations get notices gains the terminal exit notice.
+
+* Emacs
+
+- =goblins-shell= creates a terminal (=terminals.create= with =goblins-shell-program= as =argv=) and opens a Ghostel buffer running =goblins terminal attach=, keeping today's buffer placement and TRAMP =default-directory=. Killing the buffer detaches. A daemon without the =terminals= feature gets today's exec shell.
+- The sidebar lists each goblin's terminals from the snapshot, where shells are listed today, for both origins; agent-created terminals are marked. =RET= shows the terminal's buffer if this Emacs is attached, otherwise attaches in a new buffer. =K= closes it after =y-or-n-p= naming it.
+- =goblins-terminal= creates a terminal running a command line read from the minibuffer (split like a shell would, without running one; empty for the sandbox's shell), with an optional name, and attaches it like =goblins-shell=.
+- =goblins-terminal-attach= attaches to a terminal chosen with completion.
+
+The sidebar design is mocked on a page in doom-one before step 2 is implemented.
+
+* Steps
+
+Each step is reviewed and committed on its own.
+
+1. Supervisor and daemon: emulator terminals, the host endpoint methods, =attach.sock= with =terminal= and the redraw, the snapshot field, the host CLI and =docs/API.org=.
+2. Emacs: shells as terminals, the sidebar lines, attach, re-attach and close.
+3. Agent: the sandbox endpoint methods and authority, =goblin terminal=, exit notices, the skills and =docs/API.org=.
+
+* Tests
+
+- Rust: names and IDs (a name like =t1= refused), the limits and sizes, truncation of oversized output, key encoding in both cursor modes and bracketed paste, =read= of both sources with wrapped lines and the alternate screen, =wait= matching existing and new output, timing out and seeing an exit, the redraw on both screens, sandbox authority (no =host= close, no other goblin's terminal).
+- Python host suite: create a terminal, attach, detach, keep it running, re-attach to the same screen; read, send, run and wait from the host CLI; a terminal attaches in a goblin without attach handlers; a program that prints a marker and exits at once has the marker in =wait --exit= and the notice; a terminal outlives its attachment and ends when its program exits, when closed and when the goblin stops; =goblin terminal= from inside a goblin, =--notify= delivering one notice.
+- ERT: =goblins-shell= and =goblins-terminal= creating and attaching a terminal, killing the buffer detaching, the sidebar listing terminals of both origins, =RET= re-attaching and =K= closing.
+- Smoke test of the sidebar and a re-attach with vim open through the =just emacs= setup in =emacs -nw=.
