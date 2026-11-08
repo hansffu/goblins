@@ -235,6 +235,17 @@ class TerminalTests(unittest.TestCase):
                           "--timeout", "20000")
         self.assertEqual(r.returncode, 0, r.stderr + self.terminal("read", "gribble", "asker").stdout)
 
+    def test_a_terminal_and_an_exec_run_in_a_utf_8_locale(self):
+        # less and btop treat the C locale's charset as binary: both must see
+        # the same UTF-8 locale, in which an accented letter is one character.
+        probe = 'echo "L=$LC_ALL M=$(printf \'\\303\\251\' | wc -m)"'
+        r = subprocess.run([str(self.d.app), "--state-dir", str(self.d.state), "exec", "gribble", "--",
+                            "bash", "-c", probe], capture_output=True, text=True, timeout=30)
+        self.assertEqual((r.returncode, r.stdout), (0, "L=C.UTF-8 M=1\n"), r.stderr)
+        self.create("--name", "locale", "--", "bash", "-c", probe + "; sleep 600")
+        r = self.terminal("wait", "gribble", "locale", "--match", "L=C.UTF-8 M=1")
+        self.assertEqual(r.returncode, 0, r.stderr + self.terminal("read", "gribble", "locale").stdout)
+
     # What a goblin does with `goblin terminal` and the sandbox endpoint.
 
     def inside(self, *args, goblin="gribble"):

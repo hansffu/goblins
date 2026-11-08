@@ -935,7 +935,10 @@ impl Session {
         }
         for (name, value) in [
             ("HOME", binds.home.display().to_string()),
-            ("LC_ALL", "C".into()),
+            // C's collation and messages, so tool output stays the same
+            // everywhere, with a UTF-8 charset: less and btop treat the C
+            // locale's as binary. Built into glibc, so no locale archive.
+            ("LC_ALL", "C.UTF-8".into()),
             ("USER", "agent".into()),
             ("LOGNAME", "agent".into()),
             ("PATH", path.join(":")),

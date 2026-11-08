@@ -891,6 +891,8 @@ are not expanded or executed on the host. =PATH=, =HOME=, =SHELL=, =USER=,
 =LOGNAME=, and =PYTHONNOUSERSITE= are reserved. Store paths used in =env= must
 also be included through an allowed package's closure to be visible inside.
 
+A sandbox starts in the =C.UTF-8= locale (=LC_ALL=), which has the C locale's byte-order collation and English messages but a UTF-8 charset, so =less=, =btop= and other terminal programs show and accept UTF-8. A goblin's =env= may set =LC_ALL= to something else for its sandbox; a dev shell cannot.
+
 The four bind options use the agent-sandbox names and string-list format. Paths
 expand =$VAR=, =${VAR}= and leading =~/= using the host =daemon= environment;
 no shell command is evaluated. Bind sources must exist, match the declared
