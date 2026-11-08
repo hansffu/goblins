@@ -1,6 +1,6 @@
 #+title: Terminals in the sandbox
 
-Status: approved, 2026-11-08. Inspired by herdr's programmable panes (create, list, read, send, wait), adapted to goblins: every terminal runs inside its goblin's sandbox, and goblins see only their own.
+Status: implemented, 2026-11-08. Inspired by herdr's programmable panes (create, list, read, send, wait), adapted to goblins: every terminal runs inside its goblin's sandbox, and goblins see only their own.
 
 * Goal
 
