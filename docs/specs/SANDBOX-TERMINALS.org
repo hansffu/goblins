@@ -46,7 +46,7 @@ At most 16 terminals per goblin; creating a 17th fails with a message naming the
 
 * Emulator
 
-The supervisor feeds each terminal's output through a terminal emulator, the =vt100= crate (pure Rust, no =unsafe=), sized like the PTY with 5,000 lines of scrollback. The emulator serves reading, waiting, key encoding and the redraw on attach. While nobody is attached the supervisor keeps reading the PTY into the emulator, so a chatty program never blocks; while attached, output also goes to the frontend as today.
+The supervisor feeds each terminal's output through a terminal emulator, the =vt100= crate (pure Rust, no =unsafe=), sized like the PTY with 5,000 lines of scrollback. The emulator serves reading, waiting, key encoding and the redraw on attach. While nobody is attached the supervisor keeps reading the PTY into the emulator, so a chatty program never blocks; while attached, output also goes to the frontend as today. While nobody is attached the supervisor also answers the queries a shell asks at startup and waits on, as a plain VT220-class terminal: the device attributes (=CSI c= and =CSI 0 c=: =CSI ? 62 ; 22 c=), the status report (=CSI 5 n=: =CSI 0 n=) and the cursor position (=CSI 6 n=: =CSI row ; col R=, from the emulator's cursor), and nothing else. An attached frontend answers for itself. Otherwise fish, which sends the first at startup, waits ten seconds and warns, because a query that reached only the emulator is not replayed on attach.
 
 The emulator parses untrusted sandbox output on the host, as Ghostel already does in Emacs. It runs inside the goblin's supervisor, so a fault there takes down that goblin's supervisor only.
 

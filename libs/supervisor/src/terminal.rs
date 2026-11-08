@@ -194,6 +194,11 @@ impl Terminal {
             self.to_peer = screen.redraw();
         }
     }
+    /// What waits to be written to the program.
+    #[cfg(test)]
+    pub fn queued_input(&self) -> usize {
+        self.to_pty.len()
+    }
     /// Write `bytes` to the program as if typed.
     pub fn input(&mut self, bytes: &[u8]) -> Result<()> {
         if self.eof || self.master.is_none() {
@@ -426,6 +431,13 @@ impl Terminal {
                 if let Some(screen) = &mut self.screen {
                     screen.feed(&newest);
                     self.fed = true;
+                    // With nobody attached nobody would answer a query of
+                    // the program (a shell waits for its device
+                    // attributes); an attached frontend answers its own.
+                    let replies = screen.take_replies();
+                    if !consumer && self.to_pty.len() + replies.len() <= CAP {
+                        self.to_pty.extend_from_slice(&replies);
+                    }
                 }
                 // An emulated terminal keeps its output on the screen, and
                 // queues it only for a frontend that is reading.

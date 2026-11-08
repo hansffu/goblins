@@ -910,6 +910,61 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, Event::Exited { id: 5, .. })));
     }
 
+    /// What the program reads from its input, if anything.
+    fn input_of(slave: &std::os::fd::OwnedFd) -> Option<Vec<u8>> {
+        let mut input = vec![0; 128];
+        match fs::File::from(slave.try_clone().unwrap()).read(&mut input) {
+            Ok(n) => Some(input[..n].to_vec()),
+            Err(_) => None,
+        }
+    }
+
+    #[test]
+    fn a_program_nobody_is_attached_to_gets_its_basic_queries_answered() {
+        let _no_forks = unix::no_forks();
+        let (mut terminals, slave, mut events) = pane(5);
+        // A shell at startup: its device attributes, then where it is.
+        print(&slave, "hello\x1b[c\x1b[6n");
+        terminals.tick(false, &mut events);
+        assert_eq!(input_of(&slave).unwrap(), b"\x1b[?62;22c\x1b[1;6R");
+        // Nothing else is answered.
+        print(&slave, "\x1b[>c\x1b[?6n\x1b]10;?\x07");
+        terminals.tick(false, &mut events);
+        assert_eq!(input_of(&slave), None);
+        // An attached frontend answers for itself: the query reaches it.
+        let id = TerminalId::Process(5);
+        let (server, mut client) = UnixStream::pair().unwrap();
+        terminals.attach(id, server, 24, 80, &mut events);
+        terminals.tick(false, &mut events);
+        let _ = frontend(&mut client, 24, 80);
+        print(&slave, "\x1b[c");
+        terminals.tick(false, &mut events);
+        let mut query = [0; 3];
+        client.read_exact(&mut query).unwrap();
+        assert_eq!(&query, b"\x1b[c");
+        assert_eq!(input_of(&slave), None, "the supervisor stays out of it");
+        // Detached again, it answers again.
+        terminals.detach(id, &mut events);
+        drop(client);
+        terminals.tick(false, &mut events);
+        print(&slave, "\x1b[5n");
+        terminals.tick(false, &mut events);
+        assert_eq!(input_of(&slave).unwrap(), b"\x1b[0n");
+    }
+
+    #[test]
+    fn a_program_that_never_reads_cannot_make_the_supervisor_queue_without_bound() {
+        let _no_forks = unix::no_forks();
+        let (mut terminals, slave, mut events) = pane(5);
+        let flood = "\x1b[c".repeat(600);
+        for _ in 0..400 {
+            print(&slave, &flood);
+            terminals.tick(false, &mut events);
+        }
+        let queued = terminals.entries[&TerminalId::Process(5)].io.queued_input();
+        assert!(queued <= 65536, "{queued}");
+    }
+
     #[test]
     fn a_descendant_holding_the_pty_delays_the_exit_by_one_second() {
         let _no_forks = unix::no_forks();

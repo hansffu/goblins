@@ -6,7 +6,53 @@ use goblins_runtime::terminal::{self, LINE_CAP, SCROLLBACK, Source, TEXT_CAP};
 use serde_json::{Value, json};
 
 pub struct Screen {
-    parser: vt100::Parser,
+    parser: vt100::Parser<Queries>,
+}
+
+/// The queries the emulator answers for a program nobody is attached to:
+/// device attributes, the status report and the cursor position. They are
+/// the ones a shell asks at startup and waits on; the answers are queued
+/// here for the caller to send.
+#[derive(Default)]
+struct Queries {
+    replies: Vec<u8>,
+}
+/// What the emulator says it is when asked for its device attributes: a
+/// plain VT220-class terminal with colour (`62`) and nothing else.
+const DEVICE_ATTRIBUTES: &[u8] = b"\x1b[?62;22c";
+impl vt100::Callbacks for Queries {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        i1: Option<u8>,
+        i2: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        // Only the plain forms: `CSI > c`, `CSI ? 6 n`, `CSI 0:1 c` and the
+        // rest are not ours.
+        if i1.is_some() || i2.is_some() || params.len() > 1 || params.iter().any(|p| p.len() > 1) {
+            return;
+        }
+        let parameter = params
+            .first()
+            .map_or(0, |p| p.first().copied().unwrap_or(0));
+        match (c, parameter) {
+            ('c', 0) => self.replies.extend_from_slice(DEVICE_ATTRIBUTES),
+            ('n', 5) => self.replies.extend_from_slice(b"\x1b[0n"),
+            ('n', 6) => {
+                // After a character in the last column the emulator waits to
+                // wrap with the cursor one past it; a terminal reports the
+                // last column, where the cursor is drawn.
+                let (row, col) = screen.cursor_position();
+                let (_, cols) = screen.size();
+                let col = col.min(cols.saturating_sub(1));
+                self.replies
+                    .extend_from_slice(format!("\x1b[{};{}R", row + 1, col + 1).as_bytes());
+            }
+            _ => (),
+        }
+    }
 }
 
 /// What `wait` looks for in a line.
@@ -72,11 +118,15 @@ fn drop_blank(lines: &mut Vec<String>) {
 impl Screen {
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
-            parser: vt100::Parser::new(rows, cols, SCROLLBACK),
+            parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK, Queries::default()),
         }
     }
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
+    }
+    /// The answers to the queries fed since this was last called.
+    pub fn take_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.parser.callbacks_mut().replies)
     }
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let (old_rows, old_cols) = self.size();
@@ -573,4 +623,81 @@ mod tests {
         frontend.feed(b"\x1b[?1049l");
         assert_eq!(frontend.visible(), Vec::<String>::new(), "no normal-screen history");
     }
+    #[test]
+    fn it_answers_the_device_attributes_status_and_cursor_position_queries() {
+        let mut screen = Screen::new(24, 80);
+        screen.feed(b"\x1b[c");
+        assert_eq!(screen.take_replies(), b"\x1b[?62;22c");
+        screen.feed(b"\x1b[0c\x1b[5n");
+        assert_eq!(screen.take_replies(), b"\x1b[?62;22c\x1b[0n");
+        // The position is where the cursor is at that point of the output.
+        screen.feed(b"\x1b[3;5H\x1b[6n");
+        assert_eq!(screen.take_replies(), b"\x1b[3;5R");
+        screen.feed(b"ab\x1b[6n\r\n\x1b[6n");
+        assert_eq!(screen.take_replies(), b"\x1b[3;7R\x1b[4;1R");
+        // At the right margin the cursor is in the last column, not past it.
+        let mut narrow = Screen::new(3, 10);
+        narrow.feed(b"0123456789\x1b[6n");
+        assert_eq!(narrow.take_replies(), b"\x1b[1;10R");
+        narrow.feed(b"x\x1b[6n");
+        assert_eq!(narrow.take_replies(), b"\x1b[2;2R");
+        // A query split across reads is answered once it is whole.
+        screen.feed(b"\x1b[");
+        assert!(screen.take_replies().is_empty());
+        screen.feed(b"6");
+        assert!(screen.take_replies().is_empty());
+        screen.feed(b"n");
+        assert_eq!(screen.take_replies(), b"\x1b[4;1R");
+        // Answers are taken once.
+        assert!(screen.take_replies().is_empty());
+    }
+
+    #[test]
+    fn it_answers_nothing_else() {
+        let mut screen = Screen::new(24, 80);
+        for query in [
+            &b"\x1b[>c"[..],
+            b"\x1b[=c",
+            b"\x1b[1c",
+            b"\x1b[0;1c",
+            b"\x1b[>0q",
+            b"\x1b[?6n",
+            b"\x1b[?5n",
+            b"\x1b[7n",
+            b"\x1b[5;6n",
+            b"\x1b[0:1c",
+            b"\x1b[6:1n",
+            b"\x1b[5:0n",
+            b"\x1b[?u",
+            b"\x1b[?1$p",
+            b"\x1b[18t",
+            b"\x1b]10;?\x07",
+            b"\x1b]11;?\x1b\\",
+            b"\x1bP+q544e\x1b\\",
+        ] {
+            screen.feed(query);
+            assert!(screen.take_replies().is_empty(), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn multibyte_text_reads_and_redraws_unchanged() {
+        let text = "* EXPERIMENTAL \u{b7} AI-GENERATED\r\n\u{65e5}\u{672c}\u{8a9e} \u{e9} \u{273b} \u{1f41f} \x1b[31mred \u{b7}\x1b[m end";
+        let mut screen = Screen::new(6, 40);
+        screen.feed(text.as_bytes());
+        assert_eq!(screen.visible()[0], "* EXPERIMENTAL \u{b7} AI-GENERATED");
+        assert_eq!(screen.visible()[1], "\u{65e5}\u{672c}\u{8a9e} \u{e9} \u{273b} \u{1f41f} red \u{b7} end");
+        // What a frontend that attaches sees is the same text, bytes and all.
+        let mut frontend = Screen::new(6, 40);
+        frontend.feed(&screen.redraw());
+        assert_eq!(frontend.visible(), screen.visible());
+        // Also split in the middle of a character across two reads.
+        let mut split = Screen::new(6, 40);
+        let bytes = text.as_bytes();
+        let at = text.find('\u{b7}').unwrap() + 1;
+        split.feed(&bytes[..at]);
+        split.feed(&bytes[at..]);
+        assert_eq!(split.visible(), screen.visible());
+    }
+
 }

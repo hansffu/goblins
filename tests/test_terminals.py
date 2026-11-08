@@ -223,6 +223,18 @@ class TerminalTests(unittest.TestCase):
         self.assertEqual(self.create("--name", "mine", "--", "sleep", "600", goblin="snaga"), "t1")
         self.assertEqual(other["agent_name"], "snaga")
 
+    def test_a_terminal_nobody_is_attached_to_gets_its_device_and_cursor_queries_answered(self):
+        # What a shell does at startup, which fish waits ten seconds for: ask
+        # the terminal who it is and where the cursor is, with no frontend yet.
+        script = ("stty raw -echo; "
+                  r"printf '\033[c'; a=$(dd bs=1 count=9 2>/dev/null | od -An -c | tr -d ' \n'); "
+                  r"printf 'abc\033[6n'; b=$(dd bs=1 count=6 2>/dev/null | od -An -c | tr -d ' \n'); "
+                  'echo "DA1=$a CPR=$b"; sleep 600')
+        self.create("--name", "asker", "--", "bash", "-c", script)
+        r = self.terminal("wait", "gribble", "asker", "--match", "DA1=033[?62;22c CPR=033[1;4R",
+                          "--timeout", "20000")
+        self.assertEqual(r.returncode, 0, r.stderr + self.terminal("read", "gribble", "asker").stdout)
+
     # What a goblin does with `goblin terminal` and the sandbox endpoint.
 
     def inside(self, *args, goblin="gribble"):
@@ -339,6 +351,34 @@ class TerminalTests(unittest.TestCase):
         self.d.rpc.call("sessions.stop", {"session": self.agent["session"]})
         self.d.wait(lambda: self.d.get(self.agent["session"])["state"] == "stopped")
         self.assertEqual(self.d.get(self.agent["session"])["terminals"], [])
+
+
+class FishTerminalTests(unittest.TestCase):
+    """Fish, which asks its terminal for the device attributes at startup and
+    warns when nothing answers within ten seconds."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = Daemon(fixture_app("shell-goblins"))
+        cls.addClassCleanup(cls.d.close)
+
+    def test_fish_in_a_terminal_nobody_attached_to_is_not_left_waiting_for_an_answer(self):
+        agent = self.d.start(agent_name="gribble")
+        self.addCleanup(lambda: self.d.rpc.call("sessions.stop", {"session": agent["session"]}))
+        # The goblin's $SHELL is not fish, so ask for it.
+        self.d.rpc.call("terminals.create", {"session": "gribble", "name": "fish", "argv": ["fish"]})
+        # Fish gives up on a query after ten seconds, then says so on screen.
+        time.sleep(13)
+        text = self.d.rpc.call("terminals.read", {"session": "gribble", "terminal": "fish",
+                                                  "source": "recent"})["text"]
+        self.assertNotIn("could not read response", text)
+        self.assertNotIn("warning", text)
+        # It is up and answers a command typed into it.
+        self.d.rpc.call("terminals.send", {"session": "gribble", "terminal": "fish",
+                                           "text": "echo ready", "keys": ["enter"]})
+        result = self.d.rpc.call("terminals.wait", {"session": "gribble", "terminal": "fish",
+                                                    "regex": "^ready$", "timeout": 20000})
+        self.assertEqual(result["status"], "matched", text)
 
 
 if __name__ == "__main__":
