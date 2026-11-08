@@ -126,6 +126,18 @@
         (goblins--host-call source 'host.cancel (list :request request))
         (message "Stopping host command %s" name)))))
 
+(defun goblins-close-terminal (source session terminal)
+  "Close terminal TERMINAL (an ID) of goblin SESSION of SOURCE's server after
+confirming.  Its program and everything it started end."
+  (let* ((goblin (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source) session))
+         (record (and goblin (goblins--session-terminal goblin terminal))))
+    (unless record (user-error "This terminal has ended"))
+    (let ((label (goblins--terminal-label record)))
+      (when (y-or-n-p (format "Close terminal %s (%s) in %s? " label terminal
+                              (goblins--safe (plist-get goblin :agent_name))))
+        (goblins--host-call source 'terminals.close (list :session session :terminal terminal))
+        (message "Closing terminal %s" label)))))
+
 (defun goblins-host-job-log (source request)
   "Show the output of host command REQUEST of SOURCE's server beside the agent.
 The buffer is read-only and follows the file as it grows; it stays with the

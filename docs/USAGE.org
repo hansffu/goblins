@@ -765,6 +765,7 @@ goblins terminal close snikk app
 - The supervisor runs each terminal's output through an emulator, so =read= and =wait= see the screen and 5,000 lines of scrollback even while nobody is attached, and a frontend that attaches gets the screen back, including a full-screen program such as =vim= on the alternate screen. =wait= matches a line of the screen or of the recent lines, at once and after each output; anchor a regular expression (=^done$=) so the echoed command line does not match. It exits 0 on a match or the program's exit, and 1 on a timeout.
 - A terminal ends when its program exits, when it is closed, or when the goblin stops. Closing signals the program's process group, as cancelling an exec does. Terminals are not restored when a goblin is recreated.
 - =attach= connects the current terminal like =goblins attach=, with one frontend per terminal; leaving it detaches, and it prints =detached from t1= or =t1 ended=. It works in a goblin without =onAttach=, as in one with it.
+- In Emacs, =M-x goblins-shell= creates a terminal and attaches it in a Ghostel buffer, =M-x goblins-terminal= runs a command line in a new one and =M-x goblins-terminal-attach= attaches one you choose. The sidebar lists each goblin's terminals: =RET= shows or attaches one and =K= closes it. Killing the buffer only detaches. See the Emacs README.
 - The API is the =terminals.*= methods of the host endpoint, listed in [[file:API.org][API.org]]; the supervisors' part is documented there too.
 
 ** Opening sandbox files in Emacs

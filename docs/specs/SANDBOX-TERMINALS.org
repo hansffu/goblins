@@ -134,7 +134,7 @@ A new =goblins-terminals= skill, modelled on herdr's, says when to use a termina
 - =goblins-terminal= creates a terminal running a command line read from the minibuffer (split like a shell would, without running one; empty for the sandbox's shell), with an optional name, and attaches it like =goblins-shell=.
 - =goblins-terminal-attach= attaches to a terminal chosen with completion.
 
-The sidebar design is mocked on a page in doom-one before step 2 is implemented.
+Each sidebar line is the terminal icon (dim for origin =host=, the goblin's agent icon colour for origin =agent=) and the label, with nothing at the right edge. The bars keep their meaning: shown beside the sidebar, attached in this Emacs but hidden, none when detached. =K= asks =Close terminal LABEL (tN) in AGENT?=.
 
 * Steps
 

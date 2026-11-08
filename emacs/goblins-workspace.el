@@ -33,6 +33,8 @@
 (declare-function goblins-eshell "goblins-tramp" (&optional session display source))
 (declare-function goblins-dired "goblins-tramp" (&optional session display source))
 (declare-function goblins-find-file "goblins-tramp" (&optional session source))
+(declare-function goblins-terminal-attach "goblins-tramp"
+                  (&optional terminal session display source))
 (defvar ghostel-identity)
 (defvar ghostel--process)
 
@@ -81,6 +83,13 @@ The default closes the sidebar and restores the configuration saved by
   "The icon before a running host command in the sidebar, a plist like the
 entries of `goblins-agent-icons'.  A host command runs with your rights, so
 the default is a red warning shield."
+  :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
+  :group 'goblins)
+(defcustom goblins-sidebar-terminal-icon
+  '(:svg "terminal.svg" :color shadow :text "›")
+  "The icon before a terminal in the sidebar, a plist like the entries of
+`goblins-agent-icons'.  The terminals you create are drawn in :color; those
+its agent created wear the colour of its goblin's icon in `goblins-agent-icons'."
   :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
   :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
@@ -268,6 +277,8 @@ former owner is no longer one of its members."
     (let ((p (line-beginning-position)))
       (or (and (get-text-property p 'goblins-terminal)
                (cons 'terminal (get-text-property p 'goblins-terminal)))
+          (and (get-text-property p 'goblins-session-terminal)
+               (cons 'session-terminal (get-text-property p 'goblins-session-terminal)))
           (and (get-text-property p 'goblins-host-job)
                (cons 'host-job (get-text-property p 'goblins-host-job)))
           (and (get-text-property p 'goblins-id)
@@ -296,6 +307,7 @@ holding it, for restoring point when a fold hides the line."
   (when key
     (let ((prop (pcase (car key)
                   ('id 'goblins-id) ('terminal 'goblins-terminal)
+                  ('session-terminal 'goblins-session-terminal)
                   ('host-job 'goblins-host-job) (_ 'goblins-group)))
           (pos (point-min)) found)
       (while (and (not found) (setq pos (next-single-property-change pos prop)))
@@ -401,6 +413,29 @@ It starts two columns before the goblin's text, where the active bar is drawn."
             "\n")
     (add-text-properties start (point) (list 'goblins-terminal shell 'goblins-parent id
                                              'goblins-in-group group-key))))
+
+(defun goblins--sidebar-terminal-icon (session record)
+  "The icon of RECORD, a terminal of SESSION: `goblins-sidebar-terminal-icon', in
+the colour of its goblin's icon when the goblin's agent created it."
+  (goblins--icon
+   (if (equal (plist-get record :origin) "agent")
+       (let ((agent (cdr (or (assoc (goblins--session-integration session) goblins-agent-icons)
+                             (assq t goblins-agent-icons)))))
+         (plist-put (copy-sequence goblins-sidebar-terminal-icon) :color (plist-get agent :color)))
+     goblins-sidebar-terminal-icon)))
+
+(defun goblins--sidebar-insert-terminal (session record depth group-key)
+  "Insert the line of RECORD, a terminal of SESSION, at DEPTH: its icon and label."
+  (let* ((start (point))
+         (id (plist-get session :id))
+         ;; The icon takes up to two columns, then a space either side.
+         (room (max 1 (- goblins-sidebar-width 1 (* 2 depth) 2 1 1)))
+         (label (truncate-string-to-width (goblins--terminal-label record) room nil nil "…")))
+    (insert (make-string (* 2 depth) ?\s)
+            (goblins--sidebar-terminal-icon session record) " " label "\n")
+    (add-text-properties start (point)
+                         (list 'goblins-session-terminal (cons id (plist-get record :id))
+                               'goblins-parent id 'goblins-in-group group-key))))
 
 (defun goblins--sidebar-running-jobs (session-id permissions)
   "SESSION-ID's running host commands among PERMISSIONS, oldest first."
@@ -571,6 +606,9 @@ the shells follow it.  Only the name and the shells are stops for movement."
     (when-let* (((not folded))
                 (elsewhere (goblins--sidebar-elsewhere session own)))
       (goblins--sidebar-insert-detail depth id group-key elsewhere))
+    (unless finished
+      (dolist (record (append (plist-get session :terminals) nil))
+        (goblins--sidebar-insert-terminal session record depth group-key)))
     (dolist (shell own)
       (goblins--sidebar-insert-shell shell depth id group-key))
     ;; After the shells, folded or not.
@@ -735,8 +773,8 @@ column before it in a terminal."
       (let ((indent (current-indentation)))
         (when (and (> indent 1)
                    (cl-some (lambda (p) (get-text-property (point) p))
-                            '(goblins-id goblins-detail goblins-terminal goblins-host-job
-                              goblins-group)))
+                            '(goblins-id goblins-detail goblins-terminal goblins-session-terminal
+                              goblins-host-job goblins-group)))
           (let ((mask (make-overlay (point) (+ (point) indent -1))))
             (overlay-put mask 'goblins-margin t)
             (overlay-put mask 'face 'default)
@@ -825,19 +863,31 @@ shells also get `goblins-sidebar-active'."
     (with-current-buffer goblins--sidebar-buffer-name
       (mapc #'delete-overlay goblins--sidebar-active-overlays)
       (setq goblins--sidebar-active-overlays nil)
-      (let ((shown-ids nil) (shown-shells nil))
+      (let ((shown-ids nil) (shown-shells nil) (shown-terminals nil))
         (dolist (shown (mapcar #'window-buffer (goblins--main-windows)))
-          (let ((key (buffer-local-value 'goblins--session-key shown)))
-            (if (buffer-local-value 'goblins--shell-number shown)
-                (push shown shown-shells)
-              (push (if key (nth 2 key) (buffer-local-value 'goblins--view-session shown))
-                    shown-ids))))
+          (let ((key (buffer-local-value 'goblins--session-key shown))
+                (terminal (buffer-local-value 'goblins--terminal-id shown)))
+            (cond (terminal
+                   ;; Only a live attachment of this daemon's terminal: a
+                   ;; buffer whose client ended is shown but detached.
+                   (let ((session (alist-get 'session
+                                             (buffer-local-value 'ghostel-identity shown))))
+                     (when (and (buffer-live-p goblins--sidebar-source)
+                                (eq (goblins--session-terminal-buffer
+                                     goblins--sidebar-source session terminal)
+                                    shown))
+                       (push (cons session terminal) shown-terminals))))
+                  ((buffer-local-value 'goblins--shell-number shown)
+                   (push shown shown-shells))
+                  (t (push (if key (nth 2 key) (buffer-local-value 'goblins--view-session shown))
+                           shown-ids)))))
         (save-excursion
           (goto-char (point-min))
           (let ((goblin nil) (block-end (point-min)))
             (while (not (eobp))
               (let* ((id (get-text-property (point) 'goblins-id))
                      (shell (get-text-property (point) 'goblins-terminal))
+                     (terminal (get-text-property (point) 'goblins-session-terminal))
                      (line-end (line-beginning-position 2)))
                 (when id
                   (setq block-end (goblins--sidebar-block-end (point))
@@ -849,9 +899,17 @@ shells also get `goblins-sidebar-active'."
                   (when (eq goblin 'goblins-sidebar-bar-shown)
                     (goblins--sidebar-mark-shown (point) block-end)))
                 (when (>= (point) block-end) (setq goblin nil))
-                (let ((inner (when (and shell (memq shell shown-shells))
+                (let ((inner (cond
+                              ((and shell (memq shell shown-shells))
                                (goblins--sidebar-mark-shown (point) line-end)
-                               'goblins-sidebar-bar-shown)))
+                               'goblins-sidebar-bar-shown)
+                              ((and terminal (member terminal shown-terminals))
+                               (goblins--sidebar-mark-shown (point) line-end)
+                               'goblins-sidebar-bar-shown)
+                              ((and terminal (buffer-live-p goblins--sidebar-source)
+                                    (goblins--session-terminal-buffer
+                                     goblins--sidebar-source (car terminal) (cdr terminal)))
+                               'goblins-sidebar-bar-attached))))
                   (when (or goblin inner)
                     (setq goblins--sidebar-active-overlays
                           (nconc (goblins--sidebar-bar (point) goblin inner)
@@ -929,13 +987,14 @@ a goblin's name with its detail lines, which movement treats as one line."
 ;;;; Commands
 
 (defun goblins--sidebar-lines (direction)
-  "Move to the next line in DIRECTION (1 or -1): a group, a goblin, a shell
+  "Move to the next line in DIRECTION (1 or -1): a group, a goblin, a terminal
 or a running host command.
 A goblin's detail lines, rules and blank lines are passed by."
   (let ((start (point)) found)
     (while (and (not found) (zerop (forward-line direction)))
       (when (or (get-text-property (point) 'goblins-id)
                 (get-text-property (point) 'goblins-terminal)
+                (get-text-property (point) 'goblins-session-terminal)
                 (get-text-property (point) 'goblins-host-job)
                 (get-text-property (point) 'goblins-group))
         (setq found t)))
@@ -993,8 +1052,8 @@ only the headings, then every goblin on its name line, then everything."
 
 (defun goblins-sidebar-dwim ()
   "Act on the sidebar line at point, or select the sidebar.
-On a goblin show it beside the sidebar, attaching if necessary; on a shell
-show it; on a running host command follow its output; on a raid heading open its page; on a directory heading fold or
+On a goblin show it beside the sidebar, attaching if necessary; on a terminal
+show or attach it; on a running host command follow its output; on a raid heading open its page; on a directory heading fold or
 unfold it.  Outside the sidebar, select it, opening the workspace or showing
 the sidebar as needed."
   (interactive)
@@ -1005,6 +1064,13 @@ the sidebar as needed."
     (goblins-select-goblin (goblins--sidebar-ensure-source)
                            (get-text-property (line-beginning-position) 'goblins-parent)
                            (get-text-property (line-beginning-position) 'goblins-terminal)))
+   ((get-text-property (line-beginning-position) 'goblins-session-terminal)
+    (let* ((source (goblins--sidebar-ensure-source))
+           (terminal (get-text-property (line-beginning-position) 'goblins-session-terminal))
+           (session (goblins--snapshot-session
+                     (buffer-local-value 'goblins--snapshot source) (car terminal))))
+      (unless session (user-error "The daemon no longer retains this goblin"))
+      (goblins-terminal-attach (cdr terminal) session nil source)))
    ((get-text-property (line-beginning-position) 'goblins-host-job)
     (goblins-host-job-log (goblins--sidebar-ensure-source)
                           (get-text-property (line-beginning-position) 'goblins-host-job)))
@@ -1149,12 +1215,15 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
   (goblins--sidebar-move-to-waiting t))
 
 (defun goblins-sidebar-stop ()
-  "Stop the host command at point, or else the goblin at point, after confirming."
+  "Stop the host command at point, close the terminal at point, or else stop
+the goblin at point, after confirming."
   (interactive)
   (if-let* ((request (get-text-property (line-beginning-position) 'goblins-host-job)))
       (goblins-stop-host-job (goblins--sidebar-ensure-source) request)
-    (let ((goblin (goblins--sidebar-goblin-at-point)))
-      (goblins-stop-goblin (car goblin) (cdr goblin)))))
+    (if-let* ((terminal (get-text-property (line-beginning-position) 'goblins-session-terminal)))
+        (goblins-close-terminal (goblins--sidebar-ensure-source) (car terminal) (cdr terminal))
+      (let ((goblin (goblins--sidebar-goblin-at-point)))
+        (goblins-stop-goblin (car goblin) (cdr goblin))))))
 
 (defun goblins--sidebar-open-in (open)
   "Call OPEN with the session record and status buffer of the goblin at
@@ -1166,7 +1235,7 @@ point (or of its shell); it shows the buffer right of the goblin's agent."
     (funcall open session nil (car goblin))))
 
 (defun goblins-sidebar-terminal ()
-  "Open a new shell terminal inside the goblin at point; it is listed below it."
+  "Open a new shell terminal of the goblin at point; it is listed below it."
   (interactive)
   (goblins--sidebar-open-in #'goblins-shell))
 
@@ -1205,15 +1274,15 @@ running; with a prefix argument STOP, they are stopped too."
   (interactive)
   (goblins--describe-keys
    "Goblins sidebar"
-   '(("Move" ("j / k" . "next / previous goblin, shell or group")
+   '(("Move" ("j / k" . "next / previous goblin, terminal or group")
              ("n / N" . "next / previous goblin waiting for a decision")
              ("TAB" . "fold or unfold the goblin or group")
              ("S-TAB" . "cycle: headings only, goblins folded, everything"))
-     ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it; on a host command, follow its output")
+     ("Goblin" ("RET" . "show or attach its terminal; on a terminal, show or attach it; on a host command, follow its output")
                ("p" . "permission requests")
                ("I" . "info")
-               ("K" . "stop it; on a host command, stop that command")
-               ("t" . "a shell terminal inside it, listed below it")
+               ("K" . "stop it; on a terminal, close it; on a host command, stop that command")
+               ("t" . "a shell terminal of it, listed below it")
                ("e" . "Eshell inside it")
                ("d" . "Dired inside it")
                ("f" . "visit a file inside it")

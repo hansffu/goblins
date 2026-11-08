@@ -822,6 +822,14 @@ history, without a terminal; print the new goblin's ID."
       (accept-process-output nil 0.02))
     (should (funcall predicate))))
 
+(defun goblins-test--wait-text (regexp &optional timeout)
+  "Wait until the current buffer matches REGEXP; on a timeout fail with its text."
+  (let ((deadline (+ (float-time) (or timeout 30))))
+    (while (and (not (string-match-p regexp (buffer-string))) (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (unless (string-match-p regexp (buffer-string))
+      (ert-fail (list 'buffer 'lacks regexp (buffer-name) (buffer-string))))))
+
 (defun goblins-test-activity-live ()
   "Report sandbox activity through the CLI and observe subscribed GUI updates."
   (let ((id (getenv "GOBLINS_TEST_AGENT")) source info
@@ -4251,6 +4259,344 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (should (equal (mapcar (lambda (args) (cdr (member "gribble" args))) (reverse argvs))
                      '(nil ("--" "fish") ("--" "bash" "--norc")))))))
 
+(defun goblins-test--terminal-record (id label origin &rest props)
+  "A terminal record like the daemon's, with ID, LABEL and ORIGIN."
+  (append props (list :id id :name (and (not (equal label "shell")) label) :label label
+                      :origin origin :started_at 1 :rows 40 :cols 120 :attached nil)))
+
+(defun goblins-test--terminal-buffer (session id &optional process)
+  "A buffer like this Emacs's attachment of terminal ID of goblin SESSION."
+  (let ((buffer (generate-new-buffer " *goblins test attached terminal*")))
+    (with-current-buffer buffer
+      (setq-local ghostel-identity `((kind . goblins-shell) (session . ,session)
+                                     (instance . "daemon-a") (terminal . ,id)))
+      (setq-local ghostel--process process)
+      (setq-local goblins--directory "/tmp/goblins-test")
+      (setq-local goblins--terminal-id id)
+      (add-hook 'kill-buffer-hook #'goblins-tramp--shell-closed nil t))
+    buffer))
+
+(defun goblins-test--terminals-session ()
+  (goblins-test--session
+   "session-a" :cwd "/p" :agent_name "gribble"
+   :terminals (vector (goblins-test--terminal-record "t1" "app" "host")
+                      (goblins-test--terminal-record "t2" "shell" "agent"))))
+
+(ert-deftest goblins-sidebar-lists-terminals-of-both-origins-in-the-goblins-block ()
+  (goblins-test--sidebar (list (goblins-test--terminals-session)
+                               (goblins-test--session "session-b" :cwd "/p"))
+    (let ((goblins-agent-icons '((t :svg "terminal.svg" :color "#D97757" :text "✻"))))
+      (dolist (view '(all contents))
+        (setq goblins--sidebar-view view)
+        (goblins--sidebar-render)
+        ;; Folded or not, the terminals follow the goblin's lines.
+        (should (string-match-p "  › app\n  › shell\n" (goblins-test--sidebar-plain))))
+      (setq goblins--sidebar-view 'all)
+      (goblins--sidebar-render)
+      (should (equal (goblins-test--sidebar-plain)
+                     (concat "▾ /p/ !1\n  ✻ gribble\n  shell\n  ! hello (package)\n"
+                             "  › app\n  › shell\n──\n  ✻ session-b\n  shell\n")))
+      ;; A terminal's icon is dim for the host's and the colour of its
+      ;; goblin's icon for the agent's.
+      (let ((icon (lambda (terminal)
+                    (get-text-property (+ (goblins--sidebar-find (cons 'session-terminal terminal))
+                                          2)
+                                       'face)))
+            (shadow (goblins--icon-color 'shadow)))
+        (should (equal (funcall icon '("session-a" . "t1")) (and shadow (list :foreground shadow))))
+        (should (equal (funcall icon '("session-a" . "t2")) '(:foreground "#D97757"))))
+      ;; Movement stops on terminals, which belong to their goblin.
+      (goto-char (point-min))
+      (goblins-sidebar-next 2)
+      (should (equal (goblins--sidebar-key-at (point)) '(session-terminal "session-a" . "t1")))
+      (should (equal (goblins--sidebar-goblin-at-point) (cons source "session-a")))
+      (should (equal (goblins--sidebar-directory-at-point) "/p"))
+      (goblins-sidebar-next)
+      (should (equal (goblins--sidebar-key-at (point)) '(session-terminal "session-a" . "t2")))
+      ;; Point stays on its terminal as the sidebar redraws, and when the
+      ;; terminal ends it moves to the goblin's name.
+      (goblins--sidebar-render)
+      (should (equal (goblins--sidebar-key-at (point)) '(session-terminal "session-a" . "t2")))
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vector (goblins-test--session
+                                  "session-a" :cwd "/p" :agent_name "gribble"
+                                  :terminals (vector (goblins-test--terminal-record
+                                                      "t1" "app" "host")))
+                                 (goblins-test--session "session-b" :cwd "/p")))))
+      (goblins--sidebar-render)
+      (should-not (string-match-p "  › shell\n  ✻\\|t2" (buffer-string)))
+      (should (equal (goblins--sidebar-key-at (point)) '(id . "session-a"))))))
+
+(ert-deftest goblins-sidebar-terminal-icon-is-the-terminal-with-a-text-fallback ()
+  (should (equal goblins-sidebar-terminal-icon '(:svg "terminal.svg" :color shadow :text "›")))
+  (should (file-readable-p (expand-file-name "terminal.svg" goblins--icons-directory)))
+  (goblins-test--sidebar (list (goblins-test--terminals-session))
+    (let ((goblins-sidebar-terminal-icon '(:text "$")))
+      (goblins--sidebar-render)
+      (should (string-match-p "^  \\$ app$" (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-terminal-bars-follow-where-this-emacs-has-them ()
+  (goblins-test--sidebar
+      (list (goblins-test--session
+             "session-a" :cwd "/p"
+             :terminals (vector (goblins-test--terminal-record "t1" "one" "host")
+                                (goblins-test--terminal-record "t2" "two" "host")
+                                (goblins-test--terminal-record "t3" "three" "agent"
+                                                               :attached t))))
+    (let* ((process (start-process "goblins-test-terminal" nil "sleep" "60"))
+           (shown (goblins-test--terminal-buffer "session-a" "t1" process))
+           (hidden (goblins-test--terminal-buffer "session-a" "t2" process))
+           ;; Its attach client ended: this Emacs no longer has the terminal,
+           ;; also while the buffer is displayed.
+           (ended (goblins-test--terminal-buffer "session-a" "t3")))
+      (unwind-protect
+          (save-window-excursion
+            (setq goblins--sidebar-view 'all)
+            (goblins--sidebar-render)
+            (rename-buffer goblins--sidebar-buffer-name)
+            (set-window-buffer (selected-window) shown)
+            (goblins--sidebar-update-active)
+            (let ((bar (lambda (id)
+                         (let ((pos (goblins--sidebar-find (cons 'session-terminal
+                                                                 (cons "session-a" id)))))
+                           (delq nil (mapcar (lambda (o) (and (overlay-get o 'display)
+                                                              (get-text-property
+                                                               0 'face (overlay-get o 'display))))
+                                             (overlays-in pos (+ pos 3))))))))
+              ;; Shown beside the sidebar, attached here but hidden, and
+              ;; detached or attached somewhere else: no bar.
+              (should (equal (funcall bar "t1") '(goblins-sidebar-bar-shown)))
+              (should (equal (funcall bar "t2") '(goblins-sidebar-bar-attached)))
+              (should-not (funcall bar "t3"))
+              (set-window-buffer (selected-window) ended)
+              (goblins--sidebar-update-active)
+              (should-not (funcall bar "t3"))
+              (should (equal (funcall bar "t1") '(goblins-sidebar-bar-attached)))
+              (should-not (cl-some (lambda (o) (eq (overlay-get o 'face) 'goblins-sidebar-active))
+                                   (overlays-at (goblins--sidebar-find
+                                                 '(session-terminal "session-a" . "t3")))))
+              (set-window-buffer (selected-window) shown)
+              (goblins--sidebar-update-active)
+              (should-not (cl-some (lambda (o) (eq (overlay-get o 'face) 'goblins-sidebar-active))
+                                   (overlays-at (goblins--sidebar-find
+                                                 '(session-terminal "session-a" . "t2")))))
+              (should (cl-some (lambda (o) (eq (overlay-get o 'face) 'goblins-sidebar-active))
+                               (overlays-at (goblins--sidebar-find
+                                             '(session-terminal "session-a" . "t1")))))
+              ;; Killing the buffer takes its bar away at once.
+              (kill-buffer hidden)
+              (goblins--sidebar-update-active)
+              (should-not (funcall bar "t2"))))
+        (delete-process process)
+        (mapc #'kill-buffer (seq-filter #'buffer-live-p (list shown hidden ended)))))))
+
+(ert-deftest goblins-ret-attaches-a-terminal-and-k-closes-it-after-asking ()
+  (goblins-test--sidebar (list (goblins-test--terminals-session))
+    (setq goblins--sidebar-view 'all)
+    (goblins--sidebar-render)
+    (goto-char (goblins--sidebar-find '(session-terminal "session-a" . "t1")))
+    (let (attached closed prompts (answer nil))
+      (cl-letf (((symbol-function 'goblins-terminal-attach)
+                 (lambda (&rest args) (setq attached args)))
+                ((symbol-function 'goblins--host-call)
+                 (lambda (&rest args) (push args closed) nil))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (prompt) (push prompt prompts) answer)))
+        (goblins-sidebar-dwim)
+        (should (equal (list (nth 0 attached) (plist-get (nth 1 attached) :id) (nth 2 attached)
+                             (nth 3 attached))
+                       (list "t1" "session-a" nil source)))
+        ;; K asks first, naming the terminal and its goblin.
+        (goblins-sidebar-stop)
+        (should (equal prompts '("Close terminal app (t1) in gribble? ")))
+        (should-not closed)
+        (setq answer t)
+        (goblins-sidebar-stop)
+        (should (equal closed (list (list source 'terminals.close
+                                          '(:session "session-a" :terminal "t1")))))
+        ;; The default label is the shell's.
+        (goto-char (goblins--sidebar-find '(session-terminal "session-a" . "t2")))
+        (goblins-sidebar-stop)
+        (should (equal (car prompts) "Close terminal shell (t2) in gribble? ")))
+      ;; A terminal that ended meanwhile cannot be closed or attached.
+      (with-current-buffer source
+        (setq goblins--snapshot
+              (plist-put goblins--snapshot :sessions
+                         (vector (goblins-test--session "session-a" :cwd "/p")))))
+      (should-error (goblins-close-terminal source "session-a" "t1") :type 'user-error))))
+
+(defmacro goblins-test--with-terminal-daemon (&rest body)
+  "Run BODY, in a sidebar of goblin gribble whose daemon has terminals, with
+Ghostel and the daemon stubbed: `calls' records the daemon calls, `execs' the
+programs started, each as (ARGS IDENTITY BUFFER)."
+  (declare (indent 0))
+  `(goblins-test--sidebar (list (goblins-test--session "session-a" :agent_name "gribble"))
+     (with-current-buffer source (setq goblins--features '("terminals")))
+     (let ((goblins--pins (make-hash-table :test #'equal))
+           (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                               "session-a"))
+           (counter 0) calls execs created)
+       (cl-letf (((symbol-function 'goblins--require-ghostel) #'ignore)
+                 ((symbol-function 'ghostel-exec)
+                  (lambda (buffer _program args identity)
+                    (push (list args identity buffer) execs)
+                    (with-current-buffer buffer
+                      (setq-local ghostel-identity identity)
+                      (setq-local ghostel--process
+                                  (make-process :name "goblins-test-attach" :buffer buffer
+                                                :command '("sleep" "60") :noquery t)))))
+                 ((symbol-function 'goblins--host-call)
+                  (lambda (_source method params)
+                    (push (cons method params) calls)
+                    (when (eq method 'terminals.create)
+                      (let ((record (goblins-test--terminal-record
+                                     (format "t%d" (cl-incf counter))
+                                     (or (plist-get params :name) "shell") "host")))
+                        (push record created)
+                        record)))))
+         (unwind-protect
+             (progn ,@body)
+           (dolist (exec execs)
+             (let ((buffer (nth 2 exec)))
+               (when (buffer-live-p buffer)
+                 (when-let* ((process (buffer-local-value 'ghostel--process buffer)))
+                   (delete-process process))
+                 (kill-buffer buffer)))))))))
+
+(ert-deftest goblins-shell-creates-a-terminal-and-attaches-it ()
+  (goblins-test--with-terminal-daemon
+    (dolist (program '(nil "fish" ("bash" "--norc")))
+      (let ((goblins-shell-program program))
+        (goblins-shell session #'ignore source)))
+    (should (equal (mapcar (lambda (call) (cons (car call) (cdr call))) (reverse calls))
+                   '((terminals.create :session "session-a")
+                     (terminals.create :session "session-a" :argv ["fish"])
+                     (terminals.create :session "session-a" :argv ["bash" "--norc"]))))
+    (should (equal (mapcar #'car (reverse execs))
+                   '(("--state-dir" "/tmp/goblins-test" "terminal" "attach" "session-a" "t1")
+                     ("--state-dir" "/tmp/goblins-test" "terminal" "attach" "session-a" "t2")
+                     ("--state-dir" "/tmp/goblins-test" "terminal" "attach" "session-a" "t3"))))
+    (let* ((exec (car (last execs)))
+           (buffer (nth 2 exec)))
+      (should (equal (nth 1 exec)
+                     '((kind . goblins-shell) (session . "session-a") (instance . "daemon-a")
+                       (directory . "/tmp/goblins-test") (host . "gribble") (terminal . "t1"))))
+      (should (equal (buffer-name buffer) "*Goblin terminal: gribble shell*"))
+      (with-current-buffer buffer
+        (should (equal goblins--terminal-id "t1"))
+        (should-not goblins--shell-number)
+        ;; An ended terminal's buffer is kept, with its last screen.
+        (should (local-variable-p 'ghostel-kill-buffer-on-exit))
+        (should-not ghostel-kill-buffer-on-exit)
+        ;; Shells keep their TRAMP directory.
+        (should (equal default-directory "/goblins:gribble:/"))))
+    ;; The goblin's sidebar tracks this Emacs's buffer for the terminal.
+    (should (eq (goblins--session-terminal-buffer source "session-a" "t1") (nth 2 (car (last execs)))))
+    (should-not (goblins--session-terminal-buffer source "session-a" "t9"))
+    (should-not (goblins--session-terminal-buffer source "session-b" "t1"))))
+
+(ert-deftest goblins-killing-a-terminal-buffer-detaches-without-closing ()
+  (goblins-test--with-terminal-daemon
+    (let* ((buffer (goblins-shell session #'ignore source))
+           (process (buffer-local-value 'ghostel--process buffer)))
+      (should (process-live-p process))
+      (kill-buffer buffer)
+      ;; Killing the buffer ends its attach client; the terminal is not closed.
+      (goblins-test--wait (lambda () (not (process-live-p process))))
+      (should-not (cl-find 'terminals.close calls :key #'car))
+      (should-not (goblins--session-terminal-buffer source "session-a" "t1")))))
+
+(ert-deftest goblins-shell-cleans-up-its-terminal-when-attaching-fails ()
+  (goblins-test--with-terminal-daemon
+    (cl-letf (((symbol-function 'ghostel-exec) (lambda (&rest _) (error "No module"))))
+      (should-error (goblins-shell session #'ignore source)))
+    (should (equal (mapcar #'car (reverse calls)) '(terminals.create terminals.close)))
+    (should (equal (cdr (car calls)) '(:session "session-a" :terminal "t1")))
+    (should-not (cl-some (lambda (b) (string-match-p "Goblin terminal" (buffer-name b)))
+                         (buffer-list)))))
+
+(ert-deftest goblins-terminal-reads-a-command-line-and-a-name ()
+  (goblins-test--with-terminal-daemon
+    (let ((answers nil))
+      (cl-letf (((symbol-function 'goblins-tramp--goblin) (lambda (&rest _) (cons source session)))
+                ((symbol-function 'read-string)
+                 (lambda (&rest _) (pop answers))))
+        ;; Split like a shell, without running one.
+        (setq answers '("gradle run --args='a b' \"c d\"" "app"))
+        (call-interactively #'goblins-terminal)
+        ;; An empty line is the sandbox's shell; an empty name is none.
+        (setq answers '("" ""))
+        (call-interactively #'goblins-terminal)
+        (setq answers '("  " "x"))
+        (call-interactively #'goblins-terminal))
+      (should (equal (mapcar (lambda (call) (cons (car call) (cdr call))) (reverse calls))
+                     '((terminals.create :session "session-a"
+                                         :argv ["gradle" "run" "--args=a b" "c d"] :name "app")
+                       (terminals.create :session "session-a")
+                       (terminals.create :session "session-a" :name "x"))))
+      (should (equal (mapcar #'buffer-name (mapcar (lambda (e) (nth 2 e)) (reverse execs)))
+                     '("*Goblin terminal: gribble app*" "*Goblin terminal: gribble shell*"
+                       "*Goblin terminal: gribble x*"))))))
+
+(ert-deftest goblins-terminal-commands-need-a-daemon-with-terminals ()
+  (goblins-test--with-terminal-daemon
+    (with-current-buffer source (setq goblins--features '("exec")))
+    (cl-letf (((symbol-function 'goblins-tramp--goblin) (lambda (&rest _) (cons source session))))
+      (should-error (call-interactively #'goblins-terminal) :type 'user-error)
+      (should-error (call-interactively #'goblins-terminal-attach) :type 'user-error)
+      (should-error (goblins-terminal-attach "t1" session nil source) :type 'user-error))
+    (should-not calls)
+    ;; goblins-shell falls back to the exec shell.
+    (goblins-shell session #'ignore source)
+    (should (equal (car (car execs))
+                   '("--state-dir" "/tmp/goblins-test" "exec" "-t" "--instance" "daemon-a"
+                     "--session" "session-a" "gribble")))
+    (should-not calls)))
+
+(ert-deftest goblins-terminal-attach-chooses-with-completion-and-shows-an-existing-buffer ()
+  (goblins-test--with-terminal-daemon
+    (with-current-buffer source
+      (setq goblins--snapshot
+            (plist-put goblins--snapshot :sessions
+                       (vector (goblins-test--session
+                                "session-a" :agent_name "gribble"
+                                :terminals (vector (goblins-test--terminal-record
+                                                    "t1" "app" "host" :attached t)
+                                                   (goblins-test--terminal-record
+                                                    "t2" "shell" "agent")))))))
+    (setq session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                             "session-a"))
+    (let (candidates annotations choice shown)
+      (cl-letf (((symbol-function 'goblins-tramp--goblin) (lambda (&rest _) (cons source session)))
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt collection &rest _)
+                   (let ((all (all-completions "" collection)))
+                     (setq candidates all
+                           annotations (mapcar (lambda (c)
+                                                 (funcall (completion-metadata-get
+                                                           (completion-metadata "" collection nil)
+                                                           'annotation-function)
+                                                          c))
+                                               all))
+                     choice))))
+        (setq choice "shell (t2)")
+        (call-interactively #'goblins-terminal-attach)
+        (should (equal candidates '("app (t1)" "shell (t2)")))
+        (should (equal annotations '("  host, attached" "  agent")))
+        (should (equal (car (car execs))
+                       '("--state-dir" "/tmp/goblins-test" "terminal" "attach" "session-a" "t2")))
+        ;; The terminal this Emacs has is shown again, not attached twice.
+        (let ((buffer (nth 2 (car execs))))
+          (cl-letf (((symbol-function 'goblins-select-goblin)
+                     (lambda (_source id right &rest _) (setq shown (list id right)))))
+            (should (eq (goblins-terminal-attach "t2" session nil source) buffer)))
+          (should (equal shown (list "session-a" buffer)))
+          (should (= (length execs) 1)))))
+    ;; A terminal that is gone cannot be attached.
+    (should-error (goblins-terminal-attach "t9" session #'ignore source) :type 'user-error)))
+
 (ert-deftest goblins-disconnect-closes-the-connection-without-waiting ()
   (let* ((socket (make-temp-name (expand-file-name "goblins-test-" temporary-file-directory)))
          (server (make-network-process :name "goblins-test-server" :server t
@@ -4504,14 +4850,50 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
             (should (equal (goblins-test--in directory "gribble"
                                              "cat /tmp/goblins-clipboard/*.png | sha256sum")
                            (format "%s  -\n" (secure-hash 'sha256 image))))))
-        ;; The sidebar lists it under its goblin.
+        ;; The shell is a terminal of the goblin: the snapshot lists it and
+        ;; the sidebar shows it under its goblin; it counts as no shell.
         (require 'goblins-workspace)
-        (should (equal (gethash first (goblins--sidebar-shells source)) (list shell)))
-        (goblins-test--wait (lambda () (eq (plist-get (goblins--snapshot-session
-                                                       (buffer-local-value 'goblins--snapshot source)
-                                                       first)
-                                                      :shells)
-                                           1)))
+        (let ((record (lambda ()
+                        (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                                   first)))
+              (attached (lambda (id)
+                          (eq (plist-get (goblins--session-terminal
+                                          (goblins--snapshot-session
+                                           (buffer-local-value 'goblins--snapshot source) first)
+                                          id)
+                                         :attached)
+                              t))))
+          (goblins-test--wait (lambda () (funcall attached "t1")))
+          (should (equal (plist-get (goblins--session-terminal (funcall record) "t1") :origin)
+                         "host"))
+          (should (zerop (or (plist-get (funcall record) :shells) 0)))
+          (should (string-match-p "› shell\n" (goblins--sidebar-text source nil)))
+          (should (eq (goblins--session-terminal-buffer source first "t1") shell))
+          ;; Killing the buffer detaches the terminal, which keeps running
+          ;; with its screen; attaching it again brings the screen back.
+          (kill-buffer shell)
+          (goblins-test--wait (lambda () (not (funcall attached "t1"))))
+          (should (goblins--session-terminal (funcall record) "t1"))
+          (setq shell (goblins-terminal-attach "t1" (funcall record) #'pop-to-buffer source))
+          (with-current-buffer shell
+            (goblins-test--wait-text "SHELL-42")
+            (should (string-match-p "PASTED:/tmp/goblins-clipboard/" (buffer-string)))
+            (ghostel-send-string "echo AGAIN-$((6*7))\n")
+            (goblins-test--wait-text "AGAIN-42"))
+          ;; A full-screen program is redrawn on the alternate screen.
+          (let ((full (goblins-terminal
+                       '("sh" "-c"
+                         "printf '\\033[?1049h\\033[2J\\033[3;5HFULLSCREEN'; exec sleep 600")
+                       "full" (funcall record) #'pop-to-buffer source)))
+            (with-current-buffer full
+              (goblins-test--wait-text "FULLSCREEN"))
+            (kill-buffer full)
+            (goblins-test--wait (lambda () (not (funcall attached "t2"))))
+            (with-current-buffer (goblins-terminal-attach "t2" (funcall record) #'pop-to-buffer source)
+              (goblins-test--wait-text "FULLSCREEN"))
+            ;; Closing it takes it out of the snapshot.
+            (goblins--host-call source 'terminals.close (list :session first :terminal "t2"))
+            (goblins-test--wait (lambda () (not (goblins--session-terminal (funcall record) "t2"))))))
         (setq ghostel-used t)))
     ;; Stopping the goblin kills its buffers before the pin is released, so
     ;; a later goblin with the same name is pinned afresh.

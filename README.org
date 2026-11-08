@@ -419,6 +419,7 @@ Main commands:
 | =goblins-switch=                               | Jump to a running goblin                                             |
 | =goblins-accept=, =goblins-deny=                 | Decide a pending request from anywhere                               |
 | =goblins-shell=, =goblins-eshell=, =goblins-dired= | A shell, Eshell or Dired inside a goblin                             |
+| =goblins-terminal=, =goblins-terminal-attach=  | Run a command in a new terminal of a goblin; attach one of its terminals |
 | =goblins-find-file=                            | Visit a file inside a goblin                                         |
 
 =goblins-run= starts goblins in the current project's root and offers the project's =flake.nix= as dev shell.
