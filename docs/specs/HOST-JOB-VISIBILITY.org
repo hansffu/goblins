@@ -1,0 +1,80 @@
+#+title: Running host commands in Emacs
+
+Status: implemented, 2026-11-08. Builds on [[file:../adr/0012-host-commands.md][ADR 0012]] and [[file:NIX-AND-HOST-COMMANDS.org][NIX-AND-HOST-COMMANDS.org]].
+
+* Goal
+
+The human sees which host commands are running, for how long, can peek at their output, and can stop one, all from Emacs. Each host command carries a short name its agent chose, so it is recognisable at a glance.
+
+Nothing changes in how a host command runs: it keeps its pipes, its capped =output.log=, its approval and its outcome. This spec only adds a name, a start time, and host-side views and actions.
+
+* Non-goals
+
+- No PTY, no interactive attach, no input to a host command. Peeking is a read-only view of =output.log=.
+- No list of finished jobs in the sidebar. A finished, failed or cancelled job leaves the sidebar at once; its outcome stays where it is today, in the permission record shown by the permissions and info views.
+- No groundwork for detachable exec shells, which are a separate later feature.
+
+* Name
+
+=goblin host run --name NAME ...= sets the name. It travels in =HostCommand= as =name=.
+
+- One line, 1–32 characters, of ASCII letters and digits (=[A-Za-z0-9]=), the ASCII space and =._-:=, not starting or ending with a space. Anything else is refused with a message saying what is allowed. The restricted set keeps the label from imitating other text or hiding characters, so it needs no display escaping.
+- The sandbox CLI requires =--name=. The RPC field is optional, so an older in-sandbox CLI keeps working; without it the label is the command's first word (=argv[0]='s basename), shown escaped like the rest of the preview.
+- Names need not be unique. Commands keep taking the job ID.
+- The approval preview gets a =Name: NAME= line after the warning; the full command, directory, environment and time limit stay as they are. The preview's JSON gets a =name= field. The Emacs approval views read the preview's fields one by one (=goblins--popup-insert-host-command= in =goblins-views.el=, =goblins--insert-host-command= in =goblins.el=), so step 2 adds the name there.
+- The name is shown in =goblin host list= and =goblin host status= (a =name= field on =HostJob=), in the operation notice's subject, in the sidebar, and in the permissions and info views.
+
+* Start time
+
+The host-command permission record gets =started_at= (Unix seconds), set when the approved job is sent to the runtime in =decide_host=. It is absent before approval and for other kinds. =HostJob= carries it too.
+
+The record also gets =name= (as above) and =log=, the host path of the job's =output.log=, so host frontends can open it; the sandbox keeps seeing =/run/goblins/host-jobs/JOB/output.log= in =HostJob.log=.
+
+These are optional fields on =PermissionRecord=; old records without them still load.
+
+* Host CLI
+
+=goblins host list= and =goblins host cancel JOB= call the existing host-socket methods =host.list= and =host.cancel=. This closes the TODO.org item "Cancel host commands from the host side".
+
+* Emacs
+
+** Sidebar
+
+Under each goblin, after its shells, one line per *running* host command:
+
+#+begin_example
+  🛡 docker-tests            3m12s
+#+end_example
+
+The icon, the name, then the time since =started_at=. The icon is Lucide's =shield-alert= (=emacs/icons/shield-alert.svg=, listed in =emacs/icons/README.org=) in the =error= face's red, with =⚠= where SVG cannot be shown: a host command runs with the user's rights, so it should look more dangerous than a shell. It is a user option, =goblins-sidebar-host-command-icon=, a plist like =goblins-sidebar-raid-icon=. Like a shell line, it is shown whether the goblin is folded or not, right after the goblin's shells, and point can stop on it (=goblins--sidebar-insert-goblin= inserts shells after both the folded and unfolded blocks). A pending host command stays a permission line as today, above the shells, so =n= and =N= still find it; =goblins--sidebar-permission-line= shows it as =! NAME (host command)= instead of the whole command, which today is cut off at the sidebar's edge. Once approved, it becomes the running line below the shells; when it ends, the line goes.
+
+The sidebar redraws every 30 seconds today. While at least one shown sidebar lists a running host command it redraws every second instead, and falls back to 30 seconds when none is left.
+
+** Actions on a host-command line
+
+- =RET= opens a read-only buffer following the job's =output.log= (the record's =log=), kept scrolled to the end as it grows. When the job ends the buffer stays, with the file's final contents. The record turns =running= when the job is sent to the runtime, a moment before the helper creates the file: while the file does not exist yet, =RET= says "No output yet" and opens nothing. A job that fails to start leaves the sidebar like any other ending, and its message is in the permissions view.
+- =K= (=goblins-sidebar-stop=, which stops the goblin on its other lines) stops the job on a host-command line, after =y-or-n-p= naming the job, with =host.cancel=: SIGTERM to its process group, SIGKILL after 10 seconds, as today.
+
+The permissions and info views show the name, and for a running job how long it has run.
+
+* Skill
+
+The =goblins-host= skill says to pass =--name=, a short label a human recognises (for example =docker-tests=), and that the human sees running host commands, their output and can stop them.
+
+* API
+
+=docs/API.org= documents =HostCommand.name=, the record fields =name=, =started_at= and =log=, and the =HostJob= fields =name= and =started_at=, in the same change.
+
+* Steps
+
+Each step is reviewed and committed on its own.
+
+1. Daemon, both CLIs, the skill and =docs/API.org=: name, start time, log path, =goblins host list= and =cancel=.
+2. Emacs: sidebar line, icon and timer, the pending line's name, the log view and the stop action, the name in the approval, permissions and info views.
+
+* Tests
+
+- Rust: name validation (allowed set, length, edges), the preview's =Name:= line, the fallback label, and =started_at= set on approval only.
+- Python host suite: an end-to-end host command with =--name= shows =name=, =started_at= and =log= in =host.list= and the snapshot; =goblins host cancel= stops a running job.
+- ERT: the pending line showing the name, the sidebar line for a running host command, folded and unfolded, with its icon, and none once it finishes, the 1-second tick only while one is shown, =RET= opening the log, =K= calling =host.cancel= on a host-command line and still stopping the goblin elsewhere.
+- Smoke test of the sidebar through the =just emacs= setup in =emacs -nw=.

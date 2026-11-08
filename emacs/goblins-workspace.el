@@ -76,6 +76,13 @@ The default closes the sidebar and restores the configuration saved by
 `goblins-agent-icons'."
   :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
   :group 'goblins)
+(defcustom goblins-sidebar-host-command-icon
+  '(:svg "shield-alert.svg" :color error :text "⚠")
+  "The icon before a running host command in the sidebar, a plist like the
+entries of `goblins-agent-icons'.  A host command runs with your rights, so
+the default is a red warning shield."
+  :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
+  :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
 (defface goblins-sidebar-active '((t))
@@ -261,6 +268,8 @@ former owner is no longer one of its members."
     (let ((p (line-beginning-position)))
       (or (and (get-text-property p 'goblins-terminal)
                (cons 'terminal (get-text-property p 'goblins-terminal)))
+          (and (get-text-property p 'goblins-host-job)
+               (cons 'host-job (get-text-property p 'goblins-host-job)))
           (and (get-text-property p 'goblins-id)
                (cons 'id (get-text-property p 'goblins-id)))
           (and (get-text-property p 'goblins-detail)
@@ -286,7 +295,8 @@ holding it, for restoring point when a fold hides the line."
   "Return the start of the line identified by KEY, or nil."
   (when key
     (let ((prop (pcase (car key)
-                  ('id 'goblins-id) ('terminal 'goblins-terminal) (_ 'goblins-group)))
+                  ('id 'goblins-id) ('terminal 'goblins-terminal)
+                  ('host-job 'goblins-host-job) (_ 'goblins-group)))
           (pos (point-min)) found)
       (while (and (not found) (setq pos (next-single-property-change pos prop)))
         (when (equal (get-text-property pos prop) (cdr key))
@@ -392,12 +402,42 @@ It starts two columns before the goblin's text, where the active bar is drawn."
     (add-text-properties start (point) (list 'goblins-terminal shell 'goblins-parent id
                                              'goblins-in-group group-key))))
 
+(defun goblins--sidebar-running-jobs (session-id permissions)
+  "SESSION-ID's running host commands among PERMISSIONS, oldest first."
+  (sort (cl-remove-if-not (lambda (r) (and (equal (plist-get r :kind) "host-command")
+                                           (equal (plist-get r :state) "running")
+                                           (equal (plist-get r :session) session-id)))
+                          permissions)
+        (lambda (a b) (< (or (plist-get a :started_at) 0) (or (plist-get b :started_at) 0)))))
+
+(defun goblins--sidebar-insert-host-job (request depth id group-key)
+  "Insert the line of REQUEST, a running host command of goblin ID, at DEPTH:
+its icon, its name, and how long it has run at the right edge."
+  (let* ((start (point))
+         (age (or (goblins--host-duration (plist-get request :started_at)) ""))
+         ;; The icon takes up to two columns, then a space either side.
+         (room (max 1 (- goblins-sidebar-width 1 (* 2 depth) 2 1 1 (string-width age))))
+         (name (truncate-string-to-width
+                (goblins--safe (or (plist-get request :name) "host command"))
+                room nil nil "…")))
+    (insert (make-string (* 2 depth) ?\s)
+            (goblins--icon goblins-sidebar-host-command-icon) " " name
+            (propertize " " 'display `(space :align-to (- right ,(1+ (string-width age)))))
+            (propertize age 'face 'goblins-dim)
+            "\n")
+    (add-text-properties start (point) (list 'goblins-host-job (plist-get request :id)
+                                             'goblins-parent id
+                                             'goblins-in-group group-key))))
+
 (defun goblins--sidebar-permission-line (request)
   "REQUEST as \"! jq (package)\", or \"! docker\" when its package names its kind.
-A paused raid's prompt reads \"! raid crew paused\"."
+A paused raid's prompt reads \"! raid crew paused\", and a host command
+\"! docker-tests (host command)\", by its name instead of its whole command."
   (let ((package (goblins--safe (plist-get request :package)))
         (kind (goblins--safe (or (plist-get request :kind) "package"))))
     (propertize (cond ((equal kind "raid-owner") (format "! raid %s paused" package))
+                      ((and (equal kind "host-command") (plist-get request :name))
+                       (format "! %s (host command)" (goblins--safe (plist-get request :name))))
                       ((equal package kind) (concat "! " package))
                       (t (format "! %s (%s)" package kind)))
                 'face 'goblins-sidebar-permission)))
@@ -532,7 +572,11 @@ the shells follow it.  Only the name and the shells are stops for movement."
                 (elsewhere (goblins--sidebar-elsewhere session own)))
       (goblins--sidebar-insert-detail depth id group-key elsewhere))
     (dolist (shell own)
-      (goblins--sidebar-insert-shell shell depth id group-key))))
+      (goblins--sidebar-insert-shell shell depth id group-key))
+    ;; After the shells, folded or not.
+    (unless finished
+      (dolist (request (goblins--sidebar-running-jobs id permissions))
+        (goblins--sidebar-insert-host-job request depth id group-key)))))
 
 (defun goblins--sidebar-finished-p (session)
   (member (plist-get session :state) '("stopped" "failed")))
@@ -652,7 +696,9 @@ text is built apart from the sidebar so a failure cannot blank it."
     (goblins--sidebar-pad)
     (goblins--sidebar-mask-margins)
     (goblins--sidebar-highlight-selection)
-    (goblins--sidebar-update-active)))
+    (goblins--sidebar-update-active)
+    ;; A running host command may have come into view or gone.
+    (when goblins--sidebar-timer (goblins--sidebar-schedule))))
 
 (defun goblins--sidebar-pad ()
   "Put the upper half of `goblins-sidebar-line-spacing' above each line but
@@ -689,7 +735,8 @@ column before it in a terminal."
       (let ((indent (current-indentation)))
         (when (and (> indent 1)
                    (cl-some (lambda (p) (get-text-property (point) p))
-                            '(goblins-id goblins-detail goblins-terminal goblins-group)))
+                            '(goblins-id goblins-detail goblins-terminal goblins-host-job
+                              goblins-group)))
           (let ((mask (make-overlay (point) (+ (point) indent -1))))
             (overlay-put mask 'goblins-margin t)
             (overlay-put mask 'face 'default)
@@ -722,6 +769,26 @@ column before it in a terminal."
 
 (defvar goblins--sidebar-timer nil
   "Redraws shown sidebars now and then, so activity durations stay current.")
+(defvar goblins--sidebar-timer-interval nil
+  "Seconds between the redraws of `goblins--sidebar-timer'.")
+
+(defun goblins--sidebar-lists-host-job-p ()
+  "Whether a shown sidebar lists a running host command."
+  (cl-some (lambda (buffer)
+             (and (buffer-local-value 'goblins--sidebar-source buffer)
+                  (get-buffer-window buffer t)
+                  (with-current-buffer buffer
+                    (text-property-not-all (point-min) (point-max) 'goblins-host-job nil))))
+           (buffer-list)))
+
+(defun goblins--sidebar-schedule ()
+  "Redraw every second while a shown sidebar lists a running host command,
+else every 30 seconds."
+  (let ((interval (if (goblins--sidebar-lists-host-job-p) 1 30)))
+    (unless (and goblins--sidebar-timer (eql interval goblins--sidebar-timer-interval))
+      (when goblins--sidebar-timer (cancel-timer goblins--sidebar-timer))
+      (setq goblins--sidebar-timer-interval interval
+            goblins--sidebar-timer (run-with-timer interval interval #'goblins--sidebar-tick)))))
 
 (defun goblins--sidebar-tick ()
   "Redraw every shown sidebar; stop the timer once no sidebar is left."
@@ -733,7 +800,8 @@ column before it in a terminal."
           (with-current-buffer buffer
             (condition-case err (goblins--sidebar-render)
               (error (message "goblins sidebar: %s" (error-message-string err))))))))
-    (unless live
+    (if live
+        (goblins--sidebar-schedule)
       (cancel-timer goblins--sidebar-timer)
       (setq goblins--sidebar-timer nil))))
 
@@ -852,19 +920,23 @@ a goblin's name with its detail lines, which movement treats as one line."
       (cons start (point)))))
 
 (defun goblins--sidebar-window-changed (_frame-or-window)
-  (goblins--sidebar-update-active))
+  (goblins--sidebar-update-active)
+  ;; The sidebar may have just become visible.
+  (when goblins--sidebar-timer (goblins--sidebar-schedule)))
 (add-hook 'window-buffer-change-functions #'goblins--sidebar-window-changed)
 (add-hook 'window-selection-change-functions #'goblins--sidebar-window-changed)
 
 ;;;; Commands
 
 (defun goblins--sidebar-lines (direction)
-  "Move to the next line in DIRECTION (1 or -1): a group, a goblin or a shell.
+  "Move to the next line in DIRECTION (1 or -1): a group, a goblin, a shell
+or a running host command.
 A goblin's detail lines, rules and blank lines are passed by."
   (let ((start (point)) found)
     (while (and (not found) (zerop (forward-line direction)))
       (when (or (get-text-property (point) 'goblins-id)
                 (get-text-property (point) 'goblins-terminal)
+                (get-text-property (point) 'goblins-host-job)
                 (get-text-property (point) 'goblins-group))
         (setq found t)))
     (if found
@@ -922,7 +994,7 @@ only the headings, then every goblin on its name line, then everything."
 (defun goblins-sidebar-dwim ()
   "Act on the sidebar line at point, or select the sidebar.
 On a goblin show it beside the sidebar, attaching if necessary; on a shell
-show it; on a raid heading open its page; on a directory heading fold or
+show it; on a running host command follow its output; on a raid heading open its page; on a directory heading fold or
 unfold it.  Outside the sidebar, select it, opening the workspace or showing
 the sidebar as needed."
   (interactive)
@@ -933,6 +1005,9 @@ the sidebar as needed."
     (goblins-select-goblin (goblins--sidebar-ensure-source)
                            (get-text-property (line-beginning-position) 'goblins-parent)
                            (get-text-property (line-beginning-position) 'goblins-terminal)))
+   ((get-text-property (line-beginning-position) 'goblins-host-job)
+    (goblins-host-job-log (goblins--sidebar-ensure-source)
+                          (get-text-property (line-beginning-position) 'goblins-host-job)))
    ((or (get-text-property (line-beginning-position) 'goblins-id)
         (get-text-property (line-beginning-position) 'goblins-detail))
     (goblins-open-session (goblins--sidebar-ensure-source)
@@ -1074,10 +1149,12 @@ Goblins in folded groups count too, in the order of the unfolded sidebar."
   (goblins--sidebar-move-to-waiting t))
 
 (defun goblins-sidebar-stop ()
-  "Stop the goblin at point after confirming."
+  "Stop the host command at point, or else the goblin at point, after confirming."
   (interactive)
-  (let ((goblin (goblins--sidebar-goblin-at-point)))
-    (goblins-stop-goblin (car goblin) (cdr goblin))))
+  (if-let* ((request (get-text-property (line-beginning-position) 'goblins-host-job)))
+      (goblins-stop-host-job (goblins--sidebar-ensure-source) request)
+    (let ((goblin (goblins--sidebar-goblin-at-point)))
+      (goblins-stop-goblin (car goblin) (cdr goblin)))))
 
 (defun goblins--sidebar-open-in (open)
   "Call OPEN with the session record and status buffer of the goblin at
@@ -1132,10 +1209,10 @@ running; with a prefix argument STOP, they are stopped too."
              ("n / N" . "next / previous goblin waiting for a decision")
              ("TAB" . "fold or unfold the goblin or group")
              ("S-TAB" . "cycle: headings only, goblins folded, everything"))
-     ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it")
+     ("Goblin" ("RET" . "show or attach its terminal; on a shell, show it; on a host command, follow its output")
                ("p" . "permission requests")
                ("I" . "info")
-               ("K" . "stop it")
+               ("K" . "stop it; on a host command, stop that command")
                ("t" . "a shell terminal inside it, listed below it")
                ("e" . "Eshell inside it")
                ("d" . "Dired inside it")
@@ -1463,8 +1540,7 @@ On a raid, show those sent within it."
               revert-buffer-function (lambda (&rest _) (goblins-sidebar-refresh))
               hl-line-face 'goblins-sidebar-selected
               hl-line-range-function #'goblins--sidebar-selection)
-  (unless goblins--sidebar-timer
-    (setq goblins--sidebar-timer (run-with-timer 30 30 #'goblins--sidebar-tick)))
+  (goblins--sidebar-schedule)
   ;; Point shows as the highlighted line, never as a cursor, Evil's included.
   (dolist (cursor '(evil-default-cursor evil-normal-state-cursor evil-motion-state-cursor
                     evil-emacs-state-cursor evil-visual-state-cursor

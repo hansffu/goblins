@@ -389,6 +389,10 @@ pub enum HostCommand {
         /// Why the task needs it, shown to the approver
         #[arg(long)]
         reason: String,
+        /// A short label the human recognises in lists and approvals, for
+        /// example docker-tests (1-32 characters: letters, digits, space, . _ - :)
+        #[arg(long)]
+        name: String,
         /// Return once submitted; the outcome arrives as an inbox notice
         #[arg(long)]
         detach: bool,

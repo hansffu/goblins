@@ -354,11 +354,31 @@ values, so no request text can add a line or a field."
                                                    "\n")))
                                'face 'goblins-dim)
           "\n")
+  (when-let* ((name (plist-get preview :name)))
+    (goblins--wrapped-field "Name:" name))
   (goblins--wrapped-field "Command:" (plist-get preview :command))
   (goblins--wrapped-field "Directory:" (plist-get preview :directory))
   (seq-doseq (variable (plist-get preview :environment))
     (goblins--wrapped-field "Variable:" variable))
   (goblins--wrapped-field "Time limit:" (plist-get preview :time_limit)))
+
+(defun goblins--host-duration (started)
+  "How long ago STARTED, in Unix seconds, was: \"45s\", \"3m12s\", \"1h05m\" or
+\"2d03h\"."
+  (when (numberp started)
+    (let ((seconds (max 0 (floor (- (float-time) started)))))
+      (cond ((< seconds 60) (format "%ds" seconds))
+            ((< seconds 3600) (format "%dm%02ds" (/ seconds 60) (% seconds 60)))
+            ((< seconds 86400) (format "%dh%02dm" (/ seconds 3600) (/ (% seconds 3600) 60)))
+            (t (format "%dd%02dh" (/ seconds 86400) (/ (% seconds 86400) 3600)))))))
+
+(defun goblins--request-state (record)
+  "RECORD's state, followed by how long a running host command has run."
+  (let ((state (goblins--safe (plist-get record :state))))
+    (if-let* (((equal (plist-get record :state) "running"))
+              (age (goblins--host-duration (plist-get record :started_at))))
+        (format "%s %s" state age)
+      state)))
 
 (defun goblins--request-subject (record)
   "What RECORD asks for, on one line.  A host command is cut to 60
@@ -529,7 +549,7 @@ HIDE starts it folded and HEADING replaces the default heading text."
           (format "  %s  %s  [%s]"
                   (goblins--request-agent-label record)
                   (goblins--request-subject record)
-                  (goblins--safe (plist-get record :state)))))
+                  (goblins--request-state record))))
     (when details
       (goblins--field "Reason:" (plist-get record :reason))
       (goblins--field "Session:" (plist-get record :session))

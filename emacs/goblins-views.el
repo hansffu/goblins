@@ -109,6 +109,53 @@
       (goblins--host-call source 'sessions.stop (list :session id))
       (message "Stopping %s" (goblins--safe (plist-get session :agent_name))))))
 
+(defun goblins--host-job-record (source request)
+  "The permission record of REQUEST in SOURCE's snapshot, or nil."
+  (cl-find request (append (plist-get (buffer-local-value 'goblins--snapshot source)
+                                      :permissions)
+                           nil)
+           :key (lambda (r) (plist-get r :id)) :test #'equal))
+
+(defun goblins-stop-host-job (source request)
+  "Stop the running host command REQUEST of SOURCE's server after confirming."
+  (let ((record (goblins--host-job-record source request)))
+    (unless (and record (equal (plist-get record :state) "running"))
+      (user-error "This host command is no longer running"))
+    (let ((name (goblins--safe (plist-get record :name))))
+      (when (y-or-n-p (format "Stop host command %s? " name))
+        (goblins--host-call source 'host.cancel (list :request request))
+        (message "Stopping host command %s" name)))))
+
+(defun goblins-host-job-log (source request)
+  "Show the output of host command REQUEST of SOURCE's server beside the agent.
+The buffer is read-only and follows the file as it grows; it stays with the
+final contents when the job ends.  The file is the job's, so what it holds
+is never acted on: no mode, format, local variable or evaluation applies to it."
+  (let* ((record (goblins--host-job-record source request))
+         (log (plist-get record :log)))
+    (unless record (user-error "The daemon no longer retains this host command"))
+    (unless (and (stringp log) (file-readable-p log))
+      (user-error "No output yet"))
+    (let ((buffer (let ((enable-local-variables nil)
+                        (enable-local-eval nil)
+                        (auto-mode-alist nil)
+                        (magic-mode-alist nil)
+                        (magic-fallback-mode-alist nil)
+                        (interpreter-mode-alist nil)
+                        ;; No format, such as text/enriched, decodes it.
+                        (format-alist nil)
+                        (large-file-warning-threshold nil))
+                    (find-file-noselect log t))))
+      (with-current-buffer buffer
+        (setq-local format-alist nil)
+        (setq buffer-read-only t)
+        (auto-revert-tail-mode 1)
+        (goto-char (point-max)))
+      (goblins--display-main buffer)
+      (when-let* ((window (get-buffer-window buffer t)))
+        (set-window-point window (with-current-buffer buffer (point-max))))
+      buffer)))
+
 (defun goblins-kill-goblin-execs (source id)
   "Kill every shell and command inside goblin ID of SOURCE's server, after
 confirming."
@@ -605,7 +652,7 @@ end of the buffer.  Add your own to show more."
         (insert "  " (goblins--permission-glyph record) " "
                 (propertize (format "%-18s" (goblins--request-subject record))
                             'face 'goblins-key)
-                (goblins--safe (plist-get record :state))
+                (goblins--request-state record)
                 (let ((kind (plist-get record :kind)))
                   (if (member kind '(nil "package")) ""
                     (format "  (%s)" (goblins--safe kind))))
@@ -729,7 +776,7 @@ end of the buffer.  Add your own to show more."
   (pcase (plist-get record :state)
     ("ready" "accepted, ready")
     ("realizing" "accepted, provisioning")
-    (state (goblins--safe state))))
+    (_ (goblins--request-state record))))
 
 (defun goblins--permission-heading (record)
   (format "  %s %s  %s%s"
@@ -968,6 +1015,8 @@ line or a field."
             " asks to run a command on the host"
             (goblins--waiting (length pending))
             "\n")
+    (when-let* ((name (plist-get preview :name)))
+      (goblins--wrapped-field "Name:" name))
     (goblins--wrapped-field "Command:" (plist-get preview :command))
     (goblins--wrapped-field "Directory:" (plist-get preview :directory))
     (seq-doseq (variable (plist-get preview :environment))

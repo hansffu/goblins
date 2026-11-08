@@ -155,6 +155,15 @@ pub struct PermissionRecord {
     pub approved: Option<bool>,
     pub preview: Option<Value>,
     pub message: Option<String>,
+    /// A host command's name: the agent's label, or its program's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// When a host command was approved and sent to the runtime (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    /// The host path of a host command's `output.log`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -2707,6 +2716,7 @@ impl Controller {
             p.package = spec.subject();
         }
         let host_preview = host.as_ref().map(host::Spec::preview);
+        let host_name = host.as_ref().map(host::Spec::label);
         let detached = host.as_ref().is_some_and(|h| h.detach);
         let docker_scope = self.sessions[&session].docker_scope().map(str::to_string);
         // Completions must not be dropped, so a backlog the
@@ -2801,6 +2811,17 @@ impl Controller {
             approved: if auto_approve { Some(true) } else { None },
             preview: host_preview.or_else(|| docker_scope.filter(|_| p.kind == "docker").map(|scope| json!({"description": format!("Attach to the shared Docker engine of scope '{scope}': members control the same containers, volumes, network, and combined filesystem grants. Goblins this one runs start attached.")}))),
             message: None,
+            log: host_name.as_ref().map(|_| {
+                a.directory
+                    .join("resources")
+                    .join("host-jobs")
+                    .join(&request)
+                    .join("output.log")
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+            name: host_name,
+            started_at: None,
         });
         let r = self.permissions.back().unwrap();
         let change = crate::operation::Change::Requested {
@@ -3772,6 +3793,9 @@ mod tests {
             approved: Some(true),
             preview: None,
             message: None,
+            name: None,
+            started_at: None,
+            log: None,
         });
         id
     }
@@ -7687,6 +7711,9 @@ mod tests {
                 approved: None,
                 preview: None,
                 message: None,
+                name: None,
+                started_at: None,
+                log: None,
             });
         }
         d.stop("a", None).unwrap();

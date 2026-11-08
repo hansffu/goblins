@@ -172,6 +172,13 @@ pub fn check(
     let operation = match method {
         "permissions.request" => {
             let p: PermissionParams = parse(&call.params)?;
+            if p.host
+                .as_ref()
+                .and_then(|h| h.name.as_deref())
+                .is_some_and(|n| !goblins_protocol::rpc::host_name(n))
+            {
+                return Err(invalid(goblins_protocol::rpc::HOST_NAME_RULE));
+            }
             if !p.validate() {
                 return Err(invalid("invalid permission request or reason"));
             }

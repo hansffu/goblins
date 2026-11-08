@@ -174,6 +174,11 @@ pub enum Command {
     Stop { id_or_name: String },
     /// Kill one sandbox by live name or immutable session ID
     Kill { id_or_name: String },
+    /// Inspect and stop the host commands goblins run (see 'goblin host run')
+    Host {
+        #[command(subcommand)]
+        command: HostCommand,
+    },
     /// Call a trusted host JSON-RPC method
     Rpc { method: String, params_json: String },
     /// Print a shell completion script (Nix packages install Bash/Fish/Zsh scripts)
@@ -186,6 +191,14 @@ pub enum Command {
         #[arg(last = true)]
         words: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum HostCommand {
+    /// List every goblin's host commands as JSON
+    List,
+    /// Withdraw a pending host command or stop a running one by job ID
+    Cancel { job: String },
 }
 
 #[derive(Subcommand)]

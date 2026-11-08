@@ -267,7 +267,7 @@ Returns a raid's record.
 
 ** Host commands
 
-Host commands are permission requests of kind =host-command=; these methods inspect and stop them.
+Host commands are permission requests of kind =host-command=; these methods inspect and stop them. =goblins host list= and =goblins host cancel JOB= call =host.list= and =host.cancel= on the host endpoint.
 
 *** =host.list=
 
@@ -384,8 +384,8 @@ Asks the host for a grant. The reply arrives after the decision and its executio
   - =kind: "package"=: =package= is the Nix attribute name. Unless stated, =package= is empty and =update=, =lock= and =host= are absent.
   - =kind: "docker"=: attach the scope's Docker engine; =package= empty.
   - =kind: "devshell"=: refresh the dev shell; =update= lists flake inputs to update (empty for all) or =lock= locks inputs =flake.nix= declares but the lock lacks; not both. =update= holds at most 32 names of 1–200 bytes: =/=-separated parts that start with a letter or =_= and continue with letters, digits, =_=, =-= or ='=.
-  - =kind: "host-command"=: =host= is ={"argv", "cwd", "env"?, "timeout"?, "detach"?}=. =argv= has 1–1024 entries and a non-empty program; =cwd= is an absolute sandbox path; =env= is at most 256 =[name, value]= pairs and cannot set =GOBLINS_HOST_JOB=; =timeout= is a positive number of seconds. Strings contain no NUL, and =argv=, =env= and =cwd= together are at most 12 KiB.
-- Output :: ={"request", "status", "message"}= with =status= =ready=, =denied=, =failed=, =withdrawn= or =error=. A host command that ran returns ={"request", "status", "message", "exit_code", "signal", "code", "log"}= instead (a =HostJob= without =subject= and =reason=): =status= is =finished= (whatever its exit code, and after a timeout, with a message starting =timed out;=), =cancelled= (cancelled by the goblin or host, or stopped with the goblin) or =failed= (not started). A host command denied or withdrawn before running returns the plain result above. A detached host command returns ={"request", "status": "pending"}= at once and its outcome arrives as an inbox notice.
+  - =kind: "host-command"=: =host= is ={"argv", "cwd", "env"?, "timeout"?, "detach"?, "name"?}=. =argv= has 1–1024 entries and a non-empty program; =cwd= is an absolute sandbox path; =env= is at most 256 =[name, value]= pairs and cannot set =GOBLINS_HOST_JOB=; =timeout= is a positive number of seconds. =name= is a label of 1–32 characters: ASCII letters, digits, the space and =._-:=, not starting or ending with a space; anything else is refused with a message saying what is allowed. Without it the label is the basename of =argv[0]=, cut to 32 characters and escaped like the approval preview (the sandbox CLI always sends one). Names need not be unique. Strings contain no NUL, and =argv=, =env= and =cwd= together are at most 12 KiB.
+- Output :: ={"request", "status", "message"}= with =status= =ready=, =denied=, =failed=, =withdrawn= or =error=. A host command that ran returns ={"request", "status", "message", "name", "started_at", "exit_code", "signal", "code", "log"}= instead (a =HostJob= without =subject= and =reason=): =status= is =finished= (whatever its exit code, and after a timeout, with a message starting =timed out;=), =cancelled= (cancelled by the goblin or host, or stopped with the goblin) or =failed= (not started). A host command denied or withdrawn before running returns the plain result above. A detached host command returns ={"request", "status": "pending"}= at once and its outcome arrives as an inbox notice.
 - Notifications :: an attached host command sends ={"method": "host.submitted", "params": {"request"}}= before its result.
 
 *** =host.list= / =host.status= / =host.cancel=
@@ -542,8 +542,11 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =reason=    | The agent's reason                                                                                           |
 | =state=     | =pending=, =realizing=, =mounting=, =publishing=, =running=, =ready=, =finished= (host command ran), =approved= (raid owner chosen), =denied=, =withdrawn=, =failed= or =cancelled= |
 | =approved=  | Decision, or null before one                                                                                 |
-| =preview=   | Kind-specific, or null: =package= ={"in_store", "download", "build_required"}= or ={"error"}=; =docker= ={"description"}=; =devshell= =DevShellPreview=; =host-command= ={"kind": "host-command", "description", "command", "directory", "environment", "time_limit"}= |
+| =preview=   | Kind-specific, or null: =package= ={"in_store", "download", "build_required"}= or ={"error"}=; =docker= ={"description"}=; =devshell= =DevShellPreview=; =host-command= ={"kind": "host-command", "description", "name", "command", "directory", "environment", "time_limit"}= (=description= has a =Name: NAME= line after its warning; =name= is the host command's label) |
 | =message=   | Outcome message or null                                                                                      |
+| =name=      | Host commands only, else absent: the label (the agent's =name=, or the program's base name)                  |
+| =started_at= | Host commands only: Unix seconds when the approved job was sent to the runtime; absent before approval and for other kinds |
+| =log=       | Host commands only: the host path of the job's =output.log=, which exists once the helper has started it |
 
 ** Raid
 
@@ -551,7 +554,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 
 ** HostJob
 
-={"request", "status", "subject", "reason", "message", "log"}=, plus =exit_code=, =signal= and =code= once it has run. =status= is the Permission state: =pending=, =running=, then =finished=, =cancelled=, =failed=, =denied= or =withdrawn=. =code= is the exit code, =128 + signal=, or 125–127 when the command could not be started. =log= is the job's output path inside the sandbox.
+={"request", "status", "name", "started_at", "subject", "reason", "message", "log"}=, plus =exit_code=, =signal= and =code= once it has run. =status= is the Permission state: =pending=, =running=, then =finished=, =cancelled=, =failed=, =denied= or =withdrawn=. =code= is the exit code, =128 + signal=, or 125–127 when the command could not be started. =log= is the job's output path inside the sandbox (the Permission's =log= is the host's path). =name= is the label, and =started_at= is the Unix second the approved job started, null before approval; the subject starts with =NAME: = when the agent chose a name.
 
 ** Message
 

@@ -98,6 +98,7 @@ fn readable(socket: &UnixStream, timeout: Duration) -> bool {
 
 fn run(
     reason: String,
+    name: String,
     detach: bool,
     cwd: Option<PathBuf>,
     env: Vec<String>,
@@ -127,7 +128,18 @@ fn run(
         env,
         timeout,
         detach,
+        name: Some(name),
     };
+    if !host
+        .name
+        .as_deref()
+        .is_some_and(goblins_protocol::rpc::host_name)
+    {
+        return Err(format!(
+            "invalid --name: {}",
+            goblins_protocol::rpc::HOST_NAME_RULE
+        ));
+    }
     if !host.validate() {
         return Err("invalid host command: check its arguments, environment and size".into());
     }
@@ -199,12 +211,13 @@ pub fn command(command: HostCommand) -> Result<i32, String> {
     match command {
         HostCommand::Run {
             reason,
+            name,
             detach,
             cwd,
             env,
             timeout,
             command,
-        } => run(reason, detach, cwd, env, timeout, command),
+        } => run(reason, name, detach, cwd, env, timeout, command),
         HostCommand::Status { job } => {
             println!("{}", status(&job)?);
             Ok(0)

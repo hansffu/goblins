@@ -250,6 +250,9 @@ impl Controller {
             approved: None,
             preview: Some(preview),
             message: None,
+            name: None,
+            started_at: None,
+            log: None,
         });
         self.dirty = true;
     }

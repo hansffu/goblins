@@ -214,12 +214,14 @@ The sandbox acts as the host user towards the daemon. If that user is in =truste
 
 #+begin_src sh
 # Inside the goblin:
-goblin host run --reason "Run the Docker tests" -- \
+goblin host run --name docker-tests --reason "Run the Docker tests" -- \
   nix develop -c python3 -m unittest discover -s tests -p test_docker.py -v
-goblin host run --detach --reason "Long test run" --timeout 3600 -- make check
+goblin host run --name long-tests --detach --reason "Long test run" --timeout 3600 -- make check
 goblin host status|logs [--follow]|wait [--timeout S]|cancel JOB
 goblin host list
 #+end_src
+
+=--name= is required: a label of 1-32 ASCII letters, digits, spaces and =._-:= that the approval, =goblin host list= and Emacs show next to the job. From the host, =goblins host list= prints every goblin's host commands as JSON, and =goblins host cancel JOB= withdraws a pending one or stops a running one.
 
 Approving a command approves whatever the files it reads say, such as scripts, build files and tests in the shared directory, which the goblin can change at any time. The command runs as you, with no shell, in the server's environment plus any =--env KEY=VALUE= (for the command only, not its supervisor), with =GOBLINS_HOST_JOB= set and =TMPDIR= unset. Its directory, the current one or =--cwd=, must be the shared working directory or a directory granted to the goblin, which have the same paths on both sides; the sandbox's private home and =/tmp= are refused. Output goes to =/run/goblins/host-jobs/JOB/output.log= inside the sandbox (read-only, at most 16 MiB per job; the last 8 finished jobs are kept). At most 4 host commands per goblin run at once.
 
