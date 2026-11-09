@@ -3947,6 +3947,9 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (should (bobp))
     (forward-line 1)
     (should (equal (goblins--sidebar-selection) (cons (point-min) (line-beginning-position 2))))
+    ;; Its indentation is not masked: the highlight is one rectangle.
+    (should-not (cl-some (lambda (o) (overlay-get o 'goblins-margin))
+                         (overlays-in (point) (line-end-position))))
     (should (equal (get-text-property (point) 'goblins-raid) "sidebar-mouse"))
     (goblins-sidebar-fold)
     (should (equal (goblins-test--sidebar-plain)

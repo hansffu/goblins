@@ -848,7 +848,9 @@ column before it in a terminal."
     (while (not (eobp))
       (let ((indent (current-indentation)))
         (when (and (> indent 1)
-                   (goblins--sidebar-target-p (point)))
+                   (goblins--sidebar-target-p (point))
+                   ;; A heading's second line is highlighted with it, as one.
+                   (not (get-text-property (point) 'goblins-continued)))
           (let ((mask (make-overlay (point) (+ (point) indent -1))))
             (overlay-put mask 'goblins-margin t)
             (overlay-put mask 'face 'default)
