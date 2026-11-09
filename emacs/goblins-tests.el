@@ -3960,6 +3960,16 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
       (should (string-prefix-p "▾ ⚔ sidebar-mouse · goblins ⎇ sidebar-mouse\n  › nugget"
                                (goblins-test--sidebar-plain))))))
 
+(ert-deftest goblins-sidebar-aligns-a-headings-second-line-by-pixels ()
+  ;; In a GUI the fold arrow and the icon may be wider than their columns:
+  ;; the second line's blank is as wide as they show.
+  (cl-letf (((symbol-function 'display-graphic-p) (lambda (&rest _) t))
+            ((symbol-function 'string-pixel-width)
+             (lambda (text &rest _) (* 7 (length text)))))
+    (should (equal (get-text-property 0 'display (goblins--sidebar-blank "▾ ⚔ "))
+                   '(space :width (28)))))
+  (should (equal (goblins--sidebar-blank "▾ ") "  ")))
+
 (ert-deftest goblins-sidebar-cuts-the-role-then-the-name-to-keep-the-badges ()
   (let ((goblins-sidebar-width 28))
     (goblins-test--sidebar goblins-test--worktree-raid

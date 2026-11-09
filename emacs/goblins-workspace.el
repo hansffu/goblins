@@ -370,21 +370,33 @@ while PAUSED, and with DIR, the one directory of its goblins, that
 directory's project, or the WORKTREE (REPOSITORY . NAME) it is.
 Return (LABEL . CONTINUED): when the label with DIR is wider than ROOM, DIR
 moves to CONTINUED, the heading's second line, cut to fit beneath it."
-  (let* ((raid (concat (goblins--icon goblins-sidebar-raid-icon) " "
+  (let* ((icon (goblins--icon goblins-sidebar-raid-icon))
+         (raid (concat icon " "
                        (propertize (goblins--safe name) 'face 'goblins-sidebar-header)
                        (if paused (propertize " · paused" 'face 'goblins-sidebar-header) "")))
          (place (and dir (goblins--sidebar-directory-label dir nil worktree)))
          (merged (and place (concat raid (propertize " · " 'face 'goblins-dim) place))))
     (cond ((not place) (cons raid nil))
           ((or (not room) (<= (string-width merged) room)) (cons merged nil))
-          ;; The second line starts two columns further in than the label.
-          (t (cons raid (truncate-string-to-width place (max 1 (- room 2)) nil nil "…"))))))
+          ;; The second line starts under the raid's name.
+          (t (cons raid
+                   (concat (goblins--sidebar-blank (concat icon " "))
+                           (truncate-string-to-width
+                            place (max 1 (- room (string-width icon) 1)) nil nil "…")))))))
+
+(defun goblins--sidebar-blank (text)
+  "A blank as wide as TEXT shows: in a GUI its fold arrow and icon may be
+wider than their columns."
+  (if (and (display-graphic-p) (fboundp 'string-pixel-width))
+      (propertize " " 'display `(space :width (,(string-pixel-width text))))
+    (make-string (string-width text) ?\s)))
 
 (defun goblins--sidebar-insert-group (key indent label folds &optional properties pending
                                           continued)
   "Insert the heading of group KEY with LABEL, text PROPERTIES and a PENDING
-badge, and CONTINUED, if any, on a second line of the heading.  A blank line
-parts it from the goblins above.  Return non-nil unless KEY is folded in FOLDS."
+badge, and CONTINUED, if any, on a second line of the heading, under LABEL.
+A blank line parts it from the goblins above.  Return non-nil unless KEY is
+folded in FOLDS."
   (let* ((folded (goblins--sidebar-folded-p key folds))
          (text (concat
                 (propertize (concat (make-string indent ?\s) (if folded "▸ " "▾ "))
@@ -393,7 +405,11 @@ parts it from the goblins above.  Return non-nil unless KEY is folded in FOLDS."
                 (goblins--sidebar-badge (or pending 0))
                 "\n"
                 (when continued
-                  (propertize (concat (make-string (+ indent 4) ?\s) continued "\n")
+                  (propertize (concat (goblins--sidebar-blank
+                                       (propertize (concat (make-string indent ?\s)
+                                                           (if folded "▸ " "▾ "))
+                                                   'face 'goblins-sidebar-header))
+                                      continued "\n")
                               'goblins-continued t)))))
     (add-text-properties 0 (length text) (list 'goblins-group key) text)
     (add-text-properties 0 (length text) properties text)
