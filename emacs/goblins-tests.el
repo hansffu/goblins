@@ -1246,7 +1246,7 @@ before the edge."
     (goblins-sidebar-previous)
     (let ((range (goblins--sidebar-selection)))
       (should (equal (buffer-substring-no-properties (car range) (cdr range))
-                     "  › chief\n  ​shell\n  ​◐ working\n  ​✉ 1 message\n")))
+                     "  › chief\n  \u200bshell\n  \u200b◐ working\n  \u200b✉ 1 message\n")))
     ;; On a detail line, the goblin's commands still apply, and point
     ;; stays with its goblin across renders.
     (forward-line 1)
@@ -1333,7 +1333,7 @@ before the edge."
               (should block)
               (should (equal (buffer-substring-no-properties (overlay-start block)
                                                              (overlay-end block))
-                             "  › session-b\n  ​shell\n  ​○ idle\n"))
+                             "  › session-b\n  \u200bshell\n  \u200b○ idle\n"))
               (should (< (overlay-get block 'priority) hl-line-overlay-priority))
               (let ((bars (cl-remove-if-not (lambda (o) (equal (overlay-get o 'display) "▌"))
                                             (overlays-in (overlay-start block)
@@ -3588,7 +3588,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     (should (window-parameter (get-buffer-window sidebar) 'window-side))
     ;; The main window shows the status buffer: no goblin terminal yet.
     (should (eq (window-buffer (goblins--main-window)) source))
-    (goblins-test--wait (lambda () (string-match-p "› gamma.*\n  ! hello (package)"
+    (goblins-test--wait (lambda () (string-match-p "› gamma.*\n  \u200b! hello (package)"
                                                    (goblins-test--sidebar-text))))
     ;; Folded goblins are a line each, with their agent's icon (text in a
     ;; terminal) before the name.  Headings are found by their directory:
@@ -3598,7 +3598,7 @@ sees the new baseline: neither the same nor a newer snapshot repeats one."
     ;; The directory of the waiting goblin carries its count too.
     (let ((dir (plist-get (goblins-test--live-session source "gamma") :cwd)))
       (should (string-match-p " !1\\'" (goblins-test--heading-text dir)))
-      (should (string-match-p "\\`  › delta.*\n  › gamma.*\n  ! hello (package)\n"
+      (should (string-match-p "\\`  › delta.*\n  › gamma.*\n  \u200b! hello (package)\n"
                               (goblins-test--group-text dir))))
     ;; Selecting the waiting goblin pops up its request at the bottom.
     (goblins-select-goblin source (plist-get (goblins-test--live-session source "gamma") :id))
