@@ -46,6 +46,38 @@ let
     && builtins.match "([^{}]|\\{\\{|}}|\\{([a-z][a-z0-9_]{0,31}|attach\\.pid)})*" element != null;
   handler = command: builtins.isList command && command != [ ] && builtins.all handlerElement command;
   variableName = name: builtins.isString name && builtins.match "[a-z][a-z0-9_]{0,31}" name != null;
+  # mkGoblin's launchOptions: the bounds and grammars the daemon applies too.
+  optionName = name: builtins.match "[A-Za-z_][A-Za-z0-9_-]{0,31}" name != null;
+  choiceName = name: builtins.match "[A-Za-z0-9_][A-Za-z0-9._-]{0,63}" name != null;
+  optionDescription =
+    text:
+    text == null
+    || builtins.isString text
+      && builtins.stringLength text <= 200
+      && !lib.hasInfix "\n" text
+      && !lib.hasInfix "\r" text;
+  onlyKeys = keys: value: builtins.all (name: builtins.elem name keys) (builtins.attrNames value);
+  launchChoice =
+    choice:
+    builtins.isAttrs choice
+    && onlyKeys [ "description" "args" ] choice
+    && optionDescription (choice.description or null)
+    && builtins.isList (choice.args or null)
+    && choice.args != [ ]
+    && builtins.length choice.args <= 16
+    && builtins.all (
+      arg: builtins.isString arg && builtins.stringLength arg <= 256 && arg != "--"
+    ) choice.args;
+  launchOption =
+    option:
+    builtins.isAttrs option
+    && onlyKeys [ "description" "choices" ] option
+    && optionDescription (option.description or null)
+    && builtins.isAttrs (option.choices or null)
+    && option.choices != { }
+    && builtins.length (builtins.attrNames option.choices) <= 64
+    && builtins.all choiceName (builtins.attrNames option.choices)
+    && builtins.all launchChoice (builtins.attrValues option.choices);
   defaultKeys = [
     "allowedPackages"
     "env"
@@ -100,6 +132,7 @@ in
         allowedRunTargets
         bypassPermissions
         worktrees
+        launchOptions
         ;
     in
     if !validName binName || !validName outName then
@@ -184,6 +217,17 @@ in
       fail "rwDirs, rwFiles, roDirs and roFiles must be lists of path strings"
     else if !builtins.isList args || !builtins.all builtins.isString args then
       fail "args must be a list of strings"
+    else if
+      !(
+        builtins.isAttrs launchOptions
+        && builtins.length (builtins.attrNames launchOptions) <= 16
+        && builtins.all optionName (builtins.attrNames launchOptions)
+        && builtins.all launchOption (builtins.attrValues launchOptions)
+      )
+    then
+      fail "launchOptions must map at most 16 option names ([A-Za-z_][A-Za-z0-9_-], at most 32 characters) to { description ? null; choices; }, where choices maps 1 to 64 choice names ([A-Za-z0-9_][A-Za-z0-9._-], at most 64 characters) to { description ? null; args; } with 1 to 16 arguments of at most 256 bytes, none of them --, and descriptions are single lines of at most 200 bytes"
+    else if launchOptions != { } && builtins.elem "--" args then
+      fail "args cannot contain -- when launchOptions is set: chosen arguments follow args"
     else if
       !(
         resumeCommand == null || builtins.isList resumeCommand && builtins.all resumeElement resumeCommand

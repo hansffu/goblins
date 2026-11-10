@@ -62,8 +62,28 @@ pub struct Configuration {
     /// mkGoblin's `worktrees` (docs/specs/WORKTREES.org).
     #[serde(default)]
     pub worktrees: WorktreeOptions,
+    /// mkGoblin's `launchOptions`, on top-level configurations only
+    /// (docs/specs/LAUNCH-OPTIONS.org).
+    #[serde(default)]
+    pub launch_options: BTreeMap<String, LaunchOption>,
     #[serde(skip)]
     pub selected_scope: Option<Scope>,
+}
+/// A launch option a raid owner picks with `goblin run -o NAME=CHOICE`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchOption {
+    #[serde(default)]
+    pub description: Option<String>,
+    pub choices: BTreeMap<String, LaunchChoice>,
+}
+/// The arguments a choice adds after the configuration's `args`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaunchChoice {
+    #[serde(default)]
+    pub description: Option<String>,
+    pub args: Vec<String>,
 }
 /// mkGoblin's `worktrees.enable`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

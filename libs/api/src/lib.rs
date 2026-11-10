@@ -127,6 +127,26 @@ pub fn package_name(name: &str) -> bool {
                 && bytes.all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
         })
 }
+/// The most launch options a configuration declares (mkGoblin launchOptions).
+pub const MAX_LAUNCH_OPTIONS: usize = 16;
+/// A launch option's name, such as `model`.
+pub fn launch_option_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=32).contains(&name.len())
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+/// A launch option's choice, such as `gpt-5.5`; it never contains `=`.
+pub fn launch_choice(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=64).contains(&name.len())
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
 pub fn identifier(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && name

@@ -8,6 +8,7 @@ let
   # Arguments as literal template elements: their braces are text, not
   # placeholders, as in -c inline tables or --mcp-config JSON.
   literal = map (builtins.replaceStrings [ "{" "}" ] [ "{{" "}}" ]);
+  agentLaunchOptions = import ./agent-launch-options.nix { inherit (pkgs) lib; };
 in
 {
   pkg ? pkgs.claude-code,
@@ -31,6 +32,8 @@ in
   env ? { },
   injectedFiles ? { },
   devShellInjectedFiles ? { },
+  # model and effort take a list of names; see agent-launch-options.nix.
+  launchOptions ? { },
   ...
 }@options:
 assert claude.validate {
@@ -53,6 +56,16 @@ mkGoblin (
       env
       ;
     integration = "claude";
+    launchOptions = agentLaunchOptions "mkClaudeGoblin" {
+      model = name: [
+        "--model"
+        name
+      ];
+      effort = name: [
+        "--effort"
+        name
+      ];
+    } launchOptions;
     pkg = claude.mkLauncher {
       inherit
         pkg

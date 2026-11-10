@@ -78,6 +78,7 @@ fn check(manifest: &Manifest) -> Result<()> {
                 None => (),
             }
         }
+        check_launch_options(name, config)?;
         let targets = &config.allowed_run_targets;
         if targets.len() > MAX_RUN_TARGETS
             || !targets.iter().all(|c| goblins_protocol::identifier(c))
@@ -89,6 +90,37 @@ fn check(manifest: &Manifest) -> Result<()> {
         }
     }
     Ok(())
+}
+/// The bounds and grammars mkGoblin applies to `launchOptions`. Scope
+/// variants carry none, and no variant's `args` may end the options before
+/// the chosen arguments that follow them.
+fn check_launch_options(name: &str, config: &Configuration) -> Result<()> {
+    let text = |t: &Option<String>| {
+        t.as_ref()
+            .is_none_or(|t| t.len() <= 200 && !t.contains(['\n', '\r']))
+    };
+    let valid = config.launch_options.len() <= goblins_protocol::MAX_LAUNCH_OPTIONS
+        && config.launch_options.iter().all(|(option, o)| {
+            goblins_protocol::launch_option_name(option)
+                && text(&o.description)
+                && (1..=64).contains(&o.choices.len())
+                && o.choices.iter().all(|(choice, c)| {
+                    goblins_protocol::launch_choice(choice)
+                        && text(&c.description)
+                        && (1..=16).contains(&c.args.len())
+                        && c.args.iter().all(|a| a.len() <= 256 && a != "--")
+                })
+        })
+        && config.scopes.values().all(|v| v.launch_options.is_empty())
+        && (config.launch_options.is_empty()
+            || std::iter::once(config)
+                .chain(config.scopes.values())
+                .all(|v| !v.args.iter().any(|a| a == "--")));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!("invalid launch_options for '{name}'").into())
+    }
 }
 /// mkGoblins' `worktrees.directory`, expanded like file grants from the
 /// daemon's environment. None when worktrees are off.
@@ -438,6 +470,71 @@ mod tests {
                     .to_string(),
                 error
             );
+        }
+    }
+
+    #[test]
+    fn launch_options_are_parsed_and_bounded_like_mkgoblin() {
+        let options =
+            |value: Value| manifest(json!({"shell": goblin(json!({"launch_options": value}))}));
+        let model = json!({"model": {"description": "Model", "choices": {
+            "gpt-5.5": {"description": null, "args": ["-c", "model=\"gpt-5.5\""]}}}});
+        let parsed = validated(&options(model.clone())).unwrap();
+        let option = &parsed.goblins["shell"].launch_options["model"];
+        assert_eq!(option.description.as_deref(), Some("Model"));
+        assert_eq!(option.choices["gpt-5.5"].args, ["-c", "model=\"gpt-5.5\""]);
+        // Absent means none, so manifests before launch options still parse.
+        let none = validated(&manifest(json!({"shell": goblin(json!({}))}))).unwrap();
+        assert!(none.goblins["shell"].launch_options.is_empty());
+        let choice = |c: Value| json!({"mode": {"choices": c}});
+        let many = |n: usize, item: Value| -> Value {
+            (0..n)
+                .map(|i| (format!("x{i}"), item.clone()))
+                .collect::<serde_json::Map<_, _>>()
+                .into()
+        };
+        for bad in [
+            choice(json!({})),
+            choice(json!({"fast": {"args": []}})),
+            choice(json!({"fast": {"args": ["--"]}})),
+            choice(json!({"fast": {"args": ["x".repeat(257)]}})),
+            choice(json!({"fast": {"args": vec!["x"; 17]}})),
+            choice(json!({"a=b": {"args": ["x"]}})),
+            choice(json!({".a": {"args": ["x"]}})),
+            choice(json!({"x".repeat(65): {"args": ["x"]}})),
+            choice(json!({"fast": {"args": ["x"], "description": "a\nb"}})),
+            choice(json!({"fast": {"args": ["x"], "description": "x".repeat(201)}})),
+            // Bytes, as Nix counts them.
+            choice(json!({"fast": {"args": ["x"], "description": "æ".repeat(101)}})),
+            choice(many(65, json!({"args": ["x"]}))),
+            json!({"mo.de": {"choices": {"fast": {"args": ["x"]}}}}),
+            json!({"x".repeat(33): {"choices": {"fast": {"args": ["x"]}}}}),
+            many(17, json!({"choices": {"fast": {"args": ["x"]}}})),
+        ] {
+            let error = validated(&options(bad.clone())).err().unwrap().to_string();
+            assert_eq!(error, "invalid launch_options for 'shell'", "{bad}");
+        }
+        // Unknown fields, such as a choice environment, are refused.
+        assert!(
+            validated(&options(choice(
+                json!({"fast": {"args": ["x"], "env": {}}})
+            )))
+            .is_err()
+        );
+        // Variants carry none, and no variant's args end the options early.
+        let scoped = |variant: Value, args: Value| {
+            manifest(json!({"shell": goblin(json!({
+                "launch_options": model, "args": args, "allowed_scopes": ["work"],
+                "scopes": {"work": goblin(variant)},
+            }))}))
+        };
+        assert!(validated(&scoped(json!({}), json!(["--base"]))).is_ok());
+        for bad in [
+            scoped(json!({"launch_options": model}), json!([])),
+            scoped(json!({"args": ["--"]}), json!([])),
+            scoped(json!({}), json!(["--"])),
+        ] {
+            assert!(validated(&bad).is_err(), "{bad}");
         }
     }
 

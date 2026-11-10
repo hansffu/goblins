@@ -60,6 +60,12 @@ let
   };
   rejected = configuration: !(builtins.tryEval (mkGoblins configuration).config.drvPath).success;
   invalid = [
+    # Each configuration within 16 KiB, together over 256 KiB.
+    {
+      goblins = pkgs.lib.genAttrs (map (i: "g${toString i}") (pkgs.lib.range 1 20)) (
+        _: mkGoblin (base // { launchOptions = largeLaunchOptions 3; })
+      );
+    }
     { goblins = { }; }
     {
       editor.vim.enable = true;
@@ -286,7 +292,68 @@ let
       onAttach.command = [ "client" ];
       onDetach = [ ];
     }
+    { launchOptions = [ ]; }
+    { launchOptions.mode = [ "fast" ]; }
+    { launchOptions.mode.choices = { }; }
+    { launchOptions.mode.choices.fast = { }; }
+    { launchOptions.mode.choices.fast.args = [ ]; }
+    { launchOptions.mode.choices.fast.args = [ 1 ]; }
+    { launchOptions.mode.choices.fast.args = [ "--" ]; }
+    { launchOptions.mode.choices.fast.args = [ (pkgs.lib.fixedWidthString 257 "x" "") ]; }
+    { launchOptions.mode.choices.fast.args = pkgs.lib.genList (_: "x") 17; }
+    {
+      launchOptions.mode.choices.fast = {
+        args = [ "--fast" ];
+        env.X = "1";
+      };
+    }
+    {
+      launchOptions.mode = {
+        choices.fast.args = [ "--fast" ];
+        default = "fast";
+      };
+    }
+    { launchOptions.mode.choices."a=b".args = [ "x" ]; }
+    { launchOptions.mode.choices."a\"b".args = [ "x" ]; }
+    { launchOptions.mode.choices.".hidden".args = [ "x" ]; }
+    { launchOptions.mode.choices.${pkgs.lib.fixedWidthString 65 "x" ""}.args = [ "x" ]; }
+    { launchOptions."1mode".choices.fast.args = [ "x" ]; }
+    { launchOptions."mo.de".choices.fast.args = [ "x" ]; }
+    { launchOptions.${pkgs.lib.fixedWidthString 33 "x" ""}.choices.fast.args = [ "x" ]; }
+    {
+      launchOptions.mode = {
+        description = "two\nlines";
+        choices.fast.args = [ "x" ];
+      };
+    }
+    { launchOptions.mode.choices.fast.description = pkgs.lib.fixedWidthString 201 "x" ""; }
+    {
+      launchOptions = pkgs.lib.genAttrs (map (i: "o${toString i}") (pkgs.lib.range 1 17)) (_: {
+        choices.a.args = [ "x" ];
+      });
+    }
+    {
+      launchOptions.mode.choices = pkgs.lib.genAttrs (map (i: "c${toString i}") (pkgs.lib.range 1 65)) (_: {
+        args = [ "x" ];
+      });
+    }
+    # Chosen arguments follow args, so no terminator before them.
+    {
+      args = [ "--" ];
+      launchOptions.mode.choices.fast.args = [ "--fast" ];
+    }
+    # Within every per-item bound, but over 16 KiB in the manifest.
+    { launchOptions = largeLaunchOptions 16; }
   ];
+  # COUNT options of 64 choices with a 40-byte argument each, about 3.9 KiB
+  # per option in the manifest.
+  largeLaunchOptions =
+    count:
+    pkgs.lib.genAttrs (map (i: "o${toString i}") (pkgs.lib.range 1 count)) (_: {
+      choices = pkgs.lib.genAttrs (map (i: "c${toString i}") (pkgs.lib.range 1 64)) (_: {
+        args = [ (pkgs.lib.fixedWidthString 40 "x" "") ];
+      });
+    });
   codexProbe = pkgs.writeShellScriptBin "codex" ''
     if [[ "$1" == --version || "$1" == app-server ]]; then
       exec ${agents.codex}/bin/codex "$@"
@@ -1187,6 +1254,24 @@ in
         and (.goblins.shell.scopes.work | has("allowed_run_targets") | not)' ${manifest.config}
       touch $out
     '';
+  # Launch options are on the top-level configuration only, never on its
+  # scope variants.
+  launch-options-manifest =
+    let
+      manifest = mkGoblins {
+        scopes.work = mkScope { };
+        goblins.claude = mkClaudeGoblin {
+          pkg = claudeProbe;
+          allowedScopes = [ "work" ];
+          launchOptions.model = [ "sonnet" ];
+        };
+      };
+    in
+    pkgs.runCommand "goblins-launch-options-manifest" { nativeBuildInputs = [ pkgs.jq ]; } ''
+      jq -e '.goblins.claude.launch_options.model.choices.sonnet.args == ["--model", "sonnet"]
+        and (.goblins.claude.scopes.work | has("launch_options") | not)' ${manifest.config}
+      touch $out
+    '';
   cli-completions =
     pkgs.runCommand "goblins-cli-completions"
       {
@@ -1533,5 +1618,170 @@ in
     assert
       (mkGoblin (base // { devShellInjectedFiles."x.conf" = "x"; })).goblin.dev_shell_sandbox_etc
         ? "x.conf";
+    # Launch options reach the manifest as given, verbatim and in full form;
+    # none are omitted (docs/specs/LAUNCH-OPTIONS.org).
+    assert !((mkGoblin base).goblin ? launch_options);
+    assert !((mkClaudeGoblin { }).goblin ? launch_options);
+    assert
+      (mkGoblin (
+        base
+        // {
+          launchOptions.mode = {
+            description = "Session mode";
+            choices = {
+              fast = {
+                description = "Faster output";
+                args = [ "--fast" ];
+              };
+              "v1.2".args = [
+                "-c"
+                "x={a=1}"
+              ];
+            };
+          };
+        }
+      )).goblin.launch_options == {
+        mode = {
+          description = "Session mode";
+          choices = {
+            fast = {
+              description = "Faster output";
+              args = [ "--fast" ];
+            };
+            "v1.2" = {
+              description = null;
+              args = [
+                "-c"
+                "x={a=1}"
+              ];
+            };
+          };
+        };
+      };
+    # Under 16 KiB per configuration and 256 KiB together.
+    assert
+      !rejected {
+        goblins = pkgs.lib.genAttrs (map (i: "g${toString i}") (pkgs.lib.range 1 16)) (
+          _: mkGoblin (base // { launchOptions = largeLaunchOptions 3; })
+        );
+      };
+    # model and effort take names, passed to the agent's own flags as given.
+    assert
+      (mkClaudeGoblin {
+        launchOptions = {
+          model = [
+            "opus"
+            "claude-opus-5-5"
+          ];
+          effort = [ "max" ];
+          mode.choices.fast.args = [ "--fast" ];
+        };
+      }).goblin.launch_options == {
+        model = {
+          description = null;
+          choices = {
+            opus = {
+              description = null;
+              args = [
+                "--model"
+                "opus"
+              ];
+            };
+            claude-opus-5-5 = {
+              description = null;
+              args = [
+                "--model"
+                "claude-opus-5-5"
+              ];
+            };
+          };
+        };
+        effort = {
+          description = null;
+          choices.max = {
+            description = null;
+            args = [
+              "--effort"
+              "max"
+            ];
+          };
+        };
+        mode = {
+          description = null;
+          choices.fast = {
+            description = null;
+            args = [ "--fast" ];
+          };
+        };
+      };
+    assert
+      (mkCodexGoblin {
+        launchOptions = {
+          model = [ "gpt-5.5" ];
+          effort = [ "high" ];
+        };
+      }).goblin.launch_options == {
+        model = {
+          description = null;
+          choices."gpt-5.5" = {
+            description = null;
+            args = [
+              "-c"
+              "model=\"gpt-5.5\""
+            ];
+          };
+        };
+        effort = {
+          description = null;
+          choices.high = {
+            description = null;
+            args = [
+              "-c"
+              "model_reasoning_effort=\"high\""
+            ];
+          };
+        };
+      };
+    assert builtins.all
+      (
+        launchOptions:
+        !(builtins.tryEval (mkClaudeGoblin { inherit launchOptions; }).goblin.build_spec.drvPath).success
+        && !(builtins.tryEval (mkCodexGoblin { inherit launchOptions; }).goblin.build_spec.drvPath).success
+      )
+      [
+        { model = "opus"; }
+        { model = [ ]; }
+        { model = [ 1 ]; }
+        { model.choices.opus.args = [ "--model" "opus" ]; }
+        { effort.choices.high.args = [ "--effort" "high" ]; }
+        { mode = [ "fast" ]; }
+        { model = [ "a\"b" ]; }
+      ];
+    # Codex choices are App Server options and never select the profile,
+    # which filterUnavailableMcp probes with the raw arguments.
+    assert builtins.all
+      (
+        choice:
+        !(builtins.tryEval (mkCodexGoblin { launchOptions.mode.choices.x.args = choice; })
+          .goblin.build_spec.drvPath
+        ).success
+      )
+      [
+        [ "--fast" ]
+        [ "-c" ]
+        [ "-p" "chosen" ]
+        [ "-pchosen" ]
+        [ "--profile" "chosen" ]
+        [ "--profile=chosen" ]
+      ];
+    assert
+      (mkCodexGoblin {
+        launchOptions.mode.choices.x.args = [
+          "--enable"
+          "feature"
+          "-c"
+          "model=\"x\""
+        ];
+      }).goblin ? launch_options;
     pkgs.runCommand "goblins-api-evaluation" { } "touch $out";
 }

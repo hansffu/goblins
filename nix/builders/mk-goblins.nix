@@ -54,6 +54,8 @@ let
         "scope"
         "allowed_scopes"
         "allowed_run_targets"
+        # Read from the top-level configuration only.
+        "launch_options"
       ];
   # The daemon applies the same bounds.
   allowedRunTargets =
@@ -110,6 +112,15 @@ let
   # A shared Docker engine's store view comes from its members, so they must
   # agree on allowNix in a scope with Docker.
   nixAccess = lib.filterAttrs (scope: _: scopes.${scope}.docker) (perScope "nix");
+  # Options count once per configuration against the 1 MiB manifest limit.
+  launchOptionBytes = lib.foldl' (
+    total: configuration:
+    total
+    + builtins.stringLength (
+      # Omitted when there are none.
+      lib.optionalString (configuration ? launch_options) (builtins.toJSON configuration.launch_options)
+    )
+  ) 0 (builtins.attrValues configurations);
 in
 assert validate.goblins goblins;
 assert lib.assertMsg (
@@ -147,6 +158,9 @@ assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
 assert lib.assertMsg (builtins.all (n: builtins.length n <= 1) (
   builtins.attrValues nixAccess
 )) "mkGoblins: members of a scope with Docker must have the same allowNix";
+assert lib.assertMsg (
+  launchOptionBytes <= 262144
+) "mkGoblins: the launchOptions of all goblins together exceed 256 KiB in the configuration manifest";
 import ../../packages/daemon/wrapper.nix {
   inherit pkgs goblins configurations;
   worktrees = {

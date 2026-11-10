@@ -28,12 +28,33 @@ in
     allowedPackages = tools;
     allowedScopes = [ "goblins-dev" ] ++ agentScopes;
     inherit allowedRunTargets;
+    # Picked by the goblin that runs it: goblin run codex -o effort=high.
+    launchOptions.effort = [
+      "low"
+      "medium"
+      "high"
+    ];
   };
   claude = builders.mkClaudeGoblin {
     pkg = agents.claude-code;
     allowedPackages = tools;
     allowedScopes = [ "goblins-dev" ] ++ agentScopes;
     inherit allowedRunTargets;
+    # Aliases follow Claude Code's latest models.
+    launchOptions = {
+      model = [
+        "opus"
+        "sonnet"
+        "haiku"
+      ];
+      effort = [
+        "low"
+        "medium"
+        "high"
+        "xhigh"
+        "max"
+      ];
+    };
   };
   # For developing Goblins from a goblin: ordinary Nix commands against the
   # host daemon, and approved host commands for the Bubblewrap, namespace and

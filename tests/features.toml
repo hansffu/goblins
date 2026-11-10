@@ -23,7 +23,7 @@ broad = [
   "tests/daemon_support.py", "tests/build_support.py", "tests/support.py",
   "tests/terminal_support.py", "tests/run.py", "tests/tasks.py", "tests/rust_tests.py", "tests/features.toml",
   "tests/checks.nix", "justfile", "nix/lib.nix", "nix/builders/mk-goblin.nix",
-  "nix/builders/mk-goblins.nix", "nix/internal/*", "packages/*/Cargo.toml", "libs/*/Cargo.toml",
+  "nix/builders/mk-goblins.nix", "nix/builders/agent-launch-options.nix", "nix/internal/*", "packages/*/Cargo.toml", "libs/*/Cargo.toml",
 ]
 docs = ["docs/*", "README.org", "emacs/README.org", "AGENTS.md", "CLAUDE.md"]
 

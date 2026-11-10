@@ -79,6 +79,11 @@ let
       # mkGoblins.worktrees.directory. enable: false gives this configuration no
       # worktree folder and no working `goblin worktree`.
       worktrees ? { },
+      # Options a raid owner picks when it runs this configuration (goblin run
+      # -o NAME=CHOICE): { NAME = { description ? null; choices.CHOICE =
+      # { description ? null; args; }; }; }. A choice's args follow `args`.
+      # Not a scope default. See docs/specs/LAUNCH-OPTIONS.org.
+      launchOptions ? { },
     }@options:
     let
       worktreeOptions = {
@@ -124,6 +129,13 @@ let
           allowedPackages ++ [ client ] ++ lib.optional dockerOptions.enable pkgs.docker-client;
       };
       wrapped = sandbox.mkSandbox sandboxOptions;
+      launchManifest = lib.mapAttrs (_: option: {
+        description = option.description or null;
+        choices = lib.mapAttrs (_: choice: {
+          description = choice.description or null;
+          inherit (choice) args;
+        }) option.choices;
+      }) launchOptions;
       etcFiles = lib.mapAttrs (
         name: value:
         if builtins.isString value then
@@ -149,12 +161,15 @@ let
           scopeStorage
           allowedRunTargets
           bypassPermissions
+          launchOptions
           ;
         docker = dockerOptions;
         hostCommands = hostCommandOptions;
         inherit worktrees;
       }
     );
+    assert lib.assertMsg (builtins.stringLength (builtins.toJSON launchManifest) <= 16384)
+      "mkGoblin: launchOptions of '${outName}' exceed 16 KiB in the configuration manifest";
     wrapped
     // {
       # mkGoblins renders one configuration per scope the goblin may join.
@@ -198,7 +213,10 @@ let
         };
         sandbox_etc = etcFiles injectedFiles;
         dev_shell_sandbox_etc = etcFiles devShellInjectedFiles;
-      };
+      }
+      # Omitted when empty, so a manifest without options stays readable by
+      # a daemon that predates them.
+      // lib.optionalAttrs (launchOptions != { }) { launch_options = launchManifest; };
     };
 in
 mkGoblin
