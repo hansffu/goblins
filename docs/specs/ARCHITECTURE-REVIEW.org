@@ -1,0 +1,220 @@
+#+title: Architecture review: suggested work
+#+date: 2026-11-10
+
+Suggestions from a read-only review of the whole repository at commit =d530df1= (2026-11-10). Nothing here is decided: each item is a proposal with the evidence it rests on. Line references are from that commit and will drift. Items are grouped by area and ordered by priority within each group; [[*Suggested order][the last section]] gives an order across groups.
+
+The review found the process architecture sound: the daemon owns identity, policy and approvals, one supervisor per goblin owns the sandbox runtime ([[file:../adr/0018-per-goblin-supervisors.md][ADR 0018]]), and scopes are separate processes. The =Runtime= trait with its =Fake= backend, the bounded queues, the descriptor handoff with lease transfer, and the sequenced state subscription need no change. The items below concern what surrounds that core.
+
+* Public API
+
+** TODO Type the public API records and states
+
+The daemon builds most results with =json!= and every client reads them by hand: the host CLI and TUI, the sandbox CLI, Emacs (about 660 =plist-get= calls), both adapters, =nix/goblins/claude/rpc.sh=, the Claude mod and the Python tests. A renamed field fails silently: nil in Emacs, =Null= in Rust, and in the Claude adapter (=packages/adapter-claude/src/lib.rs:73=) wakeups would stop without an error.
+
+Session and permission states are strings: =SessionRecord.state= is a =String=, =UNEVICTABLE= in =packages/daemon/src/controller.rs= is a list of state names, and the controller compares states as text in about 45 places.
+
+- Move the session, permission and terminal records and their state enums into =libs/api=, and have the daemon, host CLI, TUI and sandbox CLI use them.
+- Replace the string comparisons with the enums.
+- This is the first step of [[file:API-SCHEMA.org][API-SCHEMA.org]] and is useful without the rest of that plan.
+
+** TODO Decide on the schema-first API plan
+
+[[file:API-SCHEMA.org][API-SCHEMA.org]] is a parked draft. It would give Emacs, the shell scripts, the Claude mod and the Python tests a contract to check replies against, which typed Rust records alone do not. Decide whether to pursue it, and if not, record why and what protects the non-Rust clients instead.
+
+** TODO Share the API version and the client handshake
+
+=initialize= with ={"api":1}= is written out in at least seven places: =emacs/goblins.el=, =rpc.sh=, both adapters, =packages/sandbox-cli/src/main.rs= (twice) and =packages/daemon/src/host.rs=. The Rust clients should take the version and the connect, initialize and call sequence from one place in =libs/api=.
+
+* Event loops
+
+** TODO Make the supervisor wait on all its descriptors
+
+=libs/supervisor/src/entry.rs:68= polls only the control descriptor, with a 20 ms timeout. PTY masters, attached frontend streams, the init socket, =request.sock=, the payload pidfd and host jobs are scanned once per tick (=libs/supervisor/src/engine.rs:415=). This adds up to 20 ms in each direction to terminal echo and to sandbox RPC, and wakes each idle goblin about 50 times a second.
+
+The supervisor has one worker thread, so one =poll()= over every descriptor, with the worker's completion channel signalled through a pipe or eventfd, removes the fixed tick.
+
+Related timed waits are separate cases and are not replaced by that change. =worker.rs= receives commands with =recv_timeout(WORKER_TICK)= so the worker observes cancellation. =results.rs= retries a full bounded channel with a sleep of the same interval: this is producer backpressure with cancellation, and both properties must be kept. =scope_process.rs= and =scope_client.rs= have their own timed loops; look at each on its own.
+
+** TODO Make the daemon loop wait instead of sleeping
+
+=packages/daemon/src/server.rs:51= calls =Controller::tick= and sleeps 5 ms, about 200 wakeups a second while idle. The tick should block on the host listener, the host connections, the supervisor control channels, the scope channels and a wake descriptor for the messaging thread, with a timeout only for the deadlines it tracks.
+
+Do this after the supervisor: the supervisor change is smaller and gives the larger latency gain.
+
+** TODO Publish once per tick
+
+=Controller::tick= calls =publish()= after servicing each connection, and =publish()= reconciles raids and refreshes raid prompts before it checks whether anything changed. Check whether the per-connection call is needed for the ordering it documents (a subscription snapshot and later events share one order), or whether reconciling only when state is dirty is enough.
+
+* Crate boundaries
+
+** TODO Move the transport and the guardian out of =goblins-runtime=
+
+=goblins-runtime= is described as the contract crate, but it also holds:
+
+- =channel.rs=: a complete nonblocking =SCM_RIGHTS= transport with its own control-message code, beside =libs/unix/src/ancillary.rs=.
+- =guardian.rs=: fork supervision used only by =libs/supervisor/src/docker.rs= and =packages/mount-helper/src/docker.rs=.
+- =worktrees.rs=: detection and =openat2= walking with one caller, =libs/supervisor/src/session.rs=. The daemon needs only the types.
+
+The mount helper links the whole crate, and with it =regex=, =serde_json=, =goblins-protocol= and =goblins-jsonrpc=, for the guardian alone. Moving the channel and the guardian into =goblins-unix= or a small transport crate shrinks the helper's dependencies and leaves =goblins-runtime= with declarations, policy and lease data. Worktree detection moves to =goblins-supervisor=.
+
+** TODO Use the mount-safe removal in =ResourceLease::drop=
+
+=libs/runtime/src/lease.rs:140= removes the resource directory with =fs::remove_dir_all=. =libs/unix/src/cleanup.rs= exists so that removal never crosses a mount. Either use it here or record why this directory cannot contain a mount. Whether the current code can be exploited was not established.
+
+** TODO Fold =libs/init= into the crates it wraps
+
+=libs/init= is 36 lines of production code: two pass-throughs to =goblins_unix::ancillary=, =pair()= and a re-export. The daemon already calls =ancillary= directly, so the crate no longer marks a boundary. Fold it into =goblins-unix= and =goblins_protocol::init=, and update the dependency tests that name it.
+
+** TODO Move client code out of =libs/api=
+
+=libs/api/src/terminal.rs= has a termios raw-mode and poll relay loop, and =messages.rs= does file I/O. This is frontend code inside the protocol crate, and it is why the crate depends on =libc=. Move it to a client library that the host CLI and sandbox CLI share. Low priority.
+
+** TODO Share the low-level Unix helpers
+
+=openat2= is written out five times (=libs/runtime/src/worktrees.rs=, twice in =libs/supervisor/src/binds.rs=, =libs/unix/src/cleanup.rs=, =packages/mount-helper/src/main.rs=), =cvt= three times, and the =RESOLVE_*= constants are redeclared, once as magic numbers (=binds.rs:353=). Put one of each in =goblins-unix=.
+
+** TODO Simplify the private control codec
+
+=libs/runtime/src/supervisor.rs= has a macro codec that lists every =Command= and =Event= field a second time, and 19 fields are JSON encoded as strings inside JSON. With handoff and outbound code this is about 1,700 lines and 2,241 lines of tests, for a channel between two programs from the same build. The ownership model (=Prepared=, =PendingTransfer=, =Adopted=) is sound and stays; the wire format could be derived with serde. Low priority, and only worth doing together with another change to the protocol.
+
+* Code size
+
+** TODO Move the inline test modules into their test directories
+
+- =packages/daemon/src/controller.rs= is 8,308 lines, of which lines 3759 onwards are one inline =mod tests=. =controller/tests/= exists and holds two files.
+- =libs/supervisor/src/engine.rs= is 2,876 lines, of which lines 976 onwards are tests. =engine/tests/= exists.
+
+This is mechanical, changes no behaviour and makes the production files readable. Keep =tests/features.toml= selectors current.
+
+** TODO Split the controller's largest functions
+
+After the tests have moved: =Controller::tick= is 617 lines, =start= 303 and =dispatch= 266. The event match in =tick= splits by event family (sandbox relay, launch and handoff, permissions, terminals, stop), in the same way =controller/terminals.rs= and =controller/raids.rs= already separate their areas. RPC routing is spread over =dispatch=, =host=, =sandbox_control= and the per-area handlers; one table of method, role and handler would make the routing visible.
+
+=Controller= has about 40 fields and =Active= about 30. Group them by the same areas when the functions move (history, manifest, messaging outboxes, launch state).
+
+** TODO Split =Session::start= and =Worker::start=
+
+=Session::start= (=libs/supervisor/src/session.rs:719=) is 564 lines that mix Nix socket binds, closure rooting, profile generations, namespace joins, environment, the Docker view and the init launch. The thread closure in =Worker::start= (=libs/supervisor/src/worker.rs:118=) is 462 lines. Split each into named steps.
+
+** TODO Type the errors that code branches on
+
+Errors are =Box<dyn Error>= or strings. Cancellation is recognised by the text ="session cancelled"= (=process.rs=, =results.rs=, =worker.rs=) and =devshell.rs:708= matches Nix's "does not provide attribute". Only =Uncertain= is typed. Give cancellation its own type; the Nix text match has no alternative but should be in one named function with a test.
+
+** TODO Remove the =cfg(test)= branch in =dispatch=
+
+=packages/daemon/src/controller.rs:2545= re-gates sandbox calls under =#[cfg(test)]= for older fixtures, so those tests take a path production does not. Update the fixtures and delete the branch.
+
+** TODO Remove the legacy =terminal.sock= handshake
+
+The legacy socket costs a prebound listener in =SupervisorStart=, the =SO_ACCEPTCONN= validation and a hold, refuse and release state machine (=libs/supervisor/src/terminal.rs=, =terminals.rs=). Current daemons always offer =attach.sock=. There are two separate compatibility decisions:
+
+- Removing the listener from the daemon and supervisor affects older frontends that attach to a new daemon through =terminal.sock=. Decide that no supported frontend does, then remove the supervisor side and its section in [[file:../API.org][API.org]].
+- The host CLI falls back to the record's =terminal= path when a record has no =attach= field (=packages/daemon/src/attachment.rs:191=), so that a new CLI can attach to a daemon older than attach handlers. This fallback is independent of the listener and can stay after it is gone. Remove it only when older daemons are no longer supported.
+
+** TODO Clear the leftovers from the supervisor cutover
+
+- =libs/supervisor/src/lib.rs:36=: a =cfg(test)= =mod unix= kept for one ignored driver.
+- =libs/supervisor/src/config.rs:68=: the stale comment "D moves this with the launcher".
+- =libs/supervisor/src/cleanup.rs:376=: a =cfg(test)= field and assertion inside the production =Scratch::drop=.
+
+* Agent integration
+
+** TODO Share the adapter plumbing
+
+=read=, =atomic=, =now_ms=, =REQUEST_SOCKET= and =daemon()= are copied between =packages/adapter-codex/src/main.rs= and =packages/adapter-claude/src/main.rs=, and =packages/sandbox-cli/src/main.rs= has a third copy of the connect and initialize sequence. Put them in a shared library, together with the handshake item under [[*Public API][Public API]].
+
+** TODO Give the Claude runtime conventions one owner
+
+=/tmp/goblins-claude= is hard-coded in =packages/adapter-claude/src/main.rs=, =nix/goblins/claude/hook.sh= and =monitor.sh=. The =monitor.pid= liveness protocol exists only in shell, and its result is passed to Rust as =--monitor=. Move the path and the liveness check into =goblins-claude= subcommands that the scripts call.
+
+** TODO Move Codex process supervision out of the Nix string
+
+=nix/goblins/codex/launcher.nix= holds about 110 lines of shell that start the App Server, wait for its socket, start the adapter and clean up. Option parsing is written twice with different accepted sets, in =launcher.nix= and =nix/goblins/codex/mcp.sh=, and the runtime path is in both =launcher.nix= and the adapter. Move supervision and option parsing into =goblins-codex=, where they can be tested.
+
+** TODO Make the Codex adapter's logic importable
+
+=packages/adapter-codex/src/lib.rs= holds only =Delivery= and =activity=; =Server=, =Follow=, a 230-line =run= and the TOML profile handling are in =main.rs=. The Claude adapter has the better split, with its =Ledger= in =lib.rs=. Low priority.
+
+* Nix and the manifest
+
+** TODO Check the manifest against the Rust parser at build time
+
+The =goblin= manifest is assembled in =nix/builders/mk-goblin.nix=, =mk-goblins.nix= and =packages/daemon/wrapper.nix=, and its bounds and version numbers are mirrored by hand between =nix/internal/validate.nix= and =libs/runtime/src/config/manifest.rs=. =deny_unknown_fields= catches drift, but only when the daemon starts. =wrapper.nix= already runs the built binary for completions; run the manifest validation there as well, so a mismatch fails the build.
+
+* Emacs
+
+** TODO Layer the Emacs modules
+
+=goblins.el= provides its feature and then requires =goblins-terminal= and =goblins-completion=, which load views, raids and messages; the back-references are hidden with =declare-function=. =goblins.el= itself holds the connection, the server process, launching, worktrees, the status mode and messaging. Split a core (connection, state, RPC) that nothing above it has to reach back into.
+
+Raid commands are implemented twice, in =goblins-views.el= and =goblins-raids.el= (=raids.set_owner=, =raids.destroy=); keep one.
+
+** TODO Make the common RPC calls asynchronous
+
+=goblins--host-call= is a synchronous request with a 5 s timeout, used at 17 call sites outside =goblins.el=; connecting busy-waits up to 3 s. A stalled daemon freezes Emacs for that long on each command. Convert the calls made from interactive commands and redisplay paths. Low priority: all are bounded and local.
+
+** TODO Split =goblins-tests.el= by module
+
+5,840 lines and 176 tests in one file that has grown by appending: the "ends here" footer is at line 5309, followed by about 530 more lines. Split it along the source modules.
+
+* Tests
+
+** TODO Make skipped checks visible in the merge gate
+
+Testcontainers (=tests/test_docker.py=), host Docker (=test_host_commands.py=), native Codex (=test_codex_native.py=) and the Emacs suites skip when their environment is missing, and =tests/run.py= prints one total. =just test-merge= should list each skipped test with its reason and fail on a skip that is not in a declared set.
+
+** TODO Fix or simplify the feature routing
+
+Replaying =tests/features.toml= over the last 150 commits, about 64% of code commits route to =full=. Broad patterns are checked first (=tests/tasks.py:65=), which is deliberate: [[file:../../AGENTS.md][AGENTS.md]] requires shared protocol, lifecycle and fixture code to recommend =full=. A side effect is that feature paths under a broad pattern never take effect, for example =libs/runtime/src/exec.rs=, =libs/api/src/terminal.rs= and =libs/runtime/src/worktrees.rs=. =test-feature-check= validates the mapping from tests to features, not the source paths.
+
+Keep =full= for shared paths. The suggestions are to remove the feature paths that a broad pattern shadows and have the check report such paths, and to review whether every broad entry is shared code: narrowing one is a change of the validation policy and needs its own rationale. If most changes still route to =full= afterwards, consider keeping the features as named test groups and dropping the path routing.
+
+** TODO Stop running the Rust tests twice in the merge gate
+
+=just test-merge= runs =cargo test --workspace= and then the Nix checks build each Rust package with its check phase, at one Nix job. Decide which run is the authority for unit tests and drop them from the other.
+
+** TODO Replace the long fixed sleeps
+
+Tests that assert nothing happened sleep for a fixed time: 32 s and 7 s in =tests/test_claude_config.py= and 4 s in =test_attach_handlers.py=. =test_claude_config.py:277= asserts an upper bound of 2.5 s on elapsed time. Where the code under test has a timeout, make it configurable for the test, as =GOBLINS_EVALUATION_TIMEOUT= does.
+
+=tests/test_emacs.py:85= is a different case: it sleeps 3 s between claiming a message and replying, to give Emacs time to process the snapshot the claim changed. Replace it with a wait on a condition Emacs reports, if one can be observed.
+
+* Documentation
+
+A change that touches only documentation needs no tests ([[file:../../AGENTS.md][AGENTS.md]]).
+
+** TODO Update the architecture guide
+
+[[file:../architecture/README.org][architecture/]] describes commit =19ce5c4= (2026-10-31). It does not cover sandbox terminals, worktrees, launch options, or listing and cancelling host commands.
+
+** TODO Correct the stale statements
+
+- [[file:../README.org][docs/README.org]] and [[file:../USAGE.org][USAGE.org]] say there is no terminal multiplexing; [[file:DESIGN.org][DESIGN.org]] says there is no reattachment.
+- =docs/README.org= says the tests use the configured host Emacs; =flake.nix= now pins =GOBLINS_TEST_EMACS=.
+- [[file:../adr/0019-worktrees.md][ADR 0019]], [[file:WORKTREES.org][WORKTREES.org]] and [[file:LAUNCH-OPTIONS.org][LAUNCH-OPTIONS.org]] say "proposed" and are merged.
+- [[file:CLAUDE-INTEGRATION-IN-GOBLIN.org][CLAUDE-INTEGRATION-IN-GOBLIN.org]] and [[file:PER-GOBLIN-SUPERVISOR.md][PER-GOBLIN-SUPERVISOR.md]] describe accepted ADRs 0017 and 0018 as proposals; the latter is also the only Markdown spec.
+- [[file:../adr/0002-per-session-rootless-docker.md][ADR 0002]] is "Accepted" although ADRs 0003 and 0006 replaced per-session Docker.
+- =tests/features.toml= and =tests/tasks.py= still print that documentation changes need the full gate, which =AGENTS.md= overrides in prose.
+
+** TODO Complete the documentation index
+
+The ADR list in =docs/README.org= omits 0009, 0010 and 0019 and presents superseded ADRs as accepted. Its table names 8 of the 21 files in =specs/=.
+
+** TODO Separate finished specs from live ones
+
+Only [[file:TODO.org][TODO.org]], [[file:API-SCHEMA.org][API-SCHEMA.org]] and this file describe open work. The rest of =specs/= records finished or abandoned work, among them =SUPERVISOR-REFACTOR.org=, =SANDBOX-ACCESS.org=, =SESSION-RECREATE.org=, =SANDBOX-TERMINALS.org=, both =CHILDREN-AND-RAIDS= files and =CLAUDE-SERVER-GOBLINS.org=. Move them to a history directory or mark their status in the index.
+
+** TODO Retire or resume =RESULTS.org=
+
+Its newest entry is from 2026-10-19, and =docs/README.org= still requires verified results to be recorded there. Either drop the convention and keep the file as history, or resume it.
+
+* Suggested order
+
+1. The documentation items: no test gate, and they remove the most misleading material.
+2. Move the inline test modules: mechanical, and it makes the later controller work reviewable.
+3. Type the public API records and states.
+4. Make the supervisor wait on all its descriptors, then the daemon loop.
+5. Move the transport and the guardian out of =goblins-runtime=, with =libs/init= and the shared Unix helpers.
+6. Make skipped checks visible in the merge gate.
+7. Split the controller's and the session's largest functions.
+8. The remaining items as the code around them is touched.
