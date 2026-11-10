@@ -105,6 +105,13 @@ the default is a red warning shield."
 its agent created wear the colour of its goblin's icon in `goblins-agent-icons'."
   :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
   :group 'goblins)
+(defcustom goblins-sidebar-external-agent-icon
+  '(:svg "bot.svg" :color shadow :text "»")
+  "The icon before an external agent in the sidebar, a plist like the entries
+of `goblins-agent-icons'.  A buffer sets its own with
+`goblins-external-agent-icon'."
+  :type '(plist :options ((:svg file) (:color (choice color face)) (:text string)))
+  :group 'goblins)
 (defface goblins-sidebar-selected '((t :inherit region :extend t))
   "The sidebar line at point, which the sidebar's keys act on." :group 'goblins)
 (defface goblins-sidebar-active '((t))
@@ -200,6 +207,77 @@ pair; nil FOLDS unfolds everything."
           (cons key goblins--sidebar-toggled))))
 (defvar-local goblins--sidebar-active-overlays nil)
 
+;;;; External agents
+
+(defvar-local goblins-external-agent-name nil
+  "The name the sidebar gives this external agent; nil means the buffer's name.")
+(defvar-local goblins-external-agent-icon nil
+  "The icon the sidebar gives this external agent, a plist like the entries of
+`goblins-agent-icons'; nil means `goblins-sidebar-external-agent-icon'.")
+(defvar-local goblins--external-agent-process nil
+  "This external agent's process as last seen live, so its exit shows.")
+
+(define-minor-mode goblins-external-agent-mode
+  "List this buffer in the Goblins sidebar as an external agent.
+An external agent is any buffer, such as an agent running outside Goblins.
+The sidebar lists it under its `default-directory', beside the goblins
+there, and \\[goblins-sidebar-dwim] on it shows it in the agent window with
+the windows you keep beside it, as for a goblin.  Nothing else of Goblins
+applies to it.  `goblins-external-agent-name' and `goblins-external-agent-icon'
+change how the sidebar shows it."
+  :lighter nil
+  (if goblins-external-agent-mode
+      (progn (add-hook 'kill-buffer-hook #'goblins--external-agent-killed nil t)
+             (goblins--external-agent-watch (current-buffer)))
+    (remove-hook 'kill-buffer-hook #'goblins--external-agent-killed t)
+    (goblins--external-agent-forget (current-buffer)))
+  (goblins--sidebar-render-all))
+
+(defun goblins--external-agent-killed ()
+  (goblins-external-agent-mode -1))
+
+(defun goblins--external-agent-forget (buffer)
+  "Forget BUFFER as the selected agent and its saved windows."
+  (let ((key (cons 'external buffer)))
+    (remhash key goblins--layouts)
+    (when (equal goblins--last-goblin key) (setq goblins--last-goblin nil))
+    (when (equal goblins--previous-goblin key) (setq goblins--previous-goblin nil))))
+
+(defun goblins--external-agent-p (buffer)
+  "Whether BUFFER is a live external agent."
+  (and (buffer-live-p buffer) (buffer-local-value 'goblins-external-agent-mode buffer)))
+
+(defun goblins--external-agent-label (buffer)
+  (or (buffer-local-value 'goblins-external-agent-name buffer) (buffer-name buffer)))
+
+(defun goblins--external-agent-watch (buffer)
+  "Remember BUFFER's live process, and redraw the sidebars when it exits.
+The process keeps its own sentinel; the redraw runs after it."
+  (let ((process (get-buffer-process buffer)))
+    (when (and (process-live-p process)
+               (not (eq process (buffer-local-value 'goblins--external-agent-process buffer))))
+      (with-current-buffer buffer (setq goblins--external-agent-process process))
+      (add-function :after (process-sentinel process) #'goblins--external-agent-sentinel))))
+
+(defun goblins--external-agent-sentinel (_process _event)
+  (goblins--sidebar-render-all))
+
+(defun goblins--external-agent-exited-p (buffer)
+  "Whether the process BUFFER had has exited."
+  (goblins--external-agent-watch buffer)
+  (let ((process (buffer-local-value 'goblins--external-agent-process buffer)))
+    (and process (not (process-live-p process)))))
+
+(defun goblins--external-agents ()
+  "The external agents, by name."
+  (sort (cl-remove-if-not #'goblins--external-agent-p (buffer-list))
+        (lambda (a b) (string< (goblins--external-agent-label a)
+                               (goblins--external-agent-label b)))))
+
+(defun goblins--external-agent-directory (buffer)
+  "The directory BUFFER is grouped under, without a trailing slash."
+  (directory-file-name (expand-file-name (buffer-local-value 'default-directory buffer))))
+
 ;;;; Data
 
 (defun goblins--sidebar-directory (session)
@@ -213,22 +291,27 @@ one, else its working directory, without a trailing slash; \"\" if unknown."
 REPOSITORY is the name of the folder that holds it, the main checkout's
 basename."
   (when-let* ((worktree (cl-some (lambda (session)
-                                   (let ((w (goblins--session-worktree session)))
+                                   (let ((w (and (not (bufferp session))
+                                                 (goblins--session-worktree session))))
                                      (and w (equal (directory-file-name (plist-get w :path)) dir) w)))
                                  sessions)))
     (cons (file-name-nondirectory
            (directory-file-name (file-name-directory (directory-file-name dir))))
           (plist-get worktree :name))))
 
-(defun goblins--sidebar-groups (sessions)
+(defun goblins--sidebar-groups (sessions &optional externals)
   "Return SESSIONS as ((RAID-KEY RAID-NAME (DIR . SESSIONS)...)...).
 Raids come first by name, then goblins outside any raid (RAID-KEY nil).
-Directories and sessions keep snapshot order inside each group."
+Directories and sessions keep snapshot order inside each group.  The
+EXTERNALS, external agents' buffers, join the goblins outside any raid,
+after those in their directory."
   (let (raids)
-    (dolist (session sessions)
-      (let* ((raid (plist-get session :raid))
+    (dolist (session (append sessions externals))
+      (let* ((raid (and (not (bufferp session)) (plist-get session :raid)))
              (rkey (plist-get raid :id))
-             (dir (goblins--sidebar-directory session))
+             (dir (if (bufferp session)
+                      (goblins--external-agent-directory session)
+                    (goblins--sidebar-directory session)))
              (entry (or (assoc rkey raids)
                         (car (push (list rkey (plist-get raid :name)) raids))))
              (dirs (cddr entry))
@@ -290,6 +373,8 @@ former owner is no longer one of its members."
                (cons 'session-terminal (get-text-property p 'goblins-session-terminal)))
           (and (get-text-property p 'goblins-host-job)
                (cons 'host-job (get-text-property p 'goblins-host-job)))
+          (and (get-text-property p 'goblins-external)
+               (cons 'external (get-text-property p 'goblins-external)))
           (and (get-text-property p 'goblins-id)
                (cons 'id (get-text-property p 'goblins-id)))
           (and (get-text-property p 'goblins-detail)
@@ -317,7 +402,8 @@ holding it, for restoring point when a fold hides the line."
     (let ((prop (pcase (car key)
                   ('id 'goblins-id) ('terminal 'goblins-terminal)
                   ('session-terminal 'goblins-session-terminal)
-                  ('host-job 'goblins-host-job) (_ 'goblins-group)))
+                  ('host-job 'goblins-host-job) ('external 'goblins-external)
+                  (_ 'goblins-group)))
           (pos (point-min)) found)
       (while (and (not found) (setq pos (next-single-property-change pos prop)))
         (when (equal (get-text-property pos prop) (cdr key))
@@ -459,6 +545,24 @@ the colour of its goblin's icon when the goblin's agent created it."
     (add-text-properties start (point)
                          (list 'goblins-session-terminal (cons id (plist-get record :id))
                                'goblins-parent id 'goblins-in-group group-key))))
+
+(defun goblins--sidebar-insert-external (buffer depth group-key)
+  "Insert the line of BUFFER, an external agent, at DEPTH: its icon and name,
+dimmed once its process has exited."
+  (let* ((start (point))
+         ;; The icon takes up to two columns, then a space either side.
+         (room (max 1 (- (goblins--sidebar-width) 1 (* 2 depth) 2 1 1)))
+         (exited (goblins--external-agent-exited-p buffer))
+         (label (truncate-string-to-width
+                 (concat (goblins--safe (goblins--external-agent-label buffer))
+                         (if exited " · exited" ""))
+                 room nil nil "…")))
+    (insert (make-string (* 2 depth) ?\s)
+            (goblins--icon (or (buffer-local-value 'goblins-external-agent-icon buffer)
+                               goblins-sidebar-external-agent-icon))
+            " " (if exited (propertize label 'face 'goblins-dim) label) "\n")
+    (add-text-properties start (point) (list 'goblins-external buffer
+                                             'goblins-in-group group-key))))
 
 (defun goblins--sidebar-running-jobs (session-id permissions)
   "SESSION-ID's running host commands among PERMISSIONS, oldest first."
@@ -672,68 +776,76 @@ the shells follow it.  Only the name and the shells are stops for movement."
 FOLDS is a sidebar's `goblins--sidebar-folds'; nil unfolds everything.  The
 text is built apart from the sidebar so a failure cannot blank it."
   (with-temp-buffer
-    (let ((snapshot (and (buffer-live-p source)
-                         (buffer-local-value 'goblins--snapshot source))))
-      (if (not snapshot)
-          (insert (propertize
-                   (format "%s\n" (goblins--safe
-                                   (if (buffer-live-p source)
-                                       (replace-regexp-in-string
-                                        "\\<r\\( to reconnect\\| now\\)" "g\\1"
-                                        (buffer-local-value 'goblins--notice source))
-                                     "No server; g to reconnect")))
-                   'face 'goblins-dim))
-        (let* ((sessions (goblins--sidebar-sessions snapshot))
-               (shells (goblins--sidebar-shells source))
+    (let* ((snapshot (and (buffer-live-p source)
+                          (buffer-local-value 'goblins--snapshot source)))
+           ;; External agents show even without a server.
+           (externals (goblins--external-agents))
+           (sessions (and snapshot (goblins--sidebar-sessions snapshot))))
+      (cond
+       ((not snapshot)
+        (insert (propertize
+                 (format "%s\n" (goblins--safe
+                                 (if (buffer-live-p source)
+                                     (replace-regexp-in-string
+                                      "\\<r\\( to reconnect\\| now\\)" "g\\1"
+                                      (buffer-local-value 'goblins--notice source))
+                                   "No server; g to reconnect")))
+                 'face 'goblins-dim)))
+       ((and (null sessions) (null externals))
+        (insert (propertize "No running goblins\n" 'face 'goblins-dim))))
+      (when (or sessions externals)
+        (let* ((shells (if snapshot (goblins--sidebar-shells source)
+                         (make-hash-table :test #'equal)))
                (permissions (append (plist-get snapshot :permissions) nil))
                (count (lambda (members)
                         (apply #'+ (mapcar (lambda (s) (goblins--sidebar-pending
                                                         (plist-get s :id) permissions))
-                                           members))))
+                                           (cl-remove-if #'bufferp members)))))
                (raids (append (plist-get snapshot :raids) nil)))
-          (if (null sessions)
-              (insert (propertize "No running goblins\n" 'face 'goblins-dim))
-            (dolist (raid (goblins--sidebar-groups sessions))
-              (let* ((rkey (car raid))
-                     ;; A raid whose goblins share one directory has one
-                     ;; heading for both; its goblins sit under the raid.
-                     (merged (and rkey (null (cdr (cddr raid)))))
-                     (indent (if (and rkey (not merged)) 2 0))
-                     ;; A paused raid's prompt is its former owner's,
-                     ;; which may no longer be a member.
-                     (pending (and rkey
-                                   (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
-                                      (goblins--sidebar-raid-prompts rkey permissions)))))
-                (when (or (null rkey)
-                          (let ((label (goblins--sidebar-raid-label
-                                        (or (cadr raid) rkey)
-                                        (eq (plist-get (cl-find rkey raids
-                                                                :key (lambda (r) (plist-get r :id))
-                                                                :test #'equal)
-                                                       :paused)
-                                            t)
-                                        (and merged (car (nth 2 raid)))
-                                        (and merged
-                                             (goblins--sidebar-group-worktree
-                                              (car (nth 2 raid)) (cdr (nth 2 raid))))
-                                        (goblins--sidebar-room 0 pending))))
-                            (goblins--sidebar-insert-group
-                             (list 'raid rkey) 0 (car label)
-                             folds
-                             (append (list 'goblins-raid (or (cadr raid) rkey))
-                                     (and merged (list 'goblins-directory (car (nth 2 raid)))))
-                             pending (cdr label))))
-                  (dolist (dir (cddr raid))
-                    (let ((gkey (list 'dir rkey (car dir))))
-                      (when (or merged
-                                (goblins--sidebar-insert-group
-                                 gkey indent
-                                 (goblins--sidebar-directory-label
-                                  (car dir) (goblins--sidebar-room indent (funcall count (cdr dir)))
-                                  (goblins--sidebar-group-worktree (car dir) (cdr dir)))
-                                 folds (list 'goblins-directory (car dir))
-                                 (funcall count (cdr dir))))
-                        (dolist (session (cdr dir))
+          (dolist (raid (goblins--sidebar-groups sessions externals))
+            (let* ((rkey (car raid))
+                   ;; A raid whose goblins share one directory has one
+                   ;; heading for both; its goblins sit under the raid.
+                   (merged (and rkey (null (cdr (cddr raid)))))
+                   (indent (if (and rkey (not merged)) 2 0))
+                   ;; A paused raid's prompt is its former owner's,
+                   ;; which may no longer be a member.
+                   (pending (and rkey
+                                 (+ (funcall count (apply #'append (mapcar #'cdr (cddr raid))))
+                                    (goblins--sidebar-raid-prompts rkey permissions)))))
+              (when (or (null rkey)
+                        (let ((label (goblins--sidebar-raid-label
+                                      (or (cadr raid) rkey)
+                                      (eq (plist-get (cl-find rkey raids
+                                                              :key (lambda (r) (plist-get r :id))
+                                                              :test #'equal)
+                                                     :paused)
+                                          t)
+                                      (and merged (car (nth 2 raid)))
+                                      (and merged
+                                           (goblins--sidebar-group-worktree
+                                            (car (nth 2 raid)) (cdr (nth 2 raid))))
+                                      (goblins--sidebar-room 0 pending))))
+                          (goblins--sidebar-insert-group
+                           (list 'raid rkey) 0 (car label)
+                           folds
+                           (append (list 'goblins-raid (or (cadr raid) rkey))
+                                   (and merged (list 'goblins-directory (car (nth 2 raid)))))
+                           pending (cdr label))))
+                (dolist (dir (cddr raid))
+                  (let ((gkey (list 'dir rkey (car dir))))
+                    (when (or merged
+                              (goblins--sidebar-insert-group
+                               gkey indent
+                               (goblins--sidebar-directory-label
+                                (car dir) (goblins--sidebar-room indent (funcall count (cdr dir)))
+                                (goblins--sidebar-group-worktree (car dir) (cdr dir)))
+                               folds (list 'goblins-directory (car dir))
+                               (funcall count (cdr dir))))
+                      (dolist (session (cdr dir))
+                        (if (bufferp session)
+                            (goblins--sidebar-insert-external
+                             session (1+ (/ indent 2)) gkey)
                           (goblins--sidebar-insert-goblin
                            session (1+ (/ indent 2)) gkey permissions shells folds)))))))))))
       (buffer-string))))
@@ -818,7 +930,7 @@ from `window-selection-change-functions', shows the sidebar."
 
 (defconst goblins--sidebar-target-properties
   '(goblins-id goblins-detail goblins-terminal goblins-session-terminal
-    goblins-host-job goblins-group)
+    goblins-host-job goblins-external goblins-group)
   "Text properties of the sidebar lines that RET and a click act on.")
 
 (defun goblins--sidebar-target-p (pos)
@@ -931,7 +1043,7 @@ shells also get `goblins-sidebar-active'."
     (with-current-buffer goblins--sidebar-buffer-name
       (mapc #'delete-overlay goblins--sidebar-active-overlays)
       (setq goblins--sidebar-active-overlays nil)
-      (let ((shown-ids nil) (shown-shells nil) (shown-terminals nil))
+      (let ((shown-ids nil) (shown-shells nil) (shown-terminals nil) (shown-externals nil))
         (dolist (shown (mapcar #'window-buffer (goblins--main-windows)))
           (let ((key (buffer-local-value 'goblins--session-key shown))
                 (terminal (buffer-local-value 'goblins--terminal-id shown)))
@@ -947,6 +1059,8 @@ shells also get `goblins-sidebar-active'."
                        (push (cons session terminal) shown-terminals))))
                   ((buffer-local-value 'goblins--shell-number shown)
                    (push shown shown-shells))
+                  ((buffer-local-value 'goblins-external-agent-mode shown)
+                   (push shown shown-externals))
                   (t (push (if key (nth 2 key) (buffer-local-value 'goblins--view-session shown))
                            shown-ids)))))
         (save-excursion
@@ -956,6 +1070,7 @@ shells also get `goblins-sidebar-active'."
               (let* ((id (get-text-property (point) 'goblins-id))
                      (shell (get-text-property (point) 'goblins-terminal))
                      (terminal (get-text-property (point) 'goblins-session-terminal))
+                     (external (get-text-property (point) 'goblins-external))
                      (line-end (line-beginning-position 2)))
                 (when id
                   (setq block-end (goblins--sidebar-block-end (point))
@@ -967,6 +1082,12 @@ shells also get `goblins-sidebar-active'."
                   (when (eq goblin 'goblins-sidebar-bar-shown)
                     (goblins--sidebar-mark-shown (point) block-end)))
                 (when (>= (point) block-end) (setq goblin nil))
+                ;; An external agent's buffer always exists: only shown counts.
+                (when (and external (memq external shown-externals))
+                  (goblins--sidebar-mark-shown (point) line-end)
+                  (setq goblins--sidebar-active-overlays
+                        (nconc (goblins--sidebar-bar (point) 'goblins-sidebar-bar-shown nil)
+                               goblins--sidebar-active-overlays)))
                 (let ((inner (cond
                               ((and shell (memq shell shown-shells))
                                (goblins--sidebar-mark-shown (point) line-end)
@@ -1063,8 +1184,8 @@ movement treats as one line."
 ;;;; Commands
 
 (defun goblins--sidebar-lines (direction)
-  "Move to the next line in DIRECTION (1 or -1): a group, a goblin, a terminal
-or a running host command.
+  "Move to the next line in DIRECTION (1 or -1): a group, a goblin, a terminal,
+a running host command or an external agent.
 A goblin's detail lines and blank lines are passed by."
   (let ((start (point)) found)
     (while (and (not found) (zerop (forward-line direction)))
@@ -1073,6 +1194,7 @@ A goblin's detail lines and blank lines are passed by."
                 (get-text-property (point) 'goblins-terminal)
                 (get-text-property (point) 'goblins-session-terminal)
                 (get-text-property (point) 'goblins-host-job)
+                (get-text-property (point) 'goblins-external)
                 (get-text-property (point) 'goblins-group)))
         (setq found t)))
     (if found
@@ -1130,7 +1252,8 @@ only the headings, then every goblin on its name line, then everything."
 (defun goblins-sidebar-dwim ()
   "Act on the sidebar line at point, or select the sidebar.
 On a goblin show it beside the sidebar, attaching if necessary; on a terminal
-show or attach it; on a running host command follow its output; on a raid heading open its page; on a directory heading fold or
+show or attach it; on a running host command follow its output; on an
+external agent show it as a goblin; on a raid heading open its page; on a directory heading fold or
 unfold it.  Outside the sidebar, select it, opening the workspace or showing
 the sidebar as needed."
   (interactive)
@@ -1151,6 +1274,8 @@ the sidebar as needed."
    ((get-text-property (line-beginning-position) 'goblins-host-job)
     (goblins-host-job-log (goblins--sidebar-ensure-source)
                           (get-text-property (line-beginning-position) 'goblins-host-job)))
+   ((get-text-property (line-beginning-position) 'goblins-external)
+    (goblins-select-external (get-text-property (line-beginning-position) 'goblins-external)))
    ((or (get-text-property (line-beginning-position) 'goblins-id)
         (get-text-property (line-beginning-position) 'goblins-detail))
     (goblins-open-session (goblins--sidebar-ensure-source)
@@ -1288,6 +1413,20 @@ unfolding its groups."
         (dolist (window (get-buffer-window-list sidebar nil t))
           (set-window-point window pos))))))
 
+(defun goblins--sidebar-reveal-external (buffer)
+  "Put the sidebar's point on the external agent BUFFER, unfolding its group."
+  (when-let* ((sidebar (get-buffer goblins--sidebar-buffer-name)))
+    (with-current-buffer sidebar
+      (let ((key (list 'dir nil (goblins--external-agent-directory buffer))))
+        (when (and (not (goblins--sidebar-find (cons 'external buffer)))
+                   (goblins--sidebar-folded-p key (goblins--sidebar-folds)))
+          (goblins--sidebar-toggle key)
+          (goblins--sidebar-render)))
+      (when-let* ((pos (goblins--sidebar-find (cons 'external buffer))))
+        (goto-char pos)
+        (dolist (window (get-buffer-window-list sidebar nil t))
+          (set-window-point window pos))))))
+
 (defun goblins--sidebar-move-to-waiting (backward)
   (let* ((source (goblins--sidebar-ensure-source))
          (target (goblins--sidebar-next-waiting source (goblins--sidebar-key-at (point))
@@ -1371,7 +1510,7 @@ running; with a prefix argument STOP, they are stopped too."
              ("n / N" . "next / previous goblin waiting for a decision")
              ("TAB" . "fold or unfold the goblin or group")
              ("S-TAB" . "cycle: headings only, goblins folded, everything"))
-     ("Goblin" ("RET" . "show or attach its terminal; on a terminal, show or attach it; on a host command, follow its output")
+     ("Goblin" ("RET" . "show or attach its terminal; on a terminal, show or attach it; on a host command, follow its output; on an external agent, show it")
                ("p" . "permission requests")
                ("I" . "info")
                ("K" . "stop it; on a terminal, close it; on a host command, stop that command")
@@ -1428,7 +1567,7 @@ the goblin selected last, else the default server's."
   (let ((sidebar (get-buffer goblins--sidebar-buffer-name)))
     (if (and sidebar (buffer-live-p (buffer-local-value 'goblins--sidebar-source sidebar)))
         (buffer-local-value 'goblins--sidebar-source sidebar)
-      (goblins--status-buffer (car goblins--last-goblin)))))
+      (goblins--status-buffer (goblins--selected-directory)))))
 
 (defun goblins--sidebar-show (source)
   "Show the sidebar of SOURCE's server on the left, and return its window."
@@ -1488,30 +1627,39 @@ them, the next."
                      (goblins--right-window)))))
 
 (defun goblins--sidebar-order (source)
-  "The IDs of SOURCE's running goblins in the order of the unfolded sidebar."
+  "The IDs of SOURCE's running goblins, and the buffers of the external agents,
+in the order of the unfolded sidebar."
   (let ((snapshot (buffer-local-value 'goblins--snapshot source))
         ids)
     (with-temp-buffer
       (insert (goblins--sidebar-text source nil))
-      (let ((pos (point-min)))
-        (while pos
-          (let ((id (get-text-property pos 'goblins-id)))
-            (when (and id (not (member id ids))
-                       (not (goblins--sidebar-finished-p
-                             (goblins--snapshot-session snapshot id))))
-              (push id ids)))
-          (setq pos (next-single-property-change pos 'goblins-id)))))
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let ((id (or (get-text-property (point) 'goblins-id)
+                      (get-text-property (point) 'goblins-external))))
+          (when (and id (not (member id ids))
+                     (or (bufferp id)
+                         (not (goblins--sidebar-finished-p
+                               (goblins--snapshot-session snapshot id)))))
+            (push id ids)))
+        (forward-line 1)))
     (nreverse ids)))
 
 (defun goblins--workspace-current (source)
-  "The ID of the selected goblin, if it is one of SOURCE's server."
-  (and (equal (car goblins--last-goblin) (buffer-local-value 'goblins--directory source))
-       (cdr goblins--last-goblin)))
+  "The ID of the selected goblin, if it is one of SOURCE's server, or the
+buffer of the selected external agent."
+  (cond ((eq (car goblins--last-goblin) 'external) (cdr goblins--last-goblin))
+        ((equal (car goblins--last-goblin) (buffer-local-value 'goblins--directory source))
+         (cdr goblins--last-goblin))))
 
 (defun goblins--workspace-goto (source id)
-  "Show goblin ID of SOURCE beside the sidebar, its line selected there."
-  (goblins--sidebar-reveal source id)
-  (goblins-open-session source id))
+  "Show goblin ID of SOURCE beside the sidebar, its line selected there.
+ID may be an external agent's buffer instead."
+  (if (bufferp id)
+      (progn (goblins--sidebar-reveal-external id)
+             (goblins-select-external id))
+    (goblins--sidebar-reveal source id)
+    (goblins-open-session source id)))
 
 (defun goblins-workspace-next-goblin (&optional n)
   "Show the next goblin in sidebar order, N times; wrap around."
@@ -1535,8 +1683,9 @@ them, the next."
 (defun goblins--workspace-waiting (backward)
   (let* ((source (goblins--workspace-source))
          (current (goblins--workspace-current source))
-         (target (goblins--sidebar-next-waiting source (and current (cons 'id current))
-                                                backward)))
+         (target (goblins--sidebar-next-waiting
+                  source (and current (cons (if (bufferp current) 'external 'id) current))
+                  backward)))
     (if target
         (goblins--workspace-goto source target)
       (message "No other goblin is waiting for a decision"))))
@@ -1552,15 +1701,17 @@ them, the next."
   (goblins--workspace-waiting t))
 
 (defun goblins-workspace-last-goblin ()
-  "Show the goblin selected before this one."
+  "Show the goblin, or external agent, selected before this one."
   (interactive)
-  (let* ((key (or goblins--previous-goblin (user-error "No goblin selected before")))
-         (source (goblins--status-buffer (car key)))
-         (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
-                                             (cdr key))))
-    (when (or (null session) (goblins--sidebar-finished-p session))
-      (user-error "The goblin selected before has stopped"))
-    (goblins--workspace-goto source (cdr key))))
+  (let ((key (or goblins--previous-goblin (user-error "No goblin selected before"))))
+    (if (eq (car key) 'external)
+        (goblins--workspace-goto nil (cdr key))
+      (let* ((source (goblins--status-buffer (car key)))
+             (session (goblins--snapshot-session (buffer-local-value 'goblins--snapshot source)
+                                                 (cdr key))))
+        (when (or (null session) (goblins--sidebar-finished-p session))
+          (user-error "The goblin selected before has stopped"))
+        (goblins--workspace-goto source (cdr key))))))
 
 (transient-define-prefix goblins-workspace-menu ()
   "Move around the Goblins workspace.
@@ -1751,6 +1902,16 @@ On a raid, show those sent within it."
     buffer))
 
 (defun goblins--workspace-restore (source)
+  "Show the goblin of SOURCE's server, or the external agent, selected last,
+with its saved windows.  Else the most recently used goblin terminal, else
+the status buffer alone."
+  (if (and (eq (car goblins--last-goblin) 'external)
+           (goblins--external-agent-p (cdr goblins--last-goblin)))
+      (progn (goblins--enter-external (cdr goblins--last-goblin))
+             (goblins--popup-close))
+    (goblins--workspace-restore-goblin source)))
+
+(defun goblins--workspace-restore-goblin (source)
   "Show the goblin of SOURCE's server selected last, with its saved windows.
 Else the most recently used goblin terminal, else the status buffer alone."
   (let* ((directory (buffer-local-value 'goblins--directory source))

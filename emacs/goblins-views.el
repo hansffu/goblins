@@ -193,10 +193,17 @@ confirming."
 `goblins--layout-tree'.")
 
 (defvar goblins--last-goblin nil
-  "(DIRECTORY . SESSION-ID) of the selected goblin, whose windows show.")
+  "(DIRECTORY . SESSION-ID) of the selected goblin, whose windows show.
+For an external agent, see `goblins-external-agent-mode', (external . BUFFER).")
 
 (defvar goblins--previous-goblin nil
-  "(DIRECTORY . SESSION-ID) of the goblin selected before `goblins--last-goblin'.")
+  "(DIRECTORY . SESSION-ID) of the goblin selected before `goblins--last-goblin',
+or (external . BUFFER).")
+
+(defun goblins--selected-directory ()
+  "The server state directory of the selected goblin; nil when none, or an
+external agent, is selected."
+  (and (stringp (car goblins--last-goblin)) (car goblins--last-goblin)))
 
 (defun goblins--note-selected (key)
   "Make KEY, (DIRECTORY . SESSION-ID), the selected goblin."
@@ -545,6 +552,28 @@ Outside the workspace RIGHT, or the terminal, is popped up."
       (when right (goblins--display-right right))
       (goblins--popup-follow source id)
       (or right (window-buffer (goblins--agent-window)))))))
+
+(defun goblins--enter-external (buffer)
+  "Show BUFFER, an external agent, in the workspace's agent window, with its
+saved windows."
+  (goblins--note-selected (cons 'external buffer))
+  (select-window (goblins--restore-layout (cons 'external buffer) buffer)))
+
+(defun goblins-select-external (buffer)
+  "Show BUFFER, an external agent, as `goblins-select-goblin' shows a goblin.
+In the workspace the windows of the goblin shown so far are saved, and
+BUFFER's saved windows come back; outside it, pop BUFFER up."
+  (cond
+   ((not (goblins--in-workspace-p)) (pop-to-buffer buffer))
+   ((equal (cons 'external buffer) goblins--last-goblin)
+    (let ((agent (goblins--agent-window)))
+      (unless (eq (window-buffer agent) buffer) (goblins--set-agent-buffer agent buffer))
+      (select-window agent)))
+   (t (goblins--save-layout)
+      (goblins--enter-external buffer)))
+  ;; No request waits for an external agent.
+  (goblins--popup-close)
+  buffer)
 
 (defun goblins--attach (source id display)
   "Attach a new terminal to running goblin ID of SOURCE's server, shown by DISPLAY."
@@ -1161,8 +1190,8 @@ selected in the workspace."
   (let ((goblin (cond (goblins--session-key
                        (cons (goblins--status-buffer (car goblins--session-key))
                              (nth 2 goblins--session-key)))
-                      (goblins--last-goblin
-                       (cons (goblins--status-buffer (car goblins--last-goblin))
+                      ((goblins--selected-directory)
+                       (cons (goblins--status-buffer (goblins--selected-directory))
                              (cdr goblins--last-goblin))))))
     (unless (if goblin
                 (goblins--popup-show (car goblin) (cdr goblin))
@@ -1340,7 +1369,7 @@ it has a terminal here."
   "The status buffer, connected, of the server at hand: this goblin buffer's,
 the workspace's, else that of `goblins--resolve-directory'."
   (goblins--connect (or (car goblins--session-key)
-                        (and (goblins--in-workspace-p) (car goblins--last-goblin)))))
+                        (and (goblins--in-workspace-p) (goblins--selected-directory)))))
 
 (defun goblins--running-sessions (snapshot)
   "The sessions of SNAPSHOT that have not finished."

@@ -131,11 +131,13 @@ Goblins start folded: a folded goblin keeps only its name line, its pending perm
 
 The icon comes from =goblins-agent-icons=, by the =integration= of the goblin's configuration: Claude's and Codex's marks in their colours, and a terminal for every other goblin.  Each entry has an SVG file (=:svg=), a colour or face for single-colour icons (=:color=) and the text shown where Emacs cannot draw SVG, as in a terminal (=:text=: =✻=, =◎= and =›=).  Add an entry for another integration with =add-to-list=.  A broken SVG file shows as Emacs's empty image.  The shipped icons, their sources and licences are in =emacs/icons/=.  Folds last while the sidebar lives: redraws and =g r= keep them, hiding and showing the sidebar keeps them, and leaving the workspace or showing another server's goblins starts over.
 
+Agents that do not run in Goblins can be listed too.  =M-x goblins-external-agent-mode= in any buffer, such as a Claude Code or Aider session you run yourself, makes it an external agent: the sidebar lists it under its =default-directory=, after the goblins outside a raid there, as its icon (=goblins-sidebar-external-agent-icon=: a robot head in grey, =»= where Emacs cannot draw SVG) and its buffer's name, =» *claude-code: goblins*=.  To list such buffers as they open, add the mode to their major mode's hook, =(add-hook 'claude-code-mode-hook #'goblins-external-agent-mode)=; the sidebar lists them in every workspace, with or without a server.  The buffer-local =goblins-external-agent-name= and =goblins-external-agent-icon= give one another name or icon.  The line dims with =· exited= once the buffer's process ends, and leaves when you turn the mode off or kill the buffer.  =RET= shows it in the agent window with the windows you keep beside it, like a goblin, and the workspace's moves (=n=, =p= and =l=) include it; it has the shown bar while shown, and never the grey one, since its buffer always exists.  Nothing else of Goblins applies to it: the goblin keys say to select a goblin.
+
 | Key (also Evil motion state) | Action                                                   |
 |------------------------------+----------------------------------------------------------|
 | =j= / =k=                    | next / previous goblin, shell or group                   |
 | =n= / =N=                    | next / previous goblin waiting for a decision (unfolds groups) |
-| =RET=, left click            | goblin: show or attach; terminal: show or attach it; running host command: follow its output; raid: open its page; directory: fold |
+| =RET=, left click            | goblin: show or attach; terminal: show or attach it; running host command: follow its output; external agent: show it; raid: open its page; directory: fold |
 | =TAB=                        | fold or unfold the goblin or group                       |
 | =S-TAB=                      | cycle: headings only, goblins folded, everything unfolded |
 | =p=                          | permissions of the goblin: current request, history      |
@@ -192,7 +194,7 @@ The list's other keys: =j= / =k= move, =gr= (=g= without Evil) reads the whole l
 |-----+--------|
 | =s= / =g= | select the sidebar (showing it if hidden) / the agent window |
 | =o= | select a window beside the agent: the one used last, then the next |
-| =n= / =p= | show the next / previous goblin in sidebar order |
+| =n= / =p= | show the next / previous goblin or external agent in sidebar order |
 | =w= / =W= | show the next / previous goblin waiting for a decision |
 | =l= | show the goblin selected before (and back again) |
 | =b= | choose a goblin (=goblins-switch=) |
