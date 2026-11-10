@@ -3,7 +3,9 @@
 #+startup: showall inlineimages hideblocks
 #+property: header-args:mermaid :results file graphics replace :background-color "'#282c34'" :theme dark
 
-Status: draft for discussion. The daemon's public JSON-RPC API, its host and sandbox endpoints, gets one machine-readable description. Rust types, the method reference and the Python tests' checks are generated from it, so code and documentation cannot drift apart. The API itself does not change.
+Status: design background. The implementation schedule is superseded by [[file:JSON-RPC-MIGRATION.org][JSON-RPC-MIGRATION.org]], drafted on 2026-11-10: migrate one surface at a time through specification, generation, adoption and validation, including private JSON-RPC. The public-only scope and horizontal phases below describe the earlier proposal, not the current migration schedule.
+
+The daemon's public JSON-RPC API, its host and sandbox endpoints, gets one machine-readable description. Rust types, the method reference and the Python tests' checks are generated from it, so code and documentation cannot drift apart. The API itself does not change.
 
 Labels: *[E]* existing behaviour (master, 2026-10-29), *[P]* proposed change.
 

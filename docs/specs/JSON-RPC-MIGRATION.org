@@ -1,0 +1,263 @@
+#+title: Plan: incremental JSON-RPC contracts and generated types
+#+date: 2026-11-10
+#+startup: showall
+
+Status: draft for discussion and review by Nikka. This change creates the migration plan, not schemas, generators or runtime changes. Implementation begins only after the plan is agreed.
+
+The user wants the full JSON-RPC contract, implemented in vertical chunks. Each chunk follows this order: define its JSON-RPC specification, generate types where possible, migrate its producers and consumers, then validate. Do not implement all schemas first, all generators next and all consumers last.
+
+This plan replaces the implementation schedule in [[file:API-SCHEMA.org][API-SCHEMA.org]] and expands its inventory to private JSON-RPC. That earlier draft remains design background. [[file:ARCHITECTURE-REVIEW.org][The architecture review]] explains the motivation; [[file:../API.org][API.org]] and the implementation describe current behavior. The baseline for this draft is master at =16a0e71=; references are paths rather than fixed line numbers.
+
+* Scope and invariants
+
+All repository-owned existing JSON-RPC surfaces are in scope: host, sandbox, attachment, daemon/supervisor, scope control/member and Docker guardian. Full coverage includes requests, results, errors, notifications, nested records, method availability, direction and protocol sequencing; records alone do not complete a surface.
+
+The non-JSON-RPC interfaces discovered during the inventory are recorded below with their current definitions and a disposition. Converting init, helper lines, shared files or arbitrary CLI output to JSON-RPC is not implicitly authorized by a type migration; a conversion needs an explicit protocol decision and its own four-step chunk. Raw terminal bytes, stdio, signals and locks remain their existing protocols. External protocols are consumed rather than redefined here.
+
+Public wire behavior stays compatible: names, fields, error codes, defaulting, absence versus null, unknown-field policy, limits, feature negotiation, host/sandbox visibility and error precedence. Record any disagreement between code and documentation during step 1; decide it before migration rather than silently treating generated behavior as correct. Report behavior changes separately for user decision.
+
+Private channels retain their same-build compatibility policy and their existing wire format in this migration. Neither generated metadata nor a shared Rust type may weaken descriptor validation, cleanup ownership, bounds, cancellation, fairness or adoption barriers. A private wire-format simplification is a separate change.
+
+Wire DTOs describe data, not authority. Keep runtime ownership, validation and controller lifecycle operations handwritten. Moving record definitions must not create a dependency from =libs/api= back to =libs/runtime= or the daemon; introduce descriptor-free public projections for runtime-owned nested types. State enums must not become permission to set state without its existing lifecycle consequences; lifecycle redesign is separate work.
+
+* Contract format and generation
+
+Carry forward the schema-first direction of the earlier proposal: JSON OpenRPC endpoint descriptions referring to shared JSON Schema definitions. Prove generator suitability in C01 rather than assuming every schema feature maps faithfully to Rust. =typify= is the initial Rust generator candidate, not an excuse to change accepted input.
+
+- Public documents: =libs/api/schema/host.openrpc.json=, =sandbox.openrpc.json= and =attach.openrpc.json=, with common record/error definitions. A method is identified by endpoint and name, not by its name alone.
+- Private documents: separate supervisor, scope-control, scope-member and guardian descriptions alongside their owning runtime contracts. Keep descriptor schemas and ownership annotations private; do not expose them through the public API crate.
+- Every message records its direction and request/notification role. Notifications in either direction have a separate =x-notifications= section with explicit sender, receiver and legal connection state; they never enter a callable-method allowlist. This includes the host client's =exec.signal= during an active exec as well as daemon-to-client updates. Attach's fixed-ID completion reply needs an explicit exchange description rather than a fictitious callable method.
+- Describe required/nullable fields, omission, defaults, unknown fields, unions, integer ranges, string/collection limits, byte limits and method-specific errors. Defaults in a schema do not themselves implement runtime defaulting. Common protocol errors apply before a method has been identified; they cannot be validated solely against a method's error list.
+- Document state/order constraints, actor/authority derivation, path visibility, request cancellation, delayed completion, retries/idempotency, sequence gaps and resource release in descriptions or linked prose. Do not claim JSON Schema enforces these properties.
+- Generate Rust DTOs, endpoint method/notification identities and a reference from the covered descriptions. Build Rust into =OUT_DIR= using pinned, offline-available inputs. Keep method-specific request/result association in the client API so a caller cannot accidentally pair one method with another method's DTO.
+- For constraints the generator cannot preserve, keep a named handwritten validator or wrapper, state the exception in a registry and prove equivalence with wire cases. Do not replace closed variants with =Value= merely to make generation succeed. Genuine opaque data, such as flake lock contents, stays JSON and is explicitly identified.
+- Rust handlers, host/sandbox CLIs, TUI and both adapters migrate in the chunk owning the method. The sandbox gate uses the same parameter contracts while retaining its policy checks and refusal order. Domain types may differ from wire DTOs through explicit conversions.
+- Python test clients validate covered responses and notifications against the schema. Emacs, shell and TypeScript consumers receive contract fixtures and boundary checks; generated TypeScript DTOs are added where useful, with runtime validation where data enters. No Elisp or shell generator is assumed, and static TypeScript types alone do not validate JSON.
+- Keep =API.org= updated in every chunk under the existing repository rule. Generate a separate reference for covered surfaces, linking it from =API.org= without removing the reference for unmigrated surfaces. If the documentation ownership rule changes, change =AGENTS.md= explicitly in that chunk.
+
+* Execution and completion rules
+
+Each numbered chunk below is one logical migration, with this required sequence:
+
+1. *Spec*: reconcile the implementation and =API.org=, write the covered endpoint entries and referenced records, define positive/negative wire examples and behavioral assertions.
+2. *Generate*: generate the chunk's DTOs and method identities; record unsupported constraints and their handwritten enforcement. Step 1 may define record dependencies needed by that chunk without pre-migrating unrelated methods.
+3. *Migrate*: switch all in-repository producers, Rust consumers and parameter gates for the covered methods, and update non-Rust boundary checks/fixtures. Remove superseded definitions and manual field access for covered DTOs. Explicit conversions may bridge generated records into an unmigrated snapshot or domain model; label and retire them in the owning later chunk.
+4. *Validate*: check schemas/generation/reference freshness and malformed/valid wire behavior, run the applicable feature tasks, and review the uncommitted diff. Fix findings before committing. Run the merge gate on the final candidate before merge.
+
+Do not merge a spec-only or unused-types-only implementation phase as the completion of a chunk. A chunk can have intermediate local changes, but its reviewable result must exercise the generated contract in production. If a listed chunk is too large, split it by method family before implementation; each resulting chunk repeats all four steps.
+
+Until the public migration is finished, contract checks have an explicit coverage registry: every callable method, notification in either direction and protocol-specific exchange is either covered or assigned to a remaining chunk. Include paths outside ordinary dispatch, such as active-exec input and attach handshakes. Separately register deliberate refusal/behavior entries, such as sandbox =sessions.attach=, and wildcard/unknown-method handling; recognized names that only refuse a call never enter the generated callable allowlist. Unknown covered notifications/results fail validation; uncovered surfaces remain visible as pending rather than pretending to be checked. At C15, remove the transitional exemptions and require exact coverage of available methods, notifications, special exchanges and refusal behavior. Keep deliberately malformed-frame fixtures independent of normal parameter validation.
+
+Introduce nested records in their first consuming chunk. For example, C02 owns the public session projection, C05 terminal records, C09 permission records, C11 raids and C12 messages. Preserve adapters to legacy snapshot records until C15 rather than generating the whole API up front.
+
+The order below is a default serial implementation order. Dependencies name the prerequisites when work is split; they do not authorize concurrent test runners. C16-C19 follow the public contract so relayed payloads can reuse it.
+
+* Public chunks
+
+** C01: Contract toolchain, initialization and server control
+
+Depends on: none. Current definition: =libs/jsonrpc/src/lib.rs= implements framing/envelope validation; initialization/server handlers use local structs and =json!= in =packages/daemon/src/controller.rs=.
+
+1. *Spec*: define both endpoints' initialization, roles/features/limits, common envelope/error rules and host =server.status= / =server.stop=. Establish the coverage registry, notification direction and extension conventions.
+2. *Generate*: add the reproducible generator/reference/check harness, initial DTOs and typed method association. Prove absent/null/unknown fields, unions, integer bounds and byte-limit handling; name any fallbacks.
+3. *Migrate*: use the contract in the daemon and shared Rust connection/initialize path used by host CLI, sandbox CLI and both adapters. Preserve one-shot versus persistent connection rules. Add covered-result validation to Python helpers and initialization fixtures/checks for Emacs and scripts.
+4. *Validate*: preserve malformed-envelope/duplicate-key/depth/deadline defenses, version/role refusal, startup/reconnect and stop behavior. Verify clean Nix/offline code generation and packaging; check that unmigrated methods are recorded, not rejected accidentally. Feature areas: lifecycle, packaging and all changed clients.
+
+** C02: Session records, reads and self reporting
+
+Depends on: C01. Current definition: daemon-local =SessionRecord=, manual =SandboxSession= and self-status projections; shared =AgentState= / =SetState= / =SetVariables=; worktree gate/controller definitions.
+
+1. *Spec*: define host/sandbox =sessions.list= / =sessions.get=, sandbox =sessions.status=, =sessions.set-state=, =sessions.set-variables= and =sessions.set-worktree=. Describe lifecycle/activity separately, nested identity/worktree/creator data and every visibility difference. Preserve the existing absolute =Worktree.path= exposed in sandbox worktree objects; distinguish it from excluded host-only configuration/log/socket paths and process identities. Initially retain explicit snapshot conversions for nested records owned by later chunks.
+2. *Generate*: generate endpoint-specific projections, session/activity enums and reporting parameters/results; shared public nested records must not depend on runtime authority types.
+3. *Migrate*: daemon projections, Rust readers/renderers, worktree client, adapters' status/activity/variables calls and sandbox gate. Keep existing transition side effects; migrate frontend fixtures, including Emacs and shell consumers.
+4. *Validate*: assert host-only fields, process identities and attachment sockets remain excluded from sandbox projections, while the existing worktree path remains present and unchanged in list/get/status/set-worktree results. Pin activity freshness, variable limits, worktree set/clear and stopped-record behavior. Feature areas: lifecycle, messaging, worktrees, codex, claude, tui, emacs.
+
+** C03: Session launch, targets and lifecycle commands
+
+Depends on: C02. Current definition: local =Start= and runtime gate =MemberStart=; target catalogue types and manually constructed launch/results.
+
+1. *Spec*: define host/sandbox =sessions.start= / =sessions.stop=, host =sessions.resize= / =sessions.detach= and sandbox self-detach, plus =targets.list=. Cover recreate selectors, launch options, run-target authority, idempotency and acceptance versus readiness.
+2. *Generate*: generate each endpoint's distinct parameters, launch acceptance, target descriptions/options and acknowledgement results.
+3. *Migrate*: both dispatch paths, sandbox gate, launch/resume/target clients and frontend calls; retain domain policy and fixed accepted launch arguments.
+4. *Validate*: replayed/conflicting launch keys, same-name reuse, owner authorization, stopped/failed launches, resize limits and detach connection closure. Preserve sandbox =sessions.attach='s specific =-32601= refusal and its existing error precedence; classify it as refusal behavior, not an available method. Feature areas: lifecycle, raids, worktrees, history, exec, emacs.
+
+** C04: Exec and process control
+
+Depends on: C03. Current definition: local exec parameters and manual result variants, plus typed init/runtime messages below the public boundary.
+
+1. *Spec*: define host =sessions.exec= / =sessions.kill_execs=, descriptor counts and stdio roles, session pinning, delayed exit and startup-failure results. Explicitly define host-client-to-daemon =exec.signal= notifications with ={"signal":I32}=, no ID, permitted SIGHUP/SIGINT/SIGTERM values and active-exec-only connection state; invalid active-exec input closes the connection. Record behavior outside that state separately.
+2. *Generate*: generate public parameters, result variants and the =exec.signal= notification DTO/identity; keep the notification out of callable-method lists. Bind descriptor requirements through handwritten capability-aware transport rather than serializing raw FD numbers.
+3. *Migrate*: daemon exec handler and active-exec input parser, host CLI signal producer and TRAMP-facing CLI behavior; preserve the existing init protocol.
+4. *Validate*: tty/non-tty execution, descriptor validation/leak cleanup, pin failures, signal/exit outcomes, disconnect cancellation and unrelated-exec isolation. Cover notification direction/state, missing/invalid/unsupported signal, unexpected ID/method, connection closure on invalid active-exec input and notification coverage outside ordinary dispatch. Feature areas: exec, emacs, lifecycle.
+
+** C05: Managed terminals
+
+Depends on: C04. Current definition: local =TerminalRecord= and request structs; typed internal =TerminalCall=; public results are assembled as JSON.
+
+1. *Spec*: define all host/sandbox =terminals.*= operations with exact availability, notify behavior, terminal records, read truncation and matched/timeout/exited wait variants.
+2. *Generate*: generate endpoint-specific DTOs, result unions and public terminal records; preserve private command/domain types through conversions where needed.
+3. *Migrate*: handlers, gate, supervisor result producers, host/sandbox CLIs and terminal views; retire session-record terminal placeholders introduced in C02.
+4. *Validate*: input/key validation, screen reads, immediate/final-output matches, output bounds, exit notices, wait cancellation, create failure and frontend-independent terminal lifetime. Feature areas: terminals, exec, messaging, emacs.
+
+** C06: Attachment exchanges
+
+Depends on: C05. Current definition: local hello structs, manual handshake JSON and handwritten client parsers; modern daemon and legacy supervisor paths.
+
+1. *Spec*: describe =attach.hello=, =attach.waiting=, fixed-ID success/error completion and the switch to raw bytes; include terminal selection, missing-variable waits and the retained legacy handshake.
+2. *Generate*: generate handshake metadata/notifications/results, explicitly separate from ordinary callable endpoint methods.
+3. *Migrate*: daemon and supervisor handshake producers, host/Emacs frontend parsers and Python attach helper. Do not change the byte relay.
+4. *Validate*: wait/timeout, second-attach refusal without resize, detach/drain/re-attach, stopped output, legacy compatibility and exact framed-to-raw transition. Confirm that the real attachment exchange remains separate from the intentionally refused sandbox =sessions.attach= call, including refusal before injected trailing input can attach or resize a terminal. Feature areas: exec, terminals, emacs, lifecycle.
+
+** C07: Dev shell previews and flake applications
+
+Depends on: C02. Current definition: shared request types; =Preview= and nested types in supervisor implementation; generic JSON results crossing the runtime boundary.
+
+1. *Spec*: define =devshell.lock= / =devshell.diff= / =flake.run= and the full dev shell preview, including attention variants, changes, truncation and opaque flake-lock contents.
+2. *Generate*: generate public previews and method DTOs, keeping Nix evaluation/domain state separate.
+3. *Migrate*: supervisor producers, daemon results, sandbox gate/CLI and TUI/Emacs preview consumers; remove duplicate wire-only preview types.
+4. *Validate*: update/lock exclusivity, absent/null behavior, unchanged generation/preview facts, evaluation failure/cancellation and sandbox path policy. Feature areas: devshell, tui, emacs.
+
+** C08: Editor integration
+
+Depends on: C01. Current definition: shared =editor::Open= / =File= structs, daemon-local argument construction and manual result JSON.
+
+1. *Spec*: define =editor.open= parameters, path/line/column constraints, wait semantics, errors and editor exit results.
+2. *Generate*: generate request/result DTOs with named retained path validators.
+3. *Migrate*: gate, sandbox CLI and daemon handler; preserve emacsclient invocation and host-session pinning.
+4. *Validate*: path escapes, line/column dependencies, wait/disconnect, editor failure and session pinning. Feature areas: host-tools, emacs.
+
+** C09: Permissions and approval previews
+
+Depends on: C07. Current definition: shared =PermissionParams= / =PermissionResult=; local =PermissionRecord=, string states/kinds, =Value= preview and manual decision results.
+
+1. *Spec*: define host list/get/decide and sandbox request across package, Docker, dev shell and host-command variants; include raid-owner permission records, preview/error variants, all states and approval identity. Describe the complete host-command result shapes now; C10 owns their remaining job-control consumers.
+2. *Generate*: generate permission DTOs, state/kind enums, preview unions and operation outcomes; distinguish accepted decision, ready grant and shell/job outcome.
+3. *Migrate*: request/result producers, gate, approvals, record readers and TUI/Emacs/sandbox consumers. Reuse existing host-command/preview domain data through explicit conversions until C10.
+4. *Validate*: stale approvals, preview failure, denied/withdrawn/cancelled outcomes, disconnect behavior, policy/error precedence and no host diagnostic leakage. Feature areas: devshell, docker, host-tools, raids, tui, emacs, messaging.
+
+** C10: Host job control
+
+Depends on: C09. Current definition: shared =HostCommand=, internal typed outcome, manual public job projections and =host.submitted=.
+
+1. *Spec*: define host/sandbox =host.list= / =host.status= / =host.cancel=, =HostJob= and =host.submitted=, including attached/detached request outcomes, log paths and timestamp units.
+2. *Generate*: generate job DTOs and notification using C09's request/outcome definitions without conflating the host and sandbox log paths.
+3. *Migrate*: job producers/consumers and notification handling; public DTOs do not change the helper's status-file protocol.
+4. *Validate*: detached acceptance, submit-before-result ordering, cancellation/timeout/start failure, owner visibility and cleanup before completion. Feature areas: host-tools, messaging, exec.
+
+** C11: Raids and membership
+
+Depends on: C03, C09. Current definition: typed daemon domain operations and local request/record structs; manual public results.
+
+1. *Spec*: define all host/sandbox raid methods, raid/member/membership records, generation guards, paused owner and dissolution results.
+2. *Generate*: generate wire DTOs and endpoint-specific request types, reusing session states/options.
+3. *Migrate*: handlers, gate, CLI formatting and Emacs consumers; preserve domain operations and remove C02's membership conversions where superseded.
+4. *Validate*: authorization, owner loss/change, stale generation, pause/resume, created-member control and differing host/sandbox parameters. Feature areas: raids, lifecycle, messaging, emacs.
+
+** C12: Messages, inbox and operation notices
+
+Depends on: C10, C11. Current definition: shared message/mutation/state types; manual inbox/mutation results and string operation/notice statuses.
+
+1. *Spec*: define both endpoints' messaging/inbox methods and their exact availability, messages, claims, health, unfinished operations and operation/raid/terminal notices.
+2. *Generate*: generate message/notice/result DTOs and state variants, retaining semantic mutation validation.
+3. *Migrate*: mailbox service outputs, shared RPC helpers, both adapters' inbox logic and Rust clients; update shell/Emacs/Claude-mod boundaries with checked fixtures or runtime validation. Explicitly cover the adapter failure mode where missing fields become an empty inbox.
+4. *Validate*: idempotent/conflicting keys, stale claim generations, empty inbox, audit failure, authorization changes, notice correlation and adapter wakeup behavior. Feature areas: messaging, codex, claude, raids, host-tools, emacs.
+
+** C13: Communications events and pagination
+
+Depends on: C12. Current definition: outer =mailbox::Event= struct with string =kind= and =Value= data; some typed producer-side change enums.
+
+1. *Spec*: enumerate every emitted event kind and its payload, =communications.list= parameters/results, cursor semantics and online/offline representation.
+2. *Generate*: generate tagged event payloads and page DTOs; only deliberately extensible/opaque fields remain JSON.
+3. *Migrate*: event producers, journal/page serialization and Rust/offline/Emacs consumers without changing stored event compatibility.
+4. *Validate*: every producer kind has a schema, payload-kind pairing, pagination/truncation, filtering, audit failure and older retained log reading. Feature areas: messaging, raids, history, emacs.
+
+** C14: History and recreation records
+
+Depends on: C03, C11. Current definition: typed persisted records with version migration; generic JSON list/prune wrappers and CLI augmentations.
+
+1. *Spec*: define =history.list= / =history.prune=, current records and running status, partial failure, bounds and the relationship to historical file versions. Do not equate a wire DTO migration with rewriting stored files.
+2. *Generate*: generate public records and method DTOs; retain explicit persistence-version readers and conversions.
+3. *Migrate*: daemon results, CLI online/offline projections and Emacs resume readers; share record definitions where wire/persistence semantics actually coincide.
+4. *Validate*: v1/v2/v3 reads, unknown running status offline, truncation, prune locking/failure, recreate reservations and skipped restoration. Feature areas: history, worktrees, codex, emacs.
+
+** C15: Snapshot subscription and public coverage closure
+
+Depends on: C02-C14. Current definition: local =Snapshot=; manual subscribe/update wrappers and sequence checks in Rust/Emacs.
+
+1. *Spec*: define complete snapshots using the migrated records, subscribe/unsubscribe and =state.changed=; pin sequencing, instance identity, replacement, eviction and overflow/disconnect behavior.
+2. *Generate*: generate snapshot/subscription DTOs and final endpoint identities. Require exact callable-method coverage, both notification directions including =exec.signal=, and special exchanges including attachment; separately require refusal/unknown-method behavior coverage without publishing refused names as callable methods.
+3. *Migrate*: publication, Rust subscription/TUI and Emacs boundaries; remove transitional snapshot bridges and covered-method exemptions. Audit all public Rust consumers and notification parsers for leftover manual access.
+4. *Validate*: snapshot-before-updates ordering across clients, no sequence gaps, reconnect/instance changes, record eviction, frame/queue bounds and exact endpoint/spec coverage across ordinary dispatch, special connection states and explicit refusal behavior. Feature areas: lifecycle, tui, emacs, messaging, raids; shared fixture/protocol changes recommend full.
+
+* Private JSON-RPC chunks
+
+** C16: Supervisor bootstrap, maintenance and ownership
+
+Depends on: C15. Current definition: typed startup/maintenance/message records and custom FD/lease codec in =libs/runtime/src/supervisor.rs=.
+
+1. *Spec*: define startup, preflight/maintenance exchanges, multipart transfer metadata, adoption, stopping/released and failure paths, including directions and state sequencing.
+2. *Generate*: generate all faithfully representable descriptor-free wire metadata/DTOs, including structured records and tagged enums such as =MaintenanceOperation=, while retaining exact decoding behavior. Keep owned descriptors, leases, handoff guards and channel IO handwritten. Register every non-generated field and its decoder, with a fidelity or ownership reason for each fallback.
+3. *Migrate*: daemon one-shot/process clients and supervisor entry/process path through explicit metadata-to-owned-message conversion; preserve wire layout and ownership barriers.
+4. *Validate*: partial/abandoned transfer, budgets, wrong direction/phase, peer death, ACK/EOF/reap deadlines, cleanup once and malformed descriptor handling. Feature areas: lifecycle, sandbox, packaging; shared contracts recommend full.
+
+** C17: Supervisor operational commands and events
+
+Depends on: C16. Current definition: typed runtime =Command= / =Event=, custom codec, opaque JSON call/terminal/preview payloads and string progress.
+
+1. *Spec*: cover every remaining command/event and correlated outcome: grants/devshell, launch/handoff, exec/terminals, host jobs, sandbox relay and logging. Reference the public DTOs for relayed public payloads without interpreting genuine user JSON as descriptor references.
+2. *Generate*: generate representable metadata and typed embedded outcomes, retaining private capability-bearing domain values and transport codecs where required.
+3. *Migrate*: supervisor engine/worker and daemon consumers, replacing covered opaque wire-result assembly and string progress with explicit conversions; preserve existing opaque-on-wire encoding where necessary for compatibility and FD safety.
+4. *Validate*: exact command/event coverage, ordering, bounded admission/output, cancel/stop under backpressure, no stranded completion, malicious descriptor-looking user JSON and peer death. Feature areas span all runtime consumers; shared protocol/lifecycle changes recommend full.
+
+** C18: Scope control and member protocols
+
+Depends on: C17. Current definition: =scope::Message= enum, custom capability transport and handwritten state machines.
+
+1. *Spec*: define separate control/member directions, setup/join/storage/registration/Docker/leave/error exchanges and legal transaction sequences.
+2. *Generate*: generate faithfully representable descriptor-free metadata, structured records and bounded Docker-part shapes; keep descriptor/lease acquisition, validation and ownership typed by hand.
+3. *Migrate*: daemon scope client and supervisor scope process/member clients without changing join policy or teardown ordering.
+4. *Validate*: stale idle counts, register-before-release, storage batches, Docker rollback/extension, cancelled-exchange draining, failure fanout, EOF and release deadlines. Feature areas: scopes, docker, sandbox, lifecycle; shared contracts recommend full.
+
+** C19: Docker guardian protocol
+
+Depends on: C18. Current definition: private tagged message enum and custom descriptor retention codec in =libs/runtime/src/guardian.rs=.
+
+1. *Spec*: define retain/retained, lease batch shapes, bootstrap relationship, EOF and failure behavior.
+2. *Generate*: generate transferable metadata while keeping lock descriptors and lease guards handwritten.
+3. *Migrate*: scope sender and trusted guardian receiver, preserving retention before acknowledgement and final resource-release ownership.
+4. *Validate*: malformed/duplicate/missing descriptors, partial transfers, guardian/scope death, engine teardown and retained donor leases. Feature areas: docker, scopes, sandbox; run real Docker integrations before merge.
+
+* Other process contracts: disposition, not hidden scope
+
+These boundaries belong in the inventory but are not existing JSON-RPC endpoints. None disappears merely because C01-C19 are complete. A later decision to convert one gets an additional numbered chunk with the same spec, generation, migration and validation sequence; otherwise document and validate its existing protocol without calling it a JSON-RPC migration.
+
+| Boundary | Current definition | Proposed disposition |
+|----------+--------------------+----------------------|
+| Supervisor/init | Serde =Command= / =Event= in =libs/api/src/init.rs=, seqpacket JSON and SCM_RIGHTS; no JSON-RPC envelope | Retain same-build init protocol; decide separately whether a generated schema for its existing messages or JSON-RPC conversion is useful. |
+| Supervisor/mount helper | Arguments/inherited FDs; matching parsers for =MOUNTNS= / =RELEASE= / =READY2=, grant lines, =OK= / =ERR= and EOF | Candidate follow-up for a structured protocol; specify bootstrap and restricted helper dependencies before choosing conversion. |
+| Host-job helper | Arguments/environment, lifetime-pipe EOF, output log; helper-local manual =status.json= writer and runtime =HostOutcome= reader | Candidate shared/generated file contract; preserve atomic completion and cleanup-before-result, rather than assuming it needs a request server. |
+| Namespace keeper, Docker startup/mount injection and cleanup helpers | Arguments/FDs, readiness byte/PID/file handshakes, release gates, exit status and EOF | Document as bootstrap/lifetime protocols; convert structured metadata only after an explicit decision. |
+| Claude hooks/monitor/mod | Rust =Hook= / =Ledger= subsets, JSON stdin/stdout/status, wakeup lines, shell PID/file conventions and TS parsing | C12 covers daemon messages; provider input, local ledger/status and monitor protocols remain separate contract follow-ups. |
+| Codex adapter commands/process | =Controls= / =Ledger= structs, bind string and status JSON files, atomic writes and run lock | C12 covers daemon calls; file/control protocols remain separate follow-ups. |
+| Machine consumers of CLI output, including TRAMP and Claude mod | Clap arguments, exit codes, JSON/text printers and handwritten parsers | Reuse generated public DTOs where output is identical; separately inventory wrappers, adapter status and machine-output stability. |
+| Nix producers/runtime consumers | Nix manifest/build-spec emitters and validators, Rust deserialize/validation types | Separate schema/build-time validation follow-up; do not turn configuration files into RPC. |
+| Persisted history/audit and shared locks/leases | Versioned Serde records, JSONL events, flock and filesystem publication/cleanup rules | C13/C14 cover exposed records and compatibility; retain persistence/lifetime protocol documentation separately. |
+| Frontend/payload terminal and exec stdio | PTY/stream bytes, terminal escape sequences and SCM_RIGHTS | Preserve byte streams; generated handshake/control contracts end at the stream transition. |
+| External Codex App Server and Claude integration APIs | Upstream protocols with handwritten adapter JSON parsing and partial local types | Generate/import upstream types where feasible as separate adapter work; do not invent a Goblins-owned upstream contract. |
+| Bubblewrap, pasta, Nix, Git and emacsclient | External command arguments/output, ready/PID files or pipes, exit status | Keep bounded handwritten integration adapters and tests; external format changes are independent migrations. |
+| Docker/Nix daemon sockets exposed to sandboxes | External service protocols plus local exposure/grant policy | No replacement schema in this plan; test exposure/authority and compatibility. |
+| Parent/child lifetime and cancellation | Signals, pidfds, parent-death handling, EOF, reaping and lock release | Preserve and test behavioral invariants; no generated JSON type substitutes for them. |
+
+Supervisor worker channels and daemon messaging channels connect threads, not processes. Their Rust enums and authority boundaries remain; conversions to generated DTOs happen where the owning chunk touches them, without turning local queues into RPC.
+
+* Validation, review and delivery
+
+For this plan-only change, no tests run because it is documentation only; the feature-task and merge-gate exemptions in =AGENTS.md= apply. Nikka is the user-designated reviewer, overriding the usual other-model reviewer requirement for this change. Keep the plan uncommitted until Nikka has no remaining findings.
+
+For implementation chunks, use the Git-backed =nix develop= and select tasks with =just test-plan --changed master= or =just test-plan --paths FILE...=. The feature areas listed above are minimum behavioral coverage to consider, not overrides of the router: shared protocol, lifecycle and fixture changes recommend =full=. Run the complete selection once with =just test-feature FEATURE...=, update =tests/features.toml= for new tests, and run =just test-feature-check= when mappings change.
+
+Coordinate runners through daemon messages; only one runner uses a checkout/cache at once across the raid. Every code chunk needs =just test-merge= on the final candidate before merge, and another run after any further change. Report passes, failures, every skipped environment-dependent integration and whether the gate is pending/passed/failed. Docker/host-command integrations must actually run when changed, or their blocker remains explicit. No reduced assertions, isolation or retry-based passes.
+
+Each chunk's delivery records the covered endpoint/method/notification set, generated artifacts and handwritten exceptions, removed legacy DTOs/bridges, remaining inventory, test evidence and reviewer outcome. The reviewer for later chunks follows the user's then-current instruction; this draft's Nikka assignment must not silently start a Claude reviewer.
+
+Completion means all C01-C19 owned JSON-RPC messages are specified, generated where possible, used by production producers/consumers and contract-validated, with documented generation exceptions and no unassigned method/notification gaps. Non-RPC and external follow-ups remain explicitly tracked rather than being reported as migrated.
