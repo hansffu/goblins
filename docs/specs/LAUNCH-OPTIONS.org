@@ -1,0 +1,156 @@
+#+title: Launch options for goblins
+
+Status: proposed, 2026-11-10.
+
+* Goal
+
+A goblin configuration declares named launch options with fixed choices, such as the model and effort of an agent. An agent launching a raid member sees which options each of its run targets has and picks choices with =goblin run CONFIG -o NAME=CHOICE=. Every argument a choice adds is fixed in Nix, so a launching goblin chooses from a menu and never passes arguments of its own.
+
+Out of scope: recreate (agents never recreate; a recreated goblin runs its =resumeCommand= without options, and Claude Code restores the model and effort of a resumed conversation by itself), defaults, free-form values, environment variables in choices, host launches with options (a host =goblins run -o= flag and Emacs launch prompts) and choices for a goblin started by the host.
+
+* Configuration
+
+** =mkGoblin=
+
+#+begin_src nix
+mkGoblin {
+  launchOptions = {
+    effort = {
+      description = "Reasoning effort";
+      choices = lib.genAttrs [ "low" "medium" "high" "xhigh" "max" ]
+        (level: { args = [ "--effort" level ]; });
+    };
+    mode = {
+      description = "Session mode";
+      choices = {
+        fast = { description = "Faster output"; args = [ "--fast" ]; };
+        verbose.args = [ "--verbose" ];
+      };
+    };
+  };
+}
+#+end_src
+
+- An option has =description= (optional string) and =choices= (required, non-empty). A choice has =description= (optional string) and =args= (a non-empty list of strings).
+- Option names match =[A-Za-z_][A-Za-z0-9_-]{0,31}=. Choice names match =[A-Za-z0-9_][A-Za-z0-9._-]{0,63}=, so model names such as =gpt-5.5= are valid. Neither may contain === , so =NAME=CHOICE= splits at the first ===.
+- Limits: at most 16 options, 64 choices per option, 16 arguments per choice, arguments of at most 256 bytes and descriptions of at most 200 characters. The serialized =launch_options= of one configuration is at most 16 KiB, and of all configurations together at most 256 KiB, so options take at most a quarter of the 1 MiB manifest limit; =mkGoblin= and =mkGoblins= check these with a message naming the configuration. A configuration with =model= and =effort= lists takes well under 1 KiB. The largest selection is about 1.7 KB, within the 4 KiB =sessions.start= limit on the sandbox endpoint. The daemon applies the same bounds when it reads the manifest.
+- There are no defaults: an option the launch does not name adds nothing.
+- The chosen choices' arguments are placed after the configuration's =args=, in the order of the option names, and are passed to the agent verbatim (no placeholder decoding). Placed last, they win over the same option in =args= for agents where the last occurrence counts, such as Codex =-p=/=-c= and Claude =--model=/=--effort=. Neither a configuration that declares launch options nor any choice may have =--= among its =args= (evaluation error), so a chosen argument never lands after a terminator, whatever combination is chosen. When reading a manifest, the daemon also rejects =--= in the =args= of any scope variant of a configuration with options.
+- =launchOptions= is not a scope default and is the same for every scope a configuration may join.
+
+** Agent builders
+
+=mkClaudeGoblin= and =mkCodexGoblin= accept =launchOptions= in the same form and pass it to =mkGoblin=. Two names are reserved and take a plain list of choice names instead of the full form:
+
+#+begin_src nix
+mkClaudeGoblin {
+  launchOptions = {
+    model  = [ "opus" "sonnet" "haiku" ];   # → --model X
+    effort = [ "low" "high" "max" ];        # → --effort X
+    mode.choices.fast.args = [ "--fast" ];  # full form
+  };
+}
+#+end_src
+
+| Builder        | =model=        | =effort=                        |
+|----------------+----------------+---------------------------------|
+| =mkClaudeGoblin= | =--model X=  | =--effort X=                    |
+| =mkCodexGoblin=  | =-c model="X"= | =-c model_reasoning_effort="X"= |
+
+- The listed names are passed through verbatim; Goblins keeps no model list. Claude's aliases (=opus=, =sonnet=) follow the latest model. The choice-name grammar contains no quotes or backslashes, so the Codex TOML string needs no escaping.
+- The full form for =model= or =effort=, or a list for any other name, is an evaluation error. Plain =mkGoblin= reserves no names.
+- =mkCodexGoblin= runs the existing =serverOptions= check on every choice's =args= (expanded shorthand included), so choices can only add App Server options. Choices may not select a profile in any form (=-p X=, =-pX=, =--profile X=, =--profile=X=): the profile stays a configuration setting, because =filterUnavailableMcp= probes =codex mcp list= with the raw arguments and Codex refuses a repeated =--profile=.
+
+** Manifest
+
+=mkGoblin= records the expanded options in the configuration manifest as =launch_options=, on the top-level configuration only: =mkGoblins= removes it from the scope variants, as it does =allowed_run_targets=, so the options count once against the 1 MiB manifest limit and a variant cannot disagree with them. The field is omitted when there are none, so a manifest without options stays readable by an older daemon:
+
+#+begin_src json
+{"launch_options": {"effort": {"description": "Reasoning effort",
+  "choices": {"low": {"description": null, "args": ["--effort", "low"]}}}}}
+#+end_src
+
+=Configuration= in =libs/runtime/src/config.rs= is =deny_unknown_fields=: it gains =launch_options= (default empty), parsed and bounded in =config/manifest.rs=. The field is parsed in the same commit that first emits it.
+
+* Launching
+
+** CLI
+
+=goblin run CONFIG [--name NAME] [--worktree NAME] [-o|--option NAME=CHOICE]...=
+
+- Each =-o= takes =NAME=CHOICE=; a bare word, an empty side or the same option twice is an error.
+- The CLI sends the choices as =options= in =sessions.start=. It does not check them against the configuration; the daemon does.
+- Completion: after =-o=, =__complete-names= offers =NAME== for the configuration's options, then =NAME=CHOICE= values, from =targets.list=.
+
+** Sandbox gate
+
+=MemberStart= (=libs/runtime/src/sandbox.rs=, =deny_unknown_fields=) gains =options= (map, default empty), checked for count and the name grammars before the request reaches the controller.
+
+** Controller
+
+=sessions.start= gains =options: {NAME: CHOICE}= (optional, default ={}=).
+
+- From the host endpoint, non-empty =options= are rejected with =-32602= =launch options are only for raid members=.
+- The controller keeps a catalogue of the current manifest's launch options (per configuration: description, the =args= of the configuration and of each of its scope variants, and options with their choices and arguments) next to =current_manifest=. It is built off the event pump where the manifest is already read: by the worker that publishes =Event::Manifest=, which carries the catalogue with the lease, and by =use_manifest= at startup. Neither validation nor =targets.list= reads a file in the controller.
+- For a member launch, =Controller::start= takes the current manifest lease after the retry comparison, as today, together with its catalogue, and checks the options against the target configuration before accepting. An unknown option or choice is rejected with =-32602= =unknown launch option 'NAME'; options: a, b= or =option 'NAME' has no choice 'CHOICE'; choices: a, b=, so an agent can correct itself.
+- =options= is part of the =Start= value used for the retry comparison, so a retry with different options conflicts like any other changed parameter, and an identical retry never consults a newer manifest.
+- When options are chosen, the controller builds the member's complete argument list from the catalogue: the =args= of the variant the member will run (the scope variant for the owner's scope, as the worker resolves it today, otherwise the top-level configuration) followed by the chosen choices' =args=. It sends that list in =Source::Member= and its =WireSource=, and the worker uses it instead of the =args= of the manifest it reads, as recreate does with resume arguments. A manifest edited after acceptance therefore cannot change the launched argv. Without options nothing is sent and the launch is exactly as today. The supervisor config built from the manifest is otherwise unchanged.
+- The session keeps =options= for its records. Recreate neither reads nor records them.
+
+* Discovery
+
+** =targets.list= (sandbox endpoint)
+
+Returns the caller's run targets in the order of its own =Policy.run_targets=, fixed when it started, with details from the controller's catalogue of the current manifest:
+
+#+begin_src json
+[{"name": "claude", "description": "Claude Code for implementation work",
+  "options": {"model": {"description": null,
+                        "choices": {"opus": {"description": null}, "sonnet": {"description": null}}}}}]
+#+end_src
+
+- A target missing from the current manifest is left out, since =goblin run= could not start it either. A target the current manifest adds to the caller's configuration is not listed: only the caller's own fixed allowlist counts.
+- Arguments are not returned; the agent needs names and descriptions only.
+- A goblin without run targets gets =[]=. Without a known manifest it fails like a member =sessions.start= (=-32009=).
+- The method is added to the sandbox relay allowlist in =libs/runtime/src/sandbox.rs=.
+
+** =goblin targets=
+
+#+begin_example
+claude   Claude Code for implementation work
+  model    opus | sonnet | haiku
+  effort   low | high | max
+  mode     fast | verbose              Session mode
+codex    Codex running in a Goblins sandbox
+  model    gpt-5.5 | gpt-5.5-mini
+#+end_example
+
+** Records
+
+=options= (={NAME: CHOICE}=, ={}= when none) is added to every projection that shows a session, each built separately: the host =Session= record (=SessionRecord=, host =sessions.list=/=sessions.get=), =SandboxSession= (sandbox =sessions.list=/=sessions.get=), the caller's own =sessions.status= object, and the =raids.members= entries. =goblin status= prints =Options: model=sonnet, effort=high= (or =none=), and =goblin raid members= adds an =OPTIONS= column in the same form, so an agent can pick an existing member by model.
+
+* Documentation and skills
+
+- =docs/API.org=: =sessions.start= =options= and its errors, the =options= field of each changed record (=Session=, =SandboxSession=, =sessions.status=, =raids.members= entries), =targets.list=, and =launch_options= in the manifest =Configuration=.
+- =README.org= and =docs/USAGE.org=: =launchOptions= for =mkGoblin= and the builders.
+- =goblins-spawn= skill: =goblin targets= and =-o NAME=CHOICE=.
+- Demo goblins: =model= and =effort= on the demo Claude and Codex configurations.
+
+* Tests
+
+- Nix checks (=tests/checks.nix=): options reach the top-level manifest entry only and are omitted when empty; shorthand expansion for both builders, including a dotted model name; reserved-name misuse, bad names, =--= in =args= or in a choice, empty choices, limits, Codex non-server arguments and options over the per-configuration or total size bound fail evaluation with the configuration named, and options at both bounds evaluate; Codex profile selection is rejected in all four forms.
+- =libs/runtime=: manifest parsing, the default and bounds of =launch_options=; =--= in a scope variant's =args= of a configuration with options is rejected; =MemberStart= =options= grammar; the relay allowlist entry; the largest valid selection fits the frame limit.
+- Daemon unit tests: host launches with options are rejected; unknown option and choice errors; =options= on each of the four projections; retries with different options conflict; =targets.list= keeps the caller's fixed allowlist across a manifest change and drops removed targets; the catalogue is built by startup preflight and follows =Event::Manifest= with the same sequence and lease pairing when older and newer events arrive out of order; after acceptance, editing the manifest (including adding =--= to the base =args=) does not change the final argv the member is launched with; a manifest fixture whose scope variant has different =args= from its top-level configuration launches a member in that scope with the variant's =args=, both with and without options.
+- Supervisor: the session's argv is the configuration's =args= followed by the choices' =args=, verbatim, including an argument with braces such as =-c x={a=1}=.
+- Codex: a choice =-c model="x"= with configuration =args= =-c model="base"= launches with =x=.
+- Sandbox CLI: =-o= parsing (bare word, empty side, duplicates), =targets= output, completion.
+- One live launch test: a raid owner runs a member with =-o= and the member's command line contains the choice's arguments.
+- =tests/features.toml= maps the new tests.
+
+* Steps
+
+Each step is its own reviewed commit and leaves every launch working.
+
+1. Nix and manifest: =launchOptions= in =mkGoblin=, validation, the =launch_options= field (omitted when empty) and its runtime parsing, builder shorthand, Nix and runtime parsing tests, README/USAGE, the manifest part of API.org.
+2. Launch: =MemberStart= and =sessions.start= =options=, the controller's catalogue and validation, resolved arguments in =Source=/=WireSource=, argv in the supervisor, =options= on the records, =targets.list= and the relay allowlist, API.org.
+3. Sandbox CLI and skill: =goblin run -o=, =goblin targets=, status and raid members output, completion, =goblins-spawn=, demo goblins.
