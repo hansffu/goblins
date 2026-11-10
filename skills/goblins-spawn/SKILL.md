@@ -28,11 +28,18 @@ with `goblin raid create NAME` (lowercase letters, digits and hyphens); you
 are its owner. If you are a member of someone else's raid, you cannot run
 goblins: ask its owner, or the user.
 
-Pick a configuration from the run targets `goblin status` lists, then run
+Pick a configuration from the run targets `goblin targets` lists, then run
 `goblin run CONFIG --name NAME`, substituting that configuration and a name.
 It returns at once with the new goblin's session ID and agent name; `starting`
 acknowledges the launch, not task execution. Agent names are unique among
 running goblins and are how you address them.
+
+`goblin targets` also lists each configuration's launch options, such as an
+agent's `model` and `effort`, with their choices. Choose them for the role
+with `-o NAME=CHOICE`, once per option, for example
+`goblin run claude --name reviewer -o model=opus -o effort=high`; an option
+you leave out adds nothing, so the configuration's own setting applies. `goblin raid members` shows the
+options each member was run with.
 
 A member shares your workspace, working directory, scope, dev shell and Docker
 attachment, but runs its own configuration and access (for example another

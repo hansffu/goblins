@@ -497,8 +497,10 @@ macro_rules! event_codec {
         fn encode_event(event:&Event,b:&mut Builder) -> io::Result<()> {
             match event {
                 Event::Failed(error) => { b.method="Event.Failed"; b.value("error",error)?; }
-                Event::Manifest { sequence,lease } => {
+                Event::Manifest { sequence,lease,catalogue } => {
                     b.method="Event.Manifest"; b.value("sequence",sequence)?; b.value("path",&lease.path)?; b.value("root",&lease.root())?;
+                    // Raw manifest names: opaque, so none reads as a descriptor.
+                    b.opaque("catalogue",catalogue)?;
                     let owner=b.manifest.take().map(|fd| b.owned(fd)).transpose()?;
                     b.value("owner",&owner)?; let transfer = b.transfer; b.value("transfer",&transfer)?;
                 }

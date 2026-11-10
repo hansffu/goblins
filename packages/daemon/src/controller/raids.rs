@@ -63,6 +63,9 @@ pub struct RaidMemberRecord {
     /// Ran by an owner of this raid with `goblin run`, which may stop it.
     #[serde(default)]
     pub created_by: Option<String>,
+    /// The launch options it was run with.
+    #[serde(default)]
+    pub options: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -395,6 +398,7 @@ impl Controller {
                         state: record.state.clone(),
                         owner: raid.owner.as_ref() == Some(id),
                         created_by: member.created_by.clone(),
+                        options: record.options.clone(),
                     })
                 })
                 .collect(),

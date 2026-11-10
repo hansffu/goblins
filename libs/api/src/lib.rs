@@ -127,6 +127,26 @@ pub fn package_name(name: &str) -> bool {
                 && bytes.all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
         })
 }
+/// The most launch options a configuration declares (mkGoblin launchOptions).
+pub const MAX_LAUNCH_OPTIONS: usize = 16;
+/// A launch option's name, such as `model`.
+pub fn launch_option_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=32).contains(&name.len())
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+}
+/// A launch option's choice, such as `gpt-5.5`; it never contains `=`.
+pub fn launch_choice(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    (1..=64).contains(&name.len())
+        && bytes
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
 pub fn identifier(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && name
@@ -165,6 +185,15 @@ pub mod rpc;
 pub mod terminal;
 /// `raid members` as text: one line per member, leading with the name a
 /// sender can use as a `send` recipient and its role.
+/// Launch options as `NAME=CHOICE, ...`, or None when there are none.
+pub fn launch_choices(options: &serde_json::Value) -> Option<String> {
+    let pairs: Vec<_> = options
+        .as_object()?
+        .iter()
+        .map(|(name, choice)| plain_text(&format!("{name}={}", choice.as_str().unwrap_or("?"))))
+        .collect();
+    (!pairs.is_empty()).then(|| pairs.join(", "))
+}
 pub fn raid_members(record: &serde_json::Value) -> String {
     let text = |v: &serde_json::Value| v.as_str().unwrap_or("-").to_string();
     let mut rows = vec![[
@@ -174,6 +203,7 @@ pub fn raid_members(record: &serde_json::Value) -> String {
         "STATE".into(),
         "OWNER".into(),
         "CREATED".into(),
+        "OPTIONS".into(),
         "ID".into(),
     ]];
     for m in record["members"].as_array().into_iter().flatten() {
@@ -190,10 +220,11 @@ pub fn raid_members(record: &serde_json::Value) -> String {
                 "-"
             }
             .into(),
+            launch_choices(&m["options"]).map_or("-".into(), |c| c.replace(", ", ",")),
             text(&m["id"]),
         ]);
     }
-    let widths: Vec<_> = (0..7)
+    let widths: Vec<_> = (0..8)
         .map(|i| rows.iter().map(|r| r[i].chars().count()).max().unwrap_or(0))
         .collect();
     let mut out = format!("Raid {} ({})\n", text(&record["name"]), text(&record["id"]));
@@ -218,6 +249,24 @@ pub fn raid_members(record: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn raid_members_show_each_members_launch_options() {
+        let record = serde_json::json!({"name": "crew", "id": "r1", "members": [
+            {"agent_name": "boss", "name": "claude", "state": "running", "owner": true,
+             "id": "s1", "options": {}},
+            {"agent_name": "kid", "role": "reviewer", "name": "claude", "state": "running",
+             "owner": false, "created_by": "s1", "id": "s2",
+             "options": {"model": "sonnet", "effort": "high"}},
+        ]});
+        assert_eq!(
+            raid_members(&record),
+            "Raid crew (r1)\n\
+             NAME  ROLE      CONFIGURATION  STATE    OWNER  CREATED  OPTIONS                   ID\n\
+             boss  -         claude         running  owner  -        -                         s1\n\
+             kid   reviewer  claude         running  -      yes      effort=high,model=sonnet  s2\n"
+        );
+        assert_eq!(launch_choices(&serde_json::json!({})), None);
+    }
     #[test]
     fn package_grammar_has_no_host_authority() {
         for name in ["jq", "cowsay", "python3Packages.black"] {

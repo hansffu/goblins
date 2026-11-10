@@ -43,6 +43,10 @@ pub struct MemberStart {
     /// Start in this worktree of the owner's folder (`goblin run --worktree`).
     #[serde(default)]
     pub worktree: Option<String>,
+    /// Launch options (`goblin run -o NAME=CHOICE`); the daemon checks them
+    /// against the configuration.
+    #[serde(default)]
+    pub options: std::collections::BTreeMap<String, String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,6 +146,7 @@ pub fn check(
             | "sessions.get"
             | "sessions.start"
             | "sessions.stop"
+            | "targets.list"
             | "devshell.lock"
             | "raids.create"
             | "raids.leave"
@@ -218,6 +223,11 @@ pub fn check(
                 || p.worktree
                     .as_deref()
                     .is_some_and(|n| !crate::worktrees::valid_name(n))
+                || p.options.len() > goblins_protocol::MAX_LAUNCH_OPTIONS
+                || !p.options.iter().all(|(option, choice)| {
+                    goblins_protocol::launch_option_name(option)
+                        && goblins_protocol::launch_choice(choice)
+                })
             {
                 return Err(invalid("invalid launch parameters"));
             }
@@ -502,6 +512,69 @@ mod tests {
         assert_eq!(
             fault(check(&caps, &c, 100, true, false, false).unwrap_err()).1,
             "invalid launch parameters"
+        );
+    }
+    #[test]
+    fn launch_options_are_checked_at_the_gate_and_the_largest_selection_fits() {
+        let policy = policy();
+        let support = Support::linux();
+        let caps = Capabilities {
+            policy: &policy,
+            support: &support,
+        };
+        let start = |options: Value| {
+            let c = call(
+                "sessions.start",
+                json!({"key":"k".repeat(64),"name":"shell","agent_name":"a".repeat(32),
+                    "detached":true,"worktree":"w".repeat(64),"options":options}),
+            );
+            let bytes = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":4096,
+                "method":c.method,"params":c.params}))
+            .unwrap()
+            .len();
+            check(&caps, &c, bytes, true, false, false).map_err(fault)
+        };
+        let largest: serde_json::Map<_, _> = (0..16)
+            .map(|i| (format!("o{i:x<31}"), json!(format!("{i:x<64}"))))
+            .collect();
+        assert_eq!(start(json!(largest)), Ok(()));
+        let mut many = largest.clone();
+        many.insert("extra".into(), json!("x"));
+        for bad in [
+            json!(many),
+            json!({"mo.de": "x"}),
+            json!({"mode": "a=b"}),
+            json!({"mode": ""}),
+            json!({"x".repeat(33): "x"}),
+            json!({"mode": "x".repeat(65)}),
+        ] {
+            assert_eq!(
+                start(bad.clone()).unwrap_err().1,
+                "invalid launch parameters",
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            check(
+                &caps,
+                &call("targets.list", json!({})),
+                100,
+                true,
+                false,
+                false
+            ),
+            Ok(())
+        );
+        assert!(
+            check(
+                &caps,
+                &call("targets.list", json!({"x":1})),
+                100,
+                true,
+                false,
+                false
+            )
+            .is_err()
         );
     }
     #[test]

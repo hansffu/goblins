@@ -9,6 +9,7 @@ let
   # Arguments as literal template elements: their braces are text, not
   # placeholders, as in -c inline tables.
   literal = map (builtins.replaceStrings [ "{" "}" ] [ "{{" "}}" ]);
+  agentLaunchOptions = import ./agent-launch-options.nix { inherit lib; };
   # args are the App Server's options: -c, --enable, --disable and -p, each
   # with its value. Prompts, subcommands and permission flags do not apply to
   # a server.
@@ -56,10 +57,37 @@ in
   env ? { },
   injectedFiles ? { },
   devShellInjectedFiles ? { },
+  # model and effort take a list of names; see agent-launch-options.nix.
+  launchOptions ? { },
   ...
 }@options:
 assert lib.assertMsg (serverOptions args)
   "mkCodexGoblin: args are App Server options only: -c, --enable, --disable and -p, each with its value";
+let
+  expandedLaunchOptions = agentLaunchOptions "mkCodexGoblin" {
+    model = name: [
+      "-c"
+      "model=\"${name}\""
+    ];
+    effort = name: [
+      "-c"
+      "model_reasoning_effort=\"${name}\""
+    ];
+  } launchOptions;
+  choiceArgs = lib.concatMap (
+    option: lib.concatMap (choice: choice.args or [ ]) (builtins.attrValues (option.choices or { }))
+  ) (builtins.attrValues expandedLaunchOptions);
+  choices = lib.concatMap (option: builtins.attrValues (option.choices or { })) (
+    builtins.attrValues expandedLaunchOptions
+  );
+  # filterUnavailableMcp probes `codex mcp list` with the raw arguments, and
+  # Codex refuses a repeated --profile: the profile stays in args.
+  selectsProfile = arg: builtins.match "-p.*|--profile(=.*)?" arg != null;
+in
+assert lib.assertMsg (builtins.all (choice: serverOptions (choice.args or [ ])) choices)
+  "mkCodexGoblin: launchOptions choices add App Server options only: -c, --enable and --disable, each with its value";
+assert lib.assertMsg (!builtins.any selectsProfile choiceArgs)
+  "mkCodexGoblin: launchOptions choices cannot select a profile (-p, --profile); set it in args";
 assert codex.validate {
   inherit
     pkg
@@ -91,6 +119,7 @@ mkGoblin (
       env
       ;
     integration = "codex";
+    launchOptions = expandedLaunchOptions;
     # The App Server and the adapter run for the goblin's whole life; each
     # attach starts the native terminal as a client of that server, on the
     # conversation the adapter recorded for this run.

@@ -3,6 +3,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
 import subprocess
 import tempfile
@@ -83,7 +84,8 @@ class RaidMemberTests(unittest.TestCase):
         status = self.sandbox(member["session"], "sessions.status", {})
         self.assertEqual(set(status), {"id", "agent_name", "name", "description", "state", "agent_state", "scope",
                                        "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands",
-                                       "permission_bypass", "allowed_run_targets", "raid", "worktree", "created_by"})
+                                       "permission_bypass", "allowed_run_targets", "raid", "worktree", "created_by",
+                                       "options"})
         self.assertIsNone(status["permission_bypass"])
         self.assertEqual(status["allowed_run_targets"], ["shell"])
         self.assertEqual(status["raid"]["owner_name"], "owner")
@@ -492,6 +494,49 @@ class RunTargetTests(RunTargetFixture):
         self.terminal(root).sendall(b"exit\n")
         self.d.wait(lambda: self.d.get(root["session"])["state"] == "stopped")
         self.assertEqual(self.d.get(member["session"])["state"], "running")
+
+    def test_launch_options_add_their_fixed_arguments_and_are_shown(self):
+        root = self.start_root()
+        targets = self.sandbox(root["session"], "targets.list", {})
+        self.assertEqual([t["name"] for t in targets], ["coordinator", "reviewer", "shell", "broken", "unscoped"])
+        self.assertEqual(targets[1], {"name": "reviewer", "description": "reviewer run target", "options": {
+            "shopt": {"description": "A bash option", "choices": {"extglob": {"description": None}}}}})
+        self.sandbox(root["session"], "raids.create", {"raid": "crew"})
+        with self.assertRaises(ValueError) as error:
+            self.sandbox(root["session"], "sessions.start", {"key": uuid.uuid4().hex, "name": "reviewer",
+                                                             "options": {"shopt": "nope"}})
+        self.assertEqual(error.exception.args[0]["message"], "option 'shopt' has no choice 'nope'; choices: extglob")
+        self.run_in(root, "goblin run reviewer --name opted -o shopt=extglob > /workspace/opted.json; "
+                          "goblin targets > /workspace/targets; "
+                          "goblin __complete-names -- goblin run reviewer -o > /workspace/choices; "
+                          "goblin __complete-names -- goblin run reviewer -o shopt = > /workspace/bash-choices; "
+                          "goblin completions bash > /workspace/completion.bash", "run-done")
+        member = self.running(json.loads((self.workspace / "opted.json").read_text()))
+        self.assertIn("reviewer  reviewer run target\n  shopt  extglob  A bash option\n",
+                      (self.workspace / "targets").read_text())
+        self.assertEqual((self.workspace / "choices").read_text().split(), ["shopt=extglob"])
+        # Bash splits `-o shopt=` at the equals sign: only the choices.
+        self.assertEqual((self.workspace / "bash-choices").read_text().split(), ["extglob"])
+        # Through the Bash hook, at `-o shopt=<TAB>`, `-o shopt=ext<TAB>` and
+        # a second `-o <TAB>` after `-o shopt=extglob`, as Bash splits them.
+        for words, expected in ((["goblin", "run", "reviewer", "-o", "shopt", "="], "extglob"),
+                                (["goblin", "run", "reviewer", "-o", "shopt", "=", "ext"], "extglob"),
+                                (["goblin", "run", "reviewer", "-o", "shopt", "=", "extglob", "-o", ""],
+                                 "shopt=extglob")):
+            code = ("source /workspace/completion.bash; COMP_WORDS=(" + shlex.join(words) + "); "
+                    f"COMP_CWORD={len(words) - 1}; _goblin goblin {shlex.quote(words[-1])} "
+                    f"{shlex.quote(words[-2])}; printf '%s\\n' \"${{COMPREPLY[@]}}\" > /workspace/hook")
+            self.run_in(root, "bash --noprofile --norc -c " + shlex.quote(code), f"hook-{len(words)}")
+            self.assertEqual((self.workspace / "hook").read_text().split(), [expected], words)
+        # The member's command line: its configuration's args, then the choice's.
+        self.run_in(member, "tr '\\0' ' ' < /proc/$$/cmdline > /workspace/cmdline; shopt -q extglob; "
+                            "echo $? > /workspace/extglob; goblin status > /workspace/member-status", "member-done")
+        self.assertTrue((self.workspace / "cmdline").read_text().endswith("--noprofile --norc -i -O extglob "))
+        self.assertEqual((self.workspace / "extglob").read_text(), "0\n")
+        self.assertIn("Launch options: shopt=extglob\n", (self.workspace / "member-status").read_text())
+        self.assertEqual(self.d.get(member["session"])["options"], {"shopt": "extglob"})
+        self.run_in(root, "goblin raid members > /workspace/members", "members-done")
+        self.assertRegex((self.workspace / "members").read_text(), r"\nopted +-  +reviewer .* shopt=extglob +\S+\n")
 
     def test_each_owner_uses_its_own_list(self):
         root = self.start_root()

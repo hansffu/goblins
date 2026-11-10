@@ -202,7 +202,8 @@ mod tests {
                     lease: goblins_runtime::config::ManifestLease::adopt(
                         root.join("manifest"),
                         Some(gc.clone())
-                    )
+                    ),
+                    catalogue: Default::default(),
                 })
                 .is_err()
         );

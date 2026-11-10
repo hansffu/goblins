@@ -150,6 +150,7 @@ To try Goblins from a checkout without configuring anything, =nix shell .#dev-go
 | =scope=, =allowedScopes=, =docker=     | See [[*Scopes][Scopes]] and [[*Docker][Docker]]                                                            |
 | =allowNix=, =hostCommands=           | Ordinary =nix= commands; approved commands on the host. See [[file:docs/USAGE.org::*Nix in a goblin][Nix in a goblin]] and [[file:docs/USAGE.org::*Host commands][Host commands]] |
 | =allowedRunTargets=                | See [[*Raids][Raids]]                                                                         |
+| =launchOptions=                    | Choices a raid owner picks when it runs this configuration, such as the model. See [[*Raids][Raids]] |
 
 The rest of the home directory inside a sandbox is private and temporary. See the [[file:docs/USAGE.org::*Nix API][Nix API reference]] for all options and limits.
 
@@ -311,6 +312,20 @@ goblins = {
 };
 #+end_src
 
+A configuration can offer /launch options/: named choices, each adding fixed arguments after =args=, that the owner picks when it runs the configuration. =mkClaudeGoblin= and =mkCodexGoblin= take =model= and =effort= as plain lists of names, passed to the agent as given, so Claude's aliases follow its latest models:
+
+#+begin_src nix
+reviewer = mkClaudeGoblin {
+  launchOptions = {
+    model = [ "opus" "sonnet" ];          # --model NAME
+    effort = [ "low" "high" "max" ];      # --effort NAME
+    mode.choices.fast.args = [ "--fast" ];  # any other option: the full form
+  };
+};
+#+end_src
+
+The owner sees them with =goblin targets= and picks them with =goblin run reviewer -o model=opus -o effort=high=. See [[file:docs/USAGE.org::*Launch options][Launch options]] for the full form and limits.
+
 A goblin the owner runs shares its working directory, scope and dev shell, but is not its child: it keeps running when the owner stops, and only the raid's owner can stop it. It can have access its owner lacks, if its configuration grants it, and packages approved for the owner before it ran are approved for it on request. It starts from the configuration the host last used, so a rebuild reaches new goblins after your next launch or a server restart.
 
 #+begin_src sh
@@ -371,6 +386,7 @@ goblin enable-docker --reason TEXT
 goblin devshell refresh | diff | restore-lock
 goblin flake run [#APP] [-- ARGS]
 goblin raid create NAME               # create a raid and own it
+goblin targets                        # the configurations it may run, and their options
 goblin run CONFIG --name NAME         # as owner: run a member into the raid
 goblin worktree NAME                  # work in a Git worktree on its own branch (see Git worktrees)
 goblin list | stop NAME               # as owner: the members you can stop

@@ -382,6 +382,7 @@ fn waiting_closed_member(mode: &str) -> (PathBuf, Supervised) {
         state: root.clone(),
         history: None,
         worktree: None,
+        arguments: None,
     };
     let mut runtime = Supervised::start(
         executable(&root, mode),
@@ -789,6 +790,7 @@ fn failed_spawn_and_abandoned_member_unlink_the_prebound_listener() {
         state: root.clone(),
         history: None,
         worktree: None,
+        arguments: None,
     };
     let mut runtime = Supervised::start(
         missing.clone(),
@@ -897,6 +899,7 @@ fn member_placeholder_holds_scope_and_stop_never_spawns() {
             state: root.clone(),
             history: None,
             worktree: None,
+            arguments: None,
         };
         let mut runtime = Supervised::start(
             executable(&root, "hold"),
@@ -953,6 +956,7 @@ pub(crate) fn unacked_member(root: &Path, scope: Option<goblins_runtime::Fd>) ->
         state: root.into(),
         history: None,
         worktree: None,
+        arguments: None,
     };
     goblins_unix::private_directory(&root.join("runtime")).unwrap();
     let mut runtime = Supervised::start(

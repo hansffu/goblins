@@ -137,6 +137,7 @@ impl Attempt {
                         Message::Event(Event::Manifest {
                             sequence: actual,
                             lease,
+                            ..
                         }),
                     ) if actual == sequence && &lease.path == path => {
                         let transfer = received

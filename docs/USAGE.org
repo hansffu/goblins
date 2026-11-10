@@ -881,6 +881,7 @@ agent-sandbox wrapper is a separate static sandbox and has no approval connectio
 | =allowUnixSockets= | Must be =true= for the request transport |
 | =hostCommands.enable= | =false= (default). =true=: the goblin may ask to run approved commands on the host, outside its sandbox. See [[*Host commands][Host commands]] |
 | =bypassPermissions= | =false= (default): Goblins asks the agent for no bypass, and its own permission settings decide. =true=: the agent skips its own permission prompts (Claude Code's =--dangerously-skip-permissions=, Codex's approval policy =never=). Agent goblins only. See [[*Codex configuration][Codex]] and [[*Claude Code configuration][Claude Code]] |
+| =launchOptions= | Options a raid owner picks when it runs this configuration; defaults to ={}=. See [[*Launch options][Launch options]] |
 | =allowedDomains= | =null= (default): open internet; =[]= disables networking; domain filtering is not implemented |
 | =allowedHostPorts=, =publishedPorts= | Currently must be =[]= |
 | =rwDirs=, =rwFiles=, =roDirs=, =roFiles= | Forwarded startup host bind paths; defaults to =[]= |
@@ -962,7 +963,7 @@ Host =goblins list= records and sandbox =goblin status= show each goblin's raid 
 
 * Running raid members
 
-A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME] [--worktree NAME]=; =--worktree= starts the member in that worktree of the owner's worktree folder (see Git worktrees). It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
+A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME] [--worktree NAME] [-o NAME=CHOICE]...=; =-o= picks a launch option (see Launch options) and =--worktree= starts the member in that worktree of the owner's worktree folder (see Git worktrees). It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
 
 #+begin_src nix
 mkGoblins {
@@ -983,6 +984,50 @@ A created member's configuration comes from the daemon's /current manifest/: the
 Created members are not children. Their owner exiting or stopping does not stop them; the raid pauses instead. Inside a goblin, =goblin list= shows the members created in the raid it owns, and =goblin stop NAME= (or =kill=) stops one, with the reason "stopped by raid owner NAME (ID)". Members the host invited, the owner itself and goblins elsewhere return the same absent-record error as nonexistent IDs. A new owner takes over the members any earlier owner created; an owner that loses ownership loses them at once. A created member cannot leave the raid on its own; the host can kick it. The daemon enforces all of this on the session's authenticated socket; changing CLI arguments or sending raw RPC cannot select another identity, host manifest, terminal socket, filesystem grant or approval authority.
 
 Package requests always go through the host. When an owner runs a member, the member gets an /auto-approve/ copy of the owner's approved packages and of the owner's own auto-approve set, and of the dev shell generations it has: a request for one of them is granted without asking, with the exact output the owner had. Nothing is mounted until the member asks. Packages the owner is granted later do not reach members it already ran. A goblin's own repeated request for a package it has, or a refresh to its current dev shell, is also approved automatically. A member whose copied approvals would exceed 256 packages or 32 dev shells is refused. The member's history record keeps its auto-approve list, so a resumed member keeps it.
+
+** Launch options
+
+A configuration declares /launch options/ with fixed choices, such as an agent's model and effort. Each choice adds fixed arguments, so the goblin that runs the configuration picks from a menu and passes no arguments of its own.
+
+#+begin_src nix
+shell = mkGoblin {
+  pkg = pkgs.fish;
+  binName = "fish";
+  launchOptions.mode = {
+    description = "Session mode";
+    choices = {
+      quiet = { description = "No greeting"; args = [ "--no-config" ]; };
+      login.args = [ "--login" ];
+    };
+  };
+};
+#+end_src
+
+- An option has =description= (optional) and =choices=, 1–64 of them. A choice has =description= (optional) and =args=, 1–16 arguments of at most 256 bytes. Descriptions are single lines of at most 200 bytes.
+- Option names match =[A-Za-z_][A-Za-z0-9_-]*=, at most 32 characters, and a configuration has at most 16 options. Choice names match =[A-Za-z0-9_][A-Za-z0-9._-]*=, at most 64 characters, so model names such as =gpt-5.5= work.
+- There are no defaults: an option the launch does not name adds nothing. The chosen arguments follow =args=, verbatim and in the order of the option names, so a chosen value wins over the same setting in =args= where the last occurrence counts. Neither =args= nor a choice may contain =--=, so a chosen argument never follows a terminator.
+- The options of one configuration take at most 16 KiB of the configuration manifest, and those of all configurations together at most 256 KiB. They are the same in every scope the configuration may join and are not a scope default.
+
+=mkClaudeGoblin= and =mkCodexGoblin= reserve =model= and =effort=: they take a list of names, each passed to the agent as given, and every other option takes the full form above.
+
+| Builder | =model= | =effort= |
+|---------+---------+----------|
+| =mkClaudeGoblin= | =--model NAME= | =--effort NAME= |
+| =mkCodexGoblin= | =-c model="NAME"= | =-c model_reasoning_effort="NAME"= |
+
+Goblins keeps no model list: Claude Code's aliases, such as =opus= and =sonnet=, follow its latest models, and a full model name pins one. A Codex choice adds App Server options only (=-c=, =--enable=, =--disable=), and never the profile, which stays in =args=.
+
+Inside a goblin, =goblin targets= lists the configurations it may run with their options and choices, and the owner of a raid picks them with =-o NAME=CHOICE=, once per option:
+
+#+begin_src sh
+$ goblin targets
+claude  Claude Code running in a Goblins sandbox
+  effort  low | medium | high | xhigh | max
+  model   opus | sonnet | haiku
+$ goblin run claude --name reviewer -o model=opus -o effort=high
+#+end_src
+
+Sandbox completion of =-o= offers each =NAME=CHOICE= of the configuration. The daemon checks the choices against the configuration in its current manifest and refuses an unknown one, naming the valid options or choices. It fixes the member's arguments when it accepts the launch, so a rebuild after that does not change them. =goblin status= shows a goblin's own options and =goblin raid members= each member's. Only members a raid owner runs take options: a host launch has none, and a resumed goblin runs its =resumeCommand= without them.
 
 * Git worktrees
 

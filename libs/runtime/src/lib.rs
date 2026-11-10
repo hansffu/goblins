@@ -97,6 +97,9 @@ pub enum Source {
         /// Start in this worktree, a directory in the owner's worktree folder
         /// (`goblin run --worktree`), instead of in the owner's directory.
         worktree: Option<PathBuf>,
+        /// The member's complete arguments when launch options were chosen,
+        /// instead of its configuration's `args`; None runs those.
+        arguments: Option<Vec<String>>,
     },
 }
 /// The daemon's view of one goblin's runtime. Neither method blocks.
@@ -460,6 +463,8 @@ pub enum Event {
         /// store output that holds it: an event nobody consumes removes the
         /// root when it is dropped, and the daemon shares it with `Arc`.
         lease: crate::config::ManifestLease,
+        /// Its launch options and run-target details, read with it.
+        catalogue: crate::config::Catalogue,
     },
     /// Process `id` started; any allocated PTY stays in the runtime.
     Spawned {

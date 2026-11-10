@@ -60,6 +60,8 @@ enum WireSource {
         history: Option<PathBuf>,
         #[serde(default)]
         worktree: Option<PathBuf>,
+        #[serde(default)]
+        arguments: Option<Vec<String>>,
     },
 }
 pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Value> {
@@ -87,9 +89,10 @@ pub(super) fn encode_source(source: &Source, b: &mut Builder) -> io::Result<Valu
             state,
             history,
             worktree,
+            arguments,
         } => {
             let scope = scope.as_ref().map(|fd| b.fd(fd)).transpose()?;
-            json!({"kind":"Member","scope":scope,"owner_scope":owner_scope,"manifest":manifest,"configuration":configuration,"auto":auto,"state":state,"history":history,"worktree":worktree})
+            json!({"kind":"Member","scope":scope,"owner_scope":owner_scope,"manifest":manifest,"configuration":configuration,"auto":auto,"state":state,"history":history,"worktree":worktree,"arguments":arguments})
         }
     })
 }
@@ -127,6 +130,7 @@ fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
             state,
             history,
             worktree,
+            arguments,
         } => Source::Member {
             scope: scope.map(|fd| d.take(fd).map(Fd::from)).transpose()?,
             owner_scope,
@@ -136,6 +140,7 @@ fn decode_source(value: Value, d: &mut Descriptors) -> io::Result<Source> {
             state,
             history,
             worktree,
+            arguments,
         },
     })
 }
@@ -515,6 +520,7 @@ impl Decoder {
                 let sequence = p.take("sequence")?;
                 let path = p.take("path")?;
                 let root = p.take("root")?;
+                let catalogue = p.opaque("catalogue")?;
                 let owner = p
                     .take::<Option<Descriptor>>("owner")?
                     .map(|fd| d.take(fd))
@@ -526,7 +532,11 @@ impl Decoder {
                 }
                 let lease = ManifestLease::from_transfer(path, root, owner).map_err(other)?;
                 Some(Received {
-                    message: Message::Event(Event::Manifest { sequence, lease }),
+                    message: Message::Event(Event::Manifest {
+                        sequence,
+                        lease,
+                        catalogue,
+                    }),
                     adopted: Some(transfer),
                 })
             }

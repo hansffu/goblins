@@ -133,6 +133,7 @@ impl Worker {
                         state,
                         history,
                         worktree,
+                        arguments,
                     } => {
                         copied = auto;
                         // Wait for what the owner hands over. Stopping ends
@@ -160,6 +161,7 @@ impl Worker {
                                 manifest: &manifest,
                                 configuration: &configuration,
                                 worktree,
+                                arguments,
                             },
                             token.clone(),
                             directory,
@@ -201,13 +203,17 @@ impl Worker {
                             sequence,
                             &token,
                         ) {
-                            Ok(lease) => {
+                            Ok((lease, catalogue)) => {
                                 // The daemon takes the lease over and keeps it
                                 // until the launch started, even once a newer
                                 // manifest replaces it as its current one. An
                                 // event that is refused or never read drops it,
                                 // and its root goes with it.
-                                results.send(Event::Manifest { sequence, lease })?;
+                                results.send(Event::Manifest {
+                                    sequence,
+                                    lease,
+                                    catalogue,
+                                })?;
                                 None
                             }
                             Err(error) => {

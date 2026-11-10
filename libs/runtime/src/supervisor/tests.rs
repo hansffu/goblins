@@ -503,6 +503,7 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
         state: "/state".into(),
         history: Some("/history".into()),
         worktree: None,
+        arguments: Some(vec!["--model".into(), "x={a}".into()]),
     };
     let Message::SupervisorStart(mut start) =
         startup(source, Some(handoff(&root, channel::MAX_FDS + 1)))
@@ -539,12 +540,15 @@ fn handoffs_batch_over_240_descriptors_and_preserve_scope_and_directory_authorit
     let Source::Member {
         scope: Some(scope),
         owner_scope,
+        arguments,
         ..
     } = start.source
     else {
         panic!("member");
     };
     assert_eq!(owner_scope.as_deref(), Some("scope"));
+    // Chosen launch options cross verbatim, braces included.
+    assert_eq!(arguments.unwrap(), ["--model", "x={a}"]);
     let mut byte = [0];
     fs::File::from(OwnedFd::from(scope))
         .read_exact(&mut byte)
@@ -587,6 +591,7 @@ fn startup_listener_is_closed_with_partial_handoff_on_eof_or_invalid_continuatio
             state: root.clone(),
             history: None,
             worktree: None,
+            arguments: None,
         };
         let Message::SupervisorStart(mut start) =
             startup(source, Some(handoff(&root, channel::MAX_FDS + 1)))
@@ -710,7 +715,21 @@ fn manifest(root: &Path) -> Message {
     Message::Event(Event::Manifest {
         sequence: 17,
         lease: ManifestLease::adopt(path, Some(gc)),
+        catalogue: fd_named_catalogue(),
     })
+}
+/// Manifest names are raw data: one spelled like a descriptor reference
+/// must cross as a name.
+fn fd_named_catalogue() -> crate::config::Catalogue {
+    let entry = crate::config::CatalogueEntry {
+        description: String::new(),
+        args: vec![],
+        scope_args: std::collections::BTreeMap::from([("$fd".into(), vec![])]),
+        launch_options: Default::default(),
+    };
+    crate::config::Catalogue {
+        goblins: std::collections::BTreeMap::from([("$fd".into(), entry)]),
+    }
 }
 #[test]
 fn manifest_adoption_survives_lost_ack_and_rejected_generation_cleans_the_correct_root() {
@@ -718,7 +737,14 @@ fn manifest_adoption_survives_lost_ack_and_rejected_generation_cleans_the_correc
     for receiver_first in [false, true] {
         let root = unix::temp_directory().unwrap();
         let mut prepared = Encoder::default().prepare(manifest(&root)).unwrap();
+        // An opaque string: a structured value with a "$fd" key would be
+        // taken for a descriptor reference by the channel.
+        assert!(prepared.frames.front().unwrap().value["params"]["catalogue"].is_string());
         let received = decode(&mut prepared, &mut Decoder::default());
+        let Message::Event(Event::Manifest { catalogue, .. }) = &received.message else {
+            panic!("manifest");
+        };
+        assert_eq!(catalogue, &fd_named_catalogue());
         let id = received.adopted.unwrap();
         assert_eq!(id, prepared.transfer());
         assert!(prepared.needs_adoption());
@@ -796,6 +822,7 @@ fn startup_version_and_handoff_shape_fail_before_any_launch_side_effect() {
         state: "/s".into(),
         history: None,
         worktree: None,
+        arguments: None,
     };
     assert!(Encoder::default().prepare(startup(source, None)).is_err());
 }
@@ -971,6 +998,7 @@ fn manifest_ownership_rejects_a_wrong_lock_and_unrooted_manifests_need_no_descri
         .prepare(Message::Event(Event::Manifest {
             sequence: 10,
             lease: ManifestLease::adopt(root.join("manifest.json"), None),
+            catalogue: Default::default(),
         }))
         .unwrap();
     assert!(prepared.frames.front().unwrap().fds.is_empty());
@@ -1262,6 +1290,7 @@ fn member_startup_version_rejection_keeps_sender_ownership_until_receiver_eof() 
         state: "/state".into(),
         history: None,
         worktree: None,
+        arguments: None,
     };
     let mut prepared = Encoder::default()
         .prepare(startup(source, Some(handoff(&root, 1))))

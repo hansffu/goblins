@@ -41,6 +41,7 @@ const HOSTS: usize = 32;
 const SESSIONS: usize = 16;
 const GOBLIN_NAMES: &str = include_str!("goblin-names.txt");
 const QUEUE: usize = 2 * 1024 * 1024;
+const NO_MANIFEST: &str = "no configuration is known yet; start the server with the installed goblins or run a goblin from the host";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionRecord {
     #[serde(default)]
@@ -128,6 +129,9 @@ pub struct SessionRecord {
     /// when it works in no worktree, even when launched in one.
     #[serde(default)]
     pub checkout: Option<PathBuf>,
+    /// The launch options a raid owner chose (`goblin run -o NAME=CHOICE`).
+    #[serde(default)]
+    pub options: BTreeMap<String, String>,
 }
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
@@ -583,6 +587,9 @@ struct Start {
     /// The worktree a goblin a raid owner runs starts in; never from a host.
     #[serde(skip)]
     worktree: Option<String>,
+    /// Launch options a raid owner chose; a host launch takes none.
+    #[serde(default)]
+    options: BTreeMap<String, String>,
 }
 use goblins_runtime::sandbox::MemberStart;
 #[derive(Deserialize)]
@@ -777,6 +784,9 @@ pub struct Controller {
     /// The last validated manifest the host used: what raid owners run
     /// members from. Its root goes once nothing holds the lease.
     current_manifest: Option<std::sync::Arc<goblins_runtime::config::ManifestLease>>,
+    /// The current manifest's launch options and run-target details, read
+    /// with it off the event pump.
+    catalogue: std::sync::Arc<goblins_runtime::config::Catalogue>,
     /// The order of the last accepted host launch, and of the published
     /// manifest: a slower, older launch never replaces a newer manifest.
     manifest_sequence: u64,
@@ -843,6 +853,7 @@ impl Controller {
             history_waiting: None,
             history_token: std::sync::Arc::new(()),
             current_manifest: None,
+            catalogue: Default::default(),
             manifest_sequence: 0,
             manifest_published: 0,
         })
@@ -863,7 +874,10 @@ impl Controller {
             &self.state.join("manifests"),
             0,
         ) {
-            Ok(lease) => self.current_manifest = Some(std::sync::Arc::new(lease)),
+            Ok((lease, catalogue)) => {
+                self.current_manifest = Some(std::sync::Arc::new(lease));
+                self.catalogue = std::sync::Arc::new(catalogue);
+            }
             Err(e) => eprintln!(
                 "goblins: no current configuration from {}: {e}",
                 path.display()
@@ -1399,6 +1413,41 @@ impl Controller {
             Err(missing())
         }
     }
+    /// `targets.list`: the caller's run targets in the order of its own
+    /// allowlist, fixed when it started, with their descriptions and launch
+    /// options from the current manifest. A target that manifest no longer
+    /// has is left out, since it could not be run either.
+    fn run_targets(&self, caller: &str) -> Value {
+        let allowed = self.sessions[caller]
+            .policy
+            .as_ref()
+            .map_or(&[][..], |p| &p.run_targets[..]);
+        let targets: Vec<_> = allowed
+            .iter()
+            .filter_map(|name| {
+                let entry = self.catalogue.goblins.get(name)?;
+                let options: serde_json::Map<_, _> = entry
+                    .launch_options
+                    .iter()
+                    .map(|(option, declared)| {
+                        let choices: serde_json::Map<_, _> = declared
+                            .choices
+                            .iter()
+                            .map(|(choice, c)| {
+                                (choice.clone(), json!({"description":c.description}))
+                            })
+                            .collect();
+                        (
+                            option.clone(),
+                            json!({"description":declared.description,"choices":choices}),
+                        )
+                    })
+                    .collect();
+                Some(json!({"name":name,"description":entry.description,"options":options}))
+            })
+            .collect();
+        json!(targets)
+    }
     fn sandbox_record(&self, record: &SessionRecord) -> Value {
         // No host paths, process IDs, terminal sockets or diagnostics cross the
         // sandbox endpoint.
@@ -1414,7 +1463,7 @@ impl Controller {
             "terminal_interrupted":record.terminal_interrupted,
             "terminal_detached":record.terminal_detached,
             "terminal_attached":record.terminal_attached,
-            "worktree":record.worktree})
+            "worktree":record.worktree,"options":record.options})
     }
     /// `mkGoblins.worktrees.directory` of the current configuration, expanded;
     /// None when worktrees are off or no configuration is known yet.
@@ -1655,10 +1704,23 @@ impl Controller {
         let manifest = match &owner {
             // Taken after the retry comparison: a newer current manifest
             // never turns an identical retry into a conflict.
-            Some(_) => Some(self.current_manifest.clone().ok_or((
-                -32009,
-                "no configuration is known yet; start the server with the installed goblins or run a goblin from the host".to_string(),
-            ))?),
+            Some(_) => Some(
+                self.current_manifest
+                    .clone()
+                    .ok_or((-32009, NO_MANIFEST.to_string()))?,
+            ),
+            None => None,
+        };
+        // The member's complete arguments, fixed now from the manifest the
+        // launch uses, so a later edit of that file cannot change them.
+        let arguments = match &owner {
+            Some(owner) => self
+                .catalogue
+                .arguments(&p.name, owner.scope_name.as_deref(), &p.options)
+                .map_err(|e| (-32602, e))?,
+            None if !p.options.is_empty() => {
+                return Err((-32602, "launch options are only for raid members".into()));
+            }
             None => None,
         };
         let join = self.launch_raid(&p, owner.as_ref().map(|o| o.id.as_str()))?;
@@ -1750,6 +1812,7 @@ impl Controller {
                 state: self.state.clone(),
                 history: self.history_directory.clone(),
                 worktree: worktree_path.clone(),
+                arguments,
             },
             _ => Source::Host {
                 configuration: p.configuration.clone().into(),
@@ -1842,6 +1905,7 @@ impl Controller {
             skipped: vec![],
             worktree: None,
             checkout: None,
+            options: p.options.clone(),
         };
         let result = json!({"session":id,"agent_name":record.agent_name,"state":"starting","terminal":record.terminal,"attach":record.attach});
         self.sessions.insert(
@@ -2125,7 +2189,7 @@ impl Controller {
                     "raid":record.raid.as_ref().map(|r| json!({"id":r.id,"name":r.name,
                         "role":r.role,"owner":r.owner,"paused":r.paused,
                         "owner_name":r.owner.as_ref().and_then(|o| self.sessions.get(o)).map(|a| &a.record.agent_name)})),
-                    "created_by":record.created_by}))
+                    "created_by":record.created_by,"options":record.options}))
             }
             "devshell.lock" => {
                 let _: Empty = params(value)?;
@@ -2161,6 +2225,13 @@ impl Controller {
                 let id = self.resolve_member(&p.session, scope)?;
                 Ok(self.sandbox_record(&self.sessions[&id].record))
             }
+            "targets.list" => {
+                let _: Empty = params(value)?;
+                if self.current_manifest.is_none() {
+                    return Err((-32009, NO_MANIFEST.into()));
+                }
+                Ok(self.run_targets(scope))
+            }
             "sessions.start" => {
                 let p: MemberStart = params(value)?;
                 let result = self.start(
@@ -2179,6 +2250,7 @@ impl Controller {
                         recreate: None,
                         recorded: None,
                         worktree: p.worktree,
+                        options: p.options,
                     },
                     Some(scope),
                 )?;
@@ -3178,11 +3250,16 @@ impl Controller {
                         terminal: TerminalId::Process(_),
                         ..
                     } => (),
-                    Event::Manifest { sequence, lease } => {
+                    Event::Manifest {
+                        sequence,
+                        lease,
+                        catalogue,
+                    } => {
                         let lease = std::sync::Arc::new(lease);
                         if sequence > self.manifest_published {
                             self.manifest_published = sequence;
                             self.current_manifest = Some(lease.clone());
+                            self.catalogue = std::sync::Arc::new(catalogue);
                         }
                         // The launch keeps it until it started, even once a
                         // newer manifest replaces it as the current one.
@@ -3807,6 +3884,7 @@ mod tests {
                     skipped: vec![],
                     worktree: None,
                     checkout: None,
+                    options: BTreeMap::new(),
                 },
                 runtime: Some(Box::new(goblins_runtime::Fake::ended(results))),
                 preparing: None,
@@ -4048,6 +4126,143 @@ mod tests {
         fs::remove_dir_all(path).unwrap();
     }
     #[test]
+    fn members_take_declared_launch_options_and_show_them() {
+        use goblins_runtime::config::{LaunchChoice, LaunchOption};
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut host, _peer) = host_connection();
+        // A host launch takes no options.
+        let mut host_start = launch("host", None);
+        host_start["options"] = json!({"mode":"fast"});
+        assert_eq!(
+            d.host(&mut host, "sessions.start", host_start).unwrap_err(),
+            (-32602, "launch options are only for raid members".into())
+        );
+        let owner = session_with_results_id(&mut d, "owner", vec![]);
+        let a = d.sessions.get_mut(&owner).unwrap();
+        a.record.name = "coordinator".into();
+        a.record.agent_name = owner.clone();
+        a.set_policy(policy_fixture("coordinator", &["shell", "removed"]));
+        d.sandbox_control_for_test(&owner, "raids.create", json!({"raid":"crew"}))
+            .unwrap();
+        d.current_manifest = Some(std::sync::Arc::new(
+            goblins_runtime::config::ManifestLease::unrooted(&path.join("current.json")),
+        ));
+        let mut catalogue = catalogue("shell");
+        let shell = catalogue.goblins.get_mut("shell").unwrap();
+        shell.description = "A shell".into();
+        shell.launch_options.insert(
+            "mode".into(),
+            LaunchOption {
+                description: Some("Session mode".into()),
+                choices: BTreeMap::from([
+                    (
+                        "fast".into(),
+                        LaunchChoice {
+                            description: None,
+                            args: vec!["--fast".into()],
+                        },
+                    ),
+                    (
+                        "slow".into(),
+                        LaunchChoice {
+                            description: None,
+                            args: vec!["--slow".into()],
+                        },
+                    ),
+                ]),
+            },
+        );
+        // Not an allowed target of the owner: never listed.
+        catalogue.goblins.insert("hidden".into(), catalogue_entry());
+        d.catalogue = std::sync::Arc::new(catalogue);
+        // The owner's own targets, from the current manifest; one it no
+        // longer has is left out.
+        assert_eq!(
+            d.sandbox_control_for_test(&owner, "targets.list", json!({}))
+                .unwrap(),
+            json!([{"name":"shell","description":"A shell","options":{"mode":{
+                "description":"Session mode","choices":{"fast":{"description":null},
+                "slow":{"description":null}}}}}])
+        );
+        let start = |key: &str, options: Value| json!({"key":key,"name":"shell","agent_name":null,"options":options});
+        for (options, error) in [
+            (
+                json!({"speed":"fast"}),
+                "unknown launch option 'speed'; options: mode",
+            ),
+            (
+                json!({"mode":"quick"}),
+                "option 'mode' has no choice 'quick'; choices: fast, slow",
+            ),
+        ] {
+            assert_eq!(
+                d.sandbox_control_for_test(&owner, "sessions.start", start("bad", options))
+                    .unwrap_err(),
+                (-32602, error.into())
+            );
+        }
+        let accepted = d
+            .sandbox_control_for_test(&owner, "sessions.start", start("k", json!({"mode":"fast"})))
+            .unwrap();
+        let id = accepted["session"].as_str().unwrap().to_string();
+        let chosen = BTreeMap::from([("mode".to_string(), "fast".to_string())]);
+        assert_eq!(d.sessions[&id].record.options, chosen);
+        // A retry with other options conflicts; an identical one does not.
+        assert_eq!(
+            d.sandbox_control_for_test(
+                &owner,
+                "sessions.start",
+                start("k", json!({"mode":"slow"}))
+            )
+            .unwrap_err(),
+            conflict()
+        );
+        assert_eq!(
+            d.sandbox_control_for_test(
+                &owner,
+                "sessions.start",
+                start("k", json!({"mode":"fast"}))
+            )
+            .unwrap()["session"],
+            id.as_str()
+        );
+        // Every projection of the member shows them.
+        let got = d
+            .sandbox_control_for_test(&owner, "sessions.get", json!({"session":id}))
+            .unwrap();
+        assert_eq!(got["options"], json!({"mode":"fast"}));
+        let members = d
+            .sandbox_control_for_test(&owner, "raids.members", json!({}))
+            .unwrap();
+        let member = members["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == id.as_str())
+            .unwrap();
+        assert_eq!(member["options"], json!({"mode":"fast"}));
+        assert_eq!(
+            d.sandbox_control_for_test(&owner, "sessions.status", json!({}))
+                .unwrap()["options"],
+            json!({})
+        );
+        assert_eq!(
+            serde_json::to_value(&d.sessions[&id].record).unwrap()["options"],
+            json!({"mode":"fast"})
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+    fn catalogue_entry() -> goblins_runtime::config::CatalogueEntry {
+        goblins_runtime::config::CatalogueEntry {
+            description: String::new(),
+            args: vec![],
+            scope_args: BTreeMap::new(),
+            launch_options: BTreeMap::new(),
+        }
+    }
+    #[test]
     fn owners_list_and_stop_only_members_created_in_the_raid_they_own() {
         let mut d = daemon();
         let path = d.state.clone();
@@ -4120,6 +4335,12 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
+    /// A catalogue whose only goblin is `name`.
+    fn catalogue(name: &str) -> goblins_runtime::config::Catalogue {
+        goblins_runtime::config::Catalogue {
+            goblins: BTreeMap::from([(name.to_string(), catalogue_entry())]),
+        }
+    }
     #[test]
     fn the_current_manifest_follows_host_acceptance_order() {
         let mut d = daemon();
@@ -4142,6 +4363,7 @@ mod tests {
                     path.join("newer.json"),
                     Some(roots[0].clone()),
                 ),
+                catalogue: catalogue("newer"),
             }],
         );
         d.tick().unwrap();
@@ -4154,6 +4376,7 @@ mod tests {
                     path.join("older.json"),
                     Some(roots[1].clone()),
                 ),
+                catalogue: catalogue("older"),
             }],
         );
         session_with_results_id(&mut d, "failed", vec![Event::Failed("bad".into())]);
@@ -4163,6 +4386,8 @@ mod tests {
             path.join("newer.json")
         );
         assert_eq!(d.manifest_published, 3);
+        // Its catalogue came with it, not the older one's.
+        assert_eq!(*d.catalogue, catalogue("newer"));
         // The older one never became current and its launch ended: its root
         // went with it. The newer one is the daemon's current manifest.
         assert!(roots[0].exists());
@@ -4178,10 +4403,12 @@ mod tests {
                     path.join("newest.json"),
                     None,
                 ),
+                catalogue: catalogue("newest"),
             }],
         );
         d.tick().unwrap();
         assert!(!roots[0].exists());
+        assert_eq!(*d.catalogue, catalogue("newest"));
         drop(d);
         fs::remove_dir_all(&path).unwrap();
     }

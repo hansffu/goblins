@@ -131,7 +131,7 @@ Returns one session record.
 
 Launches a goblin from a configuration, or recreates a recorded one. Returns once the launch is accepted; follow its state through =sessions.get= or the subscription.
 
-- Input :: ={"key", "configuration", "name", "agent_name", "cwd", "scope", "dev_shell", "rows", "cols", "detached", "raid", "recreate"}=
+- Input :: ={"key", "configuration", "name", "agent_name", "cwd", "scope", "dev_shell", "rows", "cols", "detached", "raid", "recreate", "options"}=
   - =key= (required): a retry key, 1–64 of =[A-Za-z0-9_-]=. Repeating a start with the same key and parameters returns the original acceptance; different parameters conflict.
   - =configuration= (required): absolute path of the runtime manifest directory.
   - =name=: the configuration key (for example =shell=), 1–64 of =[A-Za-z0-9_-]=. Omitted or empty for a recreate.
@@ -141,6 +141,7 @@ Launches a goblin from a configuration, or recreates a recorded one. Returns onc
   - =detached= (optional): start without a terminal consumer.
   - =raid= (optional): join this raid, creating it with the new goblin as owner. Raid names match =[a-z][a-z0-9-]{0,31}=.
   - =recreate= (optional): history record ID, unique prefix or unique agent name to recreate.
+  - =options= (optional): launch options are only for members a raid owner runs; a non-empty map is refused with =-32602= =launch options are only for raid members=.
 - Output :: ={"session", "agent_name", "state": "starting", "terminal", "attach"}=. =terminal= and =attach= are the paths of the session's attachment sockets (see Terminal attachment).
 
 *** =sessions.stop=
@@ -421,7 +422,7 @@ Sandbox requests pass transport and parameter validation, then configuration pol
 *** =sessions.status=
 
 - Input :: ={}=
-- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "worktree", "created_by"}=. =worktree= is the =Worktree= the goblin works in, or null. =attached= is whether a frontend is attached. =attached_since= is when the attached client started, in Unix milliseconds, for a goblin with =onAttach=; otherwise null. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
+- Output :: ={"id", "agent_name", "name", "description", "state", "agent_state", "scope", "docker_enabled", "dev_shell", "attached", "attached_since", "nix", "host_commands", "permission_bypass", "allowed_run_targets", "raid", "worktree", "created_by", "options"}=. =worktree= is the =Worktree= the goblin works in, or null. =options= is the caller's own launch options, as in =Session=. =attached= is whether a frontend is attached. =attached_since= is when the attached client started, in Unix milliseconds, for a goblin with =onAttach=; otherwise null. =raid= is ={"id", "name", "role", "owner", "paused", "owner_name"}= or null.
 
 *** =sessions.set-state=
 
@@ -503,14 +504,21 @@ A raid owner sees and stops only the goblins it ran in its raid, while it owns i
 *** =sessions.list= / =sessions.get=
 
 - Input :: ={}= / ={"session"}=
-- Output :: =[SandboxSession]= / =SandboxSession=, a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached, worktree=.
+- Output :: =[SandboxSession]= / =SandboxSession=, a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached, worktree, options=.
 
 *** =sessions.start=
 
 Runs a member in the caller's raid, sharing its workspace, scope, dev shell and approvals.
 
-- Input :: ={"key", "name", "agent_name", "detached"?, "worktree"?}=. =worktree= (optional, may be null) is the name of a worktree in the caller's worktree folder to start the member in, as =goblin run --worktree= does. The member's working directory is =FOLDER/NAME=, opened like a host launch's, and its launch is refused with a =detail= unless that directory is a worktree whose =.git= file and the checkout's record of it agree. The call is refused (=-32009=) when the caller has no worktree folder, and the member's launch when its configuration has =worktrees.enable = false=.
+- Input :: ={"key", "name", "agent_name", "detached"?, "worktree"?, "options"?}=. =options= (optional) maps launch option names to choices, as =goblin run -o NAME=CHOICE= does: at most 16 entries, names matching =[A-Za-z_][A-Za-z0-9_-]{0,31}= and choices =[A-Za-z0-9_][A-Za-z0-9._-]{0,63}=, checked before anything else (=-32602= =invalid launch parameters=). The daemon then checks them against the configuration's =launch_options= in its current manifest and refuses an unknown one with =-32602= =unknown launch option 'NAME'; options: A, B= or =option 'NAME' has no choice 'CHOICE'; choices: A, B=. It fixes the member's arguments at acceptance: the =args= of the configuration's variant for the caller's scope, then each chosen choice's =args= in the order of the option names. Without options the member runs its configuration's =args= as before. See [[file:specs/LAUNCH-OPTIONS.org][LAUNCH-OPTIONS]]. =worktree= (optional, may be null) is the name of a worktree in the caller's worktree folder to start the member in, as =goblin run --worktree= does. The member's working directory is =FOLDER/NAME=, opened like a host launch's, and its launch is refused with a =detail= unless that directory is a worktree whose =.git= file and the checkout's record of it agree. The call is refused (=-32009=) when the caller has no worktree folder, and the member's launch when its configuration has =worktrees.enable = false=.
 - Output :: ={"session", "agent_name", "state"}=
+
+*** =targets.list=
+
+The configurations the caller may run, with their launch options.
+
+- Input :: ={}=
+- Output :: =[{"name", "description", "options": {OPTION: {"description", "choices": {CHOICE: {"description"}}}}}]=, in the order of the caller's own run targets, fixed when it started. Details come from the daemon's current manifest; a target it no longer has is left out. Descriptions may be null. Choices' arguments are not returned. Without a current manifest the call fails with =-32009=.
 
 *** =sessions.stop=
 
@@ -587,6 +595,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 | =docker_enabled=                              | Whether Docker is attached                                               |
 | =created_by=                                  | ={"id", "agent_name"}= of the raid owner that ran it, or null            |
 | =worktree=                                    | =Worktree= the goblin works in, or null (see below)                      |
+| =options=                                     | ={OPTION: CHOICE}=: the launch options its raid owner chose, ={}= for none |
 | =checkout=                                    | Main checkout of a goblin with a worktree folder (=GOBLINS_CHECKOUT=), where it works without a =worktree=, or null |
 | =raid=                                        | ={"id", "name", "role", "owner", "paused"}= or null                      |
 | =identity=                                    | ={"pid", "helper_userns", "mount_owner", "source_mountns", "mountns"}= or null |
@@ -637,7 +646,7 @@ Snapshots are capped at 900 KiB; settled permission records and stopped sessions
 
 ** Raid
 
-={"id", "name", "owner", "former_owner", "paused", "generation", "members": [{"id", "agent_name", "name", "role", "state", "owner", "created_by"}]}=. =owner= is null while paused; =generation= changes on every pause and owner change.
+={"id", "name", "owner", "former_owner", "paused", "generation", "members": [{"id", "agent_name", "name", "role", "state", "owner", "created_by", "options"}]}=. A member's =options= are its launch options, as in =Session=. =owner= is null while paused; =generation= changes on every pause and owner change.
 
 ** HostJob
 
@@ -813,7 +822,7 @@ Maintenance shares preflight's synchronous private one-shot loop outside daemon 
 
 Deletion policy remains private and unchanged: scope clearing holds the storage gate and preflights every selected scope/Docker lock and path before any deletion, retains stable persistent lock inodes, and respects live leases. GC separates its exclusive temporary-store gate from server-control/daemon lock protection, keeps live/guardian-owned resources and preserves history/logs. Cancellation is checked during enumeration/preflight and before deletion/unlink/helper phases. Removal helpers keep the selected parent-directory and lease descriptors, run in their own process group, and reuse the WNOWAIT/group-kill/direct-reap guard so graceful mapping/readiness/write/cancel errors reap helper/mapping groups before scratch and outer locks unwind. Helper parent-death SIGKILL is rearmed against the original parent after namespace setup and credential calls, including before reporting a credential error, and immediately before deletion; failed arm/parent mismatch exits immediately without potentially blocked diagnostics or deletion. Forced supervisor death confirms only direct-supervisor reap: helper death via the kernel backstop and inherited lease release are separate guarantees, with orphan reaping left to the OS. No cleanup service or synchronous descendant-reap claim is added.
 
-=Source= has a =kind= discriminator. =Host= has =configuration:PATH=, =name:STRING=, =scope:STRING_OR_NULL=, =dev_shell:STRING_OR_NULL=, =workspace:PATH_OR_NULL=, =cwd:PATH_OR_NULL=, =state:PATH=, =history:PATH_OR_NULL=, =recreate:Recreate_OR_NULL= and =sequence:U64=. =Member= has =scope:DESCRIPTOR_OR_NULL=, =owner_scope:STRING_OR_NULL=, =manifest:PATH=, =configuration:STRING=, =auto:{PACKAGE:PATH,...}=, =state:PATH=, =history:PATH_OR_NULL= and =worktree:PATH_OR_NULL=, the worktree directory in the owner's worktree folder that the member starts in instead of in the owner's working directory (=goblin run --worktree=; absent decodes as null). The scope descriptor is the membership held from acceptance, not a namespace path. Source variants reject unknown fields.
+=Source= has a =kind= discriminator. =Host= has =configuration:PATH=, =name:STRING=, =scope:STRING_OR_NULL=, =dev_shell:STRING_OR_NULL=, =workspace:PATH_OR_NULL=, =cwd:PATH_OR_NULL=, =state:PATH=, =history:PATH_OR_NULL=, =recreate:Recreate_OR_NULL= and =sequence:U64=. =Member= has =scope:DESCRIPTOR_OR_NULL=, =owner_scope:STRING_OR_NULL=, =manifest:PATH=, =configuration:STRING=, =auto:{PACKAGE:PATH,...}=, =state:PATH=, =history:PATH_OR_NULL=, =worktree:PATH_OR_NULL=, the worktree directory in the owner's worktree folder that the member starts in instead of in the owner's working directory (=goblin run --worktree=; absent decodes as null), and =arguments:[STRING,...]_OR_NULL=, the member's complete arguments fixed at acceptance when launch options were chosen, which replace the configuration's =args= (absent decodes as null). The scope descriptor is the membership held from acceptance, not a namespace path. Source variants reject unknown fields.
 
 =SupervisorStart.payload_nofile= is required and nullable. At construction the foreground daemon snapshots its process-local original soft =RLIMIT_NOFILE= value if it successfully raised its own soft limit; null means no original value was recorded. The supervisor retains its inherited ambient soft and hard limits through exec and bootstrap. After complete logical startup validation, including any multipart handoff, and before creating an engine or worker or sending =Adopted=, it installs this value as process-local payload restoration metadata only. A non-null value must be a positive finite unsigned integer representable as =rlim_t= and no greater than either actual ambient soft or hard limit. Zero, infinity, conversion failure and out-of-bounds values fail startup with =invalid payload descriptor limit=; a failed =getrlimit= also fails startup with its OS error. Rejection leaves existing metadata and kernel limits unchanged and releases received capabilities and leases without an acknowledgement or engine side effects. Null clears restoration metadata without changing kernel limits. Payload launch restores the recorded soft value while retaining the ambient hard limit, so controller and supervisor capacity remains raised. The separate background =server start= self-exec path still loses process-local original-limit metadata; this preexisting limitation is outside this propagation mechanism.
 
@@ -894,7 +903,7 @@ All methods in this table are supervisor-to-daemon notifications. There is no co
 | =Event.DevShell= | ={"summary":OPAQUE_DEV_SHELL_SUMMARY}= | Publishes the now-current generation. |
 | =Event.Exported= | ={"member":STRING,"result":Result<Handoff,String>}= | Returns an owned handoff or the owner's failure. Successful handoffs may span batches. |
 | =Event.Granted= | ={"reply":Reply,"detail":STRING_OR_NULL,"output":PATH_OR_NULL}= | Reports the permission result and optional rooted output. |
-| =Event.Manifest= | ={"sequence":U64,"path":PATH,"root":PATH_OR_NULL,"owner":DESCRIPTOR_OR_NULL,"transfer":NONZERO_U64}= | Transfers a validated manifest's GC-root lease; acknowledge only after adopting it. Root and owner must both be present or both null. |
+| =Event.Manifest= | ={"sequence":U64,"path":PATH,"root":PATH_OR_NULL,"catalogue":OPAQUE_CATALOGUE,"owner":DESCRIPTOR_OR_NULL,"transfer":NONZERO_U64}= | Transfers a validated manifest's GC-root lease; acknowledge only after adopting it. Root and owner must both be present or both null. =OPAQUE_CATALOGUE= is a JSON string, so manifest names never read as descriptor references, of ={"goblins":{NAME:{"description","args","scope_args":{SCOPE:[STRING,...]},"launch_options"}}}=, read with the manifest, from which the daemon checks launch options and answers =targets.list= without reading the manifest again. |
 | =Event.Spawned= | ={"id":U64,"pid":I32}= | Reports the sandbox process PID for existing exec/onDetach behavior, with no terminal master or supervisor PID. |
 | =Event.Terminal= | ={"terminal":TerminalId,"status":TerminalStatus,"error":STRING_OR_NULL}= | Publishes a descriptor-free terminal snapshot and optional diagnostic. |
 | =Event.TerminalResult= | ={"request":U64,"result":OPAQUE_RESULT}= | Contains =Result<JSON,String>= for =TerminalCall=: the result shapes of =terminals.read=, =terminals.send= and =terminals.wait=, or why the call failed (no such terminal, the program has ended, input full). |
