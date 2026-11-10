@@ -2330,6 +2330,7 @@ mod tests {
                 directory.join(name),
                 Some(root.clone()),
             ),
+            catalogue: Default::default(),
         };
         // Queued and never read: the queue's end takes the event with it.
         let (sender, receiver) = mpsc::sync_channel(1);

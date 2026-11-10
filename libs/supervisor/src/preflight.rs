@@ -26,7 +26,11 @@ pub(crate) fn start(mut channel: Channel, first: Frame) -> Result<()> {
         let lease = crate::config::lease_manifest(&path, &directory, sequence, &cancel);
         cancel.check()?;
         let message = match lease {
-            Ok(lease) => Message::Event(Event::Manifest { sequence, lease }),
+            Ok((lease, catalogue)) => Message::Event(Event::Manifest {
+                sequence,
+                lease,
+                catalogue,
+            }),
             Err(error) => Message::PreflightFailed {
                 error: error.to_string(),
             },

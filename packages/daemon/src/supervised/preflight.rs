@@ -5,7 +5,7 @@ use super::{
 };
 use crate::Result;
 use goblins_runtime::{
-    config::ManifestLease,
+    config::{Catalogue, ManifestLease},
     supervisor::{self, Message},
 };
 use std::path::Path;
@@ -14,7 +14,7 @@ pub(crate) fn lease(
     path: &Path,
     directory: &Path,
     sequence: u64,
-) -> Result<ManifestLease> {
+) -> Result<(ManifestLease, Catalogue)> {
     let message = oneshot::request(
         executable,
         Message::Preflight {
@@ -30,7 +30,9 @@ pub(crate) fn lease(
         || false,
     )?;
     match message {
-        Message::Event(goblins_runtime::Event::Manifest { lease, .. }) => Ok(lease),
+        Message::Event(goblins_runtime::Event::Manifest {
+            lease, catalogue, ..
+        }) => Ok((lease, catalogue)),
         Message::PreflightFailed { error } => Err(error.into()),
         _ => unreachable!("validated one-shot result"),
     }

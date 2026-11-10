@@ -1,6 +1,8 @@
 use crate::Result;
 use goblins_runtime::config::Launch as Definition;
-use goblins_runtime::config::{Configuration, Editor, Handlers, Manifest, ManifestLease, Scope};
+use goblins_runtime::config::{
+    Catalogue, Configuration, Editor, Handlers, Manifest, ManifestLease, Scope,
+};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -13,10 +15,10 @@ pub fn lease_manifest(
     directory: &Path,
     sequence: u64,
     cancel: &crate::process::Cancellation,
-) -> Result<ManifestLease> {
-    validate(path)?;
+) -> Result<(ManifestLease, Catalogue)> {
+    let catalogue = Catalogue::new(&validate(path)?);
     let Some(output) = crate::session::containing_store_output(path) else {
-        return Ok(ManifestLease::adopt(path.to_path_buf(), None));
+        return Ok((ManifestLease::adopt(path.to_path_buf(), None), catalogue));
     };
     goblins_unix::private_directory(directory)?;
     let name = output.file_name().unwrap().to_string_lossy();
@@ -34,6 +36,7 @@ pub fn lease_manifest(
         )
         .map(|_| ())
     })
+    .map(|lease| (lease, catalogue))
 }
 fn construct_root(
     path: &Path,

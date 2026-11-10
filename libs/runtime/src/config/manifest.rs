@@ -539,6 +539,55 @@ mod tests {
     }
 
     #[test]
+    fn the_catalogue_fixes_a_members_arguments_from_its_scope_variant() {
+        let options = json!({
+            "mode": {"choices": {"fast": {"args": ["--fast"]}}},
+            "config": {"choices": {"x": {"args": ["-c", "x={a=1}"]}}},
+        });
+        let value = manifest(json!({"shell": goblin(json!({
+            "description": "A shell", "args": ["--base"], "launch_options": options,
+            "allowed_scopes": ["work"], "scopes": {"work": goblin(json!({"args": ["--work"]}))},
+        }))}));
+        let catalogue = crate::config::Catalogue::new(&validated(&value).unwrap());
+        let chosen = |pairs: &[(&str, &str)]| -> std::collections::BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(o, c)| (o.to_string(), c.to_string()))
+                .collect()
+        };
+        // Without choices nothing is fixed: the launch runs as before.
+        assert_eq!(
+            catalogue.arguments("shell", Some("work"), &chosen(&[])),
+            Ok(None)
+        );
+        // The variant's args, then the choices by option name, verbatim.
+        let both = chosen(&[("mode", "fast"), ("config", "x")]);
+        assert_eq!(
+            catalogue
+                .arguments("shell", Some("work"), &both)
+                .unwrap()
+                .unwrap(),
+            ["--work", "-c", "x={a=1}", "--fast"]
+        );
+        assert_eq!(
+            catalogue.arguments("shell", None, &both).unwrap().unwrap(),
+            ["--base", "-c", "x={a=1}", "--fast"]
+        );
+        assert_eq!(
+            catalogue.arguments("shell", None, &chosen(&[("mode", "slow")])),
+            Err("option 'mode' has no choice 'slow'; choices: fast".into())
+        );
+        assert_eq!(
+            catalogue.arguments("shell", None, &chosen(&[("speed", "fast")])),
+            Err("unknown launch option 'speed'; options: config, mode".into())
+        );
+        assert_eq!(
+            catalogue.arguments("absent", None, &chosen(&[("mode", "fast")])),
+            Err("unknown goblin 'absent'".into())
+        );
+    }
+
+    #[test]
     fn validation_covers_versions_bounds_and_the_editor() {
         let good = manifest(json!({"shell": goblin(json!({}))}));
         assert!(validated(&good).is_ok());

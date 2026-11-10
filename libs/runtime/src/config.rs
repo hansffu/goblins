@@ -85,6 +85,88 @@ pub struct LaunchChoice {
     pub description: Option<String>,
     pub args: Vec<String>,
 }
+/// What the daemon needs from a manifest to check launch options and list
+/// run targets without reading the manifest again
+/// (docs/specs/LAUNCH-OPTIONS.org). Built where the manifest is read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Catalogue {
+    pub goblins: BTreeMap<String, CatalogueEntry>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogueEntry {
+    pub description: String,
+    pub args: Vec<String>,
+    /// The `args` of each scope variant, which a member in that scope runs.
+    pub scope_args: BTreeMap<String, Vec<String>>,
+    pub launch_options: BTreeMap<String, LaunchOption>,
+}
+impl Catalogue {
+    pub fn new(manifest: &Manifest) -> Self {
+        let goblins = manifest
+            .goblins
+            .iter()
+            .map(|(name, config)| {
+                let entry = CatalogueEntry {
+                    description: config.description.clone(),
+                    args: config.args.clone(),
+                    scope_args: config
+                        .scopes
+                        .iter()
+                        .map(|(scope, variant)| (scope.clone(), variant.args.clone()))
+                        .collect(),
+                    launch_options: config.launch_options.clone(),
+                };
+                (name.clone(), entry)
+            })
+            .collect();
+        Self { goblins }
+    }
+    /// The complete arguments of a member of `configuration` started in the
+    /// owner's `scope` with these choices: the variant's `args`, then each
+    /// chosen choice's `args` in the order of the option names. None without
+    /// choices, which leaves the launch as it is; an error names the valid
+    /// options or choices.
+    pub fn arguments(
+        &self,
+        configuration: &str,
+        scope: Option<&str>,
+        options: &BTreeMap<String, String>,
+    ) -> std::result::Result<Option<Vec<String>>, String> {
+        if options.is_empty() {
+            return Ok(None);
+        }
+        let entry = self
+            .goblins
+            .get(configuration)
+            .ok_or_else(|| format!("unknown goblin '{configuration}'"))?;
+        let names = |keys: Vec<&String>| match keys.is_empty() {
+            true => "none".to_string(),
+            false => keys.into_iter().cloned().collect::<Vec<_>>().join(", "),
+        };
+        let mut arguments = scope
+            .and_then(|s| entry.scope_args.get(s))
+            .unwrap_or(&entry.args)
+            .clone();
+        for (option, choice) in options {
+            let declared = entry.launch_options.get(option).ok_or_else(|| {
+                format!(
+                    "unknown launch option '{option}'; options: {}",
+                    names(entry.launch_options.keys().collect())
+                )
+            })?;
+            let chosen = declared.choices.get(choice).ok_or_else(|| {
+                format!(
+                    "option '{option}' has no choice '{choice}'; choices: {}",
+                    names(declared.choices.keys().collect())
+                )
+            })?;
+            arguments.extend(chosen.args.iter().cloned());
+        }
+        Ok(Some(arguments))
+    }
+}
 /// mkGoblin's `worktrees.enable`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -36,6 +36,7 @@ pub(crate) fn peer(root: &Path, mode: &str, request: Received, mut channel: Chan
                 sequence
             },
             lease,
+            catalogue: Default::default(),
         })
     };
     writer
@@ -160,7 +161,7 @@ fn a_preflight_lease_is_published_only_after_ack_eof_and_successful_reap() {
     let _fork = goblins_unix::forking();
     let root = goblins_unix::temp_directory().unwrap();
     let path = root.join("manifest");
-    let lease = lease(&executable(&root, "preflight-success"), &path, &root, 42).unwrap();
+    let (lease, _) = lease(&executable(&root, "preflight-success"), &path, &root, 42).unwrap();
     assert_reaped(&root);
     assert_eq!(lease.path, path);
     assert!(root.join("lease-root").is_symlink());
@@ -241,7 +242,7 @@ fn preflight_work_before_a_result_has_no_two_second_operation_limit() {
     let _fork = goblins_unix::forking();
     let root = goblins_unix::temp_directory().unwrap();
     let started = Instant::now();
-    let lease = lease(
+    let (lease, _) = lease(
         &executable(&root, "preflight-slow"),
         &root.join("manifest"),
         &root,
@@ -288,6 +289,7 @@ pub(crate) fn wrong_direction_handoff(
                 state: root.into(),
                 history: None,
                 worktree: None,
+                arguments: None,
             },
             directory: root.into(),
             dimensions: (24, 80),

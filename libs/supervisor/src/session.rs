@@ -270,6 +270,9 @@ pub(crate) struct Member<'a> {
     pub configuration: &'a str,
     /// The directory in the owner's worktree folder to start in.
     pub worktree: Option<PathBuf>,
+    /// Its complete arguments when launch options were chosen, fixed by the
+    /// daemon at acceptance, instead of the configuration's `args`.
+    pub arguments: Option<Vec<String>>,
 }
 /// Recorded grants that resolved, in order, and the names that did not.
 pub(crate) type Resolved = (
@@ -431,6 +434,7 @@ impl Session {
             manifest,
             configuration,
             worktree,
+            arguments,
         } = member;
         let manifest = crate::config::validate(manifest)?;
         let editor = crate::config::editor(&manifest)?;
@@ -449,6 +453,7 @@ impl Session {
             Err(error) => directory_error = Some(format!("worktrees.directory: {error}")),
         }
         let mut session = Self::new_in(launch, None, cancel, directory)?;
+        session.arguments = arguments;
         session.worktrees.detail = directory_error;
         // new_in canonicalizes cwd for host launches only. Keep the owner's
         // pinned namespace path even when its host pathname was renamed.
