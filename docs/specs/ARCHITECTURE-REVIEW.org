@@ -15,6 +15,7 @@ Session and permission states are strings: =SessionRecord.state= is a =String=, 
 
 - Move the session, permission and terminal records and their state enums into =libs/api=, and have the daemon, host CLI, TUI and sandbox CLI use them.
 - Replace the string comparisons with the enums.
+- Enums alone are not the goal. A state change in the controller today also touches runtime ownership, name and history reservations and cleanup, in separate statements. Define the lifecycle transitions as operations that keep these consistent, so that a state cannot be set without its consequences. These operations are also the natural lines along which to split the controller (see [[*Split the controller's largest functions][Code size]]).
 - This is the first step of [[file:API-SCHEMA.org][API-SCHEMA.org]] and is useful without the rest of that plan.
 
 ** TODO Decide on the schema-first API plan
@@ -31,19 +32,30 @@ Session and permission states are strings: =SessionRecord.state= is a =String=, 
 
 =libs/supervisor/src/entry.rs:68= polls only the control descriptor, with a 20 ms timeout. PTY masters, attached frontend streams, the init socket, =request.sock=, the payload pidfd and host jobs are scanned once per tick (=libs/supervisor/src/engine.rs:415=). This adds up to 20 ms in each direction to terminal echo and to sandbox RPC, and wakes each idle goblin about 50 times a second.
 
-The supervisor has one worker thread, so one =poll()= over every descriptor, with the worker's completion channel signalled through a pipe or eventfd, removes the fixed tick.
+The supervisor has one worker thread, so one =poll()= over every descriptor, with the worker's completion channel signalled through a pipe or eventfd, can remove the fixed tick.
+
+Descriptor readiness is not the only reason to run. This is scheduling work, and the loop must also wake for:
+
+- Deadlines, such as terminal wait and close deadlines (=libs/supervisor/src/terminals.rs=), as the poll timeout.
+- Internal work that is already queued: actor output can wait for the control channel independently of any other descriptor (=libs/supervisor/src/supervisor_process.rs:90=).
+
+Keep the existing per-source service budgets and fairness (the event budget and rotating cursor in =engine.rs=), cancellation and backpressure. Measure idle wakeups and terminal and sandbox RPC latency before and after.
 
 Related timed waits are separate cases and are not replaced by that change. =worker.rs= receives commands with =recv_timeout(WORKER_TICK)= so the worker observes cancellation. =results.rs= retries a full bounded channel with a sleep of the same interval: this is producer backpressure with cancellation, and both properties must be kept. =scope_process.rs= and =scope_client.rs= have their own timed loops; look at each on its own.
 
 ** TODO Make the daemon loop wait instead of sleeping
 
-=packages/daemon/src/server.rs:51= calls =Controller::tick= and sleeps 5 ms, about 200 wakeups a second while idle. The tick should block on the host listener, the host connections, the supervisor control channels, the scope channels and a wake descriptor for the messaging thread, with a timeout only for the deadlines it tracks.
+=packages/daemon/src/server.rs:51= calls =Controller::tick= and sleeps 5 ms, about 200 wakeups a second while idle. The tick should block on the host listener, the host connections, the supervisor control channels, the scope channels and a wake descriptor for the messaging thread, with a timeout only for the deadlines it tracks. The same conditions apply as for the supervisor: deadlines, queued internal work such as the raid and operation outboxes, fairness between sources, and a measurement before and after.
 
 Do this after the supervisor: the supervisor change is smaller and gives the larger latency gain.
 
-** TODO Publish once per tick
+** TODO Reduce redundant reconciliation and snapshot work in =publish()=
 
-=Controller::tick= calls =publish()= after servicing each connection, and =publish()= reconciles raids and refreshes raid prompts before it checks whether anything changed. Check whether the per-connection call is needed for the ordering it documents (a subscription snapshot and later events share one order), or whether reconciling only when state is dirty is enough.
+=Controller::tick= calls =publish()= after servicing each connection, and =publish()= reconciles raids and refreshes raid prompts before it checks whether anything changed. The per-connection call is deliberate: it gives a subscription snapshot and later events one serialization order across competing host clients (=packages/daemon/src/controller.rs:3612=). Keep that ordering. The suggestion is only to avoid repeated work inside it, for example reconciling raids when state is dirty instead of on every call, and serializing the snapshot once instead of once for the size check and again for sending.
+
+** TODO Define what happens when live state exceeds the snapshot budget
+
+=publish()= evicts finished permission records and stopped sessions until the replacement snapshot is at most 900 KiB, and stops evicting when nothing is eligible (=packages/daemon/src/controller.rs:1295=). What a subscriber receives when live state alone exceeds the budget is not defined. Decide between admission limits, bounded record fields, or a different snapshot protocol. This is a design question from reading the code, not a failure that was shown to be reachable.
 
 * Crate boundaries
 
@@ -59,7 +71,7 @@ The mount helper links the whole crate, and with it =regex=, =serde_json=, =gobl
 
 ** TODO Use the mount-safe removal in =ResourceLease::drop=
 
-=libs/runtime/src/lease.rs:140= removes the resource directory with =fs::remove_dir_all=. =libs/unix/src/cleanup.rs= exists so that removal never crosses a mount. Either use it here or record why this directory cannot contain a mount. Whether the current code can be exploited was not established.
+=libs/runtime/src/lease.rs:140= removes the resource directory by path with =fs::remove_dir_all=, in whichever process drops the lease last. =libs/unix/src/cleanup.rs= exists so that removal works relative to a pinned descriptor and never crosses a mount. The inconsistency is certain; whether it can be exploited was not established. Investigate this early: either prove that the directory cannot contain a mount or be replaced while the lease is dropped, and record that at the call, or use the protected removal.
 
 ** TODO Fold =libs/init= into the crates it wraps
 
@@ -75,7 +87,9 @@ The mount helper links the whole crate, and with it =regex=, =serde_json=, =gobl
 
 ** TODO Simplify the private control codec
 
-=libs/runtime/src/supervisor.rs= has a macro codec that lists every =Command= and =Event= field a second time, and 19 fields are JSON encoded as strings inside JSON. With handoff and outbound code this is about 1,700 lines and 2,241 lines of tests, for a channel between two programs from the same build. The ownership model (=Prepared=, =PendingTransfer=, =Adopted=) is sound and stays; the wire format could be derived with serde. Low priority, and only worth doing together with another change to the protocol.
+=libs/runtime/src/supervisor.rs= has a macro codec that lists every =Command= and =Event= field a second time, and 19 fields are JSON encoded as strings inside JSON. With handoff and outbound code this is about 1,700 lines and 2,241 lines of tests. The ownership model (=Prepared=, =PendingTransfer=, =Adopted=) is sound and stays. Deriving the metadata encoding with serde could remove the repetition.
+
+Both ends coming from the same build does not rule out malformed frames, partial transfers or a peer that dies mid-transfer. Any simplification must keep the decoding guarantees: every received descriptor is consumed and validated exactly once (=Descriptors=, =supervisor.rs:393=), the frame and descriptor budgets hold, and adoption is acknowledged before the sender releases its guard. Low priority, and only worth doing together with another change to the protocol.
 
 * Code size
 
@@ -171,7 +185,7 @@ Keep =full= for shared paths. The suggestions are to remove the feature paths th
 
 ** TODO Stop running the Rust tests twice in the merge gate
 
-=just test-merge= runs =cargo test --workspace= and then the Nix checks build each Rust package with its check phase, at one Nix job. Decide which run is the authority for unit tests and drop them from the other.
+=just test-merge= runs =cargo test --workspace= and then the Nix checks build each Rust package with its check phase, at one Nix job. The two runs overlap but validate different arrangements: =tests/rust_tests.py= builds the production supervisor and pins it for the actor tests, while =nix/builders/rust.nix= builds each package from its own source set with stubbed workspace members and its fixture environment. First establish what each run covers that the other does not. Drop tests from one only where coverage is shown to be equivalent, and keep the packaging validation.
 
 ** TODO Replace the long fixed sleeps
 
@@ -210,11 +224,10 @@ Its newest entry is from 2026-10-19, and =docs/README.org= still requires verifi
 
 * Suggested order
 
-1. The documentation items: no test gate, and they remove the most misleading material.
-2. Move the inline test modules: mechanical, and it makes the later controller work reviewable.
-3. Type the public API records and states.
-4. Make the supervisor wait on all its descriptors, then the daemon loop.
-5. Move the transport and the guardian out of =goblins-runtime=, with =libs/init= and the shared Unix helpers.
-6. Make skipped checks visible in the merge gate.
-7. Split the controller's and the session's largest functions.
-8. The remaining items as the code around them is touched.
+Safety and the fidelity of validation come first, structural cleanup last. The documentation items are independent and can proceed at any time.
+
+1. Investigate the =ResourceLease= cleanup.
+2. Validation fidelity: remove the =cfg(test)= branch in =dispatch= so tests use the production gate, and make skipped checks visible in the merge gate.
+3. Lifecycle and API typing: the typed records and states with their transition operations, and the snapshot budget question.
+4. The event loops, measured: the supervisor first, then the daemon.
+5. Structural cleanup as the code around it is touched: moving the inline test modules, splitting the largest functions, moving the transport and the guardian out of =goblins-runtime=, and the remaining items.
