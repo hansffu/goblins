@@ -134,7 +134,7 @@ codex    Codex running in a Goblins sandbox
 - =docs/API.org=: =sessions.start= =options= and its errors, the =options= field of each changed record (=Session=, =SandboxSession=, =sessions.status=, =raids.members= entries) and =targets.list=. The manifest is not part of the RPC API: =launchOptions= and its limits are documented in =docs/USAGE.org=.
 - =README.org= and =docs/USAGE.org=: =launchOptions= for =mkGoblin= and the builders.
 - =goblins-spawn= skill: =goblin targets= and =-o NAME=CHOICE=.
-- Demo goblins: =model= and =effort= on the demo Claude configuration, =effort= on the demo Codex one. Goblins keeps no model list, so the Codex demo names no model.
+- Demo goblins: =model= and =effort= on the demo Claude and Codex configurations.
 
 * Tests
 

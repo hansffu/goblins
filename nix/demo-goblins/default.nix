@@ -29,11 +29,17 @@ in
     allowedScopes = [ "goblins-dev" ] ++ agentScopes;
     inherit allowedRunTargets;
     # Picked by the goblin that runs it: goblin run codex -o effort=high.
-    launchOptions.effort = [
-      "low"
-      "medium"
-      "high"
-    ];
+    launchOptions = {
+      model = [
+        "gpt-6.1-sol"
+        "gpt-6-luna"
+      ];
+      effort = [
+        "low"
+        "medium"
+        "high"
+      ];
+    };
   };
   claude = builders.mkClaudeGoblin {
     pkg = agents.claude-code;

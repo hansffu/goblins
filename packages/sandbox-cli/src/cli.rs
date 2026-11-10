@@ -257,6 +257,9 @@ pub enum Command {
         config: String,
         #[arg(long)]
         name: Option<String>,
+        /// A launch option of the configuration, NAME=CHOICE (see goblin targets)
+        #[arg(short = 'o', long = "option", value_name = "NAME=CHOICE")]
+        options: Vec<String>,
         /// Start the member in this worktree of this goblin's worktree folder
         #[arg(long)]
         worktree: Option<String>,
@@ -273,6 +276,8 @@ pub enum Command {
         #[command(subcommand)]
         command: TerminalCommand,
     },
+    /// The configurations this goblin may run, with their launch options
+    Targets,
     /// Show the name and identity of this sandbox
     Status,
     /// List the members created in the raid this goblin owns
@@ -294,9 +299,29 @@ pub enum Command {
     },
 }
 
-fn slot(words: Vec<String>) -> Option<bool> {
+/// What a completion position takes.
+#[derive(Debug, PartialEq)]
+enum Slot {
+    /// A configuration this goblin may run.
+    Configuration,
+    /// A member it may stop.
+    Member,
+    /// A launch option of this configuration, as NAME=CHOICE; or, once
+    /// Bash has split the word at `=`, a choice of the named option.
+    Option(String, Option<String>),
+}
+fn slot(words: Vec<String>) -> Option<Slot> {
     const TARGET: &str = "__goblins_completion_target__";
     let mut words = words;
+    // Bash splits `-o NAME=` into `-o`, `NAME` and `=`: complete the choice.
+    let mut option = None;
+    if let [.., flag, name, equals] = words.as_slice()
+        && (flag == "-o" || flag == "--option")
+        && equals == "="
+    {
+        option = Some(name.clone());
+        words.truncate(words.len() - 2);
+    }
     if words
         .last()
         .is_some_and(|word| word.starts_with("--") && word.ends_with('='))
@@ -308,7 +333,12 @@ fn slot(words: Vec<String>) -> Option<bool> {
     let mut normalized = Vec::<String>::new();
     let mut words = words.into_iter();
     while let Some(word) = words.next() {
-        if word == "=" && normalized.last().is_some_and(|w| w.starts_with("--")) {
+        // `--name = value`, and `-o NAME = CHOICE` of an earlier option.
+        let option_value = matches!(
+            normalized.iter().rev().nth(1).map(String::as_str),
+            Some("-o" | "--option")
+        );
+        if word == "=" && (option_value || normalized.last().is_some_and(|w| w.starts_with("--"))) {
             let value = words.next()?;
             normalized.last_mut()?.push_str(&format!("={value}"));
         } else {
@@ -316,19 +346,59 @@ fn slot(words: Vec<String>) -> Option<bool> {
         }
     }
     match Cli::try_parse_from(normalized).ok()?.command {
-        Command::Run { config, .. } if config == TARGET => Some(false),
-        Command::Kill { session } | Command::Stop { session } if session == TARGET => Some(true),
+        Command::Run { config, .. } if config == TARGET => Some(Slot::Configuration),
+        Command::Run {
+            config, options, ..
+        } if options.last().is_some_and(|o| o == TARGET) => Some(Slot::Option(config, option)),
+        Command::Kill { session } | Command::Stop { session } if session == TARGET => {
+            Some(Slot::Member)
+        }
         _ => None,
     }
 }
 pub fn complete(words: Vec<String>) -> Result<i32, String> {
-    let Some(names) = slot(words) else {
+    let Some(slot) = slot(words) else {
         return Ok(1);
     };
     let Ok((mut socket, _)) = super::connect() else {
         return Ok(0);
     };
-    if !names {
+    if let Slot::Option(config, named) = slot {
+        // Every NAME=CHOICE of the configuration, or the named option's
+        // choices after Bash split at `=`; the shell filters them.
+        let targets = rpc::exchange(&mut socket, json!(1), "targets.list", json!({}))
+            .map_err(|e| e.to_string())?;
+        let target = targets
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|t| t["name"] == config.as_str());
+        for (option, declared) in target
+            .and_then(|t| t["options"].as_object())
+            .into_iter()
+            .flatten()
+        {
+            for choice in declared["choices"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(c, _)| c)
+            {
+                if !goblins_protocol::launch_option_name(option)
+                    || !goblins_protocol::launch_choice(choice)
+                {
+                    continue;
+                }
+                match &named {
+                    None => println!("{option}={choice}"),
+                    Some(name) if name == option => println!("{choice}"),
+                    Some(_) => (),
+                }
+            }
+        }
+        return Ok(0);
+    }
+    if slot == Slot::Configuration {
         let configuration = |name: &str| {
             !name.is_empty()
                 && name
@@ -373,10 +443,16 @@ pub fn completions(shell: clap_complete::Shell) {
     let hook = match shell {
         clap_complete::Shell::Bash => Some(
             r#"
-    local goblins_names
-    if [[ "${COMP_WORDS[COMP_CWORD]}" != -* ]] &&
-       goblins_names=$("${COMP_WORDS[0]}" __complete-names -- "${COMP_WORDS[@]:0:COMP_CWORD}" 2>/dev/null); then
-        COMPREPLY=( $(compgen -W "$goblins_names" -- "${COMP_WORDS[COMP_CWORD]}") )
+    local goblins_names goblins_current="${COMP_WORDS[COMP_CWORD]}"
+    local goblins_words=("${COMP_WORDS[@]:0:COMP_CWORD}")
+    # Bash makes the `=` of `-o NAME=` a word of its own: complete after it.
+    if [[ "$goblins_current" == "=" ]]; then
+        goblins_words+=("=")
+        goblins_current=
+    fi
+    if [[ "$goblins_current" != -* ]] &&
+       goblins_names=$("${COMP_WORDS[0]}" __complete-names -- "${goblins_words[@]}" 2>/dev/null); then
+        COMPREPLY=( $(compgen -W "$goblins_names" -- "$goblins_current") )
         return
     fi
 "#,
@@ -426,7 +502,41 @@ mod tests {
         }
         assert_eq!(
             slot(["goblin", "run"].map(String::from).to_vec()),
-            Some(false)
+            Some(Slot::Configuration)
+        );
+        for args in [
+            &["goblin", "run", "claude", "-o"][..],
+            &["goblin", "run", "claude", "--option"],
+            &["goblin", "run", "claude", "-o", "model=opus", "--option"],
+            &["goblin", "run", "--name", "x", "claude", "-o"],
+        ] {
+            assert_eq!(
+                slot(args.iter().map(|a| a.to_string()).collect()),
+                Some(Slot::Option("claude".into(), None)),
+                "{args:?}"
+            );
+        }
+        // Bash splits an earlier `-o model=opus` too.
+        assert_eq!(
+            slot(
+                ["goblin", "run", "claude", "-o", "model", "=", "opus", "-o"]
+                    .map(String::from)
+                    .to_vec()
+            ),
+            Some(Slot::Option("claude".into(), None))
+        );
+        // Bash's words at `-o model=<TAB>` and `-o model=so<TAB>`.
+        assert_eq!(
+            slot(
+                ["goblin", "run", "claude", "-o", "model", "="]
+                    .map(String::from)
+                    .to_vec()
+            ),
+            Some(Slot::Option("claude".into(), Some("model".into())))
+        );
+        assert_eq!(
+            slot(["goblin", "kill"].map(String::from).to_vec()),
+            Some(Slot::Member)
         );
         assert_eq!(
             slot(
@@ -474,7 +584,7 @@ mod tests {
         assert!(Cli::try_parse_from(["goblin", "detatch"]).is_err());
         assert_eq!(
             slot(["goblin", "stop"].map(String::from).to_vec()),
-            Some(true)
+            Some(Slot::Member)
         );
         assert!(Cli::try_parse_from(["goblin", "raid", "invite", "x"]).is_err());
         assert!(Cli::try_parse_from(["goblin", "raid", "set-role"]).is_err());

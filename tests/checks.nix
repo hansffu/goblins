@@ -1194,6 +1194,13 @@ in
         reviewer = member "reviewer" {
           allowedRunTargets = [ ];
           rwDirs = [ "$GOBLINS_TEST_ROOT/reviewer" ];
+          launchOptions.shopt = {
+            description = "A bash option";
+            choices.extglob.args = [
+              "-O"
+              "extglob"
+            ];
+          };
         };
         shell = member "shell" { allowedRunTargets = [ "reviewer" ]; };
         unlisted = member "unlisted" { };

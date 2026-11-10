@@ -130,11 +130,15 @@ fn run() -> Result<i32, String> {
             cli::Command::Worktree { name, base, main } => {
                 return worktree::run(name, base, main);
             }
+            cli::Command::Targets => {
+                print!("{}", targets(&call("targets.list", json!({}))?));
+                return Ok(0);
+            }
             cli::Command::Status => {
                 let record = call("sessions.status", json!({}))?;
                 let raid = &record["raid"];
                 println!(
-                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nRun targets: {}\nState: {}\nActivity: {}\nAttached: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
+                    "Sandbox: {}\nConfiguration: {}\nDescription: {}\nRun targets: {}\nLaunch options: {}\nState: {}\nActivity: {}\nAttached: {}\nScope: {}\nDocker: {}\nNix: {}\nHost commands: {}{}\nDev shell: {}\nRaid: {}\nID: {}",
                     record["agent_name"].as_str().unwrap_or("unknown"),
                     record["name"].as_str().unwrap_or("unknown"),
                     record["description"].as_str().unwrap_or("unknown"),
@@ -147,6 +151,7 @@ fn run() -> Result<i32, String> {
                         Some(_) => "none".into(),
                         None => "unknown".into(),
                     },
+                    goblins_protocol::launch_choices(&record["options"]).unwrap_or("none".into()),
                     record["state"].as_str().unwrap_or("unknown"),
                     record["agent_state"].as_str().unwrap_or("unknown"),
                     match (
@@ -213,10 +218,12 @@ fn run() -> Result<i32, String> {
                 config,
                 name,
                 worktree,
+                options,
                 ..
             } => {
                 let mut params = json!({"key":random_key()?,
-                    "name":config,"agent_name":name,"detached":true});
+                    "name":config,"agent_name":name,"detached":true,
+                    "options":launch_options(&options)?});
                 if let Some(worktree) = worktree {
                     params["worktree"] = json!(worktree);
                 }
@@ -474,6 +481,70 @@ fn editor_open(args: &[String]) -> Result<i32, String> {
         }
     }
 }
+/// `goblin run -o NAME=CHOICE`, each option at most once. The daemon checks
+/// them against the configuration.
+fn launch_options(
+    options: &[String],
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut chosen = serde_json::Map::new();
+    for option in options {
+        let Some((name, choice)) = option
+            .split_once('=')
+            .filter(|(n, c)| !n.is_empty() && !c.is_empty())
+        else {
+            return Err(format!(
+                "-o {option}: expected NAME=CHOICE (see goblin targets)"
+            ));
+        };
+        if chosen.insert(name.into(), json!(choice)).is_some() {
+            return Err(format!("-o {name} is given more than once"));
+        }
+    }
+    Ok(chosen)
+}
+/// `goblin targets`: each configuration, then its options and choices.
+fn targets(list: &serde_json::Value) -> String {
+    let text = |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or(""));
+    let mut out = String::new();
+    let targets = list.as_array().map_or(&[][..], Vec::as_slice);
+    if targets.is_empty() {
+        out.push_str("No run targets\n");
+    }
+    let width = targets
+        .iter()
+        .filter_map(|t| t["options"].as_object())
+        .flat_map(|o| o.keys().map(|k| k.chars().count()))
+        .max()
+        .unwrap_or(0);
+    for target in targets {
+        out.push_str(
+            format!(
+                "{}  {}",
+                text(&target["name"]),
+                text(&target["description"])
+            )
+            .trim_end(),
+        );
+        out.push('\n');
+        for (option, declared) in target["options"].as_object().into_iter().flatten() {
+            let choices: Vec<_> = declared["choices"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(c, _)| goblins_protocol::plain_text(c))
+                .collect();
+            let line = format!(
+                "  {:width$}  {}  {}",
+                goblins_protocol::plain_text(option),
+                choices.join(" | "),
+                text(&declared["description"])
+            );
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+    }
+    out
+}
 fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String> {
     let app = app_name(installable)?;
     let result = match waiting_call("flake-run", "flake.run", json!({"app":app}))? {
@@ -595,6 +666,29 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn launch_options_are_name_choice_pairs_and_targets_list_them() {
+        let options =
+            |args: &[&str]| launch_options(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            json!(options(&["model=gpt-5.5", "mode=a=b"]).unwrap()),
+            json!({"model": "gpt-5.5", "mode": "a=b"})
+        );
+        for bad in [&["fast"][..], &["=x"], &["model="], &["model=a", "model=b"]] {
+            assert!(options(bad).is_err(), "{bad:?}");
+        }
+        let list = json!([
+            {"name": "claude", "description": "Claude Code", "options": {
+                "model": {"description": null, "choices": {"opus": {}, "sonnet": {}}},
+                "effort": {"description": "Reasoning effort", "choices": {"high": {}}}}},
+            {"name": "shell", "description": "", "options": {}}
+        ]);
+        assert_eq!(
+            targets(&list),
+            "claude  Claude Code\n  effort  high  Reasoning effort\n  model   opus | sonnet\nshell\n"
+        );
+        assert_eq!(targets(&json!([])), "No run targets\n");
+    }
     #[test]
     fn request_options_can_precede_or_follow_the_package() {
         for args in [

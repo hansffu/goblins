@@ -324,7 +324,7 @@ reviewer = mkClaudeGoblin {
 };
 #+end_src
 
-See [[file:docs/USAGE.org::*Launch options][Launch options]] for the full form and limits.
+The owner sees them with =goblin targets= and picks them with =goblin run reviewer -o model=opus -o effort=high=. See [[file:docs/USAGE.org::*Launch options][Launch options]] for the full form and limits.
 
 A goblin the owner runs shares its working directory, scope and dev shell, but is not its child: it keeps running when the owner stops, and only the raid's owner can stop it. It can have access its owner lacks, if its configuration grants it, and packages approved for the owner before it ran are approved for it on request. It starts from the configuration the host last used, so a rebuild reaches new goblins after your next launch or a server restart.
 
@@ -386,6 +386,7 @@ goblin enable-docker --reason TEXT
 goblin devshell refresh | diff | restore-lock
 goblin flake run [#APP] [-- ARGS]
 goblin raid create NAME               # create a raid and own it
+goblin targets                        # the configurations it may run, and their options
 goblin run CONFIG --name NAME         # as owner: run a member into the raid
 goblin worktree NAME                  # work in a Git worktree on its own branch (see Git worktrees)
 goblin list | stop NAME               # as owner: the members you can stop

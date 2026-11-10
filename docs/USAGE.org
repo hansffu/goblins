@@ -963,7 +963,7 @@ Host =goblins list= records and sandbox =goblin status= show each goblin's raid 
 
 * Running raid members
 
-A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME] [--worktree NAME]=; =--worktree= starts the member in that worktree of the owner's worktree folder (see Git worktrees). It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
+A raid's owner runs new goblins into it with =goblin run CONFIG [--name NAME] [--worktree NAME] [-o NAME=CHOICE]...=; =-o= picks a launch option (see Launch options) and =--worktree= starts the member in that worktree of the owner's worktree folder (see Git worktrees). It returns at once with JSON containing the session ID, agent name and state; goblins never attach to each other's terminals, so use =goblins attach NAME= on the host. A configuration may run only the configurations in its =allowedRunTargets= list. The default is an empty list: none, not even its own configuration (list its own name for that). =mkGoblins= rejects names it does not declare, and lists over 64 names.
 
 #+begin_src nix
 mkGoblins {
@@ -1016,6 +1016,18 @@ shell = mkGoblin {
 | =mkCodexGoblin= | =-c model="NAME"= | =-c model_reasoning_effort="NAME"= |
 
 Goblins keeps no model list: Claude Code's aliases, such as =opus= and =sonnet=, follow its latest models, and a full model name pins one. A Codex choice adds App Server options only (=-c=, =--enable=, =--disable=), and never the profile, which stays in =args=.
+
+Inside a goblin, =goblin targets= lists the configurations it may run with their options and choices, and the owner of a raid picks them with =-o NAME=CHOICE=, once per option:
+
+#+begin_src sh
+$ goblin targets
+claude  Claude Code running in a Goblins sandbox
+  effort  low | medium | high | xhigh | max
+  model   opus | sonnet | haiku
+$ goblin run claude --name reviewer -o model=opus -o effort=high
+#+end_src
+
+Sandbox completion of =-o= offers each =NAME=CHOICE= of the configuration. The daemon checks the choices against the configuration in its current manifest and refuses an unknown one, naming the valid options or choices. It fixes the member's arguments when it accepts the launch, so a rebuild after that does not change them. =goblin status= shows a goblin's own options and =goblin raid members= each member's. Only members a raid owner runs take options: a host launch has none, and a resumed goblin runs its =resumeCommand= without them.
 
 * Git worktrees
 
