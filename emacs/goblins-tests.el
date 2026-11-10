@@ -1886,6 +1886,173 @@ keeps the parameters of windows that live on."
         (kill-buffer dired)
         (kill-buffer notes)))))
 
+(defmacro goblins-test--externals (specs &rest body)
+  "Run BODY with external agents from SPECS, (VAR NAME DIRECTORY)..., each VAR
+bound to a buffer in `goblins-external-agent-mode'."
+  (declare (indent 1))
+  `(let ,(mapcar (lambda (spec)
+                   `(,(car spec) (with-current-buffer (generate-new-buffer ,(nth 1 spec))
+                                   (setq default-directory ,(nth 2 spec))
+                                   (goblins-external-agent-mode 1)
+                                   (current-buffer))))
+                 specs)
+     (unwind-protect (progn ,@body)
+       ,@(mapcar (lambda (spec)
+                   `(when (buffer-live-p ,(car spec))
+                      (let ((process (get-buffer-process ,(car spec))))
+                        (when process (delete-process process)))
+                      (kill-buffer ,(car spec))))
+                 specs))))
+
+(defvar goblins-test--sentinel-ran nil
+  "Whether an external agent's own sentinel ran.")
+
+(ert-deftest goblins-sidebar-lists-external-agents-with-the-goblins ()
+  (goblins-test--sidebar (list (goblins-test--session "session-a" :cwd "/p")
+                               (goblins-test--session "session-b" :cwd "/r"
+                                                      :raid '(:id "r1" :name "zeta")))
+    (goblins-test--externals ((here "*agent p*" "/p/") (there "*agent q*" "/q/"))
+      (setq goblins-test--sentinel-ran nil)
+      (with-current-buffer there
+        (setq goblins-external-agent-name "aider")
+        ;; Started after the mode, with a sentinel of its own.
+        (let ((default-directory temporary-file-directory))
+          (set-process-sentinel (start-process "goblins-test-external" there "sleep" "60")
+                                (lambda (&rest _) (setq goblins-test--sentinel-ran t)))))
+      (goblins--sidebar-render)
+      ;; Under the directory of the goblins outside a raid, after them; a
+      ;; directory of its own otherwise.  Never in a raid.
+      (should (equal (goblins-test--sidebar-plain)
+                     (concat "▾ ⚔ zeta · /r/\n  › session-b\n"
+                             "\n▾ /p/ !1\n"
+                             "  › session-a\n"
+                             "    ! hello (package)\n"
+                             "  » *agent p*\n"
+                             "\n▾ /q/\n  » aider\n")))
+      (should (eq (get-text-property (goblins--sidebar-find (cons 'external here))
+                                     'goblins-external)
+                  here))
+      ;; Once its process exits, dimmed, without waiting for a redraw; its
+      ;; own sentinel still runs.
+      (let ((process (get-buffer-process there)))
+        (kill-process process)
+        (while (process-live-p process) (accept-process-output process 0.05))
+        (accept-process-output nil 0.05)
+        (should goblins-test--sentinel-ran))
+      (goto-char (goblins--sidebar-find (cons 'external there)))
+      (should (looking-at-p "  » aider · exited$"))
+      (search-forward "aider")
+      (should (eq (get-text-property (point) 'face) 'goblins-dim))
+      ;; Movement stops on it; goblin keys refuse it.
+      (goto-char (goblins--sidebar-find (cons 'external here)))
+      (goblins-sidebar-next)
+      (should (equal (get-text-property (point) 'goblins-group) '(dir nil "/q")))
+      (goblins-sidebar-next)
+      (should (eq (get-text-property (point) 'goblins-external) there))
+      (should-error (goblins-sidebar-permissions) :type 'user-error)
+      (should-error (goblins-sidebar-info) :type 'user-error)
+      (should-error (goblins-sidebar-stop) :type 'user-error)
+      ;; Turning the mode off, or killing the buffer, takes it away.
+      (with-current-buffer here (goblins-external-agent-mode -1))
+      (goblins--sidebar-render)
+      (should-not (goblins--sidebar-find (cons 'external here)))
+      (kill-buffer there)
+      (goblins--sidebar-render)
+      (should-not (string-match-p "»" (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-sidebar-lists-external-agents-without-a-server ()
+  (goblins-test--sidebar nil
+    (with-current-buffer source
+      (setq goblins--snapshot nil goblins--notice "No server; r to reconnect"))
+    (goblins--sidebar-render)
+    (should (equal (goblins-test--sidebar-plain) "No server; g to reconnect\n"))
+    (goblins-test--externals ((agent "*agent*" "/p/"))
+      (should (equal (goblins-test--sidebar-plain)
+                     "No server; g to reconnect\n\n▾ /p/\n  » *agent*\n")))
+    ;; A server without goblins: only the agent.
+    (with-current-buffer source
+      (setq goblins--snapshot (list :instance "daemon-a" :sessions [] :permissions [])))
+    (goblins-test--externals ((agent "*agent*" "/p/"))
+      (should (equal (goblins-test--sidebar-plain) "▾ /p/\n  » *agent*\n")))
+    (goblins--sidebar-render)
+    (should (equal (goblins-test--sidebar-plain) "No running goblins\n"))))
+
+(ert-deftest goblins-sidebar-external-agent-icon-is-a-bot-with-a-text-fallback ()
+  (should (equal goblins-sidebar-external-agent-icon
+                 '(:svg "bot.svg" :color shadow :text "»")))
+  (should (file-exists-p (expand-file-name "bot.svg" goblins--icons-directory)))
+  (goblins-test--sidebar nil
+    (goblins-test--externals ((agent "*agent*" "/p/"))
+      (with-current-buffer agent
+        (setq goblins-external-agent-icon '(:svg "claude.svg" :text "✻")))
+      (goblins--sidebar-render)
+      (should (string-match-p "  ✻ \\*agent\\*" (goblins-test--sidebar-plain))))))
+
+(ert-deftest goblins-workspace-selects-external-agents-like-goblins ()
+  (goblins-test--workspace (list (goblins-test--session "session-a" :cwd "/p"))
+    (goblins-test--externals ((agent "*agent p*" "/p/"))
+      (let ((notes (generate-new-buffer " *notes*"))
+            (split-width-threshold 20)
+            (goblins-request-popups nil))
+        (unwind-protect
+            (progn
+              (terminal "session-a")
+              (goblins--sidebar-render)
+              (goblins-select-goblin source "session-a")
+              ;; RET on its line: the agent window, with nothing beside it.
+              (with-current-buffer sidebar
+                (goto-char (goblins--sidebar-find (cons 'external agent)))
+                (goblins-sidebar-dwim))
+              (should (equal goblins--last-goblin (cons 'external agent)))
+              (should (equal (goblins-test--layout) (list agent)))
+              (should (eq (window-buffer) agent))
+              (should (window-parameter (selected-window) 'goblins-agent))
+              ;; Shown, it has the bar; it never has the attached one.
+              (let ((bar (lambda ()
+                           (with-current-buffer sidebar
+                             (let ((pos (goblins--sidebar-find (cons 'external agent))))
+                               (cl-some (lambda (o) (and (overlay-get o 'display)
+                                                         (get-text-property
+                                                          0 'face (overlay-get o 'display))))
+                                        (overlays-in pos (1+ pos))))))))
+                (goblins--sidebar-update-active)
+                (should (eq (funcall bar) 'goblins-sidebar-bar-shown))
+                ;; Its own windows, kept while a goblin shows.
+                (goblins--display-right notes)
+                (goblins-select-goblin source "session-a")
+                (should (equal (goblins-test--layout) (list (terminal "session-a"))))
+                (goblins--sidebar-update-active)
+                (should-not (funcall bar))
+                (goblins-select-external agent)
+                (should (equal (goblins-test--layout) (list agent notes))))
+              (should (eq (window-buffer) agent))
+              ;; Next and previous goblin, and the one selected before.
+              (goblins-workspace-next-goblin)
+              (should (equal goblins--last-goblin '("/tmp/goblins-test" . "session-a")))
+              (goblins-workspace-next-goblin)
+              (should (equal goblins--last-goblin (cons 'external agent)))
+              (should (eq (with-current-buffer sidebar (get-text-property (point) 'goblins-external))
+                          agent))
+              (goblins-workspace-previous-goblin)
+              (should (equal goblins--last-goblin '("/tmp/goblins-test" . "session-a")))
+              (goblins-workspace-last-goblin)
+              (should (equal goblins--last-goblin (cons 'external agent)))
+              ;; The workspace's server is still the sidebar's, or the
+              ;; default one.
+              (should (eq (goblins--workspace-source) source))
+              (should-not (goblins--selected-directory))
+              ;; Re-entering the workspace brings it back.
+              (goblins--save-layout)
+              (delete-other-windows (goblins--agent-window))
+              (goblins--workspace-restore source)
+              (should (equal (goblins-test--layout) (list agent notes)))
+              ;; Killed, it is forgotten; the agent window stays.
+              (kill-buffer agent)
+              (should-not goblins--last-goblin)
+              (should-not (gethash (cons 'external agent) goblins--layouts))
+              (should (equal (car (goblins-test--layout)) source)))
+          (kill-buffer notes))))))
+
 (ert-deftest goblins-sidebar-moves-back-to-the-previous-waiting-goblin ()
   (goblins-test--sidebar goblins-test--raid-sessions
     (with-current-buffer source
