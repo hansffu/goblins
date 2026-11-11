@@ -5357,6 +5357,485 @@
         "approved"
       ],
       "additionalProperties": true
+    },
+    "PermissionKind": {
+      "type": "string",
+      "enum": [
+        "package",
+        "docker",
+        "devshell",
+        "host-command"
+      ]
+    },
+    "PermissionPackage": {
+      "type": "string"
+    },
+    "PermissionPackageAttribute": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_-]*(\\.[A-Za-z_][A-Za-z0-9_-]*)*$(?![\\s\\S])"
+    },
+    "HostCommandText": {
+      "type": "string",
+      "pattern": "^[^\\u0000]*$(?![\\s\\S])"
+    },
+    "HostCommandDirectory": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]*$(?![\\s\\S])"
+    },
+    "HostCommandArguments": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HostCommandText"
+      },
+      "minItems": 1,
+      "maxItems": 1024
+    },
+    "HostCommandEnvName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$(?![\\s\\S])"
+    },
+    "HostCommandEnvironment": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "array",
+        "items": [
+          {
+            "$ref": "#/definitions/HostCommandEnvName"
+          },
+          {
+            "$ref": "#/definitions/HostCommandText"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "HostCommandTimeout": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615,
+      "x-json-integer": true
+    },
+    "HostCommandName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[A-Za-z0-9._:\\-](?:[A-Za-z0-9 ._:\\-]{0,30}[A-Za-z0-9._:\\-])?$(?![\\s\\S])"
+    },
+    "HostCommandParams": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "$ref": "#/definitions/HostCommandArguments"
+        },
+        "cwd": {
+          "$ref": "#/definitions/HostCommandDirectory"
+        },
+        "env": {
+          "$ref": "#/definitions/HostCommandEnvironment",
+          "default": []
+        },
+        "timeout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandTimeout"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detach": {
+          "type": "boolean",
+          "default": false
+        },
+        "name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "argv",
+        "cwd"
+      ],
+      "additionalProperties": false
+    },
+    "PermissionParams": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/PermissionKind"
+        },
+        "package": {
+          "$ref": "#/definitions/PermissionPackage",
+          "default": ""
+        },
+        "reason": {
+          "$ref": "#/definitions/PermissionReason"
+        },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellInputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lock": {
+          "type": "boolean",
+          "default": false
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "PermissionGrantState": {
+      "type": "string",
+      "description": "The daemon forwards the private grant reply status verbatim. Known plain statuses are ready, denied, failed, withdrawn and error; arbitrary future statuses, including pending/finished with a message field, retain the same plain result shape."
+    },
+    "PermissionGrantResult": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/PermissionGrantState"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "status",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "PermissionPendingState": {
+      "type": "string",
+      "enum": [
+        "pending"
+      ]
+    },
+    "PermissionPendingResult": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/PermissionPendingState"
+        }
+      },
+      "required": [
+        "request",
+        "status"
+      ],
+      "additionalProperties": true
+    },
+    "PermissionHostOutcomeState": {
+      "type": "string",
+      "enum": [
+        "finished",
+        "cancelled",
+        "failed"
+      ]
+    },
+    "PermissionHostCode": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647,
+      "x-json-integer": true
+    },
+    "PermissionHostOutcome": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/PermissionHostOutcomeState"
+        },
+        "message": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionHostCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionHostCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PermissionHostCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "log": {
+          "$ref": "#/definitions/PermissionHostLog"
+        }
+      },
+      "required": [
+        "request",
+        "status",
+        "message",
+        "name",
+        "started_at",
+        "exit_code",
+        "signal",
+        "code",
+        "log"
+      ],
+      "additionalProperties": true
+    },
+    "PermissionRequestResult": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PermissionGrantResult"
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "name"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "started_at"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "exit_code"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "signal"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "log"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/definitions/PermissionPendingResult"
+            },
+            {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "message"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "name"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "started_at"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "exit_code"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "signal"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "log"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "$ref": "#/definitions/PermissionHostOutcome"
+        }
+      ]
+    },
+    "PermissionRequestReply": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": -9223372036854775808,
+              "maximum": 9223372036854775807,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "status",
+        "message",
+        "code"
+      ],
+      "additionalProperties": true
+    },
+    "LegacyGrantState": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "denied",
+        "error"
+      ]
+    },
+    "PermissionGrantReply": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "$ref": "#/definitions/OperationKey"
+        },
+        "status": {
+          "$ref": "#/definitions/LegacyGrantState"
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "status",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "PermissionHostLog": {
+      "type": "string",
+      "pattern": "^/run/goblins/host-jobs/[^/]+/output\\.log$(?![\\s\\S])"
+    },
+    "PermissionReason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
     }
   },
   "x-api-version": 1,
@@ -6201,6 +6680,91 @@
       ],
       "minItems": 4,
       "maxItems": 4
+    },
+    "HostCommandParams": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/HostCommandArguments"
+        },
+        {
+          "$ref": "#/definitions/HostCommandDirectory"
+        },
+        {
+          "$ref": "#/definitions/HostCommandEnvironment",
+          "default": []
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandTimeout"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandName"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 6
+    },
+    "PermissionParams": {
+      "type": "array",
+      "items": [
+        {
+          "$ref": "#/definitions/PermissionKind"
+        },
+        {
+          "$ref": "#/definitions/PermissionPackage",
+          "default": ""
+        },
+        {
+          "$ref": "#/definitions/PermissionReason"
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellInputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandParams"
+            },
+            {
+              "$ref": "#/x-positional-schemas/HostCommandParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 6
     }
   },
   "x-request-constraints": {
@@ -6449,6 +7013,172 @@
           }
         }
       }
+    },
+    "PermissionParams": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "package"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "package": {
+                "$ref": "#/definitions/PermissionPackageAttribute"
+              },
+              "update": {
+                "type": "null"
+              },
+              "lock": {
+                "const": false
+              },
+              "host": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "package"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "docker"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "package": {
+                "const": ""
+              },
+              "update": {
+                "type": "null"
+              },
+              "lock": {
+                "const": false
+              },
+              "host": {
+                "type": "null"
+              }
+            },
+            "required": []
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "devshell"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "package": {
+                "const": ""
+              },
+              "host": {
+                "type": "null"
+              }
+            },
+            "required": [],
+            "allOf": [
+              {
+                "not": {
+                  "type": "object",
+                  "properties": {
+                    "update": {
+                      "type": "array"
+                    },
+                    "lock": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "update",
+                    "lock"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "host-command"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "package": {
+                "const": ""
+              },
+              "update": {
+                "type": "null"
+              },
+              "lock": {
+                "const": false
+              },
+              "host": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "host"
+            ]
+          }
+        },
+        {
+          "properties": {
+            "host": {
+              "x-host-command-bytes": 12288,
+              "properties": {
+                "argv": {
+                  "items": [
+                    {
+                      "minLength": 1
+                    }
+                  ]
+                },
+                "env": {
+                  "items": {
+                    "items": [
+                      {
+                        "not": {
+                          "enum": [
+                            "GOBLINS_HOST_JOB"
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "x-attach-version": 1,
@@ -6480,6 +7210,100 @@
         "wait"
       ],
       "additionalProperties": false
+    },
+    "PermissionParams": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/PermissionKind"
+        },
+        "package": {
+          "$ref": "#/definitions/PermissionPackage",
+          "default": ""
+        },
+        "reason": {
+          "$ref": "#/definitions/PermissionReason"
+        },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DevShellInputs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lock": {
+          "type": "boolean",
+          "default": false
+        },
+        "host": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostCommandParams"
+            },
+            {
+              "$ref": "#/x-positional-schemas/HostCommandParams"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "reason"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "x-client-result-schemas": {
+    "PermissionGrantReply": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "request": {
+              "$ref": "#/definitions/OperationKey"
+            },
+            "status": {
+              "$ref": "#/definitions/LegacyGrantState"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "request",
+            "status"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "array",
+          "items": [
+            {
+              "$ref": "#/definitions/OperationKey"
+            },
+            {
+              "$ref": "#/definitions/LegacyGrantState"
+            },
+            {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        }
+      ]
     }
   }
 }

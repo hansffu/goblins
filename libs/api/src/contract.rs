@@ -21,6 +21,7 @@ pub struct NestedPositional {
     pub field: &'static str,
     pub order: &'static [&'static str],
     pub minimum: usize,
+    pub array_items: bool,
 }
 
 pub trait Method {
@@ -34,8 +35,78 @@ pub trait Method {
     const PRESENCE: ParamPresence;
     const POSITIONAL: bool = true;
     const NULL_AS_EMPTY: bool = false;
+    const PARAM_NORMALIZATION: Option<&'static str> = None;
     const NESTED_POSITIONAL: &'static [NestedPositional] = &[];
     const OMIT_FALSE: &'static [&'static str] = &[];
+}
+
+/// An explicitly declared client result reader, bound to its RPC method.
+pub trait ResultProfile {
+    type Method: Method;
+    type Reply: Response;
+    const PARAM_ORDER: &'static [&'static str];
+    const MIN_POSITIONAL: usize;
+}
+
+pub fn decode_reply_profile<M: Method, P: ResultProfile<Method = M>>(
+    value: Value,
+) -> io::Result<P::Reply> {
+    let value =
+        ordered_value(value, P::PARAM_ORDER, P::MIN_POSITIONAL).map_err(io::Error::other)?;
+    P::Reply::decode(value)
+}
+
+pub fn decode_reply<M: Method>(value: Value) -> io::Result<M::Result> {
+    M::Result::decode(value)
+}
+
+/// Select generated public outcome records without losing host fields to an
+/// overlapping untagged failed-grant branch.
+#[derive(Clone, Debug, Serialize)]
+#[serde(untagged)]
+pub enum PermissionRequestResult {
+    Grant(PermissionGrantResult),
+    Pending(PermissionPendingResult),
+    Host(PermissionHostOutcome),
+}
+impl<'de> Deserialize<'de> for PermissionRequestResult {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let host = ["name", "started_at", "exit_code", "signal", "code", "log"]
+            .iter()
+            .any(|key| value.get(*key).is_some());
+        let pending = value.get("status").and_then(Value::as_str) == Some("pending")
+            && value.get("message").is_none();
+        let result = if host {
+            validate_result_shape(&value, "PermissionHostOutcome").and_then(|()| {
+                let outcome: PermissionHostOutcome =
+                    serde_json::from_value(value).map_err(io::Error::other)?;
+                // Typify's String replacement retains the existing producer;
+                // strict result decoding must also enforce PermissionHostLog.
+                let component = outcome
+                    .log
+                    .strip_prefix("/run/goblins/host-jobs/")
+                    .and_then(|path| path.strip_suffix("/output.log"));
+                if !component.is_some_and(|request| !request.is_empty() && !request.contains('/')) {
+                    return Err(io::Error::other("invalid host outcome log path"));
+                }
+                Ok(Self::Host(outcome))
+            })
+        } else if pending {
+            validate_result_shape(&value, "PermissionPendingResult").and_then(|()| {
+                serde_json::from_value(value)
+                    .map(Self::Pending)
+                    .map_err(io::Error::other)
+            })
+        } else {
+            validate_result_shape(&value, "PermissionGrantResult").and_then(|()| {
+                serde_json::from_value(value)
+                    .map(Self::Grant)
+                    .map_err(io::Error::other)
+            })
+        };
+        result.map_err(serde::de::Error::custom)
+    }
 }
 
 /// Notifications have no result association and never become callable methods.
@@ -109,7 +180,7 @@ pub fn decode_notification<N: Notification>(call: rpc::Call) -> serde_json::Resu
 }
 
 mod generated {
-    use super::EmptyParams;
+    use super::{EmptyParams, PermissionRequestResult};
     include!(concat!(env!("OUT_DIR"), "/contract.rs"));
 }
 pub use generated::*;
@@ -146,6 +217,40 @@ pub trait Response: DeserializeOwned {
 
 mod preview;
 pub use preview::preview_reply;
+
+impl Response for PermissionRequestReply {
+    const SCHEMA: &'static str = "PermissionRequestReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            request: value
+                .get("request")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            status: value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            message: value
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            code: value.get("code").and_then(Value::as_i64),
+        })
+    }
+}
+impl Response for PermissionGrantReply {
+    const SCHEMA: &'static str = "PermissionGrantReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        // Named missing message was accepted by the original Option decoder.
+        let reply: Self = serde_json::from_value(value).map_err(io::Error::other)?;
+        if !crate::identifier(&reply.request)
+            || !matches!(reply.status.as_str(), "ready" | "denied" | "error")
+        {
+            return Err(io::Error::other("invalid terminal result"));
+        }
+        Ok(reply)
+    }
+}
 
 impl Response for PermissionDecisionReply {
     const SCHEMA: &'static str = "PermissionDecisionReply";
@@ -517,27 +622,41 @@ pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
                 .and_then(|index| values.get_mut(index)),
             _ => None,
         };
-        if let Some(Value::Array(records)) = collection {
-            for record in records {
-                if let Value::Array(fields) = record {
-                    if fields.len() < nested.minimum || fields.len() > nested.order.len() {
-                        return Err(<serde_json::Error as serde::de::Error>::custom(
-                            "invalid nested positional parameter length",
-                        ));
+        if let Some(collection) = collection {
+            if nested.array_items {
+                if let Value::Array(records) = collection {
+                    for record in records {
+                        normalize_nested_record(record, nested)?;
                     }
-                    *record = Value::Object(
-                        nested
-                            .order
-                            .iter()
-                            .zip(std::mem::take(fields))
-                            .map(|(name, value)| ((*name).to_owned(), value))
-                            .collect(),
-                    );
                 }
+            } else {
+                normalize_nested_record(collection, nested)?;
             }
         }
     }
     decode_ordered(value, M::PARAM_ORDER, M::MIN_POSITIONAL)
+}
+
+fn normalize_nested_record(
+    record: &mut Value,
+    nested: &NestedPositional,
+) -> serde_json::Result<()> {
+    if let Value::Array(fields) = record {
+        if fields.len() < nested.minimum || fields.len() > nested.order.len() {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "invalid nested positional parameter length",
+            ));
+        }
+        *record = Value::Object(
+            nested
+                .order
+                .iter()
+                .zip(std::mem::take(fields))
+                .map(|(name, value)| ((*name).to_owned(), value))
+                .collect(),
+        );
+    }
+    Ok(())
 }
 
 fn decode_ordered<P: DeserializeOwned>(
@@ -545,6 +664,10 @@ fn decode_ordered<P: DeserializeOwned>(
     order: &[&str],
     minimum: usize,
 ) -> serde_json::Result<P> {
+    serde_json::from_value(ordered_value(value, order, minimum)?)
+}
+
+fn ordered_value(value: Value, order: &[&str], minimum: usize) -> serde_json::Result<Value> {
     let value = match value {
         Value::Array(values) => {
             if values.len() < minimum {
@@ -567,7 +690,7 @@ fn decode_ordered<P: DeserializeOwned>(
         }
         other => other,
     };
-    serde_json::from_value(value)
+    Ok(value)
 }
 
 /// Retain method-specific API-1 omission behavior that Typify cannot generate
@@ -600,6 +723,21 @@ pub fn params_value<M: Method>(params: M::Params) -> serde_json::Result<Value> {
         for name in M::OMIT_FALSE {
             if object.get(*name) == Some(&Value::Bool(false)) {
                 object.remove(*name);
+            }
+        }
+        if M::PARAM_NORMALIZATION == Some("permission-request-fields") {
+            if object.get("kind").and_then(Value::as_str) == Some("package") {
+                object
+                    .entry("package")
+                    .or_insert_with(|| Value::String(String::new()));
+            } else if object.get("package").and_then(Value::as_str) == Some("") {
+                object.remove("package");
+            }
+            if let Some(host) = object.get_mut("host").and_then(Value::as_object_mut) {
+                host.entry("env").or_insert_with(|| serde_json::json!([]));
+                if host.get("detach") == Some(&Value::Bool(false)) {
+                    host.remove("detach");
+                }
             }
         }
     }
@@ -658,6 +796,141 @@ pub fn initialize(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn permission_request_decoding_preserves_old_order_defaults_and_validation() {
+        use serde::{Deserialize, Serialize};
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldHost {
+            argv: Vec<String>,
+            cwd: String,
+            #[serde(default)]
+            env: Vec<(String, String)>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            timeout: Option<u64>,
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            detach: bool,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            name: Option<String>,
+        }
+        #[derive(Deserialize, Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct Old {
+            kind: String,
+            #[serde(default)]
+            package: String,
+            reason: String,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            update: Option<Vec<String>>,
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            lock: bool,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            host: Option<OldHost>,
+        }
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["permission_request_parameter_cases"]
+            .as_array()
+            .unwrap()
+        {
+            let old = serde_json::from_value::<Old>(case["params"].clone());
+            let new =
+                super::decode_params::<super::sandbox::PermissionsRequest>(case["params"].clone());
+            assert_eq!(old.is_ok(), new.is_ok(), "{case}");
+            let valid = new.as_ref().is_ok_and(|p| p.validate());
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+            if let (Ok(old), Ok(new)) = (old, new) {
+                let mut expected = serde_json::to_value(old).unwrap();
+                if expected["kind"] != "package" && expected["package"] == "" {
+                    expected.as_object_mut().unwrap().remove("package");
+                }
+                assert_eq!(
+                    super::params_value::<super::sandbox::PermissionsRequest>(new).unwrap(),
+                    expected,
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn permission_request_client_profiles_retain_distinct_legacy_readers() {
+        use super::{
+            Response, sandbox::PermissionsRequest, sandbox_reply_profiles::PermissionsRequestGrant,
+        };
+        #[derive(serde::Deserialize, serde::Serialize)]
+        #[serde(deny_unknown_fields)]
+        struct OldGrant {
+            request: String,
+            status: String,
+            message: Option<String>,
+        }
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("../schema/fixtures.json")).unwrap();
+        for case in fixtures["permission_request_result_cases"]
+            .as_array()
+            .unwrap()
+        {
+            let wire = case["result"].clone();
+            let old = serde_json::from_value::<OldGrant>(wire.clone())
+                .ok()
+                .filter(|r| {
+                    crate::identifier(&r.request)
+                        && matches!(r.status.as_str(), "ready" | "denied" | "error")
+                });
+            let new = super::decode_reply_profile::<PermissionsRequest, PermissionsRequestGrant>(
+                wire.clone(),
+            );
+            assert_eq!(old.is_some(), new.is_ok(), "{case}");
+            assert_eq!(new.is_ok(), case["grant"].as_bool().unwrap(), "{case}");
+            if let (Some(old), Ok(new)) = (old, new) {
+                assert_eq!(
+                    serde_json::to_value(old).unwrap(),
+                    serde_json::to_value(new).unwrap()
+                );
+            }
+            let host = super::PermissionRequestReply::decode(wire.clone()).unwrap();
+            assert_eq!(
+                host.request.as_deref(),
+                wire.get("request").and_then(serde_json::Value::as_str)
+            );
+            assert_eq!(
+                host.status.as_deref(),
+                wire.get("status").and_then(serde_json::Value::as_str)
+            );
+            assert_eq!(
+                host.message.as_deref(),
+                wire.get("message").and_then(serde_json::Value::as_str)
+            );
+            assert_eq!(
+                host.code,
+                wire.get("code").and_then(serde_json::Value::as_i64)
+            );
+            let produced = serde_json::from_value::<super::PermissionRequestResult>(wire.clone());
+            assert_eq!(produced.is_ok(), case["valid"].as_bool().unwrap(), "{case}");
+            if case["valid"] == true {
+                assert!(produced.is_ok(), "{case}");
+                let emitted = serde_json::to_value(produced.unwrap()).unwrap();
+                let mut expected = wire.clone();
+                expected.as_object_mut().unwrap().retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "request"
+                            | "status"
+                            | "message"
+                            | "name"
+                            | "started_at"
+                            | "exit_code"
+                            | "signal"
+                            | "code"
+                            | "log"
+                    )
+                });
+                assert_eq!(emitted, expected, "{case}");
+            }
+        }
+    }
+
     #[test]
     fn permission_decision_requests_preserve_original_decode_and_order() {
         #[derive(serde::Deserialize)]

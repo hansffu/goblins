@@ -16,6 +16,8 @@ SCHEMA = ROOT / "libs/api/schema"
 REFERENCE = ROOT / "docs/API-REFERENCE.org"
 ENDPOINTS = ("host", "sandbox", "attach")
 NORMALIZATIONS = {
+    "permission-request-fields": "Independently read string request/status/message and signed i64 code; other values and non-objects become absent, preserving the host CLI fallbacks and original detached JSON output.",
+    "permission-grant-fields": "Preserve the closed grant CLI result decoder, optional named message and exact positional request/status/message tuple, followed by identifier and ready/denied/error checks.",
     "permission-decision-fields": "Independently read boolean accepted/approved and string request for the typed projection; successful bodies remain otherwise ignored, and the plain frontend prints the original validated JSON.",
     "editor-open-fields": "Read signed i64 code and string message independently; absent/malformed fields and non-objects retain exit code 1 and no message as fallbacks.",
     "devshell-preview-display": "Normalize recognized preview fields independently while preserving CLI/TUI numeric display fallbacks and object/array side presence; reject non-object diff results.",
@@ -67,9 +69,15 @@ def normalize_reply(profile, result):
         return dict(path=text("path"), lock=fields.get("lock"), generation=generation if type(generation) is int and 0 <= generation < 2**64 else 0)
     if profile == "permission-decision-fields":
         return dict(accepted=fields.get("accepted") if type(fields.get("accepted")) is bool else None,approved=fields.get("approved") if type(fields.get("approved")) is bool else None,request=text("request"))
-    if profile == "editor-open-fields":
+    if profile == "permission-grant-fields":
+        if isinstance(result,list):
+            result=dict(zip(("request","status","message"),result))
+        return dict(request=result["request"],status=result["status"],message=result.get("message"))
+    if profile in ("permission-request-fields", "editor-open-fields"):
         code=fields.get("code")
-        return dict(code=code if type(code) is int and -(2**63)<=code<2**63 else None,message=text("message"))
+        normalized=dict(code=code if type(code) is int and -(2**63)<=code<2**63 else None,message=text("message"))
+        if profile == "permission-request-fields":normalized.update(request=text("request"),status=text("status"))
+        return normalized
     if profile == "exec-field-fallback":
         normalized = {name: (value if type(value) is int and -(2**63) <= value < 2**63 else None) for name in ("code", "signal") for value in [fields.get(name)]}
         return dict(normalized, message=text("message"))
@@ -106,7 +114,14 @@ def integer_representation(validator, enabled, instance, schema):
         yield ValidationError("expected a JSON integer, not a floating-point value")
 
 
-Validator = validators.extend(Draft7Validator, {"x-max-bytes": byte_limit, "x-json-integer": integer_representation})
+def host_command_bytes(validator, maximum, instance, schema):
+    if not isinstance(instance,dict):return
+    strings=instance.get("argv",[])+[instance.get("cwd","")]+[v for pair in instance.get("env",[]) for v in pair]
+    if all(isinstance(v,str) for v in strings) and sum(len(v.encode("utf-8")) for v in strings)>maximum:
+        yield ValidationError(f"host command exceeds {maximum} UTF-8 bytes")
+
+
+Validator = validators.extend(Draft7Validator, {"x-max-bytes": byte_limit, "x-json-integer": integer_representation,"x-host-command-bytes":host_command_bytes})
 
 
 @lru_cache
@@ -149,7 +164,10 @@ def validate_params(endpoint, name, params):
     if isinstance(params,list):params={p["name"]:value for p,value in zip(entry["params"],params)}
     params=copy.deepcopy(params)
     for nested in entry.get("x-nested-positional-params",[]):
-        params[nested["field"]]=[dict(zip(nested["order"],record)) if isinstance(record,list) else record for record in params[nested["field"]]]
+        field=nested["field"]
+        if field not in params:continue
+        normalize=lambda record:dict(zip(nested["order"],record)) if isinstance(record,list) else record
+        params[field]=[normalize(record) for record in params[field]] if nested.get("array-items",True) else normalize(params[field])
     if "x-request-constraints" in entry:schema_validator(entry["x-request-constraints"]).validate(params)
     return True
 
@@ -185,16 +203,19 @@ def validate_completion(name, reply, compatibility=False):
     return True
 
 
-def validate_reply(endpoint, name, reply, compatibility=False):
+def validate_reply(endpoint, name, reply, compatibility=False, client_profile=None):
     """Unmigrated methods remain pending; covered methods must match exactly."""
     entry = method(endpoint, name)
     if entry is None:
         return False
+    if client_profile is not None:
+        if not compatibility:raise ValueError("client profile requires compatibility validation")
+        entry=next(p for p in entry["x-client-result-profiles"] if p["name"]==client_profile)
     shape = "Failure" if "error" in reply else "Success"
     schema_validator(common()["x-envelope-schemas"][shape]).validate(reply)
     if "error" in reply:
         error = reply["error"]
-        codes = document(endpoint)["x-common-errors"] + [e["code"] for e in entry["errors"]]
+        codes = document(endpoint)["x-common-errors"] + [e["code"] for e in method(endpoint,name)["errors"]]
         if error["code"] not in codes:
             raise ValidationError(f"unlisted error for {endpoint}/{name}: {error['code']}")
     else:
@@ -202,7 +223,7 @@ def validate_reply(endpoint, name, reply, compatibility=False):
         if compatibility and "x-client-result-normalization" in entry:
             schema_validator(entry["x-client-wire-result-schema"]).validate(result)
             result = normalize_reply(entry["x-client-result-normalization"],result)
-        schema = entry.get("x-client-result-schema", entry["result"]["schema"]) if compatibility else entry["result"]["schema"]
+        schema = entry["x-client-result-schema"] if compatibility and "x-client-result-schema" in entry else entry["result"]["schema"]
         schema_validator(schema).validate(result)
         if name == "initialize" and (result["api"] != common()["x-api-version"] or result["role"] != endpoint):
             raise ValidationError("incompatible initialization result")
@@ -226,6 +247,8 @@ def reference():
                 else:
                     lines.extend(["Compatible API-1 client reply (additive information may be absent):", ""])
                 lines.extend(["#+begin_src json", json.dumps(resolve(entry["x-client-result-schema"]), indent=2), "#+end_src", ""])
+            for profile in entry.get("x-client-result-profiles",[]):
+                lines.extend([f"Client result profile ={profile['name']}=:","",profile["description"],"","Accepted wire result:","","#+begin_src json",json.dumps(resolve(profile["x-client-wire-result-schema"]),indent=2),"#+end_src","","Normalized generated client DTO:","","#+begin_src json",json.dumps(resolve(profile["x-client-result-schema"]),indent=2),"#+end_src",""])
             if "x-request-constraints" in entry:
                 lines.extend(["Cross-field request constraints (existing semantic validation):","","#+begin_src json",json.dumps(resolve(entry["x-request-constraints"]),indent=2),"#+end_src",""])
         for entry in document(endpoint).get("x-notifications", []):
@@ -459,13 +482,21 @@ def check_nested_params(entry,params,wire):
         field,schema,order,minimum=(row[k] for k in ("field","schema","order","minimum"))
         if field in seen or field not in params["properties"]:raise ValueError("invalid nested positional field")
         seen.add(field)
-        collection=resolve({"$ref":"common.json"+params["properties"][field]["$ref"]})
         record=common()["definitions"][schema]
-        if collection.get("type")!="array" or collection["items"]!={"$ref":"#/definitions/"+schema}:raise ValueError("nested positional field is not an array of its record")
+        array_items=row.get("array-items",True)
+        if type(array_items) is not bool:raise ValueError("invalid nested positional mode")
+        if array_items:
+            collection=resolve({"$ref":"common.json"+params["properties"][field]["$ref"]})
+            if collection.get("type")!="array" or collection["items"]!={"$ref":"#/definitions/"+schema}:raise ValueError("nested positional field is not an array of its record")
+        elif params["properties"][field]!={"anyOf":[{"$ref":"#/definitions/"+schema},{"type":"null"}]}:
+            raise ValueError("nested positional field is not its optional record")
         if len(order)!=len(set(order)) or set(order)!=set(record["properties"]) or minimum!=max((i+1 for i,name in enumerate(order) if name in record["required"]),default=0):raise ValueError("nested positional order/minimum differs")
         positional={"type":"array","items":[record["properties"][name] for name in order],"minItems":minimum,"maxItems":len(order)}
         if common()["x-positional-schemas"][schema]!=positional:raise ValueError("nested positional schema differs")
-        expected["properties"][field]={**collection,"items":{"anyOf":[collection["items"],{"$ref":"#/x-positional-schemas/"+schema}]}}
+        if array_items:
+            expected["properties"][field]={**collection,"items":{"anyOf":[collection["items"],{"$ref":"#/x-positional-schemas/"+schema}]}}
+        else:
+            expected["properties"][field]={"anyOf":[{"$ref":"#/definitions/"+schema},{"$ref":"#/x-positional-schemas/"+schema},{"type":"null"}]}
     if expected!=wire:raise ValueError("wire parameters differ from declared nested normalization")
 
 
@@ -550,9 +581,23 @@ def check():
             if "x-client-result-schema" in entry:
                 schema_validator(entry["x-client-result-schema"]).check_schema(resolve(entry["x-client-result-schema"]))
             if "x-client-result-normalization" in entry:
-                expected={"permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
+                expected={"permissions.request":"permission-request-fields","permissions.decide":"permission-decision-fields","editor.open":"editor-open-fields","devshell.diff":"devshell-preview-display","devshell.lock":"devshell-lock-fields","flake.run":"flake-run-fields","sessions.exec":"exec-field-fallback","terminals.create":"terminal-create-fields","terminals.list":"terminal-list-display","terminals.close":"terminal-close-fields","terminals.read":"terminal-read-fields","terminals.wait":"terminal-wait-fields",**{name:"terminal-close-fields" for name in ("terminals.send","terminals.detach","terminals.resize")}}
                 if entry["x-client-result-normalization"] != expected.get(entry["name"]) or entry.get("x-client-wire-result-schema") != ({"type":"object"} if entry["name"]=="devshell.diff" else {}):
                     raise ValueError("unknown client result normalization")
+            if "x-client-param-normalization" in entry:
+                if entry["name"]!="permissions.request" or entry["x-client-param-normalization"]!="permission-request-fields":raise ValueError("unknown client parameter normalization")
+            profiles=entry.get("x-client-result-profiles",[])
+            if profiles:
+                if entry["name"]!="permissions.request" or len(profiles)!=1:raise ValueError("unknown client result profile")
+                profile=profiles[0]
+                if (profile["name"],profile["x-rust-name"],profile["x-client-result-normalization"],profile["x-result-order"],profile["x-min-positional"])!=("grant-cli","PermissionsRequestGrant","permission-grant-fields",["request","status","message"],3):raise ValueError("invalid client result profile")
+                normalized=resolve(profile["x-client-result-schema"])
+                wire=resolve(profile["x-client-wire-result-schema"])
+                named=copy.deepcopy(normalized);named["required"]=["request","status"]
+                tuple_schema={"type":"array","items":[normalized["properties"][key] for key in profile["x-result-order"]],"minItems":profile["x-min-positional"],"maxItems":len(profile["x-result-order"])}
+                if wire!={"oneOf":[named,tuple_schema]}:raise ValueError("client result profile wire differs")
+                schema_validator(profile["x-client-wire-result-schema"]).check_schema(wire)
+                schema_validator(profile["x-client-result-schema"]).check_schema(normalized)
             if "x-request-constraints" in entry:
                 schema_validator(entry["x-request-constraints"]).check_schema(resolve(entry["x-request-constraints"]))
         for entry in doc.get("x-completions",[]):

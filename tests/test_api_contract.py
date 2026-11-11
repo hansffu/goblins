@@ -15,6 +15,29 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_permission_request_complete_contract_and_distinct_client_profiles(self):
+        fixtures=contract.read("fixtures.json")
+        for case in fixtures["permission_request_parameter_cases"]:
+            if case["valid"]:self.assertTrue(contract.validate_params("sandbox","permissions.request",case["params"]))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_params("sandbox","permissions.request",case["params"])
+        for case in fixtures["permission_request_result_cases"]:
+            reply=dict(jsonrpc="2.0",id=1,result=case["result"])
+            self.assertTrue(contract.validate_reply("sandbox","permissions.request",reply,compatibility=True))
+            for expected,kwargs in [(case["valid"],{}),(case["grant"],dict(compatibility=True,client_profile="grant-cli"))]:
+                if expected:self.assertTrue(contract.validate_reply("sandbox","permissions.request",reply,**kwargs))
+                else:
+                    with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("sandbox","permissions.request",reply,**kwargs)
+
+    def test_optional_nested_host_positional_metadata_is_checked(self):
+        entry=copy.deepcopy(contract.method("sandbox","permissions.request"))
+        params=contract.resolve(entry["x-params-schema"]);wire=contract.resolve(entry["x-wire-params-schema"])
+        contract.check_nested_params(entry,params,wire)
+        entry["x-nested-positional-params"][0]["array-items"]=True
+        with self.assertRaises((ValueError,KeyError)):contract.check_nested_params(entry,params,wire)
+        entry=copy.deepcopy(contract.method("sandbox","permissions.request"));entry["x-nested-positional-params"][0]["minimum"]=3
+        with self.assertRaisesRegex(ValueError,"nested positional order"):contract.check_nested_params(entry,params,wire)
+
     def test_permission_decision_contract_preserves_selectors_and_client_fallbacks(self):
         fixtures=contract.read("fixtures.json")
         for case in fixtures["permission_decision_parameter_cases"]:
@@ -373,7 +396,7 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "host coverage"):
             contract.check_coverage(sources=changed)
         changed = dict(sources)
-        before = '"permissions.request"\n            | contract::sandbox::FlakeRun::NAME'
+        before = 'contract::sandbox::PermissionsRequest::NAME\n            | contract::sandbox::FlakeRun::NAME'
         changed["gate"] = sources["gate"].replace(before, '"sandbox.new" | ' + before, 1)
         self.assertNotEqual(changed["gate"], sources["gate"])
         with self.assertRaisesRegex(ValueError, "gate/controller disagree"):
@@ -833,6 +856,55 @@ class HistoricalClientTests(unittest.TestCase):
                     self.assertEqual(calls[0]["params"].get("recreate"),None if command=="run" else "record-id")
                     self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
 
+    def test_permission_grant_cli_preserves_requests_closed_results_and_unknown_outcomes(self):
+        good=dict(request="fixture-job-1",status="ready",message=None)
+        for args,params in [(["request-package","hello","--reason","tests"],dict(kind="package",package="hello",reason="tests")),(["enable-docker","--reason","tests"],dict(kind="docker",reason="tests")),(["devshell","refresh","--reason","tests","--update","nixpkgs"],dict(kind="devshell",reason="tests",update=["nixpkgs"]))]:
+            # Denial avoids a follow-up devshell restore/hook exchange.
+            result={**good,"status":"denied","message":"no"}
+            cli,call=self.sandbox_fake_cli(args,result,features=("docker-enable",))
+            self.assertEqual(call["method"],"permissions.request");self.assertEqual(call["params"],params)
+            self.assertEqual(cli.returncode,1,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+        for result in [good,{k:v for k,v in good.items() if k!="message"},["fixture-job-1","ready",None],dict(good,status="denied"),dict(good,status="error"),dict(good,status="failed"),dict(good,status="withdrawn"),dict(good,extra=True),["fixture-job-1","ready"],dict(good,request="bad id"),None,dict(good,message=7)]:
+            cli,call=self.sandbox_fake_cli(["request-package","hello"],result)
+            self.assertEqual(call["method"],"permissions.request")
+            try:
+                contract.validate_reply("sandbox","permissions.request",dict(jsonrpc="2.0",id=1,result=result),compatibility=True,client_profile="grant-cli")
+                accepted=True
+            except ValidationError:accepted=False
+            if accepted:
+                expected=contract.normalize_reply("permission-grant-fields",result)
+                self.assertEqual(cli.returncode,0 if expected["status"]=="ready" else 1,cli.stderr)
+                self.assertEqual(json.loads(cli.stdout),expected)
+            else:
+                self.assertEqual(cli.returncode,2,cli.stderr);self.assertEqual(cli.stdout,"")
+                self.assertIn("outcome unknown; do not retry automatically",cli.stderr)
+
+        error=dict(code=-32009,message="blocked",data={"preserve":True})
+        cli,_=self.sandbox_fake_cli(["request-package","hello"],None,rpc_error=error)
+        self.assertEqual(cli.returncode,1,cli.stderr)
+        self.assertEqual(json.loads(cli.stdout),dict(status="error",message=error))
+
+    def test_host_request_cli_preserves_command_omission_and_result_fallbacks(self):
+        with tempfile.TemporaryDirectory(prefix="gc-host-cwd-") as cwd:
+            args=["host","run","--name","Tests","--reason","tests","--cwd","sub","--env","A=b","--timeout","3","--","true"]
+            result=dict(request="fixture-job-1",status="finished",message="exit code 0",code=0)
+            cli,call=self.sandbox_fake_cli(args,result,cwd=cwd,features=("host-commands",))
+            self.assertEqual(call["method"],"permissions.request")
+            self.assertEqual(call["params"],dict(kind="host-command",reason="tests",host=dict(argv=["true"],cwd=str(Path(cwd)/"sub"),env=[["A","b"]],timeout=3,name="Tests")))
+            self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(cli.stderr,"")
+            for result in [dict(request="fixture-job-1",status="pending",extra=1),None,[],dict(weird=True)]:
+                cli,call=self.sandbox_fake_cli(["host","run","--name","Tests","--reason","tests","--detach","--","true"],result,cwd=cwd,features=("host-commands",))
+                self.assertTrue(call["params"]["host"]["detach"]);self.assertEqual(call["params"]["host"]["env"],[])
+                self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(json.loads(cli.stdout),result)
+            for result,code,quiet in [(dict(status="finished",code=0),0,True),(dict(status="finished",code=0.0),125,False),(dict(status="finished",code=2**32),0,False),(dict(status="cancelled",code=143,message="x\x1b"),143,False),(dict(status="failed",code=127),127,False),(dict(status="future",code=0),125,False),(None,125,False)]:
+                cli,_=self.sandbox_fake_cli(["host","run","--name","Tests","--reason","tests","--","true"],result,cwd=cwd,features=("host-commands",))
+                self.assertEqual(cli.returncode,code,cli.stderr)
+                self.assertEqual(cli.stderr=="",quiet)
+                self.assertNotIn("\x1b",cli.stderr)
+
+        cli,_=self.sandbox_fake_cli(["host","run","--name","Tests","--reason","tests","--","true"],None,features=("host-commands",),rpc_error=dict(code=-32009,message="refused"))
+        self.assertEqual(cli.returncode,125,cli.stderr);self.assertIn("host command refused: refused",cli.stderr)
+
     def test_sandbox_editor_cli_preserves_paths_params_and_legacy_results(self):
         with tempfile.TemporaryDirectory(prefix="gc-editor-") as root:
             cwd=Path(root)/"work";cwd.mkdir()
@@ -893,7 +965,7 @@ class HistoricalClientTests(unittest.TestCase):
         cli,call=self.sandbox_fake_cli(["flake","run","#"],dict(program=program,generation="ignored",extension=True),features=("flake-run",))
         self.assertEqual(cli.returncode,0,cli.stderr);self.assertEqual(call["params"],dict(app="default"))
 
-    def sandbox_fake_cli(self, arguments, result, cwd=None, features=()):
+    def sandbox_fake_cli(self, arguments, result, cwd=None, features=(), rpc_error=None):
         import errno
         import shlex
         import sys
@@ -945,7 +1017,8 @@ class HistoricalClientTests(unittest.TestCase):
                             peer.settimeout(5);init=receive(peer)
                             peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result={**fixtures["sandbox_initialize"],"features":[*fixtures["sandbox_initialize"]["features"],*features]})))
                             call=receive(peer);calls.append(call)
-                            peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],result=result)))
+                            body={"result":result} if rpc_error is None else {"error":rpc_error}
+                            peer.sendall(frame(dict(jsonrpc="2.0",id=call["id"],**body)))
                     except Exception as error: errors.append(error)
                 server=threading.Thread(target=serve,daemon=True)
                 preload=str(library)+(":"+os.environ["LD_PRELOAD"] if os.environ.get("LD_PRELOAD") else "")

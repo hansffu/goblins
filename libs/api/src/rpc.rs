@@ -1,52 +1,5 @@
 //! Public RPC parameter and result types and their validation.
-use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionResult {
-    pub request: String,
-    pub status: String,
-    pub message: Option<String>,
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionParams {
-    pub kind: String,
-    #[serde(default)]
-    pub package: String,
-    pub reason: String,
-    /// Dev shell refresh: flake inputs to update; empty means all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update: Option<Vec<String>>,
-    /// Dev shell refresh: lock inputs `flake.nix` declares but the lock lacks.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub lock: bool,
-    /// Host command: what the host runs once it approves.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub host: Option<HostCommand>,
-}
-/// A command a sandbox asks the host to run outside it (`goblin host run`).
-/// No shell is involved: `argv` is the program and its arguments.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostCommand {
-    pub argv: Vec<String>,
-    /// The sandbox's absolute path; the daemon maps it to the host.
-    pub cwd: String,
-    /// Added to, or replacing, the daemon's environment.
-    #[serde(default)]
-    pub env: Vec<(String, String)>,
-    /// Seconds before the job is cancelled; none when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<u64>,
-    /// The request returns once submitted instead of waiting for the job, and
-    /// survives its connection closing.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub detach: bool,
-    /// A short label the human recognises in lists and approvals; the
-    /// command's first word stands for it when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
+pub use crate::contract::{HostCommandParams as HostCommand, PermissionParams};
 /// What a host command's name may be, for messages that refuse one.
 pub const HOST_NAME_RULE: &str = "a host command name is 1-32 characters: ASCII letters, digits, spaces and . _ - :, without a leading or trailing space";
 /// The longest host command name.

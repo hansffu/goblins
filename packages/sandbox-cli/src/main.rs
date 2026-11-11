@@ -1,5 +1,5 @@
 //! Untrusted request client. No controller or helper dependency.
-use goblins_protocol::contract;
+use goblins_protocol::contract::{self, Method};
 mod cli;
 mod host;
 mod init;
@@ -118,9 +118,10 @@ fn run() -> Result<i32, String> {
             }
             cli::Command::RequestPackage { .. } => (),
             cli::Command::EnableDocker { reason } => {
-                return request_permission(
-                    json!({"kind":"docker", "reason":reason.unwrap_or_else(|| "Enable Docker in this sandbox".into())}),
-                );
+                return request_permission(permission_params(
+                    "docker",
+                    reason.unwrap_or_else(|| "Enable Docker in this sandbox".into()),
+                ));
             }
             cli::Command::Devshell { command } => return devshell(command),
             cli::Command::Host { command } => return host::command(command),
@@ -298,7 +299,10 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     }
     let (package, reason) = parse_args(legacy, &args)?;
-    request_permission(json!({"kind":"package","package":package,"reason":reason}))
+    request_permission(contract::PermissionParams {
+        package,
+        ..permission_params("package", reason)
+    })
 }
 /// `KEY=VALUE` arguments, split at the first `=`.
 fn variables(assignments: &[String]) -> Result<goblins_protocol::SetVariables, String> {
@@ -332,7 +336,7 @@ fn raid(command: cli::RaidCommand) -> Result<i32, String> {
     }
     Ok(0)
 }
-fn request_permission(params: serde_json::Value) -> Result<i32, String> {
+fn request_permission(params: contract::PermissionParams) -> Result<i32, String> {
     Ok(request(params)?.0)
 }
 /// Write the sandbox's trusted lock into the workspace unless it is already
@@ -385,17 +389,18 @@ fn devshell(command: cli::DevshellCommand) -> Result<i32, String> {
             lock,
             reason,
         } => {
-            let mut params = json!({"kind":"devshell","reason":reason
-                .unwrap_or_else(|| "Refresh the dev shell from the workspace flake".into())});
-            if let Some(update) = update {
-                params["update"] = json!(update);
-            }
-            if lock {
-                params["lock"] = json!(true);
-            }
+            let params = contract::PermissionParams {
+                update,
+                lock,
+                ..permission_params(
+                    "devshell",
+                    reason
+                        .unwrap_or_else(|| "Refresh the dev shell from the workspace flake".into()),
+                )
+            };
             let (code, reply) = request(params)?;
             if code != 0 {
-                if let Some(message) = reply["message"].as_str() {
+                if let Some(message) = reply.message.as_deref() {
                     eprintln!("{message}");
                 }
                 return Ok(code);
@@ -617,12 +622,24 @@ fn flake_run(installable: Option<&str>, args: Vec<String>) -> Result<i32, String
     let error = std::process::Command::new(&program).args(args).exec();
     Err(format!("cannot execute {}: {error}", program.display()))
 }
-fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String> {
+fn permission_params(kind: &str, reason: String) -> contract::PermissionParams {
+    contract::PermissionParams {
+        kind: kind.into(),
+        package: String::new(),
+        reason,
+        update: None,
+        lock: false,
+        host: None,
+    }
+}
+fn request(
+    params: contract::PermissionParams,
+) -> Result<(i32, contract::PermissionRequestReply), String> {
     let id = random_key()?;
     let exchange = || -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let mut socket = UnixStream::connect(REQUEST_SOCKET)?;
         let init = contract::initialize(&mut socket, json!(0), contract::EndpointRole::Sandbox)?;
-        if params["kind"] == "docker"
+        if params.kind == "docker"
             && !init
                 .features
                 .iter()
@@ -634,31 +651,41 @@ fn request(params: serde_json::Value) -> Result<(i32, serde_json::Value), String
         use std::io::Write;
         socket.write_all(&rpc::encode(&rpc::request(
             json!(id),
-            "permissions.request",
-            params.clone(),
+            contract::sandbox::PermissionsRequest::NAME,
+            contract::params_value::<contract::sandbox::PermissionsRequest>(params.clone())?,
         ))?)?;
         let reply = rpc::read(&mut socket)?;
         rpc::validate_response(&reply, &json!(id))?;
         if let Some(error) = reply.get("error") {
             return Ok(json!({"status":"error","message":error}));
         }
-        let result: goblins_protocol::rpc::PermissionResult =
-            serde_json::from_value(reply["result"].clone())?;
-        if !["ready", "denied", "error"].contains(&result.status.as_str())
-            || !goblins_protocol::identifier(&result.request)
-        {
-            return Err("invalid terminal result".into());
-        }
+        let result = contract::decode_reply_profile::<
+            contract::sandbox::PermissionsRequest,
+            contract::sandbox_reply_profiles::PermissionsRequestGrant,
+        >(reply["result"].clone())?;
         Ok(serde_json::to_value(result)?)
     };
     match exchange() {
         Ok(reply) => {
             println!("{}", serde_json::to_string(&reply).unwrap());
-            Ok((if reply["status"] == "ready" { 0 } else { 1 }, reply))
+            let normalized = contract::decode_reply::<contract::sandbox::PermissionsRequest>(reply)
+                .map_err(|e| e.to_string())?;
+            Ok((
+                if normalized.status.as_deref() == Some("ready") {
+                    0
+                } else {
+                    1
+                },
+                normalized,
+            ))
         }
         Err(e) => {
             eprintln!("goblins-request: outcome unknown; do not retry automatically: {e}");
-            Ok((2, json!(null)))
+            Ok((
+                2,
+                contract::decode_reply::<contract::sandbox::PermissionsRequest>(json!(null))
+                    .map_err(|e| e.to_string())?,
+            ))
         }
     }
 }

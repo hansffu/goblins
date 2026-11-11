@@ -1080,6 +1080,144 @@
       },
       "x-client-wire-result-schema": {},
       "x-client-result-normalization": "editor-open-fields"
+    },
+    {
+      "name": "permissions.request",
+      "x-rust-name": "PermissionsRequest",
+      "description": "Request a package, Docker engine, dev shell refresh or approved host command. Requires initialized, live caller authority; trailing input is refused before structural/semantic and policy checks. Body limit is 16384 bytes. Reasons are 1..1024 Unicode characters, not UTF-8 bytes. Named package defaults to empty; positional [kind,package,reason,update?,lock?,host?] requires the first three slots. Host commands retain nested [argv,cwd,env?,timeout?,detach?,name?] forms. Existing validators enforce kind-specific combinations, host-name diagnostics before general validity, command byte totals and policy/refusal order. Approval and completion are distinct; disconnect withdraws an attached request or cancels its host job, while detached host work survives and reports by notice. The daemon owns host path resolution/pinning, approvals, candidate identity and all descriptor/lifecycle state.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "kind",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/PermissionParams/properties/kind"
+          }
+        },
+        {
+          "name": "package",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/PermissionParams/properties/package"
+          }
+        },
+        {
+          "name": "reason",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/PermissionParams/properties/reason"
+          }
+        },
+        {
+          "name": "update",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/PermissionParams/properties/update"
+          }
+        },
+        {
+          "name": "lock",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/PermissionParams/properties/lock"
+          }
+        },
+        {
+          "name": "host",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/x-wire-params-schemas/PermissionParams/properties/host"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/PermissionRequestResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid request, host name, path or size"
+        },
+        {
+          "code": -32004,
+          "message": "Caller absent"
+        },
+        {
+          "code": -32003,
+          "message": "Host command capacity exceeded"
+        },
+        {
+          "code": -32009,
+          "message": "Policy, stale/liveness, grant or preparation conflict"
+        },
+        {
+          "code": -32010,
+          "message": "Capacity exceeded"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/PermissionParams"
+      },
+      "x-wire-params-schema": {
+        "$ref": "common.json#/x-wire-params-schemas/PermissionParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/PermissionParams"
+      },
+      "x-positional-required": [
+        "package"
+      ],
+      "x-nested-positional-params": [
+        {
+          "field": "host",
+          "schema": "HostCommandParams",
+          "order": [
+            "argv",
+            "cwd",
+            "env",
+            "timeout",
+            "detach",
+            "name"
+          ],
+          "minimum": 2,
+          "array-items": false
+        }
+      ],
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/PermissionParams"
+      },
+      "x-client-omit-default-false": [
+        "lock"
+      ],
+      "x-client-param-normalization": "permission-request-fields",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/PermissionRequestReply"
+      },
+      "x-client-wire-result-schema": {},
+      "x-client-result-normalization": "permission-request-fields",
+      "x-client-result-profiles": [
+        {
+          "name": "grant-cli",
+          "x-rust-name": "PermissionsRequestGrant",
+          "x-client-result-schema": {
+            "$ref": "common.json#/definitions/PermissionGrantReply"
+          },
+          "x-client-wire-result-schema": {
+            "$ref": "common.json#/x-client-result-schemas/PermissionGrantReply"
+          },
+          "x-client-result-normalization": "permission-grant-fields",
+          "x-result-order": [
+            "request",
+            "status",
+            "message"
+          ],
+          "x-min-positional": 3,
+          "description": "The package/Docker/devshell CLI uses its original closed grant decoder, accepting named missing message or exactly [request,status,message], then requiring identifier request and ready/denied/error status. It emits message:null when absent. Unknown result fields, failed/withdrawn statuses and malformed types retain outcome-unknown exit 2."
+        }
+      ]
     }
   ],
   "x-notifications": [],

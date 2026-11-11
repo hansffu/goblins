@@ -1793,7 +1793,11 @@ impl Controller {
             {
                 c.queue(rpc::result(
                     rpc_id.clone(),
-                    json!({"request":id,"status":status,"message":message}),
+                    json!(contract::PermissionGrantResult {
+                        request: id.into(),
+                        status: status.into(),
+                        message: message.clone()
+                    }),
                 ));
                 c.close = true;
             }
@@ -3046,7 +3050,8 @@ impl Controller {
                             // no new trust, so nothing is asked of the host.
                             Command::Run { serial, app: p.app }
                         } else {
-                            let p = contract_params::<contract::sandbox::DevShellDiff>(call.params)?;
+                            let p =
+                                contract_params::<contract::sandbox::DevShellDiff>(call.params)?;
                             // A preview only: no record, no candidate, no change.
                             Command::Diff {
                                 serial,
@@ -3075,12 +3080,13 @@ impl Controller {
                         c.waiting = Some((call_key(serial), id.clone()));
                         return Ok(None);
                     }
-                    if call.method != "permissions.request" {
+                    if call.method != contract::sandbox::PermissionsRequest::NAME {
                         let result = self.sandbox_control(&session, &call.method, call.params)?;
                         c.close = true;
                         return Ok(Some(result));
                     }
-                    let mut p: PermissionParams = params(call.params)?;
+                    let mut p =
+                        contract_params::<contract::sandbox::PermissionsRequest>(call.params)?;
                     let session = session.clone();
                     let a = self.sessions.get(&session).ok_or_else(missing)?;
                     if a.record.state != "running" || a.pending.is_some() || a.preparing.is_some() {
@@ -3276,7 +3282,10 @@ impl Controller {
         if detached {
             // Its outcome arrives as an operation notice.
             c.close = true;
-            return Ok(Some(json!({"request":request,"status":"pending"})));
+            return Ok(Some(json!(contract::PermissionPendingResult {
+                request,
+                status: contract::PermissionPendingState::Pending,
+            })));
         }
         if host {
             // The ID comes first: it names the job's output.
@@ -4260,6 +4269,38 @@ mod tests {
         json!({"key":key,"name":"shell","configuration":"/missing-goblins-test-manifest",
                "agent_name":agent_name,"rows":24,"cols":100})
     }
+    #[test]
+    fn plain_permission_result_producer_keeps_null_message_and_forwarded_status() {
+        let mut daemon = daemon();
+        let path = daemon.state.clone();
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        for expected in fixtures["permission_forwarded_results"].as_array().unwrap() {
+            let status = expected["status"].as_str().unwrap();
+            let (mut connection, _peer) = connection(Role::Sandbox("absent".into()));
+            connection.waiting = Some(("fixture-job-1".into(), json!(8)));
+            daemon.connections.push(connection);
+            daemon.reply_permission("fixture-job-1", status, None);
+            let connection = daemon.connections.pop().unwrap();
+            assert!(connection.close);
+            let bytes = connection.output.front().unwrap();
+            let body = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let frame = rpc::parse(&bytes[body..]).unwrap();
+            let typed: contract::PermissionRequestResult =
+                serde_json::from_value(frame["result"].clone()).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), *expected);
+            assert_eq!(
+                frame,
+                rpc::result(
+                    json!(8),
+                    json!({"request":"fixture-job-1","status":status,"message":null})
+                )
+            );
+        }
+        drop(daemon);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn decision_contract_keeps_lookup_and_raid_refusal_before_identity_checks() {
         let mut d = daemon();
@@ -5466,7 +5507,8 @@ mod tests {
         let a = d.sessions.get_mut("a").unwrap();
         a.runtime = Some(Box::new(runtime));
         a.set_policy(host_policy_fixture("shell", &[]));
-        let (mut c, _peer) = connection(Role::Sandbox("a".into()));
+        let (mut c, mut peer) = connection(Role::Sandbox("a".into()));
+        peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
         c.id = d.number();
         c.initialized = true;
         d.dispatch(&mut c, rpc::Call { jsonrpc:"2.0".into(), id:Some(json!(7)), method:"permissions.request".into(), params:json!({"kind":"host-command","reason":"test","host":{"argv":["sleep","300"],"cwd":"/work","detach":true}}) });
@@ -5488,16 +5530,17 @@ mod tests {
             .find(|r| r.id == request)
             .unwrap()
             .clone();
-        let accepted = d.decide(
-            Decision {
-                session: "a".into(),
-                request: request.clone(),
-                approval: record.approval,
-                approved: true,
-            },
-            "host",
-        )
-        .unwrap();
+        let accepted = d
+            .decide(
+                Decision {
+                    session: "a".into(),
+                    request: request.clone(),
+                    approval: record.approval,
+                    approved: true,
+                },
+                "host",
+            )
+            .unwrap();
         assert_eq!(
             accepted,
             json!({"accepted":true,"request":request,"approved":true})
@@ -5511,6 +5554,10 @@ mod tests {
             "running"
         );
         assert_eq!(d.host_jobs.len(), 1);
+        assert_eq!(
+            rpc::read(&mut peer).unwrap(),
+            rpc::result(json!(7), json!({"request":request,"status":"pending"}))
+        );
         // No HostJobFinished can follow a disconnected runtime producer.
         drop(events);
         d.tick().unwrap();

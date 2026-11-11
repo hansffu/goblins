@@ -3,7 +3,9 @@
 //! also the job's. The job's output is a file the daemon writes to
 //! /run/goblins/host-jobs/JOB, which this client tails.
 use crate::cli::HostCommand;
+use contract::Method;
 use goblins_jsonrpc as rpc;
+use goblins_protocol::contract;
 use serde_json::{Value, json};
 use std::{
     fs::File,
@@ -50,27 +52,26 @@ impl Tail {
 }
 
 /// The exit status a finished request or job stands for.
-fn exit_code(result: &Value) -> i32 {
-    match result["status"].as_str() {
-        Some("finished" | "cancelled") if result["code"].is_i64() => {
-            result["code"].as_i64().unwrap() as i32
-        }
-        Some("failed") if result["code"].is_i64() => result["code"].as_i64().unwrap() as i32,
+fn exit_code(result: &contract::PermissionRequestReply) -> i32 {
+    match result.status.as_deref() {
+        Some("finished" | "cancelled") if result.code.is_some() => result.code.unwrap() as i32,
+        Some("failed") if result.code.is_some() => result.code.unwrap() as i32,
         _ => NOT_RUN,
     }
 }
 
-fn report(result: &Value) -> i32 {
+fn report(result: &contract::PermissionRequestReply) -> i32 {
     let code = exit_code(result);
-    let status = result["status"].as_str().unwrap_or("unknown");
-    if !(status == "finished" && result["code"] == 0) {
-        let detail = result["message"]
-            .as_str()
+    let status = result.status.as_deref().unwrap_or("unknown");
+    if !(status == "finished" && result.code == Some(0)) {
+        let detail = result
+            .message
+            .as_deref()
             .map(|m| format!(": {}", goblins_protocol::plain_text(m)))
             .unwrap_or_default();
         eprintln!(
             "goblin: host command {} {status}{detail}",
-            result["request"].as_str().unwrap_or("?")
+            result.request.as_deref().unwrap_or("?")
         );
     }
     code
@@ -144,11 +145,19 @@ fn run(
     socket
         .set_write_timeout(Some(rpc::TIMEOUT))
         .map_err(|e| e.to_string())?;
-    let params = json!({"kind":"host-command","reason":reason,"host":host});
+    let params = contract::PermissionParams {
+        host: Some(host),
+        ..crate::permission_params("host-command", reason)
+    };
     socket
         .write_all(
-            &rpc::encode(&rpc::request(json!(1), "permissions.request", params))
-                .map_err(|e| e.to_string())?,
+            &rpc::encode(&rpc::request(
+                json!(1),
+                contract::sandbox::PermissionsRequest::NAME,
+                contract::params_value::<contract::sandbox::PermissionsRequest>(params)
+                    .map_err(|e| e.to_string())?,
+            ))
+            .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
     // Interrupting this command closes the connection, which withdraws the
@@ -189,10 +198,13 @@ fn run(
             println!("{result}");
             return Ok(0);
         }
-        if let Some(job) = result["request"].as_str() {
+        let result =
+            contract::decode_reply::<contract::sandbox::PermissionsRequest>(result.clone())
+                .map_err(|e| e.to_string())?;
+        if let Some(job) = result.request.as_deref() {
             tail.copy(job);
         }
-        return Ok(report(result));
+        return Ok(report(&result));
     }
 }
 
@@ -243,7 +255,12 @@ pub fn command(command: HostCommand) -> Result<i32, String> {
             loop {
                 let result = status(&job)?;
                 if terminal(&result) {
-                    return Ok(report(&result));
+                    // C10 still owns the host.status binding; reuse the existing field
+                    // projection until that method migrates.
+                    let reply =
+                        contract::decode_reply::<contract::sandbox::PermissionsRequest>(result)
+                            .map_err(|e| e.to_string())?;
+                    return Ok(report(&reply));
                 }
                 if Instant::now() >= deadline {
                     eprintln!("goblin: host command {job} is still {}", result["status"]);
@@ -269,7 +286,16 @@ mod tests {
             (json!({"status":"denied"}), NOT_RUN),
             (json!({"status":"withdrawn"}), NOT_RUN),
         ] {
-            assert_eq!(exit_code(&result), code, "{result}");
+            assert_eq!(
+                exit_code(
+                    &contract::decode_reply::<contract::sandbox::PermissionsRequest>(
+                        result.clone()
+                    )
+                    .unwrap()
+                ),
+                code,
+                "{result}"
+            );
         }
     }
 }

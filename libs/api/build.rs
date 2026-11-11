@@ -87,6 +87,42 @@ fn main() {
             typify::TypeSpacePatch::default().with_derive("PartialEq"),
         );
     }
+    for name in [
+        "PermissionKind",
+        "PermissionPackage",
+        "PermissionPackageAttribute",
+        "HostCommandText",
+        "HostCommandDirectory",
+        "HostCommandName",
+        "HostCommandEnvName",
+        "PermissionGrantState",
+        "LegacyGrantState",
+        "PermissionHostLog",
+        "PermissionReason",
+    ] {
+        settings.with_replacement(name, "std::string::String", [].into_iter());
+    }
+    settings.with_replacement(
+        "HostCommandArguments",
+        "std::vec::Vec<String>",
+        [].into_iter(),
+    );
+    settings.with_replacement(
+        "HostCommandEnvironment",
+        "std::vec::Vec<(String, String)>",
+        [].into_iter(),
+    );
+    settings.with_replacement("HostCommandTimeout", "u64", [].into_iter());
+    settings.with_replacement("PermissionHostCode", "i32", [].into_iter());
+    settings.with_replacement(
+        "PermissionRequestResult",
+        "crate::contract::PermissionRequestResult",
+        [].into_iter(),
+    );
+    settings.with_patch(
+        "HostCommandParams",
+        typify::TypeSpacePatch::default().with_derive("PartialEq"),
+    );
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -127,6 +163,7 @@ fn main() {
         "DevShellPreviewReply".to_string(),
         "EditorOpenReply".to_string(),
         "PermissionDecisionReply".to_string(),
+        "PermissionRequestReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(
@@ -214,13 +251,44 @@ fn main() {
                 let field = row["field"].as_str().unwrap();
                 let order: Vec<_> = row["order"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
                 let minimum = row["minimum"].as_u64().unwrap();
-                format!("crate::contract::NestedPositional {{ field: {field:?}, order: &{order:?}, minimum: {minimum} }}")
+                let array_items = row.get("array-items").and_then(Value::as_bool).unwrap_or(true);
+                format!("crate::contract::NestedPositional {{ field: {field:?}, order: &{order:?}, minimum: {minimum}, array_items: {array_items} }}")
             }).collect();
             let nested = nested.join(",");
-            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const NESTED_POSITIONAL: &'static [crate::contract::NestedPositional] = &[{nested}]; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
+            let param_normalization = method
+                .get("x-client-param-normalization")
+                .and_then(Value::as_str);
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const PARAM_NORMALIZATION: Option<&'static str> = {param_normalization:?}; const NESTED_POSITIONAL: &'static [crate::contract::NestedPositional] = &[{nested}]; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));
+        output.push_str(&format!(
+            "pub mod {endpoint}_reply_profiles {{ #[allow(unused_imports)] use super::*;\n"
+        ));
+        for method in document["methods"].as_array().unwrap() {
+            for profile in method["x-client-result-profiles"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                let rust = profile["x-rust-name"].as_str().unwrap();
+                let method_rust = method["x-rust-name"].as_str().unwrap();
+                let reply = profile["x-client-result-schema"]["$ref"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("common.json#/definitions/")
+                    .unwrap();
+                let order: Vec<_> = profile["x-result-order"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_str().unwrap())
+                    .collect();
+                let minimum = profile["x-min-positional"].as_u64().unwrap();
+                output.push_str(&format!("pub struct {rust}; impl crate::contract::ResultProfile for {rust} {{ type Method = super::{endpoint}::{method_rust}; type Reply = {reply}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; }}\n"));
+            }
+        }
+        output.push_str("}\n");
         output.push_str(&format!(
             "pub mod {endpoint}_notifications {{ #[allow(unused_imports)] use super::*;\n"
         ));

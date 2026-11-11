@@ -407,10 +407,11 @@ impl Controller {
     }
 
     fn finish_host_job(&mut self, job: Job, outcome: Result<HostOutcome, String>) {
+        use contract::PermissionHostOutcomeState::{Cancelled, Failed, Finished};
         let (state, message, code) = match (&outcome, &job.stopped) {
-            (Err(_), Some(why)) => ("cancelled", why.clone(), None),
+            (Err(_), Some(why)) => (Cancelled, why.clone(), None),
             (Err(diagnostic), None) => (
-                "failed",
+                Failed,
                 format!(
                     "the host command supervisor failed: {}",
                     super::bounded(diagnostic)
@@ -424,7 +425,7 @@ impl Controller {
                     "not executable" => 126,
                     _ => 125,
                 };
-                ("failed", format!("the command was {error}"), Some(code))
+                (Failed, format!("the command was {error}"), Some(code))
             }
             (Ok(o), stopped) => {
                 let mut message = match (o.exit_code, o.signal) {
@@ -442,7 +443,7 @@ impl Controller {
                 }
                 let code = o.exit_code.or(o.signal.map(|s| 128 + s));
                 (
-                    if o.cancelled { "cancelled" } else { "finished" },
+                    if o.cancelled { Cancelled } else { Finished },
                     message,
                     code,
                 )
@@ -453,16 +454,21 @@ impl Controller {
             .iter()
             .find(|r| r.id == job.request)
             .map_or((None, None), |r| (r.name.clone(), r.started_at));
-        let result = json!({"request":job.request,"status":state,"message":message,
-            "name":name,"started_at":started_at,
-            "exit_code":outcome.as_ref().ok().and_then(|o| o.exit_code),
-            "signal":outcome.as_ref().ok().and_then(|o| o.signal),
-            "code":code,
-            "log":format!("/run/goblins/host-jobs/{}/output.log", job.request)});
+        let result = json!(contract::PermissionHostOutcome {
+            request: job.request.clone(),
+            status: state,
+            message: message.clone(),
+            name,
+            started_at,
+            exit_code: outcome.as_ref().ok().and_then(|o| o.exit_code),
+            signal: outcome.as_ref().ok().and_then(|o| o.signal),
+            code,
+            log: format!("/run/goblins/host-jobs/{}/output.log", job.request),
+        });
         self.host_outcomes
             .insert(job.request.clone(), result.clone());
         if let Some(r) = self.permission_mut(&job.request) {
-            r.state = state.into();
+            r.state = state.to_string();
             r.message = Some(message.clone());
         }
         // The attached request waits under the request ID. When it is still
@@ -633,6 +639,139 @@ mod tests {
             detach: false,
             name: None,
         }
+    }
+
+    #[test]
+    fn host_request_outcome_producer_keeps_every_required_nullable_field() {
+        use super::super::{Connection, Role};
+        use goblins_runtime::HostOutcome;
+        use std::os::unix::net::UnixStream;
+        let _no_forks = goblins_unix::no_forks();
+        let path = goblins_unix::temp_directory().unwrap();
+        let mut daemon = Controller::new(&path, None).unwrap();
+        let cases = [
+            (
+                Ok(HostOutcome {
+                    exit_code: Some(0),
+                    ..Default::default()
+                }),
+                None,
+                "finished",
+                "exit code 0",
+                Some(0),
+            ),
+            (
+                Ok(HostOutcome {
+                    signal: Some(15),
+                    ..Default::default()
+                }),
+                None,
+                "finished",
+                "ended by signal 15",
+                Some(143),
+            ),
+            (
+                Ok(HostOutcome {
+                    cancelled: true,
+                    signal: Some(15),
+                    ..Default::default()
+                }),
+                Some("stop"),
+                "cancelled",
+                "stop; ended by signal 15",
+                Some(143),
+            ),
+            (
+                Ok(HostOutcome {
+                    timed_out: true,
+                    cancelled: true,
+                    truncated: true,
+                    ..Default::default()
+                }),
+                None,
+                "cancelled",
+                "timed out; ended; output truncated",
+                None,
+            ),
+            (
+                Ok(HostOutcome {
+                    spawn_error: Some("not found".into()),
+                    ..Default::default()
+                }),
+                None,
+                "failed",
+                "the command was not found",
+                Some(127),
+            ),
+            (
+                Ok(HostOutcome {
+                    spawn_error: Some("not executable".into()),
+                    ..Default::default()
+                }),
+                None,
+                "failed",
+                "the command was not executable",
+                Some(126),
+            ),
+            (
+                Ok(HostOutcome {
+                    spawn_error: Some("other".into()),
+                    ..Default::default()
+                }),
+                None,
+                "failed",
+                "the command was other",
+                Some(125),
+            ),
+            (
+                Err("lost".into()),
+                None,
+                "failed",
+                "the host command supervisor failed: lost",
+                None,
+            ),
+            (
+                Err("lost".into()),
+                Some("stopped"),
+                "cancelled",
+                "stopped",
+                None,
+            ),
+        ];
+        for (index, (outcome, stopped, state, message, code)) in cases.into_iter().enumerate() {
+            let request = format!("fixture-job-{index}");
+            let (socket, _peer) = UnixStream::pair().unwrap();
+            let mut connection =
+                Connection::new(1, Role::Sandbox("absent".into()), socket).unwrap();
+            connection.waiting = Some((request.clone(), json!(7)));
+            daemon.connections.push(connection);
+            let expected = json!({"request":request,"status":state,"message":message,
+                "name":null,"started_at":null,"exit_code":outcome.as_ref().ok().and_then(|o|o.exit_code),
+                "signal":outcome.as_ref().ok().and_then(|o|o.signal),"code":code,
+                "log":format!("/run/goblins/host-jobs/{request}/output.log")});
+            daemon.finish_host_job(
+                Job {
+                    request: request.clone(),
+                    session: "absent".into(),
+                    connection: Some(1),
+                    notify: false,
+                    stopped: stopped.map(str::to_owned),
+                },
+                outcome,
+            );
+            assert_eq!(daemon.host_outcomes[&request], expected);
+            let connection = daemon.connections.pop().unwrap();
+            assert!(connection.close);
+            let bytes = connection.output.front().unwrap();
+            let body = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+            let reply = rpc::parse(&bytes[body..]).unwrap();
+            assert_eq!(reply, rpc::result(json!(7), expected.clone()));
+            let typed: contract::PermissionRequestResult =
+                serde_json::from_value(expected.clone()).unwrap();
+            assert_eq!(serde_json::to_value(typed).unwrap(), expected);
+        }
+        drop(daemon);
+        std::fs::remove_dir_all(path).unwrap();
     }
 
     #[test]

@@ -65,7 +65,7 @@ paths = ["libs/supervisor/src/docker.rs", "libs/supervisor/src/docker/*", "libs/
 
 [features.devshell]
 description = "Nix access, devshell launch/refresh/diff and flake execution"
-python = ["test_nix", "test_devshell", "test_api_contract.HistoricalClientTests.test_sandbox_devshell_diff_uses_generated_contract_and_legacy_display", "test_api_contract.HistoricalClientTests.test_sandbox_trusted_lock_and_flake_cli_preserve_contracts_and_fallbacks", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
+python = ["test_nix", "test_devshell", "test_api_contract.HistoricalClientTests.test_permission_grant_cli_preserves_requests_closed_results_and_unknown_outcomes", "test_api_contract.HistoricalClientTests.test_sandbox_devshell_diff_uses_generated_contract_and_legacy_display", "test_api_contract.HistoricalClientTests.test_sandbox_trusted_lock_and_flake_cli_preserve_contracts_and_fallbacks", "test_run_targets.RunTargetTests.test_member_shares_the_owners_dev_shell_generation"]
 checks = ["rust"]
 paths = ["libs/supervisor/src/devshell.rs", "libs/supervisor/src/evaluator.rs", "packages/sandbox-cli/src/preview.rs", "skills/goblins-devshell/*", "skills/goblins-nix/*", "skills/goblins-packages/*"]
 
@@ -108,7 +108,7 @@ paths = ["packages/adapter-claude/*", "nix/goblins/claude/*", "nix/builders/mk-c
 
 [features.host-tools]
 description = "Host commands, editor requests and completion notices"
-python = ["test_host_commands", "test_editor", "test_api_contract.HistoricalClientTests.test_sandbox_editor_cli_preserves_paths_params_and_legacy_results", "test_operation_notices.HostCommandNotices"]
+python = ["test_host_commands", "test_api_contract.HistoricalClientTests.test_host_request_cli_preserves_command_omission_and_result_fallbacks", "test_editor", "test_api_contract.HistoricalClientTests.test_sandbox_editor_cli_preserves_paths_params_and_legacy_results", "test_operation_notices.HostCommandNotices"]
 checks = ["rust"]
 paths = ["packages/daemon/src/controller/host.rs", "packages/daemon/src/controller/editor.rs", "packages/sandbox-cli/src/host.rs", "skills/goblins-host/*"]
 

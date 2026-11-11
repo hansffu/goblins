@@ -4,9 +4,6 @@
       "host": [
         "permissions.list",
         "permissions.get"
-      ],
-      "sandbox": [
-        "permissions.request"
       ]
     },
     "C10": {

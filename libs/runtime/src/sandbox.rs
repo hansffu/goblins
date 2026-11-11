@@ -2,7 +2,6 @@
 use crate::policy::{Capabilities, Operation, Refusal};
 use goblins_jsonrpc::Call;
 use goblins_protocol::contract::{self, Method};
-use goblins_protocol::rpc::PermissionParams;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -80,7 +79,7 @@ pub fn check(
     let method = call.method.as_str();
     let limit = match method {
         "sessions.set-variables"
-        | "permissions.request"
+        | contract::sandbox::PermissionsRequest::NAME
         | contract::sandbox::TerminalsCreate::NAME => 16384,
         // A terminal takes up to 64 KiB of text to type.
         contract::sandbox::TerminalsSend::NAME => goblins_protocol::messages::MAX_REQUEST,
@@ -110,7 +109,7 @@ pub fn check(
     // Match the sandbox allowlist, never the host endpoint's methods.
     if !matches!(
         method,
-        "permissions.request"
+        contract::sandbox::PermissionsRequest::NAME
             | contract::sandbox::FlakeRun::NAME
             | contract::sandbox::DevShellDiff::NAME
             | "sessions.detach"
@@ -151,7 +150,7 @@ pub fn check(
     if trailing
         && matches!(
             method,
-            "permissions.request"
+            contract::sandbox::PermissionsRequest::NAME
                 | contract::sandbox::FlakeRun::NAME
                 | contract::sandbox::DevShellDiff::NAME
                 | contract::sandbox::EditorOpen::NAME
@@ -163,8 +162,11 @@ pub fn check(
         });
     }
     let operation = match method {
-        "permissions.request" => {
-            let p: PermissionParams = parse(&call.params)?;
+        contract::sandbox::PermissionsRequest::NAME => {
+            let p = contract::decode_params::<contract::sandbox::PermissionsRequest>(
+                call.params.clone(),
+            )
+            .map_err(|e| invalid(e.to_string()))?;
             if p.host
                 .as_ref()
                 .and_then(|h| h.name.as_deref())
@@ -357,6 +359,63 @@ mod tests {
         p
     }
     #[test]
+    fn permission_requests_keep_nested_forms_name_diagnostics_and_policy_order() {
+        let mut policy = policy();
+        policy.host_commands = false;
+        let support = Support::linux();
+        let caps = Capabilities {
+            policy: &policy,
+            support: &support,
+        };
+        let name = contract::sandbox::PermissionsRequest::NAME;
+        for (params, trailing, code, message) in [
+            (
+                json!([
+                    "host-command",
+                    "",
+                    "",
+                    null,
+                    false,
+                    [["true"], "/p", [], null, false, " bad"]
+                ]),
+                true,
+                -32600,
+                "unexpected trailing input",
+            ),
+            (
+                json!([
+                    "host-command",
+                    "",
+                    "",
+                    null,
+                    false,
+                    [["true"], "/p", [], null, false, " bad"]
+                ]),
+                false,
+                -32602,
+                goblins_protocol::rpc::HOST_NAME_RULE,
+            ),
+            (
+                json!(["host-command", "", "", null, false, [["true"], "/p"]]),
+                false,
+                -32602,
+                "invalid permission request or reason",
+            ),
+            (
+                json!(["host-command", "", "tests", null, false, [["true"], "/p"]]),
+                false,
+                -32602,
+                "this goblin may not run host commands (mkGoblin hostCommands.enable)",
+            ),
+        ] {
+            assert_eq!(
+                fault(check(&caps, &call(name, params), 100, true, false, trailing).unwrap_err()),
+                (code, message.into())
+            );
+        }
+    }
+
+    #[test]
     fn editor_request_validation_precedes_policy_and_trailing_input_is_first() {
         let policy = policy();
         let support = Support::linux();
@@ -475,22 +534,22 @@ mod tests {
     fn every_operation_is_checked_before_a_call_can_reach_daemon_state() {
         let rows = [
             (
-                "permissions.request",
+                contract::sandbox::PermissionsRequest::NAME,
                 json!({"kind":"package","package":"hello","reason":"t"}),
                 Feature::LivePackages,
             ),
             (
-                "permissions.request",
+                contract::sandbox::PermissionsRequest::NAME,
                 json!({"kind":"devshell","reason":"t"}),
                 Feature::DevShells,
             ),
             (
-                "permissions.request",
+                contract::sandbox::PermissionsRequest::NAME,
                 json!({"kind":"docker","reason":"t"}),
                 Feature::Docker,
             ),
             (
-                "permissions.request",
+                contract::sandbox::PermissionsRequest::NAME,
                 json!({"kind":"host-command","reason":"t","host":{"argv":["true"],"cwd":"/work"}}),
                 Feature::HostJobs,
             ),
@@ -594,7 +653,7 @@ mod tests {
         };
         for method in [
             "unknown",
-            "permissions.request",
+            contract::sandbox::PermissionsRequest::NAME,
             "sessions.start",
             "sessions.attach",
         ] {
