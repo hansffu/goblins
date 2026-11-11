@@ -1,11 +1,5 @@
 {
   "pending": {
-    "C14": {
-      "host": [
-        "history.list",
-        "history.prune"
-      ]
-    },
     "C15": {
       "host": [
         "state.subscribe",

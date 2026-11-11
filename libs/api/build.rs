@@ -169,6 +169,7 @@ fn main() {
         "MailboxGetParams",
         "CommunicationsListParams",
         "CommunicationsEvent",
+        "HistoryPruneParams",
     ] {
         settings.with_patch(
             name,
@@ -206,6 +207,8 @@ fn main() {
     }
     settings.with_replacement("CommClaimGeneration", "u64", [].into_iter());
     settings.with_replacement("CommRequeueReason", "String", [].into_iter());
+    settings.with_replacement("HistoryKeep", "usize", [].into_iter());
+    settings.with_replacement("HistoryRecordVersion", "u32", [].into_iter());
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -245,6 +248,7 @@ fn main() {
         "CommOperationCompletedData",
         "CommMessageAcceptedChange",
         "CommMessageRepliedChange",
+        "HistoryListResult",
     ] {
         assert_eq!(
             generation_schema["definitions"][name]["x-generator-omit"],
@@ -401,6 +405,8 @@ fn main() {
         "IgnoredResult".to_string(),
         "RaidDisplayReply".to_string(),
         "CommunicationsPageReply".to_string(),
+        "HistoryListReply".to_string(),
+        "HistoryPruneReply".to_string(),
     ]);
     for endpoint in ["host", "sandbox", "attach"] {
         let document: Value = serde_json::from_str(
@@ -448,6 +454,7 @@ fn main() {
             let positional_allowed = method["paramStructure"] != "by-name";
             let minimum = positional["minItems"].as_u64().unwrap_or(0);
             let null_as_empty = method["x-null-params-as-empty"].as_bool().unwrap_or(false);
+            let direct_serde = method["x-direct-serde-params"].as_bool().unwrap_or(false);
             let omit_false: Vec<_> = method
                 .get("x-client-omit-default-false")
                 .and_then(Value::as_array)
@@ -495,7 +502,7 @@ fn main() {
             let param_normalization = method
                 .get("x-client-param-normalization")
                 .and_then(Value::as_str);
-            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const PARAM_NORMALIZATION: Option<&'static str> = {param_normalization:?}; const NESTED_POSITIONAL: &'static [crate::contract::NestedPositional] = &[{nested}]; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
+            output.push_str(&format!("pub struct {rust}; impl crate::contract::Method for {rust} {{ type Params = {params}; type Produced = {result}; type Result = {reply}; const NAME: &'static str = {name:?}; const PARAM_ORDER: &'static [&'static str] = &{order:?}; const MIN_POSITIONAL: usize = {minimum}; const POSITIONAL: bool = {positional_allowed}; const NULL_AS_EMPTY: bool = {null_as_empty}; const DIRECT_SERDE_PARAMS: bool = {direct_serde}; const PARAM_NORMALIZATION: Option<&'static str> = {param_normalization:?}; const NESTED_POSITIONAL: &'static [crate::contract::NestedPositional] = &[{nested}]; const OMIT_FALSE: &'static [&'static str] = &{omit_false:?}; const OMIT_EMPTY_OBJECTS: &'static [&'static str] = &{omit_empty:?}; const PRESENCE: crate::contract::ParamPresence = crate::contract::ParamPresence {{ switch:{switch:?}, absent_null_fields:&{nullable:?}, present_empty_strings:&{empty_strings:?} }}; }}\n"));
             names.push(name);
         }
         output.push_str(&format!("pub const METHODS: &[&str] = &{names:?}; }}\n"));

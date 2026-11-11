@@ -29,6 +29,7 @@
 (require 'goblins-views)
 (require 'goblins-raids)
 (require 'goblins-messages)
+(require 'goblins-api-generated)
 
 (declare-function goblins-shell "goblins-tramp" (&optional session display source))
 (declare-function goblins-eshell "goblins-tramp" (&optional session display source))
@@ -245,16 +246,17 @@ SOURCE's server."
 
 (defun goblins--history-records (source)
   "The session history of SOURCE's server: its records, newest first."
-  (append (plist-get (goblins--host-call source 'history.list (make-hash-table))
-                     :records)
+  (append (goblins-api-history-list-records
+           (goblins-api-history-list
+            (goblins--host-call source 'history.list (make-hash-table))))
           nil))
 
 (defun goblins--record-label (record)
   "RECORD's agent name and its conversation's name, if the agent named it."
-  (let ((name (plist-get (plist-get record :variables) :session_name)))
+  (let ((name (goblins-api-history-variables-session-name (goblins-api-history-variables (goblins-api-history-record-variables (goblins-api-history-record record))))))
     (goblins--safe (if (and (stringp name) (not (string-empty-p name)))
-                       (format "%s: %s" (plist-get record :agent_name) name)
-                     (plist-get record :agent_name)))))
+                       (format "%s: %s" (goblins-api-history-record-agent-name (goblins-api-history-record record)) name)
+                     (goblins-api-history-record-agent-name (goblins-api-history-record record))))))
 
 (defun goblins--record-candidates (records)
   "RECORDS as completion candidates like \"nikka: Fix the tests\", their
@@ -266,7 +268,7 @@ its record as the `goblins-record' property."
     (mapcar (lambda (record)
               (let ((label (goblins--record-label record)))
                 (propertize (if (> (gethash label counts) 1)
-                                (format "%s <%s>" label (plist-get record :id))
+                                (format "%s <%s>" label (goblins-api-history-record-id (goblins-api-history-record record)))
                               label)
                             'goblins-record record)))
             records)))
@@ -282,29 +284,29 @@ its record as the `goblins-record' property."
 record ID, a goblin it ran as, or its agent's conversation ID."
   (and (stringp id) (not (string-empty-p id))
        (cl-find-if (lambda (record)
-                     (or (equal (plist-get record :id) id)
-                         (member id (append (plist-get record :sessions) nil))
-                         (equal (plist-get (plist-get record :variables) :session_id) id)))
+                     (or (equal (goblins-api-history-record-id (goblins-api-history-record record)) id)
+                         (member id (append (goblins-api-history-record-sessions (goblins-api-history-record record)) nil))
+                         (equal (goblins-api-history-variables-session-id (goblins-api-history-variables (goblins-api-history-record-variables (goblins-api-history-record record)))) id)))
                    records)))
 
 (defun goblins--record-fields (record)
   "What sets RECORD apart besides its label: its ID, age, configuration,
 directory (as a warning when it is gone), Docker, the packages granted to it
 and those skipped when it was last resumed."
-  (let* ((cwd (plist-get record :cwd))
-         (packages (append (plist-get (plist-get record :packages) :approved) nil))
-         (skipped (mapcar (lambda (s) (plist-get s :name))
-                          (append (plist-get record :skipped) nil))))
+  (let* ((cwd (goblins-api-history-record-cwd (goblins-api-history-record record)))
+         (packages (append (goblins-api-history-packages-approved (goblins-api-history-packages (goblins-api-history-record-packages (goblins-api-history-record record)))) nil))
+         (skipped (mapcar (lambda (s) (goblins-api-history-skipped-name (goblins-api-history-skipped s)))
+                          (append (goblins-api-history-record-skipped (goblins-api-history-record record)) nil))))
     (delq nil
-          (list (propertize (goblins--safe (plist-get record :id)) 'face 'goblins-key)
-                (format "%4s" (or (goblins--sidebar-duration (plist-get record :updated)) "—"))
-                (propertize (format "%-8s" (goblins--safe (plist-get record :configuration)))
+          (list (propertize (goblins--safe (goblins-api-history-record-id (goblins-api-history-record record))) 'face 'goblins-key)
+                (format "%4s" (or (goblins--sidebar-duration (goblins-api-history-record-updated (goblins-api-history-record record))) "—"))
+                (propertize (format "%-8s" (goblins--safe (goblins-api-history-record-configuration (goblins-api-history-record record))))
                             'face 'goblins-dim)
                 (and (stringp cwd)
                      (propertize (truncate-string-to-width
                                   (goblins--safe (abbreviate-file-name cwd)) 40 nil nil "…")
                                  'face (if (file-directory-p cwd) 'goblins-dim 'goblins-attention)))
-                (and (eq (plist-get record :docker_enabled) t) "docker")
+                (and (eq (goblins-api-history-record-docker-enabled (goblins-api-history-record record)) t) "docker")
                 (and packages (goblins--safe (concat "+" (string-join packages ","))))
                 (and skipped (propertize (goblins--safe (concat "skipped " (string-join skipped ",")))
                                          'face 'goblins-attention))))))
@@ -332,7 +334,7 @@ conversation ID matches too, unlisted, as on the command line."
 (defun goblins--read-record (prompt source)
   "Choose with PROMPT a conversation SOURCE's server recorded and does not
 run now; return its record."
-  (let* ((records (cl-remove-if (lambda (record) (eq (plist-get record :running) t))
+  (let* ((records (cl-remove-if (lambda (record) (eq (goblins-api-history-record-running (goblins-api-history-record record)) t))
                                 (goblins--history-records source)))
          (candidates (goblins--record-candidates records))
          (goblins--resume-records (cl-mapcar #'cons candidates records)))
@@ -370,9 +372,9 @@ directory."
                   source 'sessions.start
                   (list :key (goblins--launch-key)
                         :configuration (plist-get configs :configuration)
-                        :recreate (plist-get record :id) :rows 24 :cols 80)))
+                        :recreate (goblins-api-history-record-id (goblins-api-history-record record)) :rows 24 :cols 80)))
          (session (plist-get launch :session))
-         (cwd (plist-get record :cwd)))
+         (cwd (goblins-api-history-record-cwd (goblins-api-history-record record))))
     (with-current-buffer source
       (push session goblins--resuming)
       (goblins--report-resumed)

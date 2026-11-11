@@ -2492,6 +2492,113 @@
           "description": "The host CLI always emits after and nullable session, and omits limit to use the existing default."
         }
       ]
+    },
+    {
+      "name": "history.list",
+      "x-rust-name": "HistoryList",
+      "description": "Host-only read of recreation history, closed empty named/positional params. Decode first, then require an available store. Records sort descending(updated,id), omit deleting rows, and append current live-record running status. Sum each serialized record including running, stop before first record crossing900KiB and set truncated; wrapper bytes excluded. Offline CLI uses original unlocked loader, version normalization and running:null. No history file rewrite. Compatible CLI preserves raw partial/future records and empty fallback; Emacs readers remain permissive. Preserve original direct-Serde named and positional decoding, including excess-array length diagnostics and older_than/before/keep/dry_run field error precedence; do not normalize positional input into an object first.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HistoryListResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid params"
+        },
+        {
+          "code": -32009,
+          "message": "No session history"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/MailboxStatusParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/HistoryListReply"
+      },
+      "x-client-result-normalization": "history-list-fields",
+      "x-client-wire-result-schema": {},
+      "x-direct-serde-params": true
+    },
+    {
+      "name": "history.prune",
+      "x-rust-name": "HistoryPrune",
+      "description": "Host-only prune. Closed params and positional[older_than?,before?,keep?,dry_run?], all defaulting to null/null/null/false. Decode before requiring at least one non-null criterion, then require store. Conjoin strict age/before thresholds and keep selection; saturating age subtraction, descending(updated,id) keep order, oldest-first output; exclude live and deleting records. Dry-run or empty selection replies immediately; real deletion waits for ordered durable writer completion and reports partial failures with dry_run:false. Existing receipt/connection lifecycle and store lock remain authoritative. CLI preserves requested dry_run wording; failed collection decoded before removed and malformed individual failed records retain dash fallback. Preserve original direct-Serde named and positional decoding, including excess-array length diagnostics and older_than/before/keep/dry_run field error precedence; do not normalize positional input into an object first.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "older_than",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HistoryPruneParams/properties/older_than"
+          }
+        },
+        {
+          "name": "before",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HistoryPruneParams/properties/before"
+          }
+        },
+        {
+          "name": "keep",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HistoryPruneParams/properties/keep"
+          }
+        },
+        {
+          "name": "dry_run",
+          "required": false,
+          "schema": {
+            "$ref": "common.json#/definitions/HistoryPruneParams/properties/dry_run"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HistoryPruneResult"
+        }
+      },
+      "errors": [
+        {
+          "code": -32602,
+          "message": "Invalid params or no criterion"
+        },
+        {
+          "code": -32009,
+          "message": "No session history"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/HistoryPruneParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/HistoryPruneParams"
+      },
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/HistoryPruneReply"
+      },
+      "x-client-result-normalization": "history-prune-fields",
+      "x-client-wire-result-schema": {
+        "$ref": "common.json#/x-client-result-schemas/HistoryPruneReply"
+      },
+      "x-request-constraints": {
+        "$ref": "common.json#/x-request-constraints/HistoryPruneParams"
+      },
+      "x-direct-serde-params": true
     }
   ],
   "x-notifications": [

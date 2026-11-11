@@ -16,6 +16,79 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_c14_history_parameters_and_current_results_match_contract(self):
+        fixtures = contract.read("fixtures.json")
+        parameter_cases = fixtures["history_parameter_cases"]
+        result_cases = fixtures["history_result_cases"]
+        self.assertTrue(parameter_cases)
+        self.assertTrue(result_cases)
+        self.assertEqual({case["method"] for case in parameter_cases}, {"history.list", "history.prune"})
+        self.assertEqual({case["method"] for case in result_cases}, {"history.list", "history.prune"})
+        for case in parameter_cases:
+            with self.subTest(parameters=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_params("host", case["method"], case["params"]))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_params("host", case["method"], case["params"])
+        for case in result_cases:
+            reply = dict(jsonrpc="2.0", id=1, result=case["result"])
+            with self.subTest(result=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_reply("host", case["method"], reply))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_reply("host", case["method"], reply)
+        # Pin the current producer boundary independently of legacy acceptance.
+        current = next(copy.deepcopy(case["result"]) for case in result_cases
+                       if case["valid"] and case["method"] == "history.list" and case["result"]["records"])
+        for field, value in (("version", 1), ("version", 2), ("version", 4),
+                             ("running", None), ("running", 0), ("running", "false")):
+            broken = copy.deepcopy(current)
+            broken["records"][0][field] = value
+            with self.subTest(current_field=field, value=value), self.assertRaises(ValidationError):
+                contract.validate_reply("host", "history.list", dict(jsonrpc="2.0", id=1, result=broken))
+        for broken in (dict(removed=[17], failed=[], dry_run=False),
+                       dict(removed=[], failed=[dict(id=17, reason="bad")], dry_run=False),
+                       dict(removed=[], failed=[dict(id="a", reason=None)], dry_run=False),
+                       dict(removed=[], failed=[], dry_run=0)):
+            with self.subTest(current_prune=broken), self.assertRaises(ValidationError):
+                contract.validate_reply("host", "history.prune", dict(jsonrpc="2.0", id=1, result=broken))
+
+    def test_c14_history_compatible_readers_preserve_legacy_projection_cases(self):
+        fixtures = contract.read("fixtures.json")
+        list_cases = fixtures["history_legacy_list_cases"]
+        prune_cases = fixtures["history_legacy_prune_cases"]
+        self.assertTrue(list_cases)
+        self.assertTrue(prune_cases)
+        for raw in list_cases:
+            with self.subTest(legacy_list=raw):
+                self.assertTrue(contract.validate_reply("host", "history.list",
+                    dict(jsonrpc="2.0", id=1, result=raw), compatibility=True))
+        # The original list reader falls back to an empty array for these.
+        for raw in ({}, None, [], {"records": None}, {"records": 17}):
+            with self.subTest(empty_fallback=raw):
+                self.assertTrue(contract.validate_reply("host", "history.list",
+                    dict(jsonrpc="2.0", id=1, result=raw), compatibility=True))
+        for case in prune_cases:
+            reply = dict(jsonrpc="2.0", id=1, result=case["result"])
+            with self.subTest(legacy_prune=case):
+                if case["valid"]:
+                    self.assertTrue(contract.validate_reply("host", "history.prune", reply, compatibility=True))
+                else:
+                    with self.assertRaises(ValidationError):
+                        contract.validate_reply("host", "history.prune", reply, compatibility=True)
+        # Individual failure rows are opaque to collection decoding, while
+        # malformed collections and nonstring removed IDs remain errors.
+        partial = dict(removed=[], failed=[None, 17, dict(id=17, reason=False)])
+        self.assertTrue(contract.validate_reply("host", "history.prune",
+            dict(jsonrpc="2.0", id=1, result=partial), compatibility=True))
+        for broken in ({}, dict(removed=[], failed=None), dict(removed=[], failed=17),
+                       dict(removed=None, failed=[]), dict(removed=[17], failed=[])):
+            with self.subTest(legacy_collection=broken), self.assertRaises(ValidationError):
+                contract.validate_reply("host", "history.prune",
+                    dict(jsonrpc="2.0", id=1, result=broken), compatibility=True)
+
     def _c13b3_check_coverage(self, *, sources=None, schema=None):
         """Supply the proposed override API, or equivalent overlays on the old checker."""
         import inspect

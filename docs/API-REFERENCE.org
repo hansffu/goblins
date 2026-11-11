@@ -6250,6 +6250,345 @@ Cross-field request constraints (existing semantic validation):
 }
 #+end_src
 
+** =history.list=
+
+Host-only read of recreation history, closed empty named/positional params. Decode first, then require an available store. Records sort descending(updated,id), omit deleting rows, and append current live-record running status. Sum each serialized record including running, stop before first record crossing900KiB and set truncated; wrapper bytes excluded. Offline CLI uses original unlocked loader, version normalization and running:null. No history file rewrite. Compatible CLI preserves raw partial/future records and empty fallback; Emacs readers remain permissive. Preserve original direct-Serde named and positional decoding, including excess-array length diagnostics and older_than/before/keep/dry_run field error precedence; do not normalize positional input into an object first.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {},
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": false,
+  "minItems": 0,
+  "maxItems": 0
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "directory": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HistoryRecord"
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "directory",
+    "records",
+    "truncated"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "properties": {
+        "records": {
+          "items": {
+            "properties": {
+              "version": {
+                "const": 3
+              },
+              "running": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{}
+#+end_src
+
+The =history-list-fields= adapter: Read records only as an array (otherwise empty) and truncated only as true; retain every raw record and additive field. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "records": {
+      "type": "array",
+      "items": {}
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "records",
+    "truncated"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =history.prune=
+
+Host-only prune. Closed params and positional[older_than?,before?,keep?,dry_run?], all defaulting to null/null/null/false. Decode before requiring at least one non-null criterion, then require store. Conjoin strict age/before thresholds and keep selection; saturating age subtraction, descending(updated,id) keep order, oldest-first output; exclude live and deleting records. Dry-run or empty selection replies immediately; real deletion waits for ordered durable writer completion and reports partial failures with dry_run:false. Existing receipt/connection lifecycle and store lock remain authoritative. CLI preserves requested dry_run wording; failed collection decoded before removed and malformed individual failed records retain dash fallback. Preserve original direct-Serde named and positional decoding, including excess-array length diagnostics and older_than/before/keep/dry_run field error precedence; do not normalize positional input into an object first.
+
+Named parameters:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "older_than": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "before": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "keep": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HistoryKeep"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+Positional parameters:
+
+#+begin_src json
+{
+  "type": "array",
+  "items": [
+    {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HistoryKeep"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    {
+      "type": "boolean",
+      "default": false
+    }
+  ],
+  "minItems": 0,
+  "maxItems": 4
+}
+#+end_src
+
+Result:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HistoryPruneFailure"
+      }
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "removed",
+    "failed",
+    "dry_run"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Method errors: -32602, -32009. Common envelope/connection errors also apply.
+
+Compatible client wire result (legacy field fallback):
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {}
+    }
+  },
+  "required": [
+    "removed",
+    "failed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+The =history-prune-fields= adapter: Require failed array and removed string array, decoding failed first; retain raw failed rows for independent dash fallback and ignore result dry_run. The generated normalized client DTO is:
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {}
+    }
+  },
+  "required": [
+    "removed",
+    "failed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+Cross-field request constraints (existing semantic validation):
+
+#+begin_src json
+{
+  "anyOf": [
+    {
+      "required": [
+        "older_than"
+      ],
+      "properties": {
+        "older_than": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "required": [
+        "before"
+      ],
+      "properties": {
+        "before": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "required": [
+        "keep"
+      ],
+      "properties": {
+        "keep": {
+          "type": "integer"
+        }
+      }
+    }
+  ]
+}
+#+end_src
+
 ** Notification =exec.signal=
 
 exec.signal is a host-client-to-daemon notification, with no id, only during an active exec. Named {signal:I32} or positional [I32] accepts SIGHUP=1, SIGINT=2, SIGTERM=15. Missing, invalid or unsupported signals, an unexpected method, or any id close the active-exec connection; cleanup cancels its exec only. Outside active exec, all no-id client notifications are ignored after envelope parsing; a host request with id and method exec.signal is unknown (-32601). It is never a callable method or sandbox capability.
@@ -11993,6 +12332,51 @@ Original Serde container names, field order, required nullable sequence slots an
     ],
     "required-nullable": [
       "reason"
+    ]
+  },
+  "HistoryRecord": {
+    "name": "HistoryRecord",
+    "order": [
+      "version",
+      "id",
+      "configuration",
+      "agent_name",
+      "cwd",
+      "scope",
+      "dev_shell",
+      "docker_enabled",
+      "packages",
+      "variables",
+      "sessions",
+      "skipped",
+      "worktree",
+      "created",
+      "updated",
+      "stopped",
+      "running"
+    ],
+    "required-nullable": [
+      "cwd",
+      "scope",
+      "dev_shell",
+      "worktree",
+      "stopped",
+      "running"
+    ]
+  },
+  "HistoryPruneParams": {
+    "name": "Prune",
+    "order": [
+      "older_than",
+      "before",
+      "keep",
+      "dry_run"
+    ],
+    "emit-defaults": [
+      "older_than",
+      "before",
+      "keep",
+      "dry_run"
     ]
   }
 }
@@ -22961,6 +23345,537 @@ Original Serde container names, field order, required nullable sequence slots an
 }
 #+end_src
 
+** =HistoryRecordVersion=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 4294967295,
+  "format": "uint32",
+  "x-json-integer": true
+}
+#+end_src
+
+** =HistoryKeep=
+
+#+begin_src json
+{
+  "type": "integer",
+  "minimum": 0,
+  "maximum": 18446744073709551615,
+  "format": "uint64",
+  "x-json-integer": true
+}
+#+end_src
+
+** =HistoryPackages=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "approved": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "denied": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "auto_approve": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "approved",
+    "denied",
+    "auto_approve"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HistoryRecord=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "$ref": "#/definitions/HistoryRecordVersion"
+    },
+    "id": {
+      "type": "string"
+    },
+    "configuration": {
+      "type": "string"
+    },
+    "agent_name": {
+      "type": "string"
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HostPath"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dev_shell": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "docker_enabled": {
+      "type": "boolean"
+    },
+    "packages": {
+      "$ref": "#/definitions/HistoryPackages"
+    },
+    "variables": {
+      "$ref": "#/definitions/Variables"
+    },
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RecreateSkipped"
+      }
+    },
+    "worktree": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireWorktree"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "updated": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "stopped": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "running": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "configuration",
+    "agent_name",
+    "cwd",
+    "scope",
+    "dev_shell",
+    "docker_enabled",
+    "packages",
+    "variables",
+    "sessions",
+    "skipped",
+    "worktree",
+    "created",
+    "updated",
+    "stopped",
+    "running"
+  ],
+  "additionalProperties": true,
+  "description": "Public history projection; running is boolean online and explicitly null offline. Persisted Record remains a separate closed domain type without running. Load accepts versions1/2/3 and normalizes to3 in memory without rewriting; raw persistence DTO deserialization still permits future u32 versions. Canonical online result additionally requires version3 and boolean running."
+}
+#+end_src
+
+** =HistoryListResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "directory": {
+      "$ref": "#/definitions/HostPath"
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HistoryRecord"
+      }
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "directory",
+    "records",
+    "truncated"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "properties": {
+        "records": {
+          "items": {
+            "properties": {
+              "version": {
+                "const": 3
+              },
+              "running": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =HistoryListReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "records": {
+      "type": "array",
+      "items": {}
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "records",
+    "truncated"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HistoryPruneParams=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "older_than": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "before": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "keep": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/HistoryKeep"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
+#+end_src
+
+** =HistoryPruneFailure=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HistoryPruneResult=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HistoryPruneFailure"
+      }
+    },
+    "dry_run": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "removed",
+    "failed",
+    "dry_run"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HistoryPruneReply=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "removed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failed": {
+      "type": "array",
+      "items": {}
+    }
+  },
+  "required": [
+    "removed",
+    "failed"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HistoryDisplayRecord=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "agent_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "configuration": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cwd": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "running": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "skipped": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "id",
+    "agent_name",
+    "configuration",
+    "session_name",
+    "cwd",
+    "updated",
+    "running",
+    "skipped"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =HistoryPruneFailureRead=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -23067,3 +23982,4 @@ Original Serde container names, field order, required nullable sequence slots an
 - =communications-envelope-stage= :: C13a generates the existing event envelope and exact Serde name/order; kind/data remain String/Value until C13b introduces producer payload pairing and compatible retained-log consumers. CommunicationsLimit maps to usize, retaining the old decoder. Request emit-defaults removes only serialization omission, preserving after=0/limit=100 read defaults; session retains its original required positional nullable slot. The CLI outbound profile emits after/session and omits limit exactly as before.
 - =communications-page-reader= :: The CLI page reader normalizes fields independently: events only as array of raw JSON values, cursor/latest only as u64, session only as string. Missing/malformed values remain absent so the caller retains original event printing and page/cursor/sequence error order; successful legacy bodies gain no new early refusal. The canonical producer result stays strict. C13b owns event-data consumers.
 - =communications-typed-payloads= :: Generated CommunicationKind markers bind each known kind to its DTO; CommunicationPayload keeps its fields private and exposes only a paired kind/data result. Raid and operation domain enums retain authority and map into these DTOs; public stored envelopes remain compatible String/Value readers. Canonical kind/data and delivered/undelivered/correlation constraints stay in JSON schema; only CommunicationsEvent, CommRaidNoticeData, CommOperationCompletedData, CommMessageAcceptedChange and CommMessageRepliedChange allOf clauses are omitted from the generator clone because Typify cannot express conditionals/cross-field relations. Existing producer branches and independent original-wire comparisons enforce runtime construction. Mutation markers bind their method-specific wrapper and generated change DTO; retry IDs are projected from internally generated cached results, retaining null when no ID exists. Session and recipient producers use generated bindings too. Compatible readers are separate from strict producer DTOs: the offline reader projects only independent string fields into CommunicationSessionStartedRead; generated lazy Emacs record views retain raw plist values and original evaluation/errors. Raw stored payloads remain intentionally open for unknown, malformed or partial historical data. Producer registry and source checks cover all22 known kinds. Canonical accepted/replied schemas preserve newly created message state/zero generation/null failure, accepted host/null versus raid/string correlation and null in_reply_to, and replied in_reply_to/completed equality. Requeue reason remains nonempty with a 512-byte UTF-8 limit; generated String replacements leave the existing Mutation validator authoritative.
+- =history-persistence-and-readers= :: Public history records are generated projections from the existing closed persisted Record domain type; persisted loader/version normalization/writer/order/locks and recreation reservations remain handwritten. No file rewrite. Prune generated parameters retain original Prune name/field order/default emission; selection remains a local extension trait. HistoryListResult canonical version3/online-boolean-running allOf is omitted only in Typify input; producer follows the original store/live state. Offline generated projection emits running:null. Rust display/list/prune readers project legacy fields independently, preserve raw record arrays and failed rows, preserve failed-before-removed Serde diagnostics and original fallback/printing behavior. Lazy generated Emacs field views retain partial/malformed record behavior. The two host history methods explicitly use generated direct-Serde parameter decoding, with preserved DTO field order/default slots. Positional arrays are not normalized to objects, preserving original excess-length messages and first-invalid-field precedence; other endpoint methods keep their existing decoding strategy.

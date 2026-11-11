@@ -1,5 +1,6 @@
 //! Single authority/event loop, with independent blocking workers per session.
 use crate::Result;
+use crate::history::PruneExt;
 use crate::supervised::{Executable, Supervised};
 use goblins_jsonrpc::{self as rpc, Decoder};
 use goblins_protocol::contract::{self, Method};
@@ -1387,8 +1388,7 @@ impl Controller {
             if store.deleting.contains(&record.id) {
                 continue;
             }
-            let mut value = json!(record);
-            value["running"] = json!(running.contains(&record.id));
+            let value = crate::history::wire(record, Some(running.contains(&record.id)));
             size += serde_json::to_vec(&value).map_or(0, |v| v.len());
             if size > 900 * 1024 {
                 truncated = true;
@@ -1396,7 +1396,11 @@ impl Controller {
             }
             records.push(value);
         }
-        Ok(json!({"directory":store.directory,"records":records,"truncated":truncated}))
+        Ok(json!(contract::HistoryListResult {
+            directory: store.directory.clone(),
+            records,
+            truncated
+        }))
     }
     /// `history.prune`. Records go only once the writer has deleted them
     /// durably, so the caller waits for that and learns what failed.
@@ -1406,7 +1410,7 @@ impl Controller {
         id: Value,
         value: Value,
     ) -> std::result::Result<Option<Value>, Fault> {
-        let p: crate::history::Prune = params(value)?;
+        let p = contract_params::<contract::host::HistoryPrune>(value)?;
         if p.is_empty() {
             return Err((-32602, "choose --older-than, --before or --keep".into()));
         }
@@ -1419,9 +1423,11 @@ impl Controller {
         excluded.extend(store.deleting.iter().cloned());
         let removed = p.select(&store.records, &excluded, crate::messaging::now());
         if p.dry_run || removed.is_empty() {
-            return Ok(Some(
-                json!({"removed":removed,"failed":[],"dry_run":p.dry_run}),
-            ));
+            return Ok(Some(json!(contract::HistoryPruneResult {
+                removed,
+                failed: vec![],
+                dry_run: p.dry_run
+            })));
         }
         // Ordered with every write: the writer drops queued revisions.
         store.delete(&removed, Some(serial));
@@ -1440,7 +1446,10 @@ impl Controller {
             let failed: Vec<_> = result
                 .failed
                 .iter()
-                .map(|(id, reason)| json!({"id":id,"reason":reason}))
+                .map(|(id, reason)| contract::HistoryPruneFailure {
+                    id: id.clone(),
+                    reason: reason.clone(),
+                })
                 .collect();
             let key = prune_key(tag);
             for c in &mut self.connections {
@@ -1449,7 +1458,11 @@ impl Controller {
                 {
                     c.queue(rpc::result(
                         rpc_id.clone(),
-                        json!({"removed":result.removed,"failed":failed,"dry_run":false}),
+                        json!(contract::HistoryPruneResult {
+                            removed: result.removed.clone(),
+                            failed: failed.clone(),
+                            dry_run: false
+                        }),
                     ));
                     c.waiting = None;
                 }
@@ -2770,8 +2783,8 @@ impl Controller {
                 contract_params::<contract::host::SessionsStart>(value)?.into(),
                 None,
             ),
-            "history.list" => {
-                let _: Empty = params(value)?;
+            contract::host::HistoryList::NAME => {
+                let _ = contract_params::<contract::host::HistoryList>(value)?;
                 self.history_list()
             }
             contract::host::SessionsStop::NAME => {
@@ -3044,7 +3057,7 @@ impl Controller {
                     &call.method,
                     call.params,
                 ),
-                Role::Host if call.method == "history.prune" => {
+                Role::Host if call.method == contract::host::HistoryPrune::NAME => {
                     self.history_prune(c, id.clone(), call.params)
                 }
                 Role::Host => self.host(c, &call.method, call.params).map(Some),
@@ -9406,4 +9419,381 @@ mod tests {
         assert_eq!(sent(&queue).last().unwrap().0, "raid.dissolved");
         fs::remove_dir_all(path).unwrap();
     }
+    #[test]
+    fn c14_history_list_producer_preserves_wire_order_running_and_truncation() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        assert_eq!(
+            d.history_list().unwrap_err(),
+            (
+                -32009,
+                "no session history: this server keeps no session history".into()
+            )
+        );
+        let store = crate::history::Store::open(&path.join("history"), "c14 test").unwrap();
+        let directory = store.directory.clone();
+        d.history = Ok(store);
+        assert_eq!(
+            d.history_list().unwrap(),
+            json!({"directory":directory,"records":[],"truncated":false})
+        );
+        session_with_results_id(&mut d, "live", vec![]);
+        for (id, time) in [("old", 1), ("live", 2), ("tie", 2), ("deleting", 3)] {
+            let record = crate::history::Record::new(id, "shell", "snikk", time);
+            d.history
+                .as_mut()
+                .unwrap()
+                .records
+                .insert(id.into(), record);
+        }
+        d.history
+            .as_mut()
+            .unwrap()
+            .deleting
+            .insert("deleting".into());
+        let expected: Vec<_> = ["tie", "live", "old"]
+            .into_iter()
+            .map(|id| {
+                let mut value = json!(d.history.as_ref().unwrap().records[id]);
+                value["running"] = json!(id == "live");
+                value
+            })
+            .collect();
+        assert_eq!(
+            d.history_list().unwrap(),
+            json!({"directory":directory,"records":expected,"truncated":false})
+        );
+        let store = d.history.as_mut().unwrap();
+        store.records.clear();
+        store.deleting.clear();
+        for i in 0..20 {
+            let id = format!("r{i:02}");
+            let mut r = crate::history::Record::new(&id, "shell", "snikk", i);
+            r.variables.insert("large".into(), "x".repeat(60 * 1024));
+            store.records.insert(id, r);
+        }
+        let expected: Vec<_> = (6..20)
+            .rev()
+            .map(|i| {
+                let mut value = json!(d.history.as_ref().unwrap().records[&format!("r{i:02}")]);
+                value["running"] = json!(false);
+                value
+            })
+            .collect();
+        assert_eq!(
+            d.history_list().unwrap(),
+            json!({"directory":directory,"records":expected,"truncated":true})
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn c14_history_prune_preserves_validation_dry_run_and_partial_failure_wire() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        assert_eq!(
+            d.history_prune(&mut c, json!(1), json!({})).unwrap_err(),
+            (-32602, "choose --older-than, --before or --keep".into())
+        );
+        assert_eq!(
+            d.history_prune(&mut c, json!(1), json!({"keep":0}))
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        let store = crate::history::Store::open(&path.join("history"), "c14 test").unwrap();
+        let directory = store.directory.clone();
+        d.history = Ok(store);
+        session_with_results_id(&mut d, "live", vec![]);
+        for id in ["live", "deleting", "good", "bad"] {
+            d.history.as_mut().unwrap().records.insert(
+                id.into(),
+                crate::history::Record::new(id, "shell", "snikk", 1),
+            );
+        }
+        d.history
+            .as_mut()
+            .unwrap()
+            .deleting
+            .insert("deleting".into());
+        assert_eq!(
+            d.history_prune(&mut c, json!(2), json!({"keep":0,"dry_run":true}))
+                .unwrap(),
+            Some(json!({"removed":["bad","good"],"failed":[],"dry_run":true}))
+        );
+        assert!(c.waiting.is_none());
+        fs::write(directory.join("good.json"), b"{}").unwrap();
+        fs::create_dir(directory.join("bad.json")).unwrap();
+        assert!(
+            d.history_prune(&mut c, json!(3), json!({"keep":0}))
+                .unwrap()
+                .is_none()
+        );
+        assert!(c.waiting.is_some());
+        d.connections.push(c);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while d.connections[0].waiting.is_some() && std::time::Instant::now() < deadline {
+            d.poll_deletes();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(d.connections[0].waiting.is_none());
+        let frame = d.connections[0].output.pop_back().unwrap();
+        let start = frame.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
+        let response = rpc::parse(&frame[start..]).unwrap();
+        let reason = std::io::Error::from_raw_os_error(libc::EISDIR).to_string();
+        assert_eq!(
+            response,
+            json!({"jsonrpc":"2.0","id":3,"result":{"removed":["good"],"failed":[{"id":"bad","reason":reason}],"dry_run":false}})
+        );
+        let store = d.history.as_ref().unwrap();
+        assert!(!store.records.contains_key("good"));
+        assert!(store.records.contains_key("bad"));
+        assert!(store.records.contains_key("live"));
+        assert!(store.records.contains_key("deleting"));
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn c14_recreate_preparation_preserves_record_fields_and_refusal_order() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let make_start = || {
+            serde_json::from_value::<Start>(
+                json!({"key":"k","configuration":"config","rows":24,"cols":80}),
+            )
+            .unwrap()
+        };
+        let mut conflicting = make_start();
+        conflicting.name = "shell".into();
+        assert_eq!(
+            d.prepare_recreate(&mut conflicting, "absent")
+                .unwrap_err()
+                .0,
+            -32602
+        );
+        assert_eq!(
+            d.prepare_recreate(&mut make_start(), "absent")
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        let mut store = crate::history::Store::open(&path.join("history"), "c14 test").unwrap();
+        let mut record = crate::history::Record::new("record", "shell", "restored", 1);
+        record.cwd = Some(path.clone());
+        record.scope = Some("work".into());
+        record.dev_shell = Some("/dev#shell".into());
+        record.worktree = Some(goblins_runtime::worktrees::Worktree {
+            name: "fix".into(),
+            path: path.join("fix"),
+        });
+        record.packages.approved = vec!["jq".into()];
+        record.skipped = vec![goblins_runtime::history::Skipped::new("jq", "gone")];
+        store.records.insert(record.id.clone(), record.clone());
+        d.history = Ok(store);
+        assert_eq!(
+            d.prepare_recreate(&mut make_start(), "absent")
+                .unwrap_err()
+                .0,
+            -32004
+        );
+        let mut start = make_start();
+        d.prepare_recreate(&mut start, "record").unwrap();
+        assert_eq!(start.name, record.configuration);
+        assert_eq!(start.agent_name, Some(record.agent_name.clone()));
+        assert_eq!(start.cwd, record.cwd);
+        assert_eq!(start.scope, record.scope);
+        assert_eq!(start.dev_shell, record.dev_shell);
+        assert_eq!(start.recorded.as_deref(), Some(&record));
+        d.history.as_mut().unwrap().deleting.insert("record".into());
+        assert_eq!(
+            d.prepare_recreate(&mut make_start(), "record").unwrap_err(),
+            (-32009, "record record is being removed".into())
+        );
+        d.history.as_mut().unwrap().deleting.clear();
+        let live = session_with_results_id(&mut d, "live", vec![]);
+        d.sessions.get_mut(&live).unwrap().line = "record".into();
+        assert_eq!(
+            d.prepare_recreate(&mut make_start(), "record").unwrap_err(),
+            (
+                -32009,
+                "record record cannot be resumed now: goblin snikk (live) is live and runs it".into()
+            )
+        );
+        d.sessions.get_mut(&live).unwrap().record.state = "stopped".into();
+        // A displayed stopped state does not release the runtime reservation.
+        assert_eq!(
+            d.prepare_recreate(&mut make_start(), "record")
+                .unwrap_err()
+                .0,
+            -32009
+        );
+        d.sessions.get_mut(&live).unwrap().runtime = None;
+        assert!(d.prepare_recreate(&mut make_start(), "record").is_ok());
+        assert_eq!(d.history.as_ref().unwrap().records["record"], record);
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+
+    mod c14_review_original {
+        use super::*;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Empty {}
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        #[allow(dead_code)]
+        pub struct Prune {
+            #[serde(default)]
+            pub older_than: Option<u64>,
+            #[serde(default)]
+            pub before: Option<u64>,
+            #[serde(default)]
+            pub keep: Option<usize>,
+            #[serde(default)]
+            pub dry_run: bool,
+        }
+    }
+
+    #[test]
+    fn c14_review_list_dispatch_retains_original_positional_errors() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        for value in [json!([1]), json!([true, "x"]), json!({"unknown":1})] {
+            let expected = serde_json::from_value::<c14_review_original::Empty>(value.clone())
+                .err()
+                .unwrap()
+                .to_string();
+            let result = dispatch(
+                &mut d,
+                &mut c,
+                "history.list",
+                value.clone(),
+                Some(json!(7)),
+            );
+            assert_eq!(
+                result,
+                json!({"jsonrpc":"2.0","id":7,"error":{"code":-32602,"message":expected}}),
+                "{value}"
+            );
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn c14_review_prune_dispatch_retains_original_positional_error_precedence() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let (mut c, _peer) = connection(Role::Host);
+        c.initialized = true;
+        for value in [
+            json!([null, null, null, false, 0]),
+            json!([true, "x", null, false]),
+            json!([null, true, "x", false]),
+            json!([null, null, true, "x"]),
+            json!({"older_than":true,"before":"x","keep":null,"dry_run":false}),
+        ] {
+            let expected = serde_json::from_value::<c14_review_original::Prune>(value.clone())
+                .err()
+                .unwrap()
+                .to_string();
+            let result = dispatch(
+                &mut d,
+                &mut c,
+                "history.prune",
+                value.clone(),
+                Some(json!(8)),
+            );
+            assert_eq!(
+                result,
+                json!({"jsonrpc":"2.0","id":8,"error":{"code":-32602,"message":expected}}),
+                "{value}"
+            );
+        }
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn c14_review_full_history_record_producer_matches_original_json() {
+        let _no_forks = unix::no_forks();
+        let mut d = daemon();
+        let path = d.state.clone();
+        let mut store = crate::history::Store::open(&path.join("history"), "c14 review").unwrap();
+        let directory = store.directory.clone();
+        let mut record = crate::history::Record::new("full", "shell", "restored", 1);
+        record.cwd = Some("/work/é".into());
+        record.scope = None;
+        record.dev_shell = Some("/work#dev".into());
+        record.docker_enabled = true;
+        record.packages.approved = vec!["jq".into(), "git".into()];
+        record.packages.denied = vec!["curl".into()];
+        record.packages.auto_approve = vec!["ripgrep".into()];
+        record.variables = BTreeMap::from([
+            ("session_id".into(), "conversation".into()),
+            ("session_name".into(), "héllo\0\n".into()),
+        ]);
+        record.sessions = vec!["prior".into(), "current".into()];
+        record.skipped = vec![
+            goblins_runtime::history::Skipped {
+                name: "docker".into(),
+                reason: "no engine".into(),
+            },
+            goblins_runtime::history::Skipped {
+                name: "jq".into(),
+                reason: "gone".into(),
+            },
+        ];
+        record.worktree = Some(goblins_runtime::worktrees::Worktree {
+            name: "fix".into(),
+            path: "/trees/fix".into(),
+        });
+        record.updated = u64::MAX;
+        record.stopped = None;
+        let original = json!({"version":3,"id":"full","configuration":"shell","agent_name":"restored",
+                "cwd":"/work/é","scope":null,"dev_shell":"/work#dev","docker_enabled":true,
+                "packages":{"approved":["jq","git"],"denied":["curl"],"auto_approve":["ripgrep"]},
+                "variables":{"session_id":"conversation","session_name":"héllo\0\n"},"sessions":["prior","current"],
+                "skipped":[{"name":"docker","reason":"no engine"},{"name":"jq","reason":"gone"}],
+                "worktree":{"name":"fix","path":"/trees/fix"},"created":1,"updated":u64::MAX,"stopped":null,"running":true});
+        store.records.insert("full".into(), record.clone());
+        let mut nullable = record;
+        nullable.id = "nullable".into();
+        nullable.cwd = None;
+        nullable.scope = Some("scope".into());
+        nullable.dev_shell = None;
+        nullable.worktree = None;
+        nullable.stopped = Some(7);
+        nullable.updated = 10;
+        store.records.insert("nullable".into(), nullable);
+        d.history = Ok(store);
+        session_with_results_id(&mut d, "full", vec![]);
+        let mut expected_nullable = original.clone();
+        expected_nullable["id"] = json!("nullable");
+        expected_nullable["cwd"] = Value::Null;
+        expected_nullable["scope"] = json!("scope");
+        expected_nullable["dev_shell"] = Value::Null;
+        expected_nullable["worktree"] = Value::Null;
+        expected_nullable["stopped"] = json!(7);
+        expected_nullable["updated"] = json!(10);
+        expected_nullable["running"] = json!(false);
+        assert_eq!(
+            d.history_list().unwrap(),
+            json!({"directory":directory,"records":[original,expected_nullable],"truncated":false})
+        );
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
 }

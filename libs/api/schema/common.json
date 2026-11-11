@@ -9357,6 +9357,477 @@
       },
       "additionalProperties": true,
       "description": "Compatible retained-log projection: read string fields independently, treating missing, null, malformed fields and non-object payloads as absent before decoding. Empty strings retain precedence. Resolve agent_name first, otherwise the last slash-separated path segment, otherwise empty. Preserve original raw event data separately."
+    },
+    "HistoryRecordVersion": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295,
+      "format": "uint32",
+      "x-json-integer": true
+    },
+    "HistoryKeep": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615,
+      "format": "uint64",
+      "x-json-integer": true
+    },
+    "HistoryPackages": {
+      "type": "object",
+      "properties": {
+        "approved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "denied": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auto_approve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "approved",
+        "denied",
+        "auto_approve"
+      ],
+      "additionalProperties": true
+    },
+    "HistoryRecord": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "$ref": "#/definitions/HistoryRecordVersion"
+        },
+        "id": {
+          "type": "string"
+        },
+        "configuration": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dev_shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "docker_enabled": {
+          "type": "boolean"
+        },
+        "packages": {
+          "$ref": "#/definitions/HistoryPackages"
+        },
+        "variables": {
+          "$ref": "#/definitions/Variables"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RecreateSkipped"
+          }
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WireWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "updated": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "format": "uint64",
+          "x-json-integer": true
+        },
+        "stopped": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "running": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "version",
+        "id",
+        "configuration",
+        "agent_name",
+        "cwd",
+        "scope",
+        "dev_shell",
+        "docker_enabled",
+        "packages",
+        "variables",
+        "sessions",
+        "skipped",
+        "worktree",
+        "created",
+        "updated",
+        "stopped",
+        "running"
+      ],
+      "additionalProperties": true,
+      "description": "Public history projection; running is boolean online and explicitly null offline. Persisted Record remains a separate closed domain type without running. Load accepts versions1/2/3 and normalizes to3 in memory without rewriting; raw persistence DTO deserialization still permits future u32 versions. Canonical online result additionally requires version3 and boolean running."
+    },
+    "HistoryListResult": {
+      "type": "object",
+      "properties": {
+        "directory": {
+          "$ref": "#/definitions/HostPath"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HistoryRecord"
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "directory",
+        "records",
+        "truncated"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "properties": {
+            "records": {
+              "items": {
+                "properties": {
+                  "version": {
+                    "const": 3
+                  },
+                  "running": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "HistoryListReply": {
+      "type": "object",
+      "properties": {
+        "records": {
+          "type": "array",
+          "items": {}
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "records",
+        "truncated"
+      ],
+      "additionalProperties": true
+    },
+    "HistoryPruneParams": {
+      "type": "object",
+      "properties": {
+        "older_than": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "before": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "keep": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HistoryKeep"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dry_run": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "HistoryPruneFailure": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "HistoryPruneResult": {
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/HistoryPruneFailure"
+          }
+        },
+        "dry_run": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "removed",
+        "failed",
+        "dry_run"
+      ],
+      "additionalProperties": true
+    },
+    "HistoryPruneReply": {
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "removed",
+        "failed"
+      ],
+      "additionalProperties": true
+    },
+    "HistoryDisplayRecord": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "configuration": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updated": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "running": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "configuration",
+        "session_name",
+        "cwd",
+        "updated",
+        "running",
+        "skipped"
+      ],
+      "additionalProperties": true
+    },
+    "HistoryPruneFailureRead": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -10482,6 +10953,55 @@
       ],
       "minItems": 3,
       "maxItems": 3
+    },
+    "HistoryPruneParams": {
+      "type": "array",
+      "items": [
+        {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "format": "uint64",
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HistoryKeep"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        {
+          "type": "boolean",
+          "default": false
+        }
+      ],
+      "minItems": 0,
+      "maxItems": 4
     }
   },
   "x-request-constraints": {
@@ -11031,6 +11551,40 @@
           "x-json-integer": true
         }
       }
+    },
+    "HistoryPruneParams": {
+      "anyOf": [
+        {
+          "required": [
+            "older_than"
+          ],
+          "properties": {
+            "older_than": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "required": [
+            "before"
+          ],
+          "properties": {
+            "before": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "required": [
+            "keep"
+          ],
+          "properties": {
+            "keep": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
     }
   },
   "x-attach-version": 1,
@@ -11592,6 +12146,26 @@
           "maxItems": 5
         }
       ]
+    },
+    "HistoryPruneReply": {
+      "type": "object",
+      "properties": {
+        "removed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failed": {
+          "type": "array",
+          "items": {}
+        }
+      },
+      "required": [
+        "removed",
+        "failed"
+      ],
+      "additionalProperties": true
     }
   },
   "x-rust-serde-records": {
@@ -11755,6 +12329,51 @@
       ],
       "required-nullable": [
         "reason"
+      ]
+    },
+    "HistoryRecord": {
+      "name": "HistoryRecord",
+      "order": [
+        "version",
+        "id",
+        "configuration",
+        "agent_name",
+        "cwd",
+        "scope",
+        "dev_shell",
+        "docker_enabled",
+        "packages",
+        "variables",
+        "sessions",
+        "skipped",
+        "worktree",
+        "created",
+        "updated",
+        "stopped",
+        "running"
+      ],
+      "required-nullable": [
+        "cwd",
+        "scope",
+        "dev_shell",
+        "worktree",
+        "stopped",
+        "running"
+      ]
+    },
+    "HistoryPruneParams": {
+      "name": "Prune",
+      "order": [
+        "older_than",
+        "before",
+        "keep",
+        "dry_run"
+      ],
+      "emit-defaults": [
+        "older_than",
+        "before",
+        "keep",
+        "dry_run"
       ]
     }
   },
@@ -11925,95 +12544,6 @@
       "binding": "SessionStarted"
     }
   ],
-  "x-elisp-communication-readers": [
-    {
-      "name": "communication-envelope",
-      "schemas": [
-        "CommunicationsEvent"
-      ],
-      "fields": [
-        "kind",
-        "data",
-        "actor",
-        "timestamp"
-      ]
-    },
-    {
-      "name": "communication-data",
-      "schemas": [
-        "CommRaidCreatedData",
-        "CommRaidJoinedData",
-        "CommRaidRoleData",
-        "CommRaidLeftData",
-        "CommRaidPausedData",
-        "CommRaidOwnerData",
-        "CommRaidDissolvedData",
-        "CommRaidNoticeData",
-        "CommOperationRequestedData",
-        "CommOperationDecidedData",
-        "CommOperationCompletedData",
-        "CommOperationDuplicateData",
-        "CommMessageAcceptedData",
-        "CommMessageClaimedData",
-        "CommInboxEmptyData",
-        "CommMessageRepliedData",
-        "CommMessageCompletedData",
-        "CommMessageRequeuedData",
-        "CommOperationRetriedData",
-        "CommRecipientStoppedData",
-        "CommSessionStartedData",
-        "CommSessionExitedData"
-      ],
-      "fields": [
-        "change",
-        "messages",
-        "raid",
-        "name",
-        "notice"
-      ]
-    },
-    {
-      "name": "communication-change",
-      "schemas": [
-        "CommMessageAcceptedChange",
-        "CommMessageClaimedChange",
-        "CommInboxEmptyChange",
-        "CommMessageRepliedChange",
-        "CommMessageCompletedChange",
-        "CommMessageRequeuedChange"
-      ],
-      "fields": [
-        "message",
-        "raid",
-        "completed"
-      ]
-    },
-    {
-      "name": "message",
-      "schemas": [
-        "MailboxMessage"
-      ],
-      "fields": [
-        "id",
-        "in_reply_to",
-        "conversation",
-        "sender",
-        "sender_name",
-        "sender_path",
-        "recipient",
-        "recipient_name",
-        "recipient_path",
-        "body",
-        "created_at",
-        "state",
-        "failure"
-      ],
-      "legacy-fields": {
-        "sender_path": "Older ownership-tree logs used a path rather than sender_name.",
-        "recipient_path": "Older ownership-tree logs used a path rather than recipient_name."
-      }
-    }
-  ],
   "x-communications-producers": [
     {
       "source": "packages/daemon/src/raid.rs",
@@ -12104,5 +12634,154 @@
       }
     }
   ],
-  "x-communications-read-compatibility": "Strict current-producer schemas do not constrain retained-log or Emacs payload acceptance. Stored envelopes retain required fields and sequence/instance/file checks; raw payloads, including future kinds and malformed/partial known data, are preserved. Rust independently projects only session.started strings; schema-generated Emacs lazy record views preserve plist-get behavior and errors, field evaluation order, legacy paths, cache mutation order and unknown-kind notice fallback. None of these views validates a whole current-producer payload."
+  "x-communications-read-compatibility": "Strict current-producer schemas do not constrain retained-log or Emacs payload acceptance. Stored envelopes retain required fields and sequence/instance/file checks; raw payloads, including future kinds and malformed/partial known data, are preserved. Rust independently projects only session.started strings; schema-generated Emacs lazy record views preserve plist-get behavior and errors, field evaluation order, legacy paths, cache mutation order and unknown-kind notice fallback. None of these views validates a whole current-producer payload.",
+  "x-elisp-readers": [
+    {
+      "name": "communication-envelope",
+      "schemas": [
+        "CommunicationsEvent"
+      ],
+      "fields": [
+        "kind",
+        "data",
+        "actor",
+        "timestamp"
+      ]
+    },
+    {
+      "name": "communication-data",
+      "schemas": [
+        "CommRaidCreatedData",
+        "CommRaidJoinedData",
+        "CommRaidRoleData",
+        "CommRaidLeftData",
+        "CommRaidPausedData",
+        "CommRaidOwnerData",
+        "CommRaidDissolvedData",
+        "CommRaidNoticeData",
+        "CommOperationRequestedData",
+        "CommOperationDecidedData",
+        "CommOperationCompletedData",
+        "CommOperationDuplicateData",
+        "CommMessageAcceptedData",
+        "CommMessageClaimedData",
+        "CommInboxEmptyData",
+        "CommMessageRepliedData",
+        "CommMessageCompletedData",
+        "CommMessageRequeuedData",
+        "CommOperationRetriedData",
+        "CommRecipientStoppedData",
+        "CommSessionStartedData",
+        "CommSessionExitedData"
+      ],
+      "fields": [
+        "change",
+        "messages",
+        "raid",
+        "name",
+        "notice"
+      ]
+    },
+    {
+      "name": "communication-change",
+      "schemas": [
+        "CommMessageAcceptedChange",
+        "CommMessageClaimedChange",
+        "CommInboxEmptyChange",
+        "CommMessageRepliedChange",
+        "CommMessageCompletedChange",
+        "CommMessageRequeuedChange"
+      ],
+      "fields": [
+        "message",
+        "raid",
+        "completed"
+      ]
+    },
+    {
+      "name": "message",
+      "schemas": [
+        "MailboxMessage"
+      ],
+      "fields": [
+        "id",
+        "in_reply_to",
+        "conversation",
+        "sender",
+        "sender_name",
+        "sender_path",
+        "recipient",
+        "recipient_name",
+        "recipient_path",
+        "body",
+        "created_at",
+        "state",
+        "failure"
+      ],
+      "legacy-fields": {
+        "sender_path": "Older ownership-tree logs used a path rather than sender_name.",
+        "recipient_path": "Older ownership-tree logs used a path rather than recipient_name."
+      }
+    },
+    {
+      "name": "history-list",
+      "schemas": [
+        "HistoryListResult"
+      ],
+      "fields": [
+        "records"
+      ]
+    },
+    {
+      "name": "history-record",
+      "schemas": [
+        "HistoryRecord"
+      ],
+      "fields": [
+        "id",
+        "agent_name",
+        "variables",
+        "sessions",
+        "cwd",
+        "packages",
+        "skipped",
+        "updated",
+        "configuration",
+        "docker_enabled",
+        "running"
+      ]
+    },
+    {
+      "name": "history-variables",
+      "schemas": [
+        "Variables"
+      ],
+      "fields": [
+        "session_name",
+        "session_id"
+      ],
+      "map-fields": {
+        "session_name": "Conventional agent-reported conversation label.",
+        "session_id": "Conventional agent-reported conversation ID."
+      }
+    },
+    {
+      "name": "history-packages",
+      "schemas": [
+        "HistoryPackages"
+      ],
+      "fields": [
+        "approved"
+      ]
+    },
+    {
+      "name": "history-skipped",
+      "schemas": [
+        "RecreateSkipped"
+      ],
+      "fields": [
+        "name"
+      ]
+    }
+  ]
 }

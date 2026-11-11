@@ -4,6 +4,7 @@
 //! records in memory and a writer thread persists them, so disk I/O never
 //! runs on the event loop and every write, retention and prune is ordered.
 use crate::Result;
+use goblins_protocol::contract;
 use goblins_unix as unix;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -73,6 +74,50 @@ pub struct Record {
     pub stopped: Option<u64>,
 }
 use goblins_runtime::history::Skipped;
+/// Public projection only; persisted fields/version ownership stays here.
+impl From<&Record> for contract::HistoryRecord {
+    fn from(record: &Record) -> Self {
+        Self {
+            version: record.version,
+            id: record.id.clone(),
+            configuration: record.configuration.clone(),
+            agent_name: record.agent_name.clone(),
+            cwd: record.cwd.clone(),
+            scope: record.scope.clone(),
+            dev_shell: record.dev_shell.clone(),
+            docker_enabled: record.docker_enabled,
+            packages: contract::HistoryPackages {
+                approved: record.packages.approved.clone(),
+                denied: record.packages.denied.clone(),
+                auto_approve: record.packages.auto_approve.clone(),
+            },
+            variables: record.variables.clone(),
+            sessions: record.sessions.clone(),
+            skipped: record
+                .skipped
+                .iter()
+                .map(|s| contract::RecreateSkipped {
+                    name: s.name.clone(),
+                    reason: s.reason.clone(),
+                })
+                .collect(),
+            worktree: record.worktree.as_ref().map(|w| contract::WireWorktree {
+                name: w.name.clone(),
+                path: w.path.clone(),
+            }),
+            created: record.created,
+            updated: record.updated,
+            stopped: record.stopped,
+            running: None,
+        }
+    }
+}
+pub fn wire(record: &Record, running: Option<bool>) -> contract::HistoryRecord {
+    let mut value = contract::HistoryRecord::from(record);
+    value.running = running;
+    value
+}
+
 /// A short random record id: 8 characters of lowercase Crockford base32
 /// (40 bits), easy to read and type. `taken` rejects ids in use.
 pub fn new_id(taken: impl Fn(&str) -> bool) -> Result<String> {
@@ -248,27 +293,23 @@ impl Record {
 
 /// Which records `history.prune` removes. Running records never are; with
 /// no criterion nothing is selected.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Prune {
-    /// Not updated within this many milliseconds.
-    #[serde(default)]
-    pub older_than: Option<u64>,
-    /// Last updated before this Unix millisecond.
-    #[serde(default)]
-    pub before: Option<u64>,
-    /// Beyond the N most recently updated records.
-    #[serde(default)]
-    pub keep: Option<usize>,
-    #[serde(default)]
-    pub dry_run: bool,
+pub use contract::HistoryPruneParams as Prune;
+/// Store-owned selection over a generated request DTO.
+pub trait PruneExt {
+    fn is_empty(&self) -> bool;
+    fn select(
+        &self,
+        records: &BTreeMap<String, Record>,
+        running: &BTreeSet<String>,
+        now: u64,
+    ) -> Vec<String>;
 }
-impl Prune {
-    pub fn is_empty(&self) -> bool {
+impl PruneExt for Prune {
+    fn is_empty(&self) -> bool {
         self.older_than.is_none() && self.before.is_none() && self.keep.is_none()
     }
     /// Records matching every given criterion, oldest first.
-    pub fn select(
+    fn select(
         &self,
         records: &BTreeMap<String, Record>,
         running: &BTreeSet<String>,
@@ -1362,4 +1403,265 @@ mod tests {
             assert!(parse_date(bad).is_err(), "{bad}");
         }
     }
+    // Independent pre-C14 Serde definitions freeze accepted records and errors.
+    mod c14_original {
+        use super::*;
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Packages {
+            pub approved: Vec<String>,
+            pub denied: Vec<String>,
+            #[serde(default)]
+            pub auto_approve: Vec<String>,
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Skipped {
+            pub name: String,
+            pub reason: String,
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Worktree {
+            pub name: String,
+            pub path: PathBuf,
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Record {
+            pub version: u32,
+            pub id: String,
+            pub configuration: String,
+            pub agent_name: String,
+            pub cwd: Option<PathBuf>,
+            pub scope: Option<String>,
+            pub dev_shell: Option<String>,
+            pub docker_enabled: bool,
+            pub packages: Packages,
+            pub variables: BTreeMap<String, String>,
+            pub sessions: Vec<String>,
+            pub skipped: Vec<Skipped>,
+            #[serde(default)]
+            pub worktree: Option<Worktree>,
+            pub created: u64,
+            pub updated: u64,
+            pub stopped: Option<u64>,
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        pub struct Prune {
+            #[serde(default)]
+            pub older_than: Option<u64>,
+            #[serde(default)]
+            pub before: Option<u64>,
+            #[serde(default)]
+            pub keep: Option<usize>,
+            #[serde(default)]
+            pub dry_run: bool,
+        }
+    }
+    fn c14_compare<
+        T: serde::de::DeserializeOwned + Serialize,
+        U: serde::de::DeserializeOwned + Serialize,
+    >(
+        input: serde_json::Value,
+    ) {
+        let old = serde_json::from_value::<T>(input.clone())
+            .map(|r| serde_json::to_string(&r).unwrap())
+            .map_err(|e| e.to_string());
+        let current = serde_json::from_value::<U>(input.clone())
+            .map(|r| serde_json::to_string(&r).unwrap())
+            .map_err(|e| e.to_string());
+        assert_eq!(old, current, "input={input}");
+    }
+    #[test]
+    fn c14_record_wire_and_legacy_defaults_match_original_serde() {
+        use serde_json::json;
+        let full = json!({"version":3,"id":"abcdefgh","configuration":"shell","agent_name":"snikk",
+                "cwd":"/w/é","scope":"scope","dev_shell":"dev","docker_enabled":true,
+                "packages":{"approved":["jq"],"denied":["git"],"auto_approve":["curl"]},
+                "variables":{"session_id":"conversation","future":"value\0\n"},"sessions":["a-s1","b-s2"],
+                "skipped":[{"name":"docker","reason":"no engine"}],"worktree":{"name":"fix","path":"/w/fix"},
+                "created":0,"updated":u64::MAX,"stopped":null});
+        let check = |v| c14_compare::<c14_original::Record, Record>(v);
+        check(full.clone());
+        for version in [1, 2, 3, 4] {
+            let mut legacy = full.clone();
+            legacy["version"] = json!(version);
+            legacy.as_object_mut().unwrap().remove("worktree");
+            legacy["packages"]
+                .as_object_mut()
+                .unwrap()
+                .remove("auto_approve");
+            check(legacy);
+        }
+        for field in full.as_object().unwrap().keys() {
+            let mut missing = full.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            check(missing);
+            for value in [
+                json!(null),
+                json!(true),
+                json!(-1),
+                json!(1.5),
+                json!({}),
+                json!([]),
+            ] {
+                let mut malformed = full.clone();
+                malformed[field] = value;
+                check(malformed);
+            }
+        }
+        let mut unknown = full.clone();
+        unknown["future"] = json!(true);
+        check(unknown);
+        let mut nested = full.clone();
+        nested["packages"]["future"] = json!(true);
+        check(nested);
+        let mut nested = full.clone();
+        nested["skipped"][0]["future"] = json!(true);
+        check(nested);
+        let mut nested = full.clone();
+        nested["worktree"]["future"] = json!(true);
+        check(nested);
+        let ordered = [
+            "version",
+            "id",
+            "configuration",
+            "agent_name",
+            "cwd",
+            "scope",
+            "dev_shell",
+            "docker_enabled",
+            "packages",
+            "variables",
+            "sessions",
+            "skipped",
+            "worktree",
+            "created",
+            "updated",
+            "stopped",
+        ];
+        let seq: Vec<_> = ordered.iter().map(|k| full[*k].clone()).collect();
+        check(json!(seq));
+        for length in 0..seq.len() {
+            check(json!(&seq[..length]));
+        }
+        let mut extra = seq;
+        extra.push(json!("extra"));
+        check(json!(extra));
+    }
+    #[test]
+    fn c14_prune_named_positional_defaults_and_errors_match_original_serde() {
+        use serde_json::json;
+        let check = |v| c14_compare::<c14_original::Prune, Prune>(v);
+        for input in [
+            json!({}),
+            json!([]),
+            json!([null]),
+            json!([null, null, 0, true]),
+            json!({"older_than":u64::MAX,"before":0,"keep":usize::MAX,"dry_run":false}),
+            json!({"future":1}),
+            json!([null, null, null, false, 0]),
+            json!(null),
+            json!(false),
+        ] {
+            check(input);
+        }
+        for field in ["older_than", "before", "keep", "dry_run"] {
+            for value in [
+                json!(null),
+                json!(-1),
+                json!(0),
+                json!(1.0),
+                json!(true),
+                json!("1"),
+                json!([]),
+            ] {
+                let mut input = json!({});
+                input[field] = value;
+                check(input);
+            }
+        }
+    }
+
+    #[test]
+    fn c14_persisted_versions_normalize_without_rewriting_files() {
+        use serde_json::json;
+        let root = unix::temp_directory().unwrap();
+        let mut originals = BTreeMap::new();
+        for version in [1, 2, 3, 4] {
+            let id = format!("v{version}");
+            let mut value = serde_json::to_value(record(&id, version)).unwrap();
+            value["version"] = json!(version);
+            if version <= 2 {
+                value.as_object_mut().unwrap().remove("worktree");
+            }
+            if version == 1 {
+                value["packages"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("auto_approve");
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            fs::write(root.join(format!("{id}.json")), &bytes).unwrap();
+            originals.insert(id, bytes);
+        }
+        let loaded = load(&root).unwrap();
+        assert_eq!(
+            loaded.keys().cloned().collect::<Vec<_>>(),
+            ["v1", "v2", "v3"]
+        );
+        for id in ["v1", "v2", "v3"] {
+            assert_eq!(loaded[id].version, 3);
+            assert!(loaded[id].packages.auto_approve.is_empty());
+            assert!(loaded[id].worktree.is_none());
+        }
+        for (id, bytes) in originals {
+            assert_eq!(fs::read(root.join(format!("{id}.json"))).unwrap(), bytes);
+        }
+        let mut malformed = serde_json::to_value(record("bad", 0)).unwrap();
+        malformed["future"] = json!(true);
+        fs::write(root.join("bad.json"), malformed.to_string()).unwrap();
+        fs::write(
+            root.join("mismatch.json"),
+            serde_json::to_vec(&record("different", 0)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(load(&root).unwrap(), loaded);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn c14_prune_selection_preserves_cutoffs_ties_and_live_exclusions() {
+        let records: BTreeMap<_, _> = [("a", 0), ("b", 5), ("c", 10), ("d", 10), ("e", 20)]
+            .into_iter()
+            .map(|(id, t)| (id.into(), record(id, t)))
+            .collect();
+        let running = BTreeSet::from(["b".into()]);
+        assert_eq!(
+            newest_first(&records)
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            ["e", "d", "c", "b", "a"]
+        );
+        for (params, expected) in [
+            (serde_json::json!({}), vec![]),
+            (serde_json::json!({"dry_run":true}), vec![]),
+            (serde_json::json!({"keep":0}), vec!["a", "c", "d", "e"]),
+            (serde_json::json!({"keep":2}), vec!["a", "c"]),
+            (serde_json::json!({"before":10}), vec!["a"]),
+            (serde_json::json!({"older_than":10}), vec!["a"]),
+            (serde_json::json!({"older_than":30}), vec![]),
+            (
+                serde_json::json!({"keep":2,"before":11,"older_than":9,"dry_run":true}),
+                vec!["a", "c"],
+            ),
+        ] {
+            let p: Prune = serde_json::from_value(params.clone()).unwrap();
+            assert_eq!(p.select(&records, &running, 20), expected, "{params}");
+        }
+    }
+
 }

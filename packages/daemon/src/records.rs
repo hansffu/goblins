@@ -1,18 +1,20 @@
 //! `goblins history`: recorded goblins, through the daemon that owns the
 //! store, or straight from the store when no daemon runs here.
 use goblins_controller::{Result, history, host::Client};
+use goblins_controller::history::PruneExt;
+use goblins_protocol::contract;
 use serde_json::{Value, json};
 use std::path::Path;
 
 /// The records, newest first, each with `running` (null when unknown).
 pub(crate) fn records(state: &Path) -> Result<Vec<Value>> {
     if let Some(mut client) = Client::connect_optional(state)? {
-        match client.call("history.list", json!({})) {
+        match client.call_typed::<contract::host::HistoryList>(contract::MailboxStatusParams {}) {
             Ok(list) => {
-                if list["truncated"] == true {
+                if list.truncated {
                     eprintln!("goblins: showing only the newest records that fit one response");
                 }
-                return Ok(list["records"].as_array().cloned().unwrap_or_default());
+                return Ok(list.records);
             }
             // This daemon runs without history; read the store itself.
             Err(e) if e.to_string().contains("no session history") => (),
@@ -29,11 +31,7 @@ pub(crate) fn records(state: &Path) -> Result<Vec<Value>> {
     let records = history::load(&directory)?;
     Ok(history::newest_first(&records)
         .into_iter()
-        .map(|record| {
-            let mut value = json!(record);
-            value["running"] = Value::Null;
-            value
-        })
+        .map(|record| json!(history::wire(record, None)))
         .collect())
 }
 
@@ -43,7 +41,7 @@ pub fn list(state: &Path, as_json: bool, pager: bool) -> Result<i32> {
         println!("{}", Value::Array(records));
         return Ok(0);
     }
-    let text = |v: &Value| goblins_protocol::plain_text(v.as_str().unwrap_or("-"));
+    let text = |v: Option<&str>| goblins_protocol::plain_text(v.unwrap_or("-"));
     let mut rows = vec![
         [
             "ID",
@@ -57,23 +55,17 @@ pub fn list(state: &Path, as_json: bool, pager: bool) -> Result<i32> {
         ]
         .map(String::from),
     ];
-    for r in &records {
-        let skipped: Vec<_> = r["skipped"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|s| text(&s["name"]))
-            .collect();
+    for record in &records {
+        let r = contract::HistoryDisplayRecord::project(record);
+        let skipped: Vec<_> = r.skipped.iter().map(|s| text(s.as_deref())).collect();
         rows.push([
-            text(&r["id"]),
-            text(&r["agent_name"]),
-            text(&r["configuration"]),
-            text(&r["variables"]["session_name"]),
-            text(&r["cwd"]),
-            r["updated"]
-                .as_u64()
-                .map_or("-".into(), history::local_time),
-            match r["running"].as_bool() {
+            text(r.id.as_deref()),
+            text(r.agent_name.as_deref()),
+            text(r.configuration.as_deref()),
+            text(r.session_name.as_deref()),
+            text(r.cwd.as_deref()),
+            r.updated.map_or("-".into(), history::local_time),
+            match r.running {
                 Some(true) => "yes",
                 Some(false) => "-",
                 None => "?",
@@ -139,18 +131,16 @@ type Outcome = (Vec<String>, Vec<(String, String)>);
 pub fn prune(state: &Path, prune: history::Prune) -> Result<i32> {
     let mut outcome = None;
     if let Some(mut client) = Client::connect_optional(state)? {
-        match client.call("history.prune", serde_json::to_value(&prune)?) {
+        match client.call_typed::<contract::host::HistoryPrune>(prune.clone()) {
             Ok(result) => {
-                let failed: Vec<Value> = serde_json::from_value(result["failed"].clone())?;
                 outcome = Some((
-                    serde_json::from_value(result["removed"].clone())?,
-                    failed
+                    result.removed,
+                    result
+                        .failed
                         .iter()
-                        .map(|f| {
-                            (
-                                f["id"].as_str().unwrap_or("-").to_string(),
-                                f["reason"].as_str().unwrap_or("-").to_string(),
-                            )
+                        .map(|value| {
+                            let row = contract::HistoryPruneFailureRead::project(value);
+                            (row.id, row.reason)
                         })
                         .collect(),
                 ));
@@ -215,4 +205,165 @@ fn offline_prune(prune: &history::Prune) -> Result<Outcome> {
     }
     let result = store.delete_now(&removed);
     Ok((result.removed, result.failed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use goblins_jsonrpc as rpc;
+    use std::{io::Write, os::fd::AsRawFd, os::unix::net::UnixListener};
+
+    struct C14Root(std::path::PathBuf);
+    impl Drop for C14Root {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    fn c14_peer<T>(
+        method: &str,
+        params: Value,
+        response: std::result::Result<Value, (i32, &str)>,
+        invoke: impl FnOnce(&Path) -> T,
+    ) -> T {
+        // Guard outlives both the invoking client and scoped peer cleanup.
+        let _no_forks = goblins_unix::no_forks();
+        let root = C14Root(goblins_unix::temp_directory().unwrap());
+        let listener = UnixListener::bind(root.0.join("host.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        std::thread::scope(|scope| {
+            let server = scope.spawn(move || {
+                assert!(
+                    goblins_unix::readable(listener.as_raw_fd(), 3000).unwrap(),
+                    "client did not connect before deadline"
+                );
+                let (mut peer, _) = listener.accept().unwrap();
+                peer.set_read_timeout(Some(rpc::TIMEOUT)).unwrap();
+                peer.set_write_timeout(Some(rpc::TIMEOUT)).unwrap();
+                let init = rpc::read(&mut peer).unwrap();
+                assert_eq!(init["method"], "initialize");
+                assert_eq!(init["params"], json!({"api":1}));
+                peer.write_all(
+                    &rpc::encode(&rpc::result(
+                        init["id"].clone(),
+                        fixtures["host_initialize"].clone(),
+                    ))
+                    .unwrap(),
+                )
+                .unwrap();
+                let call = rpc::read(&mut peer).unwrap();
+                assert_eq!(call["method"], method);
+                assert_eq!(call["params"], params);
+                let reply = match response {
+                    Ok(value) => rpc::result(call["id"].clone(), value),
+                    Err((code, message)) => rpc::error(call["id"].clone(), code, message),
+                };
+                peer.write_all(&rpc::encode(&reply).unwrap()).unwrap();
+            });
+            let result = invoke(&root.0);
+            server.join().unwrap();
+            result
+        })
+    }
+    #[test]
+    fn c14_online_records_keep_raw_partial_values_and_legacy_empty_fallbacks() {
+        let raw = json!([{"id":"a","running":null,"version":99,"future":[1]},null,17]);
+        for reply in [
+            json!({"records":raw,"truncated":false}),
+            json!({"records":raw,"truncated":true}),
+            json!({"records":raw,"truncated":"future"}),
+        ] {
+            assert_eq!(
+                c14_peer("history.list", json!({}), Ok(reply), |state| records(state)).unwrap(),
+                raw.as_array().unwrap().clone()
+            );
+        }
+        for reply in [
+            json!({}),
+            json!(null),
+            json!([]),
+            json!({"records":null}),
+            json!({"records":17}),
+        ] {
+            assert!(
+                c14_peer("history.list", json!({}), Ok(reply), |state| records(state))
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let error = c14_peer(
+            "history.list",
+            json!({}),
+            Err((-32009, "access refused")),
+            |state| records(state),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("access refused"));
+    }
+    #[test]
+    fn c14_online_prune_keeps_request_defaults_partial_failures_and_decode_errors() {
+        for dry_run in [false, true] {
+            for (reply, exit) in [
+                (json!({"removed":["a"],"failed":[],"dry_run":!dry_run}), 0),
+                (
+                    json!({"removed":[],"failed":[{"id":"a","reason":"permission refused"}],"future":true}),
+                    1,
+                ),
+                (
+                    json!({"removed":[],"failed":[null,17,{"id":17,"reason":false}]}),
+                    1,
+                ),
+            ] {
+                let request = history::Prune {
+                    keep: Some(0),
+                    dry_run,
+                    ..Default::default()
+                };
+                assert_eq!(
+                    c14_peer(
+                        "history.prune",
+                        json!({"older_than":null,"before":null,"keep":0,"dry_run":dry_run}),
+                        Ok(reply),
+                        |state| prune(state, request)
+                    )
+                    .unwrap(),
+                    exit
+                );
+            }
+        }
+        for reply in [
+            json!({}),
+            json!({"removed":[],"failed":null}),
+            json!({"removed":[],"failed":17}),
+            json!({"removed":null,"failed":[]}),
+            json!({"removed":[17],"failed":[]}),
+        ] {
+            let request = history::Prune {
+                keep: Some(0),
+                ..Default::default()
+            };
+            assert!(
+                c14_peer(
+                    "history.prune",
+                    json!({"older_than":null,"before":null,"keep":0,"dry_run":false}),
+                    Ok(reply),
+                    |state| prune(state, request)
+                )
+                .is_err()
+            );
+        }
+        let request = history::Prune {
+            keep: Some(0),
+            ..Default::default()
+        };
+        let error = c14_peer(
+            "history.prune",
+            json!({"older_than":null,"before":null,"keep":0,"dry_run":false}),
+            Err((-32009, "access refused")),
+            |state| prune(state, request),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("access refused"));
+    }
 }

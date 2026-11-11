@@ -21524,5 +21524,631 @@
       },
       "valid": false
     }
+  ],
+  "history_parameter_cases": [
+    {
+      "method": "history.list",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "history.list",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "history.list",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "history.list",
+      "params": [
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "history.list",
+      "params": {
+        "future": true
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": 0
+      },
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "params": [
+        null,
+        null,
+        0
+      ],
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "params": [
+        1
+      ],
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "before": 0
+      },
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "older_than": 18446744073709551615,
+        "before": 0,
+        "keep": 0,
+        "dry_run": true
+      },
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "dry_run": true
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": null
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": -1
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": 1.0
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": true
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": 18446744073709551616
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "before": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "older_than": 0,
+        "dry_run": null
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": {
+        "keep": 0,
+        "future": true
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "params": [
+        null,
+        null,
+        0,
+        false,
+        1
+      ],
+      "valid": false
+    }
+  ],
+  "history_result_cases": [
+    {
+      "method": "history.list",
+      "result": {
+        "directory": "/tmp/history",
+        "records": [
+          {
+            "version": 3,
+            "id": "r",
+            "configuration": "shell",
+            "agent_name": "scout",
+            "cwd": "/tmp/work",
+            "scope": null,
+            "dev_shell": null,
+            "docker_enabled": true,
+            "packages": {
+              "approved": [
+                "ripgrep"
+              ],
+              "denied": [
+                "git"
+              ],
+              "auto_approve": [
+                "nix"
+              ]
+            },
+            "variables": {
+              "session_name": "hello",
+              "session_id": "thread"
+            },
+            "sessions": [
+              "s1",
+              "s2"
+            ],
+            "skipped": [
+              {
+                "name": "docker",
+                "reason": "not restored"
+              }
+            ],
+            "worktree": {
+              "name": "topic",
+              "path": "/tmp/tree"
+            },
+            "created": 1,
+            "updated": 9,
+            "stopped": null,
+            "running": false
+          }
+        ],
+        "truncated": false
+      },
+      "valid": true
+    },
+    {
+      "method": "history.list",
+      "result": {
+        "directory": "/tmp/history",
+        "records": [],
+        "truncated": true
+      },
+      "valid": true
+    },
+    {
+      "method": "history.list",
+      "result": {
+        "directory": "/tmp/history",
+        "records": [
+          {
+            "version": 4,
+            "id": "r",
+            "configuration": "shell",
+            "agent_name": "scout",
+            "cwd": "/tmp/work",
+            "scope": null,
+            "dev_shell": null,
+            "docker_enabled": true,
+            "packages": {
+              "approved": [
+                "ripgrep"
+              ],
+              "denied": [
+                "git"
+              ],
+              "auto_approve": [
+                "nix"
+              ]
+            },
+            "variables": {
+              "session_name": "hello",
+              "session_id": "thread"
+            },
+            "sessions": [
+              "s1",
+              "s2"
+            ],
+            "skipped": [
+              {
+                "name": "docker",
+                "reason": "not restored"
+              }
+            ],
+            "worktree": {
+              "name": "topic",
+              "path": "/tmp/tree"
+            },
+            "created": 1,
+            "updated": 9,
+            "stopped": null,
+            "running": false
+          }
+        ],
+        "truncated": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.list",
+      "result": {
+        "directory": "/tmp/history",
+        "records": [
+          {
+            "version": 3,
+            "id": "r",
+            "configuration": "shell",
+            "agent_name": "scout",
+            "cwd": "/tmp/work",
+            "scope": null,
+            "dev_shell": null,
+            "docker_enabled": true,
+            "packages": {
+              "approved": [
+                "ripgrep"
+              ],
+              "denied": [
+                "git"
+              ],
+              "auto_approve": [
+                "nix"
+              ]
+            },
+            "variables": {
+              "session_name": "hello",
+              "session_id": "thread"
+            },
+            "sessions": [
+              "s1",
+              "s2"
+            ],
+            "skipped": [
+              {
+                "name": "docker",
+                "reason": "not restored"
+              }
+            ],
+            "worktree": {
+              "name": "topic",
+              "path": "/tmp/tree"
+            },
+            "created": 1,
+            "updated": 9,
+            "stopped": null,
+            "running": null
+          }
+        ],
+        "truncated": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.list",
+      "result": {
+        "directory": "/tmp/history",
+        "records": [
+          {
+            "version": 3,
+            "id": "r",
+            "configuration": "shell",
+            "agent_name": "scout",
+            "cwd": "/tmp/work",
+            "scope": null,
+            "dev_shell": null,
+            "docker_enabled": true,
+            "packages": {
+              "approved": [
+                "ripgrep"
+              ],
+              "denied": [
+                "git"
+              ],
+              "auto_approve": [
+                "nix"
+              ]
+            },
+            "variables": {
+              "session_name": "hello",
+              "session_id": "thread"
+            },
+            "sessions": [
+              "s1",
+              "s2"
+            ],
+            "skipped": [
+              {
+                "name": "docker",
+                "reason": "not restored"
+              }
+            ],
+            "worktree": {
+              "name": "topic",
+              "path": "/tmp/tree"
+            },
+            "created": 1,
+            "updated": 9,
+            "stopped": null,
+            "running": "yes"
+          }
+        ],
+        "truncated": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.list",
+      "result": {
+        "directory": "/tmp/history",
+        "records": [
+          {
+            "version": 3,
+            "id": "r",
+            "configuration": "shell",
+            "agent_name": "scout",
+            "cwd": "/tmp/work",
+            "scope": null,
+            "dev_shell": null,
+            "docker_enabled": true,
+            "packages": {
+              "approved": [
+                "ripgrep"
+              ],
+              "denied": [
+                "git"
+              ],
+              "auto_approve": [
+                "nix"
+              ]
+            },
+            "variables": {
+              "session_name": "hello",
+              "session_id": "thread"
+            },
+            "sessions": [
+              "s1",
+              "s2"
+            ],
+            "skipped": [
+              {
+                "name": "docker",
+                "reason": "not restored"
+              }
+            ],
+            "worktree": {
+              "name": "topic",
+              "path": "/tmp/tree"
+            },
+            "created": 1,
+            "updated": 1.0,
+            "stopped": null,
+            "running": false
+          }
+        ],
+        "truncated": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "result": {
+        "removed": [],
+        "failed": [],
+        "dry_run": true
+      },
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "result": {
+        "removed": [
+          "r"
+        ],
+        "failed": [
+          {
+            "id": "other",
+            "reason": "blocked"
+          }
+        ],
+        "dry_run": false
+      },
+      "valid": true
+    },
+    {
+      "method": "history.prune",
+      "result": {
+        "removed": [
+          1
+        ],
+        "failed": [],
+        "dry_run": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "result": {
+        "removed": [],
+        "failed": [
+          {
+            "id": "r"
+          }
+        ],
+        "dry_run": false
+      },
+      "valid": false
+    },
+    {
+      "method": "history.prune",
+      "result": {
+        "removed": [],
+        "failed": [],
+        "dry_run": null
+      },
+      "valid": false
+    }
+  ],
+  "history_legacy_list_cases": [
+    null,
+    [],
+    17,
+    {},
+    {
+      "records": null,
+      "truncated": "yes"
+    },
+    {
+      "records": [
+        "future",
+        null,
+        {},
+        {
+          "id": "r",
+          "future": [
+            true
+          ]
+        }
+      ],
+      "truncated": true
+    },
+    {
+      "records": [
+        {
+          "version": 3,
+          "id": "r",
+          "configuration": "shell",
+          "agent_name": "scout",
+          "cwd": "/tmp/work",
+          "scope": null,
+          "dev_shell": null,
+          "docker_enabled": true,
+          "packages": {
+            "approved": [
+              "ripgrep"
+            ],
+            "denied": [
+              "git"
+            ],
+            "auto_approve": [
+              "nix"
+            ]
+          },
+          "variables": {
+            "session_name": "hello",
+            "session_id": "thread"
+          },
+          "sessions": [
+            "s1",
+            "s2"
+          ],
+          "skipped": [
+            {
+              "name": "docker",
+              "reason": "not restored"
+            }
+          ],
+          "worktree": {
+            "name": "topic",
+            "path": "/tmp/tree"
+          },
+          "created": 1,
+          "updated": 9,
+          "stopped": null,
+          "running": false
+        }
+      ],
+      "truncated": false
+    }
+  ],
+  "history_legacy_prune_cases": [
+    {
+      "result": {
+        "removed": [
+          "r"
+        ],
+        "failed": [
+          null,
+          5,
+          {},
+          {
+            "id": false,
+            "reason": []
+          }
+        ],
+        "future": true
+      },
+      "valid": true
+    },
+    {
+      "result": {
+        "removed": [],
+        "failed": []
+      },
+      "valid": true
+    },
+    {
+      "result": null,
+      "valid": false
+    },
+    {
+      "result": {},
+      "valid": false
+    },
+    {
+      "result": {
+        "removed": [],
+        "failed": null
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "removed": [
+          1
+        ],
+        "failed": []
+      },
+      "valid": false
+    },
+    {
+      "result": {
+        "removed": [],
+        "failed": {}
+      },
+      "valid": false
+    }
   ]
 }

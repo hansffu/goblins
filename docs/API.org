@@ -321,6 +321,12 @@ Removes records that are not running. Every given criterion must match; at least
 - Input :: ={"older_than"?, "before"?, "keep"?, "dry_run"?}=. =older_than= is milliseconds since the last update; =before= is a Unix millisecond; =keep= keeps the N most recently updated.
 - Output :: ={"removed": [id], "failed": [{"id", "reason"}], "dry_run"}=. A real prune replies after the deletes finish.
 
+History methods are host-only. Invalid parameter shapes or a missing prune criterion return -32602; an unavailable history store returns -32009. Individual durable-delete failures appear in failed rather than changing a successful RPC into an error. Named parameter objects are closed; history.list accepts the original empty positional form, and history.prune accepts =[older_than?, before?, keep?, dry_run?]= with null/null/null/false defaults. Null params are refused. These two methods retain direct Serde decoding of objects and positional arrays: excess elements produce the original length diagnostic, and invalid positional fields are checked in older_than/before/keep/dry_run order rather than sorted-object order. Decode precedes the no-criterion check, which precedes store availability. Age/before comparisons are strict; age subtraction saturates at zero, all specified criteria conjoin, keep uses newest-first ordering and selected IDs return oldest-first. Live and already-deleting records are excluded. A dry-run or empty selection replies immediately; durable deletion reports successes and individual failures after the existing writer finishes, with dry_run:false on that completion.
+
+List records sort descending by updated then id and omit deleting records. The 900-KiB cap sums each serialized record including running, excluding the wrapper, and stops before the first over-budget row. The daemon emits version3 and boolean running; the unlocked offline reader emits running:null. Generated public projections do not rewrite persisted files or change store ownership, recreate reservations, pruning locks or writer ordering.
+
+Compatible Rust list readers accept raw partial/future rows, default a missing or malformed records field to an empty list, and treat truncated as true only for the boolean true value. Display fields retain independent dash/unknown fallbacks. Prune readers require failed and removed arrays, decode failed before removed, require removed IDs to be strings, and retain malformed individual failed rows with dash fallbacks for id/reason. CLI wording uses requested dry_run rather than result dry_run. The original no-session-history error-text fallback to the offline store remains. Emacs resume readers use generated lazy record views without adding whole-record validation or tightening partial/malformed field behavior.
+
 ** Raids
 
 Each method that returns =Raid= returns the raid's current record. Raid names and roles match =[a-z][a-z0-9-]{0,31}=; a role can be changed but not cleared.
@@ -766,9 +772,31 @@ Emacs message-cache consumers use generated lazy record views from the canonical
 
 ** HistoryRecord
 
-={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "worktree", "created", "updated", "stopped"}=
+={"version", "id", "configuration", "agent_name", "cwd", "scope", "dev_shell", "docker_enabled", "packages": {"approved", "denied", "auto_approve"}, "variables", "sessions", "skipped", "worktree", "created", "updated", "stopped", "running"}=
 
-=version= is 3. Version 1 and 2 records read as the current version, with =worktree: null=. =worktree= is the =Worktree= the goblin works in, written whenever it changes. =goblins resume= launches in the recorded working directory and restores the worktree if its name is still a worktree in the new launch's worktree folder; otherwise the record's =skipped= lists ={"name": "worktree", "reason"}= and none is set. A record with =worktree: null= resumes without one, in the main checkout, even when its working directory is a worktree.
+Persisted Record remains a separate closed domain type; raw deserialization permits future u32 versions, while the file loader accepts only versions 1/2/3, normalizes in memory and leaves source files unchanged. Missing auto_approve defaults to an empty list and missing worktree defaults to null. API projections include all original fields plus running (boolean online, null offline), retain unknown client additions through raw readers and use generated nested package/worktree/skipped records. =version= is 3. Version 1 and 2 records read as the current version, with =worktree: null=. =worktree= is the =Worktree= the goblin works in, written whenever it changes. =goblins resume= launches in the recorded working directory and restores the worktree if its name is still a worktree in the new launch's worktree folder; otherwise the record's =skipped= lists ={"name": "worktree", "reason"}= and none is set. A record with =worktree: null= resumes without one, in the main checkout, even when its working directory is a worktree.
+
+| Field | Meaning |
+|-------+---------|
+| version | Current emitted version 3; historical file loading is described above |
+| id | Stable recreation/conversation record ID |
+| configuration, agent_name | Configuration to launch and the goblin's recorded name |
+| cwd | Nullable recorded working directory, as a host path |
+| scope, dev_shell | Nullable saved scope and development-shell reference |
+| docker_enabled | Whether Docker was enabled for this record |
+| packages.approved | Granted package names in grant/PATH priority order |
+| packages.denied | Explicitly denied package names, for information |
+| packages.auto_approve | Package names inherited for approval without asking |
+| variables | Agent-reported string map; session_id names its conversation and session_name optionally labels it |
+| sessions | Goblin session IDs that ran this record, oldest first |
+| skipped | Array of name/reason objects explaining restoration failures |
+| worktree | Nullable object containing the worktree name and host path |
+| created, updated | Creation and latest-update Unix milliseconds |
+| stopped | Nullable informational stop time in Unix milliseconds |
+| running | Boolean live-record status online; null when unknown offline |
+
+Persisted files omit running. Constructed skipped name/reason text is bounded to 256 UTF-8 bytes, with whitespace/control sanitization; this does not add stricter deserialization to older stored records. Existing record-size, package-name and retained-session limits remain enforced by the domain writer/update paths.
+
 
 * Private init channel (same build)
 

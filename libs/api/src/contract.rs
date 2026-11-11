@@ -30,6 +30,73 @@ impl Response for CommunicationsPageReply {
     }
 }
 
+impl Response for HistoryListReply {
+    const SCHEMA: &'static str = "HistoryListReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        Ok(Self {
+            records: value
+                .get("records")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            truncated: value
+                .get("truncated")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
+}
+impl Response for HistoryPruneReply {
+    const SCHEMA: &'static str = "HistoryPruneReply";
+    fn decode(value: Value) -> io::Result<Self> {
+        // Original CLI diagnostic precedence: failed collection before removed.
+        let failed = serde_json::from_value(value["failed"].clone()).map_err(io::Error::other)?;
+        let removed = serde_json::from_value(value["removed"].clone()).map_err(io::Error::other)?;
+        Ok(Self { removed, failed })
+    }
+}
+impl HistoryPruneFailureRead {
+    pub fn project(value: &Value) -> Self {
+        Self {
+            id: value
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("-")
+                .into(),
+            reason: value
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("-")
+                .into(),
+        }
+    }
+}
+impl HistoryDisplayRecord {
+    pub fn project(value: &Value) -> Self {
+        let text = |key| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        Self {
+            id: text("id"),
+            agent_name: text("agent_name"),
+            configuration: text("configuration"),
+            cwd: text("cwd"),
+            session_name: value
+                .get("variables")
+                .and_then(|v| v.get("session_name"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            updated: value.get("updated").and_then(Value::as_u64),
+            running: value.get("running").and_then(Value::as_bool),
+            skipped: value
+                .get("skipped")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|v| v.get("name").and_then(Value::as_str).map(str::to_owned))
+                .collect(),
+        }
+    }
+}
+
 /// Resolve only the historical fields this reader has always consumed.
 impl CommunicationSessionStartedRead {
     pub fn name(&self) -> &str {
@@ -111,6 +178,7 @@ pub trait Method {
     const PRESENCE: ParamPresence;
     const POSITIONAL: bool = true;
     const NULL_AS_EMPTY: bool = false;
+    const DIRECT_SERDE_PARAMS: bool = false;
     const PARAM_NORMALIZATION: Option<&'static str> = None;
     const NESTED_POSITIONAL: &'static [NestedPositional] = &[];
     const OMIT_FALSE: &'static [&'static str] = &[];
@@ -699,6 +767,11 @@ impl Response for ServerStopResult {
 /// Decode requests using their original endpoint-specific positional field order.
 /// Typify emits alphabetic Rust fields, so wire arrays must first become named data.
 pub fn decode_params<M: Method>(value: Value) -> serde_json::Result<M::Params> {
+    // Selected DTOs retain original field order and default slots, so direct
+    // Serde preserves both excess-length errors and first-invalid-field order.
+    if M::DIRECT_SERDE_PARAMS {
+        return serde_json::from_value(value);
+    }
     let mut value = if value.is_null() && M::NULL_AS_EMPTY {
         serde_json::json!({})
     } else {
