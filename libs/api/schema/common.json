@@ -7825,7 +7825,240 @@
         "data"
       ],
       "additionalProperties": true,
-      "description": "C13a event envelope retains original serialized field order and named/sequence readers. Event kind/data stay open until C13b introduces known producer payloads with an explicit legacy/unknown-event reader. No stored-log format changes."
+      "description": "The stored envelope retains original Serde name/order and open String/Value reading for unknown or older logs. Known producers bind kind/data using generated payload markers; canonical schemas check known pairs. Remaining producer families/consumers are recorded in x-migration-pending.",
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.created"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidCreatedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.joined"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidJoinedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.role"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidRoleData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.left"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidLeftData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.paused"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidPausedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.owner"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidOwnerData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.dissolved"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidDissolvedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "raid.notice"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommRaidNoticeData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "operation.requested"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommOperationRequestedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "operation.decided"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommOperationDecidedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "operation.completed"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommOperationCompletedData"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "operation.duplicate"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/definitions/CommOperationDuplicateData"
+              }
+            }
+          }
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
     },
     "CommunicationsPageResult": {
       "type": "object",
@@ -7956,6 +8189,501 @@
         "after"
       ],
       "additionalProperties": false
+    },
+    "CommRaidLeaveReason": {
+      "type": "string",
+      "enum": [
+        "left",
+        "stopped",
+        "launch-failed",
+        "kicked"
+      ]
+    },
+    "CommRaidDissolveReason": {
+      "type": "string",
+      "enum": [
+        "destroyed",
+        "empty"
+      ]
+    },
+    "CommRaidCreatedData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raid",
+        "name",
+        "owner"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidJoinedData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "raid",
+        "session",
+        "role",
+        "created_by"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidRoleData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raid",
+        "session",
+        "role"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidLeftData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "session": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/definitions/CommRaidLeaveReason"
+        }
+      },
+      "required": [
+        "raid",
+        "session",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidPausedData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "former_owner": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/definitions/CommRaidLeaveReason"
+        }
+      },
+      "required": [
+        "raid",
+        "former_owner",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidOwnerData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "previous": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "raid",
+        "owner",
+        "previous"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidDissolvedData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "reason": {
+          "$ref": "#/definitions/CommRaidDissolveReason"
+        }
+      },
+      "required": [
+        "raid",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "CommRaidNoticeData": {
+      "type": "object",
+      "properties": {
+        "raid": {
+          "type": "string"
+        },
+        "notice": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxMessage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "undelivered": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "raid",
+        "notice"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "notice": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "undelivered"
+              ]
+            },
+            {
+              "properties": {
+                "notice": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/MailboxMessage"
+                    },
+                    {
+                      "properties": {
+                        "sender": {
+                          "const": "goblins"
+                        },
+                        "state": {
+                          "const": "queued"
+                        },
+                        "claim_generation": {
+                          "const": 0
+                        },
+                        "raid": {
+                          "$ref": "#/definitions/MailboxRaidNotice"
+                        }
+                      },
+                      "required": [
+                        "raid"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "not": {
+                "required": [
+                  "undelivered"
+                ]
+              },
+              "allOf": [
+                {
+                  "x-equal-fields": [
+                    "/raid",
+                    "/notice/raid/id"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "CommOperationRequestedData": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "automatic": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "request",
+        "kind",
+        "subject",
+        "reason",
+        "automatic"
+      ],
+      "additionalProperties": true
+    },
+    "CommOperationDecidedData": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "approved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "request",
+        "approved"
+      ],
+      "additionalProperties": true
+    },
+    "CommOperationCompletedCore": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "request",
+        "kind",
+        "subject",
+        "status",
+        "message"
+      ],
+      "additionalProperties": true
+    },
+    "CommOperationCompletedData": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notice": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxMessage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "undelivered": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "kind",
+        "subject",
+        "status",
+        "message",
+        "notice"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "notice": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "undelivered"
+              ]
+            },
+            {
+              "properties": {
+                "notice": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/MailboxMessage"
+                    },
+                    {
+                      "properties": {
+                        "sender": {
+                          "const": "goblins"
+                        },
+                        "state": {
+                          "const": "queued"
+                        },
+                        "claim_generation": {
+                          "const": 0
+                        },
+                        "operation": {
+                          "$ref": "#/definitions/MailboxOperation"
+                        }
+                      },
+                      "required": [
+                        "operation"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "not": {
+                "required": [
+                  "undelivered"
+                ]
+              },
+              "allOf": [
+                {
+                  "x-equal-fields": [
+                    "/request",
+                    "/notice/operation/request"
+                  ]
+                },
+                {
+                  "x-equal-fields": [
+                    "/kind",
+                    "/notice/operation/kind"
+                  ]
+                },
+                {
+                  "x-equal-fields": [
+                    "/subject",
+                    "/notice/operation/subject"
+                  ]
+                },
+                {
+                  "x-equal-fields": [
+                    "/status",
+                    "/notice/operation/status"
+                  ]
+                },
+                {
+                  "x-equal-fields": [
+                    "/message",
+                    "/notice/operation/message"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "x-generator-omit": [
+        "allOf"
+      ]
+    },
+    "CommOperationDuplicateData": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "status"
+      ],
+      "additionalProperties": true
     }
   },
   "x-api-version": 1,
@@ -10327,6 +11055,93 @@
     }
   },
   "x-migration-pending": {
-    "C13b": "Known communication event payloads, kind/payload pairing, compatible retained-log and Emacs data consumers."
-  }
+    "C13b2": "Mutation/session/retry/recipient event payloads and producer bindings.",
+    "C13b3": "Compatible known-payload readers, retained-log/offline and Emacs consumers, producer coverage closure."
+  },
+  "x-communications-payloads": [
+    {
+      "kind": "raid.created",
+      "x-rust-name": "RaidCreated",
+      "schema": {
+        "$ref": "#/definitions/CommRaidCreatedData"
+      }
+    },
+    {
+      "kind": "raid.joined",
+      "x-rust-name": "RaidJoined",
+      "schema": {
+        "$ref": "#/definitions/CommRaidJoinedData"
+      }
+    },
+    {
+      "kind": "raid.role",
+      "x-rust-name": "RaidRole",
+      "schema": {
+        "$ref": "#/definitions/CommRaidRoleData"
+      }
+    },
+    {
+      "kind": "raid.left",
+      "x-rust-name": "RaidLeft",
+      "schema": {
+        "$ref": "#/definitions/CommRaidLeftData"
+      }
+    },
+    {
+      "kind": "raid.paused",
+      "x-rust-name": "RaidPaused",
+      "schema": {
+        "$ref": "#/definitions/CommRaidPausedData"
+      }
+    },
+    {
+      "kind": "raid.owner",
+      "x-rust-name": "RaidOwner",
+      "schema": {
+        "$ref": "#/definitions/CommRaidOwnerData"
+      }
+    },
+    {
+      "kind": "raid.dissolved",
+      "x-rust-name": "RaidDissolved",
+      "schema": {
+        "$ref": "#/definitions/CommRaidDissolvedData"
+      }
+    },
+    {
+      "kind": "raid.notice",
+      "x-rust-name": "RaidNotice",
+      "schema": {
+        "$ref": "#/definitions/CommRaidNoticeData"
+      }
+    },
+    {
+      "kind": "operation.requested",
+      "x-rust-name": "OperationRequested",
+      "schema": {
+        "$ref": "#/definitions/CommOperationRequestedData"
+      }
+    },
+    {
+      "kind": "operation.decided",
+      "x-rust-name": "OperationDecided",
+      "schema": {
+        "$ref": "#/definitions/CommOperationDecidedData"
+      }
+    },
+    {
+      "kind": "operation.completed",
+      "x-rust-name": "OperationCompleted",
+      "schema": {
+        "$ref": "#/definitions/CommOperationCompletedData"
+      }
+    },
+    {
+      "kind": "operation.duplicate",
+      "x-rust-name": "OperationDuplicate",
+      "schema": {
+        "$ref": "#/definitions/CommOperationDuplicateData"
+      }
+    }
+  ]
 }

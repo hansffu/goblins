@@ -598,6 +598,15 @@ def check():
             if field not in props or not names or any(type(n) is not str or n in props for n in names):raise ValueError("invalid generated Serde alias")
             aliases.extend(names)
         if len(aliases)!=len(set(aliases)):raise ValueError("duplicate generated Serde alias")
+    payloads=common().get("x-communications-payloads",[])
+    if payloads:
+        kinds=[row["kind"] for row in payloads];names=[row["x-rust-name"] for row in payloads]
+        if len(kinds)!=len(set(kinds)) or len(names)!=len(set(names)):raise ValueError("duplicate communication payload binding")
+        expected=[{"if":{"properties":{"kind":{"const":row["kind"]}},"required":["kind"]},"then":{"properties":{"data":row["schema"]}}} for row in payloads]
+        if common()["definitions"]["CommunicationsEvent"]["allOf"]!=expected:raise ValueError("communication kind/data constraints differ from registry")
+        for row in payloads:
+            pointer={"$ref":"common.json"+row["schema"]["$ref"]}
+            schema_validator(pointer).check_schema(resolve(pointer))
     registry = Registry()
     for uri, path in (("https://meta.json-schema.tools/", "vendor/json-schema-tools.json"), ("https://meta.json-schema.tools", "vendor/json-schema-tools.json")):
         registry = registry.with_resource(uri, Resource.from_contents(read(path), default_specification=DRAFT7))

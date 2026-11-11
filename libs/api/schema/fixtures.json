@@ -19846,5 +19846,314 @@
       "cursor": 18446744073709551616,
       "latest": true
     }
+  ],
+  "communication_payload_cases": [
+    {
+      "kind": "raid.created",
+      "data": {
+        "raid": "r",
+        "name": "crew",
+        "owner": "s"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.joined",
+      "data": {
+        "raid": "r",
+        "session": "s",
+        "role": null,
+        "created_by": null
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.role",
+      "data": {
+        "raid": "r",
+        "session": "s",
+        "role": "reviewer"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.left",
+      "data": {
+        "raid": "r",
+        "session": "s",
+        "reason": "left"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.paused",
+      "data": {
+        "raid": "r",
+        "former_owner": "s",
+        "reason": "stopped"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.owner",
+      "data": {
+        "raid": "r",
+        "owner": "s",
+        "previous": null
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.dissolved",
+      "data": {
+        "raid": "r",
+        "reason": "empty"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.notice",
+      "data": {
+        "raid": "r",
+        "notice": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "goblins",
+          "recipient": "s",
+          "sender_name": "goblins",
+          "recipient_name": "scout",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 0,
+          "failure": null,
+          "raid": {
+            "id": "r",
+            "name": "crew",
+            "event": "resumed",
+            "owner": "s"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.requested",
+      "data": {
+        "request": "p",
+        "kind": "terminal",
+        "subject": "build",
+        "reason": "run",
+        "automatic": false
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.decided",
+      "data": {
+        "request": "p",
+        "approved": true
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.completed",
+      "data": {
+        "request": "p",
+        "kind": "terminal",
+        "subject": "build",
+        "status": "exited",
+        "message": "exit code 0",
+        "notice": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "goblins",
+          "recipient": "s",
+          "sender_name": "goblins",
+          "recipient_name": "scout",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 0,
+          "failure": null,
+          "operation": {
+            "request": "p",
+            "kind": "terminal",
+            "subject": "build",
+            "status": "exited",
+            "message": "exit code 0"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.duplicate",
+      "data": {
+        "request": "p",
+        "status": "future"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.notice",
+      "data": {
+        "raid": "r",
+        "notice": null,
+        "undelivered": "mailbox capacity reached"
+      },
+      "valid": true
+    },
+    {
+      "kind": "raid.notice",
+      "data": {
+        "raid": "r",
+        "notice": null
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.completed",
+      "data": {
+        "request": "p",
+        "kind": "terminal",
+        "subject": "build",
+        "status": "exited",
+        "message": "exit code 0",
+        "notice": null,
+        "undelivered": "mailbox capacity reached"
+      },
+      "valid": true
+    },
+    {
+      "kind": "operation.completed",
+      "data": {
+        "request": "p",
+        "kind": "terminal",
+        "subject": "build",
+        "status": "exited",
+        "message": "exit code 0",
+        "notice": null
+      },
+      "valid": false
+    },
+    {
+      "kind": "raid.created",
+      "data": {
+        "request": "p",
+        "kind": "terminal",
+        "subject": "build",
+        "reason": "run",
+        "automatic": false
+      },
+      "valid": false
+    },
+    {
+      "kind": "raid.left",
+      "data": {
+        "raid": "r",
+        "session": "s",
+        "reason": "invalid"
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.completed",
+      "data": {
+        "request": "p",
+        "kind": "terminal",
+        "subject": "build",
+        "status": "exited",
+        "message": "exit code 0",
+        "notice": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "host",
+          "recipient": "s",
+          "sender_name": "goblins",
+          "recipient_name": "scout",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 0,
+          "failure": null,
+          "operation": {
+            "request": "p",
+            "kind": "terminal",
+            "subject": "build",
+            "status": "exited",
+            "message": "exit code 0"
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "operation.completed",
+      "data": {
+        "request": "other",
+        "kind": "terminal",
+        "subject": "build",
+        "status": "exited",
+        "message": "exit code 0",
+        "notice": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "goblins",
+          "recipient": "s",
+          "sender_name": "goblins",
+          "recipient_name": "scout",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 0,
+          "failure": null,
+          "operation": {
+            "request": "p",
+            "kind": "terminal",
+            "subject": "build",
+            "status": "exited",
+            "message": "exit code 0"
+          }
+        }
+      },
+      "valid": false
+    },
+    {
+      "kind": "raid.notice",
+      "data": {
+        "raid": "other",
+        "notice": {
+          "id": "i-m1",
+          "conversation": "i-c1",
+          "sender": "goblins",
+          "recipient": "s",
+          "sender_name": "goblins",
+          "recipient_name": "scout",
+          "in_reply_to": null,
+          "body": "hello\n\ud83d\udc1f",
+          "created_sequence": 1,
+          "created_at": 9,
+          "state": "queued",
+          "claim_generation": 0,
+          "failure": null,
+          "raid": {
+            "id": "r",
+            "name": "crew",
+            "event": "resumed",
+            "owner": "s"
+          }
+        }
+      },
+      "valid": false
+    }
   ]
 }

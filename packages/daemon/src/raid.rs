@@ -4,7 +4,8 @@
 //! A raid only helps members find and message each other. It grants no
 //! files or terminals, and dissolving one stops nobody. An owner leaving
 //! pauses the raid until the host selects a new owner or dissolves it.
-use serde_json::{Value, json};
+use goblins_protocol::contract::{self, CommunicationKind, CommunicationPayload};
+use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// Invite lists are bounded like live sessions; a session joins one raid.
@@ -138,13 +139,13 @@ pub struct Event {
 impl Event {
     pub fn kind(&self) -> &'static str {
         match self.change {
-            Change::Created { .. } => "raid.created",
-            Change::Joined { .. } => "raid.joined",
-            Change::Role { .. } => "raid.role",
-            Change::Left { .. } => "raid.left",
-            Change::Paused { .. } => "raid.paused",
-            Change::Owner { .. } => "raid.owner",
-            Change::Dissolved { .. } => "raid.dissolved",
+            Change::Created { .. } => contract::communication_events::RaidCreated::KIND,
+            Change::Joined { .. } => contract::communication_events::RaidJoined::KIND,
+            Change::Role { .. } => contract::communication_events::RaidRole::KIND,
+            Change::Left { .. } => contract::communication_events::RaidLeft::KIND,
+            Change::Paused { .. } => contract::communication_events::RaidPaused::KIND,
+            Change::Owner { .. } => contract::communication_events::RaidOwner::KIND,
+            Change::Dissolved { .. } => contract::communication_events::RaidDissolved::KIND,
         }
     }
     /// Additions can authorize messages; removals only take access away.
@@ -172,44 +173,79 @@ impl Event {
             Change::Owner { members, .. } | Change::Dissolved { members, .. } => members.clone(),
         }
     }
-    pub fn data(&self) -> Value {
+    pub fn payload(&self) -> CommunicationPayload {
+        use contract::communication_events as kinds;
         match &self.change {
             Change::Created { raid, name, owner } => {
-                json!({"raid":raid,"name":name,"owner":owner})
+                CommunicationPayload::new::<kinds::RaidCreated>(contract::CommRaidCreatedData {
+                    raid: raid.clone(),
+                    name: name.clone(),
+                    owner: owner.clone(),
+                })
             }
             Change::Joined {
                 raid,
                 session,
                 role,
                 created_by,
-            } => json!({"raid":raid,"session":session,"role":role,"created_by":created_by}),
+            } => CommunicationPayload::new::<kinds::RaidJoined>(contract::CommRaidJoinedData {
+                raid: raid.clone(),
+                session: session.clone(),
+                role: role.clone(),
+                created_by: created_by.clone(),
+            }),
             Change::Role {
                 raid,
                 session,
                 role,
-            } => json!({"raid":raid,"session":session,"role":role}),
+            } => CommunicationPayload::new::<kinds::RaidRole>(contract::CommRaidRoleData {
+                raid: raid.clone(),
+                session: session.clone(),
+                role: role.clone(),
+            }),
             Change::Left {
                 raid,
                 session,
                 reason,
-            } => json!({"raid":raid,"session":session,"reason":reason.as_str()}),
+            } => CommunicationPayload::new::<kinds::RaidLeft>(contract::CommRaidLeftData {
+                raid: raid.clone(),
+                session: session.clone(),
+                reason: reason.as_str().into(),
+            }),
             Change::Paused {
                 raid,
                 former_owner,
                 reason,
                 ..
-            } => json!({"raid":raid,"former_owner":former_owner,"reason":reason.as_str()}),
+            } => CommunicationPayload::new::<kinds::RaidPaused>(contract::CommRaidPausedData {
+                raid: raid.clone(),
+                former_owner: former_owner.clone(),
+                reason: reason.as_str().into(),
+            }),
             Change::Owner {
                 raid,
                 owner,
                 previous,
                 ..
-            } => json!({"raid":raid,"owner":owner,"previous":previous}),
-            Change::Dissolved { raid, reason, .. } => json!({"raid":raid,"reason":match reason {
-                Dissolution::Destroyed => "destroyed",
-                Dissolution::Empty => "empty",
-            }}),
+            } => CommunicationPayload::new::<kinds::RaidOwner>(contract::CommRaidOwnerData {
+                raid: raid.clone(),
+                owner: owner.clone(),
+                previous: previous.clone(),
+            }),
+            Change::Dissolved { raid, reason, .. } => {
+                CommunicationPayload::new::<kinds::RaidDissolved>(contract::CommRaidDissolvedData {
+                    raid: raid.clone(),
+                    reason: match reason {
+                        Dissolution::Destroyed => "destroyed",
+                        Dissolution::Empty => "empty",
+                    }
+                    .into(),
+                })
+            }
         }
+    }
+    pub fn data(&self) -> Value {
+        self.payload().into_data()
     }
 }
 
@@ -552,6 +588,139 @@ impl Raids {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn generated_raid_payloads_match_original_pairs_and_exact_json() {
+        let mut cases = vec![
+            (
+                "raid.created",
+                Change::Created {
+                    raid: "r".into(),
+                    name: "crew".into(),
+                    owner: "a".into(),
+                },
+            ),
+            (
+                "raid.role",
+                Change::Role {
+                    raid: "r".into(),
+                    session: "a".into(),
+                    role: "reviewer".into(),
+                },
+            ),
+        ];
+        for value in [None, Some("a".to_owned())] {
+            cases.push((
+                "raid.joined",
+                Change::Joined {
+                    raid: "r".into(),
+                    session: "a".into(),
+                    role: value.clone(),
+                    created_by: value.clone(),
+                },
+            ));
+            cases.push((
+                "raid.owner",
+                Change::Owner {
+                    raid: "r".into(),
+                    owner: "a".into(),
+                    previous: value,
+                    members: vec!["private-member".into()],
+                },
+            ));
+        }
+        for reason in [
+            Reason::Left,
+            Reason::Stopped,
+            Reason::LaunchFailed,
+            Reason::Kicked,
+        ] {
+            cases.push((
+                "raid.left",
+                Change::Left {
+                    raid: "r".into(),
+                    session: "a".into(),
+                    reason,
+                },
+            ));
+            cases.push((
+                "raid.paused",
+                Change::Paused {
+                    raid: "r".into(),
+                    former_owner: "a".into(),
+                    reason,
+                    members: vec!["private-member".into()],
+                },
+            ));
+        }
+        for reason in [Dissolution::Destroyed, Dissolution::Empty] {
+            cases.push((
+                "raid.dissolved",
+                Change::Dissolved {
+                    raid: "r".into(),
+                    members: vec!["private-member".into()],
+                    reason,
+                },
+            ));
+        }
+        for (kind, change) in cases {
+            let event = Event {
+                actor: "host".into(),
+                change,
+            };
+            let old = original_data(&event);
+            let (actual, data) = event.payload().into_parts();
+            assert_eq!(actual, kind);
+            assert_eq!(event.kind(), kind);
+            assert_eq!(old, data);
+            assert_eq!(
+                serde_json::to_string(&old).unwrap(),
+                serde_json::to_string(&data).unwrap()
+            );
+            assert!(!data.to_string().contains("private-member"));
+        }
+    }
+
+    use serde_json::json;
+    fn original_data(event: &Event) -> Value {
+        match &event.change {
+            Change::Created { raid, name, owner } => {
+                json!({"raid":raid,"name":name,"owner":owner})
+            }
+            Change::Joined {
+                raid,
+                session,
+                role,
+                created_by,
+            } => json!({"raid":raid,"session":session,"role":role,"created_by":created_by}),
+            Change::Role {
+                raid,
+                session,
+                role,
+            } => json!({"raid":raid,"session":session,"role":role}),
+            Change::Left {
+                raid,
+                session,
+                reason,
+            } => json!({"raid":raid,"session":session,"reason":reason.as_str()}),
+            Change::Paused {
+                raid,
+                former_owner,
+                reason,
+                ..
+            } => json!({"raid":raid,"former_owner":former_owner,"reason":reason.as_str()}),
+            Change::Owner {
+                raid,
+                owner,
+                previous,
+                ..
+            } => json!({"raid":raid,"owner":owner,"previous":previous}),
+            Change::Dissolved { raid, reason, .. } => json!({"raid":raid,"reason":match reason {
+                Dissolution::Destroyed => "destroyed",
+                Dissolution::Empty => "empty",
+            }}),
+        }
+    }
+
     use super::*;
     fn ids(values: &[&str]) -> Vec<String> {
         values.iter().map(|v| v.to_string()).collect()

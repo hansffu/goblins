@@ -212,6 +212,17 @@ impl Mailbox {
         Ok(())
     }
 
+    pub fn record_typed<K: contract::CommunicationKind>(
+        &mut self,
+        actor: &str,
+        data: K::Data,
+        now: u64,
+        audit: &mut impl Audit,
+    ) -> Result<()> {
+        let (kind, data) = contract::CommunicationPayload::new::<K>(data).into_parts();
+        self.record(actor, kind, data, now, audit)
+    }
+
     /// Log space kept for every unresolved message: a fetch and a completion
     /// for a queued item, a completion for a claimed one. Events that are not
     /// themselves such a transition must leave it free.
@@ -247,14 +258,15 @@ impl Mailbox {
                 continue;
             }
             let recorded = !self.audit_failed && {
+                let (kind, data) = raid.payload().into_parts();
                 let event = Event {
                     instance: self.instance.clone(),
                     sequence: self.sequence + 1,
                     timestamp: now,
-                    kind: raid.kind().into(),
+                    kind: kind.into(),
                     actor: raid.actor.clone(),
                     sessions: raid.sessions(),
-                    data: raid.data(),
+                    data,
                 };
                 let reserved = self.reserved_bytes();
                 match audit.append(&event, reserved) {
@@ -342,14 +354,22 @@ impl Mailbox {
             let undelivered = match self.check_capacity(std::slice::from_ref(&notice)) {
                 Err(_) => Some("mailbox capacity reached"),
                 Ok(reserved) => {
+                    let (kind, data) = contract::CommunicationPayload::new::<
+                        contract::communication_events::RaidNotice,
+                    >(contract::CommRaidNoticeData {
+                        raid: view.id.clone(),
+                        notice: Some(notice.clone()),
+                        undelivered: None,
+                    })
+                    .into_parts();
                     let event = Event {
                         instance: self.instance.clone(),
                         sequence,
                         timestamp: now,
-                        kind: "raid.notice".into(),
+                        kind: kind.into(),
                         actor: NOTICE_SENDER.into(),
                         sessions: vec![session.clone()],
-                        data: json!({"raid":view.id,"notice":notice}),
+                        data,
                     };
                     match audit.append(&event, reserved * 2048) {
                         Ok(()) => {
@@ -366,10 +386,13 @@ impl Mailbox {
                 }
             };
             if let Some(reason) = undelivered {
-                let _ = self.record(
+                let _ = self.record_typed::<contract::communication_events::RaidNotice>(
                     &session,
-                    "raid.notice",
-                    json!({"raid":view.id,"notice":null,"undelivered":reason}),
+                    contract::CommRaidNoticeData {
+                        raid: view.id.clone(),
+                        notice: None,
+                        undelivered: Some(reason.into()),
+                    },
                     now,
                     audit,
                 );
@@ -403,7 +426,13 @@ impl Mailbox {
                     if self.finished.contains(request) || self.operations.contains_key(request) {
                         continue;
                     }
-                    let _ = self.operation_event(operation, operation.data(), true, now, audit);
+                    let _ = self.operation_event(
+                        operation,
+                        operation.payload(None, None),
+                        true,
+                        now,
+                        audit,
+                    );
                     // Bounded by one pending request per live session; a lost
                     // completion must not grow this without limit.
                     if self.operations.len() >= 256 {
@@ -421,7 +450,13 @@ impl Mailbox {
                     );
                 }
                 Change::Decided { approved } => {
-                    let _ = self.operation_event(operation, operation.data(), true, now, audit);
+                    let _ = self.operation_event(
+                        operation,
+                        operation.payload(None, None),
+                        true,
+                        now,
+                        audit,
+                    );
                     if let Some(o) = self.operations.get_mut(request) {
                         o.state = if *approved { "running" } else { "pending" };
                     }
@@ -434,13 +469,16 @@ impl Mailbox {
                     notify,
                 } => {
                     if self.finished.contains(request) {
-                        let _ = self.record(
-                            session,
-                            "operation.duplicate",
-                            json!({"request":request,"status":status}),
-                            now,
-                            audit,
-                        );
+                        let _ = self
+                            .record_typed::<contract::communication_events::OperationDuplicate>(
+                                session,
+                                contract::CommOperationDuplicateData {
+                                    request: request.clone(),
+                                    status: status.clone(),
+                                },
+                                now,
+                                audit,
+                            );
                         continue;
                     }
                     if self.finished_order.len() >= FINISHED
@@ -451,7 +489,6 @@ impl Mailbox {
                     self.finished.insert(request.clone());
                     self.finished_order.push_back(request.clone());
                     self.operations.remove(request);
-                    let mut data = operation.data();
                     let notice = match (notify, live(directory, session)) {
                         (false, _) => Err("no agent integration"),
                         (true, Err(_)) => Err("recipient not running"),
@@ -489,16 +526,16 @@ impl Mailbox {
                     };
                     let undelivered = match notice {
                         Ok((notice, reserved)) => {
-                            let mut full = data.clone();
-                            full["notice"] = json!(notice);
+                            let (kind, data) =
+                                operation.payload(Some(notice.clone()), None).into_parts();
                             let event = Event {
                                 instance: self.instance.clone(),
                                 sequence: self.sequence + 1,
                                 timestamp: now,
-                                kind: operation.kind().into(),
+                                kind: kind.into(),
                                 actor: operation.actor.clone(),
                                 sessions: vec![session.clone()],
-                                data: full,
+                                data,
                             };
                             match audit.append(&event, reserved * 2048) {
                                 Ok(()) => {
@@ -519,8 +556,7 @@ impl Mailbox {
                         Err(reason) => Some(reason),
                     };
                     if let Some(reason) = undelivered {
-                        data["notice"] = Value::Null;
-                        data["undelivered"] = json!(reason);
+                        let data = operation.payload(None, Some(reason.into()));
                         // Outcomes are bounded by requests, not by the
                         // auxiliary budget that ticks and hooks consume.
                         let _ = self.operation_event(operation, data, false, now, audit);
@@ -535,7 +571,7 @@ impl Mailbox {
     fn operation_event(
         &mut self,
         operation: &crate::operation::Event,
-        data: Value,
+        payload: contract::CommunicationPayload,
         counted: bool,
         now: u64,
         audit: &mut impl Audit,
@@ -546,11 +582,12 @@ impl Mailbox {
         if counted && self.auxiliary_events >= 16384 {
             return Err(capacity());
         }
+        let (kind, data) = payload.into_parts();
         let event = Event {
             instance: self.instance.clone(),
             sequence: self.sequence + 1,
             timestamp: now,
-            kind: operation.kind().into(),
+            kind: kind.into(),
             actor: operation.actor.clone(),
             sessions: vec![operation.session.clone()],
             data,

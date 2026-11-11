@@ -21170,7 +21170,240 @@ Original Serde container names, field order, required nullable sequence slots an
     "data"
   ],
   "additionalProperties": true,
-  "description": "C13a event envelope retains original serialized field order and named/sequence readers. Event kind/data stay open until C13b introduces known producer payloads with an explicit legacy/unknown-event reader. No stored-log format changes."
+  "description": "The stored envelope retains original Serde name/order and open String/Value reading for unknown or older logs. Known producers bind kind/data using generated payload markers; canonical schemas check known pairs. Remaining producer families/consumers are recorded in x-migration-pending.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.created"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidCreatedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.joined"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidJoinedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.role"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidRoleData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.left"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidLeftData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.paused"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidPausedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.owner"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidOwnerData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.dissolved"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidDissolvedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "raid.notice"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommRaidNoticeData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "operation.requested"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommOperationRequestedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "operation.decided"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommOperationDecidedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "operation.completed"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommOperationCompletedData"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "operation.duplicate"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/definitions/CommOperationDuplicateData"
+          }
+        }
+      }
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
 }
 #+end_src
 
@@ -21319,6 +21552,576 @@ Original Serde container names, field order, required nullable sequence slots an
 }
 #+end_src
 
+** =CommRaidLeaveReason=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "left",
+    "stopped",
+    "launch-failed",
+    "kicked"
+  ]
+}
+#+end_src
+
+** =CommRaidDissolveReason=
+
+#+begin_src json
+{
+  "type": "string",
+  "enum": [
+    "destroyed",
+    "empty"
+  ]
+}
+#+end_src
+
+** =CommRaidCreatedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "raid",
+    "name",
+    "owner"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidJoinedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "session": {
+      "type": "string"
+    },
+    "role": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_by": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "raid",
+    "session",
+    "role",
+    "created_by"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidRoleData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "session": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "raid",
+    "session",
+    "role"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidLeftData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "session": {
+      "type": "string"
+    },
+    "reason": {
+      "$ref": "#/definitions/CommRaidLeaveReason"
+    }
+  },
+  "required": [
+    "raid",
+    "session",
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidPausedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "former_owner": {
+      "type": "string"
+    },
+    "reason": {
+      "$ref": "#/definitions/CommRaidLeaveReason"
+    }
+  },
+  "required": [
+    "raid",
+    "former_owner",
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidOwnerData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "raid",
+    "owner",
+    "previous"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidDissolvedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "reason": {
+      "$ref": "#/definitions/CommRaidDissolveReason"
+    }
+  },
+  "required": [
+    "raid",
+    "reason"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommRaidNoticeData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "raid": {
+      "type": "string"
+    },
+    "notice": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "undelivered": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "raid",
+    "notice"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "notice": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "undelivered"
+          ]
+        },
+        {
+          "properties": {
+            "notice": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/MailboxMessage"
+                },
+                {
+                  "properties": {
+                    "sender": {
+                      "const": "goblins"
+                    },
+                    "state": {
+                      "const": "queued"
+                    },
+                    "claim_generation": {
+                      "const": 0
+                    },
+                    "raid": {
+                      "$ref": "#/definitions/MailboxRaidNotice"
+                    }
+                  },
+                  "required": [
+                    "raid"
+                  ]
+                }
+              ]
+            }
+          },
+          "not": {
+            "required": [
+              "undelivered"
+            ]
+          },
+          "allOf": [
+            {
+              "x-equal-fields": [
+                "/raid",
+                "/notice/raid/id"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =CommOperationRequestedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "automatic": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "request",
+    "kind",
+    "subject",
+    "reason",
+    "automatic"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommOperationDecidedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "approved": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "request",
+    "approved"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommOperationCompletedCore=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "request",
+    "kind",
+    "subject",
+    "status",
+    "message"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
+** =CommOperationCompletedData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "subject": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "message": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "notice": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/MailboxMessage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "undelivered": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "kind",
+    "subject",
+    "status",
+    "message",
+    "notice"
+  ],
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "notice": {
+              "type": "null"
+            }
+          },
+          "required": [
+            "undelivered"
+          ]
+        },
+        {
+          "properties": {
+            "notice": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/MailboxMessage"
+                },
+                {
+                  "properties": {
+                    "sender": {
+                      "const": "goblins"
+                    },
+                    "state": {
+                      "const": "queued"
+                    },
+                    "claim_generation": {
+                      "const": 0
+                    },
+                    "operation": {
+                      "$ref": "#/definitions/MailboxOperation"
+                    }
+                  },
+                  "required": [
+                    "operation"
+                  ]
+                }
+              ]
+            }
+          },
+          "not": {
+            "required": [
+              "undelivered"
+            ]
+          },
+          "allOf": [
+            {
+              "x-equal-fields": [
+                "/request",
+                "/notice/operation/request"
+              ]
+            },
+            {
+              "x-equal-fields": [
+                "/kind",
+                "/notice/operation/kind"
+              ]
+            },
+            {
+              "x-equal-fields": [
+                "/subject",
+                "/notice/operation/subject"
+              ]
+            },
+            {
+              "x-equal-fields": [
+                "/status",
+                "/notice/operation/status"
+              ]
+            },
+            {
+              "x-equal-fields": [
+                "/message",
+                "/notice/operation/message"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "x-generator-omit": [
+    "allOf"
+  ]
+}
+#+end_src
+
+** =CommOperationDuplicateData=
+
+#+begin_src json
+{
+  "type": "object",
+  "properties": {
+    "request": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "request",
+    "status"
+  ],
+  "additionalProperties": true
+}
+#+end_src
+
 * Protocol behavior
 
 - =framing= :: Content-Length; 256-byte headers; duplicate keys and depth >32 rejected. See docs/API.org transport rules.
@@ -21424,3 +22227,4 @@ Original Serde container names, field order, required nullable sequence slots an
 - =mailbox-status-readers= :: InboxStatusReply requires all five original core fields so incomplete replies become read errors instead of quiet/empty inboxes. Additive raid_audit_failed/operations default false/empty for older peers. Adapters validate typed RPC replies then adapt them to their existing persisted JSON ledger format; ledger storage/lifecycle stays domain-owned. InboxHead is a named (String,u64) alias because Typify replacement paths cannot be tuple expressions. MailboxStatusParams uses a named empty Empty struct, as closed empty maps otherwise change exposed original Serde diagnostics.
 - =communications-envelope-stage= :: C13a generates the existing event envelope and exact Serde name/order; kind/data remain String/Value until C13b introduces producer payload pairing and compatible retained-log consumers. CommunicationsLimit maps to usize, retaining the old decoder. Request emit-defaults removes only serialization omission, preserving after=0/limit=100 read defaults; session retains its original required positional nullable slot. The CLI outbound profile emits after/session and omits limit exactly as before.
 - =communications-page-reader= :: The CLI page reader normalizes fields independently: events only as array of raw JSON values, cursor/latest only as u64, session only as string. Missing/malformed values remain absent so the caller retains original event printing and page/cursor/sequence error order; successful legacy bodies gain no new early refusal. The canonical producer result stays strict. C13b owns event-data consumers.
+- =communications-typed-payloads= :: Generated CommunicationKind markers bind each known kind to its DTO; CommunicationPayload keeps its fields private and exposes only a paired kind/data result. Raid and operation domain enums retain authority and map into these DTOs; public stored envelopes remain compatible String/Value readers. Canonical kind/data and delivered/undelivered/correlation constraints stay in JSON schema; only CommunicationsEvent, CommRaidNoticeData and CommOperationCompletedData allOf clauses are omitted from the generator clone because Typify cannot express conditionals/cross-field relations. Existing producer branches and independent original-wire comparisons enforce runtime construction. Other event families and consumers remain C13b2/C13b3.

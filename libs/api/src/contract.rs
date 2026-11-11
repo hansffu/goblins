@@ -30,6 +30,30 @@ impl Response for CommunicationsPageReply {
     }
 }
 
+/// A generated kind/data binding. It describes data, never publication rights.
+pub trait CommunicationKind {
+    type Data: Serialize;
+    const KIND: &'static str;
+}
+pub struct CommunicationPayload {
+    kind: &'static str,
+    data: Value,
+}
+impl CommunicationPayload {
+    pub fn new<K: CommunicationKind>(data: K::Data) -> Self {
+        Self {
+            kind: K::KIND,
+            data: serde_json::to_value(data).expect("generated communication data serializes"),
+        }
+    }
+    pub fn into_parts(self) -> (&'static str, Value) {
+        (self.kind, self.data)
+    }
+    pub fn into_data(self) -> Value {
+        self.data
+    }
+}
+
 /// Closed empty parameter objects need a struct, rather than a generated map.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

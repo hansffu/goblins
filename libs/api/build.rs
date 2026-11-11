@@ -189,6 +189,9 @@ fn main() {
         [].into_iter(),
     );
     settings.with_replacement("CommunicationsLimit", "usize", [].into_iter());
+    for name in ["CommRaidLeaveReason", "CommRaidDissolveReason"] {
+        settings.with_replacement(name, "String", [].into_iter());
+    }
     let mut types = typify::TypeSpace::new(&settings);
     // Typify 0.7 cannot process if/then/else. Keep the canonical producer
     // schema precise; Edit::outcome enforces this named dependency while
@@ -210,6 +213,23 @@ fn main() {
             .is_some()
     );
     for name in ["MailboxNextResult", "MailboxCompleteResult"] {
+        assert_eq!(
+            generation_schema["definitions"][name]["x-generator-omit"],
+            serde_json::json!(["allOf"])
+        );
+        assert!(
+            generation_schema["definitions"][name]
+                .as_object_mut()
+                .unwrap()
+                .remove("allOf")
+                .is_some()
+        );
+    }
+    for name in [
+        "CommunicationsEvent",
+        "CommRaidNoticeData",
+        "CommOperationCompletedData",
+    ] {
         assert_eq!(
             generation_schema["definitions"][name]["x-generator-omit"],
             serde_json::json!(["allOf"])
@@ -314,6 +334,20 @@ fn main() {
         "pub const ATTACH_VERSION: u64 = {};\n",
         common["x-attach-version"]
     ));
+    output.push_str("pub mod communication_events { use super::*;\n");
+    let mut kinds = Vec::new();
+    for row in common["x-communications-payloads"].as_array().unwrap() {
+        let name = row["x-rust-name"].as_str().unwrap();
+        let kind = row["kind"].as_str().unwrap();
+        let data = row["schema"]["$ref"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("#/definitions/")
+            .unwrap();
+        kinds.push(kind);
+        output.push_str(&format!("pub struct {name}; impl crate::contract::CommunicationKind for {name} {{ type Data={data}; const KIND:&'static str={kind:?}; }}\n"));
+    }
+    output.push_str(&format!("pub const KINDS:&[&str]=&{kinds:?}; }}\n"));
     let mut decoded = std::collections::BTreeSet::from([
         "InitializeReply".to_string(),
         "ServerStatusReply".to_string(),

@@ -16,6 +16,14 @@ from daemon_support import Daemon, RPC, app, frame, receive
 
 
 class ContractTests(unittest.TestCase):
+    def test_communication_payload_kind_pairing_and_notice_correlations(self):
+        for case in contract.read("fixtures.json")["communication_payload_cases"]:
+            event=dict(instance="i",sequence=1,timestamp=9,kind=case["kind"],actor="host",sessions=["s"],data=case["data"])
+            page=dict(events=[event],cursor=1,session=None,latest=1)
+            if case["valid"]:self.assertTrue(contract.validate_reply("host","communications.list",dict(jsonrpc="2.0",id=1,result=page)))
+            else:
+                with self.assertRaises(ValidationError,msg=str(case)):contract.validate_reply("host","communications.list",dict(jsonrpc="2.0",id=1,result=page))
+
     def test_communications_pagination_contract_and_legacy_page_projection(self):
         fixtures=contract.read("fixtures.json")
         for value in fixtures["communications_parameter_cases"]:

@@ -12,12 +12,18 @@ struct MemoryAudit {
     raid_full: bool,
     /// Reject operation outcomes that carry a notice for lack of capacity.
     notice_full: bool,
+    /// Reject only full raid-notice delivery; compact explanation may fit.
+    raid_notice_full: bool,
+    raid_notice_attempts: Vec<Event>,
     /// A byte limit enforced like the journal's, with the bytes written.
     limit: Option<usize>,
     bytes: usize,
 }
 impl Audit for MemoryAudit {
     fn append(&mut self, event: &Event, reserved: usize) -> std::result::Result<(), AuditError> {
+        if event.kind == "raid.notice" {
+            self.raid_notice_attempts.push(event.clone());
+        }
         if self.fail {
             return Err(AuditError::Unavailable);
         }
@@ -25,6 +31,9 @@ impl Audit for MemoryAudit {
             || self.raid_full && event.kind.starts_with("raid.")
             || self.notice_full
                 && event.kind == "operation.completed"
+                && !event.data["notice"].is_null()
+            || self.raid_notice_full
+                && event.kind == "raid.notice"
                 && !event.data["notice"].is_null()
         {
             return Err(AuditError::Capacity);
@@ -1135,5 +1144,81 @@ fn generated_inbox_status_matches_original_producer_and_hides_operation_owner() 
         for actor in ["host", "c", "x"] {
             assert_eq!(f.mailbox.status(actor), old(&f.mailbox, actor));
         }
+    }
+}
+
+#[test]
+fn raid_notice_audit_payload_matches_original_delivery_and_compact_fallbacks() {
+    use crate::raid::Reason;
+    for mode in ["delivered", "mailbox-capacity", "log-capacity"] {
+        let mut f = Fixture::new();
+        let (mut raids, events) = raid_of(&["g", "y", "s"]);
+        f.record(events);
+        f.record(raids.remove("g", Reason::Left));
+        let denied = f
+            .call(
+                "y",
+                "messages.send",
+                json!({"key":"warn","to":"s","body":"hello"}),
+            )
+            .unwrap_err();
+        assert_eq!(denied.0, -32009);
+        assert!(denied.1.contains("paused"));
+        assert!(f.mailbox.messages.is_empty());
+        let sequence = f.mailbox.sequence + 2;
+        let notice = json!({"id":format!("{INSTANCE}-m{sequence}"),"conversation":format!("{INSTANCE}-c{sequence}"),"sender":"goblins","recipient":"y","sender_name":"goblins","recipient_name":"lookout","in_reply_to":null,"body":"Raid review has resumed with owner sibling; messages to its members are allowed again.","created_sequence":sequence,"created_at":1000,"state":"queued","claim_generation":0,"failure":null,"raid":{"id":"r1","name":"review","event":"resumed","owner":"s"}});
+        let full = json!({"raid":"r1","notice":notice});
+        if mode == "mailbox-capacity" {
+            f.mailbox.limits.inbox = 0;
+        }
+        if mode == "log-capacity" {
+            f.audit.raid_notice_full = true;
+        }
+        f.record(raids.set_owner("review", "s", "host").unwrap());
+        assert_eq!(f.mailbox.raids()["y"].owner.as_deref(), Some("s"));
+        assert!(!f.mailbox.raids()["y"].paused);
+        assert!(!f.mailbox.health().audit_failed);
+        assert!(!f.mailbox.health().raid_audit_failed);
+        let events: Vec<_> = f
+            .audit
+            .events
+            .iter()
+            .filter(|event| event.kind == "raid.notice")
+            .collect();
+        assert_eq!(events.len(), 1);
+        let event = events[0];
+        assert_eq!(event.instance, INSTANCE);
+        assert_eq!(event.sequence, sequence);
+        assert_eq!(event.timestamp, 1000);
+        assert_eq!(event.sessions, vec!["y"]);
+        if mode == "delivered" {
+            assert_eq!(event.actor, "goblins");
+            assert_eq!(event.data, full);
+            assert_eq!(f.audit.raid_notice_attempts.len(), 1);
+            assert_eq!(f.mailbox.status("y")["queued"], 1);
+            assert_eq!(json!(f.mailbox.messages[0]), notice);
+        } else {
+            let reason = if mode == "mailbox-capacity" {
+                "mailbox capacity reached"
+            } else {
+                "communications log capacity reached"
+            };
+            let compact = json!({"raid":"r1","notice":null,"undelivered":reason});
+            assert_eq!(event.actor, "y");
+            assert_eq!(event.data, compact);
+            assert_eq!(f.mailbox.status("y")["queued"], 0);
+            assert!(f.mailbox.messages.is_empty());
+            if mode == "log-capacity" {
+                assert_eq!(f.audit.raid_notice_attempts.len(), 2);
+                assert_eq!(f.audit.raid_notice_attempts[0].data, full);
+                assert_eq!(f.audit.raid_notice_attempts[1].data, compact);
+            } else {
+                assert_eq!(f.audit.raid_notice_attempts.len(), 1);
+            }
+        }
+        assert!(!f.mailbox.warned.contains_key("r1"));
+        let count = f.audit.raid_notice_attempts.len();
+        f.record(raids.set_owner("review", "y", "host").unwrap());
+        assert_eq!(f.audit.raid_notice_attempts.len(), count);
     }
 }
