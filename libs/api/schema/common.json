@@ -1142,7 +1142,7 @@
         "state": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SessionState"
+              "type": "string"
             },
             {
               "type": "null"
@@ -1152,7 +1152,7 @@
         "agent_state": {
           "anyOf": [
             {
-              "$ref": "#/definitions/AgentState"
+              "type": "string"
             },
             {
               "type": "null"
@@ -1302,6 +1302,1185 @@
       },
       "required": [],
       "additionalProperties": true
+    },
+    "SessionSelectorParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "session"
+      ],
+      "additionalProperties": false
+    },
+    "ProcessIdentity": {
+      "type": "object",
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "x-json-integer": true
+        },
+        "helper_userns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "mount_owner": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "source_mountns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "mountns": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        }
+      },
+      "required": [
+        "pid",
+        "helper_userns",
+        "mount_owner",
+        "source_mountns",
+        "mountns"
+      ],
+      "additionalProperties": true
+    },
+    "RecreateSkipped": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "reason"
+      ],
+      "additionalProperties": true
+    },
+    "SessionRaid": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "paused": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "role",
+        "owner",
+        "paused"
+      ],
+      "additionalProperties": true
+    },
+    "SessionRaidReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "owner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "paused": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "additionalProperties": true
+    },
+    "SessionTerminal": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "host",
+            "agent"
+          ]
+        },
+        "started_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "rows": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "x-json-integer": true
+        },
+        "cols": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "x-json-integer": true
+        },
+        "attached": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "label",
+        "origin",
+        "started_at",
+        "rows",
+        "cols",
+        "attached"
+      ],
+      "additionalProperties": true
+    },
+    "SessionTerminalReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "string",
+          "description": "Compatibility readers preserve origin strings, including future origins."
+        },
+        "started_at": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "rows": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "x-json-integer": true
+        },
+        "cols": {
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0,
+          "maximum": 65535,
+          "x-json-integer": true
+        },
+        "attached": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "origin",
+        "started_at",
+        "rows",
+        "cols",
+        "attached"
+      ],
+      "additionalProperties": true
+    },
+    "HostSession": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "configuration": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "attach": {
+          "type": "string"
+        },
+        "docker_enabled": {
+          "type": "boolean"
+        },
+        "pty_eof": {
+          "type": "boolean"
+        },
+        "terminal_complete": {
+          "type": "boolean"
+        },
+        "terminal_interrupted": {
+          "type": "boolean"
+        },
+        "terminal_attached": {
+          "type": "boolean"
+        },
+        "terminal_detached": {
+          "type": "boolean"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dev_shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CreatedBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agent_state": {
+          "$ref": "#/definitions/AgentState"
+        },
+        "agent_state_since": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inbox": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true
+        },
+        "state": {
+          "$ref": "#/definitions/SessionState"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProcessIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "initial_packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auto_approve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "server_log": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recreated_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raid": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionRaid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shells": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "x-json-integer": true
+        },
+        "execs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "x-json-integer": true
+        },
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionTerminal"
+          }
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RecreateSkipped"
+          }
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WireWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "description",
+        "configuration",
+        "terminal",
+        "attach",
+        "docker_enabled",
+        "pty_eof",
+        "terminal_complete",
+        "terminal_interrupted",
+        "terminal_attached",
+        "terminal_detached",
+        "scope",
+        "dev_shell",
+        "cwd",
+        "created_by",
+        "agent_state",
+        "agent_state_since",
+        "inbox",
+        "state",
+        "identity",
+        "initial_packages",
+        "packages",
+        "auto_approve",
+        "server_log",
+        "stop_reason",
+        "detail",
+        "recreated_from",
+        "exit_code",
+        "raid",
+        "shells",
+        "execs",
+        "terminals",
+        "skipped",
+        "worktree",
+        "checkout",
+        "options"
+      ],
+      "additionalProperties": true
+    },
+    "HostSessionReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent on the original API-1 daemon. Snapshot views keep their separate requirement for an agent name."
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "configuration": {
+          "type": "string"
+        },
+        "terminal": {
+          "type": "string"
+        },
+        "attach": {
+          "type": "string",
+          "default": ""
+        },
+        "docker_enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "pty_eof": {
+          "type": "boolean"
+        },
+        "terminal_complete": {
+          "type": "boolean"
+        },
+        "terminal_interrupted": {
+          "type": "boolean"
+        },
+        "terminal_attached": {
+          "type": "boolean",
+          "default": false
+        },
+        "terminal_detached": {
+          "type": "boolean",
+          "default": false
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dev_shell": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CreatedBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "agent_state": {
+          "type": "string",
+          "default": "unknown",
+          "description": "Direct readers preserve activity text; snapshot views separately enforce their existing AgentState decoder."
+        },
+        "agent_state_since": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0,
+              "maximum": 18446744073709551615,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inbox": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 18446744073709551615,
+          "x-json-integer": true,
+          "default": 0
+        },
+        "state": {
+          "type": "string",
+          "description": "Compatibility readers retain previously accepted lifecycle strings; current producers use SessionState."
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProcessIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "initial_packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auto_approve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "server_log": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recreated_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "raid": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionRaidReply"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shells": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "x-json-integer": true,
+          "default": 0
+        },
+        "execs": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "x-json-integer": true,
+          "default": 0
+        },
+        "terminals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionTerminalReply"
+          },
+          "default": []
+        },
+        "skipped": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/RecreateSkipped"
+          },
+          "default": []
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WireWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "checkout": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HostPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "docker_scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Legacy alias for scope accepted by snapshot readers; duplicate canonical+alias fields remain refused by the snapshot adapter."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "configuration",
+        "state",
+        "initial_packages",
+        "packages",
+        "terminal",
+        "pty_eof",
+        "terminal_complete",
+        "terminal_interrupted"
+      ],
+      "additionalProperties": true
+    },
+    "SandboxSession": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "created_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CreatedBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/SessionState"
+        },
+        "agent_state": {
+          "$ref": "#/definitions/AgentState"
+        },
+        "initial_packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auto_approve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "docker_enabled": {
+          "type": "boolean"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal_complete": {
+          "type": "boolean"
+        },
+        "terminal_interrupted": {
+          "type": "boolean"
+        },
+        "terminal_detached": {
+          "type": "boolean"
+        },
+        "terminal_attached": {
+          "type": "boolean"
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WireWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "created_by",
+        "description",
+        "state",
+        "agent_state",
+        "initial_packages",
+        "packages",
+        "auto_approve",
+        "scope",
+        "docker_enabled",
+        "exit_code",
+        "stop_reason",
+        "terminal_complete",
+        "terminal_interrupted",
+        "terminal_detached",
+        "terminal_attached",
+        "worktree",
+        "options"
+      ],
+      "additionalProperties": true
+    },
+    "SandboxSessionReply": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "agent_name": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "created_by": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CreatedBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "default": ""
+        },
+        "state": {
+          "type": "string",
+          "description": "Compatibility readers retain previously accepted lifecycle strings; current producers use SessionState."
+        },
+        "agent_state": {
+          "type": "string",
+          "default": "unknown",
+          "description": "Direct readers preserve activity text; snapshot views separately enforce their existing AgentState decoder."
+        },
+        "initial_packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "packages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "auto_approve": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "docker_enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "format": "int32",
+              "minimum": -2147483648,
+              "maximum": 2147483647,
+              "x-json-integer": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stop_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "terminal_complete": {
+          "type": "boolean"
+        },
+        "terminal_interrupted": {
+          "type": "boolean"
+        },
+        "terminal_detached": {
+          "type": "boolean",
+          "default": false
+        },
+        "terminal_attached": {
+          "type": "boolean",
+          "default": false
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WireWorktree"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "options": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      },
+      "required": [
+        "id",
+        "agent_name",
+        "name",
+        "state",
+        "initial_packages",
+        "packages",
+        "terminal_complete",
+        "terminal_interrupted"
+      ],
+      "additionalProperties": true
+    },
+    "HostSessionList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HostSession"
+      },
+      "description": "Sessions in daemon order; stopped records may remain until eviction."
+    },
+    "HostSessionListReply": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/HostSessionReply"
+      }
+    },
+    "SandboxSessionList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SandboxSession"
+      },
+      "description": "Members the caller currently controls whose runtime has not been released, in daemon order. Released-but-retained records are omitted; a retiring member can still have a stopped lifecycle state while its runtime remains live."
+    },
+    "SandboxSessionListReply": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SandboxSessionReply"
+      }
     }
   },
   "x-api-version": 1,
@@ -1327,7 +2506,8 @@
     "parameter_forms": "C01 methods accept named objects or positional arrays: initialize accepts {api:N} or [N], server methods accept {} or []. Omitted params default to {}. Preserve Serde refusal order.",
     "result_extensions": "Result objects, including nested limits and history variants, may gain fields. Clients ignore unknown result fields; known fields and history owner discrimination remain validated. Request parameters stay closed.",
     "api1_compatibility": "Producer result schemas describe the current daemon precisely. x-client-result-schema describes compatible API-1 replies accepted by clients: configuration/limits and newer server.status history/manifest/worktree metadata may be absent. Clients retain absence as optional data and use advertised features rather than inventing values.",
-    "self_reporting": "sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access."
+    "self_reporting": "sessions.status exposes only the caller and its policy/activity. Worktree paths are deliberately visible. Activity is independent of lifecycle; variables update atomically and empty values remove keys. Missing or null set-worktree name clears the record; names are validated before filesystem access.",
+    "session-records": "Current session read producers emit complete endpoint-specific records. Host sessions include descriptor-free process identities and host paths; sandbox records exclude them, except the intentionally shared Worktree.path. API-1 reader schemas retain the defaults and omissions previously accepted by Rust snapshot clients. The controller retains domain records; explicit projections and a generated-read adapter preserve snapshot consumers until C15. Nested terminal and raid summaries are typed public data; their methods migrate in C05 and C11."
   },
   "x-envelope-schemas": {
     "Id": {
@@ -1479,6 +2659,16 @@
         }
       ],
       "minItems": 0,
+      "maxItems": 1
+    },
+    "SessionSelectorPositional": {
+      "type": "array",
+      "items": [
+        {
+          "type": "string"
+        }
+      ],
+      "minItems": 1,
       "maxItems": 1
     }
   }

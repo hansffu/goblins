@@ -117,6 +117,72 @@
         "minItems": 0,
         "maxItems": 0
       }
+    },
+    {
+      "name": "sessions.list",
+      "description": "List retained sessions in daemon order. Includes host paths and process identity data; it conveys no runtime capabilities.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostSessionList"
+        }
+      },
+      "errors": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-rust-name": "SessionsList",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/HostSessionListReply"
+      }
+    },
+    {
+      "name": "sessions.get",
+      "description": "Read a session by immutable id or live agent name. Includes host paths and process identity data; it conveys no runtime capabilities.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/HostSession"
+        }
+      },
+      "errors": [
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or unauthorized operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionSelectorParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SessionSelectorPositional"
+      },
+      "x-rust-name": "SessionsGet",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/HostSessionReply"
+      }
     }
   ],
   "x-notifications": [],

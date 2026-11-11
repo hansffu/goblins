@@ -1,5 +1,6 @@
 //! Bounded raw terminal relay shared by host and sandbox clients.
 //! Control calls and the authenticated stream are supplied by the caller.
+use crate::contract;
 use serde_json::{Value, json};
 use std::{
     io,
@@ -220,32 +221,35 @@ fn wait_outcome(
     // Stream EOF precedes local drain above. A control disconnect is never a
     // substitute for EOF, and a daemon crash must not look like normal exit.
     loop {
-        let record = control("sessions.get", json!({"session":session}))?;
+        let record = contract::invoke::<contract::host::SessionsGet, _>(
+            contract::SessionSelectorParams {
+                session: session.into(),
+            },
+            &mut control,
+        )?;
         // The daemon keeps this half-closed attachment until we drop the
         // stream, so a subsequent attachment cannot overwrite its outcome.
-        if record["terminal_detached"] == true {
+        if record.terminal_detached {
             return Ok(0);
         }
-        if ["stopped", "failed"].contains(&record["state"].as_str().unwrap_or("")) {
-            if record["state"] == "failed" {
-                return Err(record["detail"].as_str().unwrap_or("launch failed").into());
+        if matches!(record.state.as_str(), "stopped" | "failed") {
+            if record.state == "failed" {
+                return Err(record.detail.as_deref().unwrap_or("launch failed").into());
             }
-            if record["terminal_interrupted"] == true {
+            if record.terminal_interrupted {
                 return Err("terminal output incomplete".into());
             }
             // The raw stream and lifecycle notifications travel separately.
             // Stopped can be visible before the drained terminal notification.
-            if record["terminal_complete"] == true {
-                return record["exit_code"]
-                    .as_i64()
-                    .map(|c| c as i32)
-                    .ok_or_else(|| {
-                        record["stop_reason"]
-                            .as_str()
-                            .or_else(|| record["detail"].as_str())
-                            .unwrap_or("payload exit status unknown")
-                            .into()
-                    });
+            if record.terminal_complete {
+                return record.exit_code.ok_or_else(|| {
+                    record
+                        .stop_reason
+                        .as_deref()
+                        .or(record.detail.as_deref())
+                        .unwrap_or("payload exit status unknown")
+                        .into()
+                });
             }
         }
         if stop.load(Ordering::Relaxed) {
@@ -258,6 +262,16 @@ fn wait_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn completion_record(outcome: Value) -> Value {
+        let mut record = serde_json::from_str::<Value>(include_str!("../schema/fixtures.json"))
+            .unwrap()["host_session_legacy"]
+            .clone();
+        record
+            .as_object_mut()
+            .unwrap()
+            .extend(outcome.as_object().unwrap().clone());
+        record
+    }
     #[test]
     fn completion_wait_preserves_failure_unknown_exit_and_control_loss() {
         for (record, expected) in [
@@ -270,8 +284,12 @@ mod tests {
                 "payload exit status unknown",
             ),
         ] {
-            let error =
-                wait_outcome("s", |_, _| Ok(record.clone()), &AtomicBool::new(false)).unwrap_err();
+            let error = wait_outcome(
+                "s",
+                |_, _| Ok(completion_record(record.clone())),
+                &AtomicBool::new(false),
+            )
+            .unwrap_err();
             assert_eq!(error.to_string(), expected);
         }
         let error = wait_outcome(
@@ -283,7 +301,11 @@ mod tests {
         assert_eq!(error.to_string(), "control disconnected");
         let error = wait_outcome(
             "s",
-            |_, _| Ok(json!({"state":"stopped","terminal_complete":false})),
+            |_, _| {
+                Ok(completion_record(
+                    json!({"state":"stopped","terminal_complete":false}),
+                ))
+            },
             &AtomicBool::new(true),
         )
         .unwrap_err();
@@ -294,9 +316,9 @@ mod tests {
         let result = wait_outcome(
             "s",
             |_, _| {
-                Ok(
+                Ok(completion_record(
                     json!({"state":"stopped","terminal_complete":false,"terminal_interrupted":true,"terminal_detached":false,"exit_code":0}),
-                )
+                ))
             },
             &AtomicBool::new(false),
         );
@@ -316,9 +338,11 @@ mod tests {
             |method, params| {
                 assert_eq!(method, "sessions.get");
                 assert_eq!(params, json!({"session":"s"}));
-                Ok(states
-                    .pop_front()
-                    .expect("completion must be consumed exactly once"))
+                Ok(completion_record(
+                    states
+                        .pop_front()
+                        .expect("completion must be consumed exactly once"),
+                ))
             },
             &AtomicBool::new(false),
         );

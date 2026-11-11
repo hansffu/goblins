@@ -242,7 +242,7 @@ pub fn check(
             }
             None
         }
-        "sessions.status" => {
+        "sessions.status" | "sessions.list" => {
             let _: goblins_protocol::contract::EmptyParams = parse(&call.params)?;
             None
         }
@@ -265,7 +265,11 @@ pub fn check(
             }
             None
         }
-        "sessions.get" | "sessions.stop" => {
+        "sessions.get" => {
+            let _: goblins_protocol::contract::SessionSelectorParams = parse(&call.params)?;
+            None
+        }
+        "sessions.stop" => {
             let Session { session: _session } = parse(&call.params)?;
             None
         }

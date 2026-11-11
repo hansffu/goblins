@@ -67,7 +67,7 @@ Session parameters named =session= accept a session ID or the agent name of a li
 
 * Initialization (both endpoints)
 
-The schema-first migration currently covers =initialize=, host =server.status= / =server.stop= and sandbox =sessions.status= / =sessions.set-state= / =sessions.set-variables= / =sessions.set-worktree=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
+The schema-first migration currently covers =initialize=, host =server.status= / =server.stop=, sandbox =sessions.status= / =sessions.set-state= / =sessions.set-variables= / =sessions.set-worktree=, and host/sandbox =sessions.list= / =sessions.get=. Their machine-readable contracts are in =libs/api/schema/=, with the generated [[file:API-REFERENCE.org][covered-method reference]]. Other surfaces remain specified here and assigned to later chunks in =libs/api/schema/coverage.json=. Generated types supplement the existing transport, policy and lifecycle checks.
 
 The result descriptions specify what the current daemon produces. Compatible API-1 clients also accept older replies without additive metadata: =configuration= and limits information in =initialize=, and =history=, =manifest= and =worktrees_directory= in =server.status=. The =x-client-result-schema= extension defines those generated client reply types; missing information remains optional, and clients use advertised features before relying on capabilities. Tests of the current daemon still enforce the current producer schema.
 
@@ -122,14 +122,14 @@ Ends this connection's subscription.
 
 *** =sessions.list=
 
-Lists retained session records, including starting and stopped ones.
+Lists retained session records, including starting and stopped ones. The host and sandbox read methods have separate generated record projections; the host carries process identities and host paths, while the sandbox projection below carries only its documented subset. Their OpenRPC contracts also describe positional forms: =[]= for list and =[session]= for get. Requests reject unknown fields; result records and nested records permit new fields. Rust readers keep the omissions and defaults already supported by API-1 snapshot clients, including the legacy =docker_scope= alias for =scope=. Direct host reads also accept the original API-1 records without =agent_name=, retaining that omission; snapshot views keep their existing requirement for a name. Compatibility replies preserve lifecycle and terminal-origin strings accepted by earlier readers, while current producers use the documented enums; snapshot views still validate activity with their prior =AgentState= enum. A snapshot containing both =scope= and =docker_scope= is refused. The JSON list commands validate the generated result contract and print the original result JSON, retaining nulls, old omissions and extension fields. Public projections follow the documented tolerance for new result fields, including nested worktree and skipped-item summaries; the runtime's stricter validators for local persisted records stay separate.
 
 - Input :: ={}=
 - Output :: =[Session]=
 
 *** =sessions.get=
 
-Returns one session record.
+Returns one session record by immutable ID, including a retained stopped record, or by a live goblin's unique agent name. An absent record is =-32004=.
 
 - Input :: ={"session"}=
 - Output :: =Session=
@@ -513,7 +513,7 @@ A raid owner sees and stops only the goblins it ran in its raid, while it owns i
 *** =sessions.list= / =sessions.get=
 
 - Input :: ={}= / ={"session"}=
-- Output :: =[SandboxSession]= / =SandboxSession=, a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached, worktree, options=.
+- Output :: =[SandboxSession]= / =SandboxSession=. List includes only live controlled members: their runtime has not yet been released, so a retiring member can still have a stopped lifecycle state. Released-but-retained records are omitted. Get resolves an ID or live agent name and returns =-32004= when the member is absent or outside the caller's control. The record is a subset of =Session=: =id, agent_name, name, created_by, description, state, agent_state, initial_packages, packages, auto_approve, scope, docker_enabled, exit_code, stop_reason, terminal_complete, terminal_interrupted, terminal_detached, terminal_attached, worktree, options=.
 
 *** =sessions.start=
 

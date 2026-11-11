@@ -144,6 +144,17 @@ fn run() -> Result<i32, String> {
                 print!("{}", targets(&call("targets.list", json!({}))?));
                 return Ok(0);
             }
+            cli::Command::List => {
+                let (mut socket, _) = connect()?;
+                let (_, wire) = contract::exchange_with_wire::<contract::sandbox::SessionsList>(
+                    &mut socket,
+                    json!(1),
+                    contract::EmptyParams {},
+                )
+                .map_err(|e| e.to_string())?;
+                println!("{wire}");
+                return Ok(0);
+            }
             cli::Command::Status => {
                 let record =
                     call_typed::<contract::sandbox::SessionsStatus>(contract::EmptyParams {})?;
@@ -253,7 +264,6 @@ fn run() -> Result<i32, String> {
             }
             command => {
                 let (method, params) = match command {
-                    cli::Command::List => ("sessions.list", json!({})),
                     cli::Command::Kill { session } | cli::Command::Stop { session } => {
                         ("sessions.stop", json!({"session":session}))
                     }

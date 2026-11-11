@@ -32,6 +32,25 @@
       (setf (plist-get broken :features) [1])
       (should-not (goblins--initialize-valid-p broken)))))
 
+(ert-deftest goblins-session-contract-fixtures ()
+  (let* ((file (expand-file-name "../libs/api/schema/fixtures.json"
+                                 (file-name-directory (file-truename (locate-library "goblins")))))
+         (fixtures (with-temp-buffer
+                     (insert-file-contents file)
+                     (json-parse-buffer :object-type 'plist :null-object nil))))
+    (dolist (key '(:host_session :host_session_legacy))
+      (let ((record (plist-get fixtures key)))
+        (with-temp-buffer
+          (goblins--insert-agent-fields record)
+          (should (string-match-p "Session:.*session-id" (buffer-string)))
+          (should (string-match-p "State:.*running" (buffer-string)))
+          (should (string-match-p
+                   (if (eq key :host_session) "Activity:.*working" "Activity:.*unknown")
+                   (buffer-string))))))
+    (should (equal (plist-get (goblins--session-worktree
+                              (plist-get fixtures :host_session)) :path)
+                   "/host/worktrees/branch"))))
+
 ;; Unit tests check failure notices; reconnection has tests of its own.
 (setq goblins-reconnect-delays nil)
 (require 'project)

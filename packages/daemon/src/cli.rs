@@ -448,16 +448,16 @@ pub fn complete_names(default_state: Option<&Path>, words: Vec<String>) -> i32 {
     let Ok(mut client) = goblins_controller::host::Client::connect(&state) else {
         return 0;
     };
-    let Ok(records) = client.call("sessions.list", serde_json::json!({})) else {
+    use goblins_protocol::contract;
+    let Ok(records) = client.call_typed::<contract::host::SessionsList>(contract::EmptyParams {})
+    else {
         return 0;
     };
     if slot == Slot::Raid {
-        // Every raid has a live member, so the records name them all.
         let names: std::collections::BTreeSet<_> = records
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|r| r["raid"]["name"].as_str())
+            .0
+            .iter()
+            .filter_map(|r| r.raid.as_ref().map(|r| r.name.as_str()))
             .filter(|n| {
                 n.bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
@@ -468,22 +468,15 @@ pub fn complete_names(default_state: Option<&Path>, words: Vec<String>) -> i32 {
         }
         return 0;
     }
-    if let Some(records) = records.as_array() {
-        for record in records {
-            if !matches!(
-                record["state"].as_str(),
-                Some("starting" | "running" | "stopping")
-            ) {
-                continue;
-            }
-            if let Some(name) = record["agent_name"].as_str()
-                && !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            {
-                println!("{name}");
-            }
+    for record in records.0 {
+        if matches!(record.state.as_str(), "starting" | "running" | "stopping")
+            && let Some(name) = record.agent_name.as_deref()
+            && !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            println!("{name}");
         }
     }
     0
@@ -808,7 +801,10 @@ mod tests {
             Ok(TerminalCommand::Create { argv, size: None, .. }) if argv.is_empty()
         ));
         for size in ["0x80", "30x501", "30", "ax1"] {
-            assert!(terminal(&["create", "snikk", "--size", size]).is_err(), "{size}");
+            assert!(
+                terminal(&["create", "snikk", "--size", size]).is_err(),
+                "{size}"
+            );
         }
         assert!(matches!(
             terminal(&["send", "snikk", "t1", "--text", "ls", "--keys", "enter", "tab"]),
@@ -820,8 +816,24 @@ mod tests {
             Ok(TerminalCommand::Run { command, .. }) if command == "gradle run"
         ));
         assert!(matches!(
-            terminal(&["wait", "snikk", "t1", "--regex", "^done$", "--timeout", "5", "--lines", "9"]),
-            Ok(TerminalCommand::Wait { regex: Some(_), timeout: Some(5), lines: Some(9), exit: false, .. })
+            terminal(&[
+                "wait",
+                "snikk",
+                "t1",
+                "--regex",
+                "^done$",
+                "--timeout",
+                "5",
+                "--lines",
+                "9"
+            ]),
+            Ok(TerminalCommand::Wait {
+                regex: Some(_),
+                timeout: Some(5),
+                lines: Some(9),
+                exit: false,
+                ..
+            })
         ));
         assert!(matches!(
             terminal(&["wait", "snikk", "t1", "--exit"]),

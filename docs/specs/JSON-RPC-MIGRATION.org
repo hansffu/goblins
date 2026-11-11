@@ -2,7 +2,7 @@
 #+date: 2026-11-10
 #+startup: showall
 
-Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is committed as =2cb8e32=. The user authorized continuing all remaining chunks on 2026-11-11 and will perform final validation and decide merge. C02a (self reporting) is implemented, with final review sign-off pending; C02b (session records/reads) and C03-C19 remain pending. Each chunk records validation and review before completion.
+Status: plan reviewed by Nikka and implementation authorized on 2026-11-10. C01 is committed as =2cb8e32=. The user authorized continuing all remaining chunks on 2026-11-11 and will perform final validation and decide merge. C02a (self reporting) is committed as =5bdb5db= after review by Nikka. C02b (session records/reads) is implemented and its available checks passed; full integration validation is blocked by the sandbox namespace restriction; C03-C19 remain pending. Each chunk records validation and review before completion.
 
 The user wants the full JSON-RPC contract, implemented in vertical chunks. Each chunk follows this order: define its JSON-RPC specification, generate types where possible, migrate its producers and consumers, then validate. Do not implement all schemas first, all generators next and all consumers last.
 
@@ -75,6 +75,8 @@ Depends on: C01. Current definition: daemon-local =SessionRecord=, manual =Sandb
 2. *Generate*: generate endpoint-specific projections, session/activity enums and reporting parameters/results; shared public nested records must not depend on runtime authority types.
 3. *Migrate*: daemon projections, Rust readers/renderers, worktree client, adapters' status/activity/variables calls and sandbox gate. Keep existing transition side effects; migrate frontend fixtures, including Emacs and shell consumers.
 4. *Validate*: assert host-only fields, process identities and attachment sockets remain excluded from sandbox projections, while the existing worktree path remains present and unchanged in list/get/status/set-worktree results. Pin activity freshness, variable limits, worktree set/clear and stopped-record behavior. Feature areas: lifecycle, messaging, worktrees, codex, claude, tui, emacs.
+
+C02b validation (2026-11-11): =just test-rust= passed 542 tests with four standard helper/driver ignores; 18 contract and real CLI checks passed, including original API-1 list/get/legacy attachment compatibility; 178 Emacs tests passed; feature mapping covers 388 discovered Python tests. The final schema/reference consistency, generated workspace compilation and 14 pure contract checks passed; =just test-nix= passed all 232 flake checks on the unchanged code/schema candidate after the sandbox-list prose correction. Logs are retained in =target/c02b-validation/=. The required =full= feature task passed its Rust phase, then failed integration launches with namespace =EPERM= and was stopped; the compatibility follow-ups received the serial checks above. Full integration/native, packaged smoke validation and the eventual final =just test-merge= gate remain pending in a host-capable environment. No merge has been performed.
 
 ** C03: Session launch, targets and lifecycle commands
 

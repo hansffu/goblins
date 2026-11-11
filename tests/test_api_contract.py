@@ -79,6 +79,38 @@ class ContractTests(unittest.TestCase):
             schema = {"$ref":"common.json#/definitions/" + case["schema"]}
             self.assertEqual(contract.schema_validator(schema).is_valid(case["result"]), case["valid"], case)
 
+    def test_session_read_schemas_match_corpora_and_keep_producers_precise(self):
+        fixtures = contract.read("fixtures.json")
+        for endpoint in ("host", "sandbox"):
+            for case in fixtures["session_parameter_cases"]:
+                entry = contract.method(endpoint, case["method"])
+                schema = entry["x-positional-schema"] if isinstance(case["params"], list) else entry["x-params-schema"]
+                self.assertEqual(contract.schema_validator(schema).is_valid(case["params"]), case["valid"], case)
+            value = fixtures[endpoint + "_session"]
+            for name, result in [("sessions.list", [value]), ("sessions.get", value)]:
+                self.assertTrue(contract.validate_reply(endpoint, name, dict(jsonrpc="2.0",id=1,result=result)))
+            for missing in value:
+                bad = dict(value); del bad[missing]
+                with self.assertRaises(ValidationError):
+                    contract.validate_reply(endpoint, "sessions.get", dict(jsonrpc="2.0",id=1,result=bad))
+        for case in fixtures["session_result_cases"]:
+            self.assertEqual(contract.schema_validator({"$ref":"common.json#/definitions/"+case["schema"]}).is_valid(case["result"]),case["valid"],case)
+        for field, value in [("state","finished"),("agent_state","future-activity"),("terminals",[{**fixtures["host_session"]["terminals"][0], "origin":"remote"}])]:
+            result = copy.deepcopy(fixtures["host_session"]); result[field] = value
+            reply = dict(jsonrpc="2.0",id=1,result=result)
+            self.assertTrue(contract.validate_reply("host","sessions.get",reply,compatibility=True))
+            with self.assertRaises(ValidationError): contract.validate_reply("host","sessions.get",reply)
+        original = dict(jsonrpc="2.0",id=1,result=fixtures["original_api1"]["host_session"])
+        self.assertTrue(contract.validate_reply("host","sessions.get",original,compatibility=True))
+        with self.assertRaises(ValidationError): contract.validate_reply("host","sessions.get",original)
+        reply = dict(jsonrpc="2.0",id=1,result=fixtures["host_session_legacy"])
+        self.assertTrue(contract.validate_reply("host","sessions.get",reply,compatibility=True))
+        with self.assertRaises(ValidationError): contract.validate_reply("host","sessions.get",reply)
+        self.assertEqual(set(fixtures["sandbox_session"]),set(contract.common()["definitions"]["SandboxSession"]["properties"]))
+        for hidden in ("configuration","identity","cwd","checkout","terminal","attach","detail","server_log"):
+            self.assertNotIn(hidden, fixtures["sandbox_session"])
+        self.assertEqual(fixtures["sandbox_session"]["worktree"],fixtures["host_session"]["worktree"])
+
     def test_shell_initialization_boundary_uses_contract_fixtures(self):
         script = (contract.ROOT / "nix/goblins/claude/rpc.sh").read_text()
         predicate = script.split("jq -e '\n", 1)[1].split("' <<<\"$init\"", 1)[0]
@@ -104,7 +136,7 @@ class ContractTests(unittest.TestCase):
 
     def test_coverage_rejects_cross_endpoint_and_notification_misassignments(self):
         wrong = copy.deepcopy(contract.read("coverage.json"))
-        wrong["pending"]["C02"]["sandbox"].remove("sessions.list")
+        wrong["pending"]["C03"]["sandbox"].remove("sessions.start")
         with self.assertRaisesRegex(ValueError, "sandbox coverage"):
             contract.check_coverage(wrong)
         wrong = copy.deepcopy(contract.read("coverage.json"))
@@ -193,6 +225,95 @@ class HistoricalClientTests(unittest.TestCase):
                 self.assertEqual([row["method"] for row in requests], ["initialize", "server." + command])
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return result.stdout
+
+    def test_real_list_cli_validates_records_and_preserves_wire_json(self):
+        binary = os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary = re.search(r'exec (\S+)', app().read_text()).group(1)
+        fixtures = contract.read("fixtures.json")
+        good = [fixtures["host_session_legacy"], fixtures["forward_compatibility"]["host_session"]]
+        future = copy.deepcopy(fixtures["host_session"]); future["state"]="finished"; future["agent_state"]="future-activity"; future["terminals"][0]["origin"]="remote"; good.append(future)
+        broken = copy.deepcopy(good); broken[0]["identity"] = [42, 1, 2, 3, 4]
+        for records, valid in [(good, True), ([fixtures["original_api1"]["host_session"]], True), (broken, False)]:
+            with tempfile.TemporaryDirectory(prefix="gc-list-") as root:
+                state = Path(root) / "state"; state.mkdir(mode=0o700)
+                errors, calls = [], []
+                with socket.socket(socket.AF_UNIX) as listener:
+                    listener.settimeout(5); listener.bind(str(state / "host.sock")); listener.listen()
+                    def serve():
+                        try:
+                            peer, _ = listener.accept()
+                            with peer:
+                                peer.settimeout(5)
+                                init = receive(peer)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result=fixtures["original_api1"]["host_initialize"])))
+                                request = receive(peer); calls.append(request)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=records)))
+                        except Exception as error: errors.append(error)
+                    server = threading.Thread(target=serve,daemon=True); server.start()
+                    result = subprocess.run([binary,"--state-dir",str(state),"list"],text=True,capture_output=True,timeout=10)
+                    server.join(timeout=6)
+                    self.assertFalse(server.is_alive()); self.assertEqual(errors, [])
+                    self.assertEqual(calls[0]["method"],"sessions.list"); self.assertEqual(calls[0]["params"],{})
+                    if valid:
+                        self.assertEqual(result.returncode,0,result.stderr)
+                        self.assertEqual(json.loads(result.stdout), records)
+                    else: self.assertNotEqual(result.returncode,0)
+
+    def test_real_attach_cli_accepts_original_api1_record_without_agent_name(self):
+        from terminal_support import Terminal
+        binary = os.environ.get("GOBLINS_LOCAL_CONTROLLER")
+        if binary is None:
+            import re
+            binary = re.search(r'exec (\S+)', app().read_text()).group(1)
+        original = contract.read("fixtures.json")["original_api1"]
+        errors, calls = [], []
+        with tempfile.TemporaryDirectory(prefix="gc-original-") as root:
+            state = Path(root) / "state"; state.mkdir(mode=0o700)
+            record = copy.deepcopy(original["host_session"])
+            record.update(terminal=str(state / "terminal.sock"), state="stopped", pty_eof=True, terminal_complete=True, exit_code=0)
+            with socket.socket(socket.AF_UNIX) as host, socket.socket(socket.AF_UNIX) as terminal:
+                host.settimeout(5); host.bind(str(state / "host.sock")); host.listen()
+                terminal.settimeout(5); terminal.bind(record["terminal"]); terminal.listen()
+                def control():
+                    try:
+                        peer, _ = host.accept()
+                        with peer:
+                            peer.settimeout(5)
+                            init = receive(peer)
+                            peer.sendall(frame(dict(jsonrpc="2.0",id=init["id"],result=original["host_initialize"])))
+                            while True:
+                                try: request = receive(peer)
+                                except EOFError: break
+                                calls.append(request)
+                                if request["method"] == "sessions.get": result = record
+                                elif request["method"] == "sessions.resize": result = {"accepted":True}
+                                else: raise AssertionError(request)
+                                peer.sendall(frame(dict(jsonrpc="2.0",id=request["id"],result=result)))
+                    except Exception as error: errors.append(error)
+                def output():
+                    try:
+                        peer, _ = terminal.accept()
+                        with peer:
+                            peer.sendall(frame(dict(jsonrpc="2.0",id=0,result={"attached":True})) + b"original API-1 terminal output\n")
+                            peer.shutdown(socket.SHUT_WR)
+                            peer.settimeout(5)
+                            while peer.recv(1024): pass
+                    except Exception as error: errors.append(error)
+                threads = [threading.Thread(target=f,daemon=True) for f in (control,output)]
+                for thread in threads: thread.start()
+                client = Terminal([binary,"--state-dir",str(state),"attach",record["id"]])
+                try:
+                    client.expect("original API-1 terminal output",timeout=10)
+                    self.assertEqual(client.wait(),0)
+                finally: client.close()
+                for thread in threads:
+                    thread.join(timeout=6); self.assertFalse(thread.is_alive())
+                self.assertEqual(errors,[])
+                reads = [c for c in calls if c["method"] == "sessions.get"]
+                self.assertEqual(len(reads),2)
+                self.assertTrue(all(c["params"] == {"session":record["id"]} for c in reads))
 
     def test_real_status_cli_accepts_historical_api1_daemon(self):
         output = self.legacy_cli("status")

@@ -241,7 +241,11 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Command::List => println!(
             "{}",
-            Client::connect(&state)?.call("sessions.list", serde_json::json!({}))?
+            Client::connect(&state)?
+                .call_typed_with_wire::<goblins_protocol::contract::host::SessionsList>(
+                    goblins_protocol::contract::EmptyParams {}
+                )?
+                .1
         ),
         Command::Stop { id_or_name } | Command::Kill { id_or_name } => println!(
             "{}",

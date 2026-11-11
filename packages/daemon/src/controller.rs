@@ -134,6 +134,197 @@ pub struct SessionRecord {
     #[serde(default)]
     pub options: BTreeMap<String, String>,
 }
+
+// Public projections contain data only. Runtime leases and capabilities never cross here.
+impl From<&SessionRecord> for contract::HostSession {
+    fn from(r: &SessionRecord) -> Self {
+        Self {
+            id: r.id.clone(),
+            agent_name: r.agent_name.clone(),
+            name: r.name.clone(),
+            description: r.description.clone(),
+            configuration: r.configuration.clone(),
+            terminal: r.terminal.clone(),
+            attach: r.attach.clone(),
+            docker_enabled: r.docker_enabled.clone(),
+            pty_eof: r.pty_eof.clone(),
+            terminal_complete: r.terminal_complete.clone(),
+            terminal_interrupted: r.terminal_interrupted.clone(),
+            terminal_attached: r.terminal_attached.clone(),
+            terminal_detached: r.terminal_detached.clone(),
+            scope: r.scope.clone(),
+            dev_shell: r.dev_shell.clone(),
+            cwd: r.cwd.clone(),
+            created_by: r.created_by.as_ref().map(|c| contract::CreatedBy {
+                id: c.id.clone(),
+                agent_name: c.agent_name.clone(),
+            }),
+            agent_state: r.agent_state.clone(),
+            agent_state_since: r.agent_state_since.clone(),
+            inbox: r.inbox.clone(),
+            state: r.state.parse().expect("controller lifecycle state"),
+            identity: r.identity.as_ref().map(|i| contract::ProcessIdentity {
+                pid: i.pid,
+                helper_userns: i.helper_userns,
+                mount_owner: i.mount_owner,
+                source_mountns: i.source_mountns,
+                mountns: i.mountns,
+            }),
+            initial_packages: r.initial_packages.clone(),
+            packages: r.packages.clone(),
+            auto_approve: r.auto_approve.clone(),
+            server_log: r.server_log.clone(),
+            stop_reason: r.stop_reason.clone(),
+            detail: r.detail.clone(),
+            recreated_from: r.recreated_from.clone(),
+            exit_code: r.exit_code.clone(),
+            raid: r.raid.as_ref().map(|r| contract::SessionRaid {
+                id: r.id.clone(),
+                name: r.name.clone(),
+                role: r.role.clone(),
+                owner: r.owner.clone(),
+                paused: r.paused,
+            }),
+            shells: r.shells.clone(),
+            execs: r.execs.clone(),
+            terminals: r
+                .terminals
+                .iter()
+                .map(|t| contract::SessionTerminal {
+                    id: t.id.clone(),
+                    name: t.name.clone(),
+                    label: t.label.clone(),
+                    origin: t.origin.parse().expect("terminal origin"),
+                    started_at: t.started_at,
+                    rows: t.rows,
+                    cols: t.cols,
+                    attached: t.attached,
+                })
+                .collect(),
+            skipped: r
+                .skipped
+                .iter()
+                .map(|s| contract::RecreateSkipped {
+                    name: s.name.clone(),
+                    reason: s.reason.clone(),
+                })
+                .collect(),
+            worktree: r.worktree.as_ref().map(|w| contract::WireWorktree {
+                name: w.name.clone(),
+                path: w.path.clone(),
+            }),
+            checkout: r.checkout.clone(),
+            options: r.options.clone(),
+        }
+    }
+}
+
+// Temporary snapshot adapter until C15: all client fields decode through the generated
+// record first, then the existing TUI/domain view keeps its established defaults.
+impl TryFrom<contract::HostSessionReply> for SessionRecord {
+    type Error = &'static str;
+    fn try_from(r: contract::HostSessionReply) -> std::result::Result<Self, Self::Error> {
+        let agent_name = r.agent_name.ok_or("snapshot session requires agent_name")?;
+        let agent_state = r
+            .agent_state
+            .parse()
+            .map_err(|_| "invalid snapshot agent_state")?;
+        Ok(Self {
+            id: r.id,
+            agent_name,
+            name: r.name,
+            description: r.description,
+            configuration: r.configuration,
+            terminal: r.terminal,
+            attach: r.attach,
+            docker_enabled: r.docker_enabled,
+            pty_eof: r.pty_eof,
+            terminal_complete: r.terminal_complete,
+            terminal_interrupted: r.terminal_interrupted,
+            terminal_attached: r.terminal_attached,
+            terminal_detached: r.terminal_detached,
+            scope: r.scope.or(r.docker_scope),
+            dev_shell: r.dev_shell,
+            cwd: r.cwd,
+            created_by: r.created_by.map(|c| CreatedBy {
+                id: c.id,
+                agent_name: c.agent_name,
+            }),
+            agent_state,
+            agent_state_since: r.agent_state_since,
+            inbox: r.inbox,
+            state: r.state,
+            identity: r.identity.map(|i| Identity {
+                pid: i.pid,
+                helper_userns: i.helper_userns,
+                mount_owner: i.mount_owner,
+                source_mountns: i.source_mountns,
+                mountns: i.mountns,
+            }),
+            initial_packages: r.initial_packages,
+            packages: r.packages,
+            auto_approve: r.auto_approve,
+            server_log: r.server_log,
+            stop_reason: r.stop_reason,
+            detail: r.detail,
+            recreated_from: r.recreated_from,
+            exit_code: r.exit_code,
+            raid: r.raid.map(|r| RaidMembership {
+                id: r.id,
+                name: r.name,
+                role: r.role,
+                owner: r.owner,
+                paused: r.paused,
+            }),
+            shells: r.shells,
+            execs: r.execs,
+            terminals: r
+                .terminals
+                .into_iter()
+                .map(|t| TerminalRecord {
+                    id: t.id,
+                    name: t.name,
+                    label: t.label,
+                    origin: t.origin,
+                    started_at: t.started_at,
+                    rows: t.rows,
+                    cols: t.cols,
+                    attached: t.attached,
+                })
+                .collect(),
+            skipped: r
+                .skipped
+                .into_iter()
+                .map(|s| goblins_runtime::history::Skipped {
+                    name: s.name,
+                    reason: s.reason,
+                })
+                .collect(),
+            worktree: r.worktree.map(|w| goblins_runtime::worktrees::Worktree {
+                name: w.name,
+                path: w.path,
+            }),
+            checkout: r.checkout,
+            options: r.options,
+        })
+    }
+}
+fn session_records<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<SessionRecord>, D::Error> {
+    use goblins_protocol::contract::Response;
+    let values = Vec::<Value>::deserialize(d)?;
+    values
+        .into_iter()
+        .map(|v| {
+            if v.get("scope").is_some() && v.get("docker_scope").is_some() {
+                return Err(serde::de::Error::custom("duplicate scope and docker_scope"));
+            }
+            let record = contract::HostSessionReply::decode(v).map_err(serde::de::Error::custom)?;
+            record.try_into().map_err(serde::de::Error::custom)
+        })
+        .collect()
+}
 impl SessionRecord {
     /// True when the visible activity changed; the change is timestamped.
     fn set_agent_state(&mut self, state: goblins_protocol::AgentState) -> bool {
@@ -178,6 +369,7 @@ pub struct PermissionRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     pub instance: String,
+    #[serde(deserialize_with = "session_records")]
     pub sessions: Vec<SessionRecord>,
     pub permissions: Vec<PermissionRecord>,
     #[serde(default)]
@@ -1448,22 +1640,30 @@ impl Controller {
             .collect();
         json!(targets)
     }
-    fn sandbox_record(&self, record: &SessionRecord) -> Value {
-        // No host paths, process IDs, terminal sockets or diagnostics cross the
-        // sandbox endpoint.
-        json!({"id":record.id,"agent_name":record.agent_name,"name":record.name,
-            "created_by":record.created_by,
-            "description":record.description,"state":record.state,"agent_state":record.agent_state,
-            "initial_packages":record.initial_packages,
-            "packages":record.packages,"auto_approve":record.auto_approve,
-            "scope":record.scope,"docker_enabled":record.docker_enabled,
-            "exit_code":record.exit_code,
-            "stop_reason":record.stop_reason,
-            "terminal_complete":record.terminal_complete,
-            "terminal_interrupted":record.terminal_interrupted,
-            "terminal_detached":record.terminal_detached,
-            "terminal_attached":record.terminal_attached,
-            "worktree":record.worktree,"options":record.options})
+    fn sandbox_record(&self, record: &SessionRecord) -> contract::SandboxSession {
+        let r = contract::HostSession::from(record);
+        contract::SandboxSession {
+            id: r.id,
+            agent_name: r.agent_name,
+            name: r.name,
+            created_by: r.created_by,
+            description: r.description,
+            state: r.state,
+            agent_state: r.agent_state,
+            initial_packages: r.initial_packages,
+            packages: r.packages,
+            auto_approve: r.auto_approve,
+            scope: r.scope,
+            docker_enabled: r.docker_enabled,
+            exit_code: r.exit_code,
+            stop_reason: r.stop_reason,
+            terminal_complete: r.terminal_complete,
+            terminal_interrupted: r.terminal_interrupted,
+            terminal_detached: r.terminal_detached,
+            terminal_attached: r.terminal_attached,
+            worktree: r.worktree,
+            options: r.options,
+        }
     }
     /// `mkGoblins.worktrees.directory` of the current configuration, expanded;
     /// None when worktrees are off or no configuration is known yet.
@@ -2242,20 +2442,20 @@ impl Controller {
             }
             // A raid owner sees and stops only the members created in its
             // raid, while it owns it. No goblin attaches to another's terminal.
-            "sessions.list" => {
-                let _: Empty = params(value)?;
-                Ok(json!(
+            contract::sandbox::SessionsList::NAME => {
+                let _: contract::EmptyParams = params(value)?;
+                Ok(json!(contract::SandboxSessionList(
                     self.sessions
                         .values()
                         .filter(|a| a.live() && self.controls(scope, &a.record.id))
                         .map(|a| self.sandbox_record(&a.record))
                         .collect::<Vec<_>>()
-                ))
+                )))
             }
-            "sessions.get" => {
-                let p: SessionId = params(value)?;
+            contract::sandbox::SessionsGet::NAME => {
+                let p: contract::SessionSelectorParams = params(value)?;
                 let id = self.resolve_member(&p.session, scope)?;
-                Ok(self.sandbox_record(&self.sessions[&id].record))
+                Ok(json!(self.sandbox_record(&self.sessions[&id].record)))
             }
             "targets.list" => {
                 let _: Empty = params(value)?;
@@ -2484,14 +2684,21 @@ impl Controller {
                 c.close = true;
                 Ok(json!(contract::ServerStopResult { accepted: true }))
             }
-            "sessions.list" => {
-                let _: Empty = params(value)?;
-                Ok(json!(self.snapshot().sessions))
+            contract::host::SessionsList::NAME => {
+                let _: contract::EmptyParams = params(value)?;
+                Ok(json!(contract::HostSessionList(
+                    self.sessions
+                        .values()
+                        .map(|a| contract::HostSession::from(&a.record))
+                        .collect()
+                )))
             }
-            "sessions.get" => {
-                let p: SessionId = params(value)?;
+            contract::host::SessionsGet::NAME => {
+                let p: contract::SessionSelectorParams = params(value)?;
                 let id = self.resolve_session(&p.session)?;
-                Ok(json!(self.sessions[&id].record))
+                Ok(json!(contract::HostSession::from(
+                    &self.sessions[&id].record
+                )))
             }
             "sessions.start" => self.start(params(value)?, None),
             "history.list" => {
@@ -4886,6 +5093,52 @@ mod tests {
         drop(d);
         fs::remove_dir_all(path).unwrap();
     }
+    #[test]
+    fn generated_session_projections_preserve_visibility_and_snapshot_compatibility() {
+        let fixtures: Value =
+            serde_json::from_str(include_str!("../../../libs/api/schema/fixtures.json")).unwrap();
+        let record: SessionRecord =
+            serde_json::from_value(fixtures["host_session"].clone()).unwrap();
+        assert_eq!(
+            json!(contract::HostSession::from(&record)),
+            fixtures["host_session"]
+        );
+        assert_eq!(json!(record), fixtures["host_session"]);
+        let d = daemon();
+        let path = d.state.clone();
+        assert_eq!(
+            json!(d.sandbox_record(&record)),
+            fixtures["sandbox_session"]
+        );
+        let wire = json!({"instance":"fixture","sessions":[fixtures["host_session_legacy"]],"permissions":[]});
+        let snapshot: Snapshot = serde_json::from_value(wire.clone()).unwrap();
+        let legacy = &snapshot.sessions[0];
+        assert_eq!(legacy.scope.as_deref(), Some("legacy-scope"));
+        assert_eq!(legacy.agent_state, goblins_protocol::AgentState::Unknown);
+        assert_eq!(legacy.inbox, 0);
+        assert!(!legacy.terminal_attached);
+        let mut original = wire.clone();
+        original["sessions"][0] = fixtures["original_api1"]["host_session"].clone();
+        assert!(serde_json::from_value::<Snapshot>(original).is_err());
+        let mut future =
+            json!({"instance":"fixture","sessions":[fixtures["host_session"]],"permissions":[]});
+        future["sessions"][0]["state"] = json!("finished");
+        future["sessions"][0]["terminals"][0]["origin"] = json!("remote");
+        let accepted: Snapshot = serde_json::from_value(future.clone()).unwrap();
+        assert_eq!(accepted.sessions[0].state, "finished");
+        assert_eq!(accepted.sessions[0].terminals[0].origin, "remote");
+        future["sessions"][0]["agent_state"] = json!("future-activity");
+        assert!(serde_json::from_value::<Snapshot>(future).is_err());
+        let mut duplicate = wire.clone();
+        duplicate["sessions"][0]["scope"] = json!("canonical");
+        assert!(serde_json::from_value::<Snapshot>(duplicate).is_err());
+        let mut malformed = wire;
+        malformed["sessions"][0]["identity"] = json!([42, 1, 2, 3, 4]);
+        assert!(serde_json::from_value::<Snapshot>(malformed).is_err());
+        drop(d);
+        fs::remove_dir_all(path).unwrap();
+    }
+
     #[test]
     fn old_session_snapshots_default_activity_to_unknown() {
         let mut d = daemon();

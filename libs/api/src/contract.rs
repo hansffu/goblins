@@ -259,14 +259,37 @@ impl Response for ServerStopResult {
     }
 }
 
-/// Preserve the existing framing/correlation/error checks, then decode the DTO.
+/// Typed dispatch for an existing transport callback, retaining its error type.
+pub fn invoke<M: Method, E: From<io::Error>>(
+    params: M::Params,
+    transport: impl FnOnce(&str, Value) -> Result<Value, E>,
+) -> Result<M::Result, E> {
+    let params = serde_json::to_value(params).map_err(io::Error::other)?;
+    let reply = transport(M::NAME, params)?;
+    Ok(M::Result::decode(reply)?)
+}
+
+/// Preserve framing/correlation/error checks, then decode the associated DTO.
 pub fn exchange<M: Method>(
     stream: &mut UnixStream,
     id: Value,
     params: M::Params,
 ) -> io::Result<M::Result> {
-    let reply = rpc::exchange(stream, id, M::NAME, serde_json::to_value(params)?)?;
-    M::Result::decode(reply)
+    invoke::<M, io::Error>(params, |method, params| {
+        rpc::exchange(stream, id, method, params)
+    })
+}
+
+/// CLI JSON output retains the original wire fields after typed validation.
+/// This preserves nulls, omitted legacy fields and unknown result extensions.
+pub fn exchange_with_wire<M: Method>(
+    stream: &mut UnixStream,
+    id: Value,
+    params: M::Params,
+) -> io::Result<(M::Result, Value)> {
+    let wire = rpc::exchange(stream, id, M::NAME, serde_json::to_value(params)?)?;
+    let result = M::Result::decode(wire.clone())?;
+    Ok((result, wire))
 }
 
 /// Shared handshake; the caller supplies its endpoint, request ID and socket.
@@ -459,6 +482,83 @@ mod tests {
             };
             assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
         }
+    }
+
+    #[test]
+    fn session_read_contracts_preserve_requests_results_and_legacy_defaults() {
+        let f = fixtures();
+        for case in f["session_parameter_cases"].as_array().unwrap() {
+            let valid = if case["method"] == "sessions.list" {
+                serde_json::from_value::<EmptyParams>(case["params"].clone()).is_ok()
+            } else {
+                serde_json::from_value::<SessionSelectorParams>(case["params"].clone()).is_ok()
+            };
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+        }
+        for case in f["session_result_cases"].as_array().unwrap() {
+            let valid = if case["schema"] == "HostSessionReply" {
+                HostSessionReply::decode(case["result"].clone()).is_ok()
+            } else {
+                SandboxSessionReply::decode(case["result"].clone()).is_ok()
+            };
+            assert_eq!(valid, case["valid"].as_bool().unwrap(), "{case}");
+        }
+        let original =
+            HostSessionReply::decode(f["original_api1"]["host_session"].clone()).unwrap();
+        assert!(original.agent_name.is_none());
+        let original = invoke::<host::SessionsGet, io::Error>(
+            SessionSelectorParams {
+                session: "session-id".into(),
+            },
+            |name, params| {
+                assert_eq!(name, "sessions.get");
+                assert_eq!(params, json!({"session":"session-id"}));
+                Ok(f["original_api1"]["host_session"].clone())
+            },
+        )
+        .unwrap();
+        assert_eq!(original.terminal, "/host/terminal.sock");
+        let legacy = HostSessionReply::decode(f["host_session_legacy"].clone()).unwrap();
+        assert_eq!(legacy.docker_scope.as_deref(), Some("legacy-scope"));
+        assert_eq!(legacy.agent_state, "unknown");
+        assert_eq!(legacy.inbox, 0);
+        assert!(!legacy.terminal_attached);
+        assert!(legacy.worktree.is_none());
+        assert_eq!(
+            HostSessionListReply::decode(json!([f["host_session"], f["host_session_legacy"]]))
+                .unwrap()
+                .0
+                .len(),
+            2
+        );
+        assert!(HostSessionListReply::decode(json!({})).is_err());
+        assert!(HostSessionListReply::decode(json!([[]])).is_err());
+    }
+
+    #[test]
+    fn typed_exchange_keeps_cli_wire_fields_after_validation() {
+        use std::io::Write;
+        let wire = fixtures()["forward_compatibility"]["host_session"].clone();
+        let expected = wire.clone();
+        let (mut client, mut peer) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let request = rpc::read(&mut peer).unwrap();
+            assert_eq!(request["method"], "sessions.get");
+            assert_eq!(request["params"], json!({"session":"goblin"}));
+            peer.write_all(&rpc::encode(&rpc::result(request["id"].clone(), wire)).unwrap())
+                .unwrap();
+        });
+        let (record, original) = exchange_with_wire::<host::SessionsGet>(
+            &mut client,
+            json!(1),
+            SessionSelectorParams {
+                session: "goblin".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(record.id, expected["id"]);
+        assert_eq!(original, expected);
+        server.join().unwrap();
     }
 
     #[test]

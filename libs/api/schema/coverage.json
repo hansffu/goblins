@@ -1,15 +1,5 @@
 {
   "pending": {
-    "C02": {
-      "host": [
-        "sessions.list",
-        "sessions.get"
-      ],
-      "sandbox": [
-        "sessions.list",
-        "sessions.get"
-      ]
-    },
     "C03": {
       "host": [
         "sessions.start",

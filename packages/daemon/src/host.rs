@@ -53,6 +53,17 @@ impl Client {
             params,
         )?)
     }
+    pub fn call_typed_with_wire<M: Method>(
+        &mut self,
+        params: M::Params,
+    ) -> Result<(M::Result, Value)> {
+        self.next += 1;
+        Ok(contract::exchange_with_wire::<M>(
+            &mut self.stream,
+            json!(self.next),
+            params,
+        )?)
+    }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         self.next += 1;
         Ok(rpc::exchange(

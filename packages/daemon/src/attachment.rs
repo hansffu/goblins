@@ -3,6 +3,7 @@ use crate::RESIZE;
 use crate::STOP;
 use goblins_controller::Result;
 use goblins_controller::host::Client;
+use goblins_protocol::contract;
 use goblins_protocol::terminal::size;
 use goblins_unix as unix;
 use serde::Serialize;
@@ -90,8 +91,11 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
     }
     let session = launch["session"].as_str().ok_or("missing session ID")?;
     let record = loop {
-        let record = control.call("sessions.get", json!({"session":session}))?;
-        if record["state"] != "starting" {
+        let record =
+            control.call_typed::<contract::host::SessionsGet>(contract::SessionSelectorParams {
+                session: session.to_string(),
+            })?;
+        if record.state != "starting" {
             break record;
         }
         if STOP.load(Ordering::Relaxed) {
@@ -99,31 +103,31 @@ pub fn resume(state: PathBuf, configuration: String, id: String, detached: bool)
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
-    let text = |v: &serde_json::Value| goblins_protocol::plain_text(v.as_str().unwrap_or("-"));
-    if record["state"] == "failed" {
+    let text = |v: Option<&str>| goblins_protocol::plain_text(v.unwrap_or("-"));
+    if record.state == "failed" {
         return Err(format!(
             "resuming {} failed: {}",
-            text(&record["recreated_from"]),
-            text(&record["detail"])
+            text(record.recreated_from.as_deref()),
+            text(record.detail.as_deref())
         )
         .into());
     }
     eprintln!(
         "Resumed {} ({}) as {session}",
-        text(&record["agent_name"]),
-        text(&record["recreated_from"])
+        text(record.agent_name.as_deref()),
+        text(record.recreated_from.as_deref())
     );
-    for skipped in record["skipped"].as_array().into_iter().flatten() {
+    for skipped in &record.skipped {
         eprintln!(
             "Skipped: {} — {}",
-            text(&skipped["name"]),
-            text(&skipped["reason"])
+            text(Some(&skipped.name)),
+            text(Some(&skipped.reason))
         );
     }
-    if let Some(detail) = record["detail"].as_str() {
+    if let Some(detail) = record.detail.as_deref() {
         eprintln!("{}", goblins_protocol::plain_text(detail));
     }
-    relay(control, session, &record)
+    relay(control, session, &serde_json::to_value(record.clone())?)
 }
 
 pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Result<i32> {
@@ -137,15 +141,18 @@ pub fn attach(state: PathBuf, session: String, instance: Option<String>) -> Resu
     {
         return Err("daemon instance changed; cannot attach".into());
     }
-    let record = control.call("sessions.get", json!({"session":session}))?;
+    let record =
+        control.call_typed::<contract::host::SessionsGet>(contract::SessionSelectorParams {
+            session: session.to_string(),
+        })?;
     // Do not resolve reusable agent names for an editor's retained identity.
-    if instance.is_some() && record["id"] != session {
+    if instance.is_some() && record.id != session {
         return Err("session identity mismatch".into());
     }
-    let session = record["id"].as_str().ok_or("missing session ID")?;
+    let session = record.id.as_str();
     // Apply the Ghostel window's actual dimensions once the PTY is ready.
     RESIZE.store(true, Ordering::Relaxed);
-    relay(control, session, &record)
+    relay(control, session, &serde_json::to_value(record.clone())?)
 }
 
 /// Attach to the goblin whose launch or record is `record`. A daemon with

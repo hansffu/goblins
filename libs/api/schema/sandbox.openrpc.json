@@ -207,6 +207,72 @@
       "x-client-result-schema": {
         "$ref": "common.json#/definitions/SetWorktreeReply"
       }
+    },
+    {
+      "name": "sessions.list",
+      "description": "List currently controlled members whose runtime has not been released, in daemon order. Released-but-retained sessions are excluded; a retiring member can still report a stopped lifecycle state. Host-only fields are excluded.",
+      "paramStructure": "either",
+      "params": [],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SandboxSessionList"
+        }
+      },
+      "errors": [],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/EmptyParams"
+      },
+      "x-positional-schema": {
+        "type": "array",
+        "items": false,
+        "minItems": 0,
+        "maxItems": 0
+      },
+      "x-rust-name": "SessionsList",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/SandboxSessionListReply"
+      }
+    },
+    {
+      "name": "sessions.get",
+      "description": "Read a session by immutable id or live agent name. The sandbox can read only members it controls; host-only fields are excluded.",
+      "paramStructure": "either",
+      "params": [
+        {
+          "name": "session",
+          "required": true,
+          "schema": {
+            "$ref": "common.json#/definitions/SessionSelectorParams/properties/session"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "common.json#/definitions/SandboxSession"
+        }
+      },
+      "errors": [
+        {
+          "code": -32004,
+          "message": "Record absent or no longer retained"
+        },
+        {
+          "code": -32009,
+          "message": "Stale or unauthorized operation"
+        }
+      ],
+      "x-params-schema": {
+        "$ref": "common.json#/definitions/SessionSelectorParams"
+      },
+      "x-positional-schema": {
+        "$ref": "common.json#/x-positional-schemas/SessionSelectorPositional"
+      },
+      "x-rust-name": "SessionsGet",
+      "x-client-result-schema": {
+        "$ref": "common.json#/definitions/SandboxSessionReply"
+      }
     }
   ],
   "x-notifications": [],

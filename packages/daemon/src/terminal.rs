@@ -193,9 +193,16 @@ fn attach(mut client: Client, goblin: String, terminal: String) -> Result<i32> {
     if unsafe { libc::isatty(0) != 1 } {
         return Err("goblins terminal attach requires terminal input".into());
     }
-    let record = client.call("sessions.get", json!({"session":goblin}))?;
-    let session = record["id"].as_str().ok_or("missing session ID")?.to_string();
-    let stream = attachment::handshake(&client, &session, &record, Some(&terminal))?;
+    let record = client.call_typed::<goblins_protocol::contract::host::SessionsGet>(
+        goblins_protocol::contract::SessionSelectorParams { session: goblin },
+    )?;
+    let session = record.id.clone();
+    let stream = attachment::handshake(
+        &client,
+        &session,
+        &serde_json::to_value(record)?,
+        Some(&terminal),
+    )?;
     // The frontend's window is applied once the stream is relayed.
     RESIZE.store(true, Ordering::Relaxed);
     let mut outcome = None;

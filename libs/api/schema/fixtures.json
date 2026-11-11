@@ -306,6 +306,124 @@
       "future_result": {
         "new": "field"
       }
+    },
+    "host_session": {
+      "id": "session-id",
+      "agent_name": "goblin",
+      "name": "shell",
+      "description": "Shell",
+      "configuration": "/host/manifest.json",
+      "state": "running",
+      "agent_state": "working",
+      "agent_state_since": 100,
+      "inbox": 2,
+      "scope": null,
+      "dev_shell": null,
+      "cwd": "/host/repository",
+      "created_by": {
+        "id": "owner-id",
+        "agent_name": "owner",
+        "future": true
+      },
+      "docker_enabled": false,
+      "identity": {
+        "pid": 42,
+        "helper_userns": 1,
+        "mount_owner": 2,
+        "source_mountns": 3,
+        "mountns": 4,
+        "future": true
+      },
+      "initial_packages": [
+        "fish"
+      ],
+      "packages": [],
+      "auto_approve": [],
+      "terminal": "/host/terminal.sock",
+      "attach": "/host/attach.sock",
+      "server_log": null,
+      "pty_eof": false,
+      "terminal_complete": false,
+      "terminal_interrupted": false,
+      "terminal_attached": false,
+      "terminal_detached": false,
+      "exit_code": null,
+      "stop_reason": null,
+      "detail": null,
+      "raid": {
+        "id": "raid-id",
+        "name": "raid",
+        "role": null,
+        "owner": "owner-id",
+        "paused": false,
+        "future": true
+      },
+      "shells": 0,
+      "execs": 0,
+      "terminals": [
+        {
+          "id": "t1",
+          "name": null,
+          "label": "shell",
+          "origin": "agent",
+          "started_at": 100,
+          "rows": 24,
+          "cols": 80,
+          "attached": false,
+          "future": true
+        }
+      ],
+      "recreated_from": null,
+      "skipped": [],
+      "worktree": {
+        "name": "branch",
+        "path": "/host/worktrees/branch",
+        "future": true
+      },
+      "checkout": "/host/repository",
+      "options": {
+        "model": "fast"
+      },
+      "future": {
+        "ignored": true
+      }
+    },
+    "sandbox_session": {
+      "id": "session-id",
+      "agent_name": "goblin",
+      "name": "shell",
+      "created_by": {
+        "id": "owner-id",
+        "agent_name": "owner",
+        "future": true
+      },
+      "description": "Shell",
+      "state": "running",
+      "agent_state": "working",
+      "initial_packages": [
+        "fish"
+      ],
+      "packages": [],
+      "auto_approve": [],
+      "scope": null,
+      "docker_enabled": false,
+      "exit_code": null,
+      "stop_reason": null,
+      "terminal_complete": false,
+      "terminal_interrupted": false,
+      "terminal_detached": false,
+      "terminal_attached": false,
+      "worktree": {
+        "name": "branch",
+        "path": "/host/worktrees/branch",
+        "future": true
+      },
+      "options": {
+        "model": "fast"
+      },
+      "future": {
+        "ignored": true
+      }
     }
   },
   "historical_api1": {
@@ -838,6 +956,1518 @@
         }
       },
       "valid": true
+    },
+    {
+      "schema": "SelfStatusReply",
+      "result": {
+        "state": "finished",
+        "agent_state": "future-activity"
+      },
+      "valid": true
+    },
+    {
+      "schema": "SelfStatus",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "state": "finished",
+        "agent_state": "working",
+        "scope": null,
+        "docker_enabled": false,
+        "dev_shell": null,
+        "attached": true,
+        "attached_since": 123,
+        "nix": true,
+        "host_commands": false,
+        "permission_bypass": null,
+        "allowed_run_targets": [],
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "session-id",
+          "paused": false,
+          "owner_name": "goblin"
+        },
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "created_by": null,
+        "options": {}
+      },
+      "valid": false
     }
-  ]
+  ],
+  "host_session": {
+    "id": "session-id",
+    "agent_name": "goblin",
+    "name": "shell",
+    "description": "Shell",
+    "configuration": "/host/manifest.json",
+    "state": "running",
+    "agent_state": "working",
+    "agent_state_since": 100,
+    "inbox": 2,
+    "scope": null,
+    "dev_shell": null,
+    "cwd": "/host/repository",
+    "created_by": {
+      "id": "owner-id",
+      "agent_name": "owner"
+    },
+    "docker_enabled": false,
+    "identity": {
+      "pid": 42,
+      "helper_userns": 1,
+      "mount_owner": 2,
+      "source_mountns": 3,
+      "mountns": 4
+    },
+    "initial_packages": [
+      "fish"
+    ],
+    "packages": [],
+    "auto_approve": [],
+    "terminal": "/host/terminal.sock",
+    "attach": "/host/attach.sock",
+    "server_log": null,
+    "pty_eof": false,
+    "terminal_complete": false,
+    "terminal_interrupted": false,
+    "terminal_attached": false,
+    "terminal_detached": false,
+    "exit_code": null,
+    "stop_reason": null,
+    "detail": null,
+    "raid": {
+      "id": "raid-id",
+      "name": "raid",
+      "role": null,
+      "owner": "owner-id",
+      "paused": false
+    },
+    "shells": 0,
+    "execs": 0,
+    "terminals": [
+      {
+        "id": "t1",
+        "name": null,
+        "label": "shell",
+        "origin": "agent",
+        "started_at": 100,
+        "rows": 24,
+        "cols": 80,
+        "attached": false
+      }
+    ],
+    "recreated_from": null,
+    "skipped": [],
+    "worktree": {
+      "name": "branch",
+      "path": "/host/worktrees/branch"
+    },
+    "checkout": "/host/repository",
+    "options": {
+      "model": "fast"
+    }
+  },
+  "sandbox_session": {
+    "id": "session-id",
+    "agent_name": "goblin",
+    "name": "shell",
+    "created_by": {
+      "id": "owner-id",
+      "agent_name": "owner"
+    },
+    "description": "Shell",
+    "state": "running",
+    "agent_state": "working",
+    "initial_packages": [
+      "fish"
+    ],
+    "packages": [],
+    "auto_approve": [],
+    "scope": null,
+    "docker_enabled": false,
+    "exit_code": null,
+    "stop_reason": null,
+    "terminal_complete": false,
+    "terminal_interrupted": false,
+    "terminal_detached": false,
+    "terminal_attached": false,
+    "worktree": {
+      "name": "branch",
+      "path": "/host/worktrees/branch"
+    },
+    "options": {
+      "model": "fast"
+    }
+  },
+  "host_session_legacy": {
+    "id": "session-id",
+    "agent_name": "goblin",
+    "name": "shell",
+    "configuration": "/host/manifest.json",
+    "state": "running",
+    "initial_packages": [
+      "fish"
+    ],
+    "packages": [],
+    "terminal": "/host/terminal.sock",
+    "pty_eof": false,
+    "terminal_complete": false,
+    "terminal_interrupted": false,
+    "docker_scope": "legacy-scope"
+  },
+  "session_parameter_cases": [
+    {
+      "method": "sessions.list",
+      "params": {},
+      "valid": true
+    },
+    {
+      "method": "sessions.list",
+      "params": [],
+      "valid": true
+    },
+    {
+      "method": "sessions.list",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "sessions.list",
+      "params": [
+        1
+      ],
+      "valid": false
+    },
+    {
+      "method": "sessions.list",
+      "params": {
+        "session": "x"
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": {
+        "session": "goblin"
+      },
+      "valid": true
+    },
+    {
+      "method": "sessions.get",
+      "params": [
+        "session-id"
+      ],
+      "valid": true
+    },
+    {
+      "method": "sessions.get",
+      "params": {
+        "session": ""
+      },
+      "valid": true
+    },
+    {
+      "method": "sessions.get",
+      "params": null,
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": {},
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": [],
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": [
+        true
+      ],
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": {
+        "session": 1
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": {
+        "session": "s",
+        "extra": true
+      },
+      "valid": false
+    },
+    {
+      "method": "sessions.get",
+      "params": [
+        "s",
+        "extra"
+      ],
+      "valid": false
+    }
+  ],
+  "session_result_cases": [
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "finished",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": true
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": [
+          "owner-id",
+          "owner"
+        ],
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": [
+          "branch",
+          "/host/worktrees/branch"
+        ],
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": []
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": 1.5,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        },
+        "future": [
+          1,
+          2
+        ]
+      },
+      "valid": true
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "description": "Shell",
+        "state": "finished",
+        "agent_state": "working",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": true
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": [
+          "owner-id",
+          "owner"
+        ],
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": [
+          "branch",
+          "/host/worktrees/branch"
+        ],
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "options": []
+      },
+      "valid": false
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": 1.5,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "working",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "options": {
+          "model": "fast"
+        },
+        "future": [
+          1,
+          2
+        ]
+      },
+      "valid": true
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": [
+          42,
+          1,
+          2,
+          3,
+          4
+        ],
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          [
+            "t1",
+            null,
+            "shell",
+            "agent",
+            100,
+            24,
+            80,
+            false
+          ]
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": [],
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [
+          [
+            "pkg",
+            "why"
+          ]
+        ],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "terminal": "/host/terminal.sock",
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "docker_scope": false
+      },
+      "valid": false
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "future-activity",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "agent",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": true
+    },
+    {
+      "schema": "SandboxSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "description": "Shell",
+        "state": "running",
+        "agent_state": "future-activity",
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "scope": null,
+        "docker_enabled": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_detached": false,
+        "terminal_attached": false,
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": true
+    },
+    {
+      "schema": "HostSessionReply",
+      "result": {
+        "id": "session-id",
+        "agent_name": "goblin",
+        "name": "shell",
+        "description": "Shell",
+        "configuration": "/host/manifest.json",
+        "state": "running",
+        "agent_state": "working",
+        "agent_state_since": 100,
+        "inbox": 2,
+        "scope": null,
+        "dev_shell": null,
+        "cwd": "/host/repository",
+        "created_by": {
+          "id": "owner-id",
+          "agent_name": "owner"
+        },
+        "docker_enabled": false,
+        "identity": {
+          "pid": 42,
+          "helper_userns": 1,
+          "mount_owner": 2,
+          "source_mountns": 3,
+          "mountns": 4
+        },
+        "initial_packages": [
+          "fish"
+        ],
+        "packages": [],
+        "auto_approve": [],
+        "terminal": "/host/terminal.sock",
+        "attach": "/host/attach.sock",
+        "server_log": null,
+        "pty_eof": false,
+        "terminal_complete": false,
+        "terminal_interrupted": false,
+        "terminal_attached": false,
+        "terminal_detached": false,
+        "exit_code": null,
+        "stop_reason": null,
+        "detail": null,
+        "raid": {
+          "id": "raid-id",
+          "name": "raid",
+          "role": null,
+          "owner": "owner-id",
+          "paused": false
+        },
+        "shells": 0,
+        "execs": 0,
+        "terminals": [
+          {
+            "id": "t1",
+            "name": null,
+            "label": "shell",
+            "origin": "remote",
+            "started_at": 100,
+            "rows": 24,
+            "cols": 80,
+            "attached": false
+          }
+        ],
+        "recreated_from": null,
+        "skipped": [],
+        "worktree": {
+          "name": "branch",
+          "path": "/host/worktrees/branch"
+        },
+        "checkout": "/host/repository",
+        "options": {
+          "model": "fast"
+        }
+      },
+      "valid": true
+    }
+  ],
+  "original_api1": {
+    "source": "52fecebf46023423dfe5e6b82e1dd92aeabda647:crates/controller/src/controller.rs SessionRecord and initialization handler",
+    "host_initialize": {
+      "api": 1,
+      "instance": "fixture-instance",
+      "role": "host",
+      "features": [
+        "package-grants",
+        "same-daemon-reconnect",
+        "state-subscribe",
+        "raw-terminal"
+      ],
+      "limits": {
+        "header": 256,
+        "body": 16384,
+        "frame_seconds": 3,
+        "depth": 32,
+        "response_body": 1048576,
+        "calls": 4096,
+        "connections": 32,
+        "sessions": 16,
+        "output_queue": 2097152,
+        "snapshot": 921600,
+        "terminal_buffer": 65536
+      }
+    },
+    "host_session": {
+      "id": "session-id",
+      "name": "shell",
+      "configuration": "/host/manifest.json",
+      "state": "running",
+      "identity": {
+        "pid": 42,
+        "helper_userns": 1,
+        "mount_owner": 2,
+        "source_mountns": 3,
+        "mountns": 4
+      },
+      "initial_packages": [
+        "fish"
+      ],
+      "packages": [],
+      "terminal": "/host/terminal.sock",
+      "pty_eof": false,
+      "terminal_complete": false,
+      "terminal_interrupted": false,
+      "exit_code": null,
+      "detail": null
+    }
+  }
 }

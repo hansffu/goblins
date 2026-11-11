@@ -424,21 +424,22 @@ pub fn complete(words: Vec<String>) -> Result<i32, String> {
             .for_each(|n| println!("{n}"));
         return Ok(0);
     }
-    let records = rpc::exchange(&mut socket, json!(1), "sessions.list", json!({}))
+    let records =
+        goblins_protocol::contract::exchange::<goblins_protocol::contract::sandbox::SessionsList>(
+            &mut socket,
+            json!(1),
+            goblins_protocol::contract::EmptyParams {},
+        )
         .map_err(|e| e.to_string())?;
-    if let Some(records) = records.as_array() {
-        for record in records {
-            if matches!(
-                record["state"].as_str(),
-                Some("starting" | "running" | "stopping")
-            ) && let Some(name) = record["agent_name"].as_str()
-                && !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            {
-                println!("{name}");
-            }
+    for record in records.0 {
+        if matches!(record.state.as_str(), "starting" | "running" | "stopping")
+            && !record.agent_name.is_empty()
+            && record
+                .agent_name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            println!("{}", record.agent_name);
         }
     }
     Ok(0)
